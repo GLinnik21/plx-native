@@ -281,7 +281,7 @@ static char bf_feed(const unsigned char *p, unsigned size, long long pts,
 
 /* StarfishMediaAPIs Load callback: (eventType, numValue, jsonStr) */
 static void starfish_cb(int type, long long num, const char *str) {
-    if (elogf) {
+    if (elogf && type != 0) {   /* skip the per-frame "presented" event (~24/s) */
         fprintf(elogf, "smp_cb type=%d num=%lld str=%.1400s\n",
                 type, num, str ? str : "");
         fflush(elogf);
@@ -407,10 +407,14 @@ static void *cues_thread(void *arg) {
 /* nearest cue at or before t (returns absolute byte, or -1 if none) */
 static long long cue_byte_for(long long t) {
     if (!g_cues_ready || g_ncues == 0) return -1;
-    long long best = g_cues[0].byte, bestt = -1;
-    for (int i = 0; i < g_ncues; i++)
-        if (g_cues[i].t_ns <= t && g_cues[i].t_ns > bestt) { bestt = g_cues[i].t_ns; best = g_cues[i].byte; }
-    return best;
+    /* g_cues is appended in increasing t_ns → binary-search the last cue <= t */
+    int lo = 0, hi = g_ncues - 1, best = -1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (g_cues[mid].t_ns <= t) { best = mid; lo = mid + 1; }
+        else hi = mid - 1;
+    }
+    return g_cues[best < 0 ? 0 : best].byte;   /* none <= t → seek to the first cue */
 }
 /* parse http://HOST[:PORT]/PATH?query from g_url into g_host/g_port/g_path */
 static void parse_stream_url(void) {
@@ -1029,7 +1033,11 @@ static void hsv(float h, float s, float v, float out[4]) {
 
 /* critically-damped spring step */
 static void spring(float *pos, float *vel, float target, float k, float dt) {
-    float c = 2.0f * sqrtf(k);
+    /* critical-damping c = 2*sqrt(k); k is one of a couple constants, so memoize
+     * instead of a sqrt per call (~52 spring updates/frame) */
+    static float lastK = -1.0f, lastC = 0.0f;
+    if (k != lastK) { lastK = k; lastC = 2.0f * sqrtf(k); }
+    float c = lastC;
     float a = k * (target - *pos) - c * (*vel);
     *vel += a * dt;
     *pos += *vel * dt;
@@ -1106,21 +1114,6 @@ static void draw_iconbtn(float x, float y, float s, int which, int focused) {
     if      (which == 0) icon_subs(gx, gy, gs, gc);
     else if (which == 1) icon_audio(gx, gy, gs, gc);
     else                 icon_pip(gx, gy, gs, gc);
-}
-static float text_w(const char *s, int sz, int bold) {
-    if (!g_text_ok || !s || !s[0]) return 0;
-    int w = 0, h = 0; text_tex(s, sz, bold, &w, &h); return (float)w;
-}
-/* rounded translucent pill with a bold label; returns pill width */
-static float draw_pill(const char *label, float x, float y, int focused) {
-    int sz = 26; float tw = text_w(label, sz, 1);
-    float padx = 30, h = 56, w = tw + 2 * padx;
-    float bg[4], fg[4];
-    if (focused) { bg[0]=0.96f;bg[1]=0.96f;bg[2]=0.98f;bg[3]=0.97f; fg[0]=0.06f;fg[1]=0.07f;fg[2]=0.09f;fg[3]=1; }
-    else         { bg[0]=1;bg[1]=1;bg[2]=1;bg[3]=0.13f;             fg[0]=0.94f;fg[1]=0.95f;fg[2]=1;fg[3]=1; }
-    draw_rect(x, y, w, h, 0, h * 0.5f, bg, bg, 0);
-    draw_text(label, x + w * 0.5f, y + 13, sz, fg, 1, 1);
-    return w;
 }
 static void draw_hud(void) {
     /* bottom scrim: transparent → dark, so text reads over bright video */
