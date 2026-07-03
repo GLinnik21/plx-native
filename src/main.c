@@ -748,9 +748,15 @@ static void bufferfeed_pump(Uint32 now) {
             if (elogf) { fprintf(elogf, "setMediaVideoData sent → window+PLAYING\n"); fflush(elogf); }
         }
     }
-    /* feed AUs once playing (Feed only succeeds after Play) */
+    /* feed AUs once playing (Feed only succeeds after Play). Don't feed while a
+     * seek is still armed (g_seek_to_ns>=0): on a resume the seek is armed BEFORE
+     * the pipeline reaches PLAYING, so feeding here first would present the file
+     * start for a frame before the seek repositions — a visible jump. Holding off
+     * lets the seek block (above) drain those start AUs and reposition first. */
     if (bf_stream && g_mkv.duration_ns > 0) pl_dur_ns = g_mkv.duration_ns;
-    if (bf_playing && !pl_paused) { if (bf_stream) bf_feed_stream(); else bf_feed_ahead(); }
+    if (bf_playing && !pl_paused && g_seek_to_ns < 0) {
+        if (bf_stream) bf_feed_stream(); else bf_feed_ahead();
+    }
 }
 
 #define SCR_W 1920
