@@ -64,9 +64,6 @@ extern int SDL_webOSCursorVisibility(int visible);
 #    include "config.local.h"
 #  endif
 #endif
-#ifndef PLEX_TEST_URL
-#  define PLEX_TEST_URL "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"
-#endif
 /* Demo movie played when OK is pressed on a shelf card (Frozen, H264+AC3 MKV). */
 #ifndef DEMO_STREAM_URL
 #  define DEMO_STREAM_URL "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"
@@ -87,7 +84,6 @@ extern int LSCallOneReply(void *sh, const char *uri, const char *payload,
                           void *lserror);
 extern int LSGmainAttach(void *sh, void *mainloop, void *lserror);
 extern const char *LSMessageGetPayload(void *msg);
-extern void *g_main_loop_new(void *ctx, int running);
 extern int g_main_context_iteration(void *ctx, int may_block);
 extern int g_main_context_pending(void *ctx);
 
@@ -137,112 +133,25 @@ extern void SMP_Feed(void *sret, void *self, const char *payload)
     __asm__("_ZN17StarfishMediaAPIs4FeedB5cxx11EPKc");
 extern int  SMP_Play(void *self) __asm__("_ZN17StarfishMediaAPIs4PlayEv");
 extern int  SMP_Unload(void *self) __asm__("_ZN17StarfishMediaAPIs6UnloadEv");
-extern void SMP_getMediaID(void *sret, void *self)
-    __asm__("_ZN17StarfishMediaAPIs10getMediaIDEv");
-extern void SMP_setExternalContext(void *self, void *gctx)
-    __asm__("_ZN17StarfishMediaAPIs18setExternalContextEP13_GMainContext");
 extern void SMP_notifyForeground(void *self)
     __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv");
 extern int  SMP_isLoadCompleted(void *self)
     __asm__("_ZN17StarfishMediaAPIs15isLoadCompletedEv");
 extern int  SMP_Pause(void *self) __asm__("_ZN17StarfishMediaAPIs5PauseEv");
-extern long long SMP_getCurrentPlaytime(void *self)
-    __asm__("_ZN17StarfishMediaAPIs18getCurrentPlaytimeEv");
 extern void SMP_setCurrentPlaytime(void *self, long long t)
     __asm__("_ZN17StarfishMediaAPIs18setCurrentPlaytimeEx");
-extern int  SMP_Seek(void *self, const char *payload)
-    __asm__("_ZN17StarfishMediaAPIs4SeekEPKc");
 extern int  SMP_flush(void *self) __asm__("_ZN17StarfishMediaAPIs5flushEv");
-extern int  SMP_SetPlayRate(void *self, const char *payload)
-    __asm__("_ZN17StarfishMediaAPIs11SetPlayRateEPKc");
-extern void *g_main_context_default(void);
-extern void *g_main_context_new(void);
-extern void  g_main_context_push_thread_default(void *ctx);
-extern void  g_main_loop_run(void *loop);
 
 static unsigned char g_smp[65536] __attribute__((aligned(16)));
 static int g_smpReady = 0;
 
-static void *lsh = NULL;
-static char mediaId[64] = "";
 static long g_acb = 0, g_taskId = 0;
-static int acbBound = 0, subscribed = 0, videoInfoSent = 0;
-static int pipelinePlaying = 0;
-/* URI-mode pipelines emit videoInfo BEFORE loadCompleted; ACB replays stored
- * video data inside the setState transaction and tv.display rejects it
- * (ERROR_06), rolling back the transition. Buffer it, send after PLAYING. */
-static char pendingVideoInfo[1600] = "";
-static FILE *elogf = NULL; /* shared event/diagnostic log */
-
-/* BISECT: tv.display rejects the pipeline's raw videoInfo (ERROR_06).
- * libAcbAPI SEGFAULTS if expected fields (SEI/VUI/userData/...) are absent,
- * so keep the full pipeline payload and mutate ONE thing per app run.
- * Variant index comes from /tmp/poc-variant (written before launch). */
-static int g_variant = 0;
-/* /tmp/poc-mode: 0 = ACB path (default), 1 = NO ACB (uMS-only, test whether
- * the pipeline auto-displays for the foreground app without any ACB binding) */
-static int g_mode = 2;   /* default: buffer-feed player (skip media-client LSRegister, use ACB) */
+static int  videoInfoSent = 0;   /* ACB setMediaVideoData sent once, after PLAYING */
+static FILE *elogf = NULL;       /* shared event/diagnostic log */
 /* /tmp/poc-ptype: ACB playerType for AcbAPI_initialize (default MSE=10).
  * Sweeping this is log-readable: acb_cb reports whether setMediaVideoData →
  * tv.display succeeds, so no screen look is needed to find a working type. */
 static int g_ptype = PLAYER_TYPE_MSE;
-
-/* replace all occurrences of find with repl (dst must not alias src) */
-static void strrepl(char *dst, size_t cap, const char *src,
-                    const char *find, const char *repl) {
-    size_t fl = strlen(find), rl = strlen(repl), o = 0;
-    while (*src && o + 1 < cap) {
-        if (strncmp(src, find, fl) == 0) {
-            if (o + rl + 1 > cap) break;
-            memcpy(dst + o, repl, rl);
-            o += rl;
-            src += fl;
-        } else dst[o++] = *src++;
-    }
-    dst[o] = 0;
-}
-
-static void send_videoinfo_variant(int v) {
-    /* libAcbAPI keeps the payload POINTER and reads it async on its worker
-     * thread — a stack buffer here is a use-after-return crash */
-    static char buf[1600];
-    switch (v) {
-    case 0: /* full payload as pipeline sent it (afd already clamped) */
-        strrepl(buf, sizeof buf, pendingVideoInfo, "\x01", "\x01");
-        break;
-    case 1: /* webOS<5 key names per Kodi: SEI->mediaSei, VUI->mediaVui */
-        {
-            static char tmp[1600];
-            strrepl(tmp, sizeof tmp, pendingVideoInfo, "\"SEI\":", "\"mediaSei\":");
-            strrepl(buf, sizeof buf, tmp, "\"VUI\":", "\"mediaVui\":");
-        }
-        break;
-    case 2: /* userData: string -> number (uMS passes an opaque char*) */
-        strrepl(buf, sizeof buf, pendingVideoInfo,
-                "\"userData\":\"userData=(null)\"", "\"userData\":0");
-        break;
-    case 3: /* integer frameRate */
-        strrepl(buf, sizeof buf, pendingVideoInfo,
-                "\"frameRate\":23.9760246", "\"frameRate\":24");
-        break;
-    default: /* scanType lowercase per some fw: progressive->PROGRESSIVE */
-        strrepl(buf, sizeof buf, pendingVideoInfo,
-                "\"scanType\":\"progressive\"", "\"scanType\":\"VIDEO_PROGRESSIVE\"");
-        break;
-    }
-    if (elogf) { fprintf(elogf, "VARIANT %d -> %s\n", v, buf); fflush(elogf); }
-    int rc = AcbAPI_setMediaVideoData(g_acb, buf, &g_taskId);
-    if (elogf) { fprintf(elogf, "VARIANT %d rc=%d task=%ld\n", v, rc, g_taskId); fflush(elogf); }
-}
-
-static int ls2_dummy_cb(void *sh, void *msg, void *ctx) {
-    (void)sh; (void)ctx;
-    if (elogf) {
-        fprintf(elogf, "ls2> %s\n", LSMessageGetPayload(msg));
-        fflush(elogf);
-    }
-    return 1;
-}
 
 static void acb_cb(long a, long t, long ev, long app, long play,
                    const char *reply) {
@@ -251,106 +160,6 @@ static void acb_cb(long a, long t, long ev, long app, long play,
         fprintf(elogf, "acb_cb ev=%ld reply=%s\n", ev, reply ? reply : "");
         fflush(elogf);
     }
-}
-
-/* single handler for both the load reply and the media event subscription */
-static int media_cb(void *sh, void *msg, void *ctx) {
-    (void)ctx;
-    const char *pl = LSMessageGetPayload(msg);
-    if (elogf) { fprintf(elogf, "media> %s\n", pl); fflush(elogf); }
-
-    if (!mediaId[0]) {
-        const char *p = strstr(pl, "\"mediaId\":\"");
-        if (p) {
-            p += 11;
-            const char *q = strchr(p, '"');
-            if (q && (size_t)(q - p) < sizeof mediaId) {
-                memcpy(mediaId, p, q - p);
-                mediaId[q - p] = 0;
-            }
-        }
-        /* got an id → subscribe to its event stream (state/info events).
-         * (com.webos.media has no notifyForeground method on webOS 4.5.) */
-        if (mediaId[0] && !subscribed) {
-            subscribed = 1;
-            char j[128];
-            snprintf(j, sizeof j,
-                     "{\"mediaId\":\"%s\",\"subscribe\":true}", mediaId);
-            LSCall(sh, "luna://com.webos.media/subscribe", j,
-                   media_cb, NULL, NULL, NULL);
-        }
-    }
-
-    /* videoInfo event → buffer only (send after PLAYING, Kodi's timing).
-     * Audio is NOT fed to ACB — the pipeline owns the audio sink.
-     * Sanitize: this file reports afd:16 (out of the valid 4-bit 0..15
-     * range) which the display rejects as Invalid argument; clamp to 8
-     * ("full frame, same as coded"). */
-    const char *vip = strstr(pl, "\"videoInfo\":");
-    if (vip) {
-        /* extract the INNER object — ACB wraps our string in its own
-         * "videoInfo" envelope, so passing the whole event double-wraps */
-        const char *b = strchr(vip, '{');
-        if (b) {
-            int depth = 0;
-            const char *e = b;
-            do { if (*e == '{') depth++; else if (*e == '}') depth--; e++; }
-            while (depth > 0 && *e);
-            size_t n = (size_t)(e - b);
-            if (n >= sizeof pendingVideoInfo) n = sizeof pendingVideoInfo - 1;
-            memcpy(pendingVideoInfo, b, n);
-            pendingVideoInfo[n] = 0;
-        }
-        char *afd = strstr(pendingVideoInfo, "\"afd\":16");
-        if (afd) { afd[6] = '8'; afd[7] = ' '; } /* ":16" -> ":8 " */
-        if (g_acb && acbBound && !videoInfoSent) {
-            videoInfoSent = 1;
-            AcbAPI_setMediaVideoData(g_acb, pendingVideoInfo, &g_taskId);
-        }
-    }
-
-    /* load complete → Kodi order: sink MAIN → mediaId → LOADED → play.
-     * No setDisplayWindow: Kodi never calls it; MAIN sink is full-panel. */
-    if (mediaId[0] && !acbBound &&
-        (strstr(pl, "loadCompleted") || strstr(pl, "\"loaded\""))) {
-        acbBound = 1;
-        if (g_acb) {
-            int rSink  = AcbAPI_setSinkType(g_acb, SINK_TYPE_MAIN);
-            int rId    = AcbAPI_setMediaId(g_acb, mediaId);
-            int rState = AcbAPI_setState(g_acb, APPSTATE_FOREGROUND,
-                                         PLAYSTATE_LOADED, &g_taskId);
-            /* AcbController.qml: on reaching Loaded, setDisplayWindow — sizes
-             * and enables the video plane. */
-            int rWin = AcbAPI_setDisplayWindow(g_acb, 0, 0, 1920, 1080, 1,
-                                               &g_taskId);
-            if (elogf) { fprintf(elogf,
-                         "ACB bound: sink=%d id=%d state=%d win=%d mediaId=%s\n",
-                         rSink, rId, rState, rWin, mediaId); fflush(elogf); }
-        } else if (elogf) {
-            fprintf(elogf, "NO-ACB mode: play only, mediaId=%s\n", mediaId);
-            fflush(elogf);
-        }
-        char j[128];
-        snprintf(j, sizeof j, "{\"mediaId\":\"%s\"}", mediaId);
-        LSCallOneReply(lsh, "luna://com.webos.media/play", j,
-                       ls2_dummy_cb, NULL, NULL, NULL);
-    }
-    if (acbBound && strstr(pl, "\"playing\"")) {
-        if (g_acb)
-            AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING,
-                            &g_taskId);
-        pipelinePlaying = 1;
-    }
-    /* bisect: ONE variant per app run (crashes kill the process), sent from
-     * dispatch context a few events after playing */
-    if (g_acb && pipelinePlaying && !videoInfoSent) {
-        static int evCount = 0;
-        if (++evCount == 8) {
-            videoInfoSent = 1;
-            send_videoinfo_variant(g_variant);
-        }
-    }
-    return 1;
 }
 
 /* crash tracer: log faulting PC + the /proc/self/maps line containing it, so
@@ -392,59 +201,18 @@ static void install_crash_tracer(void) {
     sigaction(SIGBUS, &sa, NULL);
 }
 
-static int try_register(const char *name) {
-    struct LSErr err;
-    memset(&err, 0, sizeof err);
-    LSErrorInit(&err);
-    lsh = NULL;
-    int ok = LSRegister(name, &lsh, &err);
-    if (elogf) {
-        fprintf(elogf, "LSRegister(\"%s\") ok=%d sh=%p code=%d msg=%s\n",
-                name, ok, lsh, err.code,
-                err.message ? err.message : "(none)");
-        fflush(elogf);
+/* Create + initialize the ACB (App Common Binding) that binds the decoded video
+ * sink to the display plane. We deliberately DON'T register our own
+ * com.webos.media client — that collides with the uMS connection
+ * StarfishMediaAPIs registers (which then fails acquire with CONN_FIND_ERR).
+ * The pipeline owns that connection; we only need ACB for the plane bind. */
+static int acb_init(void) {
+    g_acb = AcbAPI_create();
+    if (g_acb) {
+        const char *appId = getenv("APPID");
+        AcbAPI_initialize(g_acb, g_ptype, appId ? appId : "com.glin.plexpoc", acb_cb);
     }
-    if (!ok) LSErrorFree(&err);
-    return ok && lsh;
-}
-
-static int ls2_init(void) {
-    /* read our real exe path as the hub sees it */
-    if (elogf) {
-        char buf[256];
-        int n = (int)readlink("/proc/self/exe", buf, sizeof buf - 1);
-        if (n > 0) { buf[n] = 0; fprintf(elogf, "exe=%s\n", buf); }
-        fflush(elogf);
-    }
-    void *ml = g_main_loop_new(NULL, 0);
-    /* buffer-feed mode: DON'T register our own com.webos.media client — it
-     * collides with the uMS connection StarfishMediaAPIs registers (which then
-     * fails acquire with CONN_FIND_ERR). Let the pipeline own it; we still
-     * create ACB (below) for the video-plane bind. */
-    if (g_mode == 2) {
-        lsh = NULL;
-        if (elogf) { fprintf(elogf, "buffer-feed: skipping media-client LSRegister\n"); fflush(elogf); }
-    } else {
-        /* try app-id name first, then the media client name the role allows */
-        if (!try_register("com.glin.plexpoc") &&
-            !try_register("com.webos.media.client.plexpoc") &&
-            !try_register(NULL)) {
-            return 0;
-        }
-        LSGmainAttach(lsh, ml, NULL);
-        if (elogf) { fprintf(elogf, "LSRegister ok sh=%p\n", lsh); fflush(elogf); }
-    }
-    /* create + initialize ACB once for the app's lifetime (skip in no-ACB
-     * mode to test whether uMS auto-displays for the foreground app) */
-    if (g_mode != 1) {
-        g_acb = AcbAPI_create();
-        if (g_acb) {
-            const char *appId = getenv("APPID");
-            AcbAPI_initialize(g_acb, g_ptype,
-                              appId ? appId : "com.glin.plexpoc", acb_cb);
-        }
-    }
-    if (elogf) { fprintf(elogf, "acb create=%ld mode=%d\n", g_acb, g_mode); fflush(elogf); }
+    if (elogf) { fprintf(elogf, "acb create=%ld\n", g_acb); fflush(elogf); }
     return 1;
 }
 
@@ -452,43 +220,6 @@ static void ls2_pump(void) {
     int guard = 8;
     while (guard-- && g_main_context_pending(NULL))
         g_main_context_iteration(NULL, 0);
-}
-
-static int start_playback(const char *url) {
-    if (!lsh) return 0;
-    mediaId[0] = 0;
-    acbBound = 0;
-    subscribed = 0;
-    videoInfoSent = 0;
-    pipelinePlaying = 0;
-    pendingVideoInfo[0] = 0;
-    char json[1024];
-    /* ACB path: no windowId in the option (ACB owns the sink connection) */
-    snprintf(json, sizeof json,
-             "{\"uri\":\"%s\",\"type\":\"media\",\"payload\":{\"option\":"
-             "{\"appId\":\"com.glin.plexpoc\"}}}", url);
-    /* LSCall (not OneReply): keeps a live token; pipeline stays loaded */
-    int ok = LSCall(lsh, "luna://com.webos.media/load", json,
-                    media_cb, NULL, NULL, NULL);
-    if (elogf) { fprintf(elogf, "load call ok=%d\n", ok); fflush(elogf); }
-    return ok;
-}
-
-static void stop_playback(void) {
-    if (g_acb)
-        AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &g_taskId);
-    if (lsh && mediaId[0]) {
-        char json[128];
-        snprintf(json, sizeof json, "{\"mediaId\":\"%s\"}", mediaId);
-        LSCallOneReply(lsh, "luna://com.webos.media/unload", json,
-                       ls2_dummy_cb, NULL, NULL, NULL);
-        mediaId[0] = 0;
-    }
-    acbBound = 0;
-    subscribed = 0;
-    videoInfoSent = 0;
-    pipelinePlaying = 0;
-    pendingVideoInfo[0] = 0;
 }
 
 /* ================= buffer-feed playback (StarfishMediaAPIs) ================= */
@@ -500,18 +231,10 @@ static long bf_len = 0;
 static long bf_au[40000];               /* AU start offsets */
 static int  bf_naus = 0, bf_next = 0, bf_loop = 0;
 static int  bf_loaded = 0, bf_bound = 0, bf_playing = 0, bf_started = 0;
-static volatile int bf_feed_stop = 0;
 static char bf_mediaId[64] = "";
 static const char *bf_payload = NULL;
 static void *load_thread(void *arg);   /* fwd */
 
-/* Two DIFFERENT pipeline events carry video description (per libplayerAPIs
- * decompile): the DISPLAY videoInfo (what tv.display validates — pixelAspectRatio
- * as a "W:H" STRING, aspectRatio, mode3D/actual3D, SEI/VUI) and the sourceInfo
- * track descriptor ("video":{...} with pixelAspectRatio as an OBJECT). ss4s/Kodi
- * pass the display videoInfo strValue VERBATIM to setMediaVideoData. */
-static char dispVideoInfo[4096] = "";   /* whole str of the display videoInfo event */
-static char srcVideoInfo[2048]  = "";   /* sourceInfo "video":{...} (fallback source) */
 /* THE payload tv.display/setMediaVideoData actually parses: the WHOLE sourceInfo
  * envelope {"context":..,"content":..,"video":{frameRate,scanType,width,height,
  * pixelAspectRatio:{w,h},data3D:{...},bitRate,adaptive,path,afd,rotation,hfr,..}}.
@@ -585,17 +308,6 @@ static void starfish_cb(int type, long long num, const char *str) {
         bf_loaded = 1;
         if (elogf) { fprintf(elogf, "SMP loadCompleted id=%s\n", bf_mediaId); fflush(elogf); }
     }
-    /* DISPLAY videoInfo event: the ONLY event whose "pixelAspectRatio" is a
-     * "W:H" STRING (sourceInfo uses an object). This is the display-ready payload
-     * tv.display validates; ss4s/Kodi pass its strValue VERBATIM. Capture the
-     * whole str unchanged — no unwrap, no key renames, no afd clamp. */
-    if (!dispVideoInfo[0] && strstr(str, "\"pixelAspectRatio\":\"")) {
-        size_t n = strlen(str);
-        if (n + 1 < sizeof dispVideoInfo) {
-            memcpy(dispVideoInfo, str, n + 1);
-            if (elogf) { fprintf(elogf, "SMP dispVideoInfo captured type=%d (%zu bytes)\n", type, n); fflush(elogf); }
-        }
-    }
     /* Capture the WHOLE sourceInfo envelope verbatim — this is the exact payload
      * tv.display/setMediaVideoData parses (context + content + nested video). */
     if (!sourceInfoRaw[0] && strstr(str, "\"video\":") && strstr(str, "\"context\":")) {
@@ -604,18 +316,6 @@ static void starfish_cb(int type, long long num, const char *str) {
             memcpy(sourceInfoRaw, str, n + 1);
             if (elogf) { fprintf(elogf, "SMP sourceInfoRaw captured (%zu bytes)\n", n); fflush(elogf); }
         }
-    }
-    /* sourceInfo "video":{...} track descriptor — fallback source for building a
-     * display videoInfo if no display event ever arrives in buffer-feed mode. */
-    if (!srcVideoInfo[0]) {
-        const char *b = strstr(str, "\"video\":");
-        if (b) { b = strchr(b, '{');
-            if (b) { int d = 0; const char *e = b;
-                do { if (*e=='{')d++; else if (*e=='}')d--; e++; } while (d>0 && *e);
-                size_t n = (size_t)(e - b);
-                if (n > 8 && n < sizeof srcVideoInfo) {
-                    memcpy(srcVideoInfo, b, n); srcVideoInfo[n]=0;
-                    if (elogf) { fprintf(elogf, "SMP srcVideoInfo captured (%zu bytes)\n", n); fflush(elogf); } } } }
     }
 }
 
@@ -635,7 +335,6 @@ static void bf_split(void) {
 /* ---- streaming path: PMS over HTTP → MKV demux → AU queue ---- */
 static au_queue     g_aq;
 static int          bf_stream = 0;      /* 1 = stream from PMS, 0 = /tmp/sample.h264 */
-static int          bf_stream_eof = 0;
 static char         g_url[1024] = "";
 static au_node     *bf_pending = NULL;  /* AU popped but not yet accepted (BufferFull) */
 static http_stream  g_hs;
@@ -876,10 +575,10 @@ static void stop_bufferfeed(int keep_cues) {
     if (bf_pending) { free(bf_pending); bf_pending = NULL; }
     free(bf_data); bf_data = NULL;
     bf_started = bf_loaded = bf_bound = bf_playing = 0;
-    bf_stream = bf_stream_eof = 0;
+    bf_stream = 0;
     bf_next = bf_naus = bf_loop = bf_frames = 0;
     videoInfoSent = 0;
-    bf_mediaId[0] = 0; sourceInfoRaw[0] = 0; srcVideoInfo[0] = 0; dispVideoInfo[0] = 0;
+    bf_mediaId[0] = 0; sourceInfoRaw[0] = 0;
     pl_paused = 0; resumePausePending = 0; g_playpos_ns = 0; pl_dur_ns = 0; g_url[0] = 0;
     g_file_size = 0; g_seek_byte = -1; g_seek_to_ns = -1;
     g_pts_shift = 0; g_max_fed_pts = 0; g_rebase_pending = 0; pl_scrub_ns = -1;
@@ -921,7 +620,7 @@ static void bf_feed_stream(void) {
         if (!bf_pending) {
             int eof = 0;
             bf_pending = aq_pop(&g_aq, &eof);
-            if (!bf_pending) { if (eof) bf_stream_eof = 1; break; }
+            if (!bf_pending) break;
         }
         /* after a seek, drop everything until the first video keyframe, then
          * zero-base the fed timeline on it (a flushed decoder needs a keyframe
@@ -966,50 +665,6 @@ static void *load_thread(void *arg) {
     int ok = SMP_Load(g_smp, bf_payload, starfish_cb);
     if (elogf) { fprintf(elogf, "SMP: Load returned ok=%d\n", ok); fflush(elogf); }
     return NULL;
-}
-
-/* minimal JSON scalar scrapers (payloads are flat enough for this) */
-static int json_int(const char *s, const char *key, long *out) {
-    char pat[64]; snprintf(pat, sizeof pat, "\"%s\":", key);
-    const char *p = strstr(s, pat); if (!p) return 0;
-    p += strlen(pat); while (*p==' ') p++;
-    *out = strtol(p, NULL, 10); return 1;
-}
-static int json_dbl(const char *s, const char *key, double *out) {
-    char pat[64]; snprintf(pat, sizeof pat, "\"%s\":", key);
-    const char *p = strstr(s, pat); if (!p) return 0;
-    p += strlen(pat); while (*p==' ') p++;
-    *out = strtod(p, NULL); return 1;
-}
-static long gcd_l(long a, long b){ while(b){long t=a%b;a=b;b=t;} return a<0?-a:a; }
-
-/* Fallback: transform the sourceInfo "video":{...} descriptor into the exact
- * display-videoInfo schema tv.display accepts (used only if no display videoInfo
- * event is ever emitted). Mirrors libplayerAPIs generateVideoInfoPtree:
- * pixelAspectRatio {w,h}->"w:h", add aspectRatio, scanType->progressive,
- * data3D->mode3D/actual3D, mediaSei/mediaVui dropped (optional color metadata). */
-static int build_display_video_info(char *out, size_t osz) {
-    if (!srcVideoInfo[0]) return 0;
-    long w=0,h=0,afd=16,rot=0; double fr=0;
-    if (!json_int(srcVideoInfo,"width",&w) || !json_int(srcVideoInfo,"height",&h)
-        || w<=0 || h<=0) return 0;
-    json_dbl(srcVideoInfo,"frameRate",&fr);
-    json_int(srcVideoInfo,"afd",&afd);
-    json_int(srcVideoInfo,"rotation",&rot);
-    long g = gcd_l(w,h); if (g<=0) g=1;
-    long an=w/g, bn=h/g;
-    long pw=1, ph=1;
-    const char *par = strstr(srcVideoInfo, "\"pixelAspectRatio\":");
-    if (par) { json_int(par,"width",&pw); json_int(par,"height",&ph);
-               if (pw<=0) pw=1; if (ph<=0) ph=1; }
-    const char *scan = strstr(srcVideoInfo,"INTERLACED") ? "interlaced" : "progressive";
-    snprintf(out, osz,
-        "{\"width\":%ld,\"height\":%ld,\"aspectRatio\":\"%ld:%ld\","
-        "\"frameRate\":%.6f,\"bitRate\":0,\"mode3D\":\"2d\",\"actual3D\":\"2d\","
-        "\"scanType\":\"%s\",\"pixelAspectRatio\":\"%ld:%ld\",\"afd\":%ld,"
-        "\"rotation\":%ld,\"hfr\":false,\"hdrType\":\"none\"}",
-        w,h,an,bn,fr,scan,pw,ph,afd,rot);
-    return 1;
 }
 
 /* called from the main loop: once loaded, bind ACB, Play, then feed AUs */
@@ -1532,14 +1187,9 @@ int main(int argc, char **argv) {
     freopen("/tmp/poc-stderr.log", "w", stderr); /* capture abort/assert text */
     install_crash_tracer();
     {
-        FILE *vf = fopen("/tmp/poc-variant", "r");
-        if (vf) { fscanf(vf, "%d", &g_variant); fclose(vf); }
-        FILE *mf = fopen("/tmp/poc-mode", "r");
-        if (mf) { fscanf(mf, "%d", &g_mode); fclose(mf); }
-        FILE *pf = fopen("/tmp/poc-ptype", "r");
+        FILE *pf = fopen("/tmp/poc-ptype", "r");   /* dev: ACB playerType override */
         if (pf) { fscanf(pf, "%d", &g_ptype); fclose(pf); }
-        if (elogf) { fprintf(elogf, "variant=%d mode=%d ptype=%d\n",
-                     g_variant, g_mode, g_ptype); fflush(elogf); }
+        if (elogf) { fprintf(elogf, "ptype=%d\n", g_ptype); fflush(elogf); }
     }
     SDL_SetMainReady();
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "0");
@@ -1629,12 +1279,10 @@ int main(int argc, char **argv) {
     int autodir = 1;
     Uint32 t0 = SDL_GetTicks(), fpsT = t0;
     int frames = 0, fpsShown = 0;
-    int autoPlayTest = 0; /* boot to the shelf UI; press OK/Enter to test playback */
     float bgPhase = 0;
     int running = 1;
 
-    FILE *elog = elogf;
-    ls2_init();
+    acb_init();
     int demo = (argc > 1 && strstr(argv[1], "demo") != NULL);
     unsigned heldSym = 0;          /* client-side key repeat (wayland) */
     Uint32 heldSince = 0, lastRep = 0, scrubLast = 0, scrubT = 0;
@@ -1681,21 +1329,21 @@ int main(int argc, char **argv) {
         ls2_pump();
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            if (elog && (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)) {
+            if (elogf && (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)) {
                 const unsigned char *raw = (const unsigned char *)&e;
-                fprintf(elog, "[%u] key type=0x%x sym=0x%x scan=0x%x raw=",
+                fprintf(elogf, "[%u] key type=0x%x sym=0x%x scan=0x%x raw=",
                         SDL_GetTicks(), e.type, e.key.keysym.sym,
                         e.key.keysym.scancode);
-                for (int bi = 0; bi < 32; bi++) fprintf(elog, "%02x", raw[bi]);
-                fprintf(elog, "\n");
-                fflush(elog);
+                for (int bi = 0; bi < 32; bi++) fprintf(elogf, "%02x", raw[bi]);
+                fprintf(elogf, "\n");
+                fflush(elogf);
             }
             if (e.type == SDL_QUIT) running = 0;
             /* ---- app background/foreground (LG SDL: SDL_APP_* 0x103..0x106) ----
              * Verified on-device: switching to a full-screen app fires 0x103, the
              * media server releases our pipeline; returning fires 0x105/0x106. */
             else if (e.type == 0x103 || e.type == 0x104) {   /* WILL/DID ENTER BACKGROUND */
-                if (elog) { fprintf(elog, "LIFECYCLE: background (playing=%d)\n", playing); fflush(elog); }
+                if (elogf) { fprintf(elogf, "LIFECYCLE: background (playing=%d)\n", playing); fflush(elogf); }
                 if (playing && !bgWasPlaying) {   /* tear down: system will release the pipeline */
                     bgPos = g_playpos_ns; bgWasPlaying = 1; bgWasPaused = pl_paused;
                     /* a held D-pad scrub / pointer drag would otherwise commit a stale
@@ -1706,7 +1354,7 @@ int main(int argc, char **argv) {
                 }
             }
             else if (e.type == 0x105 || e.type == 0x106) {   /* WILL/DID ENTER FOREGROUND */
-                if (elog) { fprintf(elog, "LIFECYCLE: foreground (wasPlaying=%d)\n", bgWasPlaying); fflush(elog); }
+                if (elogf) { fprintf(elogf, "LIFECYCLE: foreground (wasPlaying=%d)\n", bgWasPlaying); fflush(elogf); }
                 if (bgWasPlaying && e.type == 0x106) {        /* reload + resume on DID-enter */
                     playing = start_bufferfeed();
                     if (playing) { g_seek_to_ns = bgPos; pl_hud_until = SDL_GetTicks() + 4500;
@@ -1911,12 +1559,6 @@ int main(int argc, char **argv) {
             seekTried = 1;
         }
         if (bf_started) bufferfeed_pump(now);
-        if (autoPlayTest && now - t0 > 1500) {
-            autoPlayTest = 0;
-            playing = start_playback(PLEX_TEST_URL);
-            clear_opaque_region(); /* re-assert: video plane must show through */
-            if (elogf) { fprintf(elogf, "autoplay start ret=%d\n", playing); fflush(elogf); }
-        }
         /* client-side long-press repeat for the shelf: 400ms delay, then every 130ms */
         if (heldSym && now - heldSince > 400 && now - lastRep > 130) {
             lastRep = now;
@@ -2066,7 +1708,7 @@ int main(int argc, char **argv) {
             fpsT = now;
         }
     }
-    stop_playback();
+    if (bf_started) stop_bufferfeed(0);
     SDL_Quit();
     return 0;
 }
