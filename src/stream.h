@@ -24,6 +24,7 @@ typedef struct {
     long long consumed;         /* body bytes handed to caller so far */
     int  status;                /* HTTP status code, 0 on failure */
     int  chunked;               /* Transfer-Encoding: chunked */
+    long long chunk_left;       /* bytes left in the current chunk (chunked mode) */
 } http_stream;
 
 /* Connect to ip:port and send GET path. Consumes response headers; leaves the
@@ -50,15 +51,23 @@ static int http_open(http_stream *hs, const char *ip, int port,
     struct timeval rcvto = { 15, 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof rcvto);
 
+    /* Send the default wildcard Accept ONLY if the caller didn't set one. The
+     * Plex API does content negotiation: a wildcard Accept yields XML, but pms.h's
+     * parser needs JSON, so it passes an explicit "Accept: application/json" that
+     * the wildcard would otherwise override. Playback/part/photo endpoints ignore
+     * Accept and keep the default. */
+    int has_accept = extra && strcasestr(extra, "Accept:");
     char req[2048];
     int n = snprintf(req, sizeof req,
                      "GET %s HTTP/1.1\r\n"
                      "Host: %s:%d\r\n"
                      "User-Agent: plexpoc/0.1\r\n"
-                     "Accept: */*\r\n"
+                     "%s"
                      "%s"
                      "Connection: close\r\n\r\n",
-                     path, ip, port, extra ? extra : "");
+                     path, ip, port,
+                     has_accept ? "" : "Accept: */*\r\n",
+                     extra ? extra : "");
     for (int off = 0; off < n; ) {
         int w = (int)send(fd, req + off, n - off, 0);
         if (w <= 0) { close(fd); return -1; }
@@ -101,10 +110,61 @@ static int http_open(http_stream *hs, const char *ip, int port,
     return 0;
 }
 
+/* one raw body byte from the buffered-then-socket stream (for chunk framing) */
+static int hs_getb(http_stream *hs, unsigned char *b) {
+    if (hs->bpos < hs->blen) { *b = hs->buf[hs->bpos++]; return 1; }
+    if (hs->fd < 0) return 0;
+    int r = (int)recv(hs->fd, b, 1, 0);
+    if (r == 1) return 1;
+    if (r == 0) { close(hs->fd); hs->fd = -1; }
+    return 0;
+}
+/* read the next chunk-size line (skips the CRLF trailing the previous chunk and any
+ * chunk extensions/whitespace). Returns the chunk data size (0 = last chunk), or -1. */
+static long long hs_next_chunk(http_stream *hs) {
+    unsigned char b; long long sz = 0; int any = 0;
+    do { if (!hs_getb(hs, &b)) return -1; } while (b == '\r' || b == '\n');
+    for (;;) {
+        int d;
+        if (b >= '0' && b <= '9') d = b - '0';
+        else if (b >= 'a' && b <= 'f') d = b - 'a' + 10;
+        else if (b >= 'A' && b <= 'F') d = b - 'A' + 10;
+        else break;
+        sz = sz * 16 + d; any = 1;
+        if (!hs_getb(hs, &b)) return any ? sz : -1;
+    }
+    while (b != '\n') { if (!hs_getb(hs, &b)) break; }   /* consume extensions + CRLF */
+    return any ? sz : -1;
+}
+
 /* Read up to n body bytes into dst. Returns >0 bytes, 0 at EOF, -1 on error.
- * NOTE: chunked decoding not implemented — Plex direct-play/part responses are
- * Content-Length or connection-close delimited, which this handles. */
+ * Handles Content-Length / connection-close AND Transfer-Encoding: chunked
+ * (Plex live-transcode start.mkv streams are chunked). */
 static int http_read(http_stream *hs, unsigned char *dst, int n) {
+    if (hs->chunked) {
+        if (hs->chunk_left <= 0) {
+            long long cs = hs_next_chunk(hs);
+            if (cs <= 0) { if (hs->fd >= 0) { close(hs->fd); hs->fd = -1; } return 0; }
+            hs->chunk_left = cs;
+        }
+        int want = ((long long)n < hs->chunk_left) ? n : (int)hs->chunk_left;
+        int got = 0;
+        while (got < want) {
+            if (hs->bpos < hs->blen) {
+                int avail = hs->blen - hs->bpos;
+                int take = (want - got) < avail ? (want - got) : avail;
+                memcpy(dst + got, hs->buf + hs->bpos, take); hs->bpos += take; got += take;
+            } else if (hs->fd >= 0) {
+                int r = (int)recv(hs->fd, dst + got, want - got, 0);
+                if (r < 0) { if (errno == EINTR) continue; break; }
+                if (r == 0) { close(hs->fd); hs->fd = -1; break; }
+                got += r;
+            } else break;
+        }
+        hs->chunk_left -= got;
+        hs->consumed += got;
+        return got > 0 ? got : (hs->fd < 0 ? 0 : -1);
+    }
     if (hs->fd < 0 && hs->bpos >= hs->blen) return 0;
     if (hs->content_length >= 0 && hs->consumed >= hs->content_length) return 0;
 

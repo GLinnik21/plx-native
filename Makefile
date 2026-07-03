@@ -29,7 +29,7 @@ STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
 
 all: pkg/plexpoc
 
-pkg/plexpoc: src/main.c $(STUBS)
+pkg/plexpoc: src/main.c $(wildcard src/*.h) $(STUBS)
 	$(ZIG) $(CFLAGS) -Lstub $(LIBS) -o $@ src/main.c
 
 # stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly)
