@@ -19,6 +19,9 @@
 #include "stream.h"
 #include "aq.h"
 #include "mkv.h"
+#include "img.h"     /* stb_image: decode JPEG/PNG → RGBA, GL texture upload */
+#include "pms.h"     /* Plex Media Server library fetch → pms_movies[] */
+#include "posters.h" /* async poster/artwork texture store (2 bg workers) */
 
 /* SDL2_ttf (real impl on the TV); SDL_Color/SDL_Surface come from SDL.h */
 typedef struct _TTF_Font TTF_Font;
@@ -64,7 +67,17 @@ extern int SDL_webOSCursorVisibility(int visible);
 #    include "config.local.h"
 #  endif
 #endif
-/* Demo movie played when OK is pressed on a shelf card (Frozen, H264+AC3 MKV). */
+/* Plex Media Server for the library gallery (real host+token in config.local.h). */
+#ifndef PMS_HOST
+#  define PMS_HOST  "YOUR_PMS_HOST"
+#endif
+#ifndef PMS_PORT
+#  define PMS_PORT  32400
+#endif
+#ifndef PMS_TOKEN
+#  define PMS_TOKEN "YOUR_PLEX_TOKEN"
+#endif
+/* Fallback demo part if the library fetch is unavailable (Frozen, H264+AC3 MKV). */
 #ifndef DEMO_STREAM_URL
 #  define DEMO_STREAM_URL "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"
 #endif
@@ -339,6 +352,7 @@ static void bf_split(void) {
 static au_queue     g_aq;
 static int          bf_stream = 0;      /* 1 = stream from PMS, 0 = /tmp/sample.h264 */
 static char         g_url[1024] = "";
+static char         g_transcode_session[64] = "";  /* server transcode session to stop on teardown */
 static au_node     *bf_pending = NULL;  /* AU popped but not yet accepted (BufferFull) */
 static http_stream  g_hs;
 static mkv_ctx      g_mkv;
@@ -474,16 +488,20 @@ static void *stream_thread(void *arg) {
 }
 
 static int start_bufferfeed(void) {
-    /* streaming mode if /tmp/poc-url holds a PMS part URL; else the file sample */
-    FILE *uf = fopen("/tmp/poc-url", "r");
-    if (uf) {
-        if (fgets(g_url, sizeof g_url, uf)) {
-            size_t l = strlen(g_url);
-            while (l && (g_url[l-1]=='\n' || g_url[l-1]=='\r' || g_url[l-1]==' ')) g_url[--l] = 0;
-            if (g_url[0]) bf_stream = 1;
+    /* A caller may pre-set g_url (a movie selected from the gallery); only then
+     * fall back to the /tmp/poc-url dev override. Either way, a non-empty g_url
+     * means stream mode and wins over the DEMO fallback below. */
+    if (!g_url[0]) {
+        FILE *uf = fopen("/tmp/poc-url", "r");
+        if (uf) {
+            if (fgets(g_url, sizeof g_url, uf)) {
+                size_t l = strlen(g_url);
+                while (l && (g_url[l-1]=='\n' || g_url[l-1]=='\r' || g_url[l-1]==' ')) g_url[--l] = 0;
+            }
+            fclose(uf);
         }
-        fclose(uf);
     }
+    if (g_url[0]) bf_stream = 1;
     if (!bf_stream) {
         FILE *f = fopen("/tmp/sample.h264", "rb");
         if (!f) {
@@ -546,7 +564,10 @@ static int start_bufferfeed(void) {
         aq_init(&g_aq);
         pthread_create(&g_stream_th, NULL, stream_thread, NULL);
         g_stream_created = 1;
-        if (!g_cues_ready) {                /* preflight the Cue index (kept across app-switch) */
+        /* Skip the Cue preflight for a transcode: a live transcode has no byte-Cues
+         * (seek uses &offset=), and a 2nd connection to the same session makes the
+         * server cut the main demux stream before any Cluster arrives. */
+        if (!g_cues_ready && !g_transcode_session[0]) {
             g_cues_abort = 0;               /* joinable so stop_bufferfeed can wait for it */
             if (pthread_create(&g_cues_th, NULL, cues_thread, NULL) == 0) g_cues_created = 1;
         }
@@ -586,6 +607,15 @@ static void stop_bufferfeed(int keep_cues) {
     bf_next = bf_naus = bf_loop = bf_frames = 0;
     videoInfoSent = 0;
     bf_mediaId[0] = 0; sourceInfoRaw[0] = 0;
+    /* free the server-side transcode encoder if this playback was a transcode */
+    if (g_transcode_session[0]) {
+        char sp[256]; http_stream shs;
+        snprintf(sp, sizeof sp, "/video/:/transcode/universal/stop?session=%s"
+                 "&X-Plex-Client-Identifier=%s&X-Plex-Token=%s",
+                 g_transcode_session, g_transcode_session, PMS_TOKEN);
+        if (http_open(&shs, PMS_HOST, PMS_PORT, sp, NULL) == 0) http_close(&shs);
+        g_transcode_session[0] = 0;
+    }
     pl_paused = 0; resumePausePending = 0; g_playpos_ns = 0; pl_dur_ns = 0; g_url[0] = 0;
     g_file_size = 0; g_seek_byte = -1; g_seek_to_ns = -1;
     g_pts_shift = 0; g_max_fed_pts = 0; g_rebase_pending = 0; pl_scrub_ns = -1;
@@ -764,14 +794,20 @@ static void bufferfeed_pump(Uint32 now) {
 
 #define ROWS 5
 #define COLS 10
-#define CARD_W 420.0f
-#define CARD_H 236.0f
-#define GAP 36.0f
+#define CARD_W 250.0f    /* portrait 2:3 poster card */
+#define CARD_H 375.0f
+#define GAP 30.0f
 #define MARGIN_X 90.0f
 #define ROW_TITLE_H 30.0f
 #define ROW_PITCH (CARD_H + ROW_TITLE_H + 54.0f)
 #define CONTENT_Y 200.0f
 #define GLOW_PAD 48.0f /* extra quad space around card for glow/shadow */
+
+/* map a grid cell to a catalog movie (MVP: flat all-movies grid, row-major) */
+static pms_movie *movie_at(int r, int c) {
+    int idx = r * COLS + c;
+    return (idx >= 0 && idx < pms_nmovies) ? &pms_movies[idx] : NULL;
+}
 
 static const char *VS_SRC =
     "attribute vec2 a_pos;\n"
@@ -827,6 +863,20 @@ static GLuint prog;
 static GLint loc_rect, loc_screen, loc_size, loc_pad, loc_radius,
              loc_colTop, loc_colBot, loc_focus, loc_shape, loc_radR;
 
+/* ambient program: a soft bilinear gradient between 4 corner colors (Plex
+ * UltraBlurColors) — the smooth wash the artwork melts into. Reuses VS_SRC. */
+static const char *FS_AMBIENT =
+    "precision mediump float;\n"
+    "varying vec2 v_uv;\n"
+    "uniform vec4 u_atl, u_atr, u_abr, u_abl;\n"
+    "void main(){\n"
+    "  vec3 top = mix(u_atl.rgb, u_atr.rgb, v_uv.x);\n"
+    "  vec3 bot = mix(u_abl.rgb, u_abr.rgb, v_uv.x);\n"
+    "  gl_FragColor = vec4(mix(top, bot, v_uv.y), 1.0);\n"
+    "}\n";
+static GLuint aprog;
+static GLint al_rect, al_screen, al_tl, al_tr, al_br, al_bl;
+
 static GLuint compile(GLenum type, const char *src) {
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, NULL);
@@ -872,6 +922,17 @@ static void init_gl(void) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
+    aprog = glCreateProgram();
+    glAttachShader(aprog, compile(GL_VERTEX_SHADER, VS_SRC));
+    glAttachShader(aprog, compile(GL_FRAGMENT_SHADER, FS_AMBIENT));
+    glBindAttribLocation(aprog, 0, "a_pos");
+    glLinkProgram(aprog);
+    al_rect   = glGetUniformLocation(aprog, "u_rect");
+    al_screen = glGetUniformLocation(aprog, "u_screen");
+    al_tl = glGetUniformLocation(aprog, "u_atl"); al_tr = glGetUniformLocation(aprog, "u_atr");
+    al_br = glGetUniformLocation(aprog, "u_abr"); al_bl = glGetUniformLocation(aprog, "u_abl");
+    glUseProgram(prog);
+
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
@@ -889,6 +950,22 @@ static void draw_rect(float x, float y, float w, float h, float pad,
     glUniform1f(loc_focus, focus);
     glUniform1f(loc_shape, 0.0f);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+/* full-rect bilinear gradient from 4 corner colors (UltraBlurColors ambient).
+ * `dim` scales brightness so it reads as a soft dark wash behind the content. */
+static void draw_ambient(float x, float y, float w, float h, float dim,
+                         const float tl[3], const float tr[3],
+                         const float br[3], const float bl[3]) {
+    glUseProgram(aprog);
+    glUniform2f(al_screen, (float)SCR_W, (float)SCR_H);
+    glUniform4f(al_rect, x, y, w, h);
+    glUniform4f(al_tl, tl[0]*dim, tl[1]*dim, tl[2]*dim, 1.0f);
+    glUniform4f(al_tr, tr[0]*dim, tr[1]*dim, tr[2]*dim, 1.0f);
+    glUniform4f(al_br, br[0]*dim, br[1]*dim, br[2]*dim, 1.0f);
+    glUniform4f(al_bl, bl[0]*dim, bl[1]*dim, bl[2]*dim, 1.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glUseProgram(prog);
 }
 
 /* solid rect with independent left/right corner radii (radL, radR) */
@@ -1024,6 +1101,73 @@ static float draw_text(const char *s, float x, float y, int sz,
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glUseProgram(prog);   /* restore rect program for subsequent draw_rect */
     return (float)w;
+}
+
+/* ---- image program: RGBA textures (posters/logos/backdrop) with rounded corners.
+ * Reuses VS_TEXT; FS_IMG samples full RGBA * tint and rounds via an SDF box, so one
+ * shader serves opaque posters (a=1), transparent clearLogos, and the backdrop
+ * (radius 0). Like draw_text it enters iprog and self-restores prog on exit. ---- */
+static const char *FS_IMG =
+    "precision mediump float;\n"
+    "varying vec2 v_tuv;\n"
+    "uniform sampler2D u_tex;\n"
+    "uniform vec4 u_tint;\n"
+    "uniform vec2 u_isize;\n"
+    "uniform float u_iradius;\n"
+    "float sdBox(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+vec2(r);\n"
+    "  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\n"
+    "void main(){\n"
+    "  vec4 c = texture2D(u_tex, v_tuv);\n"
+    "  vec2 p = (v_tuv-0.5)*u_isize;\n"
+    "  float d = sdBox(p, u_isize*0.5, u_iradius);\n"
+    "  float m = 1.0 - smoothstep(-1.0, 1.0, d);\n"
+    "  gl_FragColor = vec4(c.rgb*u_tint.rgb, c.a*u_tint.a*m);\n"
+    "}\n";
+static GLuint iprog;
+static GLint il_rect, il_screen, il_tint, il_size, il_radius, il_tex;
+static void init_image(void) {
+    iprog = glCreateProgram();
+    glAttachShader(iprog, compile(GL_VERTEX_SHADER, VS_TEXT));   /* reuse the text VS */
+    glAttachShader(iprog, compile(GL_FRAGMENT_SHADER, FS_IMG));
+    glBindAttribLocation(iprog, 0, "a_pos");
+    glLinkProgram(iprog);
+    GLint ok = 0; glGetProgramiv(iprog, GL_LINK_STATUS, &ok);
+    if (!ok) { if (elogf){fprintf(elogf,"image prog link failed\n");fflush(elogf);} return; }
+    il_rect   = glGetUniformLocation(iprog, "u_trect");
+    il_screen = glGetUniformLocation(iprog, "u_tscreen");
+    il_tint   = glGetUniformLocation(iprog, "u_tint");
+    il_size   = glGetUniformLocation(iprog, "u_isize");
+    il_radius = glGetUniformLocation(iprog, "u_iradius");
+    il_tex    = glGetUniformLocation(iprog, "u_tex");
+    glUseProgram(prog);
+}
+/* draw texture in px rect (x,y,w,h), rounded corners `radius`, multiplied by tint. */
+static void draw_tex(GLuint tex, float x, float y, float w, float h,
+                     float radius, const float tint[4]) {
+    if (!tex) return;
+    glUseProgram(iprog);
+    glUniform2f(il_screen, (float)SCR_W, (float)SCR_H);
+    glUniform4fv(il_tint, 1, tint);
+    glUniform2f(il_size, w, h);
+    glUniform1f(il_radius, radius);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(il_tex, 0);
+    glUniform4f(il_rect, x, y, w, h);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glUseProgram(prog);   /* restore */
+}
+
+/* draw a movie's poster (thumb) in a card rect; dark skeleton until it loads */
+static void draw_poster(pms_movie *m, float cx, float cy, float w, float h, float rad) {
+    static const float tint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    static const float skT[4]  = {0.13f, 0.14f, 0.17f, 1.0f}, skB[4] = {0.08f, 0.09f, 0.11f, 1.0f};
+    if (m && m->thumb[0]) {
+        char key[352]; poster_key(key, sizeof key, m->thumb, 250, 375, 0);
+        GLuint t = poster_get(key);
+        if (t) { draw_tex(t, cx, cy, w, h, rad, tint); return; }
+    }
+    draw_rect(cx, cy, w, h, 0, rad, skT, skB, 0);
 }
 
 static void hsv(float h, float s, float v, float out[4]) {
@@ -1183,6 +1327,52 @@ static void draw_hud(void) {
     draw_text("Chapters", px, py, 28, tabdim, 0, 1);
 }
 
+/* set the playback URL + HUD strings from a selected movie (direct-play part) */
+static void play_movie(pms_movie *m) {
+    if (!m || !m->part[0]) return;
+    strncpy(g_title, m->title, sizeof g_title - 1); g_title[sizeof g_title - 1] = 0;
+    long long mins = m->dur_ns / 60000000000LL;
+    int hh = (int)(mins / 60), mm = (int)(mins % 60);
+    if (hh > 0)
+        snprintf(g_ctxline, sizeof g_ctxline, "%d \xc2\xb7 %s \xc2\xb7 %dh %dm",
+                 m->year, m->rating[0] ? m->rating : "NR", hh, mm);
+    else
+        snprintf(g_ctxline, sizeof g_ctxline, "%d \xc2\xb7 %s \xc2\xb7 %dm",
+                 m->year, m->rating[0] ? m->rating : "NR", mm);
+    /* direct-play only H264+AC3 (what the pipeline decodes natively); everything
+     * else → ask the server to transcode into progressive H264+AC3 Matroska, which
+     * the same MKV demuxer eats unchanged. See docs/plex-api.md. */
+    int directplay = (strcmp(m->vcodec, "h264") == 0 && strcmp(m->acodec, "ac3") == 0);
+    g_transcode_session[0] = 0;
+    if (directplay || !m->rk[0]) {
+        snprintf(g_url, sizeof g_url, "http://%s:%d%s?X-Plex-Token=%s",
+                 PMS_HOST, PMS_PORT, m->part, PMS_TOKEN);
+    } else {
+        char profe[512];
+        urlenc(profe, sizeof profe,
+               "add-transcode-target(type=videoProfile&context=streaming&protocol=http"
+               "&container=matroska&videoCodec=h264&audioCodec=ac3)");
+        snprintf(g_transcode_session, sizeof g_transcode_session, "plexpoc-%s", m->rk);
+        /* params shared by the /decision handshake and the /start.mkv stream */
+        char base[900];
+        snprintf(base, sizeof base,
+            "path=%%2Flibrary%%2Fmetadata%%2F%s&mediaIndex=0&partIndex=0&protocol=http"
+            "&directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000"
+            "&session=%s&X-Plex-Session-Identifier=%s&X-Plex-Client-Identifier=%s"
+            "&X-Plex-Product=plexpoc&X-Plex-Version=1&X-Plex-Platform=Generic"
+            "&X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",
+            m->rk, g_transcode_session, g_transcode_session, g_transcode_session, profe, PMS_TOKEN);
+        /* The universal transcoder needs the /decision call to REGISTER the session
+         * before start.mkv will stream (otherwise 400). Fire it synchronously. */
+        char dpath[1024]; http_stream dhs;
+        snprintf(dpath, sizeof dpath, "/video/:/transcode/universal/decision?%s", base);
+        if (http_open(&dhs, PMS_HOST, PMS_PORT, dpath, NULL) == 0) http_close(&dhs);
+        snprintf(g_url, sizeof g_url,
+                 "http://%s:%d/video/:/transcode/universal/start.mkv?%s",
+                 PMS_HOST, PMS_PORT, base);
+    }
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     elogf = fopen("/tmp/poc-events.log", "w");
@@ -1260,6 +1450,20 @@ int main(int argc, char **argv) {
     }
     init_gl();
     init_text();
+    init_image();          /* iprog: textured poster/logo/backdrop program */
+
+    /* Fetch the Plex movie catalog once at startup (blocking; own 1MB buffer,
+     * numeric PMS host so stream.h's inet_aton path is fine). M0: data only —
+     * the shelf still draws the placeholder gradient cards below. */
+    int nmov = pms_fetch_movies(PMS_HOST, PMS_PORT, PMS_TOKEN, 1);
+    if (elogf) {
+        fprintf(elogf, "pms: nmovies=%d\n", nmov);
+        for (int i = 0; i < nmov && i < 6; i++)
+            fprintf(elogf, "pms[%d]: %s (%d) %s part=%s\n", i, pms_movies[i].title,
+                    pms_movies[i].year, pms_movies[i].rating, pms_movies[i].part);
+        fflush(elogf);
+    }
+    posters_init(PMS_HOST, PMS_PORT, PMS_TOKEN);   /* spawn poster fetch/decode workers */
 
     /* card colors */
     static float colTop[ROWS][COLS][4], colBot[ROWS][COLS][4];
@@ -1274,6 +1478,7 @@ int main(int argc, char **argv) {
     static float scale[ROWS][COLS], scaleV[ROWS][COLS];
     float scrollX[ROWS] = {0}, scrollXV[ROWS] = {0};
     float scrollY = 0, scrollYV = 0;
+    float snapPos = 0, snapVel = 0, snapTarget = 0;   /* 0 = big-picture hero, 1 = grid */
     for (int r = 0; r < ROWS; r++)
         for (int c = 0; c < COLS; c++) scale[r][c] = 1.0f;
 
@@ -1404,7 +1609,14 @@ int main(int argc, char **argv) {
                     if (!dpadMode) SDL_webOSCursorVisibility(0);
                     dpadMode = 1;
                     motAccum = 0;
-                    MOVE_FOCUS(sym);
+                    if (snapTarget < 0.5f) {
+                        /* hero: DOWN drops into the grid; UP/LEFT/RIGHT stay on the hero */
+                        if (sym == (unsigned)SDLK_DOWN) { snapTarget = 1.0f; fr = 0; }
+                    } else if (sym == (unsigned)SDLK_UP && fr == 0) {
+                        snapTarget = 0.0f;              /* grid top row → back up to the hero */
+                    } else {
+                        MOVE_FOCUS(sym);                /* navigate within the grid */
+                    }
                     heldSym = sym;
                     heldSince = lastInput;
                     lastRep = lastInput;
@@ -1415,7 +1627,8 @@ int main(int argc, char **argv) {
                          sym == (unsigned)SDLK_KP_ENTER ||
                          sym == (unsigned)SDLK_SELECT) {
                     if (!playing) {
-                        /* OK on a shelf card → start the demo movie stream */
+                        /* select: hero Play (snap<0.5) plays the hero item; grid plays the focused card */
+                        play_movie(snapTarget < 0.5f ? movie_at(0, 0) : movie_at(fr, fc));
                         playing = start_bufferfeed();
                         pl_paused = 0;
                         pl_hud_until = lastInput + 4500;
@@ -1469,7 +1682,8 @@ int main(int argc, char **argv) {
                 else if (sym == (unsigned)SDLK_ESCAPE || sym == 'q' ||
                          wcode == 461 /* webOS BACK */) {
                     if (playing) { stop_bufferfeed(0); playing = 0; }
-                    else running = 0;
+                    else if (snapTarget > 0.5f) snapTarget = 0.0f;   /* grid → hero */
+                    else running = 0;                                 /* hero → quit */
                 }
             }
             else if (e.type == SDL_MOUSEMOTION) {
@@ -1559,8 +1773,19 @@ int main(int argc, char **argv) {
         if (!autoTried && !playing && now - t0 > 2000) {
             autoTried = 1;
             FILE *af = fopen("/tmp/poc-autoplay", "r");
-            if (af) { fclose(af); playing = start_bufferfeed();
+            if (af) { fclose(af);
+                      int pidx = 0; FILE *pf = fopen("/tmp/poc-playidx", "r");   /* dev: pick a title */
+                      if (pf) { if (fscanf(pf, "%d", &pidx) != 1) pidx = 0; fclose(pf); }
+                      play_movie(movie_at(pidx / COLS, pidx % COLS));
+                      playing = start_bufferfeed();
                       pl_paused = 0; pl_hud_until = now + 60000; }  /* dev: keep HUD up for capture */
+        }
+        /* dev: /tmp/poc-grid → start in grid mode (headless snap-state capture) */
+        static int gridTried = 0;
+        if (!gridTried && now - t0 > 400) {
+            gridTried = 1;
+            FILE *gf = fopen("/tmp/poc-grid", "r");
+            if (gf) { fclose(gf); snapTarget = 1.0f; fr = 0; }
         }
         /* dev: /tmp/poc-autoseek → one auto-seek to 40% at t0+12s (headless test) */
         static int seekTried = 0;
@@ -1573,7 +1798,7 @@ int main(int argc, char **argv) {
         /* client-side long-press repeat for the shelf: 400ms delay, then every 130ms */
         if (heldSym && now - heldSince > 400 && now - lastRep > 130) {
             lastRep = now;
-            MOVE_FOCUS(heldSym);
+            if (snapTarget > 0.5f) MOVE_FOCUS(heldSym);   /* hold-to-navigate: grid only */
         }
         /* LEFT/RIGHT scrub: advance the preview at a steady rate while the key is
          * held; commit on key-up (above). The remote's auto-repeat has a ~500ms
@@ -1621,7 +1846,7 @@ int main(int argc, char **argv) {
         for (int r = 0; r < ROWS; r++)
             for (int c = 0; c < COLS; c++)
                 spring(&scale[r][c], &scaleV[r][c],
-                       (r == fr && c == fc) ? 1.09f : 1.0f, 320.0f, dt);
+                       (r == fr && c == fc) ? 1.055f : 1.0f, 320.0f, dt);
         float targetSX = fc * (CARD_W + GAP) - 0.0f;
         if (targetSX < 0) targetSX = 0;
         float maxSX = COLS * (CARD_W + GAP) - GAP - (SCR_W - 2 * MARGIN_X);
@@ -1638,6 +1863,10 @@ int main(int argc, char **argv) {
         if (wantY > maxY) wantY = maxY;
         spring(&scrollY, &scrollYV, wantY, 170.0f, dt);
 
+        spring(&snapPos, &snapVel, snapTarget, 200.0f, dt);   /* hero <-> grid snap */
+
+        poster_pump(3);   /* upload up to 3 decoded posters this frame */
+
         /* ---- draw ---- */
         glViewport(0, 0, SCR_W, SCR_H);
         if (playing) {
@@ -1652,57 +1881,138 @@ int main(int argc, char **argv) {
             if (now - fpsT >= 1000) { frames = 0; fpsT = now; }
             continue;
         }
-        /* ambient accent: cheap, animated clear color instead of a
-         * fullscreen quad through the SDF shader (fill-rate!) */
-        glClearColor(0.07f + 0.015f * sinf(bgPhase), 0.075f, 0.10f, 1.0f);
+        /* dark base — the hero backdrop covers it once the art texture loads */
+        glClearColor(0.03f, 0.03f, 0.045f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        /* header: title block + tab pills (skeleton style) */
-        float white[4] = {0.92f, 0.92f, 0.95f, 1.0f};
-        float dimmer[4] = {0.25f, 0.26f, 0.30f, 1.0f};
-        float dim2[4] = {0.18f, 0.19f, 0.22f, 1.0f};
-        draw_rect(MARGIN_X, 64, 360, 56, 0, 14, white, white, 0);
-        for (int i = 0; i < 4; i++)
-            draw_rect(MARGIN_X + 480 + i * 180, 70, 150, 44, 0, 22,
-                      dimmer, dim2, 0);
+        /* the home screen is one continuum driven by snapPos (0 = hero, 1 = grid) */
+        float sp = snapPos;
+        float heroA = 1.0f - sp / 0.55f;  if (heroA < 0) heroA = 0;  if (heroA > 1) heroA = 1;
+        float shelfTopY = 828.0f + (150.0f - 828.0f) * sp;   /* PEEK_Y -> GRID_TOP_Y */
+        pms_movie *hero = movie_at(0, 0);
 
-        /* shelves */
-        for (int r = 0; r < ROWS; r++) {
-            float rowY = CONTENT_Y + r * ROW_PITCH - scrollY;
-            if (rowY > SCR_H || rowY + ROW_PITCH < 0) continue;
-            /* row title bar */
-            draw_rect(MARGIN_X, rowY, 240, 24, 0, 8, dimmer, dimmer, 0);
-            for (int c = 0; c < COLS; c++) {
-                if (r == fr && c == fc) continue; /* focused drawn last */
-                float x = MARGIN_X + c * (CARD_W + GAP) - scrollX[r];
-                if (x > SCR_W || x + CARD_W < -GLOW_PAD) continue;
-                float y = rowY + ROW_TITLE_H + 18;
-                float s = scale[r][c];
-                float w = CARD_W * s, h = CARD_H * s;
-                float cx = x - (w - CARD_W) / 2, cy = y - (h - CARD_H) / 2;
-                float foc = (r == fr && c == fc) ? 1.0f : 0.0f;
-                /* glow padding (and its fill cost) only on the focused card */
-                float padpx = foc > 0.0f ? GLOW_PAD : 4.0f;
-                draw_rect(cx - padpx, cy - padpx,
-                          w + 2 * padpx, h + 2 * padpx,
-                          padpx, 18.0f * s,
-                          colTop[r][c], colBot[r][c],
-                          foc * ((scale[r][c] - 1.0f) / 0.09f));
+        /* --- ambient blur-color wash (Plex UltraBlurColors): the soft background the
+         * artwork melts into; it IS the grid background once the art fades away.
+         * Only drawn where it shows (grid/transition, or while the backdrop loads) —
+         * in the hero view the opaque backdrop covers it, so skip that fill-rate. --- */
+        GLuint bt = 0; char bk[352];
+        if (hero && hero->art[0]) { poster_key(bk, sizeof bk, hero->art, 1280, 720, 0); bt = poster_get(bk); }
+        if (hero && hero->has_blur && (sp > 0.004f || !bt))
+            draw_ambient(0, 0, SCR_W, SCR_H, 0.55f,
+                         hero->blur[0], hero->blur[1], hero->blur[2], hero->blur[3]);
+        /* --- hero backdrop (art) over the wash: full in hero, fades + parallaxes away
+         * as the grid rises so the smooth gradient shows through. --- */
+        if (bt && sp < 0.996f) {                             /* skip once fully faded */
+            float ba = 1.0f - sp;
+            float bdTint[4] = {1.0f, 1.0f, 1.0f, ba};
+            draw_tex(bt, 0, -sp * (SCR_H - 120.0f), SCR_W, SCR_H, 0, bdTint);
+        }
+        /* bottom scrim for hero-text legibility; only in the hero view */
+        if (heroA > 0.01f) {
+            float sa = 0.30f + 0.64f * heroA;
+            float scrimT[4] = {0.02f, 0.02f, 0.03f, 0.0f}, scrimB[4] = {0.02f, 0.02f, 0.03f, sa};
+            draw_rect(0, SCR_H * 0.46f, SCR_W, SCR_H * 0.54f, 0, 0, scrimT, scrimB, 0);
+        }
+
+        /* --- hero content (low-left), fades out as the grid rises --- */
+        if (hero && heroA > 0.01f) {
+            float tx = MARGIN_X, titleY = 510.0f;
+            float wA[4] = {0.97f, 0.98f, 0.99f, heroA};
+            float dA[4] = {0.70f, 0.73f, 0.78f, heroA};
+            /* title: the movie's clearLogo (transparent PNG) if loaded, else bold text */
+            GLuint lt = 0; int lw = 0, lh = 0;
+            if (hero->rk[0]) {
+                char lpath[72], lk[352];
+                snprintf(lpath, sizeof lpath, "/library/metadata/%s/clearLogo", hero->rk);
+                poster_key(lk, sizeof lk, lpath, 600, 240, 1);   /* png=1 (transparent) */
+                lt = poster_get(lk); poster_wh(lk, &lw, &lh);
+            }
+            if (lt && lh > 0) {
+                float H = 96.0f, W = H * (float)lw / (float)lh;
+                if (W > 660.0f) { W = 660.0f; H = W * (float)lh / (float)lw; }
+                draw_tex(lt, tx, titleY + 80.0f - H, W, H, 0, wA);   /* bottom-anchored */
+            } else {
+                draw_text(hero->title, tx, titleY, 66, wA, 0, 1);
+            }
+            char meta[96];
+            snprintf(meta, sizeof meta, "Movie \xc2\xb7 %d \xc2\xb7 %s",
+                     hero->year, hero->rating[0] ? hero->rating : "NR");
+            draw_text(meta, tx, titleY + 92, 26, dA, 0, 0);
+            /* synopsis wrapped to two lines on a word boundary */
+            if (hero->summary[0]) {
+                const char *s = hero->summary; int n = (int)strlen(s);
+                char l1[88] = {0}, l2[96] = {0}; int brk = n;
+                if (n > 62) { brk = 62; while (brk > 24 && s[brk] != ' ') brk--; }
+                int c1 = brk < (int)sizeof l1 - 1 ? brk : (int)sizeof l1 - 1;
+                memcpy(l1, s, c1); l1[c1] = 0;
+                draw_text(l1, tx, titleY + 128, 24, dA, 0, 0);
+                if (brk < n) {
+                    const char *s2 = s + brk + 1; int m = (int)strlen(s2);
+                    int c2 = m; if (m > 66) { c2 = 66; while (c2 > 24 && s2[c2] != ' ') c2--; }
+                    if (c2 > (int)sizeof l2 - 4) c2 = (int)sizeof l2 - 4;
+                    memcpy(l2, s2, c2); l2[c2] = 0;
+                    if (c2 < m) strcat(l2, "\xe2\x80\xa6");   /* … */
+                    draw_text(l2, tx, titleY + 158, 24, dA, 0, 0);
+                }
+            }
+            /* Play pill (primary) — triangle + label centered as a group */
+            float pillH = 60, pillW = 168, pillY = titleY + 200;
+            float pillC[4] = {0.97f, 0.98f, 0.99f, heroA}, ink[4] = {0.05f, 0.06f, 0.08f, heroA};
+            draw_rrect(tx, pillY, pillW, pillH, pillH * 0.5f, pillH * 0.5f, pillC);
+            float triH = pillH * 0.40f;
+            draw_ptri(tx + 40, pillY + (pillH - triH) * 0.5f, triH, triH, ink);
+            draw_text("Play", tx + 76, pillY + (pillH - 30) * 0.5f - 1, 30, ink, 0, 1);
+            /* circular secondary buttons: add / info / next (glyphs centered) */
+            float cD = 60, cGap = 20;
+            float circ[4] = {0.42f, 0.44f, 0.50f, 0.5f * heroA}, gly[4] = {0.92f, 0.94f, 0.97f, heroA};
+            const char *ic[3] = {"+", "i", ">"};
+            for (int b = 0; b < 3; b++) {
+                float bx = tx + pillW + cGap + b * (cD + cGap);
+                draw_rect(bx, pillY, cD, cD, 0, cD * 0.5f, circ, circ, 0);
+                draw_text(ic[b], bx + cD * 0.5f, pillY + (cD - 32) * 0.5f - 2, 32, gly, 1, 1);
+            }
+            /* page dots */
+            float dotY = pillY + pillH + 24;
+            for (int d = 0; d < 8; d++) {
+                float dw = (d == 0) ? 26.0f : 11.0f;
+                float dc[4] = {0.85f, 0.87f, 0.9f, (d == 0 ? 0.95f : 0.35f) * heroA};
+                draw_rect(tx + d * 20.0f, dotY, dw, 11, 0, 5.5f, dc, dc, 0);
             }
         }
 
-        /* focused card drawn last: glow overlays neighbors on BOTH sides */
-        {
-            float rowY = CONTENT_Y + fr * ROW_PITCH - scrollY;
-            float x = MARGIN_X + fc * (CARD_W + GAP) - scrollX[fr];
-            float y = rowY + ROW_TITLE_H + 18;
+        /* --- shelves: peek at the bottom in hero mode, full grid when snapped --- */
+        for (int r = 0; r < ROWS; r++) {
+            float rowY = shelfTopY + r * ROW_PITCH - scrollY * sp;
+            if (rowY > SCR_H || rowY + CARD_H < 0) continue;
+            if (!movie_at(r, 0)) continue;
+            for (int c = 0; c < COLS; c++) {
+                if (r == fr && c == fc && sp > 0.5f) continue;   /* focused drawn last (grid) */
+                pms_movie *m = movie_at(r, c);
+                if (!m) continue;
+                float x = MARGIN_X + c * (CARD_W + GAP) - scrollX[r] * sp;
+                if (x > SCR_W || x + CARD_W < -GLOW_PAD) continue;
+                float s = scale[r][c];
+                float w = CARD_W * s, h = CARD_H * s;
+                float cx = x - (w - CARD_W) / 2, cy = (rowY + 12) - (h - CARD_H) / 2;
+                draw_poster(m, cx, cy, w, h, 14.0f * s);
+            }
+        }
+        /* focused card ring + label — only in grid mode */
+        if (sp > 0.5f) {
+            pms_movie *m = movie_at(fr, fc);
+            float rowY = shelfTopY + fr * ROW_PITCH - scrollY * sp;
+            float x = MARGIN_X + fc * (CARD_W + GAP) - scrollX[fr] * sp;
             float s = scale[fr][fc];
             float w = CARD_W * s, h = CARD_H * s;
-            float cx = x - (w - CARD_W) / 2, cy = y - (h - CARD_H) / 2;
-            draw_rect(cx - GLOW_PAD, cy - GLOW_PAD,
-                      w + 2 * GLOW_PAD, h + 2 * GLOW_PAD,
-                      GLOW_PAD, 18.0f * s, colTop[fr][fc], colBot[fr][fc],
-                      (scale[fr][fc] - 1.0f) / 0.09f);
+            float cx = x - (w - CARD_W) / 2, cy = (rowY + 12) - (h - CARD_H) / 2;
+            draw_poster(m, cx, cy, w, h, 14.0f * s);
+            float clear0[4] = {0, 0, 0, 0};
+            draw_rect(cx - GLOW_PAD, cy - GLOW_PAD, w + 2 * GLOW_PAD, h + 2 * GLOW_PAD,
+                      GLOW_PAD, 14.0f * s, clear0, clear0, (s - 1.0f) / 0.055f);
+            if (m) {
+                float lc[4] = {0.96f, 0.97f, 0.98f, 1.0f};
+                draw_text(m->title, cx + w * 0.5f, cy + h + 12, 26, lc, 1, 1);
+            }
         }
 
         /* FPS counter */
@@ -1720,6 +2030,7 @@ int main(int argc, char **argv) {
         }
     }
     if (bf_started) stop_bufferfeed(0);
+    posters_shutdown();
     SDL_Quit();
     return 0;
 }
