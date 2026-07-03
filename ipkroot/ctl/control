@@ -1,0 +1,7 @@
+Package: com.glin.plexpoc
+Version: 0.1.0
+Section: misc
+Priority: optional
+Architecture: arm
+Maintainer: glin <glinnik21@gmail.com>
+Description: Native Plex UI proof of concept
