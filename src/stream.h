@@ -1,0 +1,132 @@
+/* stream.h — minimal blocking HTTP/1.1 GET client over a raw TCP socket.
+ * No libcurl / no DNS: PMS is a numeric IP:port on the LAN. Included by main.c
+ * (single translation unit), so everything here is static. Format-independent —
+ * the demuxer (TS or MKV) reads bytes via http_read(); segmented HLS just opens
+ * one http_stream per segment. */
+#ifndef PLEXPOC_STREAM_H
+#define PLEXPOC_STREAM_H
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+typedef struct {
+    int  fd;
+    unsigned char buf[65536];   /* leftover-after-headers + read buffer */
+    int  blen, bpos;            /* valid bytes in buf, current read cursor */
+    long long content_length;   /* -1 if unknown (chunked/close-delimited) */
+    long long consumed;         /* body bytes handed to caller so far */
+    int  status;                /* HTTP status code, 0 on failure */
+    int  chunked;               /* Transfer-Encoding: chunked */
+} http_stream;
+
+/* Connect to ip:port and send GET path. Consumes response headers; leaves the
+ * body ready for http_read(). Returns 0 on 2xx, -1 otherwise (fd closed).
+ * extra may be NULL or extra request headers each ending in "\r\n". */
+static int http_open(http_stream *hs, const char *ip, int port,
+                     const char *path, const char *extra) {
+    memset(hs, 0, sizeof *hs);
+    hs->fd = -1;
+    hs->content_length = -1;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((unsigned short)port);
+    if (inet_aton(ip, &sa.sin_addr) == 0) { close(fd); return -1; }
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) { close(fd); return -1; }
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    /* bound a stalled recv: a blocked read can't be woken by close() from another
+     * thread, so cap it so teardown (pthread_join) can never hang indefinitely */
+    struct timeval rcvto = { 15, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof rcvto);
+
+    char req[2048];
+    int n = snprintf(req, sizeof req,
+                     "GET %s HTTP/1.1\r\n"
+                     "Host: %s:%d\r\n"
+                     "User-Agent: plexpoc/0.1\r\n"
+                     "Accept: */*\r\n"
+                     "%s"
+                     "Connection: close\r\n\r\n",
+                     path, ip, port, extra ? extra : "");
+    for (int off = 0; off < n; ) {
+        int w = (int)send(fd, req + off, n - off, 0);
+        if (w <= 0) { close(fd); return -1; }
+        off += w;
+    }
+
+    /* read until end of headers (\r\n\r\n), keeping any body bytes that follow */
+    int hdr_end = -1;
+    hs->blen = 0;
+    while (hdr_end < 0 && hs->blen < (int)sizeof hs->buf - 1) {
+        int r = (int)recv(fd, hs->buf + hs->blen, sizeof hs->buf - hs->blen, 0);
+        if (r <= 0) { close(fd); return -1; }
+        hs->blen += r;
+        for (int i = 3; i < hs->blen; i++) {
+            if (hs->buf[i-3]=='\r' && hs->buf[i-2]=='\n' &&
+                hs->buf[i-1]=='\r' && hs->buf[i]=='\n') { hdr_end = i + 1; break; }
+        }
+    }
+    if (hdr_end < 0) { close(fd); return -1; }
+
+    /* parse status line + a couple of headers (headers are ASCII up to hdr_end) */
+    hs->buf[hdr_end < (int)sizeof hs->buf ? hdr_end : (int)sizeof hs->buf - 1] = hs->buf[hdr_end]; /* no-op guard */
+    {
+        char save = 0;
+        /* temporarily NUL-terminate the header block for strstr scans */
+        if (hdr_end < (int)sizeof hs->buf) { save = (char)hs->buf[hdr_end]; hs->buf[hdr_end] = 0; }
+        const char *h = (const char *)hs->buf;
+        if (strncmp(h, "HTTP/1.", 7) == 0) hs->status = atoi(h + 9);
+        const char *cl = strcasestr(h, "\r\nContent-Length:");
+        if (cl) hs->content_length = strtoll(cl + 17, NULL, 10);
+        if (strcasestr(h, "\r\nTransfer-Encoding: chunked")) hs->chunked = 1;
+        if (hdr_end < (int)sizeof hs->buf) hs->buf[hdr_end] = (unsigned char)save;
+    }
+
+    hs->fd   = fd;
+    hs->bpos = hdr_end;   /* first body byte */
+    /* blen already includes any body bytes read alongside the headers */
+
+    if (hs->status < 200 || hs->status >= 300) { close(fd); hs->fd = -1; return -1; }
+    return 0;
+}
+
+/* Read up to n body bytes into dst. Returns >0 bytes, 0 at EOF, -1 on error.
+ * NOTE: chunked decoding not implemented — Plex direct-play/part responses are
+ * Content-Length or connection-close delimited, which this handles. */
+static int http_read(http_stream *hs, unsigned char *dst, int n) {
+    if (hs->fd < 0 && hs->bpos >= hs->blen) return 0;
+    if (hs->content_length >= 0 && hs->consumed >= hs->content_length) return 0;
+
+    /* serve buffered body first */
+    if (hs->bpos < hs->blen) {
+        int avail = hs->blen - hs->bpos;
+        int take = avail < n ? avail : n;
+        memcpy(dst, hs->buf + hs->bpos, take);
+        hs->bpos += take;
+        hs->consumed += take;
+        return take;
+    }
+    if (hs->fd < 0) return 0;
+    int r = (int)recv(hs->fd, dst, n, 0);
+    if (r < 0) return (errno == EINTR) ? http_read(hs, dst, n) : -1;
+    if (r == 0) { close(hs->fd); hs->fd = -1; return 0; }
+    hs->consumed += r;
+    return r;
+}
+
+static void http_close(http_stream *hs) {
+    if (hs->fd >= 0) { close(hs->fd); hs->fd = -1; }
+}
+
+#endif /* PLEXPOC_STREAM_H */

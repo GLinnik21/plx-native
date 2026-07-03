@@ -1,0 +1,9 @@
+/* Copy this file to config.local.h and fill in your Plex Media Server host and
+ * X-Plex-Token. config.local.h is gitignored so your token never gets committed.
+ * These override the placeholder demo/test URLs in main.c. At runtime you can also
+ * write a part URL to /tmp/poc-url to override without rebuilding.
+ *
+ * Find a part URL + token in Plex: open a movie → "Get Info" → "View XML", or use
+ * the /library/parts/<id>/<n>/file.<ext>?X-Plex-Token=<token> form. */
+#define PLEX_TEST_URL   "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"
+#define DEMO_STREAM_URL "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"
