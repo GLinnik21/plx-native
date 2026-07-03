@@ -68,6 +68,9 @@ extern int SDL_webOSCursorVisibility(int visible);
 #ifndef DEMO_STREAM_URL
 #  define DEMO_STREAM_URL "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"
 #endif
+/* On returning to the app (background→foreground), rewind the resume point by
+ * this much so playback re-enters on already-seen content. */
+#define RESUME_REWIND_NS (5LL * 1000000000LL)
 
 typedef int (*LSFilterCb)(void *sh, void *msg, void *ctx);
 /* LSError layout (luna-service2, 32-bit ARM): int + 4 ptrs + magic */
@@ -1350,8 +1353,17 @@ int main(int argc, char **argv) {
                 if (elogf) { fprintf(elogf, "LIFECYCLE: foreground (wasPlaying=%d)\n", bgWasPlaying); fflush(elogf); }
                 if (bgWasPlaying && e.type == 0x106) {        /* reload + resume on DID-enter */
                     playing = start_bufferfeed();
-                    if (playing) { g_seek_to_ns = bgPos; pl_hud_until = SDL_GetTicks() + 4500;
-                                   resumePausePending = bgWasPaused; }
+                    if (playing) {
+                        /* Resume rewind: back up a few seconds so returning to the app
+                         * re-enters on already-seen content and re-establishes context,
+                         * instead of landing at a spot that feels like a jump. Only when
+                         * we were playing — a deliberate pause keeps its exact frame. */
+                        long long rt = bgPos;
+                        if (!bgWasPaused) { rt -= RESUME_REWIND_NS; if (rt < 0) rt = 0; }
+                        g_seek_to_ns = rt;
+                        pl_hud_until = SDL_GetTicks() + 4500;
+                        resumePausePending = bgWasPaused;
+                    }
                     bgWasPlaying = 0;
                 }
             }
