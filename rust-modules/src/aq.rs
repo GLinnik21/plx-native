@@ -36,6 +36,12 @@ unsafe fn node_data(n: *mut AuNode) -> *mut u8 {
     (n as *mut u8).add(core::mem::offset_of!(AuNode, es) + core::mem::size_of::<c_int>())
 }
 
+/// crate-internal: has the consumer asked the producer to stop? (mkv checks this)
+#[inline]
+pub(crate) unsafe fn aq_is_aborted(q: *const AuQueue) -> bool {
+    !q.is_null() && (*q).abort != 0
+}
+
 #[no_mangle]
 pub extern "C" fn aq_init(q: *mut AuQueue) {
     if q.is_null() { return; }
