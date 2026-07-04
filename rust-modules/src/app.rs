@@ -70,7 +70,6 @@ extern "C" {
     fn start_bufferfeed() -> c_int;
     fn stop_bufferfeed(keep_cues: c_int);
     fn bufferfeed_pump(now: c_uint);
-    fn draw_hud();
     fn playback_pause();
     fn playback_resume();
     static mut bf_started: c_int;
@@ -587,7 +586,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                 glClearColor(0.0, 0.0, 0.0, 0.0);
                 glClear(GL_COLOR_BUFFER_BIT);
                 if now < getu(addr_of!(pl_hud_until)) || get(addr_of!(pl_paused)) != 0 {
-                    draw_hud();
+                    crate::ui::player_hud::draw_hud();
                 }
                 SDL_GL_SwapWindow(win);
                 frames += 1;
