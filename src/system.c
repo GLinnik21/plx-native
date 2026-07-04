@@ -54,8 +54,13 @@ void ls2_pump(void) {
 /* grab the wayland surface/display and make it non-opaque */
 void sys_grab_wayland(void *winp) {
     SDL_Window *win = (SDL_Window *)winp;
-    SDL_SysWMinfo wm;
-    SDL_VERSION(&wm.version);
+    /* The TV's SDL fork writes a LARGER SDL_SysWMinfo than our SDL_syswm.h
+     * declares, so SDL_GetWindowWMInfo overruns a bare `SDL_SysWMinfo wm` and
+     * smashes the stack (corrupting the caller's frame — this was the modular-
+     * split crash). Over-allocate a generous buffer for it to write into. */
+    char wmbuf[512] = {0};
+    SDL_SysWMinfo *wm = (SDL_SysWMinfo *)wmbuf;
+    SDL_VERSION(&wm->version);
     int a = -1;
     SDL_GL_GetAttribute(SDL_GL_ALPHA_SIZE, &a);
     GLint abits = -1, rbits = -1;
@@ -66,17 +71,17 @@ void sys_grab_wayland(void *winp) {
                 abits, rbits, a);
         fflush(elogf);
     }
-    if (SDL_GetWindowWMInfo(win, &wm)) {
+    if (SDL_GetWindowWMInfo(win, wm)) {
         /* the info union's wayland struct is {wl_display*, wl_surface*,
          * wl_shell_surface*}; all union members share offset 0, so read
          * the first two pointers directly (header-version independent) */
-        void **p = (void **)&wm.info;
+        void **p = (void **)&wm->info;
         g_wl_display = p[0];
         g_wl_surface = p[1];
     }
     if (elogf) {
         fprintf(elogf, "wm subsys=%d wl_surface=%p wl_display=%p alpha=%d\n",
-                wm.subsystem, g_wl_surface, g_wl_display, a);
+                wm->subsystem, g_wl_surface, g_wl_display, a);
         fflush(elogf);
     }
     clear_opaque_region();

@@ -18,7 +18,7 @@ APPDIR    = /media/developer/apps/usr/palm/applications/com.glin.plexpoc
 RUN_SECS ?= 18
 
 ZIG       = zig cc -target arm-linux-gnueabi.2.24 -mcpu=cortex_a53
-CFLAGS    = -O2 -Iinclude -Isrc -D_GNU_SOURCE    # -Isrc: unity.c #includes module .c; -D_GNU_SOURCE: strcasestr
+CFLAGS    = -O2 -Iinclude -Isrc -D_GNU_SOURCE    # -Isrc: module cross-headers; -D_GNU_SOURCE: strcasestr
 LIBS      = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 -lAcbAPI \
             -lwayland-client -lplayerAPIs
 STUBFLAGS = -shared -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables
@@ -27,16 +27,19 @@ STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
         stub/libwayland-client.so stub/libluna-service2.so stub/libglib-2.0.so \
         stub/libAcbAPI.so stub/libplayerAPIs.so
 
+# Real multi-TU build: each module compiles to its own .o, then links together.
+# (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
+SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))
+OBJS = $(SRCS:.c=.o)
+
 all: pkg/plexpoc
 
-# Unity single-TU build: src/unity.c #includes every module .c, so the code stays
-# organized in separate files but compiles as ONE translation unit. This is
-# REQUIRED on this webOS glibc target: a multi-.o link fails to wire glibc's
-# malloc-arena locks, so any worker thread (poster fetch, MKV demux) racing the
-# main thread on the heap corrupts it. Single-TU keeps malloc thread-safe.
-# Depend on all module .c/.h so editing any of them rebuilds the one object.
-pkg/plexpoc: src/unity.c $(filter-out src/unity.c,$(wildcard src/*.c)) $(wildcard src/*.h) $(STUBS)
-	$(ZIG) $(CFLAGS) src/unity.c -Lstub $(LIBS) -o $@
+# per-file compile; each object depends on ALL headers so a header edit rebuilds all
+src/%.o: src/%.c $(wildcard src/*.h)
+	$(ZIG) $(CFLAGS) -c $< -o $@
+
+pkg/plexpoc: $(OBJS) $(STUBS)
+	$(ZIG) $(OBJS) -Lstub $(LIBS) -o $@
 
 # stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly)
 stub/libSDL2.so: stub/sdl_stub.c

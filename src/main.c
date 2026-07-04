@@ -42,24 +42,25 @@ FILE *elogf = NULL;              /* shared event/diagnostic log (extern in app.h
 /* crash tracer: log faulting PC + the /proc/self/maps line containing it, so
  * we can tell which library (libplayerAPIs, gstreamer, ours) faulted */
 static void crash_handler(int sig, siginfo_t *si, void *uc) {
-    unsigned long pc = 0;
+    unsigned long pc = 0, lr = 0;
     ucontext_t *c = (ucontext_t *)uc;
 #if defined(__arm__)
     pc = (unsigned long)c->uc_mcontext.arm_pc;
+    lr = (unsigned long)c->uc_mcontext.arm_lr;
 #endif
     if (elogf) {
-        fprintf(elogf, "\n*** SIGNAL %d addr=%p pc=0x%lx\n", sig,
-                si ? si->si_addr : 0, pc);
+        fprintf(elogf, "\n*** SIGNAL %d addr=%p pc=0x%lx lr=0x%lx\n", sig,
+                si ? si->si_addr : 0, pc, lr);
         FILE *m = fopen("/proc/self/maps", "r");
         if (m) {
             char line[256];
             while (fgets(line, sizeof line, m)) {
                 unsigned long lo = 0, hi = 0;
-                if (sscanf(line, "%lx-%lx", &lo, &hi) == 2 &&
-                    pc >= lo && pc < hi) {
-                    fprintf(elogf, "in: %s", line);
-                    break;
-                }
+                if (sscanf(line, "%lx-%lx", &lo, &hi) != 2) continue;
+                if ((pc >= lo && pc < hi) || (lr >= lo && lr < hi))
+                    fprintf(elogf, "at: %s", line);
+                if (strstr(line, "plexpoc"))      /* our load base, for addr2line */
+                    fprintf(elogf, "bin: %s", line);
             }
             fclose(m);
         }
