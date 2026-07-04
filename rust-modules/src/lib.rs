@@ -11,4 +11,4 @@ mod posters;
 mod stream;
 mod system;
 mod text;
-mod ui_home;
+mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
