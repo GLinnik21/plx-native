@@ -14,12 +14,12 @@ pub(crate) fn resolve_tex(path: *const c_char, w: c_int, h: c_int, png: c_int) -
 }
 
 /// a poster card: artwork if loaded, else a dark skeleton (the Card + Grid draw op)
-pub(crate) fn draw_poster(p: Painter, m: *const PmsMovie, r: Rect, rad: f32) {
+pub(crate) fn draw_poster(p: Painter, m: Option<&PmsMovie>, r: Rect, rad: f32) {
     const SK_T: [f32; 4] = [0.13, 0.14, 0.17, 1.0];
     const SK_B: [f32; 4] = [0.08, 0.09, 0.11, 1.0];
-    unsafe {
-        if !m.is_null() && (*m).thumb[0] != 0 {
-            let t = resolve_tex((*m).thumb.as_ptr() as *const c_char, 250, 375, 0);
+    if let Some(m) = m {
+        if m.thumb[0] != 0 {
+            let t = resolve_tex(m.thumb.as_ptr() as *const c_char, 250, 375, 0);
             if t != 0 {
                 p.tex(t, r, rad, [1.0; 4]);
                 return;
