@@ -58,6 +58,19 @@ extern "C" {
     fn glActiveTexture(texture: c_uint);
     fn glEnable(cap: c_uint);
     fn glBlendFunc(sfactor: c_uint, dfactor: c_uint);
+    fn glClearColor(r: f32, g: f32, b: f32, a: f32);
+    fn glClear(mask: c_uint);
+}
+
+const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
+
+/// clear the framebuffer to an opaque color — the retui frame's first op, so the
+/// framework doesn't have to link GLES itself (it draws only through gfx/text).
+pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
+    unsafe {
+        glClearColor(r, g, b, 1.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 }
 
 static mut PROG: c_uint = 0;
