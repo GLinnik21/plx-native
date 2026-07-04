@@ -58,8 +58,11 @@ extern "C" fn cue_cb(ud: *mut c_void, time_ticks: i64, byte: i64) {
 /// for seeks — the pump sets seek_byte + closes the socket to interrupt the read; we
 /// re-open with a byte Range and resync to the next cluster.
 pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
-    let host_c = std::ffi::CString::new(host).unwrap();
-    let path_c = std::ffi::CString::new(path).unwrap();
+    // unwrap_or_default: an interior NUL (only reachable via a malformed /tmp/poc-url)
+    // yields an empty CString -> http_open fails gracefully, matching the C's degradation
+    // (never a thread panic).
+    let host_c = std::ffi::CString::new(host).unwrap_or_default();
+    let path_c = std::ffi::CString::new(path).unwrap_or_default();
     let hs_p = hs.0;
     let aq_p = aq.0;
     super::log(&format!("stream: host={} port={port}", host_c.to_string_lossy()));
@@ -124,8 +127,11 @@ pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr
 /// cue preflight: parse the header for the Cues, fetch them by Range, build the
 /// time->byte index in SHARED.cues.
 pub(crate) fn cues_thread(host: String, port: c_int, path: String, hs2: SendPtr<HttpStream>) {
-    let host_c = std::ffi::CString::new(host).unwrap();
-    let path_c = std::ffi::CString::new(path).unwrap();
+    // unwrap_or_default: an interior NUL (only reachable via a malformed /tmp/poc-url)
+    // yields an empty CString -> http_open fails gracefully, matching the C's degradation
+    // (never a thread panic).
+    let host_c = std::ffi::CString::new(host).unwrap_or_default();
+    let path_c = std::ffi::CString::new(path).unwrap_or_default();
     let hs2_p = hs2.0;
     super::log(&format!("cues: preflight start {}:{port}", host_c.to_string_lossy()));
     let mut cmkv: Box<MkvCtx> = Box::new(unsafe { std::mem::zeroed() });
