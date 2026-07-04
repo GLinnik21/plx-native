@@ -2,6 +2,7 @@
 //! migration). Each module exposes the same C ABI its src/*.h declares, so the
 //! remaining C code calls it unchanged. Ported: img, stream, aq, mkv, pms,
 //! posters, text, gfx, system, ui_home.
+mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
 mod gfx;
 mod img;
