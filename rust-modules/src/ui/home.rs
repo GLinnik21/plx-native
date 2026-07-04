@@ -32,8 +32,8 @@ fn g_fc() -> c_int {
 /// index the (Rust) catalog; returns a pointer into pms_movies[] or null
 #[no_mangle]
 pub extern "C" fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie {
-    let idx = r * COLS as c_int + c;
-    let n = unsafe { addr_of!(crate::pms::pms_nmovies).read() };
+    let idx = r as i64 * COLS as i64 + c as i64; // i64: never overflows across the FFI
+    let n = unsafe { addr_of!(crate::pms::pms_nmovies).read() } as i64;
     if idx >= 0 && idx < n {
         unsafe { (addr_of_mut!(crate::pms::pms_movies) as *mut PmsMovie).add(idx as usize) }
     } else {
@@ -52,24 +52,24 @@ impl Backdrop {
 impl View for Backdrop {
     fn draw(&self, env: &Env, p: Painter) {
         let sp = env.sp;
-        let hero = movie_at(0, 0);
-        unsafe {
-            let mut bt = 0u32;
-            if !hero.is_null() && (*hero).art[0] != 0 {
-                bt = crate::ui::widgets::resolve_tex((*hero).art.as_ptr() as *const c_char, 1280, 720, 0);
+        let hero = unsafe { movie_at(0, 0).as_ref() };
+        let mut bt = 0u32;
+        if let Some(h) = hero {
+            if h.art[0] != 0 {
+                bt = crate::ui::widgets::resolve_tex(h.art.as_ptr() as *const c_char, 1280, 720, 0);
             }
-            if !hero.is_null() && (*hero).has_blur != 0 && (sp > 0.004 || bt == 0) {
-                p.ambient(env.screen, 0.55, (*hero).blur);
+            if h.has_blur != 0 && (sp > 0.004 || bt == 0) {
+                p.ambient(env.screen, 0.55, h.blur);
             }
-            if bt != 0 && sp < 0.996 {
-                let ba = 1.0 - sp;
-                p.tex(bt, Rect::new(0.0, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, ba]);
-            }
-            if env.hero_a > 0.01 {
-                let sa = 0.30 + 0.64 * env.hero_a;
-                p.rect(Rect::new(0.0, SCR_H * 0.46, SCR_W, SCR_H * 0.54), 0.0,
-                    [0.02, 0.02, 0.03, 0.0], [0.02, 0.02, 0.03, sa], 0.0);
-            }
+        }
+        if bt != 0 && sp < 0.996 {
+            let ba = 1.0 - sp;
+            p.tex(bt, Rect::new(0.0, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, ba]);
+        }
+        if env.hero_a > 0.01 {
+            let sa = 0.30 + 0.64 * env.hero_a;
+            p.rect(Rect::new(0.0, SCR_H * 0.46, SCR_W, SCR_H * 0.54), 0.0,
+                [0.02, 0.02, 0.03, 0.0], [0.02, 0.02, 0.03, sa], 0.0);
         }
     }
 }
@@ -99,55 +99,52 @@ impl Hero {
 }
 impl View for Hero {
     fn draw(&self, env: &Env, p: Painter) {
-        let hero = movie_at(0, 0);
-        if hero.is_null() {
+        let Some(hero) = (unsafe { movie_at(0, 0).as_ref() }) else {
             return;
-        }
+        };
         let tx = MARGIN_X;
         let title_y = 510.0f32;
         let w_a = [0.97, 0.98, 0.99, 1.0]; // cascade applies hero_a
         let d_a = [0.70, 0.73, 0.78, 1.0];
-        unsafe {
-            // title: clearLogo (transparent PNG) if loaded, else bold text
-            let mut lt = 0u32;
-            let (mut lw, mut lh) = (0i32, 0i32);
-            if (*hero).rk[0] != 0 {
-                let rk = cfield(&(*hero).rk);
-                if let Ok(lpath) = CString::new(format!("/library/metadata/{rk}/clearLogo")) {
-                    let mut lk = [0u8; 352];
-                    crate::posters::poster_key(lk.as_mut_ptr() as *mut c_char, lk.len(), lpath.as_ptr(), 600, 240, 1);
-                    lt = crate::posters::poster_get(lk.as_ptr() as *const c_char);
-                    crate::posters::poster_wh(lk.as_ptr() as *const c_char, &mut lw, &mut lh);
-                }
+        // title: clearLogo (transparent PNG) if loaded, else bold text
+        let mut lt = 0u32;
+        let (mut lw, mut lh) = (0i32, 0i32);
+        if hero.rk[0] != 0 {
+            let rk = cfield(&hero.rk);
+            if let Ok(lpath) = CString::new(format!("/library/metadata/{rk}/clearLogo")) {
+                let mut lk = [0u8; 352];
+                crate::posters::poster_key(lk.as_mut_ptr() as *mut c_char, lk.len(), lpath.as_ptr(), 600, 240, 1);
+                lt = crate::posters::poster_get(lk.as_ptr() as *const c_char);
+                crate::posters::poster_wh(lk.as_ptr() as *const c_char, &mut lw, &mut lh);
             }
-            if lt != 0 && lh > 0 {
-                let mut hh = 96.0f32;
-                let mut ww = hh * lw as f32 / lh as f32;
-                if ww > 660.0 {
-                    ww = 660.0;
-                    hh = ww * lh as f32 / lw as f32;
-                }
-                p.tex(lt, Rect::new(tx, title_y + 80.0 - hh, ww, hh), 0.0, w_a);
-            } else {
-                p.text((*hero).title.as_ptr() as *const c_char, tx, title_y, 66, w_a, 0, 1);
+        }
+        if lt != 0 && lh > 0 {
+            let mut hh = 96.0f32;
+            let mut ww = hh * lw as f32 / lh as f32;
+            if ww > 660.0 {
+                ww = 660.0;
+                hh = ww * lh as f32 / lw as f32;
             }
-            // meta line
-            let rating = cfield(&(*hero).rating);
-            let meta = format!("Movie \u{b7} {} \u{b7} {}", (*hero).year, if rating.is_empty() { "NR" } else { &rating });
-            if let Ok(m) = CString::new(meta) {
-                p.text(m.as_ptr(), tx, title_y + 92.0, 26, d_a, 0, 0);
+            p.tex(lt, Rect::new(tx, title_y + 80.0 - hh, ww, hh), 0.0, w_a);
+        } else {
+            p.text(hero.title.as_ptr() as *const c_char, tx, title_y, 66, w_a, 0, 1);
+        }
+        // meta line
+        let rating = cfield(&hero.rating);
+        let meta = format!("Movie \u{b7} {} \u{b7} {}", hero.year, if rating.is_empty() { "NR" } else { &rating });
+        if let Ok(m) = CString::new(meta) {
+            p.text(m.as_ptr(), tx, title_y + 92.0, 26, d_a, 0, 0);
+        }
+        // synopsis, two lines on a word boundary
+        let summary = cfield(&hero.summary);
+        if !summary.is_empty() {
+            let (l1, l2) = wrap_two(&summary);
+            if let Ok(c1) = CString::new(l1) {
+                p.text(c1.as_ptr(), tx, title_y + 128.0, 24, d_a, 0, 0);
             }
-            // synopsis, two lines on a word boundary
-            let summary = cfield(&(*hero).summary);
-            if !summary.is_empty() {
-                let (l1, l2) = wrap_two(&summary);
-                if let Ok(c1) = CString::new(l1) {
-                    p.text(c1.as_ptr(), tx, title_y + 128.0, 24, d_a, 0, 0);
-                }
-                if !l2.is_empty() {
-                    if let Ok(c2) = CString::new(l2) {
-                        p.text(c2.as_ptr(), tx, title_y + 158.0, 24, d_a, 0, 0);
-                    }
+            if !l2.is_empty() {
+                if let Ok(c2) = CString::new(l2) {
+                    p.text(c2.as_ptr(), tx, title_y + 158.0, 24, d_a, 0, 0);
                 }
             }
         }
@@ -201,8 +198,8 @@ impl Shelf {
             if self.row == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
                 continue; // focused card drawn last (grid z-order)
             }
-            let m = movie_at(self.row as c_int, c as c_int);
-            if m.is_null() {
+            let m = unsafe { movie_at(self.row as c_int, c as c_int).as_ref() };
+            if m.is_none() {
                 continue;
             }
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.scroll_x.pos * env.sp;
@@ -257,13 +254,11 @@ impl Grid {
             let s = self.shelves[r].cards[c].scale.pos;
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x.pos * env.sp;
             let rect = Rect::new(x, self.shelves[r].base_y + 12.0, CARD_W, CARD_H).scaled(s);
-            let m = movie_at(r as c_int, c as c_int);
+            let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
             draw_poster(p, m, rect, 14.0 * s);
             p.ring(rect, GLOW_PAD, 14.0 * s, (s - 1.0) / 0.055);
-            if !m.is_null() {
-                unsafe {
-                    p.text((*m).title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, [0.96, 0.97, 0.98, 1.0], 1, 1);
-                }
+            if let Some(m) = m {
+                p.text(m.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, [0.96, 0.97, 0.98, 1.0], 1, 1);
             }
         }
     }
@@ -333,58 +328,71 @@ impl Home {
     }
     fn env(&self, dt: f32) -> Env {
         let sp = self.snap.pos;
-        Env { dt, screen: Rect::FULL, fr: g_fr(), fc: g_fc(), sp, hero_a: (1.0 - sp / 0.55).clamp(0.0, 1.0) }
+        // clamp the C-written focus into range so a stray write degrades (as in C) rather than
+        // panicking on a shelves[fr]/cards[fc] index. Normal main.c writes are already in range.
+        let cfr = g_fr().clamp(0, ROWS as c_int - 1);
+        let cfc = g_fc().clamp(0, COLS as c_int - 1);
+        Env { dt, screen: Rect::FULL, fr: cfr, fc: cfc, sp, hero_a: (1.0 - sp / 0.55).clamp(0.0, 1.0) }
     }
 }
 
 static mut SCENE: Option<Home> = None;
 #[inline]
 fn scene() -> &'static mut Home {
-    unsafe { (*addr_of_mut!(SCENE)).as_mut().unwrap() }
+    unsafe { (*addr_of_mut!(SCENE)).as_mut().expect("home_init not called") }
+}
+
+/// Run an entry-point body panic-guarded so a stray panic degrades to a skipped
+/// frame instead of unwinding into C (matches img/mkv/pms). Main-thread-only.
+#[inline]
+fn guard(f: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 }
 
 #[no_mangle]
 pub extern "C" fn home_init() {
-    unsafe {
-        *addr_of_mut!(SCENE) = Some(Home::new());
-    }
+    guard(|| unsafe { *addr_of_mut!(SCENE) = Some(Home::new()) });
 }
 
 #[no_mangle]
 pub extern "C" fn home_update(dt: f32) {
-    let h = scene();
-    h.bg_phase += dt * 0.15; // parity (unused by draw, as in C)
-    let target = unsafe { addr_of!(snapTarget).read() };
-    h.snap.step(target, K_SNAP, dt);
-    let env = h.env(dt);
-    h.grid.update(&env);
+    guard(|| {
+        let h = scene();
+        h.bg_phase += dt * 0.15; // parity (unused by draw, as in C)
+        let target = unsafe { addr_of!(snapTarget).read() };
+        h.snap.step(target, K_SNAP, dt);
+        let env = h.env(dt);
+        h.grid.update(&env);
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn home_draw() {
-    crate::gfx::frame_clear(0.03, 0.03, 0.045);
-    let h = scene();
-    let env = h.env(0.0);
-    let p = Painter::root();
-    h.bg.draw(&env, p);
-    if env.hero_a > 0.01 {
-        h.hero.draw(&env, p.alpha(env.hero_a));
-    }
-    h.grid.layout(&env);
-    h.grid.draw(&env, p);
+    guard(|| {
+        crate::gfx::frame_clear(0.03, 0.03, 0.045);
+        let h = scene();
+        let env = h.env(0.0);
+        let p = Painter::root();
+        h.bg.draw(&env, p);
+        if env.hero_a > 0.01 {
+            h.hero.draw(&env, p.alpha(env.hero_a));
+        }
+        h.grid.layout(&env);
+        h.grid.draw(&env, p);
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn home_move_focus(sym: c_uint) {
-    scene().grid.nav(sym);
+    guard(|| scene().grid.nav(sym));
 }
 
 #[no_mangle]
 pub extern "C" fn home_pointer_focus(mx: f32, my: f32) {
-    scene().grid.hit_test(mx, my);
+    guard(|| scene().grid.hit_test(mx, my));
 }
 
 #[no_mangle]
 pub extern "C" fn home_wheel(dy: c_int) {
-    scene().grid.wheel(dy);
+    guard(|| scene().grid.wheel(dy));
 }

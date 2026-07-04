@@ -117,10 +117,13 @@ impl Painter {
         let (t, b) = (self.c(top), self.c(bot));
         crate::gfx::draw_rect(r.x + self.dx, r.y + self.dy, r.w, r.h, 0.0, rad, t.as_ptr(), b.as_ptr(), focus);
     }
-    /// a focus ring/glow with no fill (colors zero, focus drives it)
+    /// a focus ring/glow with no fill (colors zero, focus drives it). The quad is
+    /// inflated by `pad` on every side so the SDF box lands on the card edge and the
+    /// glow band has room outside it (matches ui_home.c's draw_rect(cx-PAD, .., w+2*PAD, ..)).
     pub fn ring(self, r: Rect, pad: f32, rad: f32, focus: f32) {
         let z = [0.0f32; 4];
-        crate::gfx::draw_rect(r.x + self.dx, r.y + self.dy, r.w, r.h, pad, rad, z.as_ptr(), z.as_ptr(), focus);
+        crate::gfx::draw_rect(r.x + self.dx - pad, r.y + self.dy - pad, r.w + 2.0 * pad, r.h + 2.0 * pad,
+            pad, rad, z.as_ptr(), z.as_ptr(), focus);
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         let c = self.c(col);
