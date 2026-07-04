@@ -9,6 +9,7 @@ mod img;
 mod mkv;
 mod pms;
 mod posters;
+mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod stream;
 mod system;
 mod text;

@@ -148,8 +148,8 @@ static void bf_split(void) {
 /* ---- streaming path: PMS over HTTP → MKV demux → AU queue ---- */
 static au_queue     g_aq;
 static int          bf_stream = 0;      /* 1 = stream from PMS, 0 = /tmp/sample.h264 */
-static char         g_url[1024] = "";
-static char         g_transcode_session[64] = "";  /* server transcode session to stop on teardown */
+extern char         g_url[1024];               /* stream URL — owned by the Rust route module */
+extern char         g_transcode_session[64];   /* transcode session to stop on teardown (Rust route) */
 static au_node     *bf_pending = NULL;  /* AU popped but not yet accepted (BufferFull) */
 static http_stream  g_hs;
 static mkv_ctx      g_mkv;
@@ -580,8 +580,8 @@ void bufferfeed_pump(unsigned now) {
 }
 
 /* ---- playback HUD (Apple TV-style) ---- */
-static char g_title[128]   = "Frozen";               /* TODO: pull from PMS metadata */
-static char g_ctxline[96]  = "2013 \xc2\xb7 PG \xc2\xb7 1h 42m";  /* context line (UTF-8 middot) */
+extern char g_title[128];    /* HUD title — owned by the Rust route module */
+extern char g_ctxline[96];   /* HUD context line — owned by the Rust route module */
 
 static void fmt_time(char *out, int cap, long long ns, int neg) {
     long t = ns > 0 ? (long)(ns / 1000000000LL) : 0;
@@ -678,49 +678,7 @@ void draw_hud(void) {
     draw_text("Chapters", px, py, 28, tabdim, 0, 1);
 }
 
-/* set the playback URL + HUD strings from a selected movie (direct-play part) */
-void play_movie(pms_movie *m) {
-    if (!m || !m->part[0]) return;
-    strncpy(g_title, m->title, sizeof g_title - 1); g_title[sizeof g_title - 1] = 0;
-    long long mins = m->dur_ns / 60000000000LL;
-    int hh = (int)(mins / 60), mm = (int)(mins % 60);
-    if (hh > 0)
-        snprintf(g_ctxline, sizeof g_ctxline, "%d \xc2\xb7 %s \xc2\xb7 %dh %dm",
-                 m->year, m->rating[0] ? m->rating : "NR", hh, mm);
-    else
-        snprintf(g_ctxline, sizeof g_ctxline, "%d \xc2\xb7 %s \xc2\xb7 %dm",
-                 m->year, m->rating[0] ? m->rating : "NR", mm);
-    /* direct-play only H264+AC3 (what the pipeline decodes natively); everything
-     * else → ask the server to transcode into progressive H264+AC3 Matroska, which
-     * the same MKV demuxer eats unchanged. See docs/plex-api.md. */
-    int directplay = (strcmp(m->vcodec, "h264") == 0 && strcmp(m->acodec, "ac3") == 0);
-    g_transcode_session[0] = 0;
-    if (directplay || !m->rk[0]) {
-        snprintf(g_url, sizeof g_url, "http://%s:%d%s?X-Plex-Token=%s",
-                 PMS_HOST, PMS_PORT, m->part, PMS_TOKEN);
-    } else {
-        char profe[512];
-        urlenc(profe, sizeof profe,
-               "add-transcode-target(type=videoProfile&context=streaming&protocol=http"
-               "&container=matroska&videoCodec=h264&audioCodec=ac3)");
-        snprintf(g_transcode_session, sizeof g_transcode_session, "plexpoc-%s", m->rk);
-        /* params shared by the /decision handshake and the /start.mkv stream */
-        char base[900];
-        snprintf(base, sizeof base,
-            "path=%%2Flibrary%%2Fmetadata%%2F%s&mediaIndex=0&partIndex=0&protocol=http"
-            "&directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000"
-            "&session=%s&X-Plex-Session-Identifier=%s&X-Plex-Client-Identifier=%s"
-            "&X-Plex-Product=plexpoc&X-Plex-Version=1&X-Plex-Platform=Generic"
-            "&X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",
-            m->rk, g_transcode_session, g_transcode_session, g_transcode_session, profe, PMS_TOKEN);
-        /* The universal transcoder needs the /decision call to REGISTER the session
-         * before start.mkv will stream (otherwise 400). Fire it synchronously. */
-        char dpath[1024]; http_stream dhs;
-        snprintf(dpath, sizeof dpath, "/video/:/transcode/universal/decision?%s", base);
-        if (http_open(&dhs, PMS_HOST, PMS_PORT, dpath, NULL) == 0) http_close(&dhs);
-        snprintf(g_url, sizeof g_url,
-                 "http://%s:%d/video/:/transcode/universal/start.mkv?%s",
-                 PMS_HOST, PMS_PORT, base);
-    }
-}
+/* play_movie (direct-play vs transcode route selection + HUD strings) moved to
+ * the Rust route module (rust-modules/src/route.rs); it writes g_url /
+ * g_transcode_session / g_title / g_ctxline, which the functions above read. */
 

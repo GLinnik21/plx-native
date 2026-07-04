@@ -7,7 +7,7 @@
 
 /* ---- controller API (called from main) ---- */
 int  acb_init(void);
-void play_movie(pms_movie *m);
+/* play_movie moved to the Rust route module (rust-modules/src/route.rs) */
 int  start_bufferfeed(void);
 void stop_bufferfeed(int keep_cues);
 void bufferfeed_pump(unsigned now);
