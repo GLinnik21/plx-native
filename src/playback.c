@@ -10,89 +10,32 @@
 #include "aq.h"
 #include "mkv.h"
 #include "playback.h"
+#include "starfish.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
 
-/* ---- ACB (App Common Binding): binds the decoded video sink to a display
- * window. Without it the starfish pipeline never presents (audio included).
- * Sequence derived from Kodi's webOS Starfish renderer. ---- */
-extern long AcbAPI_create(void);
-extern int  AcbAPI_initialize(long acbId, int playerType, const char *appId,
-                              void (*cb)(long, long, long, long, long,
-                                         const char *));
-extern int  AcbAPI_setSinkType(long acbId, int sinkType);
-extern int  AcbAPI_setMediaId(long acbId, const char *connId);
-/* 3-arg ABI CONFIRMED by crashd: ACB::AcbCore::createTask(TaskType, long*)
- * writes the task id through arg3 — 2-arg calls leave garbage in r2 and
- * segfault (or silently corrupt memory when r2 happens to be writable).
- * Audio is owned by the pipeline — never feed it to ACB (causes
- * SOUND_ERROR_019), so AcbAPI_setMediaAudioData is intentionally unused. */
-extern int  AcbAPI_setMediaVideoData(long acbId, const char *payload,
-                                     long *taskId);
-extern int  AcbAPI_setState(long acbId, int appState, int playState,
-                            long *taskId);
-extern int  AcbAPI_setDisplayWindow(long acbId, long x, long y, long w, long h,
-                                    int fullScreen, long *taskId);
-extern int  AcbAPI_finalize(long acbId);
-extern void AcbAPI_destroy(long acbId);
-#define PLAYER_TYPE_MSE     10
-#define SINK_TYPE_MAIN      0
-#define APPSTATE_FOREGROUND 1
-#define PLAYSTATE_UNLOADED  0
-#define PLAYSTATE_LOADED    1
-#define PLAYSTATE_PLAYING   2
-
-/* ---- LG StarfishMediaAPIs (libplayerAPIs): in-process GStreamer pipeline.
- * Buffer-feed path — the pipeline lives in OUR process, so ACB can bind its
- * video sink (unlike uMS's out-of-process URI pipeline). Called via the
- * mangled C++ symbols; `this` is an over-allocated buffer we construct in
- * place (object size unknown, so we never hand it to C++ new/delete). Methods
- * returning std::string use a hidden sret pointer (first arg); we read the
- * char* at offset 0 (SSO holds short replies like "Ok"/"BufferFull"). ---- */
-extern void SMP_ctor(void *self, const char *appId)
-    __asm__("_ZN17StarfishMediaAPIsC1EPKc");
-extern void SMP_dtor(void *self) __asm__("_ZN17StarfishMediaAPIsD1Ev");
-extern int  SMP_Load(void *self, const char *payload,
-                     void (*cb)(int, long long, const char *))
-    __asm__("_ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_E");
-extern void SMP_Feed(void *sret, void *self, const char *payload)
-    __asm__("_ZN17StarfishMediaAPIs4FeedB5cxx11EPKc");
-extern int  SMP_Play(void *self) __asm__("_ZN17StarfishMediaAPIs4PlayEv");
-extern int  SMP_Unload(void *self) __asm__("_ZN17StarfishMediaAPIs6UnloadEv");
-extern void SMP_notifyForeground(void *self)
-    __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv");
-extern int  SMP_isLoadCompleted(void *self)
-    __asm__("_ZN17StarfishMediaAPIs15isLoadCompletedEv");
-extern int  SMP_Pause(void *self) __asm__("_ZN17StarfishMediaAPIs5PauseEv");
-extern void SMP_setCurrentPlaytime(void *self, long long t)
-    __asm__("_ZN17StarfishMediaAPIs18setCurrentPlaytimeEx");
-extern int  SMP_flush(void *self) __asm__("_ZN17StarfishMediaAPIs5flushEv");
-
-static unsigned char g_smp[65536] __attribute__((aligned(16)));
-static int g_smpReady = 0;
-
-static long g_acb = 0, g_taskId = 0;
+/* The StarfishMediaAPIs (C++) + ACB video-plane ABI lives in the starfish.c seam
+ * (the flat sf_ / acb_ verbs). This file owns only the buffer-feed orchestration
+ * and calls those verbs; library-thread callbacks land in sf_on_event/acb_on_event. */
+static long g_acb = 0;           /* the ACB id (from acb_create) — availability flag */
 static int  videoInfoSent = 0;   /* ACB setMediaVideoData sent once, after PLAYING */
-/* /tmp/poc-ptype: ACB playerType for AcbAPI_initialize (default MSE=10).
- * Sweeping this is log-readable: acb_cb reports whether setMediaVideoData →
- * tv.display succeeds, so no screen look is needed to find a working type. */
-static int g_ptype = PLAYER_TYPE_MSE;
+/* /tmp/poc-ptype: ACB playerType for acb_create (default MSE=10). */
+static int  g_ptype = PLAYER_TYPE_MSE;
 
-static void acb_cb(long a, long t, long ev, long app, long play,
-                   const char *reply) {
-    (void)a; (void)t; (void)app; (void)play;
+/* ACB library-thread event (forwarded by the seam) */
+void acb_on_event(long ev, const char *reply) {
     if (elogf) {
         fprintf(elogf, "acb_cb ev=%ld reply=%s\n", ev, reply ? reply : "");
         fflush(elogf);
     }
 }
 
-/* thin transport wrappers so main never touches Starfish (g_smp/g_smpReady) */
-void playback_pause(void)  { if (g_smpReady) SMP_Pause(g_smp); }
-void playback_resume(void) { if (g_smpReady) SMP_Play(g_smp); }
+/* thin transport wrappers so main never touches Starfish */
+void playback_pause(void)  { sf_pause(); }
+void playback_resume(void) { sf_play(); }
 
 /* Create + initialize the ACB (App Common Binding) that binds the decoded video
  * sink to the display plane. We deliberately DON'T register our own
@@ -105,11 +48,8 @@ int acb_init(void) {
         if (pf) { fscanf(pf, "%d", &g_ptype); fclose(pf); }
         if (elogf) { fprintf(elogf, "ptype=%d\n", g_ptype); fflush(elogf); }
     }
-    g_acb = AcbAPI_create();
-    if (g_acb) {
-        const char *appId = getenv("APPID");
-        AcbAPI_initialize(g_acb, g_ptype, appId ? appId : "com.glin.plexpoc", acb_cb);
-    }
+    const char *appId = getenv("APPID");
+    g_acb = acb_create(appId, g_ptype);
     if (elogf) { fprintf(elogf, "acb create=%ld\n", g_acb); fflush(elogf); }
     return 1;
 }
@@ -151,29 +91,9 @@ static volatile long long g_pts_shift = 0;
 static long long g_max_fed_pts = 0;
 static volatile int g_rebase_pending = 0;
 
-/* Feed one AU; returns reply's first char ('O'=Ok, 'B'=BufferFull, else err) */
-static char bf_feed(const unsigned char *p, unsigned size, long long pts,
-                    int esData) {
-    char j[160];
-    snprintf(j, sizeof j,
-             "{\"bufferAddr\":\"%p\",\"bufferSize\":%u,\"pts\":%lld,"
-             "\"esData\":%d}", (const void *)p, size, pts, esData);
-    unsigned char ret[32];
-    memset(ret, 0, sizeof ret);
-    SMP_Feed(ret, g_smp, j);
-    char *s = *(char **)ret;             /* std::string _M_p at offset 0 */
-    static int logged = 0;
-    if (elogf && logged < 3) { logged++;
-        fprintf(elogf, "feed reply=\"%s\"\n", s ? s : "(null)"); fflush(elogf); }
-    /* reply is JSON like {"returnValue":"Ok"} or {"returnValue":"BufferFull"} */
-    if (!s) return 'e';
-    if (strstr(s, "BufferFull")) return 'B';
-    if (strstr(s, "Ok")) return 'O';
-    return 'e';
-}
-
-/* StarfishMediaAPIs Load callback: (eventType, numValue, jsonStr) */
-static void starfish_cb(int type, long long num, const char *str) {
+/* pipeline library-thread event, forwarded by the seam (was starfish_cb).
+ * (eventType, numValue, jsonStr). Feeding goes through sf_feed() in the seam. */
+void sf_on_event(int type, long long num, const char *str) {
     if (elogf && type != 0) {   /* skip the per-frame "presented" event (~24/s) */
         fprintf(elogf, "smp_cb type=%d num=%lld str=%.1400s\n",
                 type, num, str ? str : "");
@@ -469,11 +389,10 @@ void stop_bufferfeed(int keep_cues) {
     if (g_cues_created)   { pthread_join(g_cues_th, NULL);   g_cues_created = 0; }
     if (g_stream_created) { pthread_join(g_stream_th, NULL); g_stream_created = 0; }
     if (g_load_created)   { pthread_join(g_load_th, NULL);   g_load_created = 0; }
-    if (g_smpReady) {
-        SMP_Unload(g_smp);
-        if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &g_taskId);
-        SMP_dtor(g_smp);
-        g_smpReady = 0;
+    if (sf_ready()) {
+        sf_unload();
+        if (g_acb) acb_unload();
+        sf_destroy();
     }
     if (bf_stream) { int eof; au_node *n; while ((n = aq_pop(&g_aq, &eof))) free(n);
                      aq_destroy(&g_aq); }   /* paired with aq_init in start_bufferfeed */
@@ -515,7 +434,7 @@ static void bf_feed_ahead(void) {
         long end = bf_au[bf_next + 1];
         long long pts = ((long long)bf_loop * (bf_naus - 1) + bf_next)
                         * 41708333LL; /* continuous ns @ 23.976 */
-        char r = bf_feed(bf_data + off, (unsigned)(end - off), pts, 1);
+        char r = sf_feed(bf_data + off, (unsigned)(end - off), pts, 1);
         if (elogf && bf_loop == 0 && bf_next < 3) {
             fprintf(elogf, "feed AU#%d sz=%ld reply=%c\n", bf_next,
                     end - off, r ? r : '?'); fflush(elogf);
@@ -550,7 +469,7 @@ static void bf_feed_stream(void) {
             free(bf_pending); bf_pending = NULL; continue;
         }
         if (fed_pts < 0) fed_pts = 0;
-        char r = bf_feed(bf_pending->data, (unsigned)bf_pending->len, fed_pts, bf_pending->es);
+        char r = sf_feed(bf_pending->data, (unsigned)bf_pending->len, fed_pts, bf_pending->es);
         if (fed_pts > g_max_fed_pts) g_max_fed_pts = fed_pts;
         static long vtot = 0, atot = 0;
         if (bf_pending->es == 1) vtot++; else atot++;
@@ -572,18 +491,15 @@ static void bf_feed_stream(void) {
  * which a sideloaded app has no role for → uMS acquire fails CONN_FIND_ERR. */
 static void *load_thread(void *arg) {
     (void)arg;
-    SMP_ctor(g_smp, NULL);
-    g_smpReady = 1;
-    SMP_notifyForeground(g_smp);
     if (elogf) { fprintf(elogf, "SMP: calling Load (uid=NULL)\n"); fflush(elogf); }
-    int ok = SMP_Load(g_smp, bf_payload, starfish_cb);
+    int ok = sf_load(bf_payload);   /* seam: ctor(uid=NULL) + notifyForeground + Load */
     if (elogf) { fprintf(elogf, "SMP: Load returned ok=%d\n", ok); fflush(elogf); }
     return NULL;
 }
 
 /* called from the main loop: once loaded, bind ACB, Play, then feed AUs */
 void bufferfeed_pump(unsigned now) {
-    if (!bf_started || !g_smpReady) return;   /* wait for media-thread ctor */
+    if (!bf_started || !sf_ready()) return;   /* wait for media-thread ctor */
     (void)now;
 
     /* pending seek: flush the pipeline, drop queued AUs, and tell the demux
@@ -591,9 +507,9 @@ void bufferfeed_pump(unsigned now) {
     if (bf_stream && g_seek_to_ns >= 0 && bf_playing && g_file_size > 0 && pl_dur_ns > 0) {
         long long t = g_seek_to_ns; g_seek_to_ns = -1;
         if (t < 0) t = 0;
-        SMP_flush(g_smp);             /* drop decoded/queued frames; resets the clock to ~0 */
-        SMP_setCurrentPlaytime(g_smp, 0);
-        SMP_Play(g_smp);              /* resume presentation after the flush */
+        sf_flush();                   /* drop decoded/queued frames; resets the clock to ~0 */
+        sf_set_playtime(0);
+        sf_play();                    /* resume presentation after the flush */
         { int eof; au_node *n; while ((n = aq_pop(&g_aq, &eof))) free(n); }
         if (bf_pending) { free(bf_pending); bf_pending = NULL; }
         long long byte = cue_byte_for(t);          /* accurate: MKV Cue index */
@@ -612,7 +528,7 @@ void bufferfeed_pump(unsigned now) {
         if (elogf) { fprintf(elogf, "seek: t=%lld byte=%lld\n", t, byte); fflush(elogf); }
     }
 
-    if (!bf_loaded && SMP_isLoadCompleted(g_smp)) {
+    if (!bf_loaded && sf_is_load_completed()) {
         bf_loaded = 1;
         if (elogf) { fprintf(elogf, "SMP loadCompleted\n"); fflush(elogf); }
     }
@@ -622,7 +538,7 @@ void bufferfeed_pump(unsigned now) {
      * (SIGSEGV inside libplayerAPIs), so it's removed. */
     /* Play as soon as loaded so the pipeline decodes fed frames */
     if (bf_loaded && !bf_playing) {
-        SMP_Play(g_smp);
+        sf_play();
         bf_playing = 1;
         if (elogf) { fprintf(elogf, "SMP Play\n"); fflush(elogf); }
     }
@@ -634,9 +550,7 @@ void bufferfeed_pump(unsigned now) {
      *   setDisplayWindow → setState(PLAYING) */
     if (bf_loaded && !bf_bound && g_acb && bf_mediaId[0]) {
         bf_bound = 1;
-        AcbAPI_setSinkType(g_acb, SINK_TYPE_MAIN);
-        AcbAPI_setMediaId(g_acb, bf_mediaId);
-        AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &g_taskId);
+        acb_bind(bf_mediaId);
         if (elogf) { fprintf(elogf, "SMP ACB bound id=%s\n", bf_mediaId); fflush(elogf); }
     }
     /* Send the WHOLE sourceInfo envelope (context + content + video) VERBATIM,
@@ -645,13 +559,12 @@ void bufferfeed_pump(unsigned now) {
      * so tv.display resolves the video and every video.* field parses correctly.
      * Then window + PLAYING (VSM connect already auto-unmuted the plane). */
     if (bf_bound && !videoInfoSent && sourceInfoRaw[0] && bf_frames >= 2) {
-        int rv = AcbAPI_setMediaVideoData(g_acb, sourceInfoRaw, &g_taskId);
+        int rv = acb_send_video_data(sourceInfoRaw);
         if (elogf) { fprintf(elogf, "setMediaVideoData rv=%d frames=%d payload=%.240s\n",
                              rv, bf_frames, sourceInfoRaw); fflush(elogf); }
         if (rv != -1) {   /* -1 = client-side isJsonError reject; else accepted */
             videoInfoSent = 1;
-            AcbAPI_setDisplayWindow(g_acb, 0, 0, 1920, 1080, 1, &g_taskId);
-            AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId);
+            acb_start(0, 0, 1920, 1080);
             if (elogf) { fprintf(elogf, "setMediaVideoData sent → window+PLAYING\n"); fflush(elogf); }
         }
     }
