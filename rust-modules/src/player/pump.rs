@@ -19,13 +19,17 @@ pub(crate) fn pump(now: u32) {
     }
     let stream = matches!(eng.source, Source::Stream);
 
-    // ---------- pending seek: flush, drop queued AUs, tell demux to re-open at byte ----------
+    // ---------- pending seek: flush, drop queued AUs, re-point the demux ----------
     let t = TX.seek_to_ns.load(Relaxed);
+    // A live transcode has NO Content-Length / byte-Cues (file_size stays -1), so gate
+    // it on duration only and seek by RESTARTING the transcode at a time &offset (below),
+    // not a byte offset. Direct-play keeps the byte-Range path.
+    let is_transcode = !crate::route::transcode_session().is_empty();
     if stream
         && t >= 0
         && eng.stage >= Stage::Playing
-        && SHARED.file_size.load(Relaxed) > 0
         && SHARED.duration_ns.load(Relaxed) > 0
+        && (is_transcode || SHARED.file_size.load(Relaxed) > 0)
     {
         TX.seek_to_ns.store(-1, Relaxed);
         let t = t.max(0);
@@ -35,15 +39,33 @@ pub(crate) fn pump(now: u32) {
             ffi::sf_play(); // resume presentation after the flush
         }
         drain_aq(eng);
-        let dur = SHARED.duration_ns.load(Relaxed);
-        let fsz = SHARED.file_size.load(Relaxed);
-        let byte = cue_byte_for(t) // accurate: MKV Cue index
-            .unwrap_or_else(|| (t as f64 / dur as f64 * fsz as f64) as i64) // else CBR estimate
-            .max(0);
-        SHARED.seek_byte.store(byte, Release); // publish BEFORE the close
+        if is_transcode {
+            // restart the transcode at &offset=SECS; re-point the demux at the new start.mkv
+            // (opened from byte 0). The fed timeline rebases on the first keyframe as usual;
+            // the new stream is 0-based at content=SECS, so add SECS back for the displayed
+            // position (integer seconds — the granularity the server's fastSeek honors).
+            let secs = t / 1_000_000_000;
+            match crate::route::transcode_seek(secs) {
+                Some(url) => {
+                    *SHARED.next_url.lock().unwrap() = Some(url);
+                    SHARED.seek_byte.store(0, Release); // fresh stream from byte 0
+                    SHARED.disp_base.store(secs * 1_000_000_000, Relaxed);
+                    super::log(&format!("seek(transcode): t={t} offset={secs}s"));
+                }
+                None => super::log("seek(transcode): rebuild failed"),
+            }
+        } else {
+            let dur = SHARED.duration_ns.load(Relaxed);
+            let fsz = SHARED.file_size.load(Relaxed);
+            let byte = cue_byte_for(t) // accurate: MKV Cue index
+                .unwrap_or_else(|| (t as f64 / dur as f64 * fsz as f64) as i64) // else CBR estimate
+                .max(0);
+            SHARED.seek_byte.store(byte, Release); // publish BEFORE the close
+            super::log(&format!("seek: t={t} byte={byte}"));
+        }
         let p = SHARED.hs_ptr.load(Acquire);
         if !p.is_null() {
-            crate::stream::http_close(p); // unblock the demux read -> it re-opens at byte
+            crate::stream::http_close(p); // unblock the demux read -> it re-opens
         }
         // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
         // presents against the flush-reset clock immediately — no catch-up freeze
@@ -51,7 +73,6 @@ pub(crate) fn pump(now: u32) {
         eng.max_fed_pts = 0;
         SHARED.frames.store(0, Relaxed); // count only POST-seek frames (resume re-pause gate)
         SHARED.playpos_ns.store(t, Relaxed); // displayed position jumps; wall clock takes over
-        super::log(&format!("seek: t={t} byte={byte}"));
     }
 
     // ---------- load -> Play (decode fed frames as soon as loaded) ----------

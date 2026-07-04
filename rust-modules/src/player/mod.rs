@@ -73,7 +73,8 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     if ty == 0 {
         // a frame was PRESENTED — map fed pts -> real content position
         SHARED.frames.fetch_add(1, Relaxed);
-        SHARED.playpos_ns.store(num - SHARED.pts_shift.load(Relaxed), Relaxed);
+        SHARED.playpos_ns
+            .store(num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed), Relaxed);
     }
     if s.is_null() {
         return;

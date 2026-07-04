@@ -11,6 +11,8 @@ use std::ptr::{addr_of, addr_of_mut};
 // reads them via the accessors below (nothing C references them since step 5).
 static mut g_url: [c_char; 1024] = [0; 1024];
 static mut g_transcode_session: [c_char; 64] = [0; 64];
+// offset-free transcode query params, kept so a seek can rebuild start.mkv?...&offset=T
+static mut g_tbase: [c_char; 1024] = [0; 1024];
 // HUD strings — crate-visible so ui::player_hud can read them.
 pub(crate) static mut g_title: [c_char; 128] = [0; 128];
 pub(crate) static mut g_ctxline: [c_char; 96] = [0; 96];
@@ -65,7 +67,40 @@ pub(crate) fn stop_transcode() {
         );
         let _ = crate::stream::http_get(&cfg.host, cfg.port, &sp, None);
     }
-    unsafe { (*addr_of_mut!(g_transcode_session))[0] = 0 };
+    unsafe {
+        (*addr_of_mut!(g_transcode_session))[0] = 0;
+        (*addr_of_mut!(g_tbase))[0] = 0;
+    }
+}
+
+/// Seek within a LIVE TRANSCODE by restarting it at a time offset — a transcode has
+/// no byte-Cues, so a byte-Range seek can't work (docs/plex-api.md). Stops the current
+/// encoder, then re-registers (/decision) and re-points the stream at
+/// start.mkv?...&offset={secs}. Returns the new URL (the demux re-opens it from byte 0),
+/// or None if this playback isn't a transcode. Blocks on two HTTP round-trips (like
+/// play_movie's /decision), which is fine during a seek (the pipeline is flushed).
+pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
+    let sess = transcode_session();
+    if sess.is_empty() {
+        return None;
+    }
+    let base = unsafe { get_c(addr_of!(g_tbase) as *const c_char, 1024) };
+    if base.is_empty() {
+        return None;
+    }
+    let cfg = unsafe { (*addr_of!(CFG)).as_ref()? };
+    // NB: do NOT explicitly /stop the old encoder here — the session id is reused, so a
+    // stop would race the demux (it cuts the stream the demux is still reading; if the
+    // demux hits EOF + checks seek_byte before the pump sets it, it exits). Instead the
+    // pump closes the demux socket AFTER arming the seek, which drops the old connection
+    // (stopping the old transcode), and this new start.mkv?&offset= (same session)
+    // repositions. /decision is just a query and doesn't cut the streaming connection.
+    let obase = format!("{base}&offset={}", offset_secs.max(0));
+    let dpath = format!("/video/:/transcode/universal/decision?{obase}");
+    let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
+    let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{obase}", cfg.host, cfg.port);
+    set_url(&url);
+    Some(url)
 }
 
 fn cfield(b: &[u8]) -> String {
@@ -137,6 +172,8 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
              &X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={}",
             cfg.token
         );
+        // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
+        unsafe { set_c(addr_of_mut!(g_tbase) as *mut c_char, 1024, &base) };
         // the universal transcoder needs /decision to REGISTER the session before start.mkv streams
         let dpath = format!("/video/:/transcode/universal/decision?{base}");
         let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);

@@ -24,9 +24,16 @@ pub(crate) struct Shared {
 
     // main/pump (M) -> library callback thread (K)
     pub pts_shift: AtomicI64,                 // g_pts_shift
+    // content-time offset added to the displayed position: a transcode SEEK restarts the
+    // stream 0-based (its PTS loses the seek offset), so playpos = fed - pts_shift + this.
+    // 0 for direct-play (file PTS already IS content time) and for the initial transcode.
+    pub disp_base: AtomicI64,
 
     // main/pump (M) -> demux (D)
     pub seek_byte: AtomicI64,                 // g_seek_byte (-1 = none)
+    // a transcode SEEK re-points the demux at a NEW start.mkv?&offset= URL (a live
+    // transcode has no byte-Cues); byte-Range seeks leave this None. Taken on re-open.
+    pub next_url: Mutex<Option<String>>,
 
     // demux (D) -> main (M)
     pub file_size: AtomicI64,                 // g_file_size
@@ -54,7 +61,9 @@ impl Shared {
             media_id: Mutex::new(None),
             source_info: Mutex::new(None),
             pts_shift: AtomicI64::new(0),
+            disp_base: AtomicI64::new(0),
             seek_byte: AtomicI64::new(-1),
+            next_url: Mutex::new(None),
             file_size: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             cues: Mutex::new(Vec::new()),
@@ -74,7 +83,9 @@ impl Shared {
         *self.media_id.lock().unwrap() = None;
         *self.source_info.lock().unwrap() = None;
         self.pts_shift.store(0, Ordering::Relaxed);
+        self.disp_base.store(0, Ordering::Relaxed);
         self.seek_byte.store(-1, Ordering::Relaxed);
+        *self.next_url.lock().unwrap() = None;
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
