@@ -29,12 +29,12 @@ STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
 
 # Hybrid C+Rust build (gradual migration). Modules ported to Rust are compiled
 # into a staticlib and linked in; their src/*.c is excluded from the C build.
-# Ported so far: img (image decode/upload — impl now in rust-modules/, safe crate).
+# Ported so far: img (image decode), stream (HTTP client) — impls in rust-modules/.
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
 RUST_TARGET = arm-unknown-linux-gnueabi.2.24
 RUST_LIB    = rust-modules/target/arm-unknown-linux-gnueabi/release/libplexpoc_modules.a
 
-SRCS = $(filter-out src/gpdebug.c src/img.c,$(wildcard src/*.c))
+SRCS = $(filter-out src/gpdebug.c src/img.c src/stream.c,$(wildcard src/*.c))
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plexpoc
@@ -53,7 +53,7 @@ src/%.o: src/%.c $(wildcard src/*.h)
 #  - -Z build-std: rebuilds std itself with these flags (precompiled std shipped
 #    the CP15 barriers), so needs the nightly toolchain + rust-src.
 RUSTFLAGS_TV = -C target-cpu=cortex-a53 -C target-feature=-neon
-$(RUST_LIB): rust-modules/src/lib.rs rust-modules/Cargo.toml
+$(RUST_LIB): $(wildcard rust-modules/src/*.rs) rust-modules/Cargo.toml
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" RUSTFLAGS="$(RUSTFLAGS_TV)" \
 	  cargo +nightly zigbuild -Z build-std=std,panic_unwind --release --target $(RUST_TARGET)
 
