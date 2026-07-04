@@ -27,9 +27,14 @@ STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
         stub/libwayland-client.so stub/libluna-service2.so stub/libglib-2.0.so \
         stub/libAcbAPI.so stub/libplayerAPIs.so
 
-# Real multi-TU build: each module compiles to its own .o, then links together.
+# Hybrid C+Rust build (gradual migration). Modules ported to Rust are compiled
+# into a staticlib and linked in; their src/*.c is excluded from the C build.
+# Ported so far: img (image decode/upload — impl now in rust-modules/, safe crate).
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
-SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))
+RUST_TARGET = arm-unknown-linux-gnueabi.2.24
+RUST_LIB    = rust-modules/target/arm-unknown-linux-gnueabi/release/libplexpoc_modules.a
+
+SRCS = $(filter-out src/gpdebug.c src/img.c,$(wildcard src/*.c))
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plexpoc
@@ -38,8 +43,24 @@ all: pkg/plexpoc
 src/%.o: src/%.c $(wildcard src/*.h)
 	$(ZIG) $(CFLAGS) -c $< -o $@
 
-pkg/plexpoc: $(OBJS) $(STUBS)
-	$(ZIG) $(OBJS) -Lstub $(LIBS) -o $@
+# Rust staticlib (cargo-zigbuild → same armv7 soft-float glibc-2.24 target).
+# CRITICAL codegen flags for this TV (32-bit ARMv8/A53):
+#  - target-cpu=cortex-a53: default arm-*-gnueabi (ARMv6) codegen emits the legacy
+#    CP15 memory barrier (mcr p15,...,c7,c10,5), UNDEFINED on the A53 (ARMv8) →
+#    SIGILL. A53 emits the dedicated `dmb` (like the C build's -mcpu=cortex_a53).
+#  - target-feature=-neon: NEON isn't needed (VFP still on for floats), and it
+#    dodges crates (simd-adler32, ...) whose NEON path uses unstable intrinsics.
+#  - -Z build-std: rebuilds std itself with these flags (precompiled std shipped
+#    the CP15 barriers), so needs the nightly toolchain + rust-src.
+RUSTFLAGS_TV = -C target-cpu=cortex-a53 -C target-feature=-neon
+$(RUST_LIB): rust-modules/src/lib.rs rust-modules/Cargo.toml
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" RUSTFLAGS="$(RUSTFLAGS_TV)" \
+	  cargo +nightly zigbuild -Z build-std=std,panic_unwind --release --target $(RUST_TARGET)
+
+# link C objects + the Rust staticlib (+ Rust std's deps: dl/pthread/m + the
+# ARM-EHABI unwinder its precompiled std references; -lunwind is zig's, static)
+pkg/plexpoc: $(OBJS) $(RUST_LIB) $(STUBS)
+	$(ZIG) $(OBJS) $(RUST_LIB) -Lstub $(LIBS) -ldl -lpthread -lm -lunwind -o $@
 
 # stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly)
 stub/libSDL2.so: stub/sdl_stub.c

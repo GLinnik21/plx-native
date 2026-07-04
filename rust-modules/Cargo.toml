@@ -1,0 +1,17 @@
+[package]
+name = "plexpoc-modules"
+version = "0.1.0"
+edition = "2021"
+
+# Static library linked into the C app (hybrid migration): each ported module
+# exposes the same C ABI its src/*.h declares, so the C code calls it unchanged.
+[lib]
+name = "plexpoc_modules"
+crate-type = ["staticlib"]
+
+[dependencies]
+# safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[profile.release]
+opt-level = 2
