@@ -29,12 +29,12 @@ STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
 
 # Hybrid C+Rust build (gradual migration). Modules ported to Rust are compiled
 # into a staticlib and linked in; their src/*.c is excluded from the C build.
-# Ported so far: img, stream, aq, mkv, pms — impls in rust-modules/.
+# Ported so far: img, stream, aq, mkv, pms, posters — impls in rust-modules/.
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
 RUST_TARGET = arm-unknown-linux-gnueabi.2.24
 RUST_LIB    = rust-modules/target/arm-unknown-linux-gnueabi/release/libplexpoc_modules.a
 
-SRCS = $(filter-out src/gpdebug.c src/img.c src/stream.c src/aq.c src/mkv.c src/pms.c,$(wildcard src/*.c))
+SRCS = $(filter-out src/gpdebug.c src/img.c src/stream.c src/aq.c src/mkv.c src/pms.c src/posters.c,$(wildcard src/*.c))
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plexpoc

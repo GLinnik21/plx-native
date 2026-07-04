@@ -76,6 +76,22 @@ fn set_field(dst: &mut [u8], s: &str) {
     dst[n] = 0;
 }
 
+/// percent-encode into a String (Rust callers, e.g. posters::poster_key)
+pub(crate) fn urlenc_str(src: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(src.len());
+    for &ch in src.as_bytes() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_' | b'.' | b'~') {
+            out.push(ch as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(ch >> 4) as usize] as char);
+            out.push(HEX[(ch & 15) as usize] as char);
+        }
+    }
+    out
+}
+
 /// percent-encode a Plex server-relative path for the transcode url= query value
 #[no_mangle]
 pub extern "C" fn urlenc(dst: *mut c_char, cap: usize, src: *const c_char) {
