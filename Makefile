@@ -18,7 +18,7 @@ APPDIR    = /media/developer/apps/usr/palm/applications/com.glin.plexpoc
 RUN_SECS ?= 18
 
 ZIG       = zig cc -target arm-linux-gnueabi.2.24 -mcpu=cortex_a53
-CFLAGS    = -O2 -Iinclude
+CFLAGS    = -O2 -Iinclude -Isrc -D_GNU_SOURCE    # -Isrc: unity.c #includes module .c; -D_GNU_SOURCE: strcasestr
 LIBS      = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 -lAcbAPI \
             -lwayland-client -lplayerAPIs
 STUBFLAGS = -shared -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables
@@ -29,8 +29,14 @@ STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
 
 all: pkg/plexpoc
 
-pkg/plexpoc: src/main.c $(wildcard src/*.h) $(STUBS)
-	$(ZIG) $(CFLAGS) -Lstub $(LIBS) -o $@ src/main.c
+# Unity single-TU build: src/unity.c #includes every module .c, so the code stays
+# organized in separate files but compiles as ONE translation unit. This is
+# REQUIRED on this webOS glibc target: a multi-.o link fails to wire glibc's
+# malloc-arena locks, so any worker thread (poster fetch, MKV demux) racing the
+# main thread on the heap corrupts it. Single-TU keeps malloc thread-safe.
+# Depend on all module .c/.h so editing any of them rebuilds the one object.
+pkg/plexpoc: src/unity.c $(filter-out src/unity.c,$(wildcard src/*.c)) $(wildcard src/*.h) $(STUBS)
+	$(ZIG) $(CFLAGS) src/unity.c -Lstub $(LIBS) -o $@
 
 # stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly)
 stub/libSDL2.so: stub/sdl_stub.c
@@ -72,6 +78,9 @@ kill:
 	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.glin.plexpoc\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
 	  fuser -k $(APPDIR)/plexpoc 2>/dev/null; echo closed'
 
+clean:
+	rm -f src/*.o pkg/plexpoc
+
 test: deploy run
 
 # ipk assembly: deb-style ar archive; zig ar emits GNU format (macOS ar is BSD)
@@ -87,4 +96,4 @@ ipk: pkg/plexpoc
 	  debian-binary control.tar.gz data.tar.gz
 	shasum -a 256 pkg/com.glin.plexpoc_0.1.0_arm.ipk | tee pkg/ipk.sha256
 
-.PHONY: all deploy run kill test ipk
+.PHONY: all deploy run kill test ipk clean
