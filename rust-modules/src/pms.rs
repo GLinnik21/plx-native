@@ -8,22 +8,23 @@ use std::panic::catch_unwind;
 
 const PMS_MAX_MOVIES: usize = 256;
 
-// Layout MUST match `pms_movie` in src/pms.h.
+// Layout MUST match `pms_movie` in src/pms.h. Fields are pub(crate) so ui_home
+// (the Rust home screen) can read them; they carry NUL-terminated C strings.
 #[repr(C)]
 pub struct PmsMovie {
-    title: [u8; 128],
-    year: c_int,
-    rating: [u8; 12],
-    dur_ns: i64,
-    part: [u8; 256],
-    thumb: [u8; 128],
-    art: [u8; 128],
-    summary: [u8; 600],
-    rk: [u8; 16],
-    vcodec: [u8; 12],
-    acodec: [u8; 12],
-    blur: [[f32; 3]; 4],
-    has_blur: c_int,
+    pub(crate) title: [u8; 128],
+    pub(crate) year: c_int,
+    pub(crate) rating: [u8; 12],
+    pub(crate) dur_ns: i64,
+    pub(crate) part: [u8; 256],
+    pub(crate) thumb: [u8; 128],
+    pub(crate) art: [u8; 128],
+    pub(crate) summary: [u8; 600],
+    pub(crate) rk: [u8; 16],
+    pub(crate) vcodec: [u8; 12],
+    pub(crate) acodec: [u8; 12],
+    pub(crate) blur: [[f32; 3]; 4],
+    pub(crate) has_blur: c_int,
 }
 impl PmsMovie {
     const ZERO: PmsMovie = PmsMovie {
