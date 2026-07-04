@@ -254,20 +254,24 @@ pub extern "C" fn plex_run(
                     // WILL/DID ENTER FOREGROUND
                     log(&format!("LIFECYCLE: foreground (wasPlaying={})", bg_was_playing as i32));
                     if bg_was_playing && et == 0x106 {
-                        playing = crate::player::start_bufferfeed();
-                        if playing {
-                            let mut rt = bg_pos;
-                            if !bg_was_paused {
-                                rt -= RESUME_REWIND_NS;
-                                if rt < 0 {
-                                    rt = 0;
+                        bg_was_playing = false; // clear regardless so a later 0x106 can't re-fire
+                        // only resume if a PLAY key didn't already restart playback in the
+                        // WILL->DID window (a second start would drop the live Engine -> UAF)
+                        if !playing {
+                            playing = crate::player::start_bufferfeed();
+                            if playing {
+                                let mut rt = bg_pos;
+                                if !bg_was_paused {
+                                    rt -= RESUME_REWIND_NS;
+                                    if rt < 0 {
+                                        rt = 0;
+                                    }
                                 }
+                                request_seek(rt);
+                                set_hud(SDL_GetTicks() + 4500);
+                                set_resume_pend(bg_was_paused);
                             }
-                            request_seek(rt);
-                            set_hud(SDL_GetTicks() + 4500);
-                            set_resume_pend(bg_was_paused);
                         }
-                        bg_was_playing = false;
                     }
                 } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
                     // LG SDL fork: state@16, wcode@20, sym@24

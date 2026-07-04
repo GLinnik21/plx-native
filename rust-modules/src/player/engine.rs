@@ -114,6 +114,14 @@ fn parse_stream_url(url: &str) -> (String, c_int, String) {
 }
 
 pub(crate) fn start_bufferfeed() -> bool {
+    // Guard a double-start: overwriting a live ENGINE slot would DROP the running
+    // Engine, detaching its worker threads and freeing the hs/hs2/aq boxes those
+    // threads still hold raw ptrs into -> use-after-free. If already running, no-op.
+    // (Reachable via a PLAY key landing in the WILL->DID foreground window.)
+    if unsafe { (*std::ptr::addr_of!(ENGINE)).is_some() } {
+        log("start_bufferfeed: already running (no-op)");
+        return true;
+    }
     // resolve the URL: route (a selected movie) wins, then /tmp/poc-url, then a local
     // sample, then the built-in demo movie.
     let mut url = crate::route::url();
@@ -146,8 +154,9 @@ pub(crate) fn start_bufferfeed() -> bool {
     let stream = sample.is_none();
     let payload_c = std::ffi::CString::new(if stream { PAYLOAD_AV } else { PAYLOAD_V }).unwrap();
 
-    let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
-    let mut hs2: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
+    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs2 = crate::stream::http_stream_boxed();
     let mut aq_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
     let mut cues_th = None;

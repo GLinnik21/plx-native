@@ -327,3 +327,14 @@ pub(crate) fn http_get(host: &str, port: c_int, path: &str, extra: Option<&str>)
     http_close(&mut *hs);
     Some(body)
 }
+
+/// A boxed HttpStream in the CLOSED state (fd = -1), so http_close is a no-op until
+/// http_open assigns a real fd. The player engine pre-allocates the demux/cue sockets
+/// before the worker threads open them; a plain zeroed box leaves fd = 0, and a
+/// teardown before (or without) http_open would then close(0) the process's stdin —
+/// and free fd 0 for a later socket() to reuse and be wrongly closed. (Box: 64KB.)
+pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
+    let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    hs.fd = -1;
+    hs
+}
