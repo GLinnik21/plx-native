@@ -398,7 +398,8 @@ pub extern "C" fn plex_run(
                             scrub_dir = if fwd { 1 } else { -1 };
                             scrub_last = last_input;
                         }
-                    } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 {
+                    } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
+                        // webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others
                         if playing {
                             crate::player::stop_bufferfeed(false);
                             playing = false;
