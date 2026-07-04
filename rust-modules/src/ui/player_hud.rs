@@ -7,18 +7,12 @@
 use crate::gfx::{draw_rect, draw_rrect};
 use crate::text::draw_text;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_char;
 use std::ptr::addr_of;
+use std::sync::atomic::Ordering::Relaxed;
 
 const SCR_W: f32 = 1920.0;
 const SCR_H: f32 = 1080.0;
-
-extern "C" {
-    static mut pl_scrub_ns: i64;
-    static mut pl_dur_ns: i64;
-    static mut pl_paused: c_int;
-    static mut g_playpos_ns: i64; // volatile (frame-presented thread)
-}
 
 fn fmt_time(ns: i64, neg: bool) -> String {
     let t = if ns > 0 { ns / 1_000_000_000 } else { 0 };
@@ -68,7 +62,7 @@ fn draw_iconbtn(x: f32, y: f32, s: f32, which: i32, focused: bool) {
 }
 
 pub(crate) fn draw_hud() {
-    unsafe {
+    {
         // bottom scrim: transparent -> dark
         let clr = [0.0f32, 0.0, 0.0, 0.0];
         let drk = [0.0f32, 0.0, 0.0, 0.86];
@@ -97,9 +91,9 @@ pub(crate) fn draw_hud() {
         let sw = SCR_W - 2.0 * mx;
         let sy = SCR_H - 198.0;
         let sh = 8.0f32;
-        let scrub = addr_of!(pl_scrub_ns).read();
-        let dispos = if scrub >= 0 { scrub } else { std::ptr::read_volatile(addr_of!(g_playpos_ns)) };
-        let dur = addr_of!(pl_dur_ns).read();
+        let scrub = crate::player::TX.scrub_ns.load(Relaxed);
+        let dispos = if scrub >= 0 { scrub } else { crate::player::playpos_ns() };
+        let dur = crate::player::duration_ns();
         let mut frac = if dur > 0 { dispos as f64 / dur as f64 } else { 0.0 };
         if frac < 0.0 {
             frac = 0.0;
@@ -126,7 +120,7 @@ pub(crate) fn draw_hud() {
         let tr = CString::new(fmt_time(dur - dispos, true)).unwrap_or_default();
         let ty = sy + 26.0;
         let ew = draw_text(te.as_ptr(), hx - 12.0, ty, 24, white.as_ptr(), 0, 0);
-        if addr_of!(pl_paused).read() != 0 {
+        if crate::player::TX.paused.load(Relaxed) {
             let gx = hx - 12.0 + ew + 14.0;
             let gs = 20.0f32;
             let gyy = ty + 3.0;

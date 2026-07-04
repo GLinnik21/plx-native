@@ -42,6 +42,13 @@ pub(crate) unsafe fn aq_is_aborted(q: *const AuQueue) -> bool {
     !q.is_null() && (*q).abort != 0
 }
 
+/// crate-internal: read a popped node's fields (es, key, pts, len, data ptr) —
+/// the player engine's feed loop needs them without re-exposing the raw offsets.
+#[inline]
+pub(crate) unsafe fn au_fields(n: *mut AuNode) -> (c_int, c_int, i64, c_int, *const u8) {
+    ((*n).es, (*n).key, (*n).pts, (*n).len, node_data(n) as *const u8)
+}
+
 #[no_mangle]
 pub extern "C" fn aq_init(q: *mut AuQueue) {
     if q.is_null() { return; }

@@ -1,11 +1,12 @@
 //! plex_run — the Rust app core (was the body of src/main.c). Owns SDL init, the
-//! event loop, input decode, the per-frame tick, draw orchestration, app
-//! lifecycle, the buffer-feed pump orchestration, and the dev triggers. The C
-//! boot shim (main.c) sets up the log + crash tracer, then calls plex_run(); the
-//! only C subsystem left below us is playback.c (+ the starfish.c C++ seam).
+//! event loop, input decode, the per-frame tick, draw orchestration, app lifecycle,
+//! the buffer-feed pump orchestration, and the dev triggers. The C boot shim
+//! (main.c) sets up the log + crash tracer, then calls plex_run(). The only C left
+//! below us is the starfish.c C++/ACB seam (the engine itself is Rust: crate::player).
 #![allow(non_upper_case_globals)]
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::{addr_of, addr_of_mut};
+use std::sync::atomic::Ordering::Relaxed;
 
 // ---- constants (SDL 2.0.4 + GLES2 + app) ----
 const SDL_INIT_VIDEO: u32 = 0x20;
@@ -43,14 +44,12 @@ const SDLK_ESCAPE: u32 = 27;
 const SCR_W: c_int = 1920;
 const SCR_H: c_int = 1080;
 const COLS: c_int = 10;
-const ROWS: c_int = 5;
 const RESUME_REWIND_NS: i64 = 5_000_000_000;
 
 extern "C" {
     fn SDL_SetMainReady();
     fn SDL_SetHint(name: *const c_char, value: *const c_char) -> c_int;
     fn SDL_Init(flags: u32) -> c_int;
-    fn SDL_GetError() -> *const c_char;
     fn SDL_GetCurrentVideoDriver() -> *const c_char;
     fn SDL_GL_SetAttribute(attr: c_int, value: c_int) -> c_int;
     fn SDL_CreateWindow(title: *const c_char, x: c_int, y: c_int, w: c_int, h: c_int, flags: u32) -> *mut c_void;
@@ -65,22 +64,6 @@ extern "C" {
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: c_uint);
-    // ---- C playback subsystem (playback.c + the starfish.c seam) ----
-    fn acb_init() -> c_int;
-    fn start_bufferfeed() -> c_int;
-    fn stop_bufferfeed(keep_cues: c_int);
-    fn bufferfeed_pump(now: c_uint);
-    fn playback_pause();
-    fn playback_resume();
-    static mut bf_started: c_int;
-    static mut pl_paused: c_int;
-    static mut resumePausePending: c_int;
-    static mut pl_hud_until: c_uint;
-    static mut pl_scrub_ns: i64;
-    static mut pl_dur_ns: i64;
-    static mut g_seek_to_ns: i64; // volatile
-    static mut g_playpos_ns: i64; // volatile
-    static mut bf_frames: c_int;  // volatile
 }
 
 fn log(m: &str) {
@@ -109,28 +92,45 @@ fn g_snap() -> f32 { unsafe { addr_of!(crate::ui::home::snapTarget).read() } }
 #[inline]
 fn set_fr(v: c_int) { unsafe { addr_of_mut!(crate::ui::home::fr).write(v) } }
 #[inline]
-fn set_fc(v: c_int) { unsafe { addr_of_mut!(crate::ui::home::fc).write(v) } }
-#[inline]
 fn set_snap(v: f32) { unsafe { addr_of_mut!(crate::ui::home::snapTarget).write(v) } }
 
-// C shared transport globals
+// transport state — was the C playback globals; now crate::player (atomics)
 #[inline]
-unsafe fn v_playpos() -> i64 { std::ptr::read_volatile(addr_of!(g_playpos_ns)) }
+fn paused() -> bool { crate::player::TX.paused.load(Relaxed) }
 #[inline]
-unsafe fn v_frames() -> c_int { std::ptr::read_volatile(addr_of!(bf_frames)) }
+fn set_paused(v: bool) { crate::player::TX.paused.store(v, Relaxed) }
 #[inline]
-unsafe fn v_seek() -> i64 { std::ptr::read_volatile(addr_of!(g_seek_to_ns)) }
+fn hud_until() -> u32 { crate::player::TX.hud_until.load(Relaxed) }
 #[inline]
-unsafe fn set_v_seek(x: i64) { std::ptr::write_volatile(addr_of_mut!(g_seek_to_ns), x) }
+fn set_hud(x: u32) { crate::player::TX.hud_until.store(x, Relaxed) }
 #[inline]
-unsafe fn get(p: *const c_int) -> c_int { p.read() }
+fn scrub() -> i64 { crate::player::TX.scrub_ns.load(Relaxed) }
 #[inline]
-unsafe fn getu(p: *const c_uint) -> c_uint { p.read() }
+fn set_scrub(x: i64) { crate::player::TX.scrub_ns.store(x, Relaxed) }
 #[inline]
-unsafe fn geti64(p: *const i64) -> i64 { p.read() }
+fn resume_pend() -> bool { crate::player::TX.resume_pend.load(Relaxed) }
+#[inline]
+fn set_resume_pend(v: bool) { crate::player::TX.resume_pend.store(v, Relaxed) }
+#[inline]
+fn dur() -> i64 { crate::player::duration_ns() }
+#[inline]
+fn playpos() -> i64 { crate::player::playpos_ns() }
+#[inline]
+fn frames() -> i32 { crate::player::frames() }
+#[inline]
+fn seek_pending() -> i64 { crate::player::seek_pending() }
+#[inline]
+fn request_seek(x: i64) { crate::player::request_seek(x) }
+#[inline]
+fn is_started() -> bool { crate::player::is_started() }
 
 #[no_mangle]
-pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: *const c_char) -> c_int {
+pub extern "C" fn plex_run(
+    pms_host: *const c_char,
+    pms_port: c_int,
+    pms_token: *const c_char,
+    demo_url: *const c_char,
+) -> c_int {
     unsafe {
         SDL_SetMainReady();
         SDL_SetHint(c"SDL_VIDEO_ALLOW_SCREENSAVER".as_ptr(), c"0".as_ptr());
@@ -186,15 +186,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
             &std::ffi::CStr::from_ptr(pms_host).to_string_lossy(),
             pms_port,
             &std::ffi::CStr::from_ptr(pms_token).to_string_lossy(),
+            &std::ffi::CStr::from_ptr(demo_url).to_string_lossy(),
         );
 
         crate::ui::home::home_init();
-        acb_init();
+        crate::player::acb_init();
 
         let mut last_input = SDL_GetTicks();
         let t0 = SDL_GetTicks();
         let mut fps_t = t0;
-        let mut frames = 0i32;
+        let mut frames_ct = 0i32;
         let mut fps_shown = 0i32;
         let mut running = true;
 
@@ -240,20 +241,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                     // WILL/DID ENTER BACKGROUND
                     log(&format!("LIFECYCLE: background (playing={})", playing as i32));
                     if playing && !bg_was_playing {
-                        bg_pos = v_playpos();
+                        bg_pos = playpos();
                         bg_was_playing = true;
-                        bg_was_paused = get(addr_of!(pl_paused)) != 0;
+                        bg_was_paused = paused();
                         scrub_dir = 0;
                         ptr_drag = false;
-                        pl_scrub_ns = -1;
-                        stop_bufferfeed(1);
+                        set_scrub(-1);
+                        crate::player::stop_bufferfeed(true);
                         playing = false;
                     }
                 } else if et == 0x105 || et == 0x106 {
                     // WILL/DID ENTER FOREGROUND
                     log(&format!("LIFECYCLE: foreground (wasPlaying={})", bg_was_playing as i32));
                     if bg_was_playing && et == 0x106 {
-                        playing = start_bufferfeed() != 0;
+                        playing = crate::player::start_bufferfeed();
                         if playing {
                             let mut rt = bg_pos;
                             if !bg_was_paused {
@@ -262,9 +263,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                                     rt = 0;
                                 }
                             }
-                            set_v_seek(rt);
-                            pl_hud_until = SDL_GetTicks() + 4500;
-                            resumePausePending = bg_was_paused as c_int;
+                            request_seek(rt);
+                            set_hud(SDL_GetTicks() + 4500);
+                            set_resume_pend(bg_was_paused);
                         }
                         bg_was_playing = false;
                     }
@@ -280,8 +281,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                             held_sym = 0;
                         }
                         if playing && scrub_dir != 0 && isnav {
-                            set_v_seek(pl_scrub_ns);
-                            pl_scrub_ns = -1;
+                            request_seek(scrub());
+                            set_scrub(-1);
                             scrub_dir = 0;
                             scrub_t = 0;
                         }
@@ -320,80 +321,82 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                         if !playing {
                             let m = if g_snap() < 0.5 { crate::ui::home::movie_at(0, 0) } else { crate::ui::home::movie_at(g_fr(), g_fc()) };
                             crate::route::play_movie(m);
-                            playing = start_bufferfeed() != 0;
-                            pl_paused = 0;
-                            pl_hud_until = last_input + 4500;
+                            playing = crate::player::start_bufferfeed();
+                            set_paused(false);
+                            set_hud(last_input + 4500);
                             if !dpad_mode {
                                 SDL_webOSCursorVisibility(0);
                                 dpad_mode = true;
                             }
                         } else {
-                            pl_paused = if get(addr_of!(pl_paused)) != 0 { 0 } else { 1 };
-                            if get(addr_of!(pl_paused)) != 0 {
-                                playback_pause();
+                            let np = !paused();
+                            set_paused(np);
+                            if np {
+                                crate::player::pause();
                             } else {
-                                playback_resume();
+                                crate::player::resume();
                             }
-                            pl_hud_until = last_input + 4500;
+                            set_hud(last_input + 4500);
                         }
                     } else if wcode == 72 || sym == 415 || wcode == 415 {
                         // PAUSE
-                        if playing && get(addr_of!(pl_paused)) == 0 {
-                            pl_paused = 1;
-                            playback_pause();
+                        if playing && !paused() {
+                            set_paused(true);
+                            crate::player::pause();
                         }
-                        pl_hud_until = last_input + 4500;
+                        set_hud(last_input + 4500);
                     } else if wcode == 450 || sym == 19 || wcode == 19 || sym == 402 || wcode == 402 {
                         // PLAY
                         if !playing {
-                            playing = start_bufferfeed() != 0;
-                            pl_paused = 0;
+                            playing = crate::player::start_bufferfeed();
+                            set_paused(false);
                             if !dpad_mode {
                                 SDL_webOSCursorVisibility(0);
                                 dpad_mode = true;
                             }
-                        } else if get(addr_of!(pl_paused)) != 0 {
-                            pl_paused = 0;
-                            playback_resume();
+                        } else if paused() {
+                            set_paused(false);
+                            crate::player::resume();
                         }
-                        pl_hud_until = last_input + 4500;
+                        set_hud(last_input + 4500);
                     } else if playing && (sym == 413 || wcode == 413) {
                         // Stop
-                        stop_bufferfeed(0);
+                        crate::player::stop_bufferfeed(false);
                         playing = false;
                     } else if playing
                         && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN
                             || sym == 417 || wcode == 417 || sym == 412 || wcode == 412)
                     {
-                        pl_hud_until = last_input + 4500;
+                        set_hud(last_input + 4500);
                         if !cur_hidden {
                             SDL_webOSCursorVisibility(0);
                             cur_hidden = true;
                         }
                         if ptr_drag {
                             ptr_drag = false;
-                            pl_scrub_ns = -1;
+                            set_scrub(-1);
                         }
                         let fwd = sym == SDLK_RIGHT || sym == 417 || wcode == 417;
                         let back = sym == SDLK_LEFT || sym == 412 || wcode == 412;
-                        if (fwd || back) && geti64(addr_of!(pl_dur_ns)) > 0 {
-                            if geti64(addr_of!(pl_scrub_ns)) < 0 {
-                                pl_scrub_ns = v_playpos();
+                        if (fwd || back) && dur() > 0 {
+                            if scrub() < 0 {
+                                set_scrub(playpos());
                             }
-                            pl_scrub_ns += if fwd { 10i64 } else { -10i64 } * 1_000_000_000;
-                            let cap = geti64(addr_of!(pl_dur_ns)) - 3 * 1_000_000_000;
-                            if geti64(addr_of!(pl_scrub_ns)) < 0 {
-                                pl_scrub_ns = 0;
+                            let mut s = scrub() + (if fwd { 10i64 } else { -10i64 }) * 1_000_000_000;
+                            let cap = dur() - 3 * 1_000_000_000;
+                            if s < 0 {
+                                s = 0;
                             }
-                            if cap > 0 && geti64(addr_of!(pl_scrub_ns)) > cap {
-                                pl_scrub_ns = cap;
+                            if cap > 0 && s > cap {
+                                s = cap;
                             }
+                            set_scrub(s);
                             scrub_dir = if fwd { 1 } else { -1 };
                             scrub_last = last_input;
                         }
                     } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 {
                         if playing {
-                            stop_bufferfeed(0);
+                            crate::player::stop_bufferfeed(false);
                             playing = false;
                         } else if g_snap() > 0.5 {
                             set_snap(0.0);
@@ -413,8 +416,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                     prev_mx = mx;
                     prev_my = my;
                     if playing {
-                        pl_hud_until = last_input + 4500;
-                        if ptr_drag && geti64(addr_of!(pl_dur_ns)) > 0 {
+                        set_hud(last_input + 4500);
+                        if ptr_drag && dur() > 0 {
                             let sbx = 90.0f32;
                             let sbw = SCR_W as f32 - 180.0;
                             let mut frac = ((mx - sbx) / sbw) as f64;
@@ -424,7 +427,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                             if frac > 1.0 {
                                 frac = 1.0;
                             }
-                            pl_scrub_ns = (frac * geti64(addr_of!(pl_dur_ns)) as f64) as i64;
+                            set_scrub((frac * dur() as f64) as i64);
                             scrub_last = last_input;
                         }
                         continue;
@@ -443,7 +446,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                         let cy = rd_i32(&ev, 24) as f32;
                         let sbx = 90.0f32;
                         let sbw = SCR_W as f32 - 180.0;
-                        let on_scrub = geti64(addr_of!(pl_dur_ns)) > 0
+                        let on_scrub = dur() > 0
                             && cy > SCR_H as f32 - 270.0
                             && cy < SCR_H as f32 - 110.0
                             && cx >= sbx
@@ -456,33 +459,34 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                             if frac > 1.0 {
                                 frac = 1.0;
                             }
-                            let mut t = (frac * geti64(addr_of!(pl_dur_ns)) as f64) as i64;
-                            let cap = geti64(addr_of!(pl_dur_ns)) - 3 * 1_000_000_000;
+                            let mut t = (frac * dur() as f64) as i64;
+                            let cap = dur() - 3 * 1_000_000_000;
                             if cap > 0 && t > cap {
                                 t = cap;
                             }
-                            pl_scrub_ns = t;
+                            set_scrub(t);
                             ptr_drag = true;
                             scrub_last = last_input;
                         } else {
-                            pl_paused = if get(addr_of!(pl_paused)) != 0 { 0 } else { 1 };
-                            if get(addr_of!(pl_paused)) != 0 {
-                                playback_pause();
+                            let np = !paused();
+                            set_paused(np);
+                            if np {
+                                crate::player::pause();
                             } else {
-                                playback_resume();
+                                crate::player::resume();
                             }
                         }
-                        pl_hud_until = last_input + 4500;
+                        set_hud(last_input + 4500);
                     }
                 } else if et == SDL_MOUSEBUTTONUP {
                     last_input = SDL_GetTicks();
                     if ptr_drag {
                         ptr_drag = false;
-                        if geti64(addr_of!(pl_scrub_ns)) >= 0 {
-                            set_v_seek(pl_scrub_ns);
-                            pl_scrub_ns = -1;
+                        if scrub() >= 0 {
+                            request_seek(scrub());
+                            set_scrub(-1);
                         }
-                        pl_hud_until = last_input + 4500;
+                        set_hud(last_input + 4500);
                     }
                 } else if et == SDL_MOUSEWHEEL {
                     let wnow = SDL_GetTicks();
@@ -502,9 +506,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                     let pidx = std::fs::read_to_string("/tmp/poc-playidx").ok()
                         .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
                     crate::route::play_movie(crate::ui::home::movie_at(pidx / COLS, pidx % COLS));
-                    playing = start_bufferfeed() != 0;
-                    pl_paused = 0;
-                    pl_hud_until = now + 60000;
+                    playing = crate::player::start_bufferfeed();
+                    set_paused(false);
+                    set_hud(now + 60000);
                 }
             }
             if !grid_tried && now.wrapping_sub(t0) > 400 {
@@ -514,14 +518,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                     set_fr(0);
                 }
             }
-            if !seek_tried && playing && geti64(addr_of!(pl_dur_ns)) > 0 && now.wrapping_sub(t0) > 12000 {
+            if !seek_tried && playing && dur() > 0 && now.wrapping_sub(t0) > 12000 {
                 seek_tried = true;
                 if std::path::Path::new("/tmp/poc-autoseek").exists() {
-                    set_v_seek(140 * 1_000_000_000);
+                    request_seek(140 * 1_000_000_000);
                 }
             }
-            if get(addr_of!(bf_started)) != 0 {
-                bufferfeed_pump(now);
+            if is_started() {
+                crate::player::pump(now);
             }
             // client-side long-press repeat (grid nav)
             if held_sym != 0 && now.wrapping_sub(held_since) > 400 && now.wrapping_sub(last_rep) > 130 {
@@ -531,10 +535,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                 }
             }
             // LEFT/RIGHT scrub advance
-            if geti64(addr_of!(pl_scrub_ns)) >= 0 && scrub_dir != 0 && !ptr_drag {
+            if scrub() >= 0 && scrub_dir != 0 && !ptr_drag {
                 if now.wrapping_sub(scrub_last) > 1200 {
-                    set_v_seek(pl_scrub_ns);
-                    pl_scrub_ns = -1;
+                    request_seek(scrub());
+                    set_scrub(-1);
                     scrub_dir = 0;
                     scrub_t = 0;
                 } else {
@@ -542,15 +546,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                     if sdt > 0.1 {
                         sdt = 0.1;
                     }
-                    pl_scrub_ns += (scrub_dir as f64 * 35.0 * sdt as f64 * 1e9) as i64;
-                    let cap = geti64(addr_of!(pl_dur_ns)) - 3 * 1_000_000_000;
-                    if geti64(addr_of!(pl_scrub_ns)) < 0 {
-                        pl_scrub_ns = 0;
+                    let mut s = scrub() + (scrub_dir as f64 * 35.0 * sdt as f64 * 1e9) as i64;
+                    let cap = dur() - 3 * 1_000_000_000;
+                    if s < 0 {
+                        s = 0;
                     }
-                    if cap > 0 && geti64(addr_of!(pl_scrub_ns)) > cap {
-                        pl_scrub_ns = cap;
+                    if cap > 0 && s > cap {
+                        s = cap;
                     }
-                    pl_hud_until = now + 4500;
+                    set_scrub(s);
+                    set_hud(now + 4500);
                     scrub_t = now;
                 }
             }
@@ -560,12 +565,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                 cur_hidden = true;
             }
             // re-pause after a resume once the seek's frame is on screen
-            if get(addr_of!(resumePausePending)) != 0 && playing && get(addr_of!(pl_paused)) == 0
-                && v_seek() < 0 && v_frames() >= 3 && v_playpos() + 15 * 1_000_000_000 >= bg_pos
+            if resume_pend() && playing && !paused()
+                && seek_pending() < 0 && frames() >= 3 && playpos() + 15 * 1_000_000_000 >= bg_pos
             {
-                pl_paused = 1;
-                playback_pause();
-                resumePausePending = 0;
+                set_paused(true);
+                crate::player::pause();
+                set_resume_pend(false);
             }
 
             let dt = {
@@ -585,13 +590,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                 crate::system::clear_opaque_region();
                 glClearColor(0.0, 0.0, 0.0, 0.0);
                 glClear(GL_COLOR_BUFFER_BIT);
-                if now < getu(addr_of!(pl_hud_until)) || get(addr_of!(pl_paused)) != 0 {
+                if now < hud_until() || paused() {
                     crate::ui::player_hud::draw_hud();
                 }
                 SDL_GL_SwapWindow(win);
-                frames += 1;
+                frames_ct += 1;
                 if now.wrapping_sub(fps_t) >= 1000 {
-                    frames = 0;
+                    frames_ct = 0;
                     fps_t = now;
                 }
                 continue;
@@ -600,16 +605,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
             let fps_col = [0.4f32, 1.0, 0.55, 1.0];
             crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
             SDL_GL_SwapWindow(win);
-            frames += 1;
+            frames_ct += 1;
             if now.wrapping_sub(fps_t) >= 1000 {
-                fps_shown = (frames as f32 * 1000.0 / now.wrapping_sub(fps_t) as f32 + 0.5) as i32;
-                frames = 0;
+                fps_shown = (frames_ct as f32 * 1000.0 / now.wrapping_sub(fps_t) as f32 + 0.5) as i32;
+                frames_ct = 0;
                 fps_t = now;
             }
         }
 
-        if get(addr_of!(bf_started)) != 0 {
-            stop_bufferfeed(0);
+        if is_started() {
+            crate::player::stop_bufferfeed(false);
         }
         crate::posters::posters_shutdown();
         SDL_Quit();

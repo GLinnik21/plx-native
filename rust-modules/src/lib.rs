@@ -7,6 +7,7 @@ mod aq;
 mod gfx;
 mod img;
 mod mkv;
+mod player; // buffer-feed video engine (was playback.c) — step 5
 mod pms;
 mod posters;
 mod route; // play_movie route selection (direct-play vs transcode) — step 3

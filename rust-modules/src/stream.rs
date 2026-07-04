@@ -23,6 +23,12 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+/// crate-internal accessors (fields are private) — the player engine reads these.
+#[inline]
+pub(crate) fn hs_content_length(hs: *const HttpStream) -> i64 { unsafe { (*hs).content_length } }
+#[inline]
+pub(crate) fn hs_status(hs: *const HttpStream) -> c_int { unsafe { (*hs).status } }
+
 /// one raw body byte (buffered first, then socket) — for chunk framing
 unsafe fn hs_getb(hs: &mut HttpStream) -> Option<u8> {
     if (hs.bpos as usize) < (hs.blen as usize) {
