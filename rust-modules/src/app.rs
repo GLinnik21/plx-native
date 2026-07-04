@@ -67,7 +67,6 @@ extern "C" {
     fn glClear(mask: c_uint);
     // ---- C playback subsystem (playback.c + the starfish.c seam) ----
     fn acb_init() -> c_int;
-    fn play_movie(m: *mut crate::pms::PmsMovie);
     fn start_bufferfeed() -> c_int;
     fn stop_bufferfeed(keep_cues: c_int);
     fn bufferfeed_pump(now: c_uint);
@@ -184,6 +183,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
         let nmov = crate::pms::pms_fetch_movies(pms_host, pms_port, pms_token, 1);
         log(&format!("pms: nmovies={nmov}"));
         crate::posters::posters_init(pms_host, pms_port, pms_token);
+        crate::route::set_config(
+            &std::ffi::CStr::from_ptr(pms_host).to_string_lossy(),
+            pms_port,
+            &std::ffi::CStr::from_ptr(pms_token).to_string_lossy(),
+        );
 
         crate::ui::home::home_init();
         acb_init();
@@ -316,7 +320,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                     } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
                         if !playing {
                             let m = if g_snap() < 0.5 { crate::ui::home::movie_at(0, 0) } else { crate::ui::home::movie_at(g_fr(), g_fc()) };
-                            play_movie(m);
+                            crate::route::play_movie(m);
                             playing = start_bufferfeed() != 0;
                             pl_paused = 0;
                             pl_hud_until = last_input + 4500;
@@ -498,7 +502,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int, pms_token: 
                 if std::path::Path::new("/tmp/poc-autoplay").exists() {
                     let pidx = std::fs::read_to_string("/tmp/poc-playidx").ok()
                         .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
-                    play_movie(crate::ui::home::movie_at(pidx / COLS, pidx % COLS));
+                    crate::route::play_movie(crate::ui::home::movie_at(pidx / COLS, pidx % COLS));
                     playing = start_bufferfeed() != 0;
                     pl_paused = 0;
                     pl_hud_until = now + 60000;
