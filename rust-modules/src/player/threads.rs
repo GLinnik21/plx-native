@@ -61,8 +61,10 @@ pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr
     // unwrap_or_default: an interior NUL (only reachable via a malformed /tmp/poc-url)
     // yields an empty CString -> http_open fails gracefully, matching the C's degradation
     // (never a thread panic).
-    let host_c = std::ffi::CString::new(host).unwrap_or_default();
-    let path_c = std::ffi::CString::new(path).unwrap_or_default();
+    // mut: a transcode seek re-points these at a new start.mkv?&offset= URL
+    let mut host_c = std::ffi::CString::new(host).unwrap_or_default();
+    let mut path_c = std::ffi::CString::new(path).unwrap_or_default();
+    let mut port = port;
     let hs_p = hs.0;
     let aq_p = aq.0;
     super::log(&format!("stream: host={} port={port}", host_c.to_string_lossy()));
@@ -112,8 +114,19 @@ pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr
         }
         let sb = SHARED.seek_byte.swap(-1, Ordering::Acquire);
         if sb >= 0 {
-            start = sb;
-            super::log(&format!("stream: seek → byte {start}"));
+            // a TRANSCODE seek re-points us at a fresh start.mkv?&offset= URL (opened from
+            // byte 0); a direct-play seek keeps the same URL + a byte Range.
+            if let Some(nu) = SHARED.next_url.lock().unwrap().take() {
+                let (h, p, pa) = super::engine::parse_stream_url(&nu);
+                host_c = std::ffi::CString::new(h).unwrap_or_default();
+                path_c = std::ffi::CString::new(pa).unwrap_or_default();
+                port = p;
+                start = 0;
+                super::log("stream: seek → new transcode url (&offset)");
+            } else {
+                start = sb;
+                super::log(&format!("stream: seek → byte {start}"));
+            }
             continue;
         }
         break; // real EOF, no pending seek

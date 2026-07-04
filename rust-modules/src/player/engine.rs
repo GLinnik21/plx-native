@@ -97,7 +97,7 @@ fn bf_split(data: &[u8]) -> Vec<usize> {
 }
 
 /// parse http://HOST[:PORT]/PATH?query -> (host, port, path)
-fn parse_stream_url(url: &str) -> (String, c_int, String) {
+pub(crate) fn parse_stream_url(url: &str) -> (String, c_int, String) {
     let s = url.strip_prefix("http://").unwrap_or(url);
     let hostend = s.find(|c| c == ':' || c == '/').unwrap_or(s.len());
     let host = s[..hostend].to_string();
@@ -347,6 +347,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
             if es == 1 && key != 0 {
                 SHARED.pts_shift.store(-pts, Ordering::Relaxed);
                 eng.rebase_pending = false;
+                log(&format!("rebase: first post-seek keyframe pts={pts} -> pts_shift={}", -pts));
             } else {
                 eng.pending = None; // drop pre-keyframe AUs
                 continue;
