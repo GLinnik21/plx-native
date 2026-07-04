@@ -7,28 +7,65 @@ use crate::pms::PmsMovie;
 use std::os::raw::{c_char, c_int};
 use std::ptr::{addr_of, addr_of_mut};
 
-// stream URL + transcode session + HUD strings, read by the C playback engine
-#[no_mangle]
-pub static mut g_url: [c_char; 1024] = [0; 1024];
-#[no_mangle]
-pub static mut g_transcode_session: [c_char; 64] = [0; 64];
-#[no_mangle]
-pub static mut g_title: [c_char; 128] = [0; 128];
-#[no_mangle]
-pub static mut g_ctxline: [c_char; 96] = [0; 96];
+// stream URL + transcode session — private backing storage; the Rust player engine
+// reads them via the accessors below (nothing C references them since step 5).
+static mut g_url: [c_char; 1024] = [0; 1024];
+static mut g_transcode_session: [c_char; 64] = [0; 64];
+// HUD strings — crate-visible so ui::player_hud can read them.
+pub(crate) static mut g_title: [c_char; 128] = [0; 128];
+pub(crate) static mut g_ctxline: [c_char; 96] = [0; 96];
 
 struct Cfg {
     host: String,
     port: c_int,
     token: String,
+    demo_url: String,
 }
 static mut CFG: Option<Cfg> = None;
 
 /// Called once at startup with the PMS config (from the C boot shim via plex_run).
-pub(crate) fn set_config(host: &str, port: c_int, token: &str) {
+pub(crate) fn set_config(host: &str, port: c_int, token: &str, demo_url: &str) {
     unsafe {
-        *addr_of_mut!(CFG) = Some(Cfg { host: host.to_owned(), port, token: token.to_owned() });
+        *addr_of_mut!(CFG) =
+            Some(Cfg { host: host.to_owned(), port, token: token.to_owned(), demo_url: demo_url.to_owned() });
     }
+}
+
+/// read a C-string field (the [c_char;N] backing buffers) as an owned String.
+unsafe fn get_c(src: *const c_char, cap: usize) -> String {
+    cfield(std::slice::from_raw_parts(src as *const u8, cap))
+}
+
+// ---- engine-facing accessors (the player module reads/owns the stream URL) ----
+pub(crate) fn url() -> String {
+    unsafe { get_c(addr_of!(g_url) as *const c_char, 1024) }
+}
+pub(crate) fn set_url(s: &str) {
+    unsafe { set_c(addr_of_mut!(g_url) as *mut c_char, 1024, s) }
+}
+pub(crate) fn clear_url() {
+    unsafe { (*addr_of_mut!(g_url))[0] = 0 }
+}
+pub(crate) fn transcode_session() -> String {
+    unsafe { get_c(addr_of!(g_transcode_session) as *const c_char, 64) }
+}
+pub(crate) fn demo_url() -> String {
+    unsafe { (*addr_of!(CFG)).as_ref().map(|c| c.demo_url.clone()).unwrap_or_default() }
+}
+/// free the server-side transcode encoder if this playback was a transcode.
+pub(crate) fn stop_transcode() {
+    let sess = transcode_session();
+    if sess.is_empty() {
+        return;
+    }
+    if let Some(cfg) = unsafe { (*addr_of!(CFG)).as_ref() } {
+        let sp = format!(
+            "/video/:/transcode/universal/stop?session={sess}&X-Plex-Client-Identifier={sess}&X-Plex-Token={}",
+            cfg.token
+        );
+        let _ = crate::stream::http_get(&cfg.host, cfg.port, &sp, None);
+    }
+    unsafe { (*addr_of_mut!(g_transcode_session))[0] = 0 };
 }
 
 fn cfield(b: &[u8]) -> String {

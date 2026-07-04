@@ -53,7 +53,7 @@ src/%.o: src/%.c $(wildcard src/*.h)
 #  - -Z build-std: rebuilds std itself with these flags (precompiled std shipped
 #    the CP15 barriers), so needs the nightly toolchain + rust-src.
 RUSTFLAGS_TV = -C target-cpu=cortex-a53 -C target-feature=-neon
-$(RUST_LIB): $(wildcard rust-modules/src/*.rs rust-modules/src/ui/*.rs) rust-modules/Cargo.toml
+$(RUST_LIB): $(wildcard rust-modules/src/*.rs rust-modules/src/ui/*.rs rust-modules/src/player/*.rs) rust-modules/Cargo.toml
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" RUSTFLAGS="$(RUSTFLAGS_TV)" \
 	  cargo +nightly zigbuild -Z build-std=std,panic_unwind --release --target $(RUST_TARGET)
 

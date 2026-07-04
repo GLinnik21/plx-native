@@ -8,40 +8,41 @@ use crate::aq::{aq_is_aborted, aq_push, AuQueue};
 use std::os::raw::{c_int, c_long, c_uint, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-type MkvByteReader = Option<extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int>;
-type MkvCueCb = Option<extern "C" fn(*mut c_void, i64, i64)>;
+pub(crate) type MkvByteReader = Option<extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int>;
+pub(crate) type MkvCueCb = Option<extern "C" fn(*mut c_void, i64, i64)>;
 
-// Layout MUST match `mkv_ctx` in src/mkv.h.
+// Layout MUST match `mkv_ctx` in src/mkv.h. Fields pub(crate) so the Rust player
+// engine (the old playback.c consumer) can configure the ctx + read its outputs.
 #[repr(C)]
 pub struct MkvCtx {
-    read: MkvByteReader,
-    ud: *mut c_void,
-    pos: i64,
-    eof: c_int,
-    tscale: i64,
-    duration_ns: i64,
-    segment_pos: i64,
-    cues_pos: i64,
-    header_only: c_int,
-    cue_cb: MkvCueCb,
-    cue_ud: *mut c_void,
-    vtrack: c_int,
-    is_h264: c_int,
-    nal_len_size: c_int,
-    sps_pps: [u8; 1024],
-    sps_pps_len: c_int,
-    atrack: c_int,
-    has_audio: c_int,
-    acodec: [u8; 8],
-    audio_frame_ns: i64,
-    q: *mut AuQueue,
-    scratch: *mut u8,
-    scratch_cap: c_int,
-    naus: c_long,
-    nkey: c_long,
-    naus_a: c_long,
-    debug: c_int,
-    laced_seen: c_int,
+    pub(crate) read: MkvByteReader,
+    pub(crate) ud: *mut c_void,
+    pub(crate) pos: i64,
+    pub(crate) eof: c_int,
+    pub(crate) tscale: i64,
+    pub(crate) duration_ns: i64,
+    pub(crate) segment_pos: i64,
+    pub(crate) cues_pos: i64,
+    pub(crate) header_only: c_int,
+    pub(crate) cue_cb: MkvCueCb,
+    pub(crate) cue_ud: *mut c_void,
+    pub(crate) vtrack: c_int,
+    pub(crate) is_h264: c_int,
+    pub(crate) nal_len_size: c_int,
+    pub(crate) sps_pps: [u8; 1024],
+    pub(crate) sps_pps_len: c_int,
+    pub(crate) atrack: c_int,
+    pub(crate) has_audio: c_int,
+    pub(crate) acodec: [u8; 8],
+    pub(crate) audio_frame_ns: i64,
+    pub(crate) q: *mut AuQueue,
+    pub(crate) scratch: *mut u8,
+    pub(crate) scratch_cap: c_int,
+    pub(crate) naus: c_long,
+    pub(crate) nkey: c_long,
+    pub(crate) naus_a: c_long,
+    pub(crate) debug: c_int,
+    pub(crate) laced_seen: c_int,
 }
 
 // ---- byte source ----
