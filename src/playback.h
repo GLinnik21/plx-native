@@ -11,7 +11,7 @@ int  acb_init(void);
 int  start_bufferfeed(void);
 void stop_bufferfeed(int keep_cues);
 void bufferfeed_pump(unsigned now);
-void draw_hud(void);
+/* draw_hud moved to the Rust ui::player_hud module */
 void playback_pause(void);    /* guards g_smpReady then SMP_Pause */
 void playback_resume(void);   /* guards g_smpReady then SMP_Play */
 
