@@ -1,8 +1,7 @@
-//! Rust port of src/text.c — SDL2_ttf text rendering: font cache + glyph-texture
-//! LRU + draw_text. Same C ABI (text.h). Main-thread only (all GL), so the caches
-//! are plain statics (no locking). Calls gfx.c's gfx_compile/gfx_use_base (still C).
-//! This is FFI-glue: mostly GL/TTF calls — ported for a uniform Rust codebase and
-//! as the eventual UI framework's text backend, not for a memory-safety win.
+//! SDL2_ttf text rendering (was src/text.c): font cache + glyph-texture LRU +
+//! draw_text. Main-thread only (all GL), so the caches are plain statics (no
+//! locking). Uses gfx's gfx_compile/gfx_use_base (crate path). Mostly GL/TTF FFI —
+//! the retui text backend.
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::addr_of_mut;
@@ -63,9 +62,6 @@ extern "C" {
     fn TTF_RenderUTF8_Blended(font: *mut TtfFont, text: *const c_char, fg: SdlColor) -> *mut SdlSurface;
     fn TTF_SetFontStyle(font: *mut TtfFont, style: c_int);
     fn SDL_FreeSurface(surf: *mut SdlSurface);
-    // gfx.c (still C)
-    fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint;
-    fn gfx_use_base();
     // GLES2
     fn glCreateProgram() -> c_uint;
     fn glAttachShader(program: c_uint, shader: c_uint);
@@ -141,16 +137,15 @@ unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     arr[sz]
 }
 
-#[no_mangle]
-pub extern "C" fn init_text() {
+pub(crate) fn init_text() {
     unsafe {
         if TTF_Init() != 0 {
             log("TTF_Init failed");
             return;
         }
         TPROG = glCreateProgram();
-        glAttachShader(TPROG, gfx_compile(GL_VERTEX_SHADER, VS_TEXT.as_ptr()));
-        glAttachShader(TPROG, gfx_compile(GL_FRAGMENT_SHADER, FS_TEXT.as_ptr()));
+        glAttachShader(TPROG, crate::gfx::gfx_compile(GL_VERTEX_SHADER, VS_TEXT.as_ptr()));
+        glAttachShader(TPROG, crate::gfx::gfx_compile(GL_FRAGMENT_SHADER, FS_TEXT.as_ptr()));
         glBindAttribLocation(TPROG, 0, c"a_pos".as_ptr());
         glLinkProgram(TPROG);
         let mut ok: c_int = 0;
@@ -166,7 +161,7 @@ pub extern "C" fn init_text() {
         if !font_at(28, 0).is_null() {
             TEXT_OK = 1;
         }
-        gfx_use_base();
+        crate::gfx::gfx_use_base();
         log(&format!("init_text ok={}", TEXT_OK));
     }
 }
@@ -242,8 +237,7 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
 }
 
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
-#[no_mangle]
-pub extern "C" fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
+pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
     unsafe {
         if TEXT_OK == 0 || s.is_null() {
             return 0.0;
@@ -270,7 +264,7 @@ pub extern "C" fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *c
         glUniform1i(TL_TEX, 0);
         glUniform4f(TL_RECT, dx, y, w as f32, h as f32);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        gfx_use_base(); // restore rect program for subsequent draw_rect
+        crate::gfx::gfx_use_base(); // restore rect program for subsequent draw_rect
         w as f32
     }
 }

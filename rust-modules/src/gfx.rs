@@ -1,8 +1,7 @@
-//! Rust port of src/gfx.c — GLES2 rendering foundation (gfx.h). Same C ABI.
-//! Three shader programs (SDF rrect/tri/focus, 4-corner ambient gradient, textured
-//! RGBA), the draw primitives, hsv/spring helpers, and the seven-segment FPS
-//! digits. FFI-glue (all GLES2 calls); state is main-thread statics. gfx_compile/
-//! gfx_use_base are the symbols text.rs links against.
+//! GLES2 rendering foundation (was src/gfx.c). Three shader programs (SDF
+//! rrect/tri/focus, 4-corner ambient gradient, textured RGBA), the draw primitives,
+//! the spring helper, and the seven-segment FPS digits. All GLES2 calls; state is
+//! main-thread statics. gfx_compile/gfx_use_base are also used by text.rs (crate path).
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
@@ -101,8 +100,7 @@ static mut IL_SIZE: c_int = 0;
 static mut IL_RADIUS: c_int = 0;
 static mut IL_TEX: c_int = 0;
 
-#[no_mangle]
-pub extern "C" fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
+pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
     unsafe {
         let s = glCreateShader(ty);
         glShaderSource(s, 1, &src, std::ptr::null());
@@ -120,15 +118,13 @@ pub extern "C" fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn gfx_use_base() {
+pub(crate) fn gfx_use_base() {
     unsafe { glUseProgram(PROG) };
 }
 
 static QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
-#[no_mangle]
-pub extern "C" fn init_gl() {
+pub(crate) fn init_gl() {
     unsafe {
         PROG = glCreateProgram();
         glAttachShader(PROG, gfx_compile(GL_VERTEX_SHADER, VS_SRC.as_ptr()));
@@ -179,8 +175,7 @@ pub extern "C" fn init_gl() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, top: *const f32, bot: *const f32, focus: f32) {
+pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, top: *const f32, bot: *const f32, focus: f32) {
     unsafe {
         glUniform4f(LOC_RECT, x, y, w, h);
         glUniform2f(LOC_SIZE, w, h);
@@ -195,8 +190,7 @@ pub extern "C" fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f3
     }
 }
 
-#[no_mangle]
-pub extern "C" fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
+pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
     unsafe {
         let c3 = |p: *const f32, i: usize| *p.add(i);
         glUseProgram(APROG);
@@ -211,8 +205,7 @@ pub extern "C" fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *co
     }
 }
 
-#[no_mangle]
-pub extern "C" fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
+pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
     unsafe {
         glUniform4f(LOC_RECT, x, y, w, h);
         glUniform2f(LOC_SIZE, w, h);
@@ -227,8 +220,7 @@ pub extern "C" fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: 
     }
 }
 
-#[no_mangle]
-pub extern "C" fn draw_ptri(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
+pub(crate) fn draw_ptri(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
     unsafe {
         glUniform4f(LOC_RECT, x, y, w, h);
         glUniform2f(LOC_SIZE, w, h);
@@ -240,46 +232,11 @@ pub extern "C" fn draw_ptri(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn hsv(h: f32, s: f32, v: f32, out: *mut f32) {
-    let c = v * s;
-    let hp = (h % 360.0) / 60.0;
-    let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
-    let (mut r, mut g, mut b) = (0.0f32, 0.0f32, 0.0f32);
-    if hp < 1.0 {
-        r = c;
-        g = x;
-    } else if hp < 2.0 {
-        r = x;
-        g = c;
-    } else if hp < 3.0 {
-        g = c;
-        b = x;
-    } else if hp < 4.0 {
-        g = x;
-        b = c;
-    } else if hp < 5.0 {
-        r = x;
-        b = c;
-    } else {
-        r = c;
-        b = x;
-    }
-    let m = v - c;
-    unsafe {
-        *out.add(0) = r + m;
-        *out.add(1) = g + m;
-        *out.add(2) = b + m;
-        *out.add(3) = 1.0;
-    }
-}
-
 static mut SPRING_LASTK: f32 = -1.0;
 static mut SPRING_LASTC: f32 = 0.0;
 
 /// critically-damped spring step
-#[no_mangle]
-pub extern "C" fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
+pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
     unsafe {
         if k != SPRING_LASTK {
             SPRING_LASTK = k;
@@ -319,8 +276,7 @@ fn draw_digit(d: i32, x: f32, y: f32, s: f32, col: *const f32) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *const f32) {
+pub(crate) fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *const f32) {
     n = n.clamp(0, 999);
     let adv = s + 0.55 * s;
     let mut x = right_x - adv;
@@ -335,8 +291,7 @@ pub extern "C" fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *co
 }
 
 // ---- image program: RGBA textures (posters/logos/backdrop) with rounded corners ----
-#[no_mangle]
-pub extern "C" fn init_image() {
+pub(crate) fn init_image() {
     unsafe {
         IPROG = glCreateProgram();
         glAttachShader(IPROG, gfx_compile(GL_VERTEX_SHADER, VS_IMG.as_ptr()));
@@ -360,8 +315,7 @@ pub extern "C" fn init_image() {
 }
 
 /// draw texture in px rect (x,y,w,h), rounded corners `radius`, multiplied by tint.
-#[no_mangle]
-pub extern "C" fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32) {
+pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32) {
     if tex == 0 {
         return;
     }

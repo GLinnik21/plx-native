@@ -5,7 +5,6 @@
 //! below us is the starfish.c C++/ACB seam (the engine itself is Rust: crate::player).
 #![allow(non_upper_case_globals)]
 use std::os::raw::{c_char, c_int, c_uint, c_void};
-use std::ptr::{addr_of, addr_of_mut};
 use std::sync::atomic::Ordering::Relaxed;
 
 // ---- constants (SDL 2.0.4 + GLES2 + app) ----
@@ -82,17 +81,17 @@ fn rd_i32(ev: &[u8], off: usize) -> i32 {
     i32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
 
-// ui focus globals live in ui::home; access them without a static-mut reference
+// ui focus state lives in ui::home; reach it through its accessors
 #[inline]
-fn g_fr() -> c_int { unsafe { addr_of!(crate::ui::home::fr).read() } }
+fn g_fr() -> c_int { crate::ui::home::row() }
 #[inline]
-fn g_fc() -> c_int { unsafe { addr_of!(crate::ui::home::fc).read() } }
+fn g_fc() -> c_int { crate::ui::home::col() }
 #[inline]
-fn g_snap() -> f32 { unsafe { addr_of!(crate::ui::home::snapTarget).read() } }
+fn g_snap() -> f32 { crate::ui::home::snap_target() }
 #[inline]
-fn set_fr(v: c_int) { unsafe { addr_of_mut!(crate::ui::home::fr).write(v) } }
+fn set_fr(v: c_int) { crate::ui::home::set_row(v) }
 #[inline]
-fn set_snap(v: f32) { unsafe { addr_of_mut!(crate::ui::home::snapTarget).write(v) } }
+fn set_snap(v: f32) { crate::ui::home::set_snap_target(v) }
 
 // transport state — was the C playback globals; now crate::player (atomics)
 #[inline]

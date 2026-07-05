@@ -27,8 +27,7 @@ extern "C" {
 static mut G_WL_SURFACE: *mut c_void = std::ptr::null_mut();
 static mut G_WL_DISPLAY: *mut c_void = std::ptr::null_mut();
 
-#[no_mangle]
-pub extern "C" fn clear_opaque_region() {
+pub(crate) fn clear_opaque_region() {
     unsafe {
         let surface = G_WL_SURFACE;
         if surface.is_null() {
@@ -41,8 +40,7 @@ pub extern "C" fn clear_opaque_region() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn ls2_pump() {
+pub(crate) fn ls2_pump() {
     unsafe {
         let mut guard = 8;
         while guard > 0 && g_main_context_pending(std::ptr::null_mut()) != 0 {
@@ -52,8 +50,7 @@ pub extern "C" fn ls2_pump() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn sys_grab_wayland(winp: *mut c_void) {
+pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
     unsafe {
         let mut wmbuf = [0u8; 512];
         // SDL_VERSION(&wm->version): major/minor/patch (u8) at offset 0

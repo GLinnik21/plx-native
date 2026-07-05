@@ -1,21 +1,19 @@
-//! Rust-first step 3: play_movie route selection (direct-play vs transcode),
-//! moved from playback.c to Rust. Owns the stream URL, the transcode session, and
-//! the HUD strings (g_*) as #[no_mangle] statics; the still-C start/stop_bufferfeed
-//! + draw_hud read them via extern until those move to Rust too (steps 4-5).
-#![allow(non_upper_case_globals)]
+//! play_movie route selection (direct-play vs transcode) + the stream URL, transcode
+//! session, and HUD strings — all private module state. The player engine reads the
+//! URL/session through the accessors here; ui::player_hud reads the HUD strings
+//! through title_cptr()/ctxline_cptr().
 use crate::pms::PmsMovie;
 use std::os::raw::{c_char, c_int};
 use std::ptr::{addr_of, addr_of_mut};
 
-// stream URL + transcode session — private backing storage; the Rust player engine
-// reads them via the accessors below (nothing C references them since step 5).
-static mut g_url: [c_char; 1024] = [0; 1024];
-static mut g_transcode_session: [c_char; 64] = [0; 64];
-// offset-free transcode query params, kept so a seek can rebuild start.mkv?...&offset=T
-static mut g_tbase: [c_char; 1024] = [0; 1024];
-// HUD strings — crate-visible so ui::player_hud can read them.
-pub(crate) static mut g_title: [c_char; 128] = [0; 128];
-pub(crate) static mut g_ctxline: [c_char; 96] = [0; 96];
+// stream URL + transcode session + offset-free transcode base (for &offset= seeks).
+static mut URL: String = String::new();
+static mut TSESSION: String = String::new();
+static mut TBASE: String = String::new();
+// HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
+// draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
+static mut TITLE: [c_char; 128] = [0; 128];
+static mut CTXLINE: [c_char; 96] = [0; 96];
 
 struct Cfg {
     host: String,
@@ -33,26 +31,28 @@ pub(crate) fn set_config(host: &str, port: c_int, token: &str, demo_url: &str) {
     }
 }
 
-/// read a C-string field (the [c_char;N] backing buffers) as an owned String.
-unsafe fn get_c(src: *const c_char, cap: usize) -> String {
-    cfield(std::slice::from_raw_parts(src as *const u8, cap))
-}
-
-// ---- engine-facing accessors (the player module reads/owns the stream URL) ----
+// ---- accessors: the player reads the URL/session; the HUD reads the title/ctxline ----
 pub(crate) fn url() -> String {
-    unsafe { get_c(addr_of!(g_url) as *const c_char, 1024) }
+    unsafe { (*addr_of!(URL)).clone() }
 }
 pub(crate) fn set_url(s: &str) {
-    unsafe { set_c(addr_of_mut!(g_url) as *mut c_char, 1024, s) }
+    unsafe { *addr_of_mut!(URL) = s.to_owned() }
 }
 pub(crate) fn clear_url() {
-    unsafe { (*addr_of_mut!(g_url))[0] = 0 }
+    unsafe { (*addr_of_mut!(URL)).clear() }
 }
 pub(crate) fn transcode_session() -> String {
-    unsafe { get_c(addr_of!(g_transcode_session) as *const c_char, 64) }
+    unsafe { (*addr_of!(TSESSION)).clone() }
 }
 pub(crate) fn demo_url() -> String {
     unsafe { (*addr_of!(CFG)).as_ref().map(|c| c.demo_url.clone()).unwrap_or_default() }
+}
+/// pointers into the module-owned HUD buffers (valid for the whole frame draw_text uses them)
+pub(crate) fn title_cptr() -> *const c_char {
+    addr_of!(TITLE) as *const c_char
+}
+pub(crate) fn ctxline_cptr() -> *const c_char {
+    addr_of!(CTXLINE) as *const c_char
 }
 /// free the server-side transcode encoder if this playback was a transcode.
 pub(crate) fn stop_transcode() {
@@ -68,8 +68,8 @@ pub(crate) fn stop_transcode() {
         let _ = crate::stream::http_get(&cfg.host, cfg.port, &sp, None);
     }
     unsafe {
-        (*addr_of_mut!(g_transcode_session))[0] = 0;
-        (*addr_of_mut!(g_tbase))[0] = 0;
+        (*addr_of_mut!(TSESSION)).clear();
+        (*addr_of_mut!(TBASE)).clear();
     }
 }
 
@@ -84,7 +84,7 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     if sess.is_empty() {
         return None;
     }
-    let base = unsafe { get_c(addr_of!(g_tbase) as *const c_char, 1024) };
+    let base = unsafe { (*addr_of!(TBASE)).clone() };
     if base.is_empty() {
         return None;
     }
@@ -144,8 +144,8 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
         format!("{} \u{b7} {} \u{b7} {}m", m.year, rating, mm)
     };
     unsafe {
-        set_c(addr_of_mut!(g_title) as *mut c_char, 128, &title);
-        set_c(addr_of_mut!(g_ctxline) as *mut c_char, 96, &ctx);
+        set_c(addr_of_mut!(TITLE) as *mut c_char, 128, &title);
+        set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, &ctx);
     }
 
     // direct-play only H264+AC3 (what the pipeline decodes natively); else ask the
@@ -173,7 +173,7 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
             cfg.token
         );
         // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
-        unsafe { set_c(addr_of_mut!(g_tbase) as *mut c_char, 1024, &base) };
+        unsafe { *addr_of_mut!(TBASE) = base.clone() };
         // the universal transcoder needs /decision to REGISTER the session before start.mkv streams
         let dpath = format!("/video/:/transcode/universal/decision?{base}");
         let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
@@ -181,7 +181,7 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
         (url, session)
     };
     unsafe {
-        set_c(addr_of_mut!(g_url) as *mut c_char, 1024, &url);
-        set_c(addr_of_mut!(g_transcode_session) as *mut c_char, 64, &session);
+        *addr_of_mut!(URL) = url;
+        *addr_of_mut!(TSESSION) = session;
     }
 }

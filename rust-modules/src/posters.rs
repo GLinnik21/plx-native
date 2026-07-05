@@ -91,8 +91,7 @@ fn set_key(s: &mut Pslot, key: &str) {
 }
 
 /// Build the transcode request path (also the store key). png=1 -> transparent clearLogo.
-#[no_mangle]
-pub extern "C" fn poster_key(dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
+pub(crate) fn poster_key(dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
     if dst.is_null() || cap == 0 {
         return;
     }
@@ -110,8 +109,7 @@ pub extern "C" fn poster_key(dst: *mut c_char, cap: usize, src_path: *const c_ch
 }
 
 /// MAIN thread. READY texture for key, else 0 (claim a slot + enqueue fetch on miss).
-#[no_mangle]
-pub extern "C" fn poster_get(key: *const c_char) -> c_uint {
+pub(crate) fn poster_get(key: *const c_char) -> c_uint {
     if key.is_null() {
         return 0;
     }
@@ -179,8 +177,7 @@ pub extern "C" fn poster_get(key: *const c_char) -> c_uint {
 }
 
 /// pixel dims of a READY texture for key (0,0 if not ready). Does NOT trigger a fetch.
-#[no_mangle]
-pub extern "C" fn poster_wh(key: *const c_char, w: *mut c_int, h: *mut c_int) {
+pub(crate) fn poster_wh(key: *const c_char, w: *mut c_int, h: *mut c_int) {
     unsafe {
         if !w.is_null() {
             *w = 0;
@@ -208,8 +205,7 @@ pub extern "C" fn poster_wh(key: *const c_char, w: *mut c_int, h: *mut c_int) {
 }
 
 /// MAIN/GL thread, once per frame BEFORE drawing. Uploads up to `budget` decoded slots.
-#[no_mangle]
-pub extern "C" fn poster_pump(budget: c_int) {
+pub(crate) fn poster_pump(budget: c_int) {
     {
         let mut g = store();
         g.frame = g.frame.wrapping_add(1); // new frame: nothing "touched" yet
@@ -309,8 +305,7 @@ fn poster_worker() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn posters_init(host: *const c_char, port: c_int, token: *const c_char) {
+pub(crate) fn posters_init(host: *const c_char, port: c_int, token: *const c_char) {
     let (host_s, token_s) = unsafe { (cstr(host), cstr(token)) };
     {
         let mut g = store();
@@ -325,8 +320,7 @@ pub extern "C" fn posters_init(host: *const c_char, port: c_int, token: *const c
     store().workers = handles;
 }
 
-#[no_mangle]
-pub extern "C" fn posters_shutdown() {
+pub(crate) fn posters_shutdown() {
     {
         let mut g = store();
         g.quit = true;

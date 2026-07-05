@@ -1,8 +1,8 @@
 //! The home screen as a retui tree: Backdrop + Hero + Grid([Shelf;5]×[Card;10]).
-//! Owns the C ABI (fr/fc/snapTarget globals + home_*/movie_at) that main.c drives
-//! unchanged. fr/fc/snapTarget stay the source of truth (main.c writes them too);
-//! the tree reads them live each frame via Env and writes back through nav.
-//! Draw ops are emitted argument-for-argument identical to ui_home.c.
+//! fr/fc/snapTarget are the focus source of truth (private module state); the tree
+//! reads them live each frame via Env and writes back through nav. plex_run drives it
+//! through home_init/update/draw/move_focus/pointer_focus/wheel (crate path) and the
+//! row/col/snap_target accessors.
 #![allow(non_upper_case_globals)]
 use crate::pms::PmsMovie;
 use crate::ui::consts::*;
@@ -12,13 +12,27 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr::{addr_of, addr_of_mut};
 
-// ---- shared focus state; main.c reads AND writes these (incl. the autoplay path) ----
-#[no_mangle]
-pub static mut fr: c_int = 0;
-#[no_mangle]
-pub static mut fc: c_int = 0;
-#[no_mangle]
-pub static mut snapTarget: f32 = 0.0;
+// ---- focus state: private main-thread module state. Home internals read/write these
+// directly; app.rs (the only outside reader) reaches them through the accessors below. ----
+static mut fr: c_int = 0;
+static mut fc: c_int = 0;
+static mut snapTarget: f32 = 0.0;
+
+pub(crate) fn row() -> c_int {
+    unsafe { addr_of!(fr).read() }
+}
+pub(crate) fn col() -> c_int {
+    unsafe { addr_of!(fc).read() }
+}
+pub(crate) fn snap_target() -> f32 {
+    unsafe { addr_of!(snapTarget).read() }
+}
+pub(crate) fn set_row(v: c_int) {
+    unsafe { addr_of_mut!(fr).write(v) }
+}
+pub(crate) fn set_snap_target(v: f32) {
+    unsafe { addr_of_mut!(snapTarget).write(v) }
+}
 
 #[inline]
 fn g_fr() -> c_int {
@@ -29,13 +43,12 @@ fn g_fc() -> c_int {
     unsafe { addr_of!(fc).read() }
 }
 
-/// index the (Rust) catalog; returns a pointer into pms_movies[] or null
-#[no_mangle]
-pub extern "C" fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie {
-    let idx = r as i64 * COLS as i64 + c as i64; // i64: never overflows across the FFI
-    let n = unsafe { addr_of!(crate::pms::pms_nmovies).read() } as i64;
+/// index the catalog; returns a pointer into it or null
+pub(crate) fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie {
+    let idx = r as i64 * COLS as i64 + c as i64; // i64: never overflows
+    let n = crate::pms::nmovies() as i64;
     if idx >= 0 && idx < n {
-        unsafe { (addr_of_mut!(crate::pms::pms_movies) as *mut PmsMovie).add(idx as usize) }
+        crate::pms::movie_ptr(idx as usize)
     } else {
         std::ptr::null_mut()
     }
@@ -349,13 +362,11 @@ fn guard(f: impl FnOnce()) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 }
 
-#[no_mangle]
-pub extern "C" fn home_init() {
+pub(crate) fn home_init() {
     guard(|| unsafe { *addr_of_mut!(SCENE) = Some(Home::new()) });
 }
 
-#[no_mangle]
-pub extern "C" fn home_update(dt: f32) {
+pub(crate) fn home_update(dt: f32) {
     guard(|| {
         let h = scene();
         h.bg_phase += dt * 0.15; // parity (unused by draw, as in C)
@@ -366,8 +377,7 @@ pub extern "C" fn home_update(dt: f32) {
     });
 }
 
-#[no_mangle]
-pub extern "C" fn home_draw() {
+pub(crate) fn home_draw() {
     guard(|| {
         crate::gfx::frame_clear(0.03, 0.03, 0.045);
         let h = scene();
@@ -382,17 +392,14 @@ pub extern "C" fn home_draw() {
     });
 }
 
-#[no_mangle]
-pub extern "C" fn home_move_focus(sym: c_uint) {
+pub(crate) fn home_move_focus(sym: c_uint) {
     guard(|| scene().grid.nav(sym));
 }
 
-#[no_mangle]
-pub extern "C" fn home_pointer_focus(mx: f32, my: f32) {
+pub(crate) fn home_pointer_focus(mx: f32, my: f32) {
     guard(|| scene().grid.hit_test(mx, my));
 }
 
-#[no_mangle]
-pub extern "C" fn home_wheel(dy: c_int) {
+pub(crate) fn home_wheel(dy: c_int) {
     guard(|| scene().grid.wheel(dy));
 }

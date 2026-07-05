@@ -1,8 +1,8 @@
-//! Rust port of src/aq.c — one-producer / one-consumer access-unit FIFO with
-//! byte-cap backpressure. Same C ABI (aq.h): the C consumer (playback) allocates
-//! an `au_queue` and passes `&q`; `aq_pop` hands back a malloc'd `au_node` the C
-//! side reads and frees. au_node uses a flexible array member (`data[]`); au_queue
-//! embeds pthread objects — both mirrored repr(C) so the layouts match glibc.
+//! One-producer / one-consumer access-unit FIFO with byte-cap backpressure (was
+//! src/aq.c). The player consumer allocates an `AuQueue` and passes `&q`; `aq_pop`
+//! hands back a malloc'd `AuNode` the caller reads and frees. AuNode uses a flexible
+//! array member (`data[]`); AuQueue embeds pthread objects — both repr(C) so the
+//! layouts match glibc.
 use std::os::raw::{c_int, c_long, c_uchar, c_void};
 use std::ptr;
 
@@ -49,8 +49,7 @@ pub(crate) unsafe fn au_fields(n: *mut AuNode) -> (c_int, c_int, i64, c_int, *co
     ((*n).es, (*n).key, (*n).pts, (*n).len, node_data(n) as *const u8)
 }
 
-#[no_mangle]
-pub extern "C" fn aq_init(q: *mut AuQueue) {
+pub(crate) fn aq_init(q: *mut AuQueue) {
     if q.is_null() { return; }
     unsafe {
         ptr::write_bytes(q as *mut u8, 0, core::mem::size_of::<AuQueue>());
@@ -60,8 +59,7 @@ pub extern "C" fn aq_init(q: *mut AuQueue) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn aq_destroy(q: *mut AuQueue) {
+pub(crate) fn aq_destroy(q: *mut AuQueue) {
     if q.is_null() { return; }
     unsafe {
         libc::pthread_mutex_destroy(ptr::addr_of_mut!((*q).m));
@@ -72,8 +70,7 @@ pub extern "C" fn aq_destroy(q: *mut AuQueue) {
 
 /// Producer: append one AU (copies `len` bytes). Blocks over AQ_MAX_BYTES unless
 /// aborting. Returns 0 on success, -1 if aborting or OOM.
-#[no_mangle]
-pub extern "C" fn aq_push(q: *mut AuQueue, data: *const c_uchar, len: c_int,
+pub(crate) fn aq_push(q: *mut AuQueue, data: *const c_uchar, len: c_int,
                           pts: i64, key: c_int, es: c_int) -> c_int {
     if q.is_null() || len < 0 { return -1; }
     unsafe {
@@ -111,8 +108,7 @@ pub extern "C" fn aq_push(q: *mut AuQueue, data: *const c_uchar, len: c_int,
 
 /// Consumer: pop the next AU (caller frees it) or NULL. Never blocks.
 /// *eof_out = 1 when the producer finished and the queue is drained.
-#[no_mangle]
-pub extern "C" fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
+pub(crate) fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
     if q.is_null() { return ptr::null_mut(); }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
@@ -133,8 +129,7 @@ pub extern "C" fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn aq_set_eof(q: *mut AuQueue) {
+pub(crate) fn aq_set_eof(q: *mut AuQueue) {
     if q.is_null() { return; }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
@@ -144,8 +139,7 @@ pub extern "C" fn aq_set_eof(q: *mut AuQueue) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn aq_abort(q: *mut AuQueue) {
+pub(crate) fn aq_abort(q: *mut AuQueue) {
     if q.is_null() { return; }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
@@ -156,8 +150,7 @@ pub extern "C" fn aq_abort(q: *mut AuQueue) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn aq_bytes(q: *mut AuQueue) -> c_long {
+pub(crate) fn aq_bytes(q: *mut AuQueue) -> c_long {
     if q.is_null() { return 0; }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
