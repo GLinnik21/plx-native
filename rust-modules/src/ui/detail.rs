@@ -26,14 +26,24 @@ const PW: f32 = 168.0; // Play pill width
 const CGAP: f32 = 20.0;
 const CD: f32 = 60.0; // circle button diameter
 
-// Below-the-hero layout (pre-scroll absolute Y); SCROLLED lifts the whole block up
-// so the season tabs sit near the top and the episode row is centered.
-const SCROLLED: f32 = 890.0;
+// Below-the-hero layout: each section has an absolute pre-scroll Y (section_top); the
+// scroll target lifts the focused section's top to TOP_MARGIN, just under the compact
+// title. SCROLLED is the scroll distance past which the backdrop is fully dark.
+const TOP_MARGIN: f32 = 120.0;
+const SCROLLED: f32 = 890.0; // = TAB_Y - TOP_MARGIN; backdrop-dim saturation reference
 const TAB_Y: f32 = 1010.0;
 const EP_Y: f32 = 1075.0;
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
+// Related row (portrait posters) + Cast & Crew row (circular headshots)
+const RELATED_Y: f32 = 1760.0;
+const REL_W: f32 = 200.0;
+const REL_H: f32 = 300.0;
+const REL_GAP: f32 = 28.0;
+const CAST_Y: f32 = 2300.0;
+const CAST_D: f32 = 150.0; // headshot diameter
+const CAST_SLOT: f32 = 200.0; // per-member horizontal pitch (room for the name)
 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
@@ -55,7 +65,9 @@ pub(crate) fn focus() -> c_int {
     }
 }
 
-/// available sections for the loaded item (hero always; tabs/episodes only for shows)
+/// available sections for the loaded item (hero always; tabs/episodes only for shows;
+/// related/cast for both when present). Section ids: 0 hero, 1 tabs, 2 episodes,
+/// 3 related, 4 cast.
 fn sections() -> Vec<c_int> {
     let mut v = vec![0];
     if let Some(d) = metadata::current() {
@@ -65,6 +77,12 @@ fn sections() -> Vec<c_int> {
         if d.is_show && !d.episodes.is_empty() {
             v.push(2);
         }
+        if !d.related.is_empty() {
+            v.push(3);
+        }
+        if !d.cast.is_empty() {
+            v.push(4);
+        }
     }
     v
 }
@@ -73,7 +91,27 @@ fn n_items(section: c_int) -> c_int {
         0 => NBTN,
         1 => metadata::current().map(|d| d.seasons.len()).unwrap_or(0) as c_int,
         2 => metadata::current().map(|d| d.episodes.len()).unwrap_or(0) as c_int,
+        3 => metadata::current().map(|d| d.related.len()).unwrap_or(0) as c_int,
+        4 => metadata::current().map(|d| d.cast.len()).unwrap_or(0) as c_int,
         _ => 0,
+    }
+}
+/// pre-scroll top Y of a section (drives the scroll target)
+fn section_top(section: c_int) -> f32 {
+    match section {
+        1 | 2 => TAB_Y, // tabs + episodes share one scrolled block
+        3 => RELATED_Y,
+        4 => CAST_Y,
+        _ => TOP_MARGIN, // hero -> scroll target 0
+    }
+}
+/// scroll offset that lifts the focused section's top to TOP_MARGIN
+fn scroll_target() -> f32 {
+    let sec = unsafe { addr_of!(SECTION).read() };
+    if sec == 0 {
+        0.0
+    } else {
+        (section_top(sec) - TOP_MARGIN).max(0.0)
     }
 }
 /// the selected catalog row pointer (for the app to play a movie), or null
@@ -150,8 +188,7 @@ pub(crate) fn move_focus(sym: c_int) {
 }
 
 pub(crate) fn update(dt: f32) {
-    let target = if unsafe { addr_of!(SECTION).read() } == 0 { 0.0 } else { SCROLLED };
-    unsafe { (*addr_of_mut!(SCROLL)).step(target, K_SCROLL, dt) }
+    unsafe { (*addr_of_mut!(SCROLL)).step(scroll_target(), K_SCROLL, dt) }
 }
 
 fn env_of(dt: f32) -> Env {
@@ -174,11 +211,13 @@ pub(crate) fn draw() {
     if hero_a < 0.99 {
         draw_compact_title(p.alpha(1.0 - hero_a), m);
     }
-    // season tabs + episode row (shows only), scrolled with the page
+    // season tabs + episode row (shows only), then related + cast (both), scrolled
     if is_show() {
         draw_tabs(ps);
         draw_episodes(ps);
     }
+    draw_related(ps);
+    draw_cast(ps);
 }
 
 fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
@@ -477,6 +516,106 @@ fn draw_episodes(p: Painter) {
     }
 }
 
+/// "Related" — a horizontal row of portrait poster cards from the related hub
+fn draw_related(p: Painter) {
+    let d = match metadata::current() {
+        Some(d) => d,
+        None => return,
+    };
+    if d.related.is_empty() {
+        return;
+    }
+    p.text(c"Related".as_ptr(), MARGIN_X, RELATED_Y, 28, [0.90, 0.92, 0.95, 1.0], 0, 1);
+    let sec = unsafe { addr_of!(SECTION).read() };
+    let col = unsafe { addr_of!(COL).read() };
+    let focus_col = if sec == 3 { col } else { -1 };
+    let row_y = RELATED_Y + 46.0;
+    let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * (REL_W + REL_GAP) } else { 0.0 };
+    let pr = p.translate(-sx, 0.0);
+    for (i, r) in d.related.iter().enumerate() {
+        let x = MARGIN_X + i as f32 * (REL_W + REL_GAP);
+        if x - sx > SCR_W || x - sx + REL_W < 0.0 {
+            continue;
+        }
+        let focused = i as c_int == focus_col;
+        let card = Rect::new(x, row_y, REL_W, REL_H);
+        let cr = if focused { card.scaled(1.05) } else { card };
+        let mut drew = false;
+        if !r.thumb.is_empty() {
+            if let Ok(tp) = CString::new(r.thumb.clone()) {
+                let t = resolve_tex(tp.as_ptr(), 250, 375, 0);
+                if t != 0 {
+                    pr.tex(t, cr, 10.0, [1.0; 4]);
+                    drew = true;
+                }
+            }
+        }
+        if !drew {
+            pr.rrect(cr, 10.0, 10.0, [0.12, 0.13, 0.16, 1.0]);
+        }
+        if focused {
+            pr.ring(cr, 6.0, 12.0, 1.0);
+            if let Ok(tc) = CString::new(r.title.clone()) {
+                pr.text(tc.as_ptr(), x, row_y + REL_H + 30.0, 20, [0.85, 0.87, 0.90, 1.0], 0, 0);
+            }
+        }
+    }
+}
+
+/// "Cast & Crew" — a horizontal row of circular headshots with names
+fn draw_cast(p: Painter) {
+    let d = match metadata::current() {
+        Some(d) => d,
+        None => return,
+    };
+    if d.cast.is_empty() {
+        return;
+    }
+    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, CAST_Y, 28, [0.90, 0.92, 0.95, 1.0], 0, 1);
+    let sec = unsafe { addr_of!(SECTION).read() };
+    let col = unsafe { addr_of!(COL).read() };
+    let focus_col = if sec == 4 { col } else { -1 };
+    let row_y = CAST_Y + 60.0;
+    let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * CAST_SLOT } else { 0.0 };
+    let pc = p.translate(-sx, 0.0);
+    for (i, c) in d.cast.iter().enumerate() {
+        let cxc = MARGIN_X + CAST_D * 0.5 + i as f32 * CAST_SLOT; // circle center x
+        if cxc - sx > SCR_W + CAST_D || cxc - sx + CAST_D < 0.0 {
+            continue;
+        }
+        let focused = i as c_int == focus_col;
+        let dp = if focused { CAST_D * 1.06 } else { CAST_D };
+        let circ = Rect::new(cxc - dp * 0.5, row_y + (CAST_D - dp) * 0.5, dp, dp);
+        // headshot (external metadata-static URL → PMS photo transcoder), circular
+        let mut drew = false;
+        if !c.thumb.is_empty() {
+            if let Ok(tp) = CString::new(c.thumb.clone()) {
+                let t = resolve_tex(tp.as_ptr(), 300, 300, 0);
+                if t != 0 {
+                    pc.tex(t, circ, dp * 0.5, [1.0; 4]);
+                    drew = true;
+                }
+            }
+        }
+        if !drew {
+            pc.rect(circ, dp * 0.5, [0.16, 0.17, 0.20, 1.0], [0.10, 0.11, 0.13, 1.0], 0.0);
+        }
+        if focused {
+            let fc = Rect::new(cxc - CAST_D * 0.5, row_y, CAST_D, CAST_D);
+            pc.ring(fc, 6.0, CAST_D * 0.5, 1.0);
+        }
+        let name_c = if focused { [0.98, 0.99, 1.0, 1.0] } else { [0.80, 0.82, 0.86, 1.0] };
+        if let Ok(nc) = CString::new(c.tag.clone()) {
+            pc.text(nc.as_ptr(), cxc, row_y + CAST_D + 22.0, 21, name_c, 1, if focused { 1 } else { 0 });
+        }
+        if !c.role.is_empty() {
+            if let Ok(rc) = CString::new(c.role.clone()) {
+                pc.text(rc.as_ptr(), cxc, row_y + CAST_D + 48.0, 17, [0.56, 0.58, 0.62, 1.0], 1, 0);
+            }
+        }
+    }
+}
+
 /// two-line wrap tuned to the narrower episode-card width
 fn wrap_ep(s: &str) -> (String, String) {
     let b = s.as_bytes();
@@ -530,8 +669,30 @@ pub(crate) fn on_ok() -> bool {
             false
         }
         2 => play_episode_at(col),
-        _ => false,
+        3 => {
+            // Related: open that item's detail page in place
+            let rk = metadata::current().and_then(|d| d.related.get(col.max(0) as usize)).map(|r| r.rk.clone());
+            if let Some(rk) = rk {
+                open_rk(&rk);
+            }
+            false
+        }
+        _ => false, // cast (4): headshots are not actionable
     }
+}
+
+/// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
+/// catalog row for the backdrop art/blur when the item is in the browse catalog, else
+/// falls back to the loaded detail's own art (no blur).
+pub(crate) fn open_rk(rk: &str) {
+    let idx = crate::pms::index_of_rk(rk);
+    unsafe {
+        addr_of_mut!(SELECTED).write(idx);
+        addr_of_mut!(SECTION).write(0);
+        addr_of_mut!(COL).write(0);
+        (*addr_of_mut!(SCROLL)).jump(0.0);
+    }
+    metadata::load_detail(rk);
 }
 
 fn play_episode_at(i: c_int) -> bool {
