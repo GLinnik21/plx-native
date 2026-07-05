@@ -10,6 +10,9 @@ use std::ptr::{addr_of, addr_of_mut};
 static mut URL: String = String::new();
 static mut TSESSION: String = String::new();
 static mut TBASE: String = String::new();
+// ratingKey of the currently-playing item (movie or episode), so an audio-track
+// switch can force a fresh transcode of the same item.
+static mut CUR_RK: String = String::new();
 // HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
 // draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
 static mut TITLE: [c_char; 128] = [0; 128];
@@ -182,10 +185,12 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
         set_c(addr_of_mut!(TITLE) as *mut c_char, 128, &title);
         set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, &ctx);
     }
-    let (url, session) = build_stream(&cfield(&m.rk), &cfield(&m.part), &cfield(&m.vcodec), &cfield(&m.acodec));
+    let rk = cfield(&m.rk);
+    let (url, session) = build_stream(&rk, &cfield(&m.part), &cfield(&m.vcodec), &cfield(&m.acodec));
     unsafe {
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
+        *addr_of_mut!(CUR_RK) = rk;
     }
 }
 
@@ -202,5 +207,44 @@ pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud
     unsafe {
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
+        *addr_of_mut!(CUR_RK) = rk.to_string();
     }
+}
+
+/// Switch the audio track: force a fresh transcode of the current item (CUR_RK) with
+/// `stream_id` as the source audio (&audioStreamID), restarted at `offset_secs`. Works
+/// from a direct-play OR transcode state — the result is always a transcode (server
+/// always emits AC3, so the pipeline's Loaded codec is unchanged). Sets URL/TSESSION/
+/// TBASE and returns the new start.mkv URL (the demux re-opens it from byte 0), or None.
+pub(crate) fn switch_audio(stream_id: i64, offset_secs: i64) -> Option<String> {
+    let cfg = unsafe { (*addr_of!(CFG)).as_ref()? };
+    let rk = unsafe { (*addr_of!(CUR_RK)).clone() };
+    if rk.is_empty() {
+        return None;
+    }
+    let profe = crate::pms::urlenc_str(
+        "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
+         &container=matroska&videoCodec=h264&audioCodec=ac3)",
+    );
+    let session = format!("plexpoc-{rk}");
+    let base = format!(
+        "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
+         &directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000\
+         &audioStreamID={stream_id}\
+         &session={session}&X-Plex-Session-Identifier={session}&X-Plex-Client-Identifier={session}\
+         &X-Plex-Product=plexpoc&X-Plex-Version=1&X-Plex-Platform=Generic\
+         &X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={}",
+        cfg.token
+    );
+    unsafe {
+        *addr_of_mut!(TBASE) = base.clone();
+        *addr_of_mut!(TSESSION) = session;
+    }
+    let obase = format!("{base}&offset={}", offset_secs.max(0));
+    let dpath = format!("/video/:/transcode/universal/decision?{obase}");
+    let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
+    let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{obase}", cfg.host, cfg.port);
+    set_url(&url);
+    crate::player::log(&format!("switch_audio sid={stream_id} offset={offset_secs} -> {url}"));
+    Some(url)
 }

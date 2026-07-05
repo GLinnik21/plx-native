@@ -122,6 +122,12 @@ pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr
                 path_c = std::ffi::CString::new(pa).unwrap_or_default();
                 port = p;
                 start = 0;
+                // an audio switch from a direct-play stream needs the transcode's Tracks
+                // re-parsed (mkv_run, via first=true) — its numbering differs from the
+                // direct-play file's; a plain transcode seek leaves this false (same tracks).
+                if SHARED.reparse_next.swap(false, Ordering::Acquire) {
+                    first = true;
+                }
                 super::log("stream: seek → new transcode url (&offset)");
             } else {
                 start = sb;

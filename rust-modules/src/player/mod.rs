@@ -38,6 +38,9 @@ pub(crate) fn frames() -> i32 { SHARED.frames.load(Relaxed) }
 pub(crate) fn duration_ns() -> i64 { SHARED.duration_ns.load(Relaxed) }
 pub(crate) fn seek_pending() -> i64 { TX.seek_to_ns.load(Relaxed) }
 pub(crate) fn request_seek(ns: i64) { TX.seek_to_ns.store(ns, Relaxed) }
+/// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
+/// transcode with that source audio at the current position next tick.
+pub(crate) fn request_audio_switch(sid: i64) { SHARED.pending_audio_sid.store(sid, Relaxed) }
 
 pub(crate) fn log(m: &str) {
     use std::io::Write;

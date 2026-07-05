@@ -19,6 +19,36 @@ pub(crate) fn pump(now: u32) {
     }
     let stream = matches!(eng.source, Source::Stream);
 
+    // ---------- pending audio-track switch: force a fresh transcode with the chosen
+    // source audio at the CURRENT position (same arm as a transcode seek), and flag a
+    // full Track re-parse on re-open (the transcode output's track numbering may differ
+    // from a direct-play file's, and mkv_seek_run does not re-parse Tracks). ----------
+    let asid = SHARED.pending_audio_sid.swap(-1, Relaxed);
+    if stream && asid >= 0 && eng.stage >= Stage::Playing {
+        let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+        if let Some(url) = crate::route::switch_audio(asid, secs) {
+            unsafe {
+                ffi::sf_flush();
+                ffi::sf_set_playtime(0);
+                ffi::sf_play();
+            }
+            drain_aq(eng);
+            *SHARED.next_url.lock().unwrap() = Some(url);
+            SHARED.seek_byte.store(0, Release); // fresh stream from byte 0
+            SHARED.disp_base.store(secs * 1_000_000_000, Relaxed);
+            SHARED.reparse_next.store(true, Release);
+            let p = SHARED.hs_ptr.load(Acquire);
+            if !p.is_null() {
+                crate::stream::http_close(p);
+            }
+            eng.rebase_pending = true;
+            eng.max_fed_pts = 0;
+            SHARED.frames.store(0, Relaxed);
+            SHARED.playpos_ns.store(secs * 1_000_000_000, Relaxed);
+            super::log(&format!("audio switch: sid={asid} offset={secs}s"));
+        }
+    }
+
     // ---------- pending seek: flush, drop queued AUs, re-point the demux ----------
     let t = TX.seek_to_ns.load(Relaxed);
     // A live transcode has NO Content-Length / byte-Cues (file_size stays -1), so gate
