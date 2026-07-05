@@ -1,0 +1,205 @@
+//! serde response DTOs — only the fields the app consumes. Everything is
+//! `#[serde(default)]` to mirror the "all optional" reality of PMS JSON (a trimmed
+//! response never fails to deserialize). `kind` renames the JSON `type` field (a Rust
+//! keyword). These are read-only: the app's own view structs are populated *from* them.
+use serde::Deserialize;
+
+/// `{ "MediaContainer": … }` — every list/detail response.
+#[derive(Deserialize, Default)]
+pub struct Envelope {
+    #[serde(rename = "MediaContainer", default)]
+    pub media_container: MediaContainer,
+}
+
+/// One flat container; every list field is optional so the same type deserializes a sections
+/// list (`Directory`), an items/detail list (`Metadata`), or a hub list (`Hub`).
+#[derive(Deserialize, Default)]
+pub struct MediaContainer {
+    #[serde(rename = "Directory", default)]
+    pub directory: Vec<LibrarySection>,
+    #[serde(rename = "Metadata", default)]
+    pub metadata: Vec<Metadata>,
+    #[serde(rename = "Hub", default)]
+    pub hub: Vec<Hub>,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(rename = "totalSize", default)]
+    pub total_size: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+#[derive(Deserialize, Default)]
+pub struct LibrarySection {
+    #[serde(default)]
+    pub key: String, // "1" — parse to i64 at the call site (keep raw)
+    #[serde(rename = "type", default)]
+    pub kind: String, // movie | show | artist
+    #[serde(default)]
+    pub title: String,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Hub {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(rename = "Metadata", default)]
+    pub metadata: Vec<Metadata>,
+}
+
+/// The movie/show/season/episode item. Missing fields default (Plex omits optionals).
+#[derive(Deserialize, Default)]
+pub struct Metadata {
+    #[serde(rename = "type", default)]
+    pub kind: String, // movie|show|season|episode|clip
+    #[serde(rename = "ratingKey", default)]
+    pub rating_key: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub year: i64,
+    #[serde(rename = "contentRating", default)]
+    pub content_rating: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub tagline: String,
+    #[serde(default)]
+    pub studio: String,
+    #[serde(rename = "originallyAvailableAt", default)]
+    pub originally_available_at: String,
+    #[serde(default)]
+    pub duration: i64, // ms
+    #[serde(rename = "viewOffset", default)]
+    pub view_offset: i64, // ms; resume point
+    #[serde(default)]
+    pub index: i64, // season/episode number
+    #[serde(rename = "parentIndex", default)]
+    pub parent_index: i64,
+    #[serde(rename = "leafCount", default)]
+    pub leaf_count: i64,
+    #[serde(default)]
+    pub thumb: String,
+    #[serde(default)]
+    pub art: String,
+    #[serde(rename = "grandparentThumb", default)]
+    pub grandparent_thumb: String,
+    #[serde(rename = "Media", default)]
+    pub media: Vec<Media>,
+    #[serde(rename = "Genre", default)]
+    pub genre: Vec<Tag>,
+    #[serde(rename = "Country", default)]
+    pub country: Vec<Tag>,
+    #[serde(rename = "Director", default)]
+    pub director: Vec<Tag>,
+    #[serde(rename = "Writer", default)]
+    pub writer: Vec<Tag>,
+    #[serde(rename = "Role", default)]
+    pub role: Vec<Tag>,
+    // D-1: PMS returns UltraBlurColors as an ARRAY `[{…}]` (the old code reads it as an object
+    // and misses it). `de_ultrablur` accepts object OR array and yields the first.
+    #[serde(rename = "UltraBlurColors", default, deserialize_with = "de_ultrablur")]
+    pub ultra_blur_colors: Option<UltraBlurColors>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Media {
+    #[serde(rename = "videoCodec", default)]
+    pub video_codec: String,
+    #[serde(rename = "audioCodec", default)]
+    pub audio_codec: String,
+    #[serde(rename = "Part", default)]
+    pub part: Vec<MediaPart>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct MediaPart {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub key: String, // /library/parts/{id}/{changestamp}/file.mkv
+    #[serde(rename = "Stream", default)]
+    pub stream: Vec<Stream>,
+}
+
+/// D-2: channels/title/hearingImpaired/audioDescription/forced are real PMS fields the spec
+/// omits — kept here. Plex 0/1 booleans stay i64; the app tests `!= 0`.
+#[derive(Deserialize, Default)]
+pub struct Stream {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(rename = "streamType", default)]
+    pub stream_type: i64, // 1 video, 2 audio, 3 subtitle
+    #[serde(default)]
+    pub codec: String,
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub channels: i64,
+    #[serde(rename = "audioChannelLayout", default)]
+    pub audio_channel_layout: String,
+    #[serde(rename = "displayTitle", default)]
+    pub display_title: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(rename = "hearingImpaired", default)]
+    pub hearing_impaired: i64,
+    #[serde(rename = "audioDescription", default)]
+    pub audio_description: i64,
+    #[serde(default)]
+    pub forced: i64,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Tag {
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default)]
+    pub role: String, // Role[] only (character name)
+    #[serde(default)]
+    pub thumb: String, // Role[] headshot
+}
+
+#[derive(Deserialize, Default, Clone, Copy)]
+pub struct UltraBlurColors {
+    #[serde(rename = "topLeft", default)]
+    pub top_left: HexColor,
+    #[serde(rename = "topRight", default)]
+    pub top_right: HexColor,
+    #[serde(rename = "bottomRight", default)]
+    pub bottom_right: HexColor,
+    #[serde(rename = "bottomLeft", default)]
+    pub bottom_left: HexColor,
+}
+
+/// "1a2b3c" (with/without '#') → linear [r,g,b] 0..1. Replaces pms::hex3.
+#[derive(Deserialize, Default, Clone, Copy)]
+#[serde(from = "String")]
+pub struct HexColor(pub [f32; 3]);
+impl From<String> for HexColor {
+    fn from(s: String) -> Self {
+        let v = u32::from_str_radix(s.trim_start_matches('#'), 16).unwrap_or(0);
+        HexColor([
+            ((v >> 16) & 0xff) as f32 / 255.0,
+            ((v >> 8) & 0xff) as f32 / 255.0,
+            (v & 0xff) as f32 / 255.0,
+        ])
+    }
+}
+
+/// Accept `{…}` OR `[{…}]` (D-1) and return the first, or None.
+fn de_ultrablur<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<UltraBlurColors>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(UltraBlurColors),
+        Many(Vec<UltraBlurColors>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(d)? {
+        Some(OneOrMany::One(u)) => Some(u),
+        Some(OneOrMany::Many(v)) => v.into_iter().next(),
+        None => None,
+    })
+}
