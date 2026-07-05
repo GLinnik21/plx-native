@@ -6,6 +6,7 @@ mod app; // plex_run — the Rust app core / event loop (the entry inverted from
 mod aq;
 mod gfx;
 mod img;
+mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod mkv;
 mod player; // buffer-feed video engine (was playback.c) — step 5
 mod pms;

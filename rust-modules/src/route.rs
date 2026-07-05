@@ -47,6 +47,10 @@ pub(crate) fn transcode_session() -> String {
 pub(crate) fn demo_url() -> String {
     unsafe { (*addr_of!(CFG)).as_ref().map(|c| c.demo_url.clone()).unwrap_or_default() }
 }
+/// PMS (host, port, token) — used by the metadata layer for detail/children/related fetches.
+pub(crate) fn config() -> Option<(String, c_int, String)> {
+    unsafe { (*addr_of!(CFG)).as_ref().map(|c| (c.host.clone(), c.port, c.token.clone())) }
+}
 /// pointers into the module-owned HUD buffers (valid for the whole frame draw_text uses them)
 pub(crate) fn title_cptr() -> *const c_char {
     addr_of!(TITLE) as *const c_char
