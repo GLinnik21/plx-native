@@ -17,6 +17,7 @@ pub(crate) struct Cast {
 }
 
 pub(crate) struct Stream {
+    pub(crate) id: i64, // Plex stream id (for &audioStreamID / &subtitleStreamID)
     pub(crate) lang: String,
     pub(crate) codec: String,
     pub(crate) channels: i64,
@@ -199,6 +200,7 @@ fn parse_streams(item: &Value, d: &mut Detail) {
     for s in streams {
         let title = jstr(s.get("title"));
         let st = Stream {
+            id: jint(s.get("id")),
             lang: jstr(s.get("language")),
             codec: jstr(s.get("codec")),
             channels: jint(s.get("channels")),
