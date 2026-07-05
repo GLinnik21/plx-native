@@ -87,7 +87,7 @@ pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr
             None
         };
         let ep = extra.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-        if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), ep) != 0 {
+        if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), ep, "GET") != 0 {
             super::log(&format!("stream: http_open FAILED status={}", crate::stream::hs_status(hs_p)));
             break;
         }
@@ -156,7 +156,7 @@ pub(crate) fn cues_thread(host: String, port: c_int, path: String, hs2: SendPtr<
     let mut cmkv: Box<MkvCtx> = Box::new(unsafe { std::mem::zeroed() });
     let cmkv_p = &mut *cmkv as *mut MkvCtx;
     cmkv.header_only = 1;
-    if crate::stream::http_open(hs2_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null()) != 0 {
+    if crate::stream::http_open(hs2_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
         super::log("cues: preflight http_open FAILED");
         return;
     }
@@ -181,7 +181,7 @@ pub(crate) fn cues_thread(host: String, port: c_int, path: String, hs2: SendPtr<
     }
     let cues_abs = segpos + cuespos;
     let rh = std::ffi::CString::new(format!("Range: bytes={cues_abs}-\r\n")).unwrap();
-    if crate::stream::http_open(hs2_p, host_c.as_ptr(), port, path_c.as_ptr(), rh.as_ptr()) != 0 {
+    if crate::stream::http_open(hs2_p, host_c.as_ptr(), port, path_c.as_ptr(), rh.as_ptr(), "GET") != 0 {
         return;
     }
     if SHARED.cues_abort.load(Ordering::Acquire) {
