@@ -17,3 +17,4 @@ mod stream;
 mod system;
 mod text;
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
+mod webvtt; // streaming WebVTT parser (soft subtitles during transcode)

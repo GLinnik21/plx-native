@@ -60,6 +60,23 @@ pub(crate) fn request_subtitle(idx: i32) {
     SHARED.desired_sub_idx.store(idx, Relaxed);
     SHARED.sub_cues.lock().unwrap().clear();
 }
+/// desired soft-WebVTT subtitle stream id during a transcode (0 = off). The pump
+/// reconciles the subs thread (spawn / re-point / stop) from this.
+pub(crate) fn request_soft_subs(sid: i64) {
+    SHARED.subs_want_sid.store(sid, Relaxed);
+}
+/// push a ready (already-clean) subtitle cue into the shared store; keeps the last ~24
+/// (ring buffer). Shared sink for the demux path and the WebVTT-sidecar path.
+pub(crate) fn push_subtitle_text(start_ns: i64, end_ns: i64, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    let mut cues = SHARED.sub_cues.lock().unwrap();
+    if cues.len() >= 24 {
+        cues.remove(0);
+    }
+    cues.push(SubCue { start_ns, end_ns, text });
+}
 /// demux (D-thread) pushes a subtitle cue (content-time ns). Keeps the last ~24 cues.
 pub(crate) fn push_subtitle_cue(start_ns: i64, end_ns: i64, payload: &[u8], is_ass: bool) {
     let text = sub_text(payload, is_ass);
@@ -68,11 +85,7 @@ pub(crate) fn push_subtitle_cue(start_ns: i64, end_ns: i64, payload: &[u8], is_a
     }
     log(&format!("sub cue [{}..{}ms] {:?}", start_ns / 1_000_000, end_ns / 1_000_000,
         text.chars().take(34).collect::<String>()));
-    let mut cues = SHARED.sub_cues.lock().unwrap();
-    if cues.len() >= 24 {
-        cues.remove(0);
-    }
-    cues.push(SubCue { start_ns, end_ns, text });
+    push_subtitle_text(start_ns, end_ns, text);
 }
 /// the subtitle text active at `now_ns`, or None (also None when subtitles are off).
 pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {

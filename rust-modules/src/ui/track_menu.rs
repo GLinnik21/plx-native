@@ -138,13 +138,24 @@ pub(crate) fn on_ok() {
             }
         } else {
             addr_of_mut!(ACTIVE_SUB).write(sel - 1); // row 0 = Off = -1
-            // direct-play: client-render the selected track from the demuxer (instant)
+            // gate the soft renderer on/off — this drives BOTH the direct-play demuxer path
+            // and (via desired_sub_idx >= 0) whether the transcode WebVTT cues render.
             crate::player::request_subtitle(active_sub()); // -1 = off, else 0-based sub index
-            // transcode: remember the Plex sub stream id to BURN into any transcode of this
-            // item; if we're transcoding right now, re-burn immediately at the current pos.
-            crate::route::set_subtitle(sub_stream_id()); // 0 = off
-            if !crate::route::transcode_session().is_empty() {
-                crate::player::request_transcode_refresh();
+            // transcode: fetch the selected subtitle as soft WebVTT (the pump spawns/re-points/
+            // stops the subs thread from subs_want_sid) instead of burning it into the video.
+            // BURN_FALLBACK restores the old server-side burn path.
+            if crate::route::BURN_FALLBACK {
+                crate::route::set_subtitle(sub_stream_id());
+                if !crate::route::transcode_session().is_empty() {
+                    crate::player::request_transcode_refresh();
+                }
+            } else {
+                crate::route::set_subtitle(0); // keep the video plane burn-free
+                // Set the soft-sidecar id ALWAYS, not only while transcoding: the pump's
+                // reconcile acts only while transcoding, so remembering it here makes a later
+                // audio switch (direct-play → transcode) bring the WebVTT sidecar up on this
+                // track — otherwise the subtitle vanishes across that transition.
+                crate::player::request_soft_subs(sub_stream_id()); // 0 = off
             }
         }
     }

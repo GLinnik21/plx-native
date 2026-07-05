@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 // video+AC3 for streaming. Copied VERBATIM from playback.c.
 const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.glin.plexpoc","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plexpoc"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.glin.plexpoc","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plexpoc"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+// Phase 0 HEVC probe payload — identical to PAYLOAD_V but codec video "H265", to isolate
+// the single variable: does StarfishMediaAPIs BUFFERSTREAM decode HEVC on this panel?
+const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.glin.plexpoc","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plexpoc"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
 static VTOT: AtomicI64 = AtomicI64::new(0); // total video AUs fed (log cadence only)
 
@@ -58,6 +61,13 @@ pub(crate) struct Engine {
     pub cues_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
     pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
+    // soft WebVTT subtitle sidecar (transcode only): the socket box (M owns; subs thread
+    // uses via raw ptr, RAII like hs/hs2), the thread handle (spawned lazily by the pump),
+    // and the sid it is CURRENTLY streaming (0 = none; main-thread-confined).
+    #[allow(dead_code)]
+    pub hs3: Box<HttpStream>,
+    pub subs_th: Option<std::thread::JoinHandle<()>>,
+    pub subs_active_sid: i64,
 }
 
 static mut ENGINE: Option<Engine> = None; // main-thread-only slot
@@ -83,12 +93,13 @@ pub(crate) fn acb_init() {
     log(&format!("acb create={acb}"));
 }
 
-/// split Annex-B into AUs on the 5-byte AUD prefix 00 00 00 01 09
-fn bf_split(data: &[u8]) -> Vec<usize> {
+/// split Annex-B into AUs on the 5-byte AUD prefix 00 00 00 01 <aud5>
+/// (H264 AUD = 0x09; HEVC AUD is NAL type 35 → first header byte 0x46).
+fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
     let mut au = Vec::new();
     let mut i = 0usize;
     while i + 4 < data.len() {
-        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 && data[i + 4] == 0x09 {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 && data[i + 4] == aud5 {
             au.push(i);
             i += 4;
         }
@@ -136,28 +147,43 @@ pub(crate) fn start_bufferfeed() -> bool {
         }
     }
     let mut sample: Option<Box<SampleBuf>> = None;
+    let mut is_h265 = false;
     if url.is_empty() {
-        match std::fs::read("/tmp/sample.h264") {
-            Ok(data) => {
-                let au = bf_split(&data);
-                log(&format!("bf_split: {} AUs in {} bytes", au.len(), data.len()));
-                if au.len() < 2 {
-                    return false;
-                }
-                sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
+        if let Ok(data) = std::fs::read("/tmp/sample.h264") {
+            let au = bf_split(&data, 0x09);
+            log(&format!("bf_split h264: {} AUs in {} bytes", au.len(), data.len()));
+            if au.len() < 2 {
+                return false;
             }
-            Err(_) => {
-                url = crate::route::demo_url();
-                crate::route::set_url(&url);
+            sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
+        } else if let Ok(data) = std::fs::read("/tmp/sample.h265") {
+            // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
+            let au = bf_split(&data, 0x46);
+            log(&format!("bf_split h265: {} AUs in {} bytes", au.len(), data.len()));
+            if au.len() < 2 {
+                return false;
             }
+            is_h265 = true;
+            sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
+        } else {
+            url = crate::route::demo_url();
+            crate::route::set_url(&url);
         }
     }
     let stream = sample.is_none();
-    let payload_c = std::ffi::CString::new(if stream { PAYLOAD_AV } else { PAYLOAD_V }).unwrap();
+    let payload_c = std::ffi::CString::new(if stream {
+        PAYLOAD_AV
+    } else if is_h265 {
+        PAYLOAD_H265
+    } else {
+        PAYLOAD_V
+    })
+    .unwrap();
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();
     let mut hs2 = crate::stream::http_stream_boxed();
+    let mut hs3 = crate::stream::http_stream_boxed(); // soft-subs sidecar (spawned lazily by the pump)
     let mut aq_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
     let mut cues_th = None;
@@ -171,8 +197,10 @@ pub(crate) fn start_bufferfeed() -> bool {
         let aq_raw = &mut *q as *mut AuQueue;
         let hs_raw = &mut *hs as *mut HttpStream;
         let hs2_raw = &mut *hs2 as *mut HttpStream;
+        let hs3_raw = &mut *hs3 as *mut HttpStream;
         SHARED.hs_ptr.store(hs_raw, Ordering::Release);
         SHARED.hs2_ptr.store(hs2_raw, Ordering::Release);
+        SHARED.hs3_ptr.store(hs3_raw, Ordering::Release);
         SHARED.seek_byte.store(-1, Ordering::Relaxed);
         {
             let (h, p) = (host.clone(), path.clone());
@@ -226,6 +254,9 @@ pub(crate) fn start_bufferfeed() -> bool {
         cues_th,
         load_th,
         report_th,
+        hs3,
+        subs_th: None,
+        subs_active_sid: 0,
     };
     unsafe {
         *std::ptr::addr_of_mut!(ENGINE) = Some(eng);
@@ -258,6 +289,7 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
 
     // 1. stop the cue preflight FIRST + unblock every thread (abort queue, close sockets)
     SHARED.cues_abort.store(true, Ordering::Release);
+    SHARED.subs_abort.store(true, Ordering::Release); // stop the soft-subs sidecar thread
     SHARED.report_stop.store(true, Ordering::Release); // stop the /:/timeline reporter
     if stream {
         if let Some(q) = eng.aq.as_mut() {
@@ -271,6 +303,10 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
         if !p2.is_null() {
             crate::stream::http_close(p2);
         }
+        let p3 = SHARED.hs3_ptr.load(Ordering::Acquire);
+        if !p3.is_null() {
+            crate::stream::http_close(p3);
+        }
     }
     // 2. JOIN before touching the cue Vec (cue_cb writes it on the preflight thread)
     if let Some(t) = eng.cues_th.take() {
@@ -283,6 +319,9 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
         let _ = t.join();
     }
     if let Some(t) = eng.report_th.take() {
+        let _ = t.join();
+    }
+    if let Some(t) = eng.subs_th.take() {
         let _ = t.join();
     }
     // final position report (state=stopped) so the server commits the resume point
