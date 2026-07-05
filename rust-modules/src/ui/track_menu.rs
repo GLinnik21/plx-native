@@ -117,12 +117,18 @@ pub(crate) fn on_ok() {
     unsafe {
         let tab = addr_of!(TAB).read();
         let sel = addr_of!(SEL).read();
+        addr_of_mut!(OPEN).write(false);
         if tab == 0 {
+            let changed = addr_of!(ACTIVE_AUDIO).read() != sel;
             addr_of_mut!(ACTIVE_AUDIO).write(sel);
+            // switch the audio track (fresh transcode with the chosen source audio)
+            if changed {
+                crate::player::request_audio_switch(audio_stream_id());
+            }
         } else {
             addr_of_mut!(ACTIVE_SUB).write(sel - 1); // row 0 = Off = -1
+            // subtitle rendering is wired in increment 3
         }
-        addr_of_mut!(OPEN).write(false);
     }
 }
 

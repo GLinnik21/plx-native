@@ -223,6 +223,7 @@ pub extern "C" fn plex_run(
         let mut seek_tried = false;
         let mut detail_tried = false;
         let mut menu_tried = false;
+        let mut menupick_tried = false;
         let mut prev = 0u32;
         let mut last_wheel = 0u32;
 
@@ -619,6 +620,21 @@ pub extern "C" fn plex_run(
                     crate::ui::track_menu::open_tab(t.trim().parse::<c_int>().unwrap_or(0));
                     menu_open = true;
                     set_hud(now + 60000);
+                }
+            }
+            // dev: /tmp/poc-menupick="<tab>,<row>" opens the menu, selects that row, and
+            // confirms it (headless track switch: e.g. "0,4" = audio tab, row 4).
+            if !menupick_tried && playing && now.wrapping_sub(t0) > 7000 {
+                menupick_tried = true;
+                if let Ok(s) = std::fs::read_to_string("/tmp/poc-menupick") {
+                    let mut it = s.trim().split(',');
+                    let tab = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
+                    let row = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
+                    crate::ui::track_menu::open_tab(tab);
+                    for _ in 0..row {
+                        crate::ui::track_menu::move_focus(SDLK_DOWN as c_int);
+                    }
+                    crate::ui::track_menu::on_ok();
                 }
             }
             if is_started() {

@@ -34,6 +34,13 @@ pub(crate) struct Shared {
     // a transcode SEEK re-points the demux at a NEW start.mkv?&offset= URL (a live
     // transcode has no byte-Cues); byte-Range seeks leave this None. Taken on re-open.
     pub next_url: Mutex<Option<String>>,
+    // pending audio-track switch: the Plex audioStreamID to switch to (-1 = none). The
+    // pump forces a fresh transcode with that source audio at the current position.
+    pub pending_audio_sid: AtomicI64,
+    // the next re-open is a fresh full stream (a switch from direct-play whose track
+    // numbering differs from the transcode output) — re-parse Tracks (mkv_run) not
+    // mkv_seek_run. A plain transcode seek leaves this false (same target = same tracks).
+    pub reparse_next: AtomicBool,
 
     // demux (D) -> main (M)
     pub file_size: AtomicI64,                 // g_file_size
@@ -64,6 +71,8 @@ impl Shared {
             disp_base: AtomicI64::new(0),
             seek_byte: AtomicI64::new(-1),
             next_url: Mutex::new(None),
+            pending_audio_sid: AtomicI64::new(-1),
+            reparse_next: AtomicBool::new(false),
             file_size: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             cues: Mutex::new(Vec::new()),
@@ -86,6 +95,8 @@ impl Shared {
         self.disp_base.store(0, Ordering::Relaxed);
         self.seek_byte.store(-1, Ordering::Relaxed);
         *self.next_url.lock().unwrap() = None;
+        self.pending_audio_sid.store(-1, Ordering::Relaxed);
+        self.reparse_next.store(false, Ordering::Relaxed);
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
