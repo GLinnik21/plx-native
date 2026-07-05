@@ -43,14 +43,29 @@ fn g_fc() -> c_int {
     unsafe { addr_of!(fc).read() }
 }
 
-/// index the catalog; returns a pointer into it or null
+// Home grid is now N hub shelves of varying length (not the old fixed ROWS×COLS).
+// The Shelf/Grid arrays are sized to these maxima; the *actual* counts come from
+// pms::hub_count()/hub_len().
+const MAX_HUBS: usize = 16; // Continue Watching, On Deck, Recently Added, collections…
+const MAX_ITEMS: usize = 24; // cards per shelf
+
+/// the item at (hub row, column) in the home hub grid, or null
 pub(crate) fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie {
-    let idx = r as i64 * COLS as i64 + c as i64; // i64: never overflows
-    let n = crate::pms::nmovies() as i64;
-    if idx >= 0 && idx < n {
-        crate::pms::movie_ptr(idx as usize)
-    } else {
-        std::ptr::null_mut()
+    if r < 0 || c < 0 {
+        return std::ptr::null_mut();
+    }
+    crate::pms::hub_item_ptr(r as usize, c as usize)
+}
+
+/// resume bar along a card bottom (Continue Watching); no-op if not in progress
+fn resume_bar(p: Painter, r: Rect, m: &PmsMovie) {
+    if m.resume_ms > 0 && m.dur_ns > 0 {
+        let frac = (m.resume_ms as f32 * 1_000_000.0 / m.dur_ns as f32).clamp(0.0, 1.0);
+        let bh = 5.0f32;
+        let (bx, bw) = (r.x + 8.0, r.w - 16.0);
+        let by = r.y + r.h - bh - 8.0;
+        p.rrect(Rect::new(bx, by, bw, bh), bh * 0.5, bh * 0.5, [1.0, 1.0, 1.0, 0.28]);
+        p.rrect(Rect::new(bx, by, bw * frac, bh), bh * 0.5, bh * 0.5, [0.98, 0.72, 0.18, 0.95]);
     }
 }
 
@@ -182,10 +197,10 @@ impl Card {
     }
 }
 
-// ---- Shelf: one grid row = [Card;COLS] + its own horizontal scroll spring
+// ---- Shelf: one hub row = [Card;MAX_ITEMS] (only hub_len used) + its own scroll spring
 struct Shelf {
     row: usize,
-    cards: [Card; COLS],
+    cards: [Card; MAX_ITEMS],
     scroll_x: Spring,
     base_y: f32,
 }
@@ -195,26 +210,25 @@ impl Shelf {
     }
     fn update(&mut self, env: &Env) {
         let (f_r, f_c) = (env.fr as usize, env.fc as usize);
-        for c in 0..COLS {
+        let n = crate::pms::hub_len(self.row);
+        for c in 0..MAX_ITEMS {
             let target = if self.row == f_r && c == f_c { 1.055 } else { 1.0 };
             self.cards[c].scale.step(target, K_SCALE, env.dt);
         }
         // only the focused row's scroll animates (matches ui_home.c: springs scrollX[fr] alone)
-        if env.fr as usize == self.row {
-            let max_sx = (COLS as f32 * (CARD_W + GAP) - GAP - (SCR_W - 2.0 * MARGIN_X)).max(0.0);
+        if env.fr as usize == self.row && n > 0 {
+            let max_sx = (n as f32 * (CARD_W + GAP) - GAP - (SCR_W - 2.0 * MARGIN_X)).max(0.0);
             let want = (f_c as f32 * (CARD_W + GAP) - (CARD_W + GAP)).clamp(0.0, max_sx);
             self.scroll_x.step(want, K_SCROLL, env.dt);
         }
     }
     fn draw_cells(&self, env: &Env, p: Painter) {
-        for c in 0..COLS {
+        for c in 0..crate::pms::hub_len(self.row) {
             if self.row == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
                 continue; // focused card drawn last (grid z-order)
             }
             let m = unsafe { movie_at(self.row as c_int, c as c_int).as_ref() };
-            if m.is_none() {
-                continue;
-            }
+            let Some(mm) = m else { continue };
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.scroll_x.pos * env.sp;
             if x > SCR_W || x + CARD_W < -GLOW_PAD {
                 continue;
@@ -222,6 +236,7 @@ impl Shelf {
             let s = self.cards[c].scale.pos;
             let r = Rect::new(x, self.base_y + 12.0, CARD_W, CARD_H).scaled(s);
             draw_poster(p, m, r, 14.0 * s);
+            resume_bar(p, r, mm);
         }
     }
 }
@@ -229,7 +244,7 @@ impl Shelf {
 // ---- Grid: the collection view. Holds [Shelf;ROWS] + the vertical scroll spring,
 // drives nav/hit-test/wheel, draws all non-focused cells then the focused card last.
 struct Grid {
-    shelves: [Shelf; ROWS],
+    shelves: [Shelf; MAX_HUBS],
     scroll_y: Spring,
 }
 impl Grid {
@@ -240,51 +255,69 @@ impl Grid {
         for s in self.shelves.iter_mut() {
             s.update(env);
         }
-        let max_y = (ROWS as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0);
+        let nh = crate::pms::hub_count().max(1);
+        let max_y = (nh as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0);
         let want_y = (env.fr as f32 * ROW_PITCH - ROW_PITCH * 0.6).clamp(0.0, max_y);
         self.scroll_y.step(want_y, K_SCROLL, env.dt);
     }
     fn layout(&mut self, env: &Env) {
         let shelf_top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * env.sp; // 828 -> 150
-        for r in 0..ROWS {
+        for r in 0..MAX_HUBS {
             self.shelves[r].base_y = shelf_top + r as f32 * ROW_PITCH - self.scroll_y.pos * env.sp;
         }
     }
     fn draw(&self, env: &Env, p: Painter) {
-        for r in 0..ROWS {
+        let nh = crate::pms::hub_count();
+        for r in 0..nh {
             let row_y = self.shelves[r].base_y;
             if row_y > SCR_H || row_y + CARD_H < 0.0 {
                 continue;
             }
-            if movie_at(r as c_int, 0).is_null() {
-                continue;
+            // hub title above the row; it rises as the row's focused card magnifies so
+            // the title-to-card gap stays proportional (Apple-TV behavior).
+            if env.sp > 0.02 {
+                let fs = if r == env.fr as usize {
+                    self.shelves[r].cards[(env.fc as usize).min(MAX_ITEMS - 1)].scale.pos
+                } else {
+                    1.0
+                };
+                let lift = CARD_H * (fs - 1.0) * 0.5;
+                if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
+                    p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, 28, [0.93, 0.95, 0.98, env.sp], 0, 1);
+                }
             }
             self.shelves[r].draw_cells(env, p);
         }
         // focused card + ring + title, drawn LAST for z-order (grid mode only)
         if env.sp > 0.5 {
             let (r, c) = (env.fr as usize, env.fc as usize);
-            let s = self.shelves[r].cards[c].scale.pos;
+            if r >= nh {
+                return;
+            }
+            let s = self.shelves[r].cards[c.min(MAX_ITEMS - 1)].scale.pos;
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x.pos * env.sp;
             let rect = Rect::new(x, self.shelves[r].base_y + 12.0, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
             draw_poster(p, m, rect, 14.0 * s);
             p.ring(rect, GLOW_PAD, 14.0 * s, (s - 1.0) / 0.055);
-            if let Some(m) = m {
-                p.text(m.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, [0.96, 0.97, 0.98, 1.0], 1, 1);
+            if let Some(mm) = m {
+                resume_bar(p, rect, mm);
+                p.text(mm.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, [0.96, 0.97, 0.98, 1.0], 1, 1);
             }
         }
     }
     // ---- navigation: writes the fr/fc globals (never caches focus) ----
     fn nav(&self, sym: c_uint) {
         unsafe {
+            let nh = crate::pms::hub_count() as c_int;
+            let nc = crate::pms::hub_len(fr.max(0) as usize) as c_int;
             if sym == SDLK_LEFT && fc > 0 {
                 fc -= 1;
-            } else if sym == SDLK_RIGHT && fc < COLS as c_int - 1 {
+            } else if sym == SDLK_RIGHT && fc < nc - 1 {
                 fc += 1;
             } else if sym == SDLK_UP && fr > 0 {
                 self.vert(-1);
-            } else if sym == SDLK_DOWN && fr < ROWS as c_int - 1 {
+            } else if sym == SDLK_DOWN && fr < nh - 1 {
                 self.vert(1);
             }
         }
@@ -295,18 +328,19 @@ impl Grid {
         let cx = MARGIN_X + g_fc() as f32 * (CARD_W + GAP) - self.shelves[cur as usize].scroll_x.pos + CARD_W * 0.5;
         let mut nc =
             ((cx - MARGIN_X - CARD_W * 0.5 + self.shelves[ncur as usize].scroll_x.pos) / (CARD_W + GAP) + 0.5) as c_int;
-        nc = nc.clamp(0, COLS as c_int - 1);
+        let ncount = crate::pms::hub_len(ncur as usize) as c_int;
+        nc = nc.clamp(0, (ncount - 1).max(0));
         fr = ncur;
         fc = nc;
     }
     fn hit_test(&self, mx: f32, my: f32) {
         unsafe {
-            for r in 0..ROWS {
-                let row_y = CONTENT_Y + r as f32 * ROW_PITCH - self.scroll_y.pos + ROW_TITLE_H + 18.0;
+            for r in 0..crate::pms::hub_count() {
+                let row_y = self.shelves[r].base_y;
                 if my < row_y || my > row_y + CARD_H {
                     continue;
                 }
-                for c in 0..COLS {
+                for c in 0..crate::pms::hub_len(r) {
                     let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x.pos;
                     if mx >= x && mx <= x + CARD_W {
                         fr = r as c_int;
@@ -318,10 +352,15 @@ impl Grid {
     }
     fn wheel(&self, dy: c_int) {
         unsafe {
-            if dy < 0 && fr < ROWS as c_int - 1 {
+            let nh = crate::pms::hub_count() as c_int;
+            if dy < 0 && fr < nh - 1 {
                 fr += 1;
             } else if dy > 0 && fr > 0 {
                 fr -= 1;
+            }
+            let nc = crate::pms::hub_len(fr.max(0) as usize) as c_int;
+            if fc >= nc {
+                fc = (nc - 1).max(0);
             }
         }
     }
@@ -341,10 +380,12 @@ impl Home {
     }
     fn env(&self, dt: f32) -> Env {
         let sp = self.snap.pos;
-        // clamp the C-written focus into range so a stray write degrades (as in C) rather than
-        // panicking on a shelves[fr]/cards[fc] index. Normal main.c writes are already in range.
-        let cfr = g_fr().clamp(0, ROWS as c_int - 1);
-        let cfc = g_fc().clamp(0, COLS as c_int - 1);
+        // clamp the focus into the current hub bounds so a stray write degrades to a
+        // valid shelves[fr]/cards[fc] index rather than reading out of range.
+        let nh = crate::pms::hub_count().max(1) as c_int;
+        let cfr = g_fr().clamp(0, (nh - 1).min(MAX_HUBS as c_int - 1));
+        let ncols = crate::pms::hub_len(cfr as usize).max(1) as c_int;
+        let cfc = g_fc().clamp(0, (ncols - 1).min(MAX_ITEMS as c_int - 1));
         Env { dt, screen: Rect::FULL, fr: cfr, fc: cfc, sp, hero_a: (1.0 - sp / 0.55).clamp(0.0, 1.0) }
     }
 }
