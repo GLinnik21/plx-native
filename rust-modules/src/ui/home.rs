@@ -81,18 +81,23 @@ impl View for Backdrop {
     fn draw(&self, env: &Env, p: Painter) {
         let sp = env.sp;
         let hero = unsafe { movie_at(0, 0).as_ref() };
+        // flat dark-gray base — the shelves sit on this (so card focus shadows read),
+        // NOT the hero's ambient wash. Only the hero itself carries a backdrop.
+        let g = [0.10, 0.10, 0.115, 1.0];
+        p.rect(env.screen, 0.0, g, g, 0.0);
         let mut bt = 0u32;
         if let Some(h) = hero {
             if h.art[0] != 0 {
                 bt = crate::ui::widgets::resolve_tex(h.art.as_ptr() as *const c_char, 1280, 720, 0);
             }
-            if h.has_blur != 0 && (sp > 0.004 || bt == 0) {
-                p.ambient(env.screen, 0.55, h.blur);
+            // hero backdrop: art if present, else the ambient wash as a fallback — both
+            // confined to the hero view, fading out as the grid rises so the shelf area
+            // stays flat gray
+            if bt != 0 && sp < 0.996 {
+                p.tex(bt, Rect::new(0.0, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, 1.0 - sp]);
+            } else if bt == 0 && h.has_blur != 0 && sp < 0.996 {
+                p.ambient(env.screen, 0.55 * (1.0 - sp), h.blur);
             }
-        }
-        if bt != 0 && sp < 0.996 {
-            let ba = 1.0 - sp;
-            p.tex(bt, Rect::new(0.0, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, ba]);
         }
         if env.hero_a > 0.01 {
             let sa = 0.30 + 0.64 * env.hero_a;
