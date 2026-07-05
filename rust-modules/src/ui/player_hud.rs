@@ -58,6 +58,72 @@ fn draw_iconbtn(x: f32, y: f32, s: f32, which: i32, focused: bool) {
     }
 }
 
+/// naive word-wrap to `max` chars/line (on word boundaries)
+fn wrap(s: &str, max: usize) -> Vec<String> {
+    if s.chars().count() <= max {
+        return vec![s.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        if !cur.is_empty() && cur.chars().count() + 1 + word.chars().count() > max {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+/// client-rendered subtitle line(s), bottom-center, synced to the video clock. Drawn
+/// every frame independent of the transport HUD; hidden when subtitles are off or no
+/// cue is active at the current position.
+pub(crate) fn draw_subtitles(hud_up: bool) {
+    let text = match crate::player::active_subtitle(crate::player::playpos_ns()) {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => return,
+    };
+    let mut lines: Vec<String> = Vec::new();
+    for seg in text.split('\n') {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        for l in wrap(seg, 42) {
+            if lines.len() < 3 {
+                lines.push(l);
+            }
+        }
+    }
+    if lines.is_empty() {
+        return;
+    }
+    let sz = 36;
+    let lh = 48.0f32;
+    let n = lines.len() as f32;
+    let cx = SCR_W * 0.5;
+    // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up
+    let baseline = if hud_up { SCR_H - 300.0 } else { SCR_H - 100.0 };
+    let block_top = baseline - n * lh;
+    let white = [1.0f32, 1.0, 1.0, 1.0];
+    let outline = [0.0f32, 0.0, 0.0, 0.85];
+    for (i, ln) in lines.iter().enumerate() {
+        let top = block_top + i as f32 * lh;
+        if let Ok(cs) = CString::new(ln.as_str()) {
+            // dark outline (4 offsets) then bright white bold text — legible over any scene
+            for (dx, dy) in [(-2.0f32, 0.0f32), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
+                draw_text(cs.as_ptr(), cx + dx, top + 4.0 + dy, sz, outline.as_ptr(), 1, 1);
+            }
+            draw_text(cs.as_ptr(), cx, top + 4.0, sz, white.as_ptr(), 1, 1);
+        }
+    }
+}
+
 pub(crate) fn draw_hud() {
     {
         // bottom scrim: transparent -> dark

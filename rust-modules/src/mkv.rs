@@ -42,6 +42,11 @@ pub struct MkvCtx {
     pub(crate) naus_a: c_long,
     pub(crate) debug: c_int,
     pub(crate) laced_seen: c_int,
+    // subtitle tracks (text only), recorded in document order for client-side rendering.
+    // The active track is chosen by index via crate::player::desired_sub_idx().
+    pub(crate) strack_nums: [i64; 16],
+    pub(crate) strack_ass: [u8; 16], // 1 = ASS/SSA (strip fields+codes), 0 = SRT/plain UTF-8
+    pub(crate) nsub: c_int,
 }
 
 // ---- byte source ----
@@ -344,7 +349,21 @@ fn mkv_unlace(fd: &[u8], lacing: i32, off: &mut [i32], sz: &mut [i32], maxf: usi
 }
 
 // ---- one (Simple)Block -> AU(s) -> queue ----
-unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64) {
+/// Matroska track number of the currently-selected subtitle (by desired index), or -1
+unsafe fn active_sub_track(c: *mut MkvCtx) -> i64 {
+    let idx = crate::player::desired_sub_idx();
+    if idx < 0 || idx >= (*c).nsub {
+        return -1;
+    }
+    (*c).strack_nums[idx as usize]
+}
+unsafe fn active_sub_ass(c: *mut MkvCtx) -> bool {
+    let idx = crate::player::desired_sub_idx();
+    idx >= 0 && idx < (*c).nsub && (*c).strack_ass[idx as usize] != 0
+}
+
+/// `bdur` = BlockDuration in tscale units (-1 if none / SimpleBlock).
+unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i64) {
     let len = blk.len() as i32;
     if len < 4 {
         return;
@@ -372,6 +391,17 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64) {
     p += 2;
     let flags = blk[p as usize];
     p += 1;
+
+    // subtitle track -> a text cue for client-side rendering (direct-play only; a
+    // transcoded stream carries no subs). A distinct track from audio/video.
+    let sub_track = active_sub_track(c);
+    if sub_track >= 0 && track == sub_track {
+        let payload = &blk[p as usize..];
+        let start = (cluster_ts + rel) * (*c).tscale;
+        let end = start + if bdur > 0 { bdur * (*c).tscale } else { 4_000_000_000 };
+        crate::player::push_subtitle_cue(start, end, payload, active_sub_ass(c));
+        return;
+    }
 
     // audio track: unpack lacing, feed each raw frame (es=2)
     if (*c).has_audio != 0 && track as c_int == (*c).atrack {
@@ -550,6 +580,17 @@ unsafe fn mkv_parse_track_entry(c: *mut MkvCtx, size: i64) {
         if (*c).has_audio != 0 {
             (*c).atrack = tnum;
         }
+    } else if ttype == 17 && (*c).nsub < 16 {
+        // subtitle track — record TEXT subs (SRT/ASS) in document order for
+        // client-side rendering; image subs (PGS/VOBSUB) are skipped.
+        let is_srt = cid.starts_with(b"S_TEXT/UTF8") || cid.starts_with(b"S_TEXT/ASCII");
+        let is_ass = cid.starts_with(b"S_TEXT/ASS") || cid.starts_with(b"S_TEXT/SSA");
+        if is_srt || is_ass {
+            let i = (*c).nsub as usize;
+            (*c).strack_nums[i] = tnum as i64;
+            (*c).strack_ass[i] = is_ass as u8;
+            (*c).nsub += 1;
+        }
     }
 }
 
@@ -567,7 +608,7 @@ unsafe fn read_block(c: *mut MkvCtx, sz: i64, cluster_ts: i64) {
         let blk = libc::malloc(sz as usize) as *mut u8;
         if !blk.is_null() {
             msrc_read(c, blk, sz as c_int);
-            mkv_handle_block(c, std::slice::from_raw_parts(blk, sz as usize), cluster_ts);
+            mkv_handle_block(c, std::slice::from_raw_parts(blk, sz as usize), cluster_ts, -1);
             libc::free(blk as *mut c_void);
         } else {
             msrc_skip(c, sz);
@@ -597,8 +638,12 @@ unsafe fn mkv_parse_cluster(c: *mut MkvCtx, size: i64) {
         } else if id == 0xA3 {
             read_block(c, sz, cluster_ts); // SimpleBlock
         } else if id == 0xA0 {
-            // BlockGroup -> find Block
+            // BlockGroup -> Block (+ optional BlockDuration for a subtitle cue's end).
+            // Buffer the Block and read BlockDuration (either order), then handle once.
             let mut bc = 0i64;
+            let mut bdur = -1i64;
+            let mut bptr: *mut u8 = std::ptr::null_mut();
+            let mut blen = 0i64;
             while sz < 0 || bc < sz {
                 let mut bid = 0u32;
                 let mut bil = 0i32;
@@ -611,8 +656,16 @@ unsafe fn mkv_parse_cluster(c: *mut MkvCtx, size: i64) {
                     break;
                 }
                 bc += (bil + bsl) as i64;
-                if bid == 0xA1 && bsz >= 0 && bsz <= (*c).scratch_cap as i64 {
-                    read_block(c, bsz, cluster_ts);
+                if bid == 0xA1 && bptr.is_null() && bsz >= 0 && bsz <= (*c).scratch_cap as i64 {
+                    bptr = libc::malloc(bsz as usize) as *mut u8;
+                    if !bptr.is_null() {
+                        msrc_read(c, bptr, bsz as c_int);
+                        blen = bsz;
+                    } else {
+                        msrc_skip(c, bsz);
+                    }
+                } else if bid == 0x9B && bsz >= 0 {
+                    bdur = ebml_uint(c, bsz);
                 } else if bsz >= 0 {
                     msrc_skip(c, bsz);
                 } else {
@@ -621,6 +674,10 @@ unsafe fn mkv_parse_cluster(c: *mut MkvCtx, size: i64) {
                 if bsz >= 0 {
                     bc += bsz;
                 }
+            }
+            if !bptr.is_null() {
+                mkv_handle_block(c, std::slice::from_raw_parts(bptr, blen as usize), cluster_ts, bdur);
+                libc::free(bptr as *mut c_void);
             }
         } else if sz >= 0 {
             msrc_skip(c, sz);

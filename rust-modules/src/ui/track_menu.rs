@@ -127,7 +127,7 @@ pub(crate) fn on_ok() {
             }
         } else {
             addr_of_mut!(ACTIVE_SUB).write(sel - 1); // row 0 = Off = -1
-            // subtitle rendering is wired in increment 3
+            crate::player::request_subtitle(active_sub()); // -1 = off, else 0-based sub index
         }
     }
 }

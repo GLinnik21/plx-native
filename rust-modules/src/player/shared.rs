@@ -14,6 +14,13 @@ pub(crate) struct CueEnt {
     pub byte: i64,
 } // was struct cue_ent
 
+/// one client-rendered subtitle cue (content-time ns), demuxed from the MKV
+pub(crate) struct SubCue {
+    pub start_ns: i64,
+    pub end_ns: i64,
+    pub text: String,
+}
+
 pub(crate) struct Shared {
     // library callback thread (K) -> main (M)
     pub playpos_ns: AtomicI64,               // g_playpos_ns
@@ -41,6 +48,11 @@ pub(crate) struct Shared {
     // numbering differs from the transcode output) — re-parse Tracks (mkv_run) not
     // mkv_seek_run. A plain transcode seek leaves this false (same target = same tracks).
     pub reparse_next: AtomicBool,
+
+    // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
+    // demux (D) pushes cues; main (M) reads the active one for the current playpos.
+    pub desired_sub_idx: AtomicI32,
+    pub sub_cues: Mutex<Vec<SubCue>>,
 
     // demux (D) -> main (M)
     pub file_size: AtomicI64,                 // g_file_size
@@ -73,6 +85,8 @@ impl Shared {
             next_url: Mutex::new(None),
             pending_audio_sid: AtomicI64::new(-1),
             reparse_next: AtomicBool::new(false),
+            desired_sub_idx: AtomicI32::new(-1),
+            sub_cues: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             cues: Mutex::new(Vec::new()),
@@ -97,6 +111,8 @@ impl Shared {
         *self.next_url.lock().unwrap() = None;
         self.pending_audio_sid.store(-1, Ordering::Relaxed);
         self.reparse_next.store(false, Ordering::Relaxed);
+        self.desired_sub_idx.store(-1, Ordering::Relaxed);
+        self.sub_cues.lock().unwrap().clear();
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
