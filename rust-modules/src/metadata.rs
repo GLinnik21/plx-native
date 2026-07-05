@@ -39,6 +39,8 @@ pub(crate) struct Episode {
     pub(crate) resume_ms: i64, // viewOffset (0 = not started)
     pub(crate) part: String,   // Media[0].Part[0].key (to play)
     pub(crate) rating: String,
+    pub(crate) vcodec: String, // Media[0].videoCodec (for the direct-play/transcode decision)
+    pub(crate) acodec: String, // Media[0].audioCodec
 }
 
 pub(crate) struct Season {
@@ -232,18 +234,23 @@ fn fetch_episodes(host: &str, port: c_int, token: &str, season_rk: &str) -> Vec<
     };
     metas(&json)
         .iter()
-        .map(|x| Episode {
-            rk: jstr(x.get("ratingKey")),
-            index: jint(x.get("index")),
-            season: jint(x.get("parentIndex")),
-            title: jstr(x.get("title")),
-            summary: jstr(x.get("summary")),
-            aired: jstr(x.get("originallyAvailableAt")),
-            dur_ms: jint(x.get("duration")),
-            thumb: jstr(x.get("thumb")),
-            resume_ms: jint(x.get("viewOffset")),
-            part: first_part(x),
-            rating: jstr(x.get("contentRating")),
+        .map(|x| {
+            let media0 = x.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first());
+            Episode {
+                rk: jstr(x.get("ratingKey")),
+                index: jint(x.get("index")),
+                season: jint(x.get("parentIndex")),
+                title: jstr(x.get("title")),
+                summary: jstr(x.get("summary")),
+                aired: jstr(x.get("originallyAvailableAt")),
+                dur_ms: jint(x.get("duration")),
+                thumb: jstr(x.get("thumb")),
+                resume_ms: jint(x.get("viewOffset")),
+                part: first_part(x),
+                rating: jstr(x.get("contentRating")),
+                vcodec: media0.map(|m| jstr(m.get("videoCodec"))).unwrap_or_default(),
+                acodec: media0.map(|m| jstr(m.get("audioCodec"))).unwrap_or_default(),
+            }
         })
         .collect()
 }
