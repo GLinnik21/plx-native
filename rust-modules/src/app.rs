@@ -219,6 +219,7 @@ pub extern "C" fn plex_run(
         let mut auto_tried = false;
         let mut grid_tried = false;
         let mut seek_tried = false;
+        let mut detail_tried = false;
         let mut prev = 0u32;
         let mut last_wheel = 0u32;
 
@@ -520,6 +521,16 @@ pub extern "C" fn plex_run(
                 if std::path::Path::new("/tmp/poc-grid").exists() {
                     set_snap(1.0);
                     set_fr(0);
+                }
+            }
+            // dev: /tmp/poc-detail=<ratingKey> loads that item's detail once (data-layer probe)
+            if !detail_tried && now.wrapping_sub(t0) > 500 {
+                detail_tried = true;
+                if let Ok(rk) = std::fs::read_to_string("/tmp/poc-detail") {
+                    let rk = rk.trim();
+                    if !rk.is_empty() {
+                        crate::metadata::load_detail(rk);
+                    }
                 }
             }
             if !seek_tried && playing && dur() > 0 && now.wrapping_sub(t0) > 12000 {
