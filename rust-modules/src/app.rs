@@ -335,16 +335,12 @@ pub extern "C" fn plex_run(
                             }
                             set_hud(last_input + 4500);
                         } else if detail_open {
-                            // Play button (focus 0): a movie plays directly; a show plays
-                            // its first episode (wired with the episodes row, increment 2).
-                            if crate::ui::detail::focus() == 0 && !crate::ui::detail::is_show() {
-                                let m = crate::ui::detail::selected_ptr();
-                                if !m.is_null() {
-                                    crate::route::play_movie(m);
-                                    playing = crate::player::start_bufferfeed();
-                                    set_paused(false);
-                                    set_hud(last_input + 4500);
-                                }
+                            // OK on the detail page: Play/episode starts playback (route
+                            // already set by on_ok); a season tab just switches season.
+                            if crate::ui::detail::on_ok() {
+                                playing = crate::player::start_bufferfeed();
+                                set_paused(false);
+                                set_hud(last_input + 4500);
                             }
                         } else {
                             // home: OK opens the detail page for the focused item
@@ -551,6 +547,20 @@ pub extern "C" fn plex_run(
                         if idx >= 0 {
                             crate::ui::detail::open(idx);
                             detail_open = true;
+                            // dev: /tmp/poc-detailsec=N jumps N sections down (headless episode/row capture)
+                            if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailsec") {
+                                for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
+                                    crate::ui::detail::move_focus(SDLK_DOWN as c_int);
+                                }
+                            }
+                            // dev: /tmp/poc-detailplay activates the focused control (headless play test)
+                            if std::path::Path::new("/tmp/poc-detailplay").exists()
+                                && crate::ui::detail::on_ok()
+                            {
+                                playing = crate::player::start_bufferfeed();
+                                set_paused(false);
+                                set_hud(now + 60000);
+                            }
                         } else {
                             crate::metadata::load_detail(rk); // off-catalog rk: load data only
                         }

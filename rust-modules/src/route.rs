@@ -120,6 +120,42 @@ unsafe fn set_c(dst: *mut c_char, cap: usize, s: &str) {
     out[n] = 0;
 }
 
+/// Pick the stream URL for an item: direct-play only H264+AC3 (what the pipeline
+/// decodes natively); else ask the server to transcode into progressive H264+AC3
+/// Matroska (same MKV demuxer eats it). Returns (url, transcode session). On the
+/// transcode path this also runs the /decision handshake and stores TBASE for seeks.
+fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, String) {
+    let cfg = match unsafe { (*addr_of!(CFG)).as_ref() } {
+        Some(c) => c,
+        None => return (String::new(), String::new()),
+    };
+    let directplay = vcodec == "h264" && acodec == "ac3";
+    if (directplay || rk.is_empty()) && !part.is_empty() {
+        return (format!("http://{}:{}{}?X-Plex-Token={}", cfg.host, cfg.port, part, cfg.token), String::new());
+    }
+    let profe = crate::pms::urlenc_str(
+        "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
+         &container=matroska&videoCodec=h264&audioCodec=ac3)",
+    );
+    let session = format!("plexpoc-{rk}");
+    // params shared by the /decision handshake and the /start.mkv stream
+    let base = format!(
+        "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
+         &directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000\
+         &session={session}&X-Plex-Session-Identifier={session}&X-Plex-Client-Identifier={session}\
+         &X-Plex-Product=plexpoc&X-Plex-Version=1&X-Plex-Platform=Generic\
+         &X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={}",
+        cfg.token
+    );
+    // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
+    unsafe { *addr_of_mut!(TBASE) = base.clone() };
+    // the universal transcoder needs /decision to REGISTER the session before start.mkv streams
+    let dpath = format!("/video/:/transcode/universal/decision?{base}");
+    let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
+    let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{base}", cfg.host, cfg.port);
+    (url, session)
+}
+
 /// Set the stream URL + HUD strings from a selected movie (direct-play or transcode).
 pub(crate) fn play_movie(m: *mut PmsMovie) {
     let m = match unsafe { m.as_ref() } {
@@ -129,11 +165,6 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
     if m.part[0] == 0 {
         return;
     }
-    let cfg = match unsafe { (*addr_of!(CFG)).as_ref() } {
-        Some(c) => c,
-        None => return,
-    };
-
     // HUD title + context line ("YEAR · RATING · Hh Mm")
     let title = cfield(&m.title);
     let mut rating = cfield(&m.rating);
@@ -151,39 +182,23 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
         set_c(addr_of_mut!(TITLE) as *mut c_char, 128, &title);
         set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, &ctx);
     }
+    let (url, session) = build_stream(&cfield(&m.rk), &cfield(&m.part), &cfield(&m.vcodec), &cfield(&m.acodec));
+    unsafe {
+        *addr_of_mut!(URL) = url;
+        *addr_of_mut!(TSESSION) = session;
+    }
+}
 
-    // direct-play only H264+AC3 (what the pipeline decodes natively); else ask the
-    // server to transcode into progressive H264+AC3 Matroska (same MKV demuxer eats it).
-    let vcodec = cfield(&m.vcodec);
-    let acodec = cfield(&m.acodec);
-    let rk = cfield(&m.rk);
-    let part = cfield(&m.part);
-    let directplay = vcodec == "h264" && acodec == "ac3";
-    let (url, session) = if directplay || rk.is_empty() {
-        (format!("http://{}:{}{}?X-Plex-Token={}", cfg.host, cfg.port, part, cfg.token), String::new())
-    } else {
-        let profe = crate::pms::urlenc_str(
-            "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
-             &container=matroska&videoCodec=h264&audioCodec=ac3)",
-        );
-        let session = format!("plexpoc-{rk}");
-        // params shared by the /decision handshake and the /start.mkv stream
-        let base = format!(
-            "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
-             &directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000\
-             &session={session}&X-Plex-Session-Identifier={session}&X-Plex-Client-Identifier={session}\
-             &X-Plex-Product=plexpoc&X-Plex-Version=1&X-Plex-Platform=Generic\
-             &X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={}",
-            cfg.token
-        );
-        // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
-        unsafe { *addr_of_mut!(TBASE) = base.clone() };
-        // the universal transcoder needs /decision to REGISTER the session before start.mkv streams
-        let dpath = format!("/video/:/transcode/universal/decision?{base}");
-        let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
-        let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{base}", cfg.host, cfg.port);
-        (url, session)
-    };
+/// Set the stream URL + HUD strings for a TV episode (from the detail page).
+pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud_title: &str, hud_ctx: &str) {
+    if part.is_empty() && rk.is_empty() {
+        return;
+    }
+    unsafe {
+        set_c(addr_of_mut!(TITLE) as *mut c_char, 128, hud_title);
+        set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, hud_ctx);
+    }
+    let (url, session) = build_stream(rk, part, vcodec, acodec);
     unsafe {
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
