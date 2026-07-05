@@ -22,6 +22,18 @@ static mut CUR_SUB_SID: i64 = 0;
 // the playing item's Part id (from the part key), so an audio switch can PUT the
 // server-side stream selection — the transcoder encodes the part's SELECTED audio.
 static mut CUR_PART_ID: i64 = 0;
+// A STABLE device id for X-Plex-Client-Identifier (NEVER varies per item) — one binary is
+// one device to the server. Fixes the old bug of sending the transcode session string here.
+const DEVICE_ID: &str = "9b7d2f1a-4c63-4e18-a5d0-7f3b8c2e6a94";
+// Opaque per-PLAYBACK session id: used as BOTH the transcode session= param AND the timeline
+// X-Plex-Session-Identifier — they must match byte-for-byte so /status/sessions correlates the
+// transcode with the report. Regenerated on each play_movie/play_episode.
+static mut SESS: String = String::new();
+// GET /identity machineIdentifier, cached once — needed for the PlayQueue uri.
+static mut MACHINE_ID: String = String::new();
+// This playback's PlayQueue ids for the timeline (empty if /playQueues failed).
+static mut PQ_ID: String = String::new();
+static mut PQ_ITEM_ID: String = String::new();
 // When true, a selected subtitle is BURNED into the transcode (server-side) — the
 // pre-WebVTT behavior, kept as an escape hatch. When false (default), a selected
 // subtitle rides a soft WebVTT sidecar (player::request_soft_subs + transcode_subtitles_url)
@@ -74,8 +86,27 @@ pub(crate) fn cur_sub_sid() -> i64 {
 pub(crate) fn cur_rk() -> String {
     unsafe { (*addr_of!(CUR_RK)).clone() }
 }
-fn cur_audio_sid() -> i64 {
+pub(crate) fn cur_audio_sid() -> i64 {
     unsafe { addr_of!(CUR_AUDIO_SID).read() }
+}
+/// The current playback's session id (X-Plex-Session-Identifier == transcode session=).
+pub(crate) fn sess() -> String {
+    unsafe { (*addr_of!(SESS)).clone() }
+}
+pub(crate) fn pq_id() -> String {
+    unsafe { (*addr_of!(PQ_ID)).clone() }
+}
+pub(crate) fn pq_item_id() -> String {
+    unsafe { (*addr_of!(PQ_ITEM_ID)).clone() }
+}
+/// The §3b identity query params (stable device id + product/platform/model/…), appended to
+/// every playback request so the server names + groups this client and shows a proper Player.
+pub(crate) fn identity_qs() -> String {
+    format!(
+        "&X-Plex-Client-Identifier={DEVICE_ID}&X-Plex-Product=Plex%20POC&X-Plex-Version=0.1.0\
+         &X-Plex-Platform=webOS&X-Plex-Platform-Version=4.5&X-Plex-Device=webOS\
+         &X-Plex-Device-Name=Living%20Room%20TV&X-Plex-Model=49SM9000PLA&X-Plex-Provides=player"
+    )
 }
 pub(crate) fn demo_url() -> String {
     unsafe { (*addr_of!(CFG)).as_ref().map(|c| c.demo_url.clone()).unwrap_or_default() }
@@ -99,7 +130,7 @@ pub(crate) fn stop_transcode() {
     }
     if let Some(cfg) = unsafe { (*addr_of!(CFG)).as_ref() } {
         let sp = format!(
-            "/video/:/transcode/universal/stop?session={sess}&X-Plex-Client-Identifier={sess}&X-Plex-Token={}",
+            "/video/:/transcode/universal/stop?session={sess}&X-Plex-Client-Identifier={DEVICE_ID}&X-Plex-Token={}",
             cfg.token
         );
         let _ = crate::stream::http_get(&cfg.host, cfg.port, &sp, None);
@@ -162,7 +193,7 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
         "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
          &container=matroska&videoCodec=h264&audioCodec=ac3)",
     );
-    let session = format!("plexpoc-{rk}");
+    let session = sess(); // per-playback id (set by build_stream); shared with the timeline
     let audio_p = match cur_audio_sid() {
         0 => String::new(),
         a => format!("&audioStreamID={a}"),
@@ -181,10 +212,10 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
         "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
          &directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000\
          {audio_p}{sub_p}\
-         &session={session}&X-Plex-Session-Identifier={session}&X-Plex-Client-Identifier={session}\
-         &X-Plex-Product=plexpoc&X-Plex-Version=1&X-Plex-Platform=Generic\
-         &X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={}",
-        cfg.token
+         &session={session}&X-Plex-Session-Identifier={session}{id}\
+         &X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
+        id = identity_qs(),
+        tok = cfg.token
     )
 }
 
@@ -228,6 +259,88 @@ pub(crate) fn transcode_subtitles_url(sub_sid: i64, offset_secs: i64) -> Option<
     Some(format!("http://{}:{}/video/:/transcode/universal/subtitles?{q}", cfg.host, cfg.port))
 }
 
+/// Fresh opaque session id per playback. Reads the kernel UUID (the TV is Linux); falls
+/// back to a ratingKey + monotonic-counter token if that read fails.
+fn new_sess(rk: &str) -> String {
+    if let Ok(u) = std::fs::read_to_string("/proc/sys/kernel/random/uuid") {
+        let t = u.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(1);
+    format!("plexpoc-{rk}-{}", CTR.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Find `"key":<number>` in a JSON body (attributes come back as ints with Accept: json).
+fn find_num(body: &str, key: &str) -> Option<i64> {
+    let pat = format!("\"{key}\":");
+    let i = body.find(&pat)? + pat.len();
+    let rest = &body[i..];
+    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+    rest[..end].trim().parse::<i64>().ok()
+}
+/// Find `"key":"<value>"` in a JSON body.
+fn find_str(body: &str, key: &str) -> Option<String> {
+    let pat = format!("\"{key}\":\"");
+    let i = body.find(&pat)? + pat.len();
+    let rest = &body[i..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Cache the server machineIdentifier (once) from GET /identity — needed for the PlayQueue uri.
+fn ensure_machine_id(cfg: &Cfg) {
+    if !unsafe { &*addr_of!(MACHINE_ID) }.is_empty() {
+        return;
+    }
+    let p = format!("/identity?X-Plex-Token={}", cfg.token);
+    if let Some(body) = crate::stream::http_get(&cfg.host, cfg.port, &p, Some("Accept: application/json\r\n")) {
+        if let Some(mid) = find_str(&String::from_utf8_lossy(&body), "machineIdentifier") {
+            unsafe { *addr_of_mut!(MACHINE_ID) = mid };
+        }
+    }
+}
+
+/// Create a PlayQueue for `rk` so the session is a first-class, remote-controllable player and
+/// the timeline can carry a real playQueueItemID. Best-effort: on failure the timeline still
+/// works (just without the queue ids).
+fn ensure_playqueue(cfg: &Cfg, rk: &str, session: &str) {
+    unsafe {
+        *addr_of_mut!(PQ_ID) = String::new();
+        *addr_of_mut!(PQ_ITEM_ID) = String::new();
+    }
+    ensure_machine_id(cfg);
+    let mid = unsafe { (*addr_of!(MACHINE_ID)).clone() };
+    if mid.is_empty() {
+        crate::player::log("playqueue: no machineIdentifier (skip)");
+        return;
+    }
+    let uri = crate::pms::urlenc_str(&format!(
+        "server://{mid}/com.plexapp.plugins.library/library/metadata/{rk}"
+    ));
+    let p = format!(
+        "/playQueues?type=video&uri={uri}&continuous=1&shuffle=0&repeat=0\
+         &X-Plex-Session-Identifier={session}{id}&X-Plex-Token={tok}",
+        id = identity_qs(),
+        tok = cfg.token
+    );
+    match crate::stream::http_post(&cfg.host, cfg.port, &p, Some("Accept: application/json\r\n")) {
+        Some(body) => {
+            let s = String::from_utf8_lossy(&body);
+            let pq = find_num(&s, "playQueueID").unwrap_or(0);
+            let it = find_num(&s, "playQueueSelectedItemID").unwrap_or(0);
+            unsafe {
+                *addr_of_mut!(PQ_ID) = if pq > 0 { pq.to_string() } else { String::new() };
+                *addr_of_mut!(PQ_ITEM_ID) = if it > 0 { it.to_string() } else { String::new() };
+            }
+            crate::player::log(&format!("playqueue: id={pq} item={it}"));
+        }
+        None => crate::player::log("playqueue: POST failed"),
+    }
+}
+
 /// Pick the stream URL for an item: direct-play only H264+AC3 (what the pipeline
 /// decodes natively); else ask the server to transcode into progressive H264+AC3
 /// Matroska (same MKV demuxer eats it). Returns (url, transcode session). On the
@@ -237,11 +350,26 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
         Some(c) => c,
         None => return (String::new(), String::new()),
     };
+    // fresh per-playback session id (BOTH direct-play and transcode report through it) +
+    // a PlayQueue so the server tracks this as a real player with a playQueueItemID.
+    let session = new_sess(rk);
+    unsafe { *addr_of_mut!(SESS) = session.clone() };
+    if !rk.is_empty() {
+        ensure_playqueue(cfg, rk, &session);
+    }
     let directplay = vcodec == "h264" && acodec == "ac3";
     if (directplay || rk.is_empty()) && !part.is_empty() {
-        return (format!("http://{}:{}{}?X-Plex-Token={}", cfg.host, cfg.port, part, cfg.token), String::new());
+        // direct-play: no transcode session (transcode_session() stays empty). Carry the
+        // session id + identity on the file GET so PMS keys the /status/sessions entry by
+        // SESS (not a token= fallback), keeping the timeline correlation consistent.
+        return (
+            format!(
+                "http://{}:{}{}?X-Plex-Token={}&X-Plex-Session-Identifier={}{}",
+                cfg.host, cfg.port, part, cfg.token, session, identity_qs()
+            ),
+            String::new(),
+        );
     }
-    let session = format!("plexpoc-{rk}");
     let base = transcode_base(rk, cfg);
     // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
     unsafe { *addr_of_mut!(TBASE) = base.clone() };
