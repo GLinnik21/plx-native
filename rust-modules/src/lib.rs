@@ -9,6 +9,7 @@ mod img;
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod mkv;
 mod player; // buffer-feed video engine (was playback.c) — step 5
+mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (unused; call sites migrate later)
 mod pms;
 mod posters;
 mod route; // play_movie route selection (direct-play vs transcode) — step 3

@@ -16,6 +16,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 libc = "0.2"
 # JSON parsing for the pms module (replaces the C's hand-rolled string scrape)
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# derive(Deserialize) for the typed plex API response models (src/plex/models.rs)
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
 [profile.release]
 opt-level = 2
