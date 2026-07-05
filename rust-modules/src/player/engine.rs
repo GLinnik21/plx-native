@@ -57,6 +57,7 @@ pub(crate) struct Engine {
     pub stream_th: Option<std::thread::JoinHandle<()>>,
     pub cues_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
+    pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
 }
 
 static mut ENGINE: Option<Engine> = None; // main-thread-only slot
@@ -197,6 +198,19 @@ pub(crate) fn start_bufferfeed() -> bool {
     let payload_ptr = threads::SendPtr(payload_c.as_ptr() as *mut c_char);
     let load_th = Some(std::thread::spawn(move || threads::load_thread(payload_ptr)));
 
+    // progress reporter: post the play position to /:/timeline (updates resume + watched).
+    // rk is captured now (fixed for the session); skipped for the sample/demo (no rk).
+    SHARED.report_stop.store(false, Ordering::Relaxed);
+    let report_th = if stream {
+        let rk = crate::route::cur_rk();
+        match (rk.is_empty(), crate::route::config()) {
+            (false, Some((h, p, t))) => Some(std::thread::spawn(move || threads::timeline_thread(h, p, t, rk))),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let eng = Engine {
         stage: Stage::Loading,
         video_info_sent: false,
@@ -211,6 +225,7 @@ pub(crate) fn start_bufferfeed() -> bool {
         stream_th,
         cues_th,
         load_th,
+        report_th,
     };
     unsafe {
         *std::ptr::addr_of_mut!(ENGINE) = Some(eng);
@@ -229,8 +244,21 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
     };
     let stream = matches!(eng.source, Source::Stream { .. });
 
+    // capture the final-position report BEFORE teardown zeroes playpos/duration
+    let final_report = {
+        let rk = crate::route::cur_rk();
+        let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+        if !rk.is_empty() && dur > 0 {
+            crate::route::config()
+                .map(|(h, p, t)| (h, p, t, rk, SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000, dur / 1_000_000))
+        } else {
+            None
+        }
+    };
+
     // 1. stop the cue preflight FIRST + unblock every thread (abort queue, close sockets)
     SHARED.cues_abort.store(true, Ordering::Release);
+    SHARED.report_stop.store(true, Ordering::Release); // stop the /:/timeline reporter
     if stream {
         if let Some(q) = eng.aq.as_mut() {
             crate::aq::aq_abort(&mut **q);
@@ -253,6 +281,18 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
     }
     if let Some(t) = eng.load_th.take() {
         let _ = t.join();
+    }
+    if let Some(t) = eng.report_th.take() {
+        let _ = t.join();
+    }
+    // final position report (state=stopped) so the server commits the resume point
+    if let Some((h, p, t, rk, pos, dur)) = final_report {
+        let path = format!(
+            "/:/timeline?ratingKey={rk}&key=%2Flibrary%2Fmetadata%2F{rk}&state=stopped\
+             &time={pos}&duration={dur}&X-Plex-Client-Identifier=com.glin.plexpoc&X-Plex-Token={t}"
+        );
+        let _ = crate::stream::http_get(&h, p, &path, None);
+        log(&format!("timeline stopped t={}s/{}s", pos / 1000, dur / 1000));
     }
     // 3. unload + destruct the pipeline, release the plane
     if unsafe { ffi::sf_ready() } != 0 {

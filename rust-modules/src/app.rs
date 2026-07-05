@@ -222,6 +222,7 @@ pub extern "C" fn plex_run(
         let mut grid_tried = false;
         let mut seek_tried = false;
         let mut detail_tried = false;
+        let mut pending_resume: i64 = 0; // seek here once the pipeline is ready (viewOffset resume)
         let mut menu_tried = false;
         let mut menupick_tried = false;
         let mut prev = 0u32;
@@ -364,6 +365,7 @@ pub extern "C" fn plex_run(
                             // already set by on_ok); a season tab just switches season.
                             if crate::ui::detail::on_ok() {
                                 playing = crate::player::start_bufferfeed();
+                                pending_resume = crate::ui::detail::last_resume_ns();
                                 set_paused(false);
                                 set_hud(last_input + 4500);
                             }
@@ -598,6 +600,7 @@ pub extern "C" fn plex_run(
                                 && crate::ui::detail::on_ok()
                             {
                                 playing = crate::player::start_bufferfeed();
+                                pending_resume = crate::ui::detail::last_resume_ns();
                                 set_paused(false);
                                 set_hud(now + 60000);
                             }
@@ -606,6 +609,13 @@ pub extern "C" fn plex_run(
                         }
                     }
                 }
+            }
+            // resume from viewOffset: seek once the pipeline is live (frames flowing +
+            // duration known), so the initial seek doesn't race the ACB bind
+            if pending_resume > 0 && playing && dur() > 0 && frames() > 0 {
+                request_seek(pending_resume);
+                log(&format!("resume: seek to {}s", pending_resume / 1_000_000_000));
+                pending_resume = 0;
             }
             if !seek_tried && playing && dur() > 0 && now.wrapping_sub(t0) > 12000 {
                 seek_tried = true;

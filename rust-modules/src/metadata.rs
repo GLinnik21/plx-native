@@ -70,6 +70,7 @@ pub(crate) struct Detail {
     pub(crate) studio: String,
     pub(crate) aired: String,
     pub(crate) dur_ms: i64,
+    pub(crate) resume_ms: i64, // viewOffset (0 = not partially watched) — the resume position
     pub(crate) art: String,
     pub(crate) thumb: String,
     pub(crate) genres: Vec<String>,
@@ -156,6 +157,7 @@ fn fetch_detail(host: &str, port: c_int, token: &str, rk: &str) -> Option<Detail
         studio: jstr(it.get("studio")),
         aired: jstr(it.get("originallyAvailableAt")),
         dur_ms: jint(it.get("duration")),
+        resume_ms: jint(it.get("viewOffset")),
         art: jstr(it.get("art")),
         thumb: jstr(it.get("thumb")),
         genres: tags(it, "Genre"),
