@@ -733,6 +733,17 @@ pub(crate) fn open_rk(rk: &str) {
     metadata::load_detail(rk);
 }
 
+/// Open the SHOW detail page for `show_rk` with the season numbered `season_num` selected
+/// (a season entry point routes to the show page, not a standalone season page).
+pub(crate) fn open_rk_season(show_rk: &str, season_num: c_int) {
+    open_rk(show_rk);
+    if let Some(d) = metadata::current() {
+        if let Some(pos) = d.seasons.iter().position(|s| s.index as c_int == season_num) {
+            metadata::load_season(pos);
+        }
+    }
+}
+
 fn play_episode_at(i: c_int) -> bool {
     let d = match metadata::current() {
         Some(d) => d,

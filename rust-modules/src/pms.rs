@@ -24,14 +24,17 @@ pub struct PmsMovie {
     pub(crate) acodec: [u8; 12],
     pub(crate) blur: [[f32; 3]; 4],
     pub(crate) has_blur: c_int,
-    pub(crate) kind: c_int,     // 0 = movie, 1 = show (a container: play episodes, no direct Part)
+    pub(crate) kind: c_int,     // 0 = movie, 1 = show, 2 = season, 3 = episode
     pub(crate) resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
+    pub(crate) show_rk: [u8; 16],   // parent show rk (episode: grandparent; season: parent)
+    pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
 }
 impl PmsMovie {
     const ZERO: PmsMovie = PmsMovie {
         title: [0; 128], year: 0, rating: [0; 12], dur_ns: 0, part: [0; 256],
         thumb: [0; 128], art: [0; 128], summary: [0; 600], rk: [0; 16],
         vcodec: [0; 12], acodec: [0; 12], blur: [[0.0; 3]; 4], has_blur: 0, kind: 0, resume_ms: 0,
+        show_rk: [0; 16], season_index: 0,
     };
 }
 
@@ -115,7 +118,25 @@ pub(crate) fn urlenc_str(src: &str) -> String {
 /// Parse one Plex `Metadata` item (from a section listing OR a hub) into a catalog row.
 fn parse_item(m: &mut PmsMovie, item: &Value) {
     *m = PmsMovie::ZERO;
-    m.kind = if jstr(item.get("type")) == "show" { 1 } else { 0 };
+    m.kind = match jstr(item.get("type")).as_str() {
+        "show" => 1,
+        "season" => 2,
+        "episode" => 3,
+        _ => 0,
+    };
+    match m.kind {
+        3 => {
+            // episode: parent show = grandparent, season number = parentIndex
+            set_field(&mut m.show_rk, &jstr(item.get("grandparentRatingKey")));
+            m.season_index = item.get("parentIndex").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
+        }
+        2 => {
+            // season: parent show = parent, season number = index
+            set_field(&mut m.show_rk, &jstr(item.get("parentRatingKey")));
+            m.season_index = item.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
+        }
+        _ => {}
+    }
     set_field(&mut m.title, &jstr(item.get("title")));
     m.year = item.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
     set_field(&mut m.rating, &jstr(item.get("contentRating")));
