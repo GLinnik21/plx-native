@@ -391,8 +391,12 @@ pub extern "C" fn plex_run(
                                 if !rk.is_empty() {
                                     if mm.kind == 3 {
                                         // episode (Continue Watching / On Deck): play directly,
-                                        // no detail page — Back returns to the home hubs
+                                        // no detail page — Back returns to the home hubs. Load the
+                                        // episode metadata (streams) + reset the track menu so the
+                                        // in-player audio/subtitle lists are populated.
                                         crate::route::play_movie(m);
+                                        crate::metadata::load_detail(&rk);
+                                        crate::ui::track_menu::reset();
                                         playing = crate::player::start_bufferfeed();
                                         pending_resume = resume_ns(mm.resume_ms, mm.dur_ns);
                                         set_paused(false);
@@ -597,7 +601,12 @@ pub extern "C" fn plex_run(
                 if std::path::Path::new("/tmp/poc-autoplay").exists() {
                     let pidx = std::fs::read_to_string("/tmp/poc-playidx").ok()
                         .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
-                    crate::route::play_movie(crate::ui::home::movie_at(pidx / COLS, pidx % COLS));
+                    let pm = crate::ui::home::movie_at(pidx / COLS, pidx % COLS);
+                    crate::route::play_movie(pm);
+                    if let Some(pmm) = pm.as_ref() {
+                        crate::metadata::load_detail(&crate::ui::widgets::cfield(&pmm.rk));
+                        crate::ui::track_menu::reset();
+                    }
                     playing = crate::player::start_bufferfeed();
                     set_paused(false);
                     set_hud(now + 60000);
