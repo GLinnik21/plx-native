@@ -95,7 +95,7 @@ fn n_items(section: c_int) -> c_int {
         2 => metadata::current().map(|d| d.episodes.len()).unwrap_or(0) as c_int,
         3 => metadata::current().map(|d| d.related.len()).unwrap_or(0) as c_int,
         4 => metadata::current().map(|d| d.cast.len()).unwrap_or(0) as c_int,
-        5 => 1, // About footer (a single non-scrolling block)
+        5 => 4, // About: card + Information + Languages + Accessibility (selection moves between them)
         _ => 0,
     }
 }
@@ -371,21 +371,28 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 }
 
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
+    // The selected control IS the white one — no ring/stroke. The focused button goes
+    // white with dark content; the others are dark with white content.
+    const WHITE: [f32; 4] = [0.97, 0.98, 0.99, 1.0];
+    const DARK_INK: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
+    const DARK_FILL: [f32; 4] = [0.16, 0.17, 0.20, 0.55];
+    const LIGHT_INK: [f32; 4] = [0.95, 0.96, 0.98, 1.0];
     let tx = MARGIN_X;
     let focus = focus();
     let cx1 = tx + PW + CGAP;
     let cx2 = cx1 + CD + CGAP;
-    PillButton::play(c"Play".as_ptr()).at(tx, y).draw(env, p);
-    CircleButton::new(c"+".as_ptr()).at(cx1, y).draw(env, p);
-    CircleButton::new(c"i".as_ptr()).at(cx2, y).draw(env, p);
-    // focus ring on the selected control (only while the hero section is focused)
-    let fr = match focus {
-        0 => Rect::new(tx, y, PW, 60.0),
-        1 => Rect::new(cx1, y, CD, 60.0),
-        2 => Rect::new(cx2, y, CD, 60.0),
-        _ => return,
-    };
-    p.ring(fr, 6.0, 30.0, 1.0);
+
+    let mut play = PillButton::play(c"Play".as_ptr()).at(tx, y);
+    (play.fill, play.ink) = if focus == 0 { (WHITE, DARK_INK) } else { (DARK_FILL, LIGHT_INK) };
+    play.draw(env, p);
+
+    let mut plus = CircleButton::new(c"+".as_ptr()).at(cx1, y);
+    (plus.face, plus.ink) = if focus == 1 { (WHITE, DARK_INK) } else { (DARK_FILL, LIGHT_INK) };
+    plus.draw(env, p);
+
+    let mut info = CircleButton::new(c"i".as_ptr()).at(cx2, y);
+    (info.face, info.ink) = if focus == 2 { (WHITE, DARK_INK) } else { (DARK_FILL, LIGHT_INK) };
+    info.draw(env, p);
 }
 
 /// small centered clearLogo/title shown at the top once the page is scrolled
@@ -786,9 +793,21 @@ fn draw_about(p: Painter) {
 
     text_at(p, tx, ABOUT_Y, 30, hd, 1, "About");
 
-    // ---- card: title, genres, summary + MORE ----
+    // ---- selection highlight: the translucent rounded panel is a FOCUS indicator that
+    // sits under whichever About block is selected (card / Information / Languages /
+    // Accessibility) and moves with focus — NOT a fixed card background. ----
     let (cw, ch, cy, pad) = (640.0f32, 330.0f32, ABOUT_Y + 50.0, 30.0f32);
-    p.rrect(Rect::new(tx, cy, cw, ch), 18.0, 18.0, [1.0, 1.0, 1.0, 0.07]);
+    if unsafe { addr_of!(SECTION).read() } == 5 {
+        let cy2 = ABOUT_Y + 430.0 - 36.0; // column highlight top (col_y - pad)
+        let hl = match unsafe { addr_of!(COL).read() } {
+            0 => Rect::new(tx, cy, cw, ch),               // card
+            1 => Rect::new(tx - 26.0, cy2, 600.0, 384.0), // Information
+            2 => Rect::new(734.0, cy2, 560.0, 384.0),     // Languages
+            _ => Rect::new(1334.0, cy2, 560.0, 384.0),    // Accessibility
+        };
+        p.rrect(hl, 18.0, 18.0, [1.0, 1.0, 1.0, 0.07]);
+    }
+    // ---- card: title, genres, summary + MORE ----
     let ix = tx + pad;
     text_at(p, ix, cy + pad, 30, hd, 1, &d.title);
     if !d.genres.is_empty() {
