@@ -177,6 +177,27 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
     )
 }
 
+/// Select the audio + subtitle streams server-side for the current part before a
+/// transcode. The transcoder encodes the part's SELECTED audio and BURNS its SELECTED
+/// subtitle (our client profile advertises no soft-sub support, so Plex's decision is
+/// always burn) — a query-param subtitleStreamID does NOT suppress a default-selected
+/// sub, only the PUT does. So we PUT subtitleStreamID=0 to keep subs OFF (no burn), or
+/// the chosen id to burn it; audioStreamID only when the user switched (else keep default).
+fn put_selection(cfg: &Cfg) {
+    let part = unsafe { addr_of!(CUR_PART_ID).read() };
+    if part <= 0 {
+        return;
+    }
+    let (aud, sub) = (cur_audio_sid(), cur_sub_sid());
+    let mut p = format!("/library/parts/{part}?allParts=1&subtitleStreamID={sub}");
+    if aud > 0 {
+        p.push_str(&format!("&audioStreamID={aud}"));
+    }
+    p.push_str(&format!("&X-Plex-Token={}", cfg.token));
+    let st = crate::stream::http_put(&cfg.host, cfg.port, &p);
+    crate::player::log(&format!("select streams: part={part} audio={aud} sub={sub} -> HTTP {st}"));
+}
+
 /// Pick the stream URL for an item: direct-play only H264+AC3 (what the pipeline
 /// decodes natively); else ask the server to transcode into progressive H264+AC3
 /// Matroska (same MKV demuxer eats it). Returns (url, transcode session). On the
@@ -194,6 +215,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     let base = transcode_base(rk, cfg);
     // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
     unsafe { *addr_of_mut!(TBASE) = base.clone() };
+    put_selection(cfg); // audio/subtitle selection drives the encode + burn
     // the universal transcoder needs /decision to REGISTER the session before start.mkv streams
     let dpath = format!("/video/:/transcode/universal/decision?{base}");
     let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
@@ -295,6 +317,7 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
         *addr_of_mut!(TBASE) = base.clone();
         *addr_of_mut!(TSESSION) = session;
     }
+    put_selection(cfg); // audio/subtitle selection drives the encode + burn
     let obase = format!("{base}&offset={}", offset_secs.max(0));
     let dpath = format!("/video/:/transcode/universal/decision?{obase}");
     let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
@@ -312,19 +335,8 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
 /// at the current position (which also (re)burns the current subtitle, if one is selected).
 pub(crate) fn switch_audio(stream_id: i64, offset_secs: i64) -> Option<String> {
     unsafe { addr_of_mut!(CUR_AUDIO_SID).write(stream_id) };
-    // Select the audio server-side. The transcoder encodes the part's SELECTED audio,
-    // not the &audioStreamID query param, and only a PUT changes the selection (a GET on
-    // the same path is a no-op). Without this the transcode keeps the default track.
-    let part = unsafe { addr_of!(CUR_PART_ID).read() };
-    if part > 0 && stream_id > 0 {
-        if let Some(cfg) = unsafe { (*addr_of!(CFG)).as_ref() } {
-            let p = format!(
-                "/library/parts/{part}?allParts=1&audioStreamID={stream_id}&X-Plex-Token={}",
-                cfg.token
-            );
-            let st = crate::stream::http_put(&cfg.host, cfg.port, &p);
-            crate::player::log(&format!("select audio: part={part} sid={stream_id} -> HTTP {st}"));
-        }
-    }
+    // retranscode -> put_selection PUTs the audio (+ subtitle) selection server-side; the
+    // transcoder encodes the part's SELECTED audio, and only a PUT changes it (a query-param
+    // or GET is a no-op).
     retranscode(offset_secs)
 }
