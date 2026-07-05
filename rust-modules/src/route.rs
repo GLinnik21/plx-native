@@ -22,6 +22,11 @@ static mut CUR_SUB_SID: i64 = 0;
 // the playing item's Part id (from the part key), so an audio switch can PUT the
 // server-side stream selection — the transcoder encodes the part's SELECTED audio.
 static mut CUR_PART_ID: i64 = 0;
+// When true, a selected subtitle is BURNED into the transcode (server-side) — the
+// pre-WebVTT behavior, kept as an escape hatch. When false (default), a selected
+// subtitle rides a soft WebVTT sidecar (player::request_soft_subs + transcode_subtitles_url)
+// and the video transcode carries no subtitle at all.
+pub(crate) const BURN_FALLBACK: bool = true;
 // HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
 // draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
 static mut TITLE: [c_char; 128] = [0; 128];
@@ -162,9 +167,15 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
         0 => String::new(),
         a => format!("&audioStreamID={a}"),
     };
-    let sub_p = match cur_sub_sid() {
-        0 => String::new(),
-        s => format!("&subtitleStreamID={s}&subtitleSize=100&subtitles=burn"),
+    // subtitles ride the soft WebVTT sidecar by default — the video transcode carries
+    // none (never baked). Only BURN_FALLBACK re-adds the burn block.
+    let sub_p = if BURN_FALLBACK {
+        match cur_sub_sid() {
+            0 => String::new(),
+            s => format!("&subtitleStreamID={s}&subtitleSize=100&subtitles=burn"),
+        }
+    } else {
+        String::new()
     };
     format!(
         "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
@@ -188,7 +199,9 @@ fn put_selection(cfg: &Cfg) {
     if part <= 0 {
         return;
     }
-    let (aud, sub) = (cur_audio_sid(), cur_sub_sid());
+    // subtitleStreamID=0 keeps the video burn-free (the soft WebVTT sidecar carries the
+    // chosen sub instead); only BURN_FALLBACK selects a sub for the server to burn.
+    let (aud, sub) = (cur_audio_sid(), if BURN_FALLBACK { cur_sub_sid() } else { 0 });
     let mut p = format!("/library/parts/{part}?allParts=1&subtitleStreamID={sub}");
     if aud > 0 {
         p.push_str(&format!("&audioStreamID={aud}"));
@@ -196,6 +209,23 @@ fn put_selection(cfg: &Cfg) {
     p.push_str(&format!("&X-Plex-Token={}", cfg.token));
     let st = crate::stream::http_put(&cfg.host, cfg.port, &p);
     crate::player::log(&format!("select streams: part={part} audio={aud} sub={sub} -> HTTP {st}"));
+}
+
+/// Build the soft-WebVTT sidecar URL for `sub_sid` at `offset_secs` on the CURRENT
+/// transcode session. Same universal params as start.mkv (TBASE, burn-free) plus
+/// &subtitleStreamID=…&subtitles=auto (NOT burn) + &offset — Plex returns text/vtt
+/// streamed in lock-step with the video. None if not transcoding / no sub selected.
+pub(crate) fn transcode_subtitles_url(sub_sid: i64, offset_secs: i64) -> Option<String> {
+    if transcode_session().is_empty() || sub_sid <= 0 {
+        return None;
+    }
+    let base = unsafe { (*addr_of!(TBASE)).clone() };
+    if base.is_empty() {
+        return None;
+    }
+    let cfg = unsafe { (*addr_of!(CFG)).as_ref()? };
+    let q = format!("{base}&subtitleStreamID={sub_sid}&subtitles=auto&offset={}", offset_secs.max(0));
+    Some(format!("http://{}:{}/video/:/transcode/universal/subtitles?{q}", cfg.host, cfg.port))
 }
 
 /// Pick the stream URL for an item: direct-play only H264+AC3 (what the pipeline

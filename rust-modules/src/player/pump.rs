@@ -1,7 +1,7 @@
 //! player::pump — the main-thread pump (was bufferfeed_pump). Runs each frame from
 //! plex_run: the pending-seek handler, the ACB-bind state machine (Stage), and the
 //! feed dispatch. All ACB/Starfish control calls happen here on the main thread.
-use super::engine::{cue_byte_for, drain_aq, engine, feed_sample, feed_stream, Source};
+use super::engine::{cue_byte_for, drain_aq, engine, feed_sample, feed_stream, Engine, Source};
 use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
 use std::os::raw::c_char;
@@ -40,6 +40,7 @@ pub(crate) fn pump(now: u32) {
             *SHARED.next_url.lock().unwrap() = Some(url);
             SHARED.seek_byte.store(0, Release); // fresh stream from byte 0
             SHARED.disp_base.store(secs * 1_000_000_000, Relaxed);
+            subs_reopen(eng, secs); // re-point the soft-subs sidecar on the same session
             SHARED.reparse_next.store(true, Release);
             let p = SHARED.hs_ptr.load(Acquire);
             if !p.is_null() {
@@ -84,6 +85,7 @@ pub(crate) fn pump(now: u32) {
                     *SHARED.next_url.lock().unwrap() = Some(url);
                     SHARED.seek_byte.store(0, Release); // fresh stream from byte 0
                     SHARED.disp_base.store(secs * 1_000_000_000, Relaxed);
+                    subs_reopen(eng, secs); // re-point the soft-subs sidecar at the new offset
                     super::log(&format!("seek(transcode): t={t} offset={secs}s"));
                 }
                 None => super::log("seek(transcode): rebuild failed"),
@@ -108,6 +110,10 @@ pub(crate) fn pump(now: u32) {
         SHARED.frames.store(0, Relaxed); // count only POST-seek frames (resume re-pause gate)
         SHARED.playpos_ns.store(t, Relaxed); // displayed position jumps; wall clock takes over
     }
+
+    // reconcile the soft-subs sidecar (spawn / re-point / stop) from subs_want_sid — after
+    // the seek/retranscode arms so a same-tick offset change is already reflected in disp_base
+    reconcile_soft_subs(eng);
 
     // ---------- load -> Play (decode fed frames as soon as loaded) ----------
     if eng.stage == Stage::Loading
@@ -155,6 +161,80 @@ pub(crate) fn pump(now: u32) {
             feed_stream(eng);
         } else {
             feed_sample(eng);
+        }
+    }
+}
+
+/// Re-point a RUNNING soft-subs sidecar at `secs` on the same transcode session (used from
+/// the transcode-seek and audio-switch/retranscode arms). Publish the new-offset subtitles
+/// URL + clear stale cues + close hs3 to unblock the read — the thread re-opens on it.
+/// Called AFTER disp_base is stored, so the first post-seek cue is rebased correctly.
+fn subs_reopen(eng: &mut Engine, secs: i64) {
+    if eng.subs_th.is_some() && eng.subs_active_sid > 0 {
+        if let Some(surl) = crate::route::transcode_subtitles_url(eng.subs_active_sid, secs) {
+            *SHARED.subs_next_url.lock().unwrap() = Some(surl);
+            SHARED.sub_cues.lock().unwrap().clear();
+            let p = SHARED.hs3_ptr.load(Acquire);
+            if !p.is_null() {
+                crate::stream::http_close(p);
+            }
+        }
+    }
+}
+
+/// Drive the soft-WebVTT subtitle thread from SHARED.subs_want_sid vs eng.subs_active_sid:
+/// spawn it when a sub is selected during a transcode, re-point it on a track switch, stop
+/// it on Off / switch-to-direct-play / not-transcoding.
+fn reconcile_soft_subs(eng: &mut Engine) {
+    let is_transcode = !crate::route::transcode_session().is_empty();
+    let want = if is_transcode { SHARED.subs_want_sid.load(Relaxed) } else { 0 };
+    // the sidecar MUST use the video session's offset (disp_base), NOT the playpos: cue
+    // alignment is store_ns = vtt_ns + disp_base with vtt_ns = content − offset, so the
+    // subs offset must equal the video's offset for store_ns to land on content time.
+    let off_secs = (SHARED.disp_base.load(Relaxed) / 1_000_000_000).max(0);
+
+    // OFF (sub=Off, or not transcoding): stop the thread, drop cues.
+    if want == 0 {
+        if eng.subs_th.is_some() {
+            SHARED.subs_abort.store(true, Release);
+            let p = SHARED.hs3_ptr.load(Acquire);
+            if !p.is_null() {
+                crate::stream::http_close(p); // interrupt the blocked recv
+            }
+            if let Some(t) = eng.subs_th.take() {
+                let _ = t.join();
+            }
+            SHARED.subs_abort.store(false, Release);
+            SHARED.sub_cues.lock().unwrap().clear();
+            eng.subs_active_sid = 0;
+        }
+        return;
+    }
+
+    // ON, not running yet: spawn on the current session at the current offset.
+    if eng.subs_th.is_none() {
+        if let Some(url) = crate::route::transcode_subtitles_url(want, off_secs) {
+            let (h, p, pa) = super::engine::parse_stream_url(&url);
+            let hs3_raw = &mut *eng.hs3 as *mut crate::stream::HttpStream;
+            SHARED.hs3_ptr.store(hs3_raw, Release);
+            SHARED.subs_abort.store(false, Release);
+            let hs3p = super::threads::SendPtr(hs3_raw);
+            eng.subs_th = Some(std::thread::spawn(move || super::threads::subs_thread(h, p, pa, hs3p)));
+            eng.subs_active_sid = want;
+        }
+        return;
+    }
+
+    // ON, running, but the user switched to a DIFFERENT track: re-point (like a seek).
+    if eng.subs_active_sid != want {
+        if let Some(url) = crate::route::transcode_subtitles_url(want, off_secs) {
+            *SHARED.subs_next_url.lock().unwrap() = Some(url);
+            SHARED.sub_cues.lock().unwrap().clear();
+            let p = SHARED.hs3_ptr.load(Acquire);
+            if !p.is_null() {
+                crate::stream::http_close(p);
+            }
+            eng.subs_active_sid = want;
         }
     }
 }

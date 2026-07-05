@@ -74,6 +74,18 @@ pub(crate) struct Shared {
     // the worker threads (Engine drops after join), so the ptrs stay valid.
     pub hs_ptr: AtomicPtr<HttpStream>,
     pub hs2_ptr: AtomicPtr<HttpStream>,
+
+    // --- soft WebVTT subtitle sidecar (transcode only) ---
+    // close-to-interrupt handle for the subs socket (like hs_ptr/hs2_ptr)
+    pub hs3_ptr: AtomicPtr<HttpStream>,
+    // teardown flag for the subs thread (like cues_abort)
+    pub subs_abort: AtomicBool,
+    // a seek/retranscode/track-switch re-points the subs stream at a new subtitles?…&offset=
+    // URL (Some => the thread re-opens on it; taken on re-open, like next_url).
+    pub subs_next_url: Mutex<Option<String>>,
+    // desired soft-sub Plex stream id for the CURRENT transcode; 0 = none/off. Set by
+    // track_menu (write), reconciled by the pump (read) to spawn/re-point/stop the thread.
+    pub subs_want_sid: AtomicI64,
 }
 
 impl Shared {
@@ -102,6 +114,10 @@ impl Shared {
             segment_pos: AtomicI64::new(0),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),
             hs2_ptr: AtomicPtr::new(std::ptr::null_mut()),
+            hs3_ptr: AtomicPtr::new(std::ptr::null_mut()),
+            subs_abort: AtomicBool::new(false),
+            subs_next_url: Mutex::new(None),
+            subs_want_sid: AtomicI64::new(0),
         }
     }
     /// reset per-file state on stop (mirrors the tail of stop_bufferfeed); does NOT
@@ -126,6 +142,10 @@ impl Shared {
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
         self.hs2_ptr.store(std::ptr::null_mut(), Ordering::Release);
+        self.hs3_ptr.store(std::ptr::null_mut(), Ordering::Release);
+        self.subs_abort.store(false, Ordering::Relaxed);
+        *self.subs_next_url.lock().unwrap() = None;
+        self.subs_want_sid.store(0, Ordering::Relaxed);
     }
 }
 

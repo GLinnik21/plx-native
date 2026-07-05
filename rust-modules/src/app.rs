@@ -599,13 +599,19 @@ pub extern "C" fn plex_run(
             if !auto_tried && !playing && now.wrapping_sub(t0) > 2000 {
                 auto_tried = true;
                 if std::path::Path::new("/tmp/poc-autoplay").exists() {
-                    let pidx = std::fs::read_to_string("/tmp/poc-playidx").ok()
-                        .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
-                    let pm = crate::ui::home::movie_at(pidx / COLS, pidx % COLS);
-                    crate::route::play_movie(pm);
-                    if let Some(pmm) = pm.as_ref() {
-                        crate::metadata::load_detail(&crate::ui::widgets::cfield(&pmm.rk));
-                        crate::ui::track_menu::reset();
+                    if std::path::Path::new("/tmp/poc-h265").exists() {
+                        // Phase 0 HEVC probe: leave the URL empty so start_bufferfeed feeds
+                        // the local /tmp/sample.h265 through the H265 Load payload.
+                        crate::route::clear_url();
+                    } else {
+                        let pidx = std::fs::read_to_string("/tmp/poc-playidx").ok()
+                            .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
+                        let pm = crate::ui::home::movie_at(pidx / COLS, pidx % COLS);
+                        crate::route::play_movie(pm);
+                        if let Some(pmm) = pm.as_ref() {
+                            crate::metadata::load_detail(&crate::ui::widgets::cfield(&pmm.rk));
+                            crate::ui::track_menu::reset();
+                        }
                     }
                     playing = crate::player::start_bufferfeed();
                     set_paused(false);
