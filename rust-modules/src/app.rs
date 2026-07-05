@@ -215,6 +215,7 @@ pub extern "C" fn plex_run(
         let mut last_ptr_motion = 0u32;
         let mut cur_hidden = false;
         let mut playing = false;
+        let mut detail_open = false; // the detail page is showing (between home and player)
 
         let mut auto_tried = false;
         let mut grid_tried = false;
@@ -306,7 +307,9 @@ pub extern "C" fn plex_run(
                         }
                         dpad_mode = true;
                         mot_accum = 0.0;
-                        if g_snap() < 0.5 {
+                        if detail_open {
+                            crate::ui::detail::move_focus(sym as c_int);
+                        } else if g_snap() < 0.5 {
                             if sym == SDLK_DOWN {
                                 set_snap(1.0);
                                 set_fr(0);
@@ -322,17 +325,7 @@ pub extern "C" fn plex_run(
                     } else if wcode == 0x1e4 {
                         // LG pointer auto-hidden; ignore
                     } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
-                        if !playing {
-                            let m = if g_snap() < 0.5 { crate::ui::home::movie_at(0, 0) } else { crate::ui::home::movie_at(g_fr(), g_fc()) };
-                            crate::route::play_movie(m);
-                            playing = crate::player::start_bufferfeed();
-                            set_paused(false);
-                            set_hud(last_input + 4500);
-                            if !dpad_mode {
-                                SDL_webOSCursorVisibility(0);
-                                dpad_mode = true;
-                            }
-                        } else {
+                        if playing {
                             let np = !paused();
                             set_paused(np);
                             if np {
@@ -341,6 +334,27 @@ pub extern "C" fn plex_run(
                                 crate::player::resume();
                             }
                             set_hud(last_input + 4500);
+                        } else if detail_open {
+                            // Play button (focus 0): a movie plays directly; a show plays
+                            // its first episode (wired with the episodes row, increment 2).
+                            if crate::ui::detail::focus() == 0 && !crate::ui::detail::is_show() {
+                                let m = crate::ui::detail::selected_ptr();
+                                if !m.is_null() {
+                                    crate::route::play_movie(m);
+                                    playing = crate::player::start_bufferfeed();
+                                    set_paused(false);
+                                    set_hud(last_input + 4500);
+                                }
+                            }
+                        } else {
+                            // home: OK opens the detail page for the focused item
+                            let idx = if g_snap() < 0.5 { 0 } else { g_fr() * COLS as c_int + g_fc() };
+                            crate::ui::detail::open(idx);
+                            detail_open = true;
+                            if !dpad_mode {
+                                SDL_webOSCursorVisibility(0);
+                                dpad_mode = true;
+                            }
                         }
                     } else if wcode == 72 || sym == 415 || wcode == 415 {
                         // PAUSE
@@ -399,10 +413,14 @@ pub extern "C" fn plex_run(
                             scrub_last = last_input;
                         }
                     } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
-                        // webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others
+                        // webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
+                        // Back stack: player -> detail (if opened from there) -> grid -> hero -> exit.
                         if playing {
                             crate::player::stop_bufferfeed(false);
                             playing = false;
+                        } else if detail_open {
+                            crate::ui::detail::close();
+                            detail_open = false;
                         } else if g_snap() > 0.5 {
                             set_snap(0.0);
                         } else {
@@ -523,13 +541,19 @@ pub extern "C" fn plex_run(
                     set_fr(0);
                 }
             }
-            // dev: /tmp/poc-detail=<ratingKey> loads that item's detail once (data-layer probe)
+            // dev: /tmp/poc-detail=<ratingKey> opens that catalog item's detail page once
             if !detail_tried && now.wrapping_sub(t0) > 500 {
                 detail_tried = true;
                 if let Ok(rk) = std::fs::read_to_string("/tmp/poc-detail") {
                     let rk = rk.trim();
                     if !rk.is_empty() {
-                        crate::metadata::load_detail(rk);
+                        let idx = crate::pms::index_of_rk(rk);
+                        if idx >= 0 {
+                            crate::ui::detail::open(idx);
+                            detail_open = true;
+                        } else {
+                            crate::metadata::load_detail(rk); // off-catalog rk: load data only
+                        }
                     }
                 }
             }
@@ -542,10 +566,10 @@ pub extern "C" fn plex_run(
             if is_started() {
                 crate::player::pump(now);
             }
-            // client-side long-press repeat (grid nav)
+            // client-side long-press repeat (grid nav; not while the detail page is up)
             if held_sym != 0 && now.wrapping_sub(held_since) > 400 && now.wrapping_sub(last_rep) > 130 {
                 last_rep = now;
-                if g_snap() > 0.5 {
+                if !detail_open && g_snap() > 0.5 {
                     crate::ui::home::home_move_focus(held_sym);
                 }
             }
@@ -598,6 +622,9 @@ pub extern "C" fn plex_run(
             prev = now;
 
             crate::ui::home::home_update(dt);
+            if detail_open {
+                crate::ui::detail::update(dt);
+            }
             crate::posters::poster_pump(3);
 
             glViewport(0, 0, SCR_W, SCR_H);
@@ -616,7 +643,11 @@ pub extern "C" fn plex_run(
                 }
                 continue;
             }
-            crate::ui::home::home_draw();
+            if detail_open {
+                crate::ui::detail::draw();
+            } else {
+                crate::ui::home::home_draw();
+            }
             let fps_col = [0.4f32, 1.0, 0.55, 1.0];
             crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
             SDL_GL_SwapWindow(win);
