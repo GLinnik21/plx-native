@@ -348,6 +348,31 @@ pub(crate) fn http_put(host: &str, port: c_int, path: &str) -> c_int {
     status
 }
 
+/// Minimal HTTP POST (no request body); returns the response body, or None on failure.
+/// Used for POST /playQueues (parse the returned ids) and POST /:/timeline (body ignored) —
+/// the Plex spec verb for both. Params ride the query string like the GET/PUT wrappers.
+pub(crate) fn http_post(host: &str, port: c_int, path: &str, extra: Option<&str>) -> Option<Vec<u8>> {
+    let host_c = std::ffi::CString::new(host).ok()?;
+    let path_c = std::ffi::CString::new(path).ok()?;
+    let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
+    let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+    let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "POST") != 0 {
+        return None;
+    }
+    let mut body = Vec::new();
+    let mut chunk = vec![0u8; 65536];
+    loop {
+        let r = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
+        if r <= 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..r as usize]);
+    }
+    http_close(&mut *hs);
+    Some(body)
+}
+
 /// A boxed HttpStream in the CLOSED state (fd = -1), so http_close is a no-op until
 /// http_open assigns a real fd. The player engine pre-allocates the demux/cue sockets
 /// before the worker threads open them; a plain zeroed box leaves fd = 0, and a

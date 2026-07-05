@@ -326,11 +326,8 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
     }
     // final position report (state=stopped) so the server commits the resume point
     if let Some((h, p, t, rk, pos, dur)) = final_report {
-        let path = format!(
-            "/:/timeline?ratingKey={rk}&key=%2Flibrary%2Fmetadata%2F{rk}&state=stopped\
-             &time={pos}&duration={dur}&X-Plex-Client-Identifier=com.glin.plexpoc&X-Plex-Token={t}"
-        );
-        let _ = crate::stream::http_get(&h, p, &path, None);
+        let path = threads::timeline_path(&rk, "stopped", pos, dur, &t);
+        let _ = crate::stream::http_post(&h, p, &path, None);
         log(&format!("timeline stopped t={}s/{}s", pos / 1000, dur / 1000));
     }
     // 3. unload + destruct the pipeline, release the plane
