@@ -10,6 +10,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub mod consts;
+pub mod detail;
 pub mod home;
 pub mod player_hud;
 pub mod widgets;
