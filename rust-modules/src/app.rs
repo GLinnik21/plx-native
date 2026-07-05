@@ -216,11 +216,13 @@ pub extern "C" fn plex_run(
         let mut cur_hidden = false;
         let mut playing = false;
         let mut detail_open = false; // the detail page is showing (between home and player)
+        let mut menu_open = false; // the in-player track menu (audio/subtitles) is showing
 
         let mut auto_tried = false;
         let mut grid_tried = false;
         let mut seek_tried = false;
         let mut detail_tried = false;
+        let mut menu_tried = false;
         let mut prev = 0u32;
         let mut last_wheel = 0u32;
 
@@ -301,6 +303,28 @@ pub extern "C" fn plex_run(
                         continue;
                     }
                     last_input = SDL_GetTicks();
+                    // the in-player track menu is modal — it swallows every key while open
+                    if playing && menu_open {
+                        if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
+                            crate::ui::track_menu::move_focus(sym as c_int);
+                            set_hud(last_input + 8000);
+                        } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
+                            crate::ui::track_menu::on_ok();
+                            menu_open = false;
+                            set_hud(last_input + 4500);
+                        } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
+                            crate::ui::track_menu::close();
+                            menu_open = false;
+                        }
+                        continue;
+                    }
+                    // UP during playback opens the track menu
+                    if playing && sym == SDLK_UP {
+                        crate::ui::track_menu::open();
+                        menu_open = true;
+                        set_hud(last_input + 8000);
+                        continue;
+                    }
                     if !playing && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN) {
                         if !dpad_mode {
                             SDL_webOSCursorVisibility(0);
@@ -470,7 +494,16 @@ pub extern "C" fn plex_run(
                             && cy < SCR_H as f32 - 110.0
                             && cx >= sbx
                             && cx <= sbx + sbw;
-                        if on_scrub {
+                        // the subtitles(1612)/audio(1692) control icons (player_hud row: y=SCR_H-288, 58px)
+                        let on_icons =
+                            cy >= SCR_H as f32 - 288.0 && cy <= SCR_H as f32 - 230.0 && cx >= 1612.0 && cx <= 1750.0;
+                        if menu_open {
+                            crate::ui::track_menu::close();
+                            menu_open = false;
+                        } else if on_icons {
+                            crate::ui::track_menu::open_tab(if cx < 1682.0 { 1 } else { 0 });
+                            menu_open = true;
+                        } else if on_scrub {
                             let mut frac = ((cx - sbx) / sbw) as f64;
                             if frac < 0.0 {
                                 frac = 0.0;
@@ -579,6 +612,15 @@ pub extern "C" fn plex_run(
                     request_seek(140 * 1_000_000_000);
                 }
             }
+            // dev: /tmp/poc-menu=<tab> opens the in-player track menu once (headless capture)
+            if !menu_tried && playing && now.wrapping_sub(t0) > 6000 {
+                menu_tried = true;
+                if let Ok(t) = std::fs::read_to_string("/tmp/poc-menu") {
+                    crate::ui::track_menu::open_tab(t.trim().parse::<c_int>().unwrap_or(0));
+                    menu_open = true;
+                    set_hud(now + 60000);
+                }
+            }
             if is_started() {
                 crate::player::pump(now);
             }
@@ -650,6 +692,9 @@ pub extern "C" fn plex_run(
                 glClear(GL_COLOR_BUFFER_BIT);
                 if now < hud_until() || paused() {
                     crate::ui::player_hud::draw_hud();
+                }
+                if menu_open {
+                    crate::ui::track_menu::draw();
                 }
                 SDL_GL_SwapWindow(win);
                 frames_ct += 1;

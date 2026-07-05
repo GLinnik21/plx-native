@@ -13,6 +13,7 @@ pub mod consts;
 pub mod detail;
 pub mod home;
 pub mod player_hud;
+pub mod track_menu;
 pub mod widgets;
 
 #[derive(Clone, Copy, Default)]
