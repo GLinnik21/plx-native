@@ -184,15 +184,70 @@ unsafe fn set_c(dst: *mut c_char, cap: usize, s: &str) {
     out[n] = 0;
 }
 
+/// Capability profile (X-Plex-Client-Profile-Extra, URL-decoded form): direct-play an MKV
+/// whose video is H264 and audio AAC/AC3/EAC3, subs SRT/ASS, up to 4K — plus the H264/AC3
+/// transcode fallback target. Deliberately NO `hevc` in direct-play yet: the demuxer can't
+/// consume streamed HEVC until Phase 3, and advertising it would make PMS serve HEVC that the
+/// H264-only demuxer mangles into a hang.
+fn profile_extra() -> String {
+    crate::pms::urlenc_str(
+        "add-direct-play-profile(type=videoProfile&container=mkv&videoCodec=h264\
+         &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa)\
+         +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
+         +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
+         +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
+         &container=matroska&videoCodec=h264&audioCodec=ac3)",
+    )
+}
+
+/// The /decision request params for `rk`: asks the Media Decision Engine (hasMDE=1) whether
+/// the item direct-plays given our profile. directPlay=1 = "I can direct-play if it matches".
+fn decision_base(rk: &str, cfg: &Cfg) -> String {
+    format!(
+        "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http&hasMDE=1\
+         &directPlay=1&directStream=1&directStreamAudio=1&mediaBufferSize=20971\
+         &session={session}&X-Plex-Session-Identifier={session}{id}\
+         &X-Plex-Client-Profile-Name=Generic&X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
+        session = sess(),
+        id = identity_qs(),
+        profe = profile_extra(),
+        tok = cfg.token
+    )
+}
+
+/// Ask PMS whether `rk` should direct-play (Some(true) → serve the raw Part) or transcode
+/// (Some(false) → start.mkv). None when the server returns no usable Media decision, so the
+/// caller falls back to the local codec test. Registers the session as a side effect.
+fn server_decision(rk: &str, cfg: &Cfg) -> Option<bool> {
+    let dpath = format!("/video/:/transcode/universal/decision?{}", decision_base(rk, cfg));
+    let body = crate::stream::http_get(&cfg.host, cfg.port, &dpath, Some("Accept: application/json\r\n"))?;
+    let s = String::from_utf8_lossy(&body);
+    if !s.contains("\"Part\"") {
+        crate::player::log(&format!(
+            "decision: no media (general={:?}) -> local heuristic",
+            find_num(&s, "generalDecisionCode")
+        ));
+        return None;
+    }
+    // Part.decision is the first "decision" at/after the "Part" array (Media/container carry none)
+    let after_part = s.find("\"Part\"").map(|i| &s[i..]).unwrap_or(&s);
+    let part_dec = find_str(after_part, "decision").unwrap_or_default();
+    let direct = part_dec == "directplay";
+    crate::player::log(&format!(
+        "decision: part={part_dec} general={:?} mde={:?} -> {}",
+        find_num(&s, "generalDecisionCode"),
+        find_num(&s, "mdeDecisionCode"),
+        if direct { "DIRECT PLAY" } else { "TRANSCODE" }
+    ));
+    Some(direct)
+}
+
 /// The offset-free transcode params for `rk`, carrying the CURRENT audio + subtitle
 /// selection (CUR_AUDIO_SID / CUR_SUB_SID). Shared by build_stream + retranscode, and
 /// (via TBASE) by transcode_seek — so every transcode of the item stays on the chosen
 /// tracks. The subtitle, when set, is burned in (Plex's default decision for our profile).
 fn transcode_base(rk: &str, cfg: &Cfg) -> String {
-    let profe = crate::pms::urlenc_str(
-        "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
-         &container=matroska&videoCodec=h264&audioCodec=ac3)",
-    );
+    let profe = profile_extra();
     let session = sess(); // per-playback id (set by build_stream); shared with the timeline
     let audio_p = match cur_audio_sid() {
         0 => String::new(),
@@ -213,7 +268,7 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
          &directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000\
          {audio_p}{sub_p}\
          &session={session}&X-Plex-Session-Identifier={session}{id}\
-         &X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
+         &X-Plex-Client-Profile-Name=Generic&X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
         id = identity_qs(),
         tok = cfg.token
     )
@@ -357,7 +412,21 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     if !rk.is_empty() {
         ensure_playqueue(cfg, rk, &session);
     }
-    let directplay = vcodec == "h264" && acodec == "ac3";
+    // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
+    // capability profile. Falls back to the local codec test if the server returns no usable
+    // decision; the local-sample/demo path (rk empty) skips the decision entirely.
+    let mut directplay = if rk.is_empty() {
+        false
+    } else {
+        server_decision(rk, cfg).unwrap_or(vcodec == "h264" && acodec == "ac3")
+    };
+    // Phase 2 safety: the in-house MKV demuxer is H264-only until Phase 3, so never direct-play
+    // a codec it can't consume even when the server (Generic base profile) returns directplay for
+    // it. Phase 3 removes this guard once mkv.rs demuxes HEVC. (h264 direct-plays as adjudicated.)
+    if directplay && !rk.is_empty() && vcodec != "h264" {
+        crate::player::log(&format!("decision: directplay overridden -> transcode (demuxer h264-only, vcodec={vcodec})"));
+        directplay = false;
+    }
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: no transcode session (transcode_session() stays empty). Carry the
         // session id + identity on the file GET so PMS keys the /status/sessions entry by
