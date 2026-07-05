@@ -27,14 +27,15 @@ STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
         stub/libwayland-client.so stub/libluna-service2.so stub/libglib-2.0.so \
         stub/libAcbAPI.so stub/libplayerAPIs.so
 
-# Hybrid C+Rust build (gradual migration). Modules ported to Rust are compiled
-# into a staticlib and linked in; their src/*.c is excluded from the C build.
-# Ported: img,stream,aq,mkv,pms,posters,text,gfx,system,ui_home — in rust-modules/.
+# Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
+# linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
+# C++/ACB seam). The former per-module C sources (aq/gfx/img/mkv/pms/posters/stream/
+# system/text/ui_home/playback) were deleted after porting.
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
 RUST_TARGET = arm-unknown-linux-gnueabi.2.24
 RUST_LIB    = rust-modules/target/arm-unknown-linux-gnueabi/release/libplexpoc_modules.a
 
-SRCS = $(filter-out src/gpdebug.c src/img.c src/stream.c src/aq.c src/mkv.c src/pms.c src/posters.c src/text.c src/gfx.c src/system.c src/ui_home.c,$(wildcard src/*.c))
+SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))   # = main.c + starfish.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plexpoc
