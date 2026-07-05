@@ -30,21 +30,21 @@ const CD: f32 = 60.0; // circle button diameter
 // scroll target lifts the focused section's top to TOP_MARGIN, just under the compact
 // title. SCROLLED is the scroll distance past which the backdrop is fully dark.
 const TOP_MARGIN: f32 = 120.0;
-const SCROLLED: f32 = 890.0; // = TAB_Y - TOP_MARGIN; backdrop-dim saturation reference
-const TAB_Y: f32 = 1010.0;
-const EP_Y: f32 = 1075.0;
+const SCROLLED: f32 = 800.0; // = TAB_Y - TOP_MARGIN; backdrop-dim saturation reference
+const TAB_Y: f32 = 920.0; // tabs peek just under the hero buttons in the hero view
+const EP_Y: f32 = 985.0;
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
 // Related row (portrait posters) + Cast & Crew row (circular headshots)
-const RELATED_Y: f32 = 1760.0;
+const RELATED_Y: f32 = 1670.0;
 const REL_W: f32 = 200.0;
 const REL_H: f32 = 300.0;
 const REL_GAP: f32 = 28.0;
-const CAST_Y: f32 = 2300.0;
+const CAST_Y: f32 = 2210.0;
 const CAST_D: f32 = 150.0; // headshot diameter
 const CAST_SLOT: f32 = 200.0; // per-member horizontal pitch (room for the name)
-const ABOUT_Y: f32 = 2820.0; // About footer (heading + card + 3 info columns); gap clears the cast row
+const ABOUT_Y: f32 = 2730.0; // About footer (heading + card + 3 info columns); gap clears the cast row
 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
