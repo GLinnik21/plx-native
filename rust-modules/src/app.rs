@@ -553,6 +553,12 @@ pub extern "C" fn plex_run(
                                     crate::ui::detail::move_focus(SDLK_DOWN as c_int);
                                 }
                             }
+                            // dev: /tmp/poc-detailcol=N then moves the focus N to the right
+                            if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailcol") {
+                                for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
+                                    crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
+                                }
+                            }
                             // dev: /tmp/poc-detailplay activates the focused control (headless play test)
                             if std::path::Path::new("/tmp/poc-detailplay").exists()
                                 && crate::ui::detail::on_ok()
