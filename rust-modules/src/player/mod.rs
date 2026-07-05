@@ -10,7 +10,7 @@ mod pump;
 mod shared;
 mod threads;
 
-use shared::{Shared, Transport};
+use shared::{Shared, SubCue, Transport};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -40,7 +40,67 @@ pub(crate) fn seek_pending() -> i64 { TX.seek_to_ns.load(Relaxed) }
 pub(crate) fn request_seek(ns: i64) { TX.seek_to_ns.store(ns, Relaxed) }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
 /// transcode with that source audio at the current position next tick.
-pub(crate) fn request_audio_switch(sid: i64) { SHARED.pending_audio_sid.store(sid, Relaxed) }
+pub(crate) fn request_audio_switch(sid: i64) {
+    SHARED.pending_audio_sid.store(sid, Relaxed);
+    SHARED.sub_cues.lock().unwrap().clear(); // the fresh transcode carries no embedded subs
+}
+
+// ---- client-rendered subtitles (direct-play only; a transcode carries no subs) ----
+/// selected subtitle track index (-1 = off); the demuxer reads this per block.
+pub(crate) fn desired_sub_idx() -> i32 { SHARED.desired_sub_idx.load(Relaxed) }
+/// select a subtitle track by index (-1 = off) and drop stale cues.
+pub(crate) fn request_subtitle(idx: i32) {
+    SHARED.desired_sub_idx.store(idx, Relaxed);
+    SHARED.sub_cues.lock().unwrap().clear();
+}
+/// demux (D-thread) pushes a subtitle cue (content-time ns). Keeps the last ~24 cues.
+pub(crate) fn push_subtitle_cue(start_ns: i64, end_ns: i64, payload: &[u8], is_ass: bool) {
+    let text = sub_text(payload, is_ass);
+    if text.is_empty() {
+        return;
+    }
+    log(&format!("sub cue [{}..{}ms] {:?}", start_ns / 1_000_000, end_ns / 1_000_000,
+        text.chars().take(34).collect::<String>()));
+    let mut cues = SHARED.sub_cues.lock().unwrap();
+    if cues.len() >= 24 {
+        cues.remove(0);
+    }
+    cues.push(SubCue { start_ns, end_ns, text });
+}
+/// the subtitle text active at `now_ns`, or None (also None when subtitles are off).
+pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
+    if SHARED.desired_sub_idx.load(Relaxed) < 0 {
+        return None;
+    }
+    let cues = SHARED.sub_cues.lock().unwrap();
+    cues.iter().rev().find(|c| now_ns >= c.start_ns && now_ns < c.end_ns).map(|c| c.text.clone())
+}
+/// extract displayable text from a subtitle block (SRT = raw UTF-8; ASS = the field
+/// after the 8th comma), stripping tags/override codes and normalizing line breaks.
+fn sub_text(payload: &[u8], is_ass: bool) -> String {
+    let raw = String::from_utf8_lossy(payload);
+    let s = if is_ass {
+        raw.splitn(9, ',').nth(8).unwrap_or("").to_string()
+    } else {
+        raw.into_owned()
+    };
+    let mut out = String::with_capacity(s.len());
+    let mut ch = s.chars().peekable();
+    while let Some(c) = ch.next() {
+        match c {
+            '<' => while let Some(x) = ch.next() { if x == '>' { break; } },   // <i></i>
+            '{' => while let Some(x) = ch.next() { if x == '}' { break; } },   // {\an8}
+            '\\' => match ch.peek() {
+                Some('N') | Some('n') => { ch.next(); out.push('\n'); }
+                Some('h') => { ch.next(); out.push(' '); }
+                _ => out.push('\\'),
+            },
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out.trim().to_string()
+}
 
 pub(crate) fn log(m: &str) {
     use std::io::Write;
