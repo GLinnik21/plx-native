@@ -1,11 +1,10 @@
-//! Rust port of src/stream.c — blocking HTTP/1.1 GET over a raw TCP socket.
-//! Same C ABI (stream.h): the C callers (posters/pms/playback) allocate an
-//! `http_stream` and pass `&hs`; this operates on it in place via a repr(C)
-//! mirror. Header/chunk parsing is bounds-checked (no OOB), unlike the C.
+//! Blocking HTTP/1.1 GET over a raw TCP socket (was src/stream.c). Callers
+//! (posters/pms/player) allocate an `HttpStream` and pass `&hs`; this operates on it
+//! in place. Header/chunk parsing is bounds-checked (no OOB).
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uchar, c_void};
 
-// Layout MUST match `http_stream` in src/stream.h (repr(C) follows the C ABI).
+// repr(C) for a stable layout: the player boxes it + hands raw ptrs across threads.
 #[repr(C)]
 pub struct HttpStream {
     fd: c_int,
@@ -86,8 +85,7 @@ unsafe fn hs_next_chunk(hs: &mut HttpStream) -> Option<i64> {
     if any { Some(sz) } else { None }
 }
 
-#[no_mangle]
-pub extern "C" fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
+pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
                             path: *const c_char, extra: *const c_char) -> c_int {
     if hs.is_null() || ip.is_null() || path.is_null() {
         return -1;
@@ -216,8 +214,7 @@ pub extern "C" fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
     }
 }
 
-#[no_mangle]
-pub extern "C" fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
+pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
     if hs.is_null() || dst.is_null() || n <= 0 {
         return if n == 0 { 0 } else { -1 };
     }
@@ -290,8 +287,7 @@ pub extern "C" fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) ->
     }
 }
 
-#[no_mangle]
-pub extern "C" fn http_close(hs: *mut HttpStream) {
+pub(crate) fn http_close(hs: *mut HttpStream) {
     if hs.is_null() {
         return;
     }

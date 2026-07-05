@@ -1,9 +1,8 @@
-//! Rust port of src/mkv.c — streaming Matroska/EBML demuxer -> H264 Annex-B AUs
-//! + raw audio frames pushed to the (Rust) au_queue; parses SeekHead/Cues for the
-//! seek index. Same C ABI (mkv.h): playback.c fills an mkv_ctx and calls mkv_run/
-//! mkv_seek_run/mkv_parse_cues; ebml_id/ebml_size are also called by the C cue
-//! preflight. mkv_ctx is a repr(C) mirror; bytes come from the read callback.
-//! Entry points catch_unwind so a parse bug is a clean failure, never UB into C.
+//! Streaming Matroska/EBML demuxer -> H264 Annex-B AUs + raw audio frames pushed to
+//! the au_queue (was src/mkv.c); parses SeekHead/Cues for the seek index. The player
+//! fills an `MkvCtx` and calls mkv_run/mkv_seek_run/mkv_parse_cues; ebml_id/ebml_size
+//! are also used by the cue preflight. Bytes come from the read callback. Entry points
+//! catch_unwind so a parse bug is a clean failure, never a panic across a callback.
 use crate::aq::{aq_is_aborted, aq_push, AuQueue};
 use std::os::raw::{c_int, c_long, c_uint, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -78,8 +77,7 @@ unsafe fn msrc_skip(c: *mut MkvCtx, n: i64) -> i64 {
 }
 
 // ---- EBML primitives ----
-#[no_mangle]
-pub extern "C" fn ebml_id(c: *mut MkvCtx, id: *mut c_uint, idlen: *mut c_int) -> c_int {
+pub(crate) fn ebml_id(c: *mut MkvCtx, id: *mut c_uint, idlen: *mut c_int) -> c_int {
     unsafe {
         let mut b0 = 0u8;
         if msrc_read(c, &mut b0, 1) != 1 {
@@ -112,8 +110,7 @@ pub extern "C" fn ebml_id(c: *mut MkvCtx, id: *mut c_uint, idlen: *mut c_int) ->
     }
 }
 
-#[no_mangle]
-pub extern "C" fn ebml_size(c: *mut MkvCtx, size: *mut i64, szlen: *mut c_int) -> c_int {
+pub(crate) fn ebml_size(c: *mut MkvCtx, size: *mut i64, szlen: *mut c_int) -> c_int {
     unsafe {
         let mut b0 = 0u8;
         if msrc_read(c, &mut b0, 1) != 1 {
@@ -848,8 +845,7 @@ fn mkv_parse_cues_inner(c: *mut MkvCtx, size: i64) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn mkv_parse_cues(c: *mut MkvCtx, size: i64) {
+pub(crate) fn mkv_parse_cues(c: *mut MkvCtx, size: i64) {
     if c.is_null() {
         return;
     }
@@ -895,8 +891,7 @@ unsafe fn mkv_parse_segment(c: *mut MkvCtx, size: i64) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn mkv_seek_run(c: *mut MkvCtx) {
+pub(crate) fn mkv_seek_run(c: *mut MkvCtx) {
     if c.is_null() {
         return;
     }
@@ -927,8 +922,7 @@ pub extern "C" fn mkv_seek_run(c: *mut MkvCtx) {
     }));
 }
 
-#[no_mangle]
-pub extern "C" fn mkv_run(c: *mut MkvCtx) -> c_int {
+pub(crate) fn mkv_run(c: *mut MkvCtx) -> c_int {
     if c.is_null() {
         return -1;
     }

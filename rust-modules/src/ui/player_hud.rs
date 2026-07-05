@@ -1,14 +1,11 @@
-//! Rust-first step 4: the player transport HUD (was draw_hud + its helpers in
-//! playback.c). A faithful procedural port over the Rust gfx/text primitives; it
-//! reads the live playback state (pl_scrub_ns/g_playpos_ns/pl_dur_ns/pl_paused,
-//! still C in playback.c until step 5) and the Rust route HUD strings
-//! (route::g_title/g_ctxline). A View/ProgressBar refactor onto retui is a follow-up.
+//! The player transport HUD (was draw_hud in playback.c). A procedural draw over the
+//! gfx/text primitives; reads the live playback state via crate::player (TX +
+//! playpos_ns/duration_ns) and the route HUD strings via route::title_cptr/ctxline_cptr.
+//! A View/ProgressBar refactor onto retui is a follow-up.
 #![allow(dead_code)]
 use crate::gfx::{draw_rect, draw_rrect};
 use crate::text::draw_text;
 use std::ffi::CString;
-use std::os::raw::c_char;
-use std::ptr::addr_of;
 use std::sync::atomic::Ordering::Relaxed;
 
 const SCR_W: f32 = 1920.0;
@@ -73,8 +70,8 @@ pub(crate) fn draw_hud() {
         let track = [1.0f32, 1.0, 1.0, 0.24];
         let mx = 90.0f32;
 
-        draw_text(addr_of!(crate::route::g_ctxline) as *const c_char, mx, SCR_H - 312.0, 24, dim.as_ptr(), 0, 0);
-        draw_text(addr_of!(crate::route::g_title) as *const c_char, mx, SCR_H - 278.0, 54, white.as_ptr(), 0, 1);
+        draw_text(crate::route::ctxline_cptr(), mx, SCR_H - 312.0, 24, dim.as_ptr(), 0, 0);
+        draw_text(crate::route::title_cptr(), mx, SCR_H - 278.0, 54, white.as_ptr(), 0, 1);
 
         // right control buttons: subtitles, audio, pip
         let bs = 58.0f32;

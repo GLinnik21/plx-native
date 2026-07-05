@@ -33,8 +33,7 @@ fn log(m: &str) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn img_decode_rgba(buf: *const c_uchar, len: c_int,
+pub(crate) fn img_decode_rgba(buf: *const c_uchar, len: c_int,
                                   w: *mut c_int, h: *mut c_int) -> *mut c_uchar {
     if buf.is_null() || len <= 0 { return ptr::null_mut(); }
     let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
@@ -62,13 +61,11 @@ pub extern "C" fn img_decode_rgba(buf: *const c_uchar, len: c_int,
     px
 }
 
-#[no_mangle]
-pub extern "C" fn img_free(px: *mut c_uchar) {
+pub(crate) fn img_free(px: *mut c_uchar) {
     if !px.is_null() { unsafe { free(px as *mut c_void) } }
 }
 
-#[no_mangle]
-pub extern "C" fn img_upload_rgba(px: *const c_uchar, w: c_int, h: c_int) -> c_uint {
+pub(crate) fn img_upload_rgba(px: *const c_uchar, w: c_int, h: c_int) -> c_uint {
     if px.is_null() || w <= 0 || h <= 0 { return 0; }
     let mut t: c_uint = 0;
     unsafe {
@@ -82,17 +79,5 @@ pub extern "C" fn img_upload_rgba(px: *const c_uchar, w: c_int, h: c_int) -> c_u
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
-    t
-}
-
-#[no_mangle]
-pub extern "C" fn img_tex_from_memory(buf: *const c_uchar, len: c_int,
-                                      out_w: *mut c_int, out_h: *mut c_int) -> c_uint {
-    let (mut w, mut h) = (0, 0);
-    let px = img_decode_rgba(buf, len, &mut w, &mut h);
-    if px.is_null() { return 0; }
-    let t = img_upload_rgba(px, w, h);
-    img_free(px);
-    unsafe { if !out_w.is_null() { *out_w = w } if !out_h.is_null() { *out_h = h } }
     t
 }

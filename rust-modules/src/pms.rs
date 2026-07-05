@@ -1,16 +1,15 @@
-//! Rust port of src/pms.c — Plex library fetch/parse into the shared pms_movies[]
-//! array, plus urlenc (shared by posters/playback). Same C ABI (pms.h): ui_home.c
-//! reads pms_movies[]/pms_nmovies (defined here), the C callers call urlenc. The
+//! Plex library fetch/parse into the private catalog (was src/pms.c), read by the UI
+//! via movie_ptr()/nmovies(), plus urlenc_str (shared by posters/route). The
 //! hand-rolled JSON string-scrape is replaced with serde_json navigation.
+#![allow(non_upper_case_globals)]
 use serde_json::Value;
 use std::os::raw::{c_char, c_int};
 use std::panic::catch_unwind;
 
 const PMS_MAX_MOVIES: usize = 256;
 
-// Layout MUST match `pms_movie` in src/pms.h. Fields are pub(crate) so ui_home
-// (the Rust home screen) can read them; they carry NUL-terminated C strings.
-#[repr(C)]
+// A catalog row. Fields pub(crate) so the UI / route / player read them; they carry
+// NUL-terminated C strings in fixed buffers.
 pub struct PmsMovie {
     pub(crate) title: [u8; 128],
     pub(crate) year: c_int,
@@ -34,11 +33,18 @@ impl PmsMovie {
     };
 }
 
-// The catalog, shared with the C UI (ui_home.c reads these via pms.h externs).
-#[no_mangle]
-pub static mut pms_movies: [PmsMovie; PMS_MAX_MOVIES] = [PmsMovie::ZERO; PMS_MAX_MOVIES];
-#[no_mangle]
-pub static mut pms_nmovies: c_int = 0;
+// The catalog (private; the UI reads it through movie_ptr()/nmovies()).
+static mut pms_movies: [PmsMovie; PMS_MAX_MOVIES] = [PmsMovie::ZERO; PMS_MAX_MOVIES];
+static mut pms_nmovies: c_int = 0;
+
+/// pointer to catalog row `i` (unchecked; caller ensures i < nmovies())
+pub(crate) fn movie_ptr(i: usize) -> *mut PmsMovie {
+    unsafe { (std::ptr::addr_of_mut!(pms_movies) as *mut PmsMovie).add(i) }
+}
+/// number of movies currently in the catalog
+pub(crate) fn nmovies() -> usize {
+    unsafe { std::ptr::addr_of!(pms_nmovies).read() as usize }
+}
 
 // ---- helpers ----
 unsafe fn cstr(p: *const c_char) -> String {
@@ -93,40 +99,8 @@ pub(crate) fn urlenc_str(src: &str) -> String {
     out
 }
 
-/// percent-encode a Plex server-relative path for the transcode url= query value
-#[no_mangle]
-pub extern "C" fn urlenc(dst: *mut c_char, cap: usize, src: *const c_char) {
-    if dst.is_null() || cap == 0 {
-        return;
-    }
-    unsafe {
-        let out = std::slice::from_raw_parts_mut(dst as *mut u8, cap);
-        const HEX: &[u8; 16] = b"0123456789ABCDEF";
-        let mut o = 0usize;
-        if !src.is_null() {
-            let s = std::ffi::CStr::from_ptr(src).to_bytes();
-            for &ch in s {
-                if o + 4 >= cap {
-                    break;
-                }
-                if ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_' || ch == b'.' || ch == b'~' {
-                    out[o] = ch;
-                    o += 1;
-                } else {
-                    out[o] = b'%';
-                    out[o + 1] = HEX[(ch >> 4) as usize];
-                    out[o + 2] = HEX[(ch & 15) as usize];
-                    o += 3;
-                }
-            }
-        }
-        out[o] = 0;
-    }
-}
-
-/// Fetch section <sec> ("Movies" is 1) and parse into pms_movies[]. Returns count.
-#[no_mangle]
-pub extern "C" fn pms_fetch_movies(host: *const c_char, port: c_int, token: *const c_char, sec: c_int) -> c_int {
+/// Fetch section <sec> ("Movies" is 1) and parse into the catalog. Returns count.
+pub(crate) fn pms_fetch_movies(host: *const c_char, port: c_int, token: *const c_char, sec: c_int) -> c_int {
     let r = catch_unwind(|| unsafe {
         std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), 0);
         let host_s = cstr(host);
