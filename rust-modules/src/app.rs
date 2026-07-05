@@ -178,7 +178,7 @@ pub extern "C" fn plex_run(
         crate::gfx::init_image();
 
         // fetch the catalog once, then spawn the poster workers
-        let nmov = crate::pms::pms_fetch_movies(pms_host, pms_port, pms_token);
+        let nmov = crate::pms::pms_fetch_hubs(pms_host, pms_port, pms_token);
         log(&format!("pms: nmovies={nmov}"));
         crate::posters::posters_init(pms_host, pms_port, pms_token);
         crate::route::set_config(
@@ -370,13 +370,22 @@ pub extern "C" fn plex_run(
                                 set_hud(last_input + 4500);
                             }
                         } else {
-                            // home: OK opens the detail page for the focused item
-                            let idx = if g_snap() < 0.5 { 0 } else { g_fr() * COLS as c_int + g_fc() };
-                            crate::ui::detail::open(idx);
-                            detail_open = true;
-                            if !dpad_mode {
-                                SDL_webOSCursorVisibility(0);
-                                dpad_mode = true;
+                            // home: OK opens the detail page for the focused hub item (by rk)
+                            let m = if g_snap() < 0.5 {
+                                crate::ui::home::movie_at(0, 0)
+                            } else {
+                                crate::ui::home::movie_at(g_fr(), g_fc())
+                            };
+                            if let Some(mm) = m.as_ref() {
+                                let rk = crate::ui::widgets::cfield(&mm.rk);
+                                if !rk.is_empty() {
+                                    crate::ui::detail::open_rk(&rk);
+                                    detail_open = true;
+                                    if !dpad_mode {
+                                        SDL_webOSCursorVisibility(0);
+                                        dpad_mode = true;
+                                    }
+                                }
                             }
                         }
                     } else if wcode == 72 || sym == 415 || wcode == 415 {

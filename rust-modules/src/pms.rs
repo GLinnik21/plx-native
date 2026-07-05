@@ -24,13 +24,14 @@ pub struct PmsMovie {
     pub(crate) acodec: [u8; 12],
     pub(crate) blur: [[f32; 3]; 4],
     pub(crate) has_blur: c_int,
-    pub(crate) kind: c_int, // 0 = movie, 1 = show (a container: play episodes, no direct Part)
+    pub(crate) kind: c_int,     // 0 = movie, 1 = show (a container: play episodes, no direct Part)
+    pub(crate) resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
 }
 impl PmsMovie {
     const ZERO: PmsMovie = PmsMovie {
         title: [0; 128], year: 0, rating: [0; 12], dur_ns: 0, part: [0; 256],
         thumb: [0; 128], art: [0; 128], summary: [0; 600], rk: [0; 16],
-        vcodec: [0; 12], acodec: [0; 12], blur: [[0.0; 3]; 4], has_blur: 0, kind: 0,
+        vcodec: [0; 12], acodec: [0; 12], blur: [[0.0; 3]; 4], has_blur: 0, kind: 0, resume_ms: 0,
     };
 }
 
@@ -111,10 +112,51 @@ pub(crate) fn urlenc_str(src: &str) -> String {
     out
 }
 
+/// Parse one Plex `Metadata` item (from a section listing OR a hub) into a catalog row.
+fn parse_item(m: &mut PmsMovie, item: &Value) {
+    *m = PmsMovie::ZERO;
+    m.kind = if jstr(item.get("type")) == "show" { 1 } else { 0 };
+    set_field(&mut m.title, &jstr(item.get("title")));
+    m.year = item.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
+    set_field(&mut m.rating, &jstr(item.get("contentRating")));
+    let durms = item.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
+    m.dur_ns = if durms > 0 { durms * 1_000_000 } else { 0 };
+    m.resume_ms = item.get("viewOffset").and_then(|v| v.as_i64()).unwrap_or(0);
+    // poster: prefer the show poster for episodes (grandparentThumb) so a landscape
+    // episode still doesn't fill a portrait card
+    let thumb = item
+        .get("grandparentThumb")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| jstr(item.get("thumb")));
+    set_field(&mut m.thumb, &thumb);
+    set_field(&mut m.art, &jstr(item.get("art")));
+    set_field(&mut m.summary, &jstr(item.get("summary")));
+    set_field(&mut m.rk, &jstr(item.get("ratingKey")));
+    // Media[0]: codecs + Part[0].key (movies/episodes; a show container has none)
+    if let Some(md) = item.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first()) {
+        set_field(&mut m.vcodec, &jstr(md.get("videoCodec")));
+        set_field(&mut m.acodec, &jstr(md.get("audioCodec")));
+        if let Some(p0) = md.get("Part").and_then(|a| a.as_array()).and_then(|a| a.first()) {
+            set_field(&mut m.part, &jstr(p0.get("key")));
+        }
+    }
+    // UltraBlurColors -> ambient gradient
+    if let Some(ub) = item.get("UltraBlurColors") {
+        if let Some(tl) = ub.get("topLeft").and_then(|v| v.as_str()) {
+            m.blur[0] = hex3(tl);
+            m.blur[1] = hex3(ub.get("topRight").and_then(|v| v.as_str()).unwrap_or("000000"));
+            m.blur[2] = hex3(ub.get("bottomRight").and_then(|v| v.as_str()).unwrap_or("000000"));
+            m.blur[3] = hex3(ub.get("bottomLeft").and_then(|v| v.as_str()).unwrap_or("000000"));
+            m.has_blur = 1;
+        }
+    }
+}
+
 /// Fetch one library section's items and APPEND them to the catalog starting at
-/// index `start`. `is_show`: shows are containers (you play episodes, not the show),
-/// so they carry no Media/Part — keep them anyway. Returns the new total count.
-unsafe fn fetch_section(host: &str, port: c_int, token: &str, sec: i64, is_show: bool, start: usize) -> usize {
+/// index `start`. Returns the new total count.
+unsafe fn fetch_section(host: &str, port: c_int, token: &str, sec: i64, start: usize) -> usize {
     let path = format!("/library/sections/{sec}/all?X-Plex-Token={token}");
     let body = match crate::stream::http_get(host, port, &path, Some("Accept: application/json\r\n")) {
         Some(b) => b,
@@ -138,37 +180,9 @@ unsafe fn fetch_section(host: &str, port: c_int, token: &str, sec: i64, is_show:
             break;
         }
         let m = &mut movies[n];
-        *m = PmsMovie::ZERO;
-        m.kind = if is_show { 1 } else { 0 };
-        set_field(&mut m.title, &jstr(item.get("title")));
-        m.year = item.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
-        set_field(&mut m.rating, &jstr(item.get("contentRating")));
-        let durms = item.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
-        m.dur_ns = if durms > 0 { durms * 1_000_000 } else { 0 };
-        set_field(&mut m.thumb, &jstr(item.get("thumb")));
-        set_field(&mut m.art, &jstr(item.get("art")));
-        set_field(&mut m.summary, &jstr(item.get("summary")));
-        set_field(&mut m.rk, &jstr(item.get("ratingKey")));
-        // Media[0]: codecs + Part[0].key (movies only; a show has none)
-        if let Some(md) = item.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first()) {
-            set_field(&mut m.vcodec, &jstr(md.get("videoCodec")));
-            set_field(&mut m.acodec, &jstr(md.get("audioCodec")));
-            if let Some(p0) = md.get("Part").and_then(|a| a.as_array()).and_then(|a| a.first()) {
-                set_field(&mut m.part, &jstr(p0.get("key")));
-            }
-        }
-        // UltraBlurColors -> ambient gradient
-        if let Some(ub) = item.get("UltraBlurColors") {
-            if let Some(tl) = ub.get("topLeft").and_then(|v| v.as_str()) {
-                m.blur[0] = hex3(tl);
-                m.blur[1] = hex3(ub.get("topRight").and_then(|v| v.as_str()).unwrap_or("000000"));
-                m.blur[2] = hex3(ub.get("bottomRight").and_then(|v| v.as_str()).unwrap_or("000000"));
-                m.blur[3] = hex3(ub.get("bottomLeft").and_then(|v| v.as_str()).unwrap_or("000000"));
-                m.has_blur = 1;
-            }
-        }
+        parse_item(m, item);
         // movies need a playable Part; shows are containers (episodes carry the parts)
-        if m.title[0] != 0 && (m.part[0] != 0 || is_show) {
+        if m.title[0] != 0 && (m.part[0] != 0 || m.kind == 1) {
             n += 1;
         }
     }
@@ -205,8 +219,103 @@ pub(crate) fn pms_fetch_movies(host: *const c_char, port: c_int, token: *const c
             }
         }
         let mut n = 0usize;
-        for (key, is_show) in sections {
-            n = fetch_section(&host_s, port, &token_s, key, is_show, n);
+        for (key, _is_show) in sections {
+            n = fetch_section(&host_s, port, &token_s, key, n);
+        }
+        std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), n as c_int);
+        n as c_int
+    });
+    r.unwrap_or(0)
+}
+
+// ---- home hubs: each hub is a titled slice of the catalog (pms_movies) ----
+struct HubRow {
+    title: String,
+    start: usize,
+    len: usize,
+}
+static mut HUBS: Vec<HubRow> = Vec::new();
+
+/// number of home hubs
+pub(crate) fn hub_count() -> usize {
+    unsafe { std::ptr::addr_of!(HUBS).as_ref().map(|v| v.len()).unwrap_or(0) }
+}
+/// title of hub `i` (e.g. "Continue Watching")
+pub(crate) fn hub_title(i: usize) -> String {
+    unsafe {
+        std::ptr::addr_of!(HUBS).as_ref().and_then(|v| v.get(i)).map(|h| h.title.clone()).unwrap_or_default()
+    }
+}
+/// item count in hub `i`
+pub(crate) fn hub_len(i: usize) -> usize {
+    unsafe { std::ptr::addr_of!(HUBS).as_ref().and_then(|v| v.get(i)).map(|h| h.len).unwrap_or(0) }
+}
+/// pointer to item `col` of hub `hub`, or null
+pub(crate) fn hub_item_ptr(hub: usize, col: usize) -> *mut PmsMovie {
+    unsafe {
+        if let Some(h) = std::ptr::addr_of!(HUBS).as_ref().and_then(|v| v.get(hub)) {
+            if col < h.len {
+                return movie_ptr(h.start + col);
+            }
+        }
+    }
+    std::ptr::null_mut()
+}
+
+/// Fetch the home hubs (Continue Watching, On Deck, Recently Added, collections) into
+/// the catalog + the HUBS grouping. Skips music/photo/playlist hubs + empty ones.
+pub(crate) fn pms_fetch_hubs(host: *const c_char, port: c_int, token: *const c_char) -> c_int {
+    let r = catch_unwind(|| unsafe {
+        std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), 0);
+        if let Some(v) = std::ptr::addr_of_mut!(HUBS).as_mut() {
+            v.clear();
+        }
+        let host_s = cstr(host);
+        let token_s = cstr(token);
+        let path = format!("/hubs?count=12&excludeContinueWatching=0&X-Plex-Token={token_s}");
+        let body = match crate::stream::http_get(&host_s, port, &path, Some("Accept: application/json\r\n")) {
+            Some(b) => b,
+            None => return 0,
+        };
+        let json: Value = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+        let hubs = match json.get("MediaContainer").and_then(|m| m.get("Hub")).and_then(|a| a.as_array()) {
+            Some(h) => h,
+            None => return 0,
+        };
+        let movies =
+            std::slice::from_raw_parts_mut(std::ptr::addr_of_mut!(pms_movies) as *mut PmsMovie, PMS_MAX_MOVIES);
+        const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
+        let mut n = 0usize;
+        for hub in hubs {
+            if SKIP.contains(&jstr(hub.get("type")).as_str()) {
+                continue;
+            }
+            let items = match hub.get("Metadata").and_then(|a| a.as_array()) {
+                Some(it) if !it.is_empty() => it,
+                _ => continue,
+            };
+            let start = n;
+            for item in items {
+                if n >= PMS_MAX_MOVIES {
+                    break;
+                }
+                if SKIP.contains(&jstr(item.get("type")).as_str()) {
+                    continue;
+                }
+                let m = &mut movies[n];
+                parse_item(m, item);
+                if m.title[0] != 0 && m.thumb[0] != 0 {
+                    n += 1; // need a poster to show it in a shelf
+                }
+            }
+            if n > start {
+                if let Some(v) = std::ptr::addr_of_mut!(HUBS).as_mut() {
+                    v.push(HubRow { title: jstr(hub.get("title")), start, len: n - start });
+                }
+            }
         }
         std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), n as c_int);
         n as c_int

@@ -52,10 +52,10 @@ const ABOUT_Y: f32 = 2730.0; // About footer (heading + card + 3 info columns); 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
     let idx = unsafe { addr_of!(SELECTED).read() };
-    if idx < 0 {
+    if idx < 0 || idx as usize >= crate::pms::nmovies() {
         return None;
     }
-    unsafe { crate::ui::home::movie_at(idx / COLS as c_int, idx % COLS as c_int).as_ref() }
+    unsafe { crate::pms::movie_ptr(idx as usize).as_ref() }
 }
 
 /// the focused hero button (0=Play), or -1 when the hero section isn't focused
@@ -124,10 +124,10 @@ fn scroll_target() -> f32 {
 /// the selected catalog row pointer (for the app to play a movie), or null
 pub(crate) fn selected_ptr() -> *mut PmsMovie {
     let idx = unsafe { addr_of!(SELECTED).read() };
-    if idx < 0 {
+    if idx < 0 || idx as usize >= crate::pms::nmovies() {
         return std::ptr::null_mut();
     }
-    crate::ui::home::movie_at(idx / COLS as c_int, idx % COLS as c_int)
+    crate::pms::movie_ptr(idx as usize)
 }
 /// is the loaded item a TV show?
 pub(crate) fn is_show() -> bool {
@@ -144,10 +144,12 @@ pub(crate) fn open(idx: c_int) {
         addr_of_mut!(COL).write(0);
         (*addr_of_mut!(SCROLL)).jump(0.0);
     }
-    if let Some(m) = unsafe { crate::ui::home::movie_at(idx / COLS as c_int, idx % COLS as c_int).as_ref() } {
-        let rk = cfield(&m.rk);
-        if !rk.is_empty() {
-            metadata::load_detail(&rk);
+    if idx >= 0 && (idx as usize) < crate::pms::nmovies() {
+        if let Some(m) = unsafe { crate::pms::movie_ptr(idx as usize).as_ref() } {
+            let rk = cfield(&m.rk);
+            if !rk.is_empty() {
+                metadata::load_detail(&rk);
+            }
         }
     }
 }
