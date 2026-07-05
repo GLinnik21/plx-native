@@ -44,6 +44,13 @@ pub(crate) fn request_audio_switch(sid: i64) {
     SHARED.pending_audio_sid.store(sid, Relaxed);
     SHARED.sub_cues.lock().unwrap().clear(); // the fresh transcode carries no embedded subs
 }
+/// request a re-transcode at the current position with the CURRENT audio + subtitle —
+/// used when a subtitle is (de)selected while already transcoding, so the server
+/// re-burns (or drops) it. No-op-ish if not transcoding (the caller gates on that).
+pub(crate) fn request_transcode_refresh() {
+    SHARED.pending_retranscode.store(true, Relaxed);
+    SHARED.sub_cues.lock().unwrap().clear(); // burned/absent in the fresh transcode
+}
 
 // ---- client-rendered subtitles (direct-play only; a transcode carries no subs) ----
 /// selected subtitle track index (-1 = off); the demuxer reads this per block.

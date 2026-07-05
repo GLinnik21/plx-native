@@ -48,6 +48,9 @@ pub(crate) struct Shared {
     // numbering differs from the transcode output) — re-parse Tracks (mkv_run) not
     // mkv_seek_run. A plain transcode seek leaves this false (same target = same tracks).
     pub reparse_next: AtomicBool,
+    // pending "re-transcode at the current position with the current audio + subtitle" —
+    // set when a subtitle is (de)selected while transcoding, so Plex re-burns (or drops) it.
+    pub pending_retranscode: AtomicBool,
 
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
@@ -85,6 +88,7 @@ impl Shared {
             next_url: Mutex::new(None),
             pending_audio_sid: AtomicI64::new(-1),
             reparse_next: AtomicBool::new(false),
+            pending_retranscode: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
             sub_cues: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
@@ -111,6 +115,7 @@ impl Shared {
         *self.next_url.lock().unwrap() = None;
         self.pending_audio_sid.store(-1, Ordering::Relaxed);
         self.reparse_next.store(false, Ordering::Relaxed);
+        self.pending_retranscode.store(false, Ordering::Relaxed);
         self.desired_sub_idx.store(-1, Ordering::Relaxed);
         self.sub_cues.lock().unwrap().clear();
         self.file_size.store(0, Ordering::Relaxed);
