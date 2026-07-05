@@ -24,12 +24,13 @@ pub struct PmsMovie {
     pub(crate) acodec: [u8; 12],
     pub(crate) blur: [[f32; 3]; 4],
     pub(crate) has_blur: c_int,
+    pub(crate) kind: c_int, // 0 = movie, 1 = show (a container: play episodes, no direct Part)
 }
 impl PmsMovie {
     const ZERO: PmsMovie = PmsMovie {
         title: [0; 128], year: 0, rating: [0; 12], dur_ns: 0, part: [0; 256],
         thumb: [0; 128], art: [0; 128], summary: [0; 600], rk: [0; 16],
-        vcodec: [0; 12], acodec: [0; 12], blur: [[0.0; 3]; 4], has_blur: 0,
+        vcodec: [0; 12], acodec: [0; 12], blur: [[0.0; 3]; 4], has_blur: 0, kind: 0,
     };
 }
 
@@ -99,66 +100,102 @@ pub(crate) fn urlenc_str(src: &str) -> String {
     out
 }
 
-/// Fetch section <sec> ("Movies" is 1) and parse into the catalog. Returns count.
-pub(crate) fn pms_fetch_movies(host: *const c_char, port: c_int, token: *const c_char, sec: c_int) -> c_int {
+/// Fetch one library section's items and APPEND them to the catalog starting at
+/// index `start`. `is_show`: shows are containers (you play episodes, not the show),
+/// so they carry no Media/Part — keep them anyway. Returns the new total count.
+unsafe fn fetch_section(host: &str, port: c_int, token: &str, sec: i64, is_show: bool, start: usize) -> usize {
+    let path = format!("/library/sections/{sec}/all?X-Plex-Token={token}");
+    let body = match crate::stream::http_get(host, port, &path, Some("Accept: application/json\r\n")) {
+        Some(b) => b,
+        None => return start,
+    };
+    let json: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => return start,
+    };
+    let meta = match json.get("MediaContainer").and_then(|m| m.get("Metadata")).and_then(|a| a.as_array()) {
+        Some(m) => m,
+        None => return start,
+    };
+    let movies = std::slice::from_raw_parts_mut(
+        std::ptr::addr_of_mut!(pms_movies) as *mut PmsMovie,
+        PMS_MAX_MOVIES,
+    );
+    let mut n = start;
+    for item in meta {
+        if n >= PMS_MAX_MOVIES {
+            break;
+        }
+        let m = &mut movies[n];
+        *m = PmsMovie::ZERO;
+        m.kind = if is_show { 1 } else { 0 };
+        set_field(&mut m.title, &jstr(item.get("title")));
+        m.year = item.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
+        set_field(&mut m.rating, &jstr(item.get("contentRating")));
+        let durms = item.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
+        m.dur_ns = if durms > 0 { durms * 1_000_000 } else { 0 };
+        set_field(&mut m.thumb, &jstr(item.get("thumb")));
+        set_field(&mut m.art, &jstr(item.get("art")));
+        set_field(&mut m.summary, &jstr(item.get("summary")));
+        set_field(&mut m.rk, &jstr(item.get("ratingKey")));
+        // Media[0]: codecs + Part[0].key (movies only; a show has none)
+        if let Some(md) = item.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first()) {
+            set_field(&mut m.vcodec, &jstr(md.get("videoCodec")));
+            set_field(&mut m.acodec, &jstr(md.get("audioCodec")));
+            if let Some(p0) = md.get("Part").and_then(|a| a.as_array()).and_then(|a| a.first()) {
+                set_field(&mut m.part, &jstr(p0.get("key")));
+            }
+        }
+        // UltraBlurColors -> ambient gradient
+        if let Some(ub) = item.get("UltraBlurColors") {
+            if let Some(tl) = ub.get("topLeft").and_then(|v| v.as_str()) {
+                m.blur[0] = hex3(tl);
+                m.blur[1] = hex3(ub.get("topRight").and_then(|v| v.as_str()).unwrap_or("000000"));
+                m.blur[2] = hex3(ub.get("bottomRight").and_then(|v| v.as_str()).unwrap_or("000000"));
+                m.blur[3] = hex3(ub.get("bottomLeft").and_then(|v| v.as_str()).unwrap_or("000000"));
+                m.has_blur = 1;
+            }
+        }
+        // movies need a playable Part; shows are containers (episodes carry the parts)
+        if m.title[0] != 0 && (m.part[0] != 0 || is_show) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Fetch every movie + show library into the catalog (movies first, shows after),
+/// discovering the section keys from /library/sections. Returns the total count.
+pub(crate) fn pms_fetch_movies(host: *const c_char, port: c_int, token: *const c_char) -> c_int {
     let r = catch_unwind(|| unsafe {
         std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), 0);
         let host_s = cstr(host);
         let token_s = cstr(token);
-        let path = format!("/library/sections/{sec}/all?X-Plex-Token={token_s}");
-        let body = match crate::stream::http_get(&host_s, port, &path, Some("Accept: application/json\r\n")) {
-            Some(b) => b,
-            None => return 0,
-        };
-        let json: Value = match serde_json::from_slice(&body) {
-            Ok(v) => v,
-            Err(_) => return 0,
-        };
-        let meta = match json.get("MediaContainer").and_then(|m| m.get("Metadata")).and_then(|a| a.as_array()) {
-            Some(m) => m,
-            None => return 0,
-        };
-        let movies = std::slice::from_raw_parts_mut(
-            std::ptr::addr_of_mut!(pms_movies) as *mut PmsMovie,
-            PMS_MAX_MOVIES,
-        );
+        // discover the section keys once, then fetch movies first, shows after — so
+        // movie rows keep their existing order and the hero (movie_at(0,0)) stays a
+        // movie; shows append into the later grid rows.
+        let secpath = format!("/library/sections?X-Plex-Token={token_s}");
+        let mut sections: Vec<(i64, bool)> = Vec::new(); // (key, is_show)
+        if let Some(body) = crate::stream::http_get(&host_s, port, &secpath, Some("Accept: application/json\r\n")) {
+            if let Ok(json) = serde_json::from_slice::<Value>(&body) {
+                if let Some(dirs) = json.get("MediaContainer").and_then(|m| m.get("Directory")).and_then(|a| a.as_array()) {
+                    for is_show in [false, true] {
+                        let want = if is_show { "show" } else { "movie" };
+                        for d in dirs {
+                            if jstr(d.get("type")) != want {
+                                continue;
+                            }
+                            if let Some(key) = d.get("key").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()) {
+                                sections.push((key, is_show));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let mut n = 0usize;
-        for item in meta {
-            if n >= PMS_MAX_MOVIES {
-                break;
-            }
-            let m = &mut movies[n];
-            *m = PmsMovie::ZERO;
-            set_field(&mut m.title, &jstr(item.get("title")));
-            m.year = item.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
-            set_field(&mut m.rating, &jstr(item.get("contentRating")));
-            let durms = item.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
-            m.dur_ns = if durms > 0 { durms * 1_000_000 } else { 0 };
-            set_field(&mut m.thumb, &jstr(item.get("thumb")));
-            set_field(&mut m.art, &jstr(item.get("art")));
-            set_field(&mut m.summary, &jstr(item.get("summary")));
-            set_field(&mut m.rk, &jstr(item.get("ratingKey")));
-            // Media[0]: codecs + Part[0].key
-            if let Some(md) = item.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first()) {
-                set_field(&mut m.vcodec, &jstr(md.get("videoCodec")));
-                set_field(&mut m.acodec, &jstr(md.get("audioCodec")));
-                if let Some(p0) = md.get("Part").and_then(|a| a.as_array()).and_then(|a| a.first()) {
-                    set_field(&mut m.part, &jstr(p0.get("key")));
-                }
-            }
-            // UltraBlurColors -> ambient gradient
-            if let Some(ub) = item.get("UltraBlurColors") {
-                if let Some(tl) = ub.get("topLeft").and_then(|v| v.as_str()) {
-                    m.blur[0] = hex3(tl);
-                    m.blur[1] = hex3(ub.get("topRight").and_then(|v| v.as_str()).unwrap_or("000000"));
-                    m.blur[2] = hex3(ub.get("bottomRight").and_then(|v| v.as_str()).unwrap_or("000000"));
-                    m.blur[3] = hex3(ub.get("bottomLeft").and_then(|v| v.as_str()).unwrap_or("000000"));
-                    m.has_blur = 1;
-                }
-            }
-            if m.title[0] != 0 && m.part[0] != 0 {
-                n += 1;
-            }
+        for (key, is_show) in sections {
+            n = fetch_section(&host_s, port, &token_s, key, is_show, n);
         }
         std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), n as c_int);
         n as c_int

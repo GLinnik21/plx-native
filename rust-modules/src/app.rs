@@ -178,7 +178,7 @@ pub extern "C" fn plex_run(
         crate::gfx::init_image();
 
         // fetch the catalog once, then spawn the poster workers
-        let nmov = crate::pms::pms_fetch_movies(pms_host, pms_port, pms_token, 1);
+        let nmov = crate::pms::pms_fetch_movies(pms_host, pms_port, pms_token);
         log(&format!("pms: nmovies={nmov}"));
         crate::posters::posters_init(pms_host, pms_port, pms_token);
         crate::route::set_config(
