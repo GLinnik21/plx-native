@@ -1,5 +1,12 @@
 # PMS API Reference (verified against live server)
 
+> **Authoritative source: [`plex-openapi.json`](plex-openapi.json)** — the official Plex Media
+> Server OpenAPI 3.1 spec (205 operations). Check it FIRST for any endpoint (method, path,
+> params, response); this file is a hand-curated, live-verified subset for the paths we use.
+> The spec is where `transcodeSubtitles` (soft WebVTT during transcode), `PUT /library/parts`
+> (audio/subtitle stream selection), `/hubs/search`, and `/library/streams/{id}.{ext}` live —
+> reach for it before reverse-engineering.
+
 Server: `http://YOUR_PMS_HOST:32400` — PMS apiVersion 1.2.2.
 Token: `X-Plex-Token=YOUR_PLEX_TOKEN` (query param or `X-Plex-Token` header). Get yours from Plex → any item → Get Info → View XML.
 All endpoints below were verified live on 2026-07-03 with read-only GETs, **except** §7 (timeline), which is documented from community sources only.
