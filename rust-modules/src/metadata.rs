@@ -177,37 +177,53 @@ fn fetch_detail(host: &str, port: c_int, token: &str, rk: &str) -> Option<Detail
         cur_season: 0,
         related: Vec::new(),
     };
-    // audio/subtitle streams (movies carry Media/Part/Stream; shows do not)
-    if let Some(part) = it
+    // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
+    // episodes do, so load_detail backfills a show's streams from its first episode).
+    parse_streams(it, &mut d);
+    Some(d)
+}
+
+/// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer)
+fn parse_streams(item: &Value, d: &mut Detail) {
+    let part = item
         .get("Media")
         .and_then(|a| a.as_array())
         .and_then(|a| a.first())
         .and_then(|md| md.get("Part"))
         .and_then(|a| a.as_array())
-        .and_then(|a| a.first())
-    {
-        if let Some(streams) = part.get("Stream").and_then(|a| a.as_array()) {
-            for s in streams {
-                let title = jstr(s.get("title"));
-                let st = Stream {
-                    lang: jstr(s.get("language")),
-                    codec: jstr(s.get("codec")),
-                    channels: jint(s.get("channels")),
-                    layout: jstr(s.get("audioChannelLayout")),
-                    sdh: jint(s.get("hearingImpaired")) != 0,
-                    ad: jint(s.get("audioDescription")) != 0 || title.to_lowercase().contains("descri"),
-                    forced: jint(s.get("forced")) != 0,
-                    title,
-                };
-                match jint(s.get("streamType")) {
-                    2 => d.audio.push(st),
-                    3 => d.subs.push(st),
-                    _ => {}
-                }
-            }
+        .and_then(|a| a.first());
+    let streams = match part.and_then(|p| p.get("Stream")).and_then(|a| a.as_array()) {
+        Some(s) => s,
+        None => return,
+    };
+    for s in streams {
+        let title = jstr(s.get("title"));
+        let st = Stream {
+            lang: jstr(s.get("language")),
+            codec: jstr(s.get("codec")),
+            channels: jint(s.get("channels")),
+            layout: jstr(s.get("audioChannelLayout")),
+            sdh: jint(s.get("hearingImpaired")) != 0,
+            ad: jint(s.get("audioDescription")) != 0 || title.to_lowercase().contains("descri"),
+            forced: jint(s.get("forced")) != 0,
+            title,
+        };
+        match jint(s.get("streamType")) {
+            2 => d.audio.push(st),
+            3 => d.subs.push(st),
+            _ => {}
         }
     }
-    Some(d)
+}
+
+/// fetch one item's full metadata and parse its streams into `d` — used to borrow a
+/// show's first-episode audio/subtitle tracks (the show container carries none).
+fn fetch_item_streams(host: &str, port: c_int, token: &str, rk: &str, d: &mut Detail) {
+    if let Some(json) = get_json(host, port, &format!("/library/metadata/{rk}?X-Plex-Token={token}")) {
+        if let Some(it) = meta0(&json) {
+            parse_streams(it, d);
+        }
+    }
 }
 
 fn fetch_seasons(host: &str, port: c_int, token: &str, rk: &str) -> Vec<Season> {
@@ -312,6 +328,12 @@ pub(crate) fn load_detail(rk: &str) {
             d.seasons = fetch_seasons(&host, port, &token, &rk);
             if let Some(s0) = d.seasons.first() {
                 d.episodes = fetch_episodes(&host, port, &token, &s0.rk);
+            }
+            // a show carries no streams itself — backfill the About footer's audio/
+            // subtitle tracks from the first episode (one extra round-trip)
+            let first_ep_rk = d.episodes.first().map(|e| e.rk.clone());
+            if let Some(ep_rk) = first_ep_rk {
+                fetch_item_streams(&host, port, &token, &ep_rk, &mut d);
             }
         }
         d.related = fetch_related(&host, port, &token, &rk);

@@ -44,6 +44,7 @@ const REL_GAP: f32 = 28.0;
 const CAST_Y: f32 = 2300.0;
 const CAST_D: f32 = 150.0; // headshot diameter
 const CAST_SLOT: f32 = 200.0; // per-member horizontal pitch (room for the name)
+const ABOUT_Y: f32 = 2820.0; // About footer (heading + card + 3 info columns); gap clears the cast row
 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
@@ -83,6 +84,7 @@ fn sections() -> Vec<c_int> {
         if !d.cast.is_empty() {
             v.push(4);
         }
+        v.push(5); // About footer — always present when an item is loaded
     }
     v
 }
@@ -93,6 +95,7 @@ fn n_items(section: c_int) -> c_int {
         2 => metadata::current().map(|d| d.episodes.len()).unwrap_or(0) as c_int,
         3 => metadata::current().map(|d| d.related.len()).unwrap_or(0) as c_int,
         4 => metadata::current().map(|d| d.cast.len()).unwrap_or(0) as c_int,
+        5 => 1, // About footer (a single non-scrolling block)
         _ => 0,
     }
 }
@@ -102,6 +105,7 @@ fn section_top(section: c_int) -> f32 {
         1 | 2 => TAB_Y, // tabs + episodes share one scrolled block
         3 => RELATED_Y,
         4 => CAST_Y,
+        5 => ABOUT_Y,
         _ => TOP_MARGIN, // hero -> scroll target 0
     }
 }
@@ -218,6 +222,7 @@ pub(crate) fn draw() {
     }
     draw_related(ps);
     draw_cast(ps);
+    draw_about(ps);
 }
 
 fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
@@ -709,6 +714,167 @@ fn play_episode_at(i: c_int) -> bool {
     let hud_ctx = format!("{}  \u{b7}  S{} E{}", show, ep.season, ep.index);
     crate::route::play_episode(&ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
     true
+}
+
+// ---- About footer (section 5): heading + card + Information/Languages/Accessibility ----
+
+/// wrap `s` into up to `max_lines` lines of ~`budget` chars (word boundaries); the
+/// last line gets an ellipsis if the text was truncated.
+fn wrap_lines(s: &str, budget: usize, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for w in s.split_whitespace() {
+        if !cur.is_empty() && cur.len() + 1 + w.len() > budget {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(w);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            while last.len() > budget.saturating_sub(1) {
+                last.pop();
+            }
+            last.push('\u{2026}');
+        }
+    }
+    lines
+}
+
+fn text_at(p: Painter, x: f32, y: f32, sz: c_int, col: [f32; 4], bold: c_int, s: &str) -> f32 {
+    match CString::new(s) {
+        Ok(t) => p.text(t.as_ptr(), x, y, sz, col, 0, bold),
+        Err(_) => 0.0,
+    }
+}
+
+/// a dim label over one/two white value lines; returns the vertical advance
+fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str, lbl: [f32; 4], val: [f32; 4]) -> f32 {
+    text_at(p, x, y, 20, lbl, 0, label);
+    let wrapped = wrap_lines(value, 40, 2);
+    for (i, ln) in wrapped.iter().enumerate() {
+        text_at(p, x, y + 30.0 + i as f32 * 26.0, 24, val, 1, ln);
+    }
+    30.0 + wrapped.len().max(1) as f32 * 26.0 + 22.0
+}
+
+/// a small rounded accessibility badge (CC / SDH / AD)
+fn draw_badge(p: Painter, x: f32, y: f32, label: &str) {
+    let (w, h) = (48.0f32, 30.0f32);
+    p.rrect(Rect::new(x, y, w, h), 7.0, 7.0, [0.86, 0.88, 0.92, 0.20]);
+    if let Ok(t) = CString::new(label) {
+        p.text(t.as_ptr(), x + w * 0.5, y + (h - 20.0) * 0.5 - 1.0, 20, [0.9, 0.92, 0.96, 1.0], 1, 1);
+    }
+}
+
+fn draw_about(p: Painter) {
+    let d = match metadata::current() {
+        Some(d) => d,
+        None => return,
+    };
+    let tx = MARGIN_X;
+    let hd = [0.95, 0.96, 0.98, 1.0]; // headings
+    let val = [0.90, 0.92, 0.95, 1.0]; // values
+    let lbl = [0.55, 0.57, 0.62, 1.0]; // dim labels
+    let dim = [0.66, 0.68, 0.72, 1.0];
+
+    text_at(p, tx, ABOUT_Y, 30, hd, 1, "About");
+
+    // ---- card: title, genres, summary + MORE ----
+    let (cw, ch, cy, pad) = (640.0f32, 330.0f32, ABOUT_Y + 50.0, 30.0f32);
+    p.rrect(Rect::new(tx, cy, cw, ch), 18.0, 18.0, [1.0, 1.0, 1.0, 0.07]);
+    let ix = tx + pad;
+    text_at(p, ix, cy + pad, 30, hd, 1, &d.title);
+    if !d.genres.is_empty() {
+        text_at(p, ix, cy + pad + 44.0, 22, dim, 0, &d.genres.join(", "));
+    }
+    let sy = cy + pad + 100.0;
+    let lines = wrap_lines(&d.summary, 52, 5);
+    for (i, ln) in lines.iter().enumerate() {
+        let w = text_at(p, ix, sy + i as f32 * 30.0, 22, val, 0, ln);
+        if i + 1 == lines.len() {
+            text_at(p, ix + w + 8.0, sy + i as f32 * 30.0, 22, hd, 1, "MORE");
+        }
+    }
+
+    // ---- three columns ----
+    let col_y = ABOUT_Y + 430.0;
+
+    // Information
+    text_at(p, tx, col_y, 30, hd, 1, "Information");
+    let mut yy = col_y + 68.0;
+    let released = pretty_date(&d.aired, d.year);
+    if !released.is_empty() {
+        yy += draw_pair(p, tx, yy, "Released", &released, lbl, val);
+    }
+    let dur = if d.dur_ms > 0 { d.dur_ms } else { d.episodes.first().map(|e| e.dur_ms).unwrap_or(0) };
+    if dur > 0 {
+        let mins = dur / 60_000;
+        yy += draw_pair(p, tx, yy, "Run Time", &format!("{} hr {} min", mins / 60, mins % 60), lbl, val);
+    }
+    yy += draw_pair(p, tx, yy, "Rated", if d.rating.is_empty() { "NR" } else { &d.rating }, lbl, val);
+    if !d.countries.is_empty() {
+        draw_pair(p, tx, yy, "Regions of Origin", &d.countries.join(", "), lbl, val);
+    }
+
+    // Languages
+    let lx = 760.0f32;
+    text_at(p, lx, col_y, 30, hd, 1, "Languages");
+    let mut ly = col_y + 68.0;
+    if let Some(a0) = d.audio.first() {
+        let orig = if a0.lang.is_empty() { "Unknown".to_string() } else { a0.lang.clone() };
+        ly += draw_pair(p, lx, ly, "Original Audio", &orig, lbl, val);
+    }
+    if !d.audio.is_empty() {
+        text_at(p, lx, ly, 20, lbl, 0, "Audio");
+        let list: Vec<String> = d
+            .audio
+            .iter()
+            .take(8)
+            .map(|a| {
+                let lang = if a.lang.is_empty() { "Unknown".to_string() } else { a.lang.clone() };
+                format!("{} ({})", lang, a.codec.to_uppercase())
+            })
+            .collect();
+        for (i, ln) in wrap_lines(&list.join(", "), 44, 6).iter().enumerate() {
+            text_at(p, lx, ly + 30.0 + i as f32 * 28.0, 22, val, 0, ln);
+        }
+    }
+
+    // Accessibility
+    let ax = 1360.0f32;
+    text_at(p, ax, col_y, 30, hd, 1, "Accessibility");
+    let cc = !d.subs.is_empty();
+    let sdh = d.subs.iter().any(|s| s.sdh);
+    let ad = d.audio.iter().any(|a| a.ad);
+    let items: [(bool, &str, &str); 3] = [
+        (cc, "CC", "Closed captions refer to subtitles in available languages with the addition of relevant non-dialogue information."),
+        (sdh, "SDH", "Subtitles for the deaf and hard of hearing (SDH) refer to subtitles in the original language with the addition of relevant non-dialogue information."),
+        (ad, "AD", "Audio descriptions (AD) refer to a narration track describing what is happening on screen, to provide context for those who are blind or have low vision."),
+    ];
+    let mut ay = col_y + 64.0;
+    let mut any = false;
+    for (present, label, desc) in items {
+        if !present {
+            continue;
+        }
+        any = true;
+        draw_badge(p, ax, ay, label);
+        let wrapped = wrap_lines(desc, 40, 4);
+        for (i, ln) in wrapped.iter().enumerate() {
+            text_at(p, ax, ay + 46.0 + i as f32 * 26.0, 20, val, 0, ln);
+        }
+        ay += 46.0 + wrapped.len() as f32 * 26.0 + 26.0;
+    }
+    if !any {
+        text_at(p, ax, col_y + 68.0, 22, dim, 0, "\u{2014}");
+    }
 }
 
 /// "YYYY-MM-DD" -> "D Mon YYYY"; falls back to the year, then empty
