@@ -86,7 +86,7 @@ unsafe fn hs_next_chunk(hs: &mut HttpStream) -> Option<i64> {
 }
 
 pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
-                            path: *const c_char, extra: *const c_char) -> c_int {
+                            path: *const c_char, extra: *const c_char, method: &str) -> c_int {
     if hs.is_null() || ip.is_null() || path.is_null() {
         return -1;
     }
@@ -143,7 +143,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         };
         let accept = if extra_s.to_ascii_lowercase().contains("accept:") { "" } else { "Accept: */*\r\n" };
         let req = format!(
-            "GET {path_s} HTTP/1.1\r\nHost: {ip_s}:{port}\r\nUser-Agent: plexpoc/0.1\r\n{accept}{extra_s}Connection: close\r\n\r\n"
+            "{method} {path_s} HTTP/1.1\r\nHost: {ip_s}:{port}\r\nUser-Agent: plexpoc/0.1\r\n{accept}{extra_s}Connection: close\r\n\r\n"
         );
         let bytes = req.as_bytes();
         let mut off = 0usize;
@@ -308,7 +308,7 @@ pub(crate) fn http_get(host: &str, port: c_int, path: &str, extra: Option<&str>)
     let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
     let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
-    if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr) != 0 {
+    if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "GET") != 0 {
         return None;
     }
     let mut body = Vec::new();
@@ -322,6 +322,30 @@ pub(crate) fn http_get(host: &str, port: c_int, path: &str, extra: Option<&str>)
     }
     http_close(&mut *hs);
     Some(body)
+}
+
+/// Minimal HTTP PUT (no request body); returns the response status, or -1 on failure.
+/// Used to SELECT a stream server-side — PUT /library/parts/{id}?allParts=1&audioStreamID=…
+/// — because the transcoder encodes the part's *selected* audio, not a query-param one
+/// (a GET on the same path does not change the selection; only PUT does).
+pub(crate) fn http_put(host: &str, port: c_int, path: &str) -> c_int {
+    let host_c = match std::ffi::CString::new(host) {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
+    let path_c = match std::ffi::CString::new(path) {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
+    let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "PUT") != 0 {
+        return if hs.status != 0 { hs.status } else { -1 };
+    }
+    let status = hs.status;
+    let mut chunk = vec![0u8; 4096];
+    while http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int) > 0 {}
+    http_close(&mut *hs);
+    status
 }
 
 /// A boxed HttpStream in the CLOSED state (fd = -1), so http_close is a no-op until

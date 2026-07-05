@@ -19,6 +19,9 @@ static mut CUR_RK: String = String::new();
 // subtitles are separate (client-rendered from the demuxer, player::request_subtitle).
 static mut CUR_AUDIO_SID: i64 = 0;
 static mut CUR_SUB_SID: i64 = 0;
+// the playing item's Part id (from the part key), so an audio switch can PUT the
+// server-side stream selection — the transcoder encodes the part's SELECTED audio.
+static mut CUR_PART_ID: i64 = 0;
 // HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
 // draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
 static mut TITLE: [c_char; 128] = [0; 128];
@@ -198,6 +201,17 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     (url, session)
 }
 
+/// Extract the numeric Part id from a Plex part key (/library/parts/{id}/…/file.mkv).
+fn part_id_of(part_key: &str) -> i64 {
+    let mut it = part_key.split('/');
+    while let Some(seg) = it.next() {
+        if seg == "parts" {
+            return it.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        }
+    }
+    0
+}
+
 /// Set the stream URL + HUD strings from a selected movie (direct-play or transcode).
 pub(crate) fn play_movie(m: *mut PmsMovie) {
     let m = match unsafe { m.as_ref() } {
@@ -230,11 +244,13 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
         addr_of_mut!(CUR_AUDIO_SID).write(0);
         addr_of_mut!(CUR_SUB_SID).write(0);
     }
-    let (url, session) = build_stream(&rk, &cfield(&m.part), &cfield(&m.vcodec), &cfield(&m.acodec));
+    let part = cfield(&m.part);
+    let (url, session) = build_stream(&rk, &part, &cfield(&m.vcodec), &cfield(&m.acodec));
     unsafe {
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
         *addr_of_mut!(CUR_RK) = rk;
+        addr_of_mut!(CUR_PART_ID).write(part_id_of(&part));
     }
 }
 
@@ -257,6 +273,7 @@ pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
         *addr_of_mut!(CUR_RK) = rk.to_string();
+        addr_of_mut!(CUR_PART_ID).write(part_id_of(part));
     }
 }
 
@@ -295,5 +312,19 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
 /// at the current position (which also (re)burns the current subtitle, if one is selected).
 pub(crate) fn switch_audio(stream_id: i64, offset_secs: i64) -> Option<String> {
     unsafe { addr_of_mut!(CUR_AUDIO_SID).write(stream_id) };
+    // Select the audio server-side. The transcoder encodes the part's SELECTED audio,
+    // not the &audioStreamID query param, and only a PUT changes the selection (a GET on
+    // the same path is a no-op). Without this the transcode keeps the default track.
+    let part = unsafe { addr_of!(CUR_PART_ID).read() };
+    if part > 0 && stream_id > 0 {
+        if let Some(cfg) = unsafe { (*addr_of!(CFG)).as_ref() } {
+            let p = format!(
+                "/library/parts/{part}?allParts=1&audioStreamID={stream_id}&X-Plex-Token={}",
+                cfg.token
+            );
+            let st = crate::stream::http_put(&cfg.host, cfg.port, &p);
+            crate::player::log(&format!("select audio: part={part} sid={stream_id} -> HTTP {st}"));
+        }
+    }
     retranscode(offset_secs)
 }
