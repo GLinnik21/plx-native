@@ -51,6 +51,8 @@ pub(crate) struct Shared {
     // pending "re-transcode at the current position with the current audio + subtitle" —
     // set when a subtitle is (de)selected while transcoding, so Plex re-burns (or drops) it.
     pub pending_retranscode: AtomicBool,
+    // tells the /:/timeline progress-reporter thread to exit (set in stop_bufferfeed).
+    pub report_stop: AtomicBool,
 
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
@@ -89,6 +91,7 @@ impl Shared {
             pending_audio_sid: AtomicI64::new(-1),
             reparse_next: AtomicBool::new(false),
             pending_retranscode: AtomicBool::new(false),
+            report_stop: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
             sub_cues: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
@@ -116,6 +119,7 @@ impl Shared {
         self.pending_audio_sid.store(-1, Ordering::Relaxed);
         self.reparse_next.store(false, Ordering::Relaxed);
         self.pending_retranscode.store(false, Ordering::Relaxed);
+        self.report_stop.store(false, Ordering::Relaxed);
         self.desired_sub_idx.store(-1, Ordering::Relaxed);
         self.sub_cues.lock().unwrap().clear();
         self.file_size.store(0, Ordering::Relaxed);

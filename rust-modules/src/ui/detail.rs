@@ -20,6 +20,9 @@ static mut SELECTED: c_int = -1;
 static mut SECTION: c_int = 0; // 0=hero buttons, 1=season tabs, 2=episodes
 static mut COL: c_int = 0; // focused item within the section
 static mut SCROLL: Spring = Spring::at(0.0);
+// resume position (ns) for the item on_ok just started (0 = from the beginning);
+// app.rs reads it after start_bufferfeed to seek once the pipeline is ready.
+static mut LAST_RESUME_NS: i64 = 0;
 
 const NBTN: c_int = 3;
 const PW: f32 = 168.0; // Play pill width
@@ -656,9 +659,25 @@ fn wrap_ep(s: &str) -> (String, String) {
     (l1, l2)
 }
 
+/// resume position (ns) for the last on_ok play case (0 = from the beginning). app.rs
+/// captures this after start_bufferfeed and seeks there once the pipeline is ready.
+pub(crate) fn last_resume_ns() -> i64 {
+    unsafe { addr_of!(LAST_RESUME_NS).read() }
+}
+/// apply Plex's resume rule (skip <10s and >95%) and stash the position for app.rs.
+fn set_resume(resume_ms: i64, dur_ms: i64) {
+    let ns = if resume_ms > 10_000 && (dur_ms <= 0 || (resume_ms as f64) < 0.95 * dur_ms as f64) {
+        resume_ms * 1_000_000
+    } else {
+        0
+    };
+    unsafe { addr_of_mut!(LAST_RESUME_NS).write(ns) }
+}
+
 /// OK/SELECT on the detail page: returns true if playback should start (the route
 /// URL/HUD have already been set). Section 0 = hero Play, 1 = season tab, 2 = episode.
 pub(crate) fn on_ok() -> bool {
+    unsafe { addr_of_mut!(LAST_RESUME_NS).write(0) }; // default: no resume (set below for plays)
     let sec = unsafe { addr_of!(SECTION).read() };
     let col = unsafe { addr_of!(COL).read() };
     match sec {
@@ -674,6 +693,10 @@ pub(crate) fn on_ok() -> bool {
                     return false;
                 }
                 crate::route::play_movie(m);
+                set_resume(
+                    metadata::current().map(|d| d.resume_ms).unwrap_or(0),
+                    metadata::current().map(|d| d.dur_ms).unwrap_or(0),
+                );
                 true
             }
         }
@@ -720,6 +743,7 @@ fn play_episode_at(i: c_int) -> bool {
     let show = d.title.clone();
     let hud_title = if ep.title.is_empty() { show.clone() } else { ep.title.clone() };
     let hud_ctx = format!("{}  \u{b7}  S{} E{}", show, ep.season, ep.index);
+    set_resume(ep.resume_ms, ep.dur_ms);
     crate::route::play_episode(&ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
     true
 }

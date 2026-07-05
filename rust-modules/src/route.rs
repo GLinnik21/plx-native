@@ -62,6 +62,10 @@ pub(crate) fn set_subtitle(sid: i64) {
 pub(crate) fn cur_sub_sid() -> i64 {
     unsafe { addr_of!(CUR_SUB_SID).read() }
 }
+/// ratingKey of the currently-playing item (for /:/timeline progress reports).
+pub(crate) fn cur_rk() -> String {
+    unsafe { (*addr_of!(CUR_RK)).clone() }
+}
 fn cur_audio_sid() -> i64 {
     unsafe { addr_of!(CUR_AUDIO_SID).read() }
 }

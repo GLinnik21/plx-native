@@ -220,3 +220,37 @@ pub(crate) fn load_thread(payload: SendPtr<c_char>) {
     let ok = unsafe { super::ffi::sf_load(payload.0) };
     super::log(&format!("SMP: Load returned ok={ok}"));
 }
+
+/// progress-reporter thread: every ~10s, POST the current position to Plex's
+/// /:/timeline so the server updates viewOffset (the resume point) + watched state.
+/// `rk` is captured at spawn (fixed per playback session, no static-mut race). Exits
+/// when SHARED.report_stop is set; the final state=stopped report is sent by
+/// stop_bufferfeed (main thread) with the last position.
+pub(crate) fn timeline_thread(host: String, port: c_int, token: String, rk: String) {
+    const CID: &str = "com.glin.plexpoc";
+    loop {
+        // sleep ~10s in 1s steps so we exit promptly on teardown
+        for _ in 0..10 {
+            if SHARED.report_stop.load(Ordering::Acquire) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        if SHARED.report_stop.load(Ordering::Acquire) {
+            return;
+        }
+        let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+        if dur <= 0 || rk.is_empty() {
+            continue;
+        }
+        let t = SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000;
+        let d = dur / 1_000_000;
+        let state = if super::TX.paused.load(Ordering::Relaxed) { "paused" } else { "playing" };
+        let path = format!(
+            "/:/timeline?ratingKey={rk}&key=%2Flibrary%2Fmetadata%2F{rk}&state={state}\
+             &time={t}&duration={d}&X-Plex-Client-Identifier={CID}&X-Plex-Token={token}"
+        );
+        let _ = crate::stream::http_get(&host, port, &path, None);
+        super::log(&format!("timeline {state} t={}s/{}s", t / 1000, d / 1000));
+    }
+}
