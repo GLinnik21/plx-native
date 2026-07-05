@@ -89,6 +89,17 @@ pub(crate) fn open_tab(tab: c_int) {
 pub(crate) fn close() {
     unsafe { addr_of_mut!(OPEN).write(false) }
 }
+/// reset the active selections to defaults (call when a new item's detail opens, so
+/// the menu doesn't show a stale checkmark from the previous item)
+pub(crate) fn reset() {
+    unsafe {
+        addr_of_mut!(OPEN).write(false);
+        addr_of_mut!(TAB).write(0);
+        addr_of_mut!(SEL).write(0);
+        addr_of_mut!(ACTIVE_AUDIO).write(0);
+        addr_of_mut!(ACTIVE_SUB).write(-1);
+    }
+}
 
 pub(crate) fn move_focus(sym: c_int) {
     let sym = sym as u32;
@@ -127,7 +138,14 @@ pub(crate) fn on_ok() {
             }
         } else {
             addr_of_mut!(ACTIVE_SUB).write(sel - 1); // row 0 = Off = -1
+            // direct-play: client-render the selected track from the demuxer (instant)
             crate::player::request_subtitle(active_sub()); // -1 = off, else 0-based sub index
+            // transcode: remember the Plex sub stream id to BURN into any transcode of this
+            // item; if we're transcoding right now, re-burn immediately at the current pos.
+            crate::route::set_subtitle(sub_stream_id()); // 0 = off
+            if !crate::route::transcode_session().is_empty() {
+                crate::player::request_transcode_refresh();
+            }
         }
     }
 }

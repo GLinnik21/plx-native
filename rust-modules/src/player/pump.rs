@@ -19,14 +19,18 @@ pub(crate) fn pump(now: u32) {
     }
     let stream = matches!(eng.source, Source::Stream);
 
-    // ---------- pending audio-track switch: force a fresh transcode with the chosen
-    // source audio at the CURRENT position (same arm as a transcode seek), and flag a
-    // full Track re-parse on re-open (the transcode output's track numbering may differ
-    // from a direct-play file's, and mkv_seek_run does not re-parse Tracks). ----------
+    // ---------- pending audio-track switch OR subtitle-burn refresh: force a fresh
+    // transcode with the current audio + subtitle at the CURRENT position (same arm as a
+    // transcode seek), and flag a full Track re-parse on re-open (the transcode output's
+    // track numbering may differ from a direct-play file's, and mkv_seek_run does not
+    // re-parse Tracks). switch_audio already carries the current subtitle, so an audio
+    // switch also (re)burns it; a pure subtitle change uses retranscode. ----------
     let asid = SHARED.pending_audio_sid.swap(-1, Relaxed);
-    if stream && asid >= 0 && eng.stage >= Stage::Playing {
+    let refresh = SHARED.pending_retranscode.swap(false, Relaxed);
+    if stream && (asid >= 0 || refresh) && eng.stage >= Stage::Playing {
         let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-        if let Some(url) = crate::route::switch_audio(asid, secs) {
+        let rebuilt = if asid >= 0 { crate::route::switch_audio(asid, secs) } else { crate::route::retranscode(secs) };
+        if let Some(url) = rebuilt {
             unsafe {
                 ffi::sf_flush();
                 ffi::sf_set_playtime(0);
@@ -45,7 +49,7 @@ pub(crate) fn pump(now: u32) {
             eng.max_fed_pts = 0;
             SHARED.frames.store(0, Relaxed);
             SHARED.playpos_ns.store(secs * 1_000_000_000, Relaxed);
-            super::log(&format!("audio switch: sid={asid} offset={secs}s"));
+            super::log(&format!("re-transcode: asid={asid} refresh={refresh} offset={secs}s"));
         }
     }
 

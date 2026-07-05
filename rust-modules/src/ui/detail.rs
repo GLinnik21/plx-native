@@ -134,6 +134,7 @@ pub(crate) fn is_show() -> bool {
 /// Open the detail page for catalog row `idx`: load its full detail (blocking) and
 /// reset focus/scroll.
 pub(crate) fn open(idx: c_int) {
+    crate::ui::track_menu::reset(); // fresh item → drop the previous item's track selection
     unsafe {
         addr_of_mut!(SELECTED).write(idx);
         addr_of_mut!(SECTION).write(0);
