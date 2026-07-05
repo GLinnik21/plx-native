@@ -122,6 +122,16 @@ fn seek_pending() -> i64 { crate::player::seek_pending() }
 fn request_seek(x: i64) { crate::player::request_seek(x) }
 #[inline]
 fn is_started() -> bool { crate::player::is_started() }
+/// resume position (ns) for a directly-played item: only if past 10s and before 95% of
+/// its duration (Plex's in-progress rule), else 0 (start from the beginning).
+fn resume_ns(resume_ms: i64, dur_ns: i64) -> i64 {
+    let dur_ms = dur_ns / 1_000_000;
+    if resume_ms > 10_000 && (dur_ms <= 0 || (resume_ms as f64) < 0.95 * dur_ms as f64) {
+        resume_ms * 1_000_000
+    } else {
+        0
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn plex_run(
@@ -370,7 +380,7 @@ pub extern "C" fn plex_run(
                                 set_hud(last_input + 4500);
                             }
                         } else {
-                            // home: OK opens the detail page for the focused hub item (by rk)
+                            // home: route by the focused hub item's type
                             let m = if g_snap() < 0.5 {
                                 crate::ui::home::movie_at(0, 0)
                             } else {
@@ -379,8 +389,26 @@ pub extern "C" fn plex_run(
                             if let Some(mm) = m.as_ref() {
                                 let rk = crate::ui::widgets::cfield(&mm.rk);
                                 if !rk.is_empty() {
-                                    crate::ui::detail::open_rk(&rk);
-                                    detail_open = true;
+                                    if mm.kind == 3 {
+                                        // episode (Continue Watching / On Deck): play directly,
+                                        // no detail page — Back returns to the home hubs
+                                        crate::route::play_movie(m);
+                                        playing = crate::player::start_bufferfeed();
+                                        pending_resume = resume_ns(mm.resume_ms, mm.dur_ns);
+                                        set_paused(false);
+                                        set_hud(last_input + 4500);
+                                    } else if mm.kind == 2 {
+                                        // season: open the SHOW page with that season selected
+                                        crate::ui::detail::open_rk_season(
+                                            &crate::ui::widgets::cfield(&mm.show_rk),
+                                            mm.season_index,
+                                        );
+                                        detail_open = true;
+                                    } else {
+                                        // movie / show: open the detail page
+                                        crate::ui::detail::open_rk(&rk);
+                                        detail_open = true;
+                                    }
                                     if !dpad_mode {
                                         SDL_webOSCursorVisibility(0);
                                         dpad_mode = true;
