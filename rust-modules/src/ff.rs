@@ -20,7 +20,7 @@ use std::sync::Once;
 
 /// Bisect flag: /tmp/poc-demux=ff routes the demux thread through this libavformat
 /// demuxer instead of mkv.rs, so both paths coexist during bring-up (Phases B–E).
-static USE_FF: AtomicBool = AtomicBool::new(false);
+static USE_FF: AtomicBool = AtomicBool::new(true);
 pub(crate) fn use_ff() -> bool {
     USE_FF.load(Ordering::Relaxed)
 }
@@ -243,12 +243,16 @@ pub(crate) fn boot() {
             ver(avutil_version())
         ));
     }
-    // Bisect trigger: /tmp/poc-demux=ff routes the demux thread through the libavformat
-    // demuxer (this module) instead of mkv.rs, so both paths coexist during bring-up.
-    if std::fs::read_to_string("/tmp/poc-demux").map(|s| s.trim() == "ff").unwrap_or(false) {
-        USE_FF.store(true, Ordering::Relaxed);
-        crate::player::log("ff: demux=ff (libavformat demuxer active)");
-    }
+    // The libavformat demuxer is the DEFAULT (robust index-based seeking; fixes the HEVC
+    // seek corruption of the hand-rolled path). Set /tmp/poc-demux=mkv to fall back to the
+    // legacy mkv.rs demuxer for comparison.
+    let fallback_mkv = std::fs::read_to_string("/tmp/poc-demux").map(|s| s.trim() == "mkv").unwrap_or(false);
+    USE_FF.store(!fallback_mkv, Ordering::Relaxed);
+    crate::player::log(if fallback_mkv {
+        "ff: demuxer = mkv.rs (fallback via poc-demux=mkv)"
+    } else {
+        "ff: demuxer = libavformat"
+    });
     // Phase A dev trigger: /tmp/poc-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
     if let Ok(u) = std::fs::read_to_string("/tmp/poc-ffprobe") {
@@ -348,9 +352,11 @@ struct AVIOCtxHead {
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
-        // interrupt: bail out of a blocked read for a direct-play seek OR teardown, so
-        // av_read_frame returns and the loop can act.
-        if crate::aq::aq_is_aborted(s.aq) || SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0 {
+        // interrupt: bail out of a blocked read on teardown (aborted) only. A direct-play
+        // seek unblocks the read via the pump's http_close(hs) + a next_url reopen — it must
+        // NOT bail here on seek_to_ns, or the post-reopen find_stream_info reads would fail.
+        // seek_to_ns is now purely the post-reopen av_seek_frame target (§ reopen).
+        if crate::aq::aq_is_aborted(s.aq) {
             return AVERROR_EOF;
         }
         let r = crate::stream::http_read(s.hs, dst as *mut c_uchar, n);
@@ -683,18 +689,24 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 break;
             }
 
+            // Direct-play seek/resume: the pump reopened us on the same part URL and left a
+            // target ns in SHARED.seek_to_ns. Seek on THIS freshly-opened AVFormatContext (an
+            // in-place av_seek_frame on a live context corrupts matroska demuxer state ->
+            // "Playing error"). A transcode reopen leaves seek_to_ns=-1 (start.mkv is already
+            // 0-based at &offset), so it skips this.
+            let seek_ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
+            if seek_ns >= 0 {
+                let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
+                let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
+                crate::player::log(&format!("ff: seek-after-reopen {}s rv={sr}", seek_ns / 1_000_000_000));
+            }
+
             // INNER read loop
             loop {
                 let r = av_read_frame(fmt, pkt);
                 if r < 0 {
-                    // direct-play seek is handled here; abort / transcode-seek / EOF exit.
-                    let ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
-                    if ns >= 0 {
-                        let ts = av_rescale_q(ns, NS_TB, stream_time_base(vst));
-                        av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
-                        crate::player::log(&format!("ff: seek to {}s", ns / 1_000_000_000));
-                        continue;
-                    }
+                    // EOF, a direct-play seek, or teardown — break to the outer loop, which
+                    // reopens on next_url (same part URL) and av_seek_frame's after reopen.
                     break;
                 }
                 let si = (*pkt).stream_index;

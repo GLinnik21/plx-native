@@ -91,10 +91,16 @@ pub(crate) fn pump(now: u32) {
                 None => super::log("seek(transcode): rebuild failed"),
             }
         } else if crate::ff::use_ff() {
-            // libavformat demuxer: publish a TIME target; the demux thread calls
-            // av_seek_frame (index-based) — no byte estimate, no MKV Cue index.
-            SHARED.seek_to_ns.store(t, Release);
-            super::log(&format!("seek(ff): t={t}"));
+            // libavformat direct-play seek: REOPEN the AVFormatContext on the SAME part URL,
+            // then av_seek_frame AFTER reopen (an in-place seek on a live context corrupts the
+            // matroska demuxer state -> "Playing error" + freeze). The outer demux loop reopens
+            // on next_url (gated by seek_byte); seek_to_ns carries the target it seeks to after
+            // reopen; disp_base=t so the 0-based-rebased fed clock displays the seek point.
+            *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
+            SHARED.seek_byte.store(0, Release); // reopen trigger for the outer loop
+            SHARED.seek_to_ns.store(t, Release); // post-reopen av_seek_frame target
+            SHARED.disp_base.store(t, Relaxed);
+            super::log(&format!("seek(ff): reopen+seek t={t}"));
         } else {
             let dur = SHARED.duration_ns.load(Relaxed);
             let fsz = SHARED.file_size.load(Relaxed);
