@@ -4,11 +4,11 @@
 //! `SHARED`. All other cross-thread state is in shared.rs (atomics + Mutex); the
 //! Engine (engine.rs) is main-thread-confined. Design: docs/engine-port-design.md.
 #![allow(non_upper_case_globals)]
-mod engine;
+pub(crate) mod engine;
 mod ffi;
 mod pump;
 mod shared;
-mod threads;
+pub(crate) mod threads;
 
 use shared::{Shared, SubCue, Transport};
 use std::ffi::CStr;

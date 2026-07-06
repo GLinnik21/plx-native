@@ -38,6 +38,7 @@ pub(crate) struct Shared {
 
     // main/pump (M) -> demux (D)
     pub seek_byte: AtomicI64,                 // g_seek_byte (-1 = none)
+    pub seek_to_ns: AtomicI64,                // direct-play demux seek target ns (-1=none); pump -> ff demux
     // a transcode SEEK re-points the demux at a NEW start.mkv?&offset= URL (a live
     // transcode has no byte-Cues); byte-Range seeks leave this None. Taken on re-open.
     pub next_url: Mutex<Option<String>>,
@@ -99,6 +100,7 @@ impl Shared {
             pts_shift: AtomicI64::new(0),
             disp_base: AtomicI64::new(0),
             seek_byte: AtomicI64::new(-1),
+            seek_to_ns: AtomicI64::new(-1),
             next_url: Mutex::new(None),
             pending_audio_sid: AtomicI64::new(-1),
             reparse_next: AtomicBool::new(false),
@@ -131,6 +133,7 @@ impl Shared {
         self.pts_shift.store(0, Ordering::Relaxed);
         self.disp_base.store(0, Ordering::Relaxed);
         self.seek_byte.store(-1, Ordering::Relaxed);
+        self.seek_to_ns.store(-1, Ordering::Relaxed);
         *self.next_url.lock().unwrap() = None;
         self.pending_audio_sid.store(-1, Ordering::Relaxed);
         self.reparse_next.store(false, Ordering::Relaxed);
