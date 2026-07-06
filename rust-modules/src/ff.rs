@@ -9,8 +9,21 @@
 //! struct layouts below are the FFmpeg n3.3 ABI and MUST be confirmed on-device
 //! (log codec_id/width/height for a known title) before the demuxer is built on them.
 #![allow(dead_code)]
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+use crate::aq::AuQueue;
+use crate::player::threads::SendPtr;
+use crate::player::SHARED;
+use crate::stream::HttpStream;
+use std::ffi::CString;
+use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
+
+/// Bisect flag: /tmp/poc-demux=ff routes the demux thread through this libavformat
+/// demuxer instead of mkv.rs, so both paths coexist during bring-up (Phases B–E).
+static USE_FF: AtomicBool = AtomicBool::new(false);
+pub(crate) fn use_ff() -> bool {
+    USE_FF.load(Ordering::Relaxed)
+}
 
 // ---- opaque handles (pointer-only, never dereferenced) ----
 pub enum AVClass {}
@@ -230,6 +243,12 @@ pub(crate) fn boot() {
             ver(avutil_version())
         ));
     }
+    // Bisect trigger: /tmp/poc-demux=ff routes the demux thread through the libavformat
+    // demuxer (this module) instead of mkv.rs, so both paths coexist during bring-up.
+    if std::fs::read_to_string("/tmp/poc-demux").map(|s| s.trim() == "ff").unwrap_or(false) {
+        USE_FF.store(true, Ordering::Relaxed);
+        crate::player::log("ff: demux=ff (libavformat demuxer active)");
+    }
     // Phase A dev trigger: /tmp/poc-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
     if let Ok(u) = std::fs::read_to_string("/tmp/poc-ffprobe") {
@@ -295,4 +314,459 @@ fn probe(url: &str) {
         ));
         avformat_close_input(&mut fmt);
     }
+}
+
+// ==== the demuxer (Phases B–D) ===================================================
+
+// whence values for the AVIO seek callback
+const SEEK_SET: c_int = 0;
+const SEEK_CUR: c_int = 1;
+const SEEK_END: c_int = 2;
+const AVSEEK_SIZE: c_int = 0x10000;
+
+/// AVIO backing state: wraps the Engine-owned demux socket so libavformat reads through
+/// stream.rs's raw socket (numeric IP, no DNS, Connection: close) and can seek by
+/// re-opening with a byte Range. Boxed so its address is stable for the C callbacks.
+struct AvioState {
+    hs: *mut HttpStream,
+    aq: *mut AuQueue,
+    host: CString,
+    port: c_int,
+    path: CString,
+    off: i64,
+    size: i64,
+}
+
+/// AVIOContext leading fields, so we can free avio->buffer manually (FFmpeg 3.3 has no
+/// avio_context_free). `buffer` sits at +4, right after `av_class`.
+#[repr(C)]
+struct AVIOCtxHead {
+    av_class: *const c_void,
+    buffer: *mut u8,
+}
+
+extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
+    unsafe {
+        let s = &mut *(op as *mut AvioState);
+        // interrupt: bail out of a blocked read for a direct-play seek OR teardown, so
+        // av_read_frame returns and the loop can act.
+        if crate::aq::aq_is_aborted(s.aq) || SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0 {
+            return AVERROR_EOF;
+        }
+        let r = crate::stream::http_read(s.hs, dst as *mut c_uchar, n);
+        if r <= 0 {
+            return AVERROR_EOF;
+        }
+        s.off += r as i64;
+        r
+    }
+}
+
+extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
+    unsafe {
+        let s = &mut *(op as *mut AvioState);
+        if whence == AVSEEK_SIZE {
+            return s.size;
+        }
+        let target = match whence {
+            SEEK_SET => offset,
+            SEEK_CUR => s.off + offset,
+            SEEK_END => s.size + offset,
+            _ => return -1,
+        };
+        if target < 0 {
+            return -1;
+        }
+        crate::stream::http_close(s.hs);
+        let range = CString::new(format!("Range: bytes={}-\r\n", target)).unwrap_or_default();
+        if crate::stream::http_open(s.hs, s.host.as_ptr(), s.port, s.path.as_ptr(), range.as_ptr(), "GET") != 0 {
+            return -1;
+        }
+        s.off = target;
+        target
+    }
+}
+
+#[inline]
+unsafe fn pts_ns(pkt: *const AVPacket, st: *mut AVStream) -> i64 {
+    let t = if (*pkt).pts != AV_NOPTS_VALUE { (*pkt).pts } else { (*pkt).dts };
+    if t == AV_NOPTS_VALUE {
+        return 0;
+    }
+    av_rescale_q(t, stream_time_base(st), NS_TB)
+}
+
+unsafe fn free_ptr(p: *mut c_void) {
+    let mut q = p;
+    av_freep(&mut q as *mut *mut c_void as *mut c_void);
+}
+
+/// Free a custom AVIOContext (buffer + context): FFmpeg 3.3 has no avio_context_free and
+/// avformat_close_input does not free a caller-set pb.
+unsafe fn free_avio(avio: *mut AVIOContext) {
+    if avio.is_null() {
+        return;
+    }
+    let head = avio as *mut AVIOCtxHead;
+    av_freep(std::ptr::addr_of_mut!((*head).buffer) as *mut c_void); // frees + NULLs avio->buffer
+    let mut p = avio;
+    av_freep(&mut p as *mut *mut AVIOContext as *mut c_void); // frees + NULLs the context
+}
+
+/// The libavformat demuxer thread body — replaces mkv.rs's stream_thread when use_ff().
+/// Opens the URL through a custom AVIO over stream.rs, reads packets, converts video to
+/// Annex-B via the mp4toannexb BSF (VPS/SPS/PPS prepended at every keyframe), feeds video
+/// (es=1) + raw audio (es=2) to the AuQueue, and seeks via av_seek_frame.
+/// Parse an avcC (H264) / hvcC (HEVC) extradata record into a ready-to-prepend Annex-B
+/// parameter-set blob (VPS/SPS/PPS with 4-byte start codes) + the NAL length-prefix size.
+/// Mirrors mkv.rs's mkv_parse_avcc/mkv_parse_hvcc — the format the Starfish decoder wants.
+unsafe fn parse_extradata(ed: *const u8, len: usize, is_hevc: bool) -> (Vec<u8>, usize) {
+    let mut blob = Vec::new();
+    if ed.is_null() || len < 7 {
+        return (blob, 4);
+    }
+    let e = std::slice::from_raw_parts(ed, len);
+    let sc = [0u8, 0, 0, 1];
+    if is_hevc {
+        // HEVCDecoderConfigurationRecord: ver@0==1, nal_len@21, numArrays@22, arrays@23.
+        if len < 23 || e[0] != 1 {
+            return (blob, 4);
+        }
+        let nls = (e[21] & 3) as usize + 1;
+        let narr = e[22] as usize;
+        let mut p = 23usize;
+        for _ in 0..narr {
+            if p + 3 > len {
+                break;
+            }
+            // array header: [completeness|reserved|NAL_type(&0x3f)] u16 count.
+            // ONLY VPS(32)/SPS(33)/PPS(34) belong in the prepend blob; skip SEI(39/40) and
+            // anything else — a stray SEI here corrupts the parameter-set sequence.
+            let keep = matches!(e[p] & 0x3f, 32 | 33 | 34);
+            let cnt = ((e[p + 1] as usize) << 8) | e[p + 2] as usize;
+            p += 3;
+            for _ in 0..cnt {
+                if p + 2 > len {
+                    break;
+                }
+                let nl = ((e[p] as usize) << 8) | e[p + 1] as usize;
+                p += 2;
+                if nl == 0 || p + nl > len {
+                    break;
+                }
+                if keep {
+                    blob.extend_from_slice(&sc);
+                    blob.extend_from_slice(&e[p..p + nl]);
+                }
+                p += nl;
+            }
+        }
+        (blob, nls)
+    } else {
+        // AVCDecoderConfigurationRecord: ver@0==1, nal_len@4, SPS list @5, then PPS list.
+        if e[0] != 1 {
+            return (blob, 4);
+        }
+        let nls = (e[4] & 3) as usize + 1;
+        let nsps = (e[5] & 0x1f) as usize;
+        let mut p = 6usize;
+        for _ in 0..nsps {
+            if p + 2 > len {
+                break;
+            }
+            let nl = ((e[p] as usize) << 8) | e[p + 1] as usize;
+            p += 2;
+            if nl == 0 || p + nl > len {
+                break;
+            }
+            blob.extend_from_slice(&sc);
+            blob.extend_from_slice(&e[p..p + nl]);
+            p += nl;
+        }
+        if p < len {
+            let npps = e[p] as usize;
+            p += 1;
+            for _ in 0..npps {
+                if p + 2 > len {
+                    break;
+                }
+                let nl = ((e[p] as usize) << 8) | e[p + 1] as usize;
+                p += 2;
+                if nl == 0 || p + nl > len {
+                    break;
+                }
+                blob.extend_from_slice(&sc);
+                blob.extend_from_slice(&e[p..p + nl]);
+                p += nl;
+            }
+        }
+        (blob, nls)
+    }
+}
+
+/// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
+/// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5 / HEVC IRAP
+/// types 16-23). Returns true if it is a keyframe. Mirrors mkv_handle_block.
+unsafe fn packet_to_annexb(
+    data: *const u8,
+    size: usize,
+    nls: usize,
+    is_hevc: bool,
+    param: &[u8],
+    out: &mut Vec<u8>,
+) -> bool {
+    out.clear();
+    if data.is_null() || size < nls + 1 {
+        return false;
+    }
+    let d = std::slice::from_raw_parts(data, size);
+    // pass 1: is this AU a keyframe?
+    let mut is_key = false;
+    let mut i = 0usize;
+    while i + nls <= size {
+        let mut nl = 0usize;
+        for k in 0..nls {
+            nl = (nl << 8) | d[i + k] as usize;
+        }
+        i += nls;
+        if nl == 0 || i + nl > size {
+            break;
+        }
+        let b0 = d[i];
+        let key = if is_hevc {
+            (16..=23).contains(&((b0 >> 1) & 0x3f))
+        } else {
+            (b0 & 0x1f) == 5
+        };
+        if key {
+            is_key = true;
+            break;
+        }
+        i += nl;
+    }
+    if is_key {
+        out.extend_from_slice(param);
+    }
+    // pass 2: emit each NAL as 00 00 00 01 + bytes
+    let sc = [0u8, 0, 0, 1];
+    let mut i = 0usize;
+    while i + nls <= size {
+        let mut nl = 0usize;
+        for k in 0..nls {
+            nl = (nl << 8) | d[i + k] as usize;
+        }
+        i += nls;
+        if nl == 0 || i + nl > size {
+            break;
+        }
+        out.extend_from_slice(&sc);
+        out.extend_from_slice(&d[i..i + nl]);
+        i += nl;
+    }
+    is_key
+}
+
+static DIAG_FIRST: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+    DIAG_FIRST.store(true, Ordering::Relaxed);
+    ensure_registered();
+    let aq_p = aq.0;
+    let hs_p = hs.0;
+    let mut host_c = CString::new(host).unwrap_or_default();
+    let mut path_c = CString::new(path).unwrap_or_default();
+    let mut port = port;
+
+    // OUTER loop: a transcode seek / audio-switch re-points us at a fresh start.mkv URL
+    // (a live transcode has no seekable index), reopening the whole AVFormatContext.
+    'outer: loop {
+        unsafe {
+            crate::stream::http_close(hs_p);
+            if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
+                crate::player::log(&format!("ff: http_open FAILED status={}", crate::stream::hs_status(hs_p)));
+                break;
+            }
+            let size = crate::stream::hs_content_length(hs_p);
+            SHARED.file_size.store(size, Ordering::Release);
+            crate::player::log(&format!("ff: open status={} clen={}", crate::stream::hs_status(hs_p), size));
+
+            let mut state = Box::new(AvioState {
+                hs: hs_p,
+                aq: aq_p,
+                host: host_c.clone(),
+                port,
+                path: path_c.clone(),
+                off: 0,
+                size,
+            });
+            let buf = av_malloc(65536) as *mut u8;
+            if buf.is_null() {
+                crate::player::log("ff: av_malloc failed");
+                break;
+            }
+            let avio = avio_alloc_context(
+                buf,
+                65536,
+                0,
+                &mut *state as *mut AvioState as *mut c_void,
+                Some(read_cb),
+                None,
+                Some(seek_cb),
+            );
+            if avio.is_null() {
+                crate::player::log("ff: avio_alloc_context failed");
+                free_ptr(buf as *mut c_void);
+                break;
+            }
+            let mut fmt = avformat_alloc_context();
+            if fmt.is_null() {
+                crate::player::log("ff: avformat_alloc_context failed");
+                free_avio(avio);
+                break;
+            }
+            (*fmt).pb = avio;
+            let r = avformat_open_input(&mut fmt, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut());
+            if r < 0 || fmt.is_null() {
+                crate::player::log(&format!("ff: open_input failed r={r}"));
+                free_avio(avio);
+                break;
+            }
+            if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
+                crate::player::log("ff: find_stream_info failed");
+                avformat_close_input(&mut fmt);
+                free_avio(avio);
+                break;
+            }
+            let vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
+            let ai = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0);
+            if vi < 0 {
+                crate::player::log("ff: no video stream");
+                avformat_close_input(&mut fmt);
+                free_avio(avio);
+                break;
+            }
+            let streams = (*fmt).streams;
+            let vst = *streams.add(vi as usize);
+            let vcp = stream_codecpar(vst);
+            let dur = (*fmt).duration;
+            if dur > 0 {
+                SHARED.duration_ns.store(dur.saturating_mul(1000), Ordering::Relaxed);
+            }
+            crate::player::log(&format!(
+                "ff: v=#{vi} codec_id={} {}x{} a=#{ai} dur_ns={}",
+                (*vcp).codec_id,
+                (*vcp).width,
+                (*vcp).height,
+                SHARED.duration_ns.load(Ordering::Relaxed)
+            ));
+
+            // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
+            // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
+            // parameter sets on this 3.3 build (it leaves the keyframe starting with SEI), so we
+            // build the AU from the codecpar extradata; libavformat still owns demux + seeking.
+            let is_hevc = (*vcp).codec_id == AV_CODEC_ID_HEVC;
+            let (param_blob, nal_len_size) =
+                parse_extradata((*vcp).extradata, (*vcp).extradata_size.max(0) as usize, is_hevc);
+            crate::player::log(&format!(
+                "ff: param_sets={} bytes nal_len={} is_hevc={}",
+                param_blob.len(),
+                nal_len_size,
+                is_hevc
+            ));
+            let mut aubuf: Vec<u8> = Vec::with_capacity(4 * 1024 * 1024);
+
+            let pkt = av_packet_alloc();
+            if pkt.is_null() {
+                crate::player::log("ff: packet_alloc failed");
+                avformat_close_input(&mut fmt);
+                free_avio(avio);
+                break;
+            }
+
+            // INNER read loop
+            loop {
+                let r = av_read_frame(fmt, pkt);
+                if r < 0 {
+                    // direct-play seek is handled here; abort / transcode-seek / EOF exit.
+                    let ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
+                    if ns >= 0 {
+                        let ts = av_rescale_q(ns, NS_TB, stream_time_base(vst));
+                        av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
+                        crate::player::log(&format!("ff: seek to {}s", ns / 1_000_000_000));
+                        continue;
+                    }
+                    break;
+                }
+                let si = (*pkt).stream_index;
+                if si == vi {
+                    let is_key = packet_to_annexb(
+                        (*pkt).data,
+                        (*pkt).size.max(0) as usize,
+                        nal_len_size,
+                        is_hevc,
+                        &param_blob,
+                        &mut aubuf,
+                    );
+                    let pts = pts_ns(pkt, vst);
+                    if DIAG_FIRST.swap(false, Ordering::Relaxed) {
+                        let n = aubuf.len().min(40);
+                        let head: String =
+                            aubuf[..n].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+                        crate::player::log(&format!(
+                            "ff: AU#0 size={} key={} head=[{}]",
+                            aubuf.len(),
+                            is_key,
+                            head
+                        ));
+                    }
+                    crate::aq::aq_push(
+                        aq_p,
+                        aubuf.as_ptr(),
+                        aubuf.len() as c_int,
+                        pts,
+                        if is_key { 1 } else { 0 },
+                        1,
+                    );
+                    av_packet_unref(pkt);
+                } else if si == ai {
+                    let ast = *streams.add(ai as usize);
+                    let pts = pts_ns(pkt, ast);
+                    crate::aq::aq_push(aq_p, (*pkt).data, (*pkt).size, pts, 1, 2);
+                    av_packet_unref(pkt);
+                } else {
+                    av_packet_unref(pkt);
+                }
+                if crate::aq::aq_is_aborted(aq_p) {
+                    break;
+                }
+            }
+
+            // cleanup this stream (we own pb, so close_input won't free the AVIO)
+            let mut pkt_m = pkt;
+            av_packet_free(&mut pkt_m);
+            avformat_close_input(&mut fmt);
+            free_avio(avio);
+            let _ = &state; // keep the AvioState alive until after free_avio
+        }
+
+        if unsafe { crate::aq::aq_is_aborted(aq_p) } {
+            break;
+        }
+        // transcode seek / audio-switch: re-point at the new start.mkv URL and reopen.
+        let sb = SHARED.seek_byte.swap(-1, Ordering::Acquire);
+        if sb >= 0 {
+            if let Some(nu) = SHARED.next_url.lock().unwrap().take() {
+                let (h, p, pa) = crate::player::engine::parse_stream_url(&nu);
+                host_c = CString::new(h).unwrap_or_default();
+                path_c = CString::new(pa).unwrap_or_default();
+                port = p;
+                let _ = SHARED.reparse_next.swap(false, Ordering::Acquire);
+                crate::player::log("ff: seek → new transcode url (&offset)");
+                continue 'outer;
+            }
+        }
+        break;
+    }
+    crate::aq::aq_set_eof(aq_p);
+    crate::player::log("ff: demux ended");
 }

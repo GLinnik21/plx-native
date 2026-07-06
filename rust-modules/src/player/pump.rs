@@ -90,6 +90,11 @@ pub(crate) fn pump(now: u32) {
                 }
                 None => super::log("seek(transcode): rebuild failed"),
             }
+        } else if crate::ff::use_ff() {
+            // libavformat demuxer: publish a TIME target; the demux thread calls
+            // av_seek_frame (index-based) — no byte estimate, no MKV Cue index.
+            SHARED.seek_to_ns.store(t, Release);
+            super::log(&format!("seek(ff): t={t}"));
         } else {
             let dur = SHARED.duration_ns.load(Relaxed);
             let fsz = SHARED.file_size.load(Relaxed);
