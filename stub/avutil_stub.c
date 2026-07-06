@@ -2,6 +2,7 @@
 // libavutil.so.55. Real bodies come from the device at runtime. Packet/dict/mem
 // helpers used by the demuxer.
 unsigned avutil_version(void) { return 0; }
+void *av_malloc(void) { return 0; }
 void *av_packet_alloc(void) { return 0; }
 void av_packet_free(void **pkt) { (void)pkt; }
 void av_packet_unref(void *pkt) { (void)pkt; }
