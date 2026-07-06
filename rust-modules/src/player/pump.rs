@@ -118,7 +118,16 @@ pub(crate) fn pump(now: u32) {
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;
         eng.max_fed_pts = 0;
-        SHARED.frames.store(0, Relaxed); // count only POST-seek frames (resume re-pause gate)
+        // A direct-play seek that lands while already Streaming (e.g. a scrub after the
+        // resume) has its video plane bound to frames sf_flush just dropped -> the pipeline
+        // throws "Playing error". Fall back to Bound + clear video_info_sent so the pump
+        // re-sends setMediaVideoData and re-asserts PLAYING once post-seek frames decode,
+        // re-binding the plane to the fresh frames. (Transcode reloads via next_url; skip it.)
+        if !is_transcode && eng.stage > Stage::Bound {
+            eng.stage = Stage::Bound;
+            eng.video_info_sent = false;
+        }
+        SHARED.frames.store(0, Relaxed); // count only POST-seek frames (rebind + resume re-pause gate)
         SHARED.playpos_ns.store(t, Relaxed); // displayed position jumps; wall clock takes over
     }
 
