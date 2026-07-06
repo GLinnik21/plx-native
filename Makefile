@@ -20,12 +20,13 @@ RUN_SECS ?= 18
 ZIG       = zig cc -target arm-linux-gnueabi.2.24 -mcpu=cortex_a53
 CFLAGS    = -O2 -Iinclude -Isrc -D_GNU_SOURCE    # -Isrc: module cross-headers; -D_GNU_SOURCE: strcasestr
 LIBS      = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 -lAcbAPI \
-            -lwayland-client -lplayerAPIs
+            -lwayland-client -lplayerAPIs -lavformat -lavcodec -lavutil
 STUBFLAGS = -shared -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables
 
 STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
         stub/libwayland-client.so stub/libluna-service2.so stub/libglib-2.0.so \
-        stub/libAcbAPI.so stub/libplayerAPIs.so
+        stub/libAcbAPI.so stub/libplayerAPIs.so \
+        stub/libavformat.so stub/libavcodec.so stub/libavutil.so
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
@@ -80,6 +81,13 @@ stub/libAcbAPI.so: stub/acb_stub.c
 	$(ZIG) $(STUBFLAGS) -Wl,-soname,libAcbAPI.so.1 -o $@ $<
 stub/libplayerAPIs.so: stub/starfish_stub.c
 	$(ZIG) $(STUBFLAGS) -Wl,-soname,libplayerAPIs.so.1 -o $@ $<
+# FFmpeg (present on the TV): demux + bitstream filters + HTTP. SONAMEs must match DT_NEEDED.
+stub/libavformat.so: stub/avformat_stub.c
+	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavformat.so.57 -o $@ $<
+stub/libavcodec.so: stub/avcodec_stub.c
+	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavcodec.so.57 -o $@ $<
+stub/libavutil.so: stub/avutil_stub.c
+	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavutil.so.55 -o $@ $<
 
 # tmp+mv so deploy works while the old binary is still executing (ETXTBSY)
 deploy: pkg/plexpoc

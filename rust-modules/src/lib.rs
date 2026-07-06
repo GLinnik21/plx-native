@@ -4,6 +4,7 @@
 //! posters, text, gfx, system, ui_home.
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
+mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — replaces mkv.rs (TV ships FFmpeg 3.4)
 mod gfx;
 mod img;
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related

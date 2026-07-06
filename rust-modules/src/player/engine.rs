@@ -108,6 +108,19 @@ fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
     au
 }
 
+/// Build the streamed BUFFERSTREAM Load payload from PAYLOAD_AV, substituting the item's real
+/// video/audio codecs + a sink envelope. video = "H264"|"H265", audio = "AC3"|"EAC3"|"AAC".
+/// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
+/// the sink envelope.
+fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
+    PAYLOAD_AV
+        .replace(r#""video":"H264""#, &format!(r#""video":"{video}""#))
+        .replace(r#""audio":"AC3""#, &format!(r#""audio":"{audio}""#))
+        .replace(r#""maxWidth":1920"#, &format!(r#""maxWidth":{mw}"#))
+        .replace(r#""maxHeight":1080"#, &format!(r#""maxHeight":{mh}"#))
+        .replace(r#""maxFrameRate":30"#, r#""maxFrameRate":60"#)
+}
+
 /// parse http://HOST[:PORT]/PATH?query -> (host, port, path)
 pub(crate) fn parse_stream_url(url: &str) -> (String, c_int, String) {
     let s = url.strip_prefix("http://").unwrap_or(url);
@@ -171,14 +184,27 @@ pub(crate) fn start_bufferfeed() -> bool {
         }
     }
     let stream = sample.is_none();
-    let payload_c = std::ffi::CString::new(if stream {
-        PAYLOAD_AV
+    // For a streamed direct-play/transcode, pick the Load codecs from the item: video H264 vs
+    // H265 (native HEVC direct-play), audio AC3/EAC3/AAC. (The local sample paths keep their
+    // fixed payloads.)
+    let stream_payload;
+    let payload_str: &str = if stream {
+        let hevc = crate::route::stream_vcodec() == "hevc";
+        let vc = if hevc { "H265" } else { "H264" };
+        let ac = match crate::route::stream_acodec().as_str() {
+            "eac3" => "EAC3",
+            "aac" => "AAC",
+            _ => "AC3",
+        };
+        let (mw, mh) = if hevc { (3840, 2160) } else { (1920, 1080) };
+        stream_payload = build_av_payload(vc, ac, mw, mh);
+        &stream_payload
     } else if is_h265 {
         PAYLOAD_H265
     } else {
         PAYLOAD_V
-    })
-    .unwrap();
+    };
+    let payload_c = std::ffi::CString::new(payload_str).unwrap();
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();

@@ -34,6 +34,10 @@ static mut MACHINE_ID: String = String::new();
 // This playback's PlayQueue ids for the timeline (empty if /playQueues failed).
 static mut PQ_ID: String = String::new();
 static mut PQ_ITEM_ID: String = String::new();
+// The streamed item's Media video/audio codec (h264/hevc, ac3/eac3/aac), so the player picks
+// the H265 Load payload for a native HEVC direct-play and the matching audio codec.
+static mut STREAM_VCODEC: String = String::new();
+static mut STREAM_ACODEC: String = String::new();
 // When true, a selected subtitle is BURNED into the transcode (server-side) — the
 // pre-WebVTT behavior, kept as an escape hatch. When false (default), a selected
 // subtitle rides a soft WebVTT sidecar (player::request_soft_subs + transcode_subtitles_url)
@@ -98,6 +102,14 @@ pub(crate) fn pq_id() -> String {
 }
 pub(crate) fn pq_item_id() -> String {
     unsafe { (*addr_of!(PQ_ITEM_ID)).clone() }
+}
+/// The streamed item's Media video/audio codec, so the player picks the H265 Load payload for a
+/// native HEVC direct-play and the matching audio codec.
+pub(crate) fn stream_vcodec() -> String {
+    unsafe { (*addr_of!(STREAM_VCODEC)).clone() }
+}
+pub(crate) fn stream_acodec() -> String {
+    unsafe { (*addr_of!(STREAM_ACODEC)).clone() }
 }
 /// The §3b identity query params (stable device id + product/platform/model/…), appended to
 /// every playback request so the server names + groups this client and shows a proper Player.
@@ -185,13 +197,12 @@ unsafe fn set_c(dst: *mut c_char, cap: usize, s: &str) {
 }
 
 /// Capability profile (X-Plex-Client-Profile-Extra, URL-decoded form): direct-play an MKV
-/// whose video is H264 and audio AAC/AC3/EAC3, subs SRT/ASS, up to 4K — plus the H264/AC3
-/// transcode fallback target. Deliberately NO `hevc` in direct-play yet: the demuxer can't
-/// consume streamed HEVC until Phase 3, and advertising it would make PMS serve HEVC that the
-/// H264-only demuxer mangles into a hang.
+/// whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS, up to 4K — plus the
+/// H264/AC3 transcode fallback target. HEVC direct-plays natively now (Phase 3 demuxer + the
+/// panel decodes it, incl. 4K HDR10 auto-detected from the bitstream).
 fn profile_extra() -> String {
     crate::pms::urlenc_str(
-        "add-direct-play-profile(type=videoProfile&container=mkv&videoCodec=h264\
+        "add-direct-play-profile(type=videoProfile&container=mkv&videoCodec=h264,hevc\
          &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
@@ -415,19 +426,20 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. Falls back to the local codec test if the server returns no usable
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.
-    let mut directplay = if rk.is_empty() {
+    // Server-adjudicated (Phase 2). HEVC now direct-plays (Phase 3 demuxer + native decode);
+    // the guard that forced non-h264 to transcode is gone.
+    let directplay = if rk.is_empty() {
         false
     } else {
         server_decision(rk, cfg).unwrap_or(vcodec == "h264" && acodec == "ac3")
     };
-    // Phase 2 safety: the in-house MKV demuxer is H264-only until Phase 3, so never direct-play
-    // a codec it can't consume even when the server (Generic base profile) returns directplay for
-    // it. Phase 3 removes this guard once mkv.rs demuxes HEVC. (h264 direct-plays as adjudicated.)
-    if directplay && !rk.is_empty() && vcodec != "h264" {
-        crate::player::log(&format!("decision: directplay overridden -> transcode (demuxer h264-only, vcodec={vcodec})"));
-        directplay = false;
-    }
     if (directplay || rk.is_empty()) && !part.is_empty() {
+        // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload
+        // uses them (h264/hevc + the source audio).
+        unsafe {
+            *addr_of_mut!(STREAM_VCODEC) = vcodec.to_string();
+            *addr_of_mut!(STREAM_ACODEC) = acodec.to_string();
+        }
         // direct-play: no transcode session (transcode_session() stays empty). Carry the
         // session id + identity on the file GET so PMS keys the /status/sessions entry by
         // SESS (not a token= fallback), keeping the timeline correlation consistent.
@@ -438,6 +450,12 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
             ),
             String::new(),
         );
+    }
+    // transcode: PMS re-encodes to H264/AC3 in MKV regardless of the source codec, so the
+    // Load payload must be H264/AC3 (NOT the source hevc/eac3).
+    unsafe {
+        *addr_of_mut!(STREAM_VCODEC) = "h264".to_string();
+        *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
     }
     let base = transcode_base(rk, cfg);
     // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
