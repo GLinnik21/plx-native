@@ -200,7 +200,7 @@ pub extern "C" fn plex_run(
 
         crate::ui::home::home_init();
         crate::player::acb_init();
-        crate::ff::smoke(); // confirm the TV's FFmpeg linked + loaded (demuxer foundation)
+        crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/poc-ffprobe ABI probe
 
         let mut last_input = SDL_GetTicks();
         let t0 = SDL_GetTicks();

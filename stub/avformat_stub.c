@@ -3,6 +3,8 @@
 // device's real library is loaded and these empty bodies are never executed.
 // Only the symbols the app actually calls need to appear here (name-only match).
 unsigned avformat_version(void) { return 0; }
+void av_register_all(void) {}
+void *avio_alloc_context(void) { return 0; }
 void avformat_network_init(void) {}
 void avformat_network_deinit(void) {}
 int avformat_open_input(void **ps, const char *url, void *fmt, void **options) { (void)ps; (void)url; (void)fmt; (void)options; return 0; }
