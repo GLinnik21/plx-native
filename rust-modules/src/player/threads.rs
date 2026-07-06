@@ -70,10 +70,10 @@ pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr
     super::log(&format!("stream: host={} port={port}", host_c.to_string_lossy()));
     let mut mkv: Box<MkvCtx> = Box::new(unsafe { std::mem::zeroed() });
     let mkv_p = &mut *mkv as *mut MkvCtx;
-    let scratch = unsafe { libc::malloc(4 * 1024 * 1024) as *mut u8 };
+    let scratch = unsafe { libc::malloc(12 * 1024 * 1024) as *mut u8 };
     mkv.q = aq_p;
     mkv.scratch = scratch;
-    mkv.scratch_cap = 4 * 1024 * 1024;
+    mkv.scratch_cap = 12 * 1024 * 1024;
     let mut rc = StreamRead { hs: hs_p, mkv: mkv_p };
     mkv.read = Some(stream_read);
     mkv.ud = &mut rc as *mut StreamRead as *mut c_void;

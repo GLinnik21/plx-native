@@ -28,7 +28,7 @@ pub struct MkvCtx {
     pub(crate) vtrack: c_int,
     pub(crate) is_h264: c_int,
     pub(crate) nal_len_size: c_int,
-    pub(crate) sps_pps: [u8; 1024],
+    pub(crate) sps_pps: [u8; 2048],
     pub(crate) sps_pps_len: c_int,
     pub(crate) atrack: c_int,
     pub(crate) has_audio: c_int,
@@ -47,6 +47,12 @@ pub struct MkvCtx {
     pub(crate) strack_nums: [i64; 16],
     pub(crate) strack_ass: [u8; 16], // 1 = ASS/SSA (strip fields+codes), 0 = SRT/plain UTF-8
     pub(crate) nsub: c_int,
+    // HEVC (V_MPEGH/ISO/HEVC) demux alongside H264: is_hevc gates the video branch, and the
+    // coded dimensions (from the Video element) feed the Starfish Load payload. Appended at the
+    // end so existing field offsets are unchanged.
+    pub(crate) is_hevc: c_int,
+    pub(crate) vwidth: c_int,
+    pub(crate) vheight: c_int,
 }
 
 // ---- byte source ----
@@ -249,6 +255,81 @@ unsafe fn mkv_parse_avcc(c: *mut MkvCtx, p: &[u8]) {
     (*c).sps_pps_len = out as c_int;
 }
 
+// ---- hvcC -> Annex-B VPS/SPS/PPS + NAL length size (HEVCDecoderConfigurationRecord) ----
+// ISO/IEC 14496-15 §8.3.3.1: 23-byte fixed prefix (the 6-byte constraint-flags field pushes
+// lengthSizeMinusOne to byte 21, unlike avcC where it's byte 4), then numArrays at byte 22,
+// then arrays of (NAL-type byte, u16 count, count × (u16 len + NAL)). Keep VPS(32)/SPS(33)/
+// PPS(34), skip SEI (39/40).
+unsafe fn mkv_parse_hvcc(c: *mut MkvCtx, p: &[u8]) {
+    let len = p.len();
+    if len < 23 || p[0] != 1 {
+        return;
+    }
+    (*c).nal_len_size = (p[21] & 0x03) as c_int + 1;
+    let num_arrays = p[22] as usize;
+    let sps = sps_mut(c);
+    let cap = SPS_CAP;
+    let mut o = 23usize;
+    let mut out = 0usize;
+    for _ in 0..num_arrays {
+        if o + 3 > len {
+            break;
+        }
+        let nal_type = p[o] & 0x3f;
+        let num_nalus = ((p[o + 1] as usize) << 8) | p[o + 2] as usize;
+        o += 3;
+        let keep = matches!(nal_type, 32 | 33 | 34); // VPS / SPS / PPS
+        for _ in 0..num_nalus {
+            if o + 2 > len {
+                return;
+            }
+            let l = ((p[o] as usize) << 8) | p[o + 1] as usize;
+            o += 2;
+            if o + l > len {
+                return;
+            }
+            if keep && out + 4 + l <= cap {
+                sps[out] = 0; sps[out + 1] = 0; sps[out + 2] = 0; sps[out + 3] = 1;
+                out += 4;
+                sps[out..out + l].copy_from_slice(&p[o..o + l]);
+                out += l;
+            }
+            o += l;
+        }
+    }
+    (*c).sps_pps_len = out as c_int;
+}
+
+// ---- Video element (0xE0): read the coded PixelWidth/PixelHeight for the Load payload ----
+unsafe fn mkv_parse_video(c: *mut MkvCtx, size: i64, vw: &mut i32, vh: &mut i32) {
+    let mut consumed = 0i64;
+    while size < 0 || consumed < size {
+        let mut id = 0u32;
+        let mut il = 0i32;
+        let mut sz = 0i64;
+        let mut sl = 0i32;
+        if ebml_id(c, &mut id, &mut il) == 0 {
+            break;
+        }
+        if ebml_size(c, &mut sz, &mut sl) == 0 {
+            break;
+        }
+        consumed += (il + sl) as i64;
+        if id == 0xB0 {
+            *vw = ebml_uint(c, sz) as i32;
+        } else if id == 0xBA {
+            *vh = ebml_uint(c, sz) as i32;
+        } else if sz >= 0 {
+            msrc_skip(c, sz);
+        } else {
+            break;
+        }
+        if sz >= 0 {
+            consumed += sz;
+        }
+    }
+}
+
 // ---- lacing: split a laced block body into frames. lacing 0 none,1 Xiph,2 fixed,3 EBML
 fn mkv_unlace(fd: &[u8], lacing: i32, off: &mut [i32], sz: &mut [i32], maxf: usize) -> usize {
     let fl = fd.len() as i32;
@@ -431,7 +512,7 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
         return;
     }
 
-    if track as c_int != (*c).vtrack || (*c).is_h264 == 0 {
+    if track as c_int != (*c).vtrack || ((*c).is_h264 == 0 && (*c).is_hevc == 0) {
         return;
     }
     if (flags >> 1) & 0x03 != 0 {
@@ -442,7 +523,9 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
     let fd = &blk[p as usize..];
     let fl = fd.len() as i32;
     let ns = (*c).nal_len_size;
-    // pass 1: any IDR (nal type 5)? -> prepend SPS/PPS, mark keyframe
+    let hevc = (*c).is_hevc != 0;
+    // pass 1: keyframe? H264 IDR = NAL type 5; HEVC IRAP (BLA/IDR/CRA) = NAL types 16..=23.
+    // At a keyframe we prepend the param sets (H264 SPS/PPS or HEVC VPS/SPS/PPS) + mark es=1 key.
     let mut key = 0i32;
     let mut i = 0i32;
     while i + ns <= fl {
@@ -454,7 +537,9 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
         if nal_len <= 0 || i as i64 + nal_len > fl as i64 {
             break;
         }
-        if fd[i as usize] & 0x1f == 5 {
+        let b0 = fd[i as usize];
+        let is_key = if hevc { (16..=23).contains(&((b0 >> 1) & 0x3f)) } else { (b0 & 0x1f) == 5 };
+        if is_key {
             key = 1;
             break;
         }
@@ -464,6 +549,7 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
     let scap = (*c).scratch_cap;
     let need = fl + (fl / 32 + 4) + (if key != 0 { (*c).sps_pps_len } else { 0 }) + 64;
     if need > scap {
+        crate::player::log(&format!("mkv: video AU dropped (need={need} > scratch_cap={scap}) — raise cap"));
         return;
     }
     let scratch = std::slice::from_raw_parts_mut((*c).scratch, scap as usize);
@@ -515,6 +601,8 @@ unsafe fn mkv_parse_track_entry(c: *mut MkvCtx, size: i64) {
     let mut cidlen = 0usize;
     let mut cp = [0u8; 1024];
     let mut cplen = 0usize;
+    let mut vw = 0i32;
+    let mut vh = 0i32;
     while size < 0 || consumed < size {
         let mut id = 0u32;
         let mut il = 0i32;
@@ -545,6 +633,8 @@ unsafe fn mkv_parse_track_entry(c: *mut MkvCtx, size: i64) {
             if sz > n as i64 {
                 msrc_skip(c, sz - n as i64);
             }
+        } else if id == 0xE0 {
+            mkv_parse_video(c, sz, &mut vw, &mut vh);
         } else if sz >= 0 {
             msrc_skip(c, sz);
         } else {
@@ -557,10 +647,17 @@ unsafe fn mkv_parse_track_entry(c: *mut MkvCtx, size: i64) {
     let cid = &codecid[..cidlen];
     if ttype == 1 && (*c).vtrack < 0 {
         (*c).vtrack = tnum;
+        (*c).vwidth = vw;
+        (*c).vheight = vh;
         if cid.starts_with(b"V_MPEG4/ISO/AVC") {
             (*c).is_h264 = 1;
             if cplen > 0 {
                 mkv_parse_avcc(c, &cp[..cplen]);
+            }
+        } else if cid.starts_with(b"V_MPEGH/ISO/HEVC") {
+            (*c).is_hevc = 1;
+            if cplen > 0 {
+                mkv_parse_hvcc(c, &cp[..cplen]);
             }
         }
     } else if ttype == 2 && (*c).atrack < 0 {
