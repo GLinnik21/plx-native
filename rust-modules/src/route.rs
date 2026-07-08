@@ -433,22 +433,33 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.
     // Server-adjudicated (Phase 2). HEVC now direct-plays (Phase 3 demuxer + native decode);
     // the guard that forced non-h264 to transcode is gone.
-    // The local fallback (when the server /decision returns nothing) MUST match our capability
-    // profile: H264/HEVC video + AAC/AC3/E-AC3 audio all direct-play natively. The old
-    // h264+ac3-only test wrongly transcoded HEVC+E-AC3 items whenever the decision request
-    // hiccupped (e.g. The Morning Show episodes silently dropped to a 1080p transcode).
-    let directplay = if rk.is_empty() {
+    // Smart direct-play: the video decodes natively (H264/HEVC) AND some audio track is
+    // direct-playable (AAC/AC3/E-AC3) — even if the DEFAULT track isn't. We own the demuxer, so
+    // we direct-play the raw file and FEED a direct-playable track (e.g. Toy Story 3: TrueHD
+    // default + an AC3 track → native 4K HEVC + AC3, no transcode — beats the server's
+    // video-downscaling transcode). Falls back to the server /decision (then the local codec
+    // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
+    let video_dp = matches!(vcodec, "h264" | "hevc");
+    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(rk, acodec, cfg) };
+    let directplay = if video_dp && audio_sel.is_some() {
+        true
+    } else if rk.is_empty() {
         false
     } else {
         server_decision(rk, cfg)
-            .unwrap_or_else(|| matches!(vcodec, "h264" | "hevc") && matches!(acodec, "aac" | "ac3" | "eac3"))
+            .unwrap_or_else(|| video_dp && matches!(acodec, "aac" | "ac3" | "eac3"))
     };
     if (directplay || rk.is_empty()) && !part.is_empty() {
-        // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload
-        // uses them (h264/hevc + the source audio).
+        // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
+        // them (h264/hevc + the chosen audio track's codec). If the chosen track isn't the
+        // default (aidx >= 0), tell the demuxer to feed that stream.
+        let (aidx, achosen) = audio_sel.unwrap_or((-1, acodec.to_string()));
         unsafe {
             *addr_of_mut!(STREAM_VCODEC) = vcodec.to_string();
-            *addr_of_mut!(STREAM_ACODEC) = acodec.to_string();
+            *addr_of_mut!(STREAM_ACODEC) = achosen;
+        }
+        if aidx >= 0 {
+            crate::player::set_audio_track(aidx); // feed the direct-playable non-default track
         }
         // direct-play: no transcode session (transcode_session() stays empty). Carry the
         // session id + identity on the file GET so PMS keys the /status/sessions entry by
@@ -476,6 +487,20 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
     let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{base}", cfg.host, cfg.port);
     (url, session)
+}
+
+/// Pick the audio track to DIRECT-PLAY for `rk`: the default if it's direct-playable, else the
+/// first other direct-playable track (aac/ac3/eac3) in the file — else None (no DP audio → must
+/// transcode). Only fetches the track list when the default isn't DP (the TrueHD/DTS case), so
+/// the common path adds no round-trip. Returns (audio_idx, codec): idx -1 = default/best track,
+/// else the 0-based audio-stream index for the demuxer (desired_audio_idx / nth_audio_stream).
+fn pick_dp_audio(rk: &str, default_acodec: &str, cfg: &Cfg) -> Option<(i32, String)> {
+    let dp = |c: &str| matches!(c, "aac" | "ac3" | "eac3");
+    if dp(default_acodec) {
+        return Some((-1, default_acodec.to_string()));
+    }
+    let codecs = crate::metadata::audio_codecs(&cfg.host, cfg.port, &cfg.token, rk);
+    codecs.iter().position(|c| dp(c)).map(|i| (i as i32, codecs[i].clone()))
 }
 
 /// Extract the numeric Part id from a Plex part key (/library/parts/{id}/…/file.mkv).

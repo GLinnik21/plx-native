@@ -220,6 +220,35 @@ fn parse_streams(item: &Value, d: &mut Detail) {
     }
 }
 
+/// The audio-track codecs of `rk` in FILE order (lowercase, e.g. ["truehd","ac3"]). Empty on
+/// any fetch/parse failure. Used by the route decision to find a direct-playable audio track
+/// when the default one isn't (so a TrueHD-default item with an AC3 track still direct-plays).
+pub(crate) fn audio_codecs(host: &str, port: c_int, token: &str, rk: &str) -> Vec<String> {
+    let json = match get_json(host, port, &format!("/library/metadata/{rk}?X-Plex-Token={token}")) {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    let item = match meta0(&json) {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let part = item
+        .get("Media")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|md| md.get("Part"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first());
+    match part.and_then(|p| p.get("Stream")).and_then(|a| a.as_array()) {
+        Some(streams) => streams
+            .iter()
+            .filter(|s| jint(s.get("streamType")) == 2)
+            .map(|s| jstr(s.get("codec")).to_lowercase())
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a
 /// show's first-episode audio/subtitle tracks (the show container carries none).
 fn fetch_item_streams(host: &str, port: c_int, token: &str, rk: &str, d: &mut Detail) {

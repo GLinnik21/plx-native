@@ -66,6 +66,12 @@ pub(crate) fn request_audio_track(audio_idx: i32, codec: &str) {
 pub(crate) fn reset_audio_track() {
     SHARED.desired_audio_idx.store(-1, Relaxed);
 }
+/// select the audio stream index the demuxer feeds at the FIRST Load (before start_bufferfeed) —
+/// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
+/// a TrueHD-default item). -1 = default/best.
+pub(crate) fn set_audio_track(idx: i32) {
+    SHARED.desired_audio_idx.store(idx, Relaxed);
+}
 /// request a re-transcode at the current position with the CURRENT audio + subtitle —
 /// used when a subtitle is (de)selected while already transcoding, so the server
 /// re-burns (or drops) it. No-op-ish if not transcoding (the caller gates on that).
