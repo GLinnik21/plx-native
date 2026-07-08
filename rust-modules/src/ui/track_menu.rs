@@ -188,15 +188,29 @@ fn audio_label(i: usize) -> String {
         })
         .unwrap_or_default()
 }
+/// Image (bitmap) subtitle codecs — PGS/VobSub/DVD/DVB. We render subtitles client-side as text
+/// and can't rasterize a bitmap overlay, so these can't display; the menu marks them so a title
+/// with only image subs (e.g. a Blu-ray rip) doesn't look silently broken.
+pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
+    matches!(
+        codec.to_ascii_lowercase().as_str(),
+        "pgs" | "hdmv_pgs_subtitle" | "vobsub" | "dvd_subtitle" | "dvdsub" | "dvb_subtitle" | "dvbsub"
+    )
+}
 fn sub_label(i: usize) -> String {
     metadata::current()
         .and_then(|d| d.subs.get(i))
         .map(|s| {
             let lang = if s.lang.is_empty() { "Unknown".to_string() } else { s.lang.clone() };
-            if s.title.is_empty() {
+            let base = if s.title.is_empty() {
                 lang
             } else {
                 format!("{} \u{2014} {}", lang, s.title)
+            };
+            if is_image_sub_codec(&s.codec) {
+                format!("{base}  (image, unsupported)")
+            } else {
+                base
             }
         })
         .unwrap_or_default()
