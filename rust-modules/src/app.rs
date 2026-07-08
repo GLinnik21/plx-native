@@ -376,7 +376,7 @@ pub extern "C" fn plex_run(
                             if crate::ui::detail::on_ok() {
                                 let resume = crate::ui::detail::last_resume_ns();
                                 if resume > 0 {
-                                    crate::player::arm_seek(resume); // seek AT the first Load (no play-from-start flash)
+                                    crate::player::resume_at(resume); // seek AT the first Load (direct-play) or restart the transcode at &offset
                                 }
                                 playing = crate::player::start_bufferfeed();
                                 set_paused(false);
@@ -402,7 +402,7 @@ pub extern "C" fn plex_run(
                                         crate::ui::track_menu::reset();
                                         let resume = resume_ns(mm.resume_ms, mm.dur_ns);
                                         if resume > 0 {
-                                            crate::player::arm_seek(resume); // seek AT the first Load
+                                            crate::player::resume_at(resume); // seek AT the first Load (direct-play) or restart the transcode at &offset
                                         }
                                         playing = crate::player::start_bufferfeed();
                                         set_paused(false);
@@ -659,7 +659,7 @@ pub extern "C" fn plex_run(
                             {
                                 let resume = crate::ui::detail::last_resume_ns();
                                 if resume > 0 {
-                                    crate::player::arm_seek(resume); // seek AT the first Load
+                                    crate::player::resume_at(resume); // seek AT the first Load (direct-play) or restart the transcode at &offset
                                 }
                                 playing = crate::player::start_bufferfeed();
                                 set_paused(false);
