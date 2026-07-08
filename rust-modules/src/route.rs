@@ -111,6 +111,11 @@ pub(crate) fn stream_vcodec() -> String {
 pub(crate) fn stream_acodec() -> String {
     unsafe { (*addr_of!(STREAM_ACODEC)).clone() }
 }
+/// Override the audio codec used to build the Load payload — set by a native audio-track
+/// switch to the chosen track's codec before the direct-play reload.
+pub(crate) fn set_stream_acodec(codec: &str) {
+    unsafe { *addr_of_mut!(STREAM_ACODEC) = codec.to_owned() }
+}
 /// The §3b identity query params (stable device id + product/platform/model/…), appended to
 /// every playback request so the server names + groups this client and shows a proper Player.
 pub(crate) fn identity_qs() -> String {
@@ -428,10 +433,15 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.
     // Server-adjudicated (Phase 2). HEVC now direct-plays (Phase 3 demuxer + native decode);
     // the guard that forced non-h264 to transcode is gone.
+    // The local fallback (when the server /decision returns nothing) MUST match our capability
+    // profile: H264/HEVC video + AAC/AC3/E-AC3 audio all direct-play natively. The old
+    // h264+ac3-only test wrongly transcoded HEVC+E-AC3 items whenever the decision request
+    // hiccupped (e.g. The Morning Show episodes silently dropped to a 1080p transcode).
     let directplay = if rk.is_empty() {
         false
     } else {
-        server_decision(rk, cfg).unwrap_or(vcodec == "h264" && acodec == "ac3")
+        server_decision(rk, cfg)
+            .unwrap_or_else(|| matches!(vcodec, "h264" | "hevc") && matches!(acodec, "aac" | "ac3" | "eac3"))
     };
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload
@@ -511,6 +521,7 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
         addr_of_mut!(CUR_AUDIO_SID).write(0);
         addr_of_mut!(CUR_SUB_SID).write(0);
     }
+    crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
     let part = cfield(&m.part);
     let (url, session) = build_stream(&rk, &part, &cfield(&m.vcodec), &cfield(&m.acodec));
     unsafe {
@@ -535,6 +546,7 @@ pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud
         addr_of_mut!(CUR_AUDIO_SID).write(0);
         addr_of_mut!(CUR_SUB_SID).write(0);
     }
+    crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
     let (url, session) = build_stream(rk, part, vcodec, acodec);
     unsafe {
         *addr_of_mut!(URL) = url;

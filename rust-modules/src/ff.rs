@@ -228,6 +228,24 @@ unsafe fn stream_index(s: *mut AVStream) -> c_int {
     *((s as *const u8).add(OFF_STREAM_INDEX) as *const c_int)
 }
 
+/// The ffmpeg stream index of the `n`-th audio stream in file order (for native audio-track
+/// selection), or None if there are fewer than n+1 audio streams. metadata.audio is filtered
+/// in the same file order, so the track menu's 0-based audio index maps 1:1 here.
+unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
+    let streams = (*fmt).streams;
+    let mut count = 0i32;
+    for i in 0..(*fmt).nb_streams {
+        let cp = stream_codecpar(*streams.add(i as usize));
+        if (*cp).codec_type == AVMEDIA_TYPE_AUDIO {
+            if count == n {
+                return Some(i as c_int);
+            }
+            count += 1;
+        }
+    }
+    None
+}
+
 static REGISTER: Once = Once::new();
 fn ensure_registered() {
     REGISTER.call_once(|| unsafe {
@@ -695,7 +713,15 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 break;
             }
             let vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
-            let ai = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0);
+            // native audio-track selection: feed the chosen Nth audio stream (SHARED.desired_
+            // audio_idx, set by the track menu), else the pipeline's best/default audio.
+            let want_aidx = SHARED.desired_audio_idx.load(Ordering::Relaxed);
+            let ai = if want_aidx >= 0 {
+                nth_audio_stream(fmt, want_aidx)
+                    .unwrap_or_else(|| av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0))
+            } else {
+                av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0)
+            };
             if vi < 0 {
                 crate::player::log("ff: no video stream");
                 avformat_close_input(&mut fmt);
