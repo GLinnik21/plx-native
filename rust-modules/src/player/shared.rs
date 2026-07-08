@@ -24,6 +24,10 @@ pub(crate) struct SubCue {
 pub(crate) struct Shared {
     // library callback thread (K) -> main (M)
     pub playpos_ns: AtomicI64,               // g_playpos_ns
+    // the presented frame's fed PTS (0-based, raw `num` from the type=0 callback). The feed
+    // loop throttles on max_fed_pts - pres_fed so it stays ~MAX_FEED_AHEAD ahead of the
+    // decoder (feeding further overfills the 4K HEVC DPB/CPB and stalls the sink).
+    pub pres_fed: AtomicI64,
     pub frames: AtomicI32,                    // bf_frames
     pub load_completed: AtomicBool,           // bf_loaded signal
     pub media_id: Mutex<Option<CString>>,     // bf_mediaId (captured once)
@@ -93,6 +97,7 @@ impl Shared {
     pub const fn new() -> Self {
         Shared {
             playpos_ns: AtomicI64::new(0),
+            pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
             load_completed: AtomicBool::new(false),
             media_id: Mutex::new(None),
@@ -126,6 +131,7 @@ impl Shared {
     /// touch the cue table (that has its own keep_cues rule).
     pub fn reset_session(&self) {
         self.playpos_ns.store(0, Ordering::Relaxed);
+        self.pres_fed.store(0, Ordering::Relaxed);
         self.frames.store(0, Ordering::Relaxed);
         self.load_completed.store(false, Ordering::Relaxed);
         *self.media_id.lock().unwrap() = None;

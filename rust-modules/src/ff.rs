@@ -25,6 +25,13 @@ pub(crate) fn use_ff() -> bool {
     USE_FF.load(Ordering::Relaxed)
 }
 
+/// Feed audio (es=2) to the pipeline. Cleared by the /tmp/poc-noaudio dev trigger to
+/// A/B whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
+static FEED_AUDIO: AtomicBool = AtomicBool::new(true);
+pub(crate) fn set_feed_audio(on: bool) {
+    FEED_AUDIO.store(on, Ordering::Relaxed);
+}
+
 // ---- opaque handles (pointer-only, never dereferenced) ----
 pub enum AVClass {}
 pub enum AVInputFormat {}
@@ -510,6 +517,41 @@ unsafe fn parse_extradata(ed: *const u8, len: usize, is_hevc: bool) -> (Vec<u8>,
     }
 }
 
+static SEI_STRIPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// True if this HEVC NAL is an SEI (prefix=39 / suffix=40) carrying a user-data-registered
+/// ITU-T T.35 HDR10+ dynamic-metadata message (payloadType 4, country_code 0xB5, terminal
+/// provider 0x003C). webOS's HEVC decoder does NOT support per-frame HDR10+ metadata and
+/// stalls on it — Kodi strips it unconditionally ("webOS doesn't support HDR10+ and it can
+/// cause issues"). `nal` is the NAL payload WITHOUT the start code (starts at the 2-byte
+/// NAL header). Static HDR10 mastering-display / CLL SEI (payloadType 137/144) is kept.
+fn is_hdr10plus_sei(nal: &[u8]) -> bool {
+    if nal.len() < 2 {
+        return false;
+    }
+    let nal_type = (nal[0] >> 1) & 0x3f;
+    if nal_type != 39 && nal_type != 40 {
+        return false;
+    }
+    let mut p = 2usize; // SEI RBSP starts after the 2-byte NAL header
+    let mut ptype = 0usize; // payloadType (0xFF-run + terminator)
+    while p < nal.len() && nal[p] == 0xff {
+        ptype += 255;
+        p += 1;
+    }
+    if p >= nal.len() {
+        return false;
+    }
+    ptype += nal[p] as usize;
+    p += 1;
+    while p < nal.len() && nal[p] == 0xff {
+        p += 1; // skip payloadSize (0xFF-run + terminator); value unused
+    }
+    p += 1;
+    // user_data_registered_itu_t_t35 == 4; T.35 header: country 0xB5, provider 0x003C
+    ptype == 4 && p + 3 <= nal.len() && nal[p] == 0xb5 && nal[p + 1] == 0x00 && nal[p + 2] == 0x3c
+}
+
 /// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
 /// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5 / HEVC IRAP
 /// types 16-23). Returns true if it is a keyframe. Mirrors mkv_handle_block.
@@ -553,7 +595,7 @@ unsafe fn packet_to_annexb(
     if is_key {
         out.extend_from_slice(param);
     }
-    // pass 2: emit each NAL as 00 00 00 01 + bytes
+    // pass 2: emit each NAL as 00 00 00 01 + bytes, dropping per-frame HDR10+ SEI (HEVC)
     let sc = [0u8, 0, 0, 1];
     let mut i = 0usize;
     while i + nls <= size {
@@ -565,8 +607,17 @@ unsafe fn packet_to_annexb(
         if nl == 0 || i + nl > size {
             break;
         }
+        let nal = &d[i..i + nl];
+        if is_hevc && is_hdr10plus_sei(nal) {
+            let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            if n <= 3 || n % 500 == 0 {
+                crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+            }
+            i += nl;
+            continue;
+        }
         out.extend_from_slice(&sc);
-        out.extend_from_slice(&d[i..i + nl]);
+        out.extend_from_slice(nal);
         i += nl;
     }
     is_key
@@ -740,7 +791,7 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                         1,
                     );
                     av_packet_unref(pkt);
-                } else if si == ai {
+                } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                     let ast = *streams.add(ai as usize);
                     let pts = pts_ns(pkt, ast);
                     crate::aq::aq_push(aq_p, (*pkt).data, (*pkt).size, pts, 1, 2);

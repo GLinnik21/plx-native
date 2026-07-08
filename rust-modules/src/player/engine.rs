@@ -13,6 +13,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
 // video+AC3 for streaming. Copied VERBATIM from playback.c.
 const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.glin.plexpoc","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plexpoc"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+// NB: pauseAtDecodeTime stays FALSE here. Kodi uses true, but only alongside its decode-time
+// trigger machinery (setTimeToDecode); with true and no trigger the decoder never starts
+// (verified on-device: Load+Play OK but zero frames decoded). The feed-ahead throttle
+// (MAX_FEED_AHEAD_NS in feed_stream) is the anti-stall mechanism; the other Kodi payload
+// flags are being re-introduced one at a time.
 const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.glin.plexpoc","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plexpoc"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 // Phase 0 HEVC probe payload — identical to PAYLOAD_V but codec video "H265", to isolate
 // the single variable: does StarfishMediaAPIs BUFFERSTREAM decode HEVC on this panel?
@@ -187,18 +192,29 @@ pub(crate) fn start_bufferfeed() -> bool {
     // For a streamed direct-play/transcode, pick the Load codecs from the item: video H264 vs
     // H265 (native HEVC direct-play), audio AC3/EAC3/AAC. (The local sample paths keep their
     // fixed payloads.)
+    // dev A/B: /tmp/poc-noaudio feeds video only (needAudio:false + skip es=2) to isolate
+    // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
+    let no_audio = std::path::Path::new("/tmp/poc-noaudio").exists();
+    crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
     let payload_str: &str = if stream {
         let hevc = crate::route::stream_vcodec() == "hevc";
-        let vc = if hevc { "H265" } else { "H264" };
-        let ac = match crate::route::stream_acodec().as_str() {
-            "eac3" => "EAC3",
-            "aac" => "AAC",
-            _ => "AC3",
-        };
-        let (mw, mh) = if hevc { (3840, 2160) } else { (1920, 1080) };
-        stream_payload = build_av_payload(vc, ac, mw, mh);
-        &stream_payload
+        if no_audio {
+            if hevc { PAYLOAD_H265 } else { PAYLOAD_V }
+        } else {
+            let vc = if hevc { "H265" } else { "H264" };
+            // LG's pipeline names E-AC3 "AC3 PLUS" (Dolby Digital Plus), NOT "EAC3" — the
+            // wrong string leaves the audio ES unconfigured, and with audioSync the video
+            // sink slaves to the dead audio clock and stalls (verified: video-only plays).
+            let ac = match crate::route::stream_acodec().as_str() {
+                "eac3" => "AC3 PLUS",
+                "aac" => "AAC",
+                _ => "AC3",
+            };
+            let (mw, mh) = if hevc { (3840, 2160) } else { (1920, 1080) };
+            stream_payload = build_av_payload(vc, ac, mw, mh);
+            &stream_payload
+        }
     } else if is_h265 {
         PAYLOAD_H265
     } else {
@@ -268,7 +284,11 @@ pub(crate) fn start_bufferfeed() -> bool {
     let eng = Engine {
         stage: Stage::Loading,
         video_info_sent: false,
-        rebase_pending: false,
+        // if a seek is armed for the FIRST open (resume, or reload_at), rebase the first
+        // post-seek keyframe to fed-pts 0 so the pipeline sees a 0-based timeline identical
+        // to fresh play (disp_base carries the content offset). Plain fresh play leaves this
+        // false (first keyframe is already ~0).
+        rebase_pending: SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0,
         max_fed_pts: 0,
         aq: aq_box,
         hs,
@@ -292,17 +312,75 @@ pub(crate) fn start_bufferfeed() -> bool {
     true
 }
 
+/// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
+/// time. disp_base=0 and (via start_bufferfeed) rebase_pending=true, so feed_stream rebases
+/// the landed keyframe K to fed-pts 0 and the presented position reads as num+K = content
+/// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek).
+pub(crate) fn arm_seek(target_ns: i64) {
+    let t = target_ns.max(0);
+    SHARED.seek_to_ns.store(t, Ordering::Release);
+    SHARED.disp_base.store(0, Ordering::Relaxed);
+    SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
+}
+
+/// Direct-play seek = tear down the pipeline and start a FRESH Load at `target_ns`. The old
+/// flush()+refeed path left a STALE GStreamer segment (decompiled ground truth: the no-arg
+/// StarfishMediaAPIs::flush() → CustomPipeline::flush() is a degenerate gst_element_seek to
+/// GST_CLOCK_TIME_NONE with NO FLUSH_START/STOP and NO fresh SEGMENT; the HW sink/decoder
+/// only re-anchor their segment/basetime on a real SEGMENT/FLUSH event). Post-seek buffers
+/// were then scheduled against the pre-seek segment, the sink stopped draining, and the fixed
+/// ~14.7 MB of upstream buffers filled in ~48 s → permanent BufferFull + "Playing error". A
+/// fresh Load re-establishes a correct segment by construction — the known-good fresh-play
+/// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
+pub(crate) fn reload_at(target_ns: i64) {
+    if crate::route::url().is_empty() {
+        log("reload_at: no url (ignored)");
+        return;
+    }
+    log(&format!("reload_at: fresh Load at {}s", target_ns / 1_000_000_000));
+    teardown(true, true); // keep cues; reload mode: preserve the session (no url-clear / stop-scrobble)
+    arm_seek(target_ns);
+    start_bufferfeed();
+}
+
+/// Reload the pipeline for a MODE/CODEC change — an audio-track switch on a direct-play HEVC
+/// item forces a transcode (H264/AC3), so the pipeline must be re-Loaded with the H264 payload
+/// (feeding H264 into the H265-configured pipeline stalls). Unlike reload_at, the transcode
+/// start.mkv is already 0-based at `&offset`, so no av_seek — just set disp_base to the offset.
+/// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
+pub(crate) fn reload_transcode(offset_ns: i64) {
+    if crate::route::url().is_empty() {
+        log("reload_transcode: no url (ignored)");
+        return;
+    }
+    log(&format!("reload_transcode: fresh Load at offset {}s", offset_ns / 1_000_000_000));
+    teardown(true, true); // keep cues/session; reload mode
+    SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
+    SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
+    start_bufferfeed();
+}
+
 /// Stop playback: unblock+join threads, unload+destruct the pipeline, release the
 /// video plane, reset all state so a fresh start_bufferfeed() can restart.
 pub(crate) fn stop_bufferfeed(keep_cues: bool) {
+    teardown(keep_cues, false);
+}
+
+/// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
+/// stop: preserve the playback session so start_bufferfeed can restart the SAME item — skip
+/// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
+fn teardown(keep_cues: bool, for_reload: bool) {
     let mut eng = match unsafe { (*std::ptr::addr_of_mut!(ENGINE)).take() } {
         Some(e) => e,
         None => return,
     };
     let stream = matches!(eng.source, Source::Stream { .. });
 
-    // capture the final-position report BEFORE teardown zeroes playpos/duration
-    let final_report = {
+    // capture the final-position report BEFORE teardown zeroes playpos/duration (a reload is
+    // not a stop — don't scrobble "stopped", it would falsely pause/mark-watched the item)
+    let final_report = if for_reload {
+        None
+    } else {
         let rk = crate::route::cur_rk();
         let dur = SHARED.duration_ns.load(Ordering::Relaxed);
         if !rk.is_empty() && dur > 0 {
@@ -372,11 +450,15 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
         }
     }
     eng.pending = None;
-    // 5. reset shared + transport, stop the server transcode, clear the URL
+    // 5. reset shared + transport. On a real stop also stop the server transcode + clear the
+    // URL; on a reload KEEP them so start_bufferfeed restarts the same item (a direct-play
+    // reload has no transcode session anyway, so the skip only matters for the URL).
     SHARED.reset_session();
-    crate::route::stop_transcode();
     TX.reset();
-    crate::route::clear_url();
+    if !for_reload {
+        crate::route::stop_transcode();
+        crate::route::clear_url();
+    }
     // 6. keep the cue index across an app-switch (same file) only if FULLY loaded
     if !keep_cues || !SHARED.cues_ready.load(Ordering::Relaxed) {
         SHARED.cues.lock().unwrap().clear();
@@ -435,6 +517,9 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
     };
     let mut fed = 0;
     while fed < 120 {
+        // NB: Kodi paces the feed to ~1.6s ahead of the presented position (SHARED.pres_fed),
+        // but that needs the two-lane audio/video split first — a single combined max_fed_pts
+        // is audio-dominated and starves video. Greedy-to-BufferFull for now (task: two-lane feed).
         if eng.pending.is_none() {
             let mut eof: c_int = 0;
             let n = crate::aq::aq_pop(qp, &mut eof);

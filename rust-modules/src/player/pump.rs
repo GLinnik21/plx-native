@@ -19,38 +19,21 @@ pub(crate) fn pump(now: u32) {
     }
     let stream = matches!(eng.source, Source::Stream);
 
-    // ---------- pending audio-track switch OR subtitle-burn refresh: force a fresh
-    // transcode with the current audio + subtitle at the CURRENT position (same arm as a
-    // transcode seek), and flag a full Track re-parse on re-open (the transcode output's
-    // track numbering may differ from a direct-play file's, and mkv_seek_run does not
-    // re-parse Tracks). switch_audio already carries the current subtitle, so an audio
-    // switch also (re)burns it; a pure subtitle change uses retranscode. ----------
+    // ---------- pending audio-track switch OR subtitle-burn refresh: force a fresh transcode
+    // (H264/AC3) with the selected audio + subtitle at the CURRENT position, then RELOAD the
+    // pipeline. A direct-play item is Loaded for its native codec (e.g. H265); the transcode
+    // output is H264, so we MUST re-Load with the H264 payload — flush+refeeding H264 into the
+    // H265 pipeline stalls. reload_transcode REPLACES the ENGINE, so `eng` dangles after it:
+    // return immediately. ----------
     let asid = SHARED.pending_audio_sid.swap(-1, Relaxed);
     let refresh = SHARED.pending_retranscode.swap(false, Relaxed);
     if stream && (asid >= 0 || refresh) && eng.stage >= Stage::Playing {
         let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
         let rebuilt = if asid >= 0 { crate::route::switch_audio(asid, secs) } else { crate::route::retranscode(secs) };
-        if let Some(url) = rebuilt {
-            unsafe {
-                ffi::sf_flush();
-                ffi::sf_set_playtime(0);
-                ffi::sf_play();
-            }
-            drain_aq(eng);
-            *SHARED.next_url.lock().unwrap() = Some(url);
-            SHARED.seek_byte.store(0, Release); // fresh stream from byte 0
-            SHARED.disp_base.store(secs * 1_000_000_000, Relaxed);
-            subs_reopen(eng, secs); // re-point the soft-subs sidecar on the same session
-            SHARED.reparse_next.store(true, Release);
-            let p = SHARED.hs_ptr.load(Acquire);
-            if !p.is_null() {
-                crate::stream::http_close(p);
-            }
-            eng.rebase_pending = true;
-            eng.max_fed_pts = 0;
-            SHARED.frames.store(0, Relaxed);
-            SHARED.playpos_ns.store(secs * 1_000_000_000, Relaxed);
-            super::log(&format!("re-transcode: asid={asid} refresh={refresh} offset={secs}s"));
+        if rebuilt.is_some() {
+            super::log(&format!("re-transcode: asid={asid} refresh={refresh} offset={secs}s → reload"));
+            super::engine::reload_transcode(secs * 1_000_000_000);
+            return;
         }
     }
 
@@ -68,6 +51,18 @@ pub(crate) fn pump(now: u32) {
     {
         TX.seek_to_ns.store(-1, Relaxed);
         let t = t.max(0);
+        // DIRECT-PLAY seek: reload the whole pipeline at t. A plain flush()+refeed leaves a
+        // STALE GStreamer segment → the HW sink stops draining ~48 s later → permanent
+        // BufferFull + "Playing error" (root-caused by decompiling libpipeline/lxvideosink;
+        // see engine::reload_at). A fresh Load re-establishes a correct segment — the
+        // known-good fresh-play path. reload_at REPLACES the ENGINE, so `eng` dangles after
+        // it: return immediately and let the next pump() tick drive the fresh engine.
+        if !is_transcode && crate::ff::use_ff() {
+            super::engine::reload_at(t);
+            return;
+        }
+        // TRANSCODE + legacy-mkv seeks keep the flush+refeed model (a transcode restart feeds
+        // a fresh 0-based start.mkv; mkv is the fallback demuxer).
         unsafe {
             ffi::sf_flush(); // drop decoded/queued frames; resets the clock to ~0
             ffi::sf_set_playtime(0);
@@ -90,18 +85,8 @@ pub(crate) fn pump(now: u32) {
                 }
                 None => super::log("seek(transcode): rebuild failed"),
             }
-        } else if crate::ff::use_ff() {
-            // libavformat direct-play seek: REOPEN the AVFormatContext on the SAME part URL,
-            // then av_seek_frame AFTER reopen (an in-place seek on a live context corrupts the
-            // matroska demuxer state -> "Playing error" + freeze). The outer demux loop reopens
-            // on next_url (gated by seek_byte); seek_to_ns carries the target it seeks to after
-            // reopen; disp_base=t so the 0-based-rebased fed clock displays the seek point.
-            *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
-            SHARED.seek_byte.store(0, Release); // reopen trigger for the outer loop
-            SHARED.seek_to_ns.store(t, Release); // post-reopen av_seek_frame target
-            SHARED.disp_base.store(t, Relaxed);
-            super::log(&format!("seek(ff): reopen+seek t={t}"));
         } else {
+            // legacy-mkv direct-play seek: byte-Range reopen at the Cue offset (fallback demuxer)
             let dur = SHARED.duration_ns.load(Relaxed);
             let fsz = SHARED.file_size.load(Relaxed);
             let byte = cue_byte_for(t) // accurate: MKV Cue index
@@ -118,11 +103,10 @@ pub(crate) fn pump(now: u32) {
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;
         eng.max_fed_pts = 0;
-        // A direct-play seek that lands while already Streaming (e.g. a scrub after the
-        // resume) has its video plane bound to frames sf_flush just dropped -> the pipeline
-        // throws "Playing error". Fall back to Bound + clear video_info_sent so the pump
-        // re-sends setMediaVideoData and re-asserts PLAYING once post-seek frames decode,
-        // re-binding the plane to the fresh frames. (Transcode reloads via next_url; skip it.)
+        // legacy-mkv seek landing while already Streaming: its plane is bound to frames
+        // sf_flush just dropped → "Playing error". Fall back to Bound + clear video_info_sent
+        // so the pump re-sends setMediaVideoData once post-seek frames decode. (ff reloads
+        // instead of reaching here; transcode reloads via next_url.)
         if !is_transcode && eng.stage > Stage::Bound {
             eng.stage = Stage::Bound;
             eng.video_info_sent = false;

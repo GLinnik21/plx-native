@@ -561,6 +561,10 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     unsafe {
         *addr_of_mut!(TBASE) = base.clone();
         *addr_of_mut!(TSESSION) = session;
+        // the transcode output is H264 + AC3 — record it so a pipeline RELOAD (audio switch
+        // from a direct-play HEVC item) builds the H264 Load payload, not the stale H265 one.
+        *addr_of_mut!(STREAM_VCODEC) = "h264".to_string();
+        *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
     }
     put_selection(cfg); // audio/subtitle selection drives the encode + burn
     let obase = format!("{base}&offset={}", offset_secs.max(0));
