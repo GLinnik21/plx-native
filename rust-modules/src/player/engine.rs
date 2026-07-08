@@ -221,7 +221,10 @@ pub(crate) fn start_bufferfeed() -> bool {
                 "aac" => "AAC",
                 _ => "AC3",
             };
-            let (mw, mh) = if hevc { (3840, 2160) } else { (1920, 1080) };
+            // Sink envelope = the panel max (4K) regardless of codec; the pipeline reads the
+            // true dims from the bitstream (SPS), so this is just a ceiling and is correct for a
+            // 4K stream (HEVC transcode / HEVC direct-play) AND harmless for a 1080p H264 file.
+            let (mw, mh) = (3840, 2160);
             stream_payload = build_av_payload(vc, ac, mw, mh);
             &stream_payload
         }

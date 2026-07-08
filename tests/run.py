@@ -315,8 +315,11 @@ def op_audio_transcode(lines):
     if re_t is None or rl_t is None:
         return False, f"missing transcode-switch logs (re-transcode={bool(re_t)} reload_transcode={bool(rl_t)})"
     cs = codec_ids(lines)
-    if cs and cs[-1][0] != 28:
-        return False, f"codec after transcode switch = {cs[-1][0]}, expected 28 :: {cs[-1][3].strip()}"
+    # the transcode target is HEVC (keeps 4K + HDR10), so an audio-forced re-transcode
+    # re-encodes the video to HEVC (174). NB: a future "audio-only transcode" that COPIES the
+    # video would leave it at the source codec instead — update this expectation if that lands.
+    if cs and cs[-1][0] != 174:
+        return False, f"codec after transcode switch = {cs[-1][0]}, expected 174 (HEVC target) :: {cs[-1][3].strip()}"
     return True, f"transcode switch OK :: {rl_t.strip()}"
 
 
