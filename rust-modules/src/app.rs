@@ -72,6 +72,36 @@ fn log(m: &str) {
     }
 }
 
+/// Log every Rust panic (message + source location + thread) to the event log AND the
+/// persistent crash log BEFORE it unwinds. A panic that crosses an extern "C" boundary
+/// (e.g. libav calling ff::read_cb/seek_cb) aborts the process (SIGABRT) — by then the
+/// message is gone, so capturing it here is the only way to see WHAT panicked. Pairs with
+/// main.c's crash tracer, which re-raises the signal for a full webOS crashd backtrace.
+fn install_panic_logger() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "?".into());
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic>".into());
+        let cur = std::thread::current();
+        let thread = cur.name().unwrap_or("?");
+        let line = format!("*** RUST PANIC [{thread}] at {loc}: {msg}");
+        log(&line);
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-crash.log") {
+            let _ = writeln!(f, "{line}");
+        }
+        default(info); // preserve default behaviour (stderr -> poc-stderr.log)
+    }));
+}
+
 #[inline]
 fn rd_u32(ev: &[u8], off: usize) -> u32 {
     u32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
@@ -140,6 +170,7 @@ pub extern "C" fn plex_run(
     pms_token: *const c_char,
     demo_url: *const c_char,
 ) -> c_int {
+    install_panic_logger();
     unsafe {
         SDL_SetMainReady();
         SDL_SetHint(c"SDL_VIDEO_ALLOW_SCREENSAVER".as_ptr(), c"0".as_ptr());
