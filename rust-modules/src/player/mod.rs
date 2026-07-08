@@ -22,7 +22,7 @@ static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availabilit
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
-pub(crate) use engine::{acb_init, start_bufferfeed, stop_bufferfeed};
+pub(crate) use engine::{acb_init, arm_seek, start_bufferfeed, stop_bufferfeed};
 pub(crate) use pump::pump;
 pub(crate) fn pause() {
     unsafe { ffi::sf_pause(); }
@@ -156,6 +156,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     if ty == 0 {
         // a frame was PRESENTED — map fed pts -> real content position
         SHARED.frames.fetch_add(1, Relaxed);
+        SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
         SHARED.playpos_ns
             .store(num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed), Relaxed);
     }

@@ -233,7 +233,6 @@ pub extern "C" fn plex_run(
         let mut grid_tried = false;
         let mut seek_tried = false;
         let mut detail_tried = false;
-        let mut pending_resume: i64 = 0; // seek here once the pipeline is ready (viewOffset resume)
         let mut menu_tried = false;
         let mut menupick_tried = false;
         let mut prev = 0u32;
@@ -375,8 +374,11 @@ pub extern "C" fn plex_run(
                             // OK on the detail page: Play/episode starts playback (route
                             // already set by on_ok); a season tab just switches season.
                             if crate::ui::detail::on_ok() {
+                                let resume = crate::ui::detail::last_resume_ns();
+                                if resume > 0 {
+                                    crate::player::arm_seek(resume); // seek AT the first Load (no play-from-start flash)
+                                }
                                 playing = crate::player::start_bufferfeed();
-                                pending_resume = crate::ui::detail::last_resume_ns();
                                 set_paused(false);
                                 set_hud(last_input + 4500);
                             }
@@ -398,8 +400,11 @@ pub extern "C" fn plex_run(
                                         crate::route::play_movie(m);
                                         crate::metadata::load_detail(&rk);
                                         crate::ui::track_menu::reset();
+                                        let resume = resume_ns(mm.resume_ms, mm.dur_ns);
+                                        if resume > 0 {
+                                            crate::player::arm_seek(resume); // seek AT the first Load
+                                        }
                                         playing = crate::player::start_bufferfeed();
-                                        pending_resume = resume_ns(mm.resume_ms, mm.dur_ns);
                                         set_paused(false);
                                         set_hud(last_input + 4500);
                                     } else if mm.kind == 2 {
@@ -652,8 +657,11 @@ pub extern "C" fn plex_run(
                             if std::path::Path::new("/tmp/poc-detailplay").exists()
                                 && crate::ui::detail::on_ok()
                             {
+                                let resume = crate::ui::detail::last_resume_ns();
+                                if resume > 0 {
+                                    crate::player::arm_seek(resume); // seek AT the first Load
+                                }
                                 playing = crate::player::start_bufferfeed();
-                                pending_resume = crate::ui::detail::last_resume_ns();
                                 set_paused(false);
                                 set_hud(now + 60000);
                             }
@@ -663,13 +671,8 @@ pub extern "C" fn plex_run(
                     }
                 }
             }
-            // resume from viewOffset: seek once the pipeline is live (frames flowing +
-            // duration known), so the initial seek doesn't race the ACB bind
-            if pending_resume > 0 && playing && dur() > 0 && frames() > 0 {
-                request_seek(pending_resume);
-                log(&format!("resume: seek to {}s", pending_resume / 1_000_000_000));
-                pending_resume = 0;
-            }
+            // resume is armed BEFORE start_bufferfeed (crate::player::arm_seek) so the very
+            // first Load opens at the viewOffset — no play-from-start flash, no post-frames seek.
             if !seek_tried && playing && dur() > 0 && now.wrapping_sub(t0) > 12000 {
                 seek_tried = true;
                 if std::path::Path::new("/tmp/poc-autoseek").exists() {
