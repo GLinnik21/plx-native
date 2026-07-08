@@ -132,6 +132,14 @@ region and cues appear within the run window. (For a transcode item, soft subs r
 sidecar, which per project memory delivers 0 bytes on this pipeline — direct-play is the only
 reliable sub path, hence this design.)
 
+**This case is tagged `known_gap` (reported as `XFAIL`, not `FAIL`).** Subtitle rendering lives
+only in the legacy `mkv.rs` demuxer, which is H264-only and slated for removal (Phase E). The
+default libavformat path emits no subtitle cues at all, so subtitles are effectively unsupported
+on the codecs (HEVC/4K) most content uses. The real fix is **adding subtitle-cue support to
+`ff.rs`**; until then this case documents the gap rather than failing the suite. A `known_gap`
+case that fails is `XFAIL` (expected) and does not affect the exit code; if it ever passes it is
+reported `XPASS` (time to drop the tag).
+
 ## Adding a case
 
 Append an entry to `manifest.json` → `cases`:
