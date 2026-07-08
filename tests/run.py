@@ -1,0 +1,520 @@
+#!/usr/bin/env python3
+"""
+On-device regression harness for the webOS Plex player (plex-native-poc).
+
+For each case in manifest.json this driver:
+  1. closes the running app on the TV (luna-send closeByAppId + fuser -k, via `make kill`);
+  2. (if the case sets a viewOffset) seeds the item's resume point server-side via
+     PUT /:/progress -- AFTER the close, so a live timeline_thread can't re-scrobble over it;
+  3. clears every /tmp/poc-* trigger on the TV, then writes only the ones this case needs;
+  4. runs `make run TV=<tv> RUN_SECS=<n>`, which relaunches the app, waits, and cats
+     /tmp/poc-events.log back;
+  5. filters the `smp_cb type=43 num=0 str=` flood and evaluates the per-op assertions;
+  6. records PASS/FAIL with the failing evidence line.
+
+Security: the PMS X-Plex-Token is read from src/config.local.h at runtime and is NEVER
+printed, logged, or written to any file. The TV ssh creds already live in the committed
+Makefile, so we shell out to `make` / sshpass for device I/O.
+
+Usage:
+  ./tests/run.py --list                 # list cases and what they cover
+  ./tests/run.py --build                # cargo + make + make deploy, then run all cases
+  ./tests/run.py --filter morning       # run only cases whose name contains "morning"
+  ./tests/run.py                        # run every case (assumes app already deployed)
+
+Exit code is nonzero if any selected case fails.
+
+No third-party deps -- Python 3 stdlib only (macOS system python3 is fine).
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+
+# ---------------------------------------------------------------------------
+# Paths / constants
+# ---------------------------------------------------------------------------
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(TESTS_DIR)
+MANIFEST = os.path.join(TESTS_DIR, "manifest.json")
+CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
+
+# every dev trigger we ever set -- cleared before each run so a stale one can't bleed in
+ALL_TRIGGERS = [
+    "poc-detail", "poc-detailplay", "poc-detailsec", "poc-detailcol",
+    "poc-autoseek", "poc-menupick", "poc-menu", "poc-noaudio", "poc-demux",
+    "poc-grid", "poc-autoplay", "poc-h265", "poc-playidx", "poc-url",
+    "poc-play", "poc-ffprobe",
+]
+
+# the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
+TYPE43_SPAM = re.compile(r"smp_cb type=43 num=0 str=\s*$")
+
+
+# ---------------------------------------------------------------------------
+# Token (never printed)
+# ---------------------------------------------------------------------------
+def read_token():
+    """Extract PMS_TOKEN "..." from the gitignored src/config.local.h."""
+    try:
+        with open(CONFIG_LOCAL_H, "r") as f:
+            txt = f.read()
+    except OSError as e:
+        sys.exit(f"cannot read {CONFIG_LOCAL_H}: {e}\n"
+                 f"(this file is gitignored and holds the PMS token; create it locally)")
+    m = re.search(r'#define\s+PMS_TOKEN\s+"([^"]+)"', txt)
+    if not m:
+        sys.exit(f"no PMS_TOKEN macro found in {CONFIG_LOCAL_H}")
+    return m.group(1)
+
+
+# ---------------------------------------------------------------------------
+# Device I/O
+# ---------------------------------------------------------------------------
+def ssh(tv, remote_cmd, timeout=30):
+    """Run a command on the TV. Mirrors the Makefile's committed sshpass creds."""
+    cmd = [
+        "sshpass", "-p", "alpine", "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=8",
+        f"root@{tv}", remote_cmd,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def make(target_args, timeout, capture=True):
+    """Invoke a make target from the repo root (absolute cwd so nothing drifts)."""
+    cmd = ["make", "-s", "-C", REPO_ROOT] + target_args
+    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+
+
+def pms_put_progress(host, port, rk, time_ms, token):
+    """Seed an item's resume point (viewOffset) via PUT /:/progress. Token never printed."""
+    q = urllib.parse.urlencode({
+        "key": rk,
+        "identifier": "com.plexapp.plugins.library",
+        "time": str(time_ms),
+        "state": "stopped",
+        "X-Plex-Token": token,
+    })
+    url = f"http://{host}:{port}/:/progress?{q}"
+    redacted = url.replace(token, "<token>")
+    req = urllib.request.Request(url, method="PUT")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            print(f"    progress set: {redacted} -> {resp.status}")
+            return True
+    except Exception as e:
+        print(f"    WARN: progress PUT failed ({redacted}): {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Trigger derivation
+# ---------------------------------------------------------------------------
+def triggers_for_case(case):
+    """
+    Map a case's operations -> the /tmp/poc-* files to write on the TV.
+    Returns a list of (filename, content-or-None) pairs; None => `touch` (empty marker).
+    """
+    files = [("poc-play", case["rk"])]  # the robust play trigger (fetches any rk)
+    for op in case["operations"]:
+        kind = op["op"]
+        if kind == "seek":
+            files.append(("poc-autoseek", None))          # touch -> one seek to 140s
+        elif kind == "audio_switch":
+            files.append(("poc-menupick", f'{op["tab"]},{op["row"]}'))
+        elif kind == "subtitle":
+            files.append(("poc-menupick", f'{op["tab"]},{op["row"]}'))
+            if op.get("demux") == "mkv":
+                # ONLY the legacy mkv.rs demuxer emits `sub cue [..]` lines (libavformat
+                # doesn't demux subtitles). mkv.rs is H264-only, so subtitle cases target
+                # an H264 item.
+                files.append(("poc-demux", "mkv"))
+        # "play" and "resume" need no extra trigger (resume rides the seeded viewOffset).
+    return files
+
+
+def apply_triggers(tv, files):
+    """Clear every poc-* trigger, then create the ones this case needs, in one ssh round-trip."""
+    parts = ["rm -f " + " ".join(f"/tmp/{t}" for t in ALL_TRIGGERS)]
+    for name, content in files:
+        if content is None:
+            parts.append(f"touch /tmp/{name}")
+        else:
+            # single-quote the content; rks / "0,6" / "mkv" never contain quotes
+            parts.append(f"printf '%s' '{content}' > /tmp/{name}")
+    ssh(tv, "; ".join(parts))
+
+
+# ---------------------------------------------------------------------------
+# Log parsing
+# ---------------------------------------------------------------------------
+def filter_log(raw):
+    """Drop the type=43 flood; return the surviving lines as a list."""
+    return [ln for ln in raw.splitlines() if not TYPE43_SPAM.search(ln)]
+
+
+RE_DECISION = re.compile(r"decision: part=.* -> (DIRECT PLAY|TRANSCODE)")
+RE_CODEC = re.compile(r"ff: v=#0 codec_id=(\d+)\s+(\d+)x(\d+)")
+RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
+RE_SUBCUE = re.compile(r'sub cue \[\d+\.\.\d+ms\]\s+"(.*)"')
+# the `stream: host=.. path=<url>` line the demux logs when it opens the media URL -- the
+# ground truth of direct-play (`/library/parts/..`) vs transcode (`/transcode/universal/..`).
+# This is the ONLY universal decision signal: the smart/fast direct-play path in build_stream
+# short-circuits and never logs a `decision:` line (that is emitted only when server_decision
+# runs), so keying solely on `decision:` false-FAILs every plain direct-play case.
+RE_STREAM_PATH = re.compile(r"stream:.*path=(\S+)")
+# the media URL carries the secret X-Plex-Token; strip it from anything we print/log.
+RE_TOKEN = re.compile(r"(X-Plex-Token=)[^&\s]+")
+
+
+def redact(s):
+    """Never let the PMS token reach stdout: replace any X-Plex-Token=<v> with <token>."""
+    return RE_TOKEN.sub(r"\1<token>", s)
+
+
+def codec_ids(lines):
+    """All (codec_id, width, height) from `ff: v=#0` lines, in order."""
+    out = []
+    for ln in lines:
+        m = RE_CODEC.search(ln)
+        if m:
+            out.append((int(m.group(1)), int(m.group(2)), int(m.group(3)), ln))
+    return out
+
+
+def timeline_secs(lines):
+    """All `timeline playing t=<S>s` values in order."""
+    return [(int(m.group(1)), ln) for ln in lines for m in [RE_TIMELINE.search(ln)] if m]
+
+
+def find(lines, needle):
+    for ln in lines:
+        if needle in ln:
+            return ln
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Assertions -- each returns (ok: bool, evidence: str)
+# ---------------------------------------------------------------------------
+def a_decision(lines, expected):
+    want = "DIRECT PLAY" if expected == "directplay" else "TRANSCODE"
+    # Primary signal: the actual URL the demux opened. This is emitted on EVERY playback,
+    # unlike `decision:` which the smart direct-play fast path skips. `/library/parts/..`
+    # is a raw file GET (direct play); `/transcode/universal/..` is a server transcode.
+    for ln in lines:
+        m = RE_STREAM_PATH.search(ln)
+        if m:
+            path = m.group(1)
+            if "/transcode/" in path:
+                got = "TRANSCODE"
+            elif "/library/parts/" in path:
+                got = "DIRECT PLAY"
+            else:
+                continue  # a subtitle/other stream line -- not the media decision
+            return (got == want), f"stream path -> {got} (want {want}) :: {redact(ln.strip())}"
+    # Fallback: the explicit `decision:` line (only server_decision emits it -- transcode
+    # items and the local-heuristic path).
+    for ln in lines:
+        mm = RE_DECISION.search(ln)
+        if mm:
+            got = mm.group(1)
+            return (got == want), f"decision={got} (want {want}) :: {redact(ln.strip())}"
+    return False, "no `stream: ... path=` or `decision: ... ->` line found"
+
+
+def a_codec(lines, expected_id, min_width):
+    cs = codec_ids(lines)
+    if not cs:
+        return False, "no `ff: v=#0 codec_id=` line found"
+    cid, w, h, ln = cs[0]
+    ok = (cid == expected_id) and (w >= min_width)
+    return ok, f"codec_id={cid} {w}x{h} (want id={expected_id} w>={min_width}) :: {ln.strip()}"
+
+
+def a_no_error(lines):
+    for ln in lines:
+        if "smp_cb type=18" in ln or "Playing error" in ln:
+            return False, f"error surfaced :: {ln.strip()}"
+    return True, "no `smp_cb type=18` / `Playing error`"
+
+
+def a_video_bound(lines):
+    ln = find(lines, "setMediaVideoData sent")
+    return (ln is not None), (ln.strip() if ln else "no `setMediaVideoData sent` (video plane never bound)")
+
+
+def a_timeline_climb(lines, min_climb):
+    ts = timeline_secs(lines)
+    if len(ts) < 2:
+        return False, f"only {len(ts)} `timeline playing t=` line(s); need >=2 that climb"
+    lo = min(t for t, _ in ts)
+    hi = max(t for t, _ in ts)
+    ok = (hi - lo) >= min_climb
+    return ok, f"timeline {lo}s..{hi}s (climb {hi-lo}s, need >={min_climb}s) over {len(ts)} reports"
+
+
+# ---- per-op assertions ----
+def op_seek_inplace(lines, target_s):
+    started = find(lines, "seek(ff in-place)")
+    if started is None:
+        return False, "no `seek(ff in-place)` line (in-place seek did not fire)"
+    seg_ok = any("sendSegment=1" in ln for ln in lines if "in-place seek:" in ln)
+    if not seg_ok:
+        ln = find(lines, "in-place seek:")
+        return False, f"in-place seek lacked sendSegment=1 :: {ln.strip() if ln else 'no in-place seek: line'}"
+    if find(lines, "reload_at: fresh Load"):
+        return False, "in-place seek fell back to a reload (`reload_at: fresh Load` present)"
+    ts = timeline_secs(lines)
+    reached = max((t for t, _ in ts), default=-1)
+    if reached < target_s - 6:
+        return False, f"timeline reached only {reached}s, expected >= ~{target_s}s after seek"
+    return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
+
+
+def op_seek_transcode(lines, target_s):
+    hit = find(lines, "seek(transcode)") or find(lines, "reload_at: fresh Load at 140s") \
+        or find(lines, "reload_at: fresh Load at %ds" % target_s)
+    if hit is None:
+        return False, "neither `seek(transcode)` nor `reload_at: fresh Load at 140s` present"
+    ts = timeline_secs(lines)
+    reached = max((t for t, _ in ts), default=-1)
+    if reached < target_s - 6:
+        return False, f"timeline reached only {reached}s, expected >= ~{target_s}s after seek"
+    return True, f"transcode/reload seek OK; reached {reached}s :: {hit.strip()}"
+
+
+def op_audio_native(lines):
+    hit = find(lines, "audio switch (native)")
+    if hit is None:
+        return False, "no `audio switch (native)` line (switch was not native)"
+    cs = codec_ids(lines)
+    if not cs:
+        return False, "no ff codec line after switch"
+    last_id = cs[-1][0]
+    if last_id != 174:
+        return False, f"codec after native switch = {last_id}, expected 174 (should stay HEVC) :: {cs[-1][3].strip()}"
+    return True, f"native switch OK; codec stayed 174 :: {hit.strip()}"
+
+
+def op_audio_transcode(lines):
+    re_t = find(lines, "re-transcode:")
+    rl_t = find(lines, "reload_transcode:")
+    if re_t is None or rl_t is None:
+        return False, f"missing transcode-switch logs (re-transcode={bool(re_t)} reload_transcode={bool(rl_t)})"
+    cs = codec_ids(lines)
+    if cs and cs[-1][0] != 28:
+        return False, f"codec after transcode switch = {cs[-1][0]}, expected 28 :: {cs[-1][3].strip()}"
+    return True, f"transcode switch OK :: {rl_t.strip()}"
+
+
+def op_subtitle(lines):
+    for ln in lines:
+        m = RE_SUBCUE.search(ln)
+        if m and m.group(1).strip():
+            return True, f"sub cue rendered :: {ln.strip()}"
+    return False, "no `sub cue [..] \"text\"` line with non-empty text"
+
+
+def op_resume_directplay(lines, offset_s):
+    ts = timeline_secs(lines)
+    if not ts:
+        return False, "no `timeline playing t=` line to check resume position"
+    first_s, ln = ts[0]
+    floor = int(offset_s * 0.6)
+    ok = first_s >= floor
+    return ok, f"first timeline t={first_s}s (want >= {floor}s, offset {offset_s}s) :: {ln.strip()}"
+
+
+def op_resume_transcode(lines, offset_s):
+    hit = None
+    for ln in lines:
+        m = re.search(r"resume\(transcode\): restart at offset (\d+)s", ln)
+        if m:
+            hit = (int(m.group(1)), ln)
+            break
+    if hit is None:
+        return False, "no `resume(transcode): restart at offset <s>s` line"
+    got, ln = hit
+    if abs(got - offset_s) > max(15, offset_s * 0.1):
+        return False, f"resume offset {got}s != expected ~{offset_s}s :: {ln.strip()}"
+    ts = timeline_secs(lines)
+    first_s = ts[0][0] if ts else -1
+    if first_s < int(offset_s * 0.6):
+        return False, f"first timeline t={first_s}s not near offset {offset_s}s"
+    return True, f"transcode resume OK at {got}s; first timeline {first_s}s :: {ln.strip()}"
+
+
+# ---------------------------------------------------------------------------
+# Case execution
+# ---------------------------------------------------------------------------
+def evaluate(case, lines):
+    """Run every assertion for a case. Returns (passed, [(label, ok, evidence)])."""
+    exp = case["expect"]
+    results = []
+
+    # base assertions (every case)
+    results.append(("decision", *a_decision(lines, exp["decision"])))
+    results.append(("codec", *a_codec(lines, exp["codec_id"], exp["min_video_width"])))
+    if exp.get("require_video_bound", True):
+        results.append(("video_bound", *a_video_bound(lines)))
+    results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
+    if exp.get("no_playing_error", True):
+        results.append(("no_error", *a_no_error(lines)))
+
+    # per-operation assertions
+    for op in case["operations"]:
+        k = op["op"]
+        if k == "seek" and op.get("mode") == "inplace":
+            results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
+        elif k == "seek":
+            results.append(("seek_transcode", *op_seek_transcode(lines, op.get("target_s", 140))))
+        elif k == "audio_switch" and op.get("mode") == "native":
+            results.append(("audio_native", *op_audio_native(lines)))
+        elif k == "audio_switch":
+            results.append(("audio_transcode", *op_audio_transcode(lines)))
+        elif k == "subtitle":
+            results.append(("subtitle", *op_subtitle(lines)))
+        elif k == "resume" and op.get("mode") == "transcode":
+            results.append(("resume_transcode", *op_resume_transcode(lines, op.get("offset_s", 600))))
+        elif k == "resume":
+            results.append(("resume_directplay", *op_resume_directplay(lines, op.get("offset_s", 600))))
+
+    passed = all(ok for _, ok, _ in results)
+    return passed, results
+
+
+def run_case(case, cfg, token, verbose):
+    name = case["name"]
+    tv = cfg["tv"]
+    run_secs = case.get("run_secs", 60)
+    print(f"\n=== {name}  (rk={case['rk']}, {case.get('title','')}) ===")
+    print(f"    covers: {', '.join(case.get('covers', []))}")
+
+    # 1. close the app first (so a live timeline_thread can't overwrite the viewOffset)
+    make(["kill", f"TV={tv}"], timeout=40)
+
+    # 2. seed the resume point AFTER the close
+    setup = case.get("setup", {})
+    if "viewOffset_ms" in setup:
+        pms_put_progress(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"],
+                         setup["viewOffset_ms"], token)
+
+    # 3. clear + set triggers
+    files = triggers_for_case(case)
+    apply_triggers(tv, files)
+    shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
+    print(f"    triggers: {shown}")
+
+    # 4. run + fetch log
+    print(f"    make run RUN_SECS={run_secs} ...")
+    try:
+        proc = make(["run", f"TV={tv}", f"RUN_SECS={run_secs}"], timeout=run_secs + 90)
+    except subprocess.TimeoutExpired:
+        print("    FAIL: make run timed out")
+        return False, [("harness", False, "make run timed out")], []
+    lines = filter_log(proc.stdout + "\n" + proc.stderr)
+
+    # 5. evaluate
+    passed, results = evaluate(case, lines)
+    for label, ok, evidence in results:
+        mark = "PASS" if ok else "FAIL"
+        if ok and not verbose:
+            print(f"      [{mark}] {label}")
+        else:
+            print(f"      [{mark}] {label}: {redact(evidence)}")  # never leak the token
+    print(f"    => {'PASS' if passed else 'FAIL'}")
+    return passed, results, lines
+
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+def do_build(tv):
+    print("=== BUILD: cargo zigbuild -> make -> make deploy ===")
+    rust_dir = os.path.join(REPO_ROOT, "rust-modules")
+    env = dict(os.environ)
+    env["PATH"] = os.path.expanduser("~/.cargo/bin") + os.pathsep + env.get("PATH", "")
+    env["RUSTFLAGS"] = "-C target-cpu=cortex-a53 -C target-feature=-neon"
+    cargo = subprocess.run(
+        ["cargo", "+nightly", "zigbuild", "-Z", "build-std=std,panic_unwind",
+         "--release", "--target", "arm-unknown-linux-gnueabi.2.24"],
+        cwd=rust_dir, env=env, timeout=1200)
+    if cargo.returncode != 0:
+        sys.exit("cargo build failed")
+    if make(["all"], timeout=600, capture=False).returncode != 0:
+        sys.exit("make (link) failed")
+    if make(["deploy", f"TV={tv}"], timeout=180, capture=False).returncode != 0:
+        sys.exit("make deploy failed")
+    print("=== BUILD OK ===")
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
+    ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
+    ap.add_argument("--filter", default=None, help="run only cases whose name contains this substring")
+    ap.add_argument("--list", action="store_true", help="list cases and exit")
+    ap.add_argument("--tv", default=None, help="override TV IP (default from manifest)")
+    ap.add_argument("--verbose", action="store_true", help="print evidence for passing assertions too")
+    args = ap.parse_args()
+
+    with open(MANIFEST) as f:
+        manifest = json.load(f)
+    cfg = {
+        "tv": args.tv or manifest.get("tv", "192.168.0.114"),
+        "pms": manifest.get("pms", {"host": "192.168.0.3", "port": 32400}),
+    }
+    cases = manifest["cases"]
+    if args.filter:
+        cases = [c for c in cases if args.filter in c["name"]]
+
+    if args.list:
+        for c in manifest["cases"]:
+            ops = "+".join(o["op"] for o in c["operations"])
+            print(f"{c['name']:32s} rk={c['rk']:<5} {ops:20s} {', '.join(c.get('covers', []))}")
+        return 0
+
+    if not cases:
+        sys.exit(f"no cases match --filter {args.filter!r}")
+
+    token = read_token()  # never printed
+
+    if args.build:
+        do_build(cfg["tv"])
+
+    summary = []
+    for c in cases:
+        try:
+            passed, results, _ = run_case(c, cfg, token, args.verbose)
+        except Exception as e:  # keep the batch going; record the failure
+            print(f"    ERROR running {c['name']}: {e}")
+            passed, results = False, [("harness", False, str(e))]
+        fails = [label for label, ok, _ in results if not ok]
+        summary.append((c["name"], passed, fails))
+
+    # final table
+    print("\n" + "=" * 72)
+    print("SUMMARY")
+    print("=" * 72)
+    npass = sum(1 for _, p, _ in summary if p)
+    for name, passed, fails in summary:
+        mark = "PASS" if passed else "FAIL"
+        detail = "" if passed else "  <- " + ", ".join(fails)
+        print(f"  [{mark}] {name}{detail}")
+    print(f"\n{npass}/{len(summary)} cases passed")
+    return 0 if npass == len(summary) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

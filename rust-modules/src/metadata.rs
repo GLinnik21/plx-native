@@ -71,6 +71,9 @@ pub(crate) struct Detail {
     pub(crate) aired: String,
     pub(crate) dur_ms: i64,
     pub(crate) resume_ms: i64, // viewOffset (0 = not partially watched) — the resume position
+    pub(crate) part: String,   // Media[0].Part[0].key for a leaf (movie/episode); empty for a show
+    pub(crate) vcodec: String, // Media[0].videoCodec (drives the direct-play/transcode decision)
+    pub(crate) acodec: String, // Media[0].audioCodec
     pub(crate) art: String,
     pub(crate) thumb: String,
     pub(crate) genres: Vec<String>,
@@ -146,6 +149,7 @@ fn first_part(item: &Value) -> String {
 fn fetch_detail(host: &str, port: c_int, token: &str, rk: &str) -> Option<Detail> {
     let json = get_json(host, port, &format!("/library/metadata/{rk}?X-Plex-Token={token}"))?;
     let it = meta0(&json)?;
+    let media0 = it.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first());
     let mut d = Detail {
         rk: rk.to_string(),
         is_show: jstr(it.get("type")) == "show",
@@ -158,6 +162,9 @@ fn fetch_detail(host: &str, port: c_int, token: &str, rk: &str) -> Option<Detail
         aired: jstr(it.get("originallyAvailableAt")),
         dur_ms: jint(it.get("duration")),
         resume_ms: jint(it.get("viewOffset")),
+        part: first_part(it), // empty for a show (no Media on the show container)
+        vcodec: media0.map(|m| jstr(m.get("videoCodec"))).unwrap_or_default(),
+        acodec: media0.map(|m| jstr(m.get("audioCodec"))).unwrap_or_default(),
         art: jstr(it.get("art")),
         thumb: jstr(it.get("thumb")),
         genres: tags(it, "Genre"),
