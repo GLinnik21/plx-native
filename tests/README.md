@@ -81,7 +81,7 @@ Base playback (decision + codec + not-stuck), one case each:
 | `hannah_montana_mp4_aac` | 1816 | HEVC + AAC, **mp4 container**, sidecar subs |
 | `phineas_h264_aac` | 72 | H264 + AAC direct-play, TV episode, no subs |
 | `home_alone_manyaudio` | 3 | H264 + AC3 direct-play, 8 audio tracks (DTS/vorbis present) |
-| `toy_story4_av1_transcode` | 1945 | **must-transcode** (AV1 video + no DP audio) → H264/AC3 |
+| `toy_story4_av1_transcode` | 1945 | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 (needs server pref `TranscoderHEVCEncodingMode=always`; else video drops to audio-only) |
 
 Operation cases (each also re-checks not-stuck / no-error afterward):
 
@@ -92,7 +92,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `substance_resume_directplay` | 4 | viewOffset 600s honored — first `timeline` near 600s, not 0 |
 | `toy_story4_resume_transcode` | 1945 | `resume(transcode): restart at offset 600s`, first timeline near 600s |
 | `morning_show_audio_native` | 1804 | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
-| `home_alone_audio_transcode` | 3 | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 28 |
+| `home_alone_audio_transcode` | 3 | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
 | `substance_subtitle_srt` | 4 | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] "text"` lines |
 
 ### Key log signals asserted (filter `smp_cb type=43 num=0 str=$` first)

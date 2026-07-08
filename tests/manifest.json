@@ -190,10 +190,10 @@
       "kind": "movie",
       "title": "Toy Story 4 (AV1)",
       "covers": [
-        "must-transcode",
         "av1-video",
         "no-dp-audio",
-        "anchor"
+        "anchor",
+        "transcode-hevc-4k"
       ],
       "run_secs": 60,
       "operations": [
@@ -203,8 +203,8 @@
       ],
       "expect": {
         "decision": "transcode",
-        "codec_id": 28,
-        "min_video_width": 1900,
+        "codec_id": 174,
+        "min_video_width": 3000,
         "min_timeline_climb_s": 12,
         "no_playing_error": true,
         "require_video_bound": true
@@ -262,8 +262,8 @@
       ],
       "expect": {
         "decision": "transcode",
-        "codec_id": 28,
-        "min_video_width": 1900,
+        "codec_id": 174,
+        "min_video_width": 3000,
         "min_timeline_climb_s": 10,
         "no_playing_error": true,
         "require_video_bound": true
@@ -326,8 +326,8 @@
       ],
       "expect": {
         "decision": "transcode",
-        "codec_id": 28,
-        "min_video_width": 1900,
+        "codec_id": 174,
+        "min_video_width": 3000,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
         "require_video_bound": true

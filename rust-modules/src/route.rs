@@ -202,17 +202,23 @@ unsafe fn set_c(dst: *mut c_char, cap: usize, s: &str) {
 }
 
 /// Capability profile (X-Plex-Client-Profile-Extra, URL-decoded form): direct-play an MKV
-/// whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS, up to 4K — plus the
-/// H264/AC3 transcode fallback target. HEVC direct-plays natively now (Phase 3 demuxer + the
-/// panel decodes it, incl. 4K HDR10 auto-detected from the bitstream).
+/// whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS, up to 4K — plus an
+/// HEVC/AC3 transcode target so a source we can't direct-play (AV1/VP9/…) is re-encoded to
+/// HEVC at native resolution (the panel decodes HEVC 4K natively) instead of downscaled H264
+/// 1080p. NB: the SERVER must have HEVC encoding enabled for non-HEVC sources
+/// (Settings → Transcoder → "Enable HEVC video Encoding = Always"); otherwise PMS drops the
+/// video (audio-only) for an HEVC-only target. The bitDepth=10 upper bound declares 10-bit
+/// support so PMS keeps HDR10 through the transcode (HEVC Main10, BT.2020+PQ in-bitstream) —
+/// the same in-band static HDR10 SEI the direct-play path relies on (ff.rs keeps it).
 fn profile_extra() -> String {
     crate::pms::urlenc_str(
         "add-direct-play-profile(type=videoProfile&container=mkv&videoCodec=h264,hevc\
          &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
+         +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
          +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
-         &container=matroska&videoCodec=h264&audioCodec=ac3)",
+         &container=matroska&videoCodec=hevc&audioCodec=ac3)",
     )
 }
 
@@ -281,7 +287,7 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
     };
     format!(
         "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
-         &directPlay=0&directStream=1&videoResolution=1920x1080&maxVideoBitrate=20000\
+         &directPlay=0&directStream=1&videoResolution=3840x2160&maxVideoBitrate=60000\
          {audio_p}{sub_p}\
          &session={session}&X-Plex-Session-Identifier={session}{id}\
          &X-Plex-Client-Profile-Name=Generic&X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
@@ -477,10 +483,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
             String::new(),
         );
     }
-    // transcode: PMS re-encodes to H264/AC3 in MKV regardless of the source codec, so the
-    // Load payload must be H264/AC3 (NOT the source hevc/eac3).
+    // transcode: PMS re-encodes to HEVC/AC3 in MKV (HEVC target keeps 4K + HDR10; see
+    // profile_extra + the server's "HEVC encoding = Always" pref), so the Load payload must be
+    // H265/AC3 (NOT the source av1/eac3).
     unsafe {
-        *addr_of_mut!(STREAM_VCODEC) = "h264".to_string();
+        *addr_of_mut!(STREAM_VCODEC) = "hevc".to_string();
         *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
     }
     let base = transcode_base(rk, cfg);
@@ -621,9 +628,9 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     unsafe {
         *addr_of_mut!(TBASE) = base.clone();
         *addr_of_mut!(TSESSION) = session;
-        // the transcode output is H264 + AC3 — record it so a pipeline RELOAD (audio switch
-        // from a direct-play HEVC item) builds the H264 Load payload, not the stale H265 one.
-        *addr_of_mut!(STREAM_VCODEC) = "h264".to_string();
+        // the transcode output is HEVC + AC3 — record it so a pipeline RELOAD (audio switch)
+        // builds the H265 Load payload matching the re-encoded stream.
+        *addr_of_mut!(STREAM_VCODEC) = "hevc".to_string();
         *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
     }
     put_selection(cfg); // audio/subtitle selection drives the encode + burn
