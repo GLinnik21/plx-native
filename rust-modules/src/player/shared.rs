@@ -49,6 +49,12 @@ pub(crate) struct Shared {
     // pending audio-track switch: the Plex audioStreamID to switch to (-1 = none). The
     // pump forces a fresh transcode with that source audio at the current position.
     pub pending_audio_sid: AtomicI64,
+    // NATIVE audio-track switch (direct-play, no transcode): the 0-based audio stream index
+    // to feed. `pending` (-1 = none) is consumed by the pump to trigger a reload; `desired`
+    // (-1 = av_find_best_stream) is read by the demuxer to pick the Nth audio stream and
+    // PERSISTS across seeks/reloads (reset only on a new item, not in reset_session).
+    pub pending_audio_idx: AtomicI32,
+    pub desired_audio_idx: AtomicI32,
     // the next re-open is a fresh full stream (a switch from direct-play whose track
     // numbering differs from the transcode output) — re-parse Tracks (mkv_run) not
     // mkv_seek_run. A plain transcode seek leaves this false (same target = same tracks).
@@ -108,6 +114,8 @@ impl Shared {
             seek_to_ns: AtomicI64::new(-1),
             next_url: Mutex::new(None),
             pending_audio_sid: AtomicI64::new(-1),
+            pending_audio_idx: AtomicI32::new(-1),
+            desired_audio_idx: AtomicI32::new(-1),
             reparse_next: AtomicBool::new(false),
             pending_retranscode: AtomicBool::new(false),
             report_stop: AtomicBool::new(false),
@@ -142,6 +150,9 @@ impl Shared {
         self.seek_to_ns.store(-1, Ordering::Relaxed);
         *self.next_url.lock().unwrap() = None;
         self.pending_audio_sid.store(-1, Ordering::Relaxed);
+        self.pending_audio_idx.store(-1, Ordering::Relaxed);
+        // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
+        // native audio-track choice survives seeking. It is reset on a new item (route).
         self.reparse_next.store(false, Ordering::Relaxed);
         self.pending_retranscode.store(false, Ordering::Relaxed);
         self.report_stop.store(false, Ordering::Relaxed);

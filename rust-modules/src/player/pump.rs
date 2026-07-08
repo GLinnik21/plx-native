@@ -19,6 +19,17 @@ pub(crate) fn pump(now: u32) {
     }
     let stream = matches!(eng.source, Source::Stream);
 
+    // ---------- pending NATIVE audio-track switch (direct-play, no transcode): reload
+    // direct-play feeding the chosen audio stream from the same MKV. REPLACES the ENGINE, so
+    // `eng` dangles — return immediately. ----------
+    let nidx = SHARED.pending_audio_idx.swap(-1, Relaxed);
+    if stream && nidx >= 0 && eng.stage >= Stage::Playing {
+        let pos = SHARED.playpos_ns.load(Relaxed).max(0);
+        super::log(&format!("audio switch (native): idx={nidx} at {}s → reload", pos / 1_000_000_000));
+        super::engine::switch_audio_native(nidx, pos);
+        return;
+    }
+
     // ---------- pending audio-track switch OR subtitle-burn refresh: force a fresh transcode
     // (H264/AC3) with the selected audio + subtitle at the CURRENT position, then RELOAD the
     // pipeline. A direct-play item is Loaded for its native codec (e.g. H265); the transcode

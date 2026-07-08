@@ -362,6 +362,17 @@ pub(crate) fn reload_at(target_ns: i64) {
     start_bufferfeed();
 }
 
+/// NATIVE audio-track switch (direct-play, NO transcode): select the Nth audio stream from the
+/// same MKV and reload the direct-play pipeline at the current position (route::stream_acodec
+/// was already set to the chosen track's codec, so the fresh Load configures the right audio
+/// decoder). desired_audio_idx persists across the reload, so the demuxer keeps feeding the
+/// chosen stream and the choice survives later seeks.
+pub(crate) fn switch_audio_native(audio_idx: i32, pos_ns: i64) {
+    SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
+    log(&format!("switch_audio_native: audio_idx={audio_idx} at {}s", pos_ns / 1_000_000_000));
+    reload_at(pos_ns); // fresh direct-play Load at the current position, new audio stream
+}
+
 /// Reload the pipeline for a MODE/CODEC change — an audio-track switch on a direct-play HEVC
 /// item forces a transcode (H264/AC3), so the pipeline must be re-Loaded with the H264 payload
 /// (feeding H264 into the H265-configured pipeline stalls). Unlike reload_at, the transcode

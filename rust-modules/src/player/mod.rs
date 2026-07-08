@@ -22,7 +22,7 @@ static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availabilit
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
-pub(crate) use engine::{acb_init, arm_seek, resume_at, start_bufferfeed, stop_bufferfeed};
+pub(crate) use engine::{acb_init, resume_at, start_bufferfeed, stop_bufferfeed};
 pub(crate) use pump::pump;
 pub(crate) fn pause() {
     unsafe { ffi::sf_pause(); }
@@ -43,6 +43,20 @@ pub(crate) fn request_seek(ns: i64) { TX.seek_to_ns.store(ns, Relaxed) }
 pub(crate) fn request_audio_switch(sid: i64) {
     SHARED.pending_audio_sid.store(sid, Relaxed);
     SHARED.sub_cues.lock().unwrap().clear(); // the fresh transcode carries no embedded subs
+}
+/// request a NATIVE audio-track switch (direct-play, NO transcode): feed the 0-based `audio_idx`
+/// audio stream from the same MKV with codec `codec`. The pump reloads direct-play at the current
+/// position next tick (switch_audio_native). Used when the item direct-plays and the target track
+/// is a direct-playable codec (aac/ac3/eac3).
+pub(crate) fn request_audio_track(audio_idx: i32, codec: &str) {
+    crate::route::set_stream_acodec(codec); // the reload's Load payload uses this audio codec
+    SHARED.pending_audio_idx.store(audio_idx, Relaxed);
+    SHARED.sub_cues.lock().unwrap().clear();
+}
+/// reset to the default (best) audio stream — called on a new item so a prior track choice
+/// does not leak across items (desired_audio_idx persists across seeks, not across items).
+pub(crate) fn reset_audio_track() {
+    SHARED.desired_audio_idx.store(-1, Relaxed);
 }
 /// request a re-transcode at the current position with the CURRENT audio + subtitle —
 /// used when a subtitle is (de)selected while already transcoding, so the server

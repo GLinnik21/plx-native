@@ -132,9 +132,22 @@ pub(crate) fn on_ok() {
         if tab == 0 {
             let changed = addr_of!(ACTIVE_AUDIO).read() != sel;
             addr_of_mut!(ACTIVE_AUDIO).write(sel);
-            // switch the audio track (fresh transcode with the chosen source audio)
             if changed {
-                crate::player::request_audio_switch(audio_stream_id());
+                // NATIVE switch when the item direct-plays AND the target track is a
+                // direct-playable codec (aac/ac3/eac3): just feed the other audio stream from
+                // the same MKV — no transcode, stays 4K HEVC. Else fall back to a server
+                // transcode (item already transcoding, or TrueHD/DTS target).
+                let codec = metadata::current()
+                    .and_then(|d| d.audio.get(sel.max(0) as usize))
+                    .map(|s| s.codec.clone())
+                    .unwrap_or_default();
+                let native = crate::route::transcode_session().is_empty()
+                    && matches!(codec.as_str(), "aac" | "ac3" | "eac3");
+                if native {
+                    crate::player::request_audio_track(sel, &codec);
+                } else {
+                    crate::player::request_audio_switch(audio_stream_id());
+                }
             }
         } else {
             addr_of_mut!(ACTIVE_SUB).write(sel - 1); // row 0 = Off = -1
