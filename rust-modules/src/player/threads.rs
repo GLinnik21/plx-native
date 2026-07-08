@@ -346,5 +346,7 @@ fn push_vtt_cue(cue: crate::webvtt::VttCue) {
     let (s, e) = (cue.start_ns + base, cue.end_ns + base);
     super::log(&format!("subs cue [{}..{}ms] {:?}", s / 1_000_000, e / 1_000_000,
         cue.text.chars().take(34).collect::<String>()));
-    super::push_subtitle_text(s, e, cue.text);
+    // The transcode sidecar only ever fetches the SELECTED track, so tag with the current
+    // desired index; the render filters on it (the store is cleared on a re-point/re-transcode).
+    super::push_subtitle_text(SHARED.desired_sub_idx.load(Ordering::Relaxed), s, e, cue.text);
 }

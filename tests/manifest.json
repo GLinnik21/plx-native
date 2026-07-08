@@ -399,15 +399,15 @@
       "name": "substance_subtitle_srt",
       "rk": "4",
       "kind": "movie",
-      "title": "The Substance (embedded SRT soft-render)",
+      "title": "The Substance (embedded subtitle soft-render, ff.rs demuxer)",
       "covers": [
         "subtitle-srt",
         "soft-render",
-        "mkv-demuxer-only"
+        "ff-demuxer"
       ],
       "run_secs": 90,
       "setup": {
-        "viewOffset_ms": 600000
+        "viewOffset_ms": 843000
       },
       "operations": [
         {
@@ -416,8 +416,7 @@
         {
           "op": "subtitle",
           "tab": 1,
-          "row": 1,
-          "demux": "mkv"
+          "row": 3
         }
       ],
       "expect": {
@@ -427,8 +426,7 @@
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
         "require_video_bound": true
-      },
-      "known_gap": "subtitle rendering exists only in the legacy mkv.rs demuxer (ff.rs, the default, demuxes no subtitles); adding sub-cue support to ff.rs is the real fix (Phase E)"
+      }
     }
   ],
   "library_gaps": {

@@ -430,17 +430,16 @@ fn mkv_unlace(fd: &[u8], lacing: i32, off: &mut [i32], sz: &mut [i32], maxf: usi
 }
 
 // ---- one (Simple)Block -> AU(s) -> queue ----
-/// Matroska track number of the currently-selected subtitle (by desired index), or -1
-unsafe fn active_sub_track(c: *mut MkvCtx) -> i64 {
-    let idx = crate::player::desired_sub_idx();
-    if idx < 0 || idx >= (*c).nsub {
-        return -1;
+/// If `track` is a recorded text-subtitle track, its 0-based subtitle index + ASS flag; else
+/// None. Cues are pushed for EVERY text track (not just the selected one) so a mid-play switch
+/// is instant — the render filters by desired_sub_idx (see active_subtitle).
+unsafe fn sub_index_of(c: *mut MkvCtx, track: i64) -> Option<(i32, bool)> {
+    for i in 0..(*c).nsub {
+        if (*c).strack_nums[i as usize] == track {
+            return Some((i, (*c).strack_ass[i as usize] != 0));
+        }
     }
-    (*c).strack_nums[idx as usize]
-}
-unsafe fn active_sub_ass(c: *mut MkvCtx) -> bool {
-    let idx = crate::player::desired_sub_idx();
-    idx >= 0 && idx < (*c).nsub && (*c).strack_ass[idx as usize] != 0
+    None
 }
 
 /// `bdur` = BlockDuration in tscale units (-1 if none / SimpleBlock).
@@ -474,13 +473,13 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
     p += 1;
 
     // subtitle track -> a text cue for client-side rendering (direct-play only; a
-    // transcoded stream carries no subs). A distinct track from audio/video.
-    let sub_track = active_sub_track(c);
-    if sub_track >= 0 && track == sub_track {
+    // transcoded stream carries no subs). A distinct track from audio/video. Push every text
+    // track (the render selects one); a switch then shows immediately from the buffered cues.
+    if let Some((sidx, is_ass)) = sub_index_of(c, track) {
         let payload = &blk[p as usize..];
         let start = (cluster_ts + rel) * (*c).tscale;
         let end = start + if bdur > 0 { bdur * (*c).tscale } else { 4_000_000_000 };
-        crate::player::push_subtitle_cue(start, end, payload, active_sub_ass(c));
+        crate::player::push_subtitle_cue(sidx, start, end, payload, is_ass);
         return;
     }
 

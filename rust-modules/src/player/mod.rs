@@ -82,45 +82,60 @@ pub(crate) fn request_transcode_refresh() {
 // ---- client-rendered subtitles (direct-play only; a transcode carries no subs) ----
 /// selected subtitle track index (-1 = off); the demuxer reads this per block.
 pub(crate) fn desired_sub_idx() -> i32 { SHARED.desired_sub_idx.load(Relaxed) }
-/// select a subtitle track by index (-1 = off) and drop stale cues.
+/// select a subtitle track by index (-1 = off). Does NOT clear the cue store: the demuxer
+/// pushes cues for EVERY text track regardless of selection, so the buffered region's cues for
+/// the newly-selected track are already present and the switch shows immediately. Clearing here
+/// would reintroduce the ~10-20s buffer-gap delay (the demuxer runs well ahead of the playhead).
+/// A new item / transcode re-point clears the store via reset_session / the pump.
 pub(crate) fn request_subtitle(idx: i32) {
     SHARED.desired_sub_idx.store(idx, Relaxed);
-    SHARED.sub_cues.lock().unwrap().clear();
 }
 /// desired soft-WebVTT subtitle stream id during a transcode (0 = off). The pump
 /// reconciles the subs thread (spawn / re-point / stop) from this.
 pub(crate) fn request_soft_subs(sid: i64) {
     SHARED.subs_want_sid.store(sid, Relaxed);
 }
-/// push a ready (already-clean) subtitle cue into the shared store; keeps the last ~24
-/// (ring buffer). Shared sink for the demux path and the WebVTT-sidecar path.
-pub(crate) fn push_subtitle_text(start_ns: i64, end_ns: i64, text: String) {
+/// push a ready (already-clean) subtitle cue into the shared store, tagged with its 0-based
+/// track index. Shared sink for the demux path (all text tracks) and the WebVTT-sidecar path.
+/// Bounded by TIME rather than a fixed count: since every track is pushed regardless of
+/// selection, drop cues already well behind the playhead and keep a generous forward window
+/// (the demuxer reads ~10-20s ahead). A hard cap guards against a runaway.
+pub(crate) fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: String) {
     if text.is_empty() {
         return;
     }
     let mut cues = SHARED.sub_cues.lock().unwrap();
-    if cues.len() >= 24 {
+    let floor = SHARED.playpos_ns.load(Relaxed) - 2_000_000_000;
+    cues.retain(|c| c.end_ns >= floor);
+    if cues.len() >= 512 {
         cues.remove(0);
     }
-    cues.push(SubCue { start_ns, end_ns, text });
+    cues.push(SubCue { track, start_ns, end_ns, text });
 }
-/// demux (D-thread) pushes a subtitle cue (content-time ns). Keeps the last ~24 cues.
-pub(crate) fn push_subtitle_cue(start_ns: i64, end_ns: i64, payload: &[u8], is_ass: bool) {
+/// demux (D-thread) pushes a subtitle cue (content-time ns) for track `track`. Called for
+/// EVERY text track so a mid-play switch is instant; only the selected track's cues are logged.
+pub(crate) fn push_subtitle_cue(track: i32, start_ns: i64, end_ns: i64, payload: &[u8], is_ass: bool) {
     let text = sub_text(payload, is_ass);
     if text.is_empty() {
         return;
     }
-    log(&format!("sub cue [{}..{}ms] {:?}", start_ns / 1_000_000, end_ns / 1_000_000,
-        text.chars().take(34).collect::<String>()));
-    push_subtitle_text(start_ns, end_ns, text);
+    if track == SHARED.desired_sub_idx.load(Relaxed) {
+        log(&format!("sub cue [{}..{}ms] {:?}", start_ns / 1_000_000, end_ns / 1_000_000,
+            text.chars().take(34).collect::<String>()));
+    }
+    push_subtitle_text(track, start_ns, end_ns, text);
 }
-/// the subtitle text active at `now_ns`, or None (also None when subtitles are off).
+/// the selected track's subtitle text active at `now_ns`, or None (also None when off).
 pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
-    if SHARED.desired_sub_idx.load(Relaxed) < 0 {
+    let sel = SHARED.desired_sub_idx.load(Relaxed);
+    if sel < 0 {
         return None;
     }
     let cues = SHARED.sub_cues.lock().unwrap();
-    cues.iter().rev().find(|c| now_ns >= c.start_ns && now_ns < c.end_ns).map(|c| c.text.clone())
+    cues.iter()
+        .rev()
+        .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
+        .map(|c| c.text.clone())
 }
 /// extract displayable text from a subtitle block (SRT = raw UTF-8; ASS = the field
 /// after the 8th comma), stripping tags/override codes and normalizing line breaks.
