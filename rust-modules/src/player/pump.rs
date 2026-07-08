@@ -79,7 +79,7 @@ pub(crate) fn pump(now: u32) {
         }
         unsafe {
             ffi::sf_flush(); // drop decoded/queued frames
-            ffi::sf_play(); // resume presentation after the flush
+            ffi::sf_pause(); // freeze the clock; feed_stream Plays once PRIME_NS is buffered
         }
         drain_aq(eng);
         if is_transcode {
@@ -127,6 +127,7 @@ pub(crate) fn pump(now: u32) {
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;
         eng.max_fed_pts = 0;
+        eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
         // legacy-mkv seek landing while already Streaming: its plane is bound to frames sf_flush
         // just dropped → "Playing error". Fall back to Bound so the pump re-sends
         // setMediaVideoData once post-seek frames decode. ff keeps the plane (sendSegmentEvent
@@ -149,9 +150,17 @@ pub(crate) fn pump(now: u32) {
     {
         SHARED.load_completed.store(true, Relaxed);
         super::log("SMP loadCompleted");
-        unsafe { ffi::sf_play() };
         eng.stage = Stage::Playing;
-        super::log("SMP Play");
+        // A fresh Load for a seek/resume (rebase_pending) primes before Play so the clock does
+        // not free-run through the demux av_seek reopen gap (fast-forward on resume). Initial
+        // play-from-0 has no such gap — Play immediately.
+        if eng.rebase_pending {
+            eng.prime_play = true;
+            super::log("SMP loadCompleted (priming before Play)");
+        } else {
+            unsafe { ffi::sf_play() };
+            super::log("SMP Play");
+        }
     }
 
     // ---------- ACB bind, Kodi/ss4s order: setSinkType(MAIN)+setMediaId+setState(LOADED) ----------

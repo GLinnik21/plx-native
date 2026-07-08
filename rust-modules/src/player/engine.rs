@@ -54,6 +54,11 @@ pub(crate) struct Engine {
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.
     pub max_fed_pts: i64,      // g_max_fed_pts
+    // prime-then-play: after a seek/resume the pipeline is PAUSED and data is buffered before
+    // Play, so the clock doesn't free-run through the demux reopen / transcode-restart gap (that
+    // gap is what makes video "fast-forward" to catch the audio clock on resume). feed_stream
+    // fires Play once max_fed_pts reaches PRIME_NS.
+    pub prime_play: bool,
     pub aq: Option<Box<AuQueue>>, // g_aq (M owns; ptr handed to D)
     // hs/hs2/payload are RAII: held alive for the workers (which hold raw ptrs into
     // them) and freed only after join — never read back through the field.
@@ -294,6 +299,7 @@ pub(crate) fn start_bufferfeed() -> bool {
         rebase_pending: SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0,
         flushed: false,
         max_fed_pts: 0,
+        prime_play: false,
         aq: aq_box,
         hs,
         hs2,
@@ -544,6 +550,10 @@ pub(crate) fn drain_aq(eng: &mut Engine) {
 /// feed streamed AUs from the demux queue; hold the current AU across ticks on
 /// BufferFull (backpressure); zero-base the fed timeline on the first post-seek
 /// keyframe; drop stale AUs past the B-frame reorder distance.
+/// prime-then-play buffer depth: how much of the post-seek stream to buffer (paused) before
+/// starting the clock. Enough to cover the pipeline's decode latency so the first frame is ready.
+const PRIME_NS: i64 = 700_000_000;
+
 pub(crate) fn feed_stream(eng: &mut Engine) {
     let qp = match eng.aq.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
@@ -603,6 +613,14 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         let r = unsafe { ffi::sf_feed(data, len as u32, fp, es) };
         if fp > eng.max_fed_pts {
             eng.max_fed_pts = fp;
+        }
+        // prime-then-play: once PRIME_NS of the fresh (post-seek/resume) stream is buffered,
+        // start the clock. The pipeline was paused through the reopen gap, so it now presents
+        // from the seek point in A/V sync instead of fast-forwarding to a clock that ran ahead.
+        if eng.prime_play && eng.max_fed_pts >= PRIME_NS {
+            unsafe { ffi::sf_play() };
+            eng.prime_play = false;
+            log(&format!("primed: {}ms buffered -> Play", eng.max_fed_pts / 1_000_000));
         }
         if es == 1 {
             let v = VTOT.fetch_add(1, Ordering::Relaxed) + 1;
