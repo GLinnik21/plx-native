@@ -22,3 +22,7 @@ void _ZN17StarfishMediaAPIs11SetPlayRateEPKc(void) {}
  * (real body in libpf-1.0.so.1, already in scope via libplayerAPIs' DT_NEEDED). */
 void _ZN17StarfishMediaAPIs15setTimeToDecodeEPKc(void) {}
 void _ZN13mediapipeline14CustomPipeline16sendSegmentEventEv(void) {}
+/* webOS<11 in-place-seek fallback (CustomPipeline, real body in libpf-1.0.so.1):
+ * loadSpi_getInfo(MEDIA_CUSTOM_CONTENT_INFO*) + setContentInfo(MEDIA_CUSTOM_SRC_TYPE_T, ci*). */
+void _ZN13mediapipeline14CustomPipeline15loadSpi_getInfoEP25MEDIA_CUSTOM_CONTENT_INFO(void) {}
+void _ZN13mediapipeline14CustomPipeline14setContentInfoE23MEDIA_CUSTOM_SRC_TYPE_TP25MEDIA_CUSTOM_CONTENT_INFO(void) {}

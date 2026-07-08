@@ -13,6 +13,7 @@ extern "C" {
     pub(crate) fn sf_flush() -> c_int;
     pub(crate) fn sf_set_playtime(t: i64);
     pub(crate) fn sf_set_time_to_decode(position_ns: i64) -> c_int;
+    pub(crate) fn sf_set_content_info(position_ns: i64) -> c_int;
     pub(crate) fn sf_send_segment() -> c_int;
     pub(crate) fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char;
     pub(crate) fn sf_unload();
