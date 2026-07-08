@@ -323,6 +323,25 @@ pub(crate) fn arm_seek(target_ns: i64) {
     SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
 }
 
+/// Resume/seek AT the first Load. A direct-play item seeks the demuxer (av_seek via arm_seek).
+/// A TRANSCODE item's stream is 0-based and NOT seekable (no byte-index, Content-Length=-1), so
+/// av_seek fails — instead restart the encode at `&offset=secs` (transcode_seek) and display
+/// content time via disp_base. Call BEFORE start_bufferfeed, AFTER route::play_movie has run the
+/// decision (so transcode_session/TBASE are set). Used for viewOffset resume.
+pub(crate) fn resume_at(resume_ns: i64) {
+    if resume_ns <= 0 {
+        return;
+    }
+    if crate::route::transcode_session().is_empty() {
+        arm_seek(resume_ns); // direct-play: av_seek the file at the first open
+    } else if crate::route::transcode_seek(resume_ns / 1_000_000_000).is_some() {
+        // transcode: the encode restarts at &offset (0-based); disp_base carries the offset
+        SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
+        SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
+        log(&format!("resume(transcode): restart at offset {}s", resume_ns / 1_000_000_000));
+    }
+}
+
 /// Direct-play seek = tear down the pipeline and start a FRESH Load at `target_ns`. The old
 /// flush()+refeed path left a STALE GStreamer segment (decompiled ground truth: the no-arg
 /// StarfishMediaAPIs::flush() → CustomPipeline::flush() is a degenerate gst_element_seek to

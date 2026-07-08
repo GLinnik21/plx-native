@@ -22,7 +22,7 @@ static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availabilit
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
-pub(crate) use engine::{acb_init, arm_seek, start_bufferfeed, stop_bufferfeed};
+pub(crate) use engine::{acb_init, arm_seek, resume_at, start_bufferfeed, stop_bufferfeed};
 pub(crate) use pump::pump;
 pub(crate) fn pause() {
     unsafe { ffi::sf_pause(); }
