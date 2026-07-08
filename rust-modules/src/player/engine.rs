@@ -556,6 +556,13 @@ pub(crate) fn drain_aq(eng: &mut Engine) {
 /// prime-then-play buffer depth: how much of the post-seek stream to buffer (paused) before
 /// starting the clock. Enough to cover the pipeline's decode latency so the first frame is ready.
 const PRIME_NS: i64 = 700_000_000;
+// Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
+// position (SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
+// ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
+// clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
+// ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
+const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
+const AUDIO_SLACK_NS: i64 = 2_000_000_000;
 
 pub(crate) fn feed_stream(eng: &mut Engine) {
     let qp = match eng.aq.as_mut() {
@@ -564,9 +571,8 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
     };
     let mut fed = 0;
     while fed < 120 {
-        // NB: Kodi paces the feed to ~1.6s ahead of the presented position (SHARED.pres_fed),
-        // but that needs the two-lane audio/video split first — a single combined max_fed_pts
-        // is audio-dominated and starves video. Greedy-to-BufferFull for now (task: two-lane feed).
+        // Feed each AU, throttled to ~MAX_FEED_AHEAD_NS ahead of the presented position per lane
+        // (see the throttle below) rather than greedily to BufferFull.
         if eng.pending.is_none() {
             let mut eof: c_int = 0;
             let n = crate::aq::aq_pop(qp, &mut eof);
@@ -619,6 +625,17 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         }
         if fp < 0 {
             fp = 0;
+        }
+        // Feed-ahead throttle: don't feed an AU that's already more than its lane's budget ahead
+        // of the presented position — keep it pending and retry once the pipeline presents more.
+        // Skipped while priming (feed freely to reach PRIME_NS before Play). The FIFO is pts-
+        // ordered, so if the head is over budget everything behind it is too; breaking is correct.
+        if !eng.prime_play {
+            let pres = SHARED.pres_fed.load(Ordering::Relaxed);
+            let budget = if es == 1 { MAX_FEED_AHEAD_NS } else { MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS };
+            if fp - pres > budget {
+                break;
+            }
         }
         let r = unsafe { ffi::sf_feed(data, len as u32, fp, es) };
         if fp > eng.max_fed_pts {
