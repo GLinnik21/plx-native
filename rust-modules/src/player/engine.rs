@@ -54,6 +54,8 @@ pub(crate) struct Engine {
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.
     pub max_fed_pts: i64,      // g_max_fed_pts
+    pub seek_base_pts: i64,    // fed pts of the first post-seek keyframe (prime measures buffer
+    // depth as max_fed_pts - seek_base_pts, since the in-place seek feeds REAL pts, not 0-based)
     // prime-then-play: after a seek/resume the pipeline is PAUSED and data is buffered before
     // Play, so the clock doesn't free-run through the demux reopen / transcode-restart gap (that
     // gap is what makes video "fast-forward" to catch the audio clock on resume). feed_stream
@@ -299,6 +301,7 @@ pub(crate) fn start_bufferfeed() -> bool {
         rebase_pending: SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0,
         flushed: false,
         max_fed_pts: 0,
+        seek_base_pts: 0,
         prime_play: false,
         aq: aq_box,
         hs,
@@ -583,9 +586,15 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
                     // pts_shift=0 → playpos = presented real pts = content time.
                     SHARED.pts_shift.store(0, Ordering::Relaxed);
                     let ok = unsafe { ffi::sf_set_time_to_decode(pts) };
+                    // setTimeToDecode returns 0 on webOS<11 (it needs PausedState); fall back to
+                    // the content-info path (loadSpi_getInfo + setContentInfo(ptsToDecode)), which
+                    // re-anchors the decode position while Playing. Then always inject the fresh
+                    // GStreamer SEGMENT so the sink re-bases instead of stalling.
+                    let ci = if ok == 0 { unsafe { ffi::sf_set_content_info(pts) } } else { 1 };
                     let seg = unsafe { ffi::sf_send_segment() };
-                    log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} sendSegment={seg}"));
+                    log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} setContentInfo={ci} sendSegment={seg}"));
                     if seg == 0 {
+                        // pipeline not reachable — future seeks fall back to reload-per-seek
                         super::INPLACE_SEEK_OK.store(false, Ordering::Relaxed);
                     }
                     eng.flushed = false;
@@ -595,6 +604,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
                     SHARED.pts_shift.store(-pts, Ordering::Relaxed);
                 }
                 eng.rebase_pending = false;
+                eng.seek_base_pts = pts + SHARED.pts_shift.load(Ordering::Relaxed); // fed-pts base
                 log(&format!("rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
                     SHARED.pts_shift.load(Ordering::Relaxed)));
             } else {
@@ -617,10 +627,10 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         // prime-then-play: once PRIME_NS of the fresh (post-seek/resume) stream is buffered,
         // start the clock. The pipeline was paused through the reopen gap, so it now presents
         // from the seek point in A/V sync instead of fast-forwarding to a clock that ran ahead.
-        if eng.prime_play && eng.max_fed_pts >= PRIME_NS {
+        if eng.prime_play && eng.max_fed_pts - eng.seek_base_pts >= PRIME_NS {
             unsafe { ffi::sf_play() };
             eng.prime_play = false;
-            log(&format!("primed: {}ms buffered -> Play", eng.max_fed_pts / 1_000_000));
+            log(&format!("primed: {}ms buffered -> Play", (eng.max_fed_pts - eng.seek_base_pts) / 1_000_000));
         }
         if es == 1 {
             let v = VTOT.fetch_add(1, Ordering::Relaxed) + 1;

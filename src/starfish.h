@@ -18,7 +18,8 @@ int  sf_play(void);
 int  sf_pause(void);
 int  sf_flush(void);
 void sf_set_playtime(long long t);
-int  sf_set_time_to_decode(long long position_ns); /* Kodi in-place seek: setTimeToDecode */
+int  sf_set_time_to_decode(long long position_ns); /* Kodi in-place seek: setTimeToDecode (returns 0 on webOS<11) */
+int  sf_set_content_info(long long position_ns);   /* webOS<11 in-place seek: loadSpi_getInfo + setContentInfo(ptsToDecode); 0 = pipeline not reachable */
 int  sf_send_segment(void);                        /* Kodi in-place seek: CustomPipeline::sendSegmentEvent; 0 = pipeline not reachable */
 char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData); /* 'O'/'B'/'e' */
 void sf_unload(void);                /* Unload the pipeline */

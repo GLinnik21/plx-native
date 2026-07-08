@@ -53,6 +53,19 @@ extern int  SMP_setTimeToDecode(void *self, const char *json)
     __asm__("_ZN17StarfishMediaAPIs15setTimeToDecodeEPKc");
 extern void CP_sendSegmentEvent(void *pipeline)
     __asm__("_ZN13mediapipeline14CustomPipeline16sendSegmentEventEv");
+/* webOS<11 in-place-seek fallback (the path the official app / Kodi use): set the pipeline's
+ * decode PTS through its MEDIA_CUSTOM_CONTENT_INFO. loadSpi_getInfo(ci) fills the whole 312-byte
+ * struct from current state (it internally memsets 0x138 + repopulates via config_contentinfo);
+ * we then overwrite only ptsToDecode (int64 @ +0x28) and setContentInfo() memcpy's it back into
+ * the running pipeline. Both are CustomPipeline methods → `this` = the pipeline ptr. Verified by
+ * decompile of libpf-1.0.so.1: struct size 0x138, ptsToDecode @ 0x28, SRC_TYPE_ES = 7. */
+extern int  CP_loadSpi_getInfo(void *pipeline, void *ci)
+    __asm__("_ZN13mediapipeline14CustomPipeline15loadSpi_getInfoEP25MEDIA_CUSTOM_CONTENT_INFO");
+extern void CP_setContentInfo(void *pipeline, int srcType, void *ci)
+    __asm__("_ZN13mediapipeline14CustomPipeline14setContentInfoE23MEDIA_CUSTOM_SRC_TYPE_TP25MEDIA_CUSTOM_CONTENT_INFO");
+#define MEDIA_CUSTOM_SRC_TYPE_ES 7   /* MEDIA_CUSTOM_SRC_TYPE_T::ES (verified) */
+#define CI_SIZE      0x138           /* sizeof(MEDIA_CUSTOM_CONTENT_INFO_T) = 312 (verified) */
+#define CI_PTS_OFF   0x28            /* int64 ptsToDecode offset (verified 3 ways) */
 
 static unsigned char g_smp[65536] __attribute__((aligned(16)));
 static int  g_smp_ready = 0;
@@ -107,6 +120,24 @@ int sf_send_segment(void) {
     if (elogf) { fprintf(elogf, "sendSegment: pipeline=%p\n", p); fflush(elogf); }
     if (!p) return 0;
     CP_sendSegmentEvent(p);
+    return 1;
+}
+
+/* webOS<11 in-place seek: the fallback for when setTimeToDecode returns 0 (which it does on
+ * this build — it dispatches to CustomPlayer::setTimeToDecodeSpi, which only succeeds while the
+ * pipeline is in PausedState). Over-allocated struct (real size 0x138; the app never sees the
+ * layout — libpf owns it). Call on the first post-flush keyframe, BEFORE sf_send_segment().
+ * Returns 0 only if the pipeline ptr isn't reachable. */
+static unsigned char g_ci[1024] __attribute__((aligned(16)));
+int sf_set_content_info(long long position_ns) {
+    void *p = sf_pipeline();
+    if (!p) return 0;
+    memset(g_ci, 0, sizeof g_ci);
+    CP_loadSpi_getInfo(p, g_ci);                       /* fill current content info */
+    *(long long *)(g_ci + CI_PTS_OFF) = position_ns;   /* override ptsToDecode (ns) */
+    CP_setContentInfo(p, MEDIA_CUSTOM_SRC_TYPE_ES, g_ci);
+    if (elogf) { fprintf(elogf, "setContentInfo: pts=%lld ES=%d\n",
+                         position_ns, MEDIA_CUSTOM_SRC_TYPE_ES); fflush(elogf); }
     return 1;
 }
 
