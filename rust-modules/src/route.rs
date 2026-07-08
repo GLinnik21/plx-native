@@ -489,18 +489,36 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     (url, session)
 }
 
-/// Pick the audio track to DIRECT-PLAY for `rk`: the default if it's direct-playable, else the
-/// first other direct-playable track (aac/ac3/eac3) in the file — else None (no DP audio → must
-/// transcode). Only fetches the track list when the default isn't DP (the TrueHD/DTS case), so
-/// the common path adds no round-trip. Returns (audio_idx, codec): idx -1 = default/best track,
-/// else the 0-based audio-stream index for the demuxer (desired_audio_idx / nth_audio_stream).
+/// Preferred audio language (ISO-639 code). Content is often authored with a foreign default
+/// dub (e.g. The Office ships a Russian "kubik" track flagged default); we prefer the English
+/// track when the item has one, rather than following the file's default flag.
+const PREF_AUDIO_LANG: &str = "eng";
+
+/// Pick the audio track to DIRECT-PLAY for `rk`, returning (audio_idx, codec): idx -1 = the
+/// codec-default track (demuxer default via audio_stream_matching), else the 0-based audio-stream
+/// index (desired_audio_idx / nth_audio_stream). Order of preference:
+///   1. a direct-playable track in PREF_AUDIO_LANG (English), so English shows don't open in a
+///      foreign default dub — the Load payload uses THAT track's codec so there is no mismatch;
+///   2. the file's default track, if its codec is direct-playable;
+///   3. any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling — smart-DP).
+/// None when NO audio track is direct-playable (→ transcode). Fetches the track list once.
 fn pick_dp_audio(rk: &str, default_acodec: &str, cfg: &Cfg) -> Option<(i32, String)> {
     let dp = |c: &str| matches!(c, "aac" | "ac3" | "eac3");
+    let tracks = crate::metadata::audio_tracks(&cfg.host, cfg.port, &cfg.token, rk);
+    if tracks.is_empty() {
+        // no track info — fall back to the codec-default (or transcode if that isn't DP)
+        return if dp(default_acodec) { Some((-1, default_acodec.to_string())) } else { None };
+    }
+    // 1. preferred-language, direct-playable
+    if let Some(i) = tracks.iter().position(|(c, l)| dp(c) && l == PREF_AUDIO_LANG) {
+        return Some((i as i32, tracks[i].0.clone()));
+    }
+    // 2. the file/Plex default track (its codec = default_acodec), if direct-playable
     if dp(default_acodec) {
         return Some((-1, default_acodec.to_string()));
     }
-    let codecs = crate::metadata::audio_codecs(&cfg.host, cfg.port, &cfg.token, rk);
-    codecs.iter().position(|c| dp(c)).map(|i| (i as i32, codecs[i].clone()))
+    // 3. any direct-playable track (smart direct-play over a non-DP default)
+    tracks.iter().position(|(c, _)| dp(c)).map(|i| (i as i32, tracks[i].0.clone()))
 }
 
 /// Extract the numeric Part id from a Plex part key (/library/parts/{id}/…/file.mkv).

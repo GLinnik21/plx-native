@@ -227,10 +227,11 @@ fn parse_streams(item: &Value, d: &mut Detail) {
     }
 }
 
-/// The audio-track codecs of `rk` in FILE order (lowercase, e.g. ["truehd","ac3"]). Empty on
-/// any fetch/parse failure. Used by the route decision to find a direct-playable audio track
-/// when the default one isn't (so a TrueHD-default item with an AC3 track still direct-plays).
-pub(crate) fn audio_codecs(host: &str, port: c_int, token: &str, rk: &str) -> Vec<String> {
+/// The audio tracks of `rk` in FILE order as (codec, languageCode) lowercase pairs, e.g.
+/// [("ac3","rus"),("eac3","eng")]. Empty on any fetch/parse failure. Used by the route decision
+/// to pick a direct-playable track — preferring a language (English) over the file's default —
+/// and to fall back to a direct-playable sibling when the default codec isn't (TrueHD default).
+pub(crate) fn audio_tracks(host: &str, port: c_int, token: &str, rk: &str) -> Vec<(String, String)> {
     let json = match get_json(host, port, &format!("/library/metadata/{rk}?X-Plex-Token={token}")) {
         Some(j) => j,
         None => return Vec::new(),
@@ -250,7 +251,7 @@ pub(crate) fn audio_codecs(host: &str, port: c_int, token: &str, rk: &str) -> Ve
         Some(streams) => streams
             .iter()
             .filter(|s| jint(s.get("streamType")) == 2)
-            .map(|s| jstr(s.get("codec")).to_lowercase())
+            .map(|s| (jstr(s.get("codec")).to_lowercase(), jstr(s.get("languageCode")).to_lowercase()))
             .collect(),
         None => Vec::new(),
     }
