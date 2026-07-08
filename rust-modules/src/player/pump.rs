@@ -68,15 +68,17 @@ pub(crate) fn pump(now: u32) {
         // see engine::reload_at). A fresh Load re-establishes a correct segment — the
         // known-good fresh-play path. reload_at REPLACES the ENGINE, so `eng` dangles after
         // it: return immediately and let the next pump() tick drive the fresh engine.
-        if !is_transcode && crate::ff::use_ff() {
+        // Direct-play (ff): Kodi IN-PLACE seek — flush + reopen the demuxer + av_seek, and
+        // (in feed_stream, on the first post-flush keyframe) setTimeToDecode + sendSegmentEvent
+        // to re-anchor the GStreamer segment WITHOUT a reload/decoder re-init (no A/V-resync
+        // glitch). Falls back to reload-per-seek if the pipeline isn't reachable
+        // (INPLACE_SEEK_OK cleared by feed_stream when sendSegmentEvent can't find it).
+        if !is_transcode && crate::ff::use_ff() && !super::INPLACE_SEEK_OK.load(Relaxed) {
             super::engine::reload_at(t);
             return;
         }
-        // TRANSCODE + legacy-mkv seeks keep the flush+refeed model (a transcode restart feeds
-        // a fresh 0-based start.mkv; mkv is the fallback demuxer).
         unsafe {
-            ffi::sf_flush(); // drop decoded/queued frames; resets the clock to ~0
-            ffi::sf_set_playtime(0);
+            ffi::sf_flush(); // drop decoded/queued frames
             ffi::sf_play(); // resume presentation after the flush
         }
         drain_aq(eng);
@@ -96,6 +98,17 @@ pub(crate) fn pump(now: u32) {
                 }
                 None => super::log("seek(transcode): rebuild failed"),
             }
+        } else if crate::ff::use_ff() {
+            // in-place ff direct-play seek: reopen the AVFormatContext on the same part URL +
+            // av_seek to t (the demux outer loop reopens on next_url/seek_byte, av_seeks on
+            // seek_to_ns). eng.flushed → feed_stream fires setTimeToDecode+sendSegmentEvent on
+            // the first post-seek keyframe. disp_base=0 (rebase to the landed keyframe).
+            eng.flushed = true;
+            *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
+            SHARED.seek_byte.store(0, Release); // reopen trigger
+            SHARED.seek_to_ns.store(t, Release); // post-reopen av_seek target
+            SHARED.disp_base.store(0, Relaxed);
+            super::log(&format!("seek(ff in-place): reopen+seek t={t}"));
         } else {
             // legacy-mkv direct-play seek: byte-Range reopen at the Cue offset (fallback demuxer)
             let dur = SHARED.duration_ns.load(Relaxed);
@@ -114,11 +127,11 @@ pub(crate) fn pump(now: u32) {
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;
         eng.max_fed_pts = 0;
-        // legacy-mkv seek landing while already Streaming: its plane is bound to frames
-        // sf_flush just dropped → "Playing error". Fall back to Bound + clear video_info_sent
-        // so the pump re-sends setMediaVideoData once post-seek frames decode. (ff reloads
-        // instead of reaching here; transcode reloads via next_url.)
-        if !is_transcode && eng.stage > Stage::Bound {
+        // legacy-mkv seek landing while already Streaming: its plane is bound to frames sf_flush
+        // just dropped → "Playing error". Fall back to Bound so the pump re-sends
+        // setMediaVideoData once post-seek frames decode. ff keeps the plane (sendSegmentEvent
+        // re-anchors it, no rebind); transcode reloads via next_url.
+        if !is_transcode && !crate::ff::use_ff() && eng.stage > Stage::Bound {
             eng.stage = Stage::Bound;
             eng.video_info_sent = false;
         }

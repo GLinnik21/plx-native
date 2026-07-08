@@ -47,6 +47,12 @@ extern int  SMP_isLoadCompleted(void *self) __asm__("_ZN17StarfishMediaAPIs15isL
 extern int  SMP_Pause(void *self) __asm__("_ZN17StarfishMediaAPIs5PauseEv");
 extern void SMP_setCurrentPlaytime(void *self, long long t) __asm__("_ZN17StarfishMediaAPIs18setCurrentPlaytimeEx");
 extern int  SMP_flush(void *self) __asm__("_ZN17StarfishMediaAPIs5flushEv");
+/* Kodi in-place seek: setTimeToDecode(JSON {"position":<ns>}) + the CustomPipeline's
+ * sendSegmentEvent() (called ON the pipeline pointer, reached from the object below). */
+extern int  SMP_setTimeToDecode(void *self, const char *json)
+    __asm__("_ZN17StarfishMediaAPIs15setTimeToDecodeEPKc");
+extern void CP_sendSegmentEvent(void *pipeline)
+    __asm__("_ZN13mediapipeline14CustomPipeline16sendSegmentEventEv");
 
 static unsigned char g_smp[65536] __attribute__((aligned(16)));
 static int  g_smp_ready = 0;
@@ -74,6 +80,35 @@ int  sf_flush(void)               { return g_smp_ready ? SMP_flush(g_smp) : 0; }
 void sf_set_playtime(long long t) { if (g_smp_ready) SMP_setCurrentPlaytime(g_smp, t); }
 void sf_unload(void)              { if (g_smp_ready) SMP_Unload(g_smp); }
 void sf_destroy(void)             { if (g_smp_ready) { SMP_dtor(g_smp); g_smp_ready = 0; } }
+
+/* The CustomPipeline* reached from our object (VERIFIED by decompile: StarfishMediaAPIs::
+ * player is a shared_ptr _M_ptr at g_smp+0x4c; AbstractPlayer::pipeline _M_ptr at player+0x4;
+ * Pipeline is CustomPipeline's primary base so the ptr is usable as `this`). player@0x4c is
+ * populated on our uid=NULL object — sf_play/sf_flush already dispatch through it. */
+static void *sf_pipeline(void) {
+    if (!g_smp_ready) return 0;
+    void *player = *(void **)((unsigned char *)g_smp + 0x4c);
+    if (!player) return 0;
+    return *(void **)((unsigned char *)player + 0x04);
+}
+
+/* Kodi in-place seek, on the first video AU after flush(): tell the pipeline the new decode
+ * timestamp, then inject a fresh GStreamer SEGMENT (the step a bare flush() omits — its
+ * absence is the stale-segment stall the reload path works around). position_ns = the fed
+ * (0-based rebased) PTS of that first frame. */
+int sf_set_time_to_decode(long long position_ns) {
+    if (!g_smp_ready) return 0;
+    char j[64];
+    snprintf(j, sizeof j, "{\"position\":%lld}", position_ns);
+    return SMP_setTimeToDecode(g_smp, j);
+}
+int sf_send_segment(void) {
+    void *p = sf_pipeline();
+    if (elogf) { fprintf(elogf, "sendSegment: pipeline=%p\n", p); fflush(elogf); }
+    if (!p) return 0;
+    CP_sendSegmentEvent(p);
+    return 1;
+}
 
 /* Feed one AU; hides the sret std::string (SSO char* at offset 0). 'O'/'B'/'e'. */
 char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
