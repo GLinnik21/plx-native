@@ -441,13 +441,18 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
     let video_dp = matches!(vcodec, "h264" | "hevc");
     let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(rk, acodec, cfg) };
-    let directplay = if video_dp && audio_sel.is_some() {
+    let directplay = if !video_dp {
+        // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265.
+        // Anything else (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's
+        // /decision says directplay (it adjudicates the panel's decoders, not our payload). This
+        // gate is why the local sample path (rk empty) is the only other non-transcode case.
+        false
+    } else if audio_sel.is_some() {
         true
     } else if rk.is_empty() {
         false
     } else {
-        server_decision(rk, cfg)
-            .unwrap_or_else(|| video_dp && matches!(acodec, "aac" | "ac3" | "eac3"))
+        server_decision(rk, cfg).unwrap_or_else(|| matches!(acodec, "aac" | "ac3" | "eac3"))
     };
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
