@@ -93,7 +93,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `toy_story4_resume_transcode` | 1945 | `resume(transcode): restart at offset 600s`, first timeline near 600s |
 | `morning_show_audio_native` | 1804 | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
 | `home_alone_audio_transcode` | 3 | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 28 |
-| `substance_subtitle_srt` | 4 | embedded SRT soft-render — `sub cue [..] "text"` lines (see mkv-demuxer note) |
+| `substance_subtitle_srt` | 4 | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] "text"` lines |
 
 ### Key log signals asserted (filter `smp_cb type=43 num=0 str=$` first)
 
@@ -121,24 +121,26 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 - **Unicode arrows** in some log lines (`setMediaVideoData sent → …`, `→ reload`) are matched
   on their stable ASCII prefix.
 
-## The subtitle case uses the legacy MKV demuxer (important)
+## Subtitle soft-render (now on the default demuxer)
 
-Only the legacy `mkv.rs` demuxer emits `sub cue [..]` lines (it renders soft subtitles from
-the MKV subtitle track, gated on `desired_sub_idx`). The **default libavformat demuxer does
-not demux subtitles**, so a subtitle soft-render test must force `/tmp/poc-demux=mkv` — which
-the `subtitle` op does automatically. `mkv.rs` is **H264-only**, so the subtitle case targets an
-H264 item (`The Substance`, rk 4) and seeds a `viewOffset` so playback lands in a dialogue-rich
-region and cues appear within the run window. (For a transcode item, soft subs ride a WebVTT
-sidecar, which per project memory delivers 0 bytes on this pipeline — direct-play is the only
-reliable sub path, hence this design.)
+The **default libavformat demuxer (`ff.rs`) now demuxes embedded text subtitles** (SRT/subrip,
+ASS/SSA, mov_text) and emits `sub cue [..] "text"` lines, so the subtitle case runs on the
+default path — no `poc-demux=mkv` forcing. It pushes cues for **all** text tracks (tagged by
+index) and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
+instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are skipped — client rendering
+can't rasterize a bitmap overlay; the webOS pipeline's own subtitle engine is only reachable in
+its URI/demuxer playback mode, not our in-process buffer-feed (see project memory).
 
-**This case is tagged `known_gap` (reported as `XFAIL`, not `FAIL`).** Subtitle rendering lives
-only in the legacy `mkv.rs` demuxer, which is H264-only and slated for removal (Phase E). The
-default libavformat path emits no subtitle cues at all, so subtitles are effectively unsupported
-on the codecs (HEVC/4K) most content uses. The real fix is **adding subtitle-cue support to
-`ff.rs`**; until then this case documents the gap rather than failing the suite. A `known_gap`
-case that fails is `XFAIL` (expected) and does not affect the exit code; if it ever passes it is
-reported `XPASS` (time to drop the tag).
+The case targets `The Substance` (rk 4) — the local copy is Russian-dubbed with four text
+tracks `[RU-forced, RU, EN, EN-SDH]`, so it picks **row 3 = the English track** (row 0 is Off;
+`desired_sub_idx = row − 1`) and seeds a `viewOffset` of 843 s so playback lands in the dense
+opening monologue and cues appear within the run window. (For a transcode item, soft subs ride a
+WebVTT sidecar, which per project memory delivers 0 bytes on this pipeline — direct-play is the
+only reliable sub path.)
+
+To regression-test the legacy `mkv.rs` demuxer specifically, a case may still set `"demux":
+"mkv"` on its `subtitle` op (H264-only). It's optional now that the default path covers subtitles
+on HEVC/mp4 too.
 
 ## Adding a case
 

@@ -133,9 +133,10 @@ def triggers_for_case(case):
         elif kind == "subtitle":
             files.append(("poc-menupick", f'{op["tab"]},{op["row"]}'))
             if op.get("demux") == "mkv":
-                # ONLY the legacy mkv.rs demuxer emits `sub cue [..]` lines (libavformat
-                # doesn't demux subtitles). mkv.rs is H264-only, so subtitle cases target
-                # an H264 item.
+                # Optional: force the legacy mkv.rs demuxer (H264-only) to regression-test that
+                # path specifically. The DEFAULT libavformat demuxer (ff.rs) now emits `sub cue
+                # [..]` lines too, so subtitle cases no longer need this — omit `demux` to run on
+                # the default and cover HEVC/mp4 as well.
                 files.append(("poc-demux", "mkv"))
         # "play" and "resume" need no extra trigger (resume rides the seeded viewOffset).
     return files

@@ -270,6 +270,30 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
     None
 }
 
+/// How a subtitle stream's payload turns into displayable text — classified by the codec's
+/// name (avcodec_get_name is already linked, so we avoid hardcoding the n3.3 subtitle codec-id
+/// block, which the ABI probe never verified). Bitmap subs (PGS/VobSub/DVB/teletext) carry no
+/// text and can't be client-rendered, but still occupy their file-order slot so the track
+/// menu's desired_sub_idx stays aligned with the metadata subs list.
+#[derive(Clone, Copy, PartialEq)]
+enum SubKind {
+    Plain,   // SRT / subrip / text / webvtt: packet payload is UTF-8 text
+    Ass,     // ASS / SSA: dialogue line; text is the field after the 8th comma
+    MovText, // mp4 tx3g: 2-byte big-endian text-length prefix, then UTF-8 text
+    Bitmap,  // PGS / VobSub / DVB / teletext: image subtitle, not renderable here
+}
+
+unsafe fn sub_kind(codec_id: c_int) -> SubKind {
+    let name = std::ffi::CStr::from_ptr(avcodec_get_name(codec_id)).to_string_lossy();
+    match name.as_ref() {
+        "ass" | "ssa" => SubKind::Ass,
+        "mov_text" => SubKind::MovText,
+        "subrip" | "srt" | "text" | "webvtt" | "vplayer" | "pjs" | "jacosub" | "microdvd"
+        | "sami" | "realtext" | "subviewer" | "subviewer1" | "stl" | "mpl2" => SubKind::Plain,
+        _ => SubKind::Bitmap,
+    }
+}
+
 static REGISTER: Once = Once::new();
 fn ensure_registered() {
     REGISTER.call_once(|| unsafe {
@@ -770,6 +794,38 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 SHARED.duration_ns.load(Ordering::Relaxed)
             ));
 
+            // Client-rendered subtitles (direct-play only): enumerate subtitle streams in FILE
+            // order so their 0-based position maps 1:1 to the track menu's desired_sub_idx (which
+            // indexes metadata d.subs, i.e. every streamType==3 stream in document order). The
+            // selected track is read LIVE in the loop below, so switching subtitles mid-play takes
+            // effect with no reopen (parity with mkv.rs's active_sub_track).
+            let mut sub_streams: Vec<(c_int, SubKind)> = Vec::new();
+            for i in 0..(*fmt).nb_streams {
+                let cp = stream_codecpar(*streams.add(i as usize));
+                if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
+                    sub_streams.push((i as c_int, sub_kind((*cp).codec_id)));
+                }
+            }
+            if !sub_streams.is_empty() {
+                let desc: Vec<String> = sub_streams
+                    .iter()
+                    .map(|(si, k)| {
+                        let kn = match k {
+                            SubKind::Ass => "ass",
+                            SubKind::MovText => "mov_text",
+                            SubKind::Plain => "text",
+                            SubKind::Bitmap => "image",
+                        };
+                        format!("#{si}:{kn}")
+                    })
+                    .collect();
+                crate::player::log(&format!(
+                    "ff: sub tracks=[{}] selected={}",
+                    desc.join(","),
+                    crate::player::desired_sub_idx()
+                ));
+            }
+
             // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
             // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
             // parameter sets on this 3.3 build (it leaves the keyframe starting with SEI), so we
@@ -848,6 +904,43 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                     let ast = *streams.add(ai as usize);
                     let pts = pts_ns(pkt, ast);
                     crate::aq::aq_push(aq_p, (*pkt).data, (*pkt).size, pts, 1, 2);
+                    av_packet_unref(pkt);
+                } else if let Some(sub_pos) = sub_streams.iter().position(|(sidx, _)| *sidx == si) {
+                    // Subtitle packet. Push a cue for EVERY text track (tagged with its file-order
+                    // index), NOT just the selected one, so a mid-play track switch is instant —
+                    // the render filters by desired_sub_idx (active_subtitle). Pushing only the
+                    // selected track leaves the buffered ~10-20s (the demuxer reads well ahead of
+                    // the playhead) cue-less after a switch. Subtitles carry no ES → never fed to
+                    // the pipeline. end_ns is pkt.duration; text subs without one fall back to +4s.
+                    let kind = sub_streams[sub_pos].1;
+                    if kind != SubKind::Bitmap {
+                        let sst = *streams.add(si as usize);
+                        let start = pts_ns(pkt, sst);
+                        let dur = (*pkt).duration;
+                        let end = if dur > 0 {
+                            start + av_rescale_q(dur, stream_time_base(sst), NS_TB)
+                        } else {
+                            start + 4_000_000_000
+                        };
+                        let sz = (*pkt).size.max(0) as usize;
+                        if !(*pkt).data.is_null() && sz > 0 {
+                            let raw = std::slice::from_raw_parts((*pkt).data, sz);
+                            // mp4 tx3g: drop the 2-byte big-endian text-length prefix.
+                            let payload: &[u8] = if kind == SubKind::MovText && sz >= 2 {
+                                let tl = ((raw[0] as usize) << 8) | raw[1] as usize;
+                                &raw[2..2 + tl.min(sz - 2)]
+                            } else {
+                                raw
+                            };
+                            crate::player::push_subtitle_cue(
+                                sub_pos as i32,
+                                start,
+                                end,
+                                payload,
+                                kind == SubKind::Ass,
+                            );
+                        }
+                    }
                     av_packet_unref(pkt);
                 } else {
                     av_packet_unref(pkt);

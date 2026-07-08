@@ -14,8 +14,12 @@ pub(crate) struct CueEnt {
     pub byte: i64,
 } // was struct cue_ent
 
-/// one client-rendered subtitle cue (content-time ns), demuxed from the MKV
+/// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
+/// index it belongs to; the demuxer pushes cues for ALL text tracks and the render filters by
+/// the selected `desired_sub_idx`, so switching tracks is instant (no re-demux of the buffered
+/// region). Content-time ns matches the fed video PTS timeline (see active_subtitle).
 pub(crate) struct SubCue {
+    pub track: i32,
     pub start_ns: i64,
     pub end_ns: i64,
     pub text: String,
