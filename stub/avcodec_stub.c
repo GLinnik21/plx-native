@@ -10,3 +10,4 @@ int av_bsf_send_packet(void *ctx, void *pkt) { (void)ctx; (void)pkt; return 0; }
 int av_bsf_receive_packet(void *ctx, void *pkt) { (void)ctx; (void)pkt; return 0; }
 void av_bsf_free(void **ctx) { (void)ctx; }
 int avcodec_parameters_copy(void *dst, const void *src) { (void)dst; (void)src; return 0; }
+const char *avcodec_get_name(int id) { (void)id; return "?"; }  /* real body from the TV's libavcodec */

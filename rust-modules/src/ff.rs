@@ -181,6 +181,7 @@ extern "C" {
     fn av_packet_free(pkt: *mut *mut AVPacket);
     fn av_packet_unref(pkt: *mut AVPacket);
     fn avcodec_parameters_copy(dst: *mut AVCodecParameters, src: *const AVCodecParameters) -> c_int;
+    fn avcodec_get_name(id: c_int) -> *const c_char;
     fn av_bsf_get_by_name(name: *const c_char) -> *const AVBitStreamFilter;
     fn av_bsf_alloc(f: *const AVBitStreamFilter, ctx: *mut *mut AVBSFContext) -> c_int;
     fn av_bsf_init(ctx: *mut AVBSFContext) -> c_int;
@@ -226,6 +227,29 @@ unsafe fn stream_time_base(s: *mut AVStream) -> AVRational {
 #[inline]
 unsafe fn stream_index(s: *mut AVStream) -> c_int {
     *((s as *const u8).add(OFF_STREAM_INDEX) as *const c_int)
+}
+
+/// The ffmpeg stream index of the first audio stream whose codec matches `want` (the Load
+/// payload's audio codec, e.g. "ac3"), or None. `av_find_best_stream` picks the "highest
+/// quality" audio (on an 8-track file it chose DTS over the AC3 default) — but the Load payload
+/// carries Media[0].audioCodec, so feeding a different-codec track leaves the audio ES
+/// unconfigured and, with audioSync, wedges the video (BufferFull forever). Matching the fed
+/// track to the payload codec avoids that.
+unsafe fn audio_stream_matching(fmt: *mut AVFormatContext, want: &str) -> Option<c_int> {
+    if want.is_empty() {
+        return None;
+    }
+    let streams = (*fmt).streams;
+    for i in 0..(*fmt).nb_streams {
+        let cp = stream_codecpar(*streams.add(i as usize));
+        if (*cp).codec_type == AVMEDIA_TYPE_AUDIO {
+            let name = std::ffi::CStr::from_ptr(avcodec_get_name((*cp).codec_id)).to_string_lossy();
+            if name.eq_ignore_ascii_case(want) {
+                return Some(i as c_int);
+            }
+        }
+    }
+    None
 }
 
 /// The ffmpeg stream index of the `n`-th audio stream in file order (for native audio-track
@@ -720,7 +744,10 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 nth_audio_stream(fmt, want_aidx)
                     .unwrap_or_else(|| av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0))
             } else {
-                av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0)
+                // default: feed the track matching the Load payload's codec (Media[0].audioCodec),
+                // NOT av_find_best_stream — a codec mismatch stalls the audio ES and wedges video.
+                audio_stream_matching(fmt, &crate::route::stream_acodec())
+                    .unwrap_or_else(|| av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0))
             };
             if vi < 0 {
                 crate::player::log("ff: no video stream");
