@@ -233,6 +233,7 @@ pub extern "C" fn plex_run(
         let mut grid_tried = false;
         let mut seek_tried = false;
         let mut detail_tried = false;
+        let mut play_tried = false;
         let mut menu_tried = false;
         let mut menupick_tried = false;
         let mut prev = 0u32;
@@ -667,6 +668,49 @@ pub extern "C" fn plex_run(
                             }
                         } else {
                             crate::metadata::load_detail(rk); // off-catalog rk: load data only
+                        }
+                    }
+                }
+            }
+            // dev: /tmp/poc-play=<ratingKey> plays ANY library item (regression harness).
+            // Unlike poc-detail it does NOT depend on the item being in the home catalog:
+            // it fetches the item's metadata fresh and drives the same field-based play
+            // path the detail Play button uses (route::play_episode is generic — movie or
+            // episode), so tests can target arbitrary rks deterministically.
+            if !play_tried && !playing && now.wrapping_sub(t0) > 500 {
+                play_tried = true;
+                if let Ok(rk) = std::fs::read_to_string("/tmp/poc-play") {
+                    let rk = rk.trim();
+                    if !rk.is_empty() {
+                        crate::metadata::load_detail(rk); // fetch ANY rk (movie/show/episode)
+                        crate::ui::track_menu::reset(); // populate the audio/subtitle lists
+                        // a movie/episode leaf carries its own part+codecs; a show has an
+                        // empty part, so fall back to its first episode.
+                        let leaf = crate::metadata::current().map(|d| {
+                            if !d.part.is_empty() {
+                                (d.part.clone(), d.vcodec.clone(), d.acodec.clone(),
+                                 d.title.clone(), d.resume_ms, d.dur_ms)
+                            } else if let Some(ep) = d.episodes.first() {
+                                (ep.part.clone(), ep.vcodec.clone(), ep.acodec.clone(),
+                                 d.title.clone(), ep.resume_ms, ep.dur_ms)
+                            } else {
+                                (String::new(), String::new(), String::new(),
+                                 d.title.clone(), 0, 0)
+                            }
+                        });
+                        if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
+                            if !part.is_empty() {
+                                log(&format!("poc-play: rk={rk} start"));
+                                crate::route::play_episode(rk, &part, &vc, &ac, &title, "");
+                                // resume_ns wants the duration in NANOSECONDS (dur_ms is ms)
+                                let resume = resume_ns(resume_ms, dur_ms * 1_000_000);
+                                if resume > 0 {
+                                    crate::player::resume_at(resume); // seek AT first Load / restart transcode at &offset
+                                }
+                                playing = crate::player::start_bufferfeed();
+                                set_paused(false);
+                                set_hud(now + 60000);
+                            }
                         }
                     }
                 }
