@@ -18,6 +18,8 @@ int  sf_play(void);
 int  sf_pause(void);
 int  sf_flush(void);
 void sf_set_playtime(long long t);
+int  sf_set_time_to_decode(long long position_ns); /* Kodi in-place seek: setTimeToDecode */
+int  sf_send_segment(void);                        /* Kodi in-place seek: CustomPipeline::sendSegmentEvent; 0 = pipeline not reachable */
 char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData); /* 'O'/'B'/'e' */
 void sf_unload(void);                /* Unload the pipeline */
 void sf_destroy(void);               /* destruct the object; clears sf_ready */

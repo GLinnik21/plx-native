@@ -18,3 +18,7 @@ void _ZN17StarfishMediaAPIs18setCurrentPlaytimeEx(void) {}
 void _ZN17StarfishMediaAPIs4SeekEPKc(void) {}
 void _ZN17StarfishMediaAPIs5flushEv(void) {}
 void _ZN17StarfishMediaAPIs11SetPlayRateEPKc(void) {}
+/* Kodi in-place seek: setTimeToDecode (libplayerAPIs) + CustomPipeline::sendSegmentEvent
+ * (real body in libpf-1.0.so.1, already in scope via libplayerAPIs' DT_NEEDED). */
+void _ZN17StarfishMediaAPIs15setTimeToDecodeEPKc(void) {}
+void _ZN13mediapipeline14CustomPipeline16sendSegmentEventEv(void) {}

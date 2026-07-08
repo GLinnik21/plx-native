@@ -50,6 +50,9 @@ pub(crate) struct Engine {
     pub stage: Stage,
     pub video_info_sent: bool, // videoInfoSent
     pub rebase_pending: bool,  // g_rebase_pending
+    pub flushed: bool,         // Kodi m_flushed: set on an in-place seek flush; the first
+    // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
+    // segment a bare flush() omits), then clears this.
     pub max_fed_pts: i64,      // g_max_fed_pts
     pub aq: Option<Box<AuQueue>>, // g_aq (M owns; ptr handed to D)
     // hs/hs2/payload are RAII: held alive for the workers (which hold raw ptrs into
@@ -289,6 +292,7 @@ pub(crate) fn start_bufferfeed() -> bool {
         // to fresh play (disp_base carries the content offset). Plain fresh play leaves this
         // false (first keyframe is already ~0).
         rebase_pending: SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0,
+        flushed: false,
         max_fed_pts: 0,
         aq: aq_box,
         hs,
@@ -562,9 +566,27 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         let (es, key, pts, len, data) = unsafe { crate::aq::au_fields(n) };
         if eng.rebase_pending {
             if es == 1 && key != 0 {
-                SHARED.pts_shift.store(-pts, Ordering::Relaxed);
+                if eng.flushed {
+                    // Kodi IN-PLACE seek (exact): feed the REAL content PTS (no rebase), tell the
+                    // pipeline the real decode position, then inject a fresh GStreamer SEGMENT —
+                    // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
+                    // pts_shift=0 → playpos = presented real pts = content time.
+                    SHARED.pts_shift.store(0, Ordering::Relaxed);
+                    let ok = unsafe { ffi::sf_set_time_to_decode(pts) };
+                    let seg = unsafe { ffi::sf_send_segment() };
+                    log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} sendSegment={seg}"));
+                    if seg == 0 {
+                        super::INPLACE_SEEK_OK.store(false, Ordering::Relaxed);
+                    }
+                    eng.flushed = false;
+                } else {
+                    // reload / initial-resume seek: rebase the landed keyframe to fed-pts 0 (the
+                    // fresh Load's pipeline expects a 0-based feed; disp_base carries the offset).
+                    SHARED.pts_shift.store(-pts, Ordering::Relaxed);
+                }
                 eng.rebase_pending = false;
-                log(&format!("rebase: first post-seek keyframe pts={pts} -> pts_shift={}", -pts));
+                log(&format!("rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
+                    SHARED.pts_shift.load(Ordering::Relaxed)));
             } else {
                 eng.pending = None; // drop pre-keyframe AUs
                 continue;

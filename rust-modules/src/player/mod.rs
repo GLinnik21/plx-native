@@ -19,6 +19,14 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering::Relaxed};
 pub(crate) static SHARED: Shared = Shared::new();
 pub(crate) static TX: Transport = Transport::new();
 static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availability flag
+// Kodi in-place seek (flush + setTimeToDecode + sendSegmentEvent, no reload). DISABLED on
+// this webOS 4.5: the pipeline IS reachable and sendSegmentEvent works, but setTimeToDecode
+// returns 0 (unsupported pre-webOS-11) so the pipeline holds at the seek point — the proper
+// fix is the webOS<11 fallback (CustomPipeline::loadSpi_getInfo + setContentInfo with
+// ptsToDecode; see task #42). Until then, seeks use the robust reload-per-seek path. The
+// in-place infrastructure (sf_pipeline/sf_send_segment/sf_set_time_to_decode, the flushed
+// latch, the pump/feed_stream branches) is kept and gated on this flag.
+pub(crate) static INPLACE_SEEK_OK: AtomicBool = AtomicBool::new(false);
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
