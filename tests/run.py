@@ -170,7 +170,10 @@ RE_SUBCUE = re.compile(r'sub cue \[\d+\.\.\d+ms\]\s+"(.*)"')
 # This is the ONLY universal decision signal: the smart/fast direct-play path in build_stream
 # short-circuits and never logs a `decision:` line (that is emitted only when server_decision
 # runs), so keying solely on `decision:` false-FAILs every plain direct-play case.
-RE_STREAM_PATH = re.compile(r"stream:.*path=(\S+)")
+# NON-greedy up to the FIRST path= — the transcode URL is
+# `path=/video/:/transcode/..start.mkv?path=%2Flibrary..`, and a greedy .* would grab the
+# inner (URL-encoded) query param instead of the real request path.
+RE_STREAM_PATH = re.compile(r"stream:.*?path=(\S+)")
 # the media URL carries the secret X-Plex-Token; strip it from anything we print/log.
 RE_TOKEN = re.compile(r"(X-Plex-Token=)[^&\s]+")
 
@@ -356,6 +359,12 @@ def op_resume_transcode(lines, offset_s):
 # ---------------------------------------------------------------------------
 # Case execution
 # ---------------------------------------------------------------------------
+def uses_mkv_demux(case):
+    """True if a case forces the legacy mkv.rs demuxer (subtitle cases) — it's the only demuxer
+    that emits `sub cue` lines, but it doesn't log the libavformat `ff: codec_id` line."""
+    return any(op.get("demux") == "mkv" for op in case.get("operations", []))
+
+
 def evaluate(case, lines):
     """Run every assertion for a case. Returns (passed, [(label, ok, evidence)])."""
     exp = case["expect"]
@@ -363,7 +372,10 @@ def evaluate(case, lines):
 
     # base assertions (every case)
     results.append(("decision", *a_decision(lines, exp["decision"])))
-    results.append(("codec", *a_codec(lines, exp["codec_id"], exp["min_video_width"])))
+    # The legacy mkv.rs demuxer (subtitle cases) doesn't emit `ff: v=#0 codec_id=`; skip the
+    # ffmpeg-codec check there — video_bound + timeline_climb still prove the frame decoded.
+    if not uses_mkv_demux(case):
+        results.append(("codec", *a_codec(lines, exp["codec_id"], exp["min_video_width"])))
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
@@ -501,19 +513,30 @@ def main():
             print(f"    ERROR running {c['name']}: {e}")
             passed, results = False, [("harness", False, str(e))]
         fails = [label for label, ok, _ in results if not ok]
-        summary.append((c["name"], passed, fails))
+        summary.append((c["name"], passed, fails, c.get("known_gap")))
 
-    # final table
+    # final table. A case tagged `known_gap` that fails is XFAIL (a documented, expected gap —
+    # not a regression); it does NOT fail the suite. If it unexpectedly passes it is XPASS.
     print("\n" + "=" * 72)
     print("SUMMARY")
     print("=" * 72)
-    npass = sum(1 for _, p, _ in summary if p)
-    for name, passed, fails in summary:
-        mark = "PASS" if passed else "FAIL"
-        detail = "" if passed else "  <- " + ", ".join(fails)
+    npass = real_fail = nxfail = 0
+    for name, passed, fails, gap in summary:
+        if passed:
+            npass += 1
+            mark = "XPASS" if gap else "PASS"
+            detail = "  (known gap unexpectedly passes)" if gap else ""
+        elif gap:
+            nxfail += 1
+            mark = "XFAIL"
+            detail = "  <- " + ", ".join(fails) + f"  (known gap: {gap})"
+        else:
+            real_fail += 1
+            mark = "FAIL"
+            detail = "  <- " + ", ".join(fails)
         print(f"  [{mark}] {name}{detail}")
-    print(f"\n{npass}/{len(summary)} cases passed")
-    return 0 if npass == len(summary) else 1
+    print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}")
+    return 0 if real_fail == 0 else 1
 
 
 if __name__ == "__main__":

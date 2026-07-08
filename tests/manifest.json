@@ -1,18 +1,28 @@
 {
   "version": 1,
-  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/poc-* triggers (see README) and asserts on /tmp/poc-events.log. rks are real PMS items (192.168.0.3:32400). The runner (run.py) reads the X-Plex-Token from src/config.local.h at runtime — it is NEVER stored here. Cases are derived from the library survey; see library_gaps for combos no real item can cover.",
-  "pms": { "host": "192.168.0.3", "port": 32400 },
+  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/poc-* triggers (see README) and asserts on /tmp/poc-events.log. rks are real PMS items (192.168.0.3:32400). The runner (run.py) reads the X-Plex-Token from src/config.local.h at runtime \u2014 it is NEVER stored here. Cases are derived from the library survey; see library_gaps for combos no real item can cover.",
+  "pms": {
+    "host": "192.168.0.3",
+    "port": 32400
+  },
   "tv": "192.168.0.114",
-
   "cases": [
     {
       "name": "substance_h264_ac3",
       "rk": "4",
       "kind": "movie",
       "title": "The Substance",
-      "covers": ["h264+ac3", "directplay-1080p", "embedded-srt"],
+      "covers": [
+        "h264+ac3",
+        "directplay-1080p",
+        "embedded-srt"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "directplay",
         "codec_id": 28,
@@ -27,9 +37,18 @@
       "rk": "1804",
       "kind": "episode",
       "title": "The Morning Show S2E2",
-      "covers": ["hevc-4k-hdr10", "eac3", "episode", "anchor"],
+      "covers": [
+        "hevc-4k-hdr10",
+        "eac3",
+        "episode",
+        "anchor"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "directplay",
         "codec_id": 174,
@@ -44,9 +63,18 @@
       "rk": "1926",
       "kind": "movie",
       "title": "Toy Story 3",
-      "covers": ["smart-dp", "hevc-4k-hdr10", "truehd-default->ac3-sibling", "anchor"],
+      "covers": [
+        "smart-dp",
+        "hevc-4k-hdr10",
+        "truehd-default->ac3-sibling",
+        "anchor"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "directplay",
         "codec_id": 174,
@@ -61,9 +89,17 @@
       "rk": "1900",
       "kind": "movie",
       "title": "Project Hail Mary",
-      "covers": ["hevc-4k-dovi-p8", "eac3", "embedded-srt-many"],
+      "covers": [
+        "hevc-4k-dovi-p8",
+        "eac3",
+        "embedded-srt-many"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "directplay",
         "codec_id": 174,
@@ -78,9 +114,17 @@
       "rk": "1816",
       "kind": "movie",
       "title": "Hannah Montana 20th Anniversary",
-      "covers": ["hevc+aac", "mp4-container", "sidecar-subs"],
+      "covers": [
+        "hevc+aac",
+        "mp4-container",
+        "sidecar-subs"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "directplay",
         "codec_id": 174,
@@ -95,9 +139,17 @@
       "rk": "72",
       "kind": "episode",
       "title": "Phineas and Ferb S1E1",
-      "covers": ["h264+aac", "episode", "no-subs"],
+      "covers": [
+        "h264+aac",
+        "episode",
+        "no-subs"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "directplay",
         "codec_id": 28,
@@ -112,9 +164,17 @@
       "rk": "3",
       "kind": "movie",
       "title": "Home Alone",
-      "covers": ["h264+ac3", "many-audio-tracks", "dts+vorbis-present"],
+      "covers": [
+        "h264+ac3",
+        "many-audio-tracks",
+        "dts+vorbis-present"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "directplay",
         "codec_id": 28,
@@ -124,15 +184,23 @@
         "require_video_bound": true
       }
     },
-
     {
       "name": "toy_story4_av1_transcode",
       "rk": "1945",
       "kind": "movie",
       "title": "Toy Story 4 (AV1)",
-      "covers": ["must-transcode", "av1-video", "no-dp-audio", "anchor"],
+      "covers": [
+        "must-transcode",
+        "av1-video",
+        "no-dp-audio",
+        "anchor"
+      ],
       "run_secs": 60,
-      "operations": [ { "op": "play" } ],
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
       "expect": {
         "decision": "transcode",
         "codec_id": 28,
@@ -142,17 +210,26 @@
         "require_video_bound": true
       }
     },
-
     {
       "name": "substance_seek_inplace",
       "rk": "4",
       "kind": "movie",
       "title": "The Substance (in-place seek)",
-      "covers": ["seek-inplace", "libavformat-seek", "h264"],
+      "covers": [
+        "seek-inplace",
+        "libavformat-seek",
+        "h264"
+      ],
       "run_secs": 60,
       "operations": [
-        { "op": "play" },
-        { "op": "seek", "mode": "inplace", "target_s": 140 }
+        {
+          "op": "play"
+        },
+        {
+          "op": "seek",
+          "mode": "inplace",
+          "target_s": 140
+        }
       ],
       "expect": {
         "decision": "directplay",
@@ -168,11 +245,20 @@
       "rk": "1945",
       "kind": "movie",
       "title": "Toy Story 4 (transcode seek)",
-      "covers": ["seek-transcode", "transcode-reload"],
+      "covers": [
+        "seek-transcode",
+        "transcode-reload"
+      ],
       "run_secs": 70,
       "operations": [
-        { "op": "play" },
-        { "op": "seek", "mode": "transcode_or_reload", "target_s": 140 }
+        {
+          "op": "play"
+        },
+        {
+          "op": "seek",
+          "mode": "transcode_or_reload",
+          "target_s": 140
+        }
       ],
       "expect": {
         "decision": "transcode",
@@ -183,18 +269,28 @@
         "require_video_bound": true
       }
     },
-
     {
       "name": "substance_resume_directplay",
       "rk": "4",
       "kind": "movie",
       "title": "The Substance (resume @600s)",
-      "covers": ["resume-viewoffset", "directplay"],
+      "covers": [
+        "resume-viewoffset",
+        "directplay"
+      ],
       "run_secs": 60,
-      "setup": { "viewOffset_ms": 600000 },
+      "setup": {
+        "viewOffset_ms": 600000
+      },
       "operations": [
-        { "op": "play" },
-        { "op": "resume", "mode": "directplay", "offset_s": 600 }
+        {
+          "op": "play"
+        },
+        {
+          "op": "resume",
+          "mode": "directplay",
+          "offset_s": 600
+        }
       ],
       "expect": {
         "decision": "directplay",
@@ -210,12 +306,23 @@
       "rk": "1945",
       "kind": "movie",
       "title": "Toy Story 4 (transcode resume @600s)",
-      "covers": ["resume-viewoffset", "transcode"],
+      "covers": [
+        "resume-viewoffset",
+        "transcode"
+      ],
       "run_secs": 60,
-      "setup": { "viewOffset_ms": 600000 },
+      "setup": {
+        "viewOffset_ms": 600000
+      },
       "operations": [
-        { "op": "play" },
-        { "op": "resume", "mode": "transcode", "offset_s": 600 }
+        {
+          "op": "play"
+        },
+        {
+          "op": "resume",
+          "mode": "transcode",
+          "offset_s": 600
+        }
       ],
       "expect": {
         "decision": "transcode",
@@ -226,17 +333,27 @@
         "require_video_bound": true
       }
     },
-
     {
       "name": "morning_show_audio_native",
       "rk": "1804",
       "kind": "episode",
       "title": "The Morning Show (native audio switch)",
-      "covers": ["audio-switch-native", "hevc-stays-174", "eac3->eac3"],
+      "covers": [
+        "audio-switch-native",
+        "hevc-stays-174",
+        "eac3->eac3"
+      ],
       "run_secs": 60,
       "operations": [
-        { "op": "play" },
-        { "op": "audio_switch", "tab": 0, "row": 1, "mode": "native" }
+        {
+          "op": "play"
+        },
+        {
+          "op": "audio_switch",
+          "tab": 0,
+          "row": 1,
+          "mode": "native"
+        }
       ],
       "expect": {
         "decision": "directplay",
@@ -252,11 +369,22 @@
       "rk": "3",
       "kind": "movie",
       "title": "Home Alone (English DTS -> transcode)",
-      "covers": ["audio-switch-transcode", "lang-forces-transcode", "dca-target"],
+      "covers": [
+        "audio-switch-transcode",
+        "lang-forces-transcode",
+        "dca-target"
+      ],
       "run_secs": 70,
       "operations": [
-        { "op": "play" },
-        { "op": "audio_switch", "tab": 0, "row": 6, "mode": "transcode" }
+        {
+          "op": "play"
+        },
+        {
+          "op": "audio_switch",
+          "tab": 0,
+          "row": 6,
+          "mode": "transcode"
+        }
       ],
       "expect": {
         "decision": "directplay",
@@ -267,18 +395,30 @@
         "require_video_bound": true
       }
     },
-
     {
       "name": "substance_subtitle_srt",
       "rk": "4",
       "kind": "movie",
       "title": "The Substance (embedded SRT soft-render)",
-      "covers": ["subtitle-srt", "soft-render", "mkv-demuxer-only"],
+      "covers": [
+        "subtitle-srt",
+        "soft-render",
+        "mkv-demuxer-only"
+      ],
       "run_secs": 90,
-      "setup": { "viewOffset_ms": 600000 },
+      "setup": {
+        "viewOffset_ms": 600000
+      },
       "operations": [
-        { "op": "play" },
-        { "op": "subtitle", "tab": 1, "row": 1, "demux": "mkv" }
+        {
+          "op": "play"
+        },
+        {
+          "op": "subtitle",
+          "tab": 1,
+          "row": 1,
+          "demux": "mkv"
+        }
       ],
       "expect": {
         "decision": "directplay",
@@ -287,15 +427,36 @@
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
         "require_video_bound": true
-      }
+      },
+      "known_gap": "subtitle rendering exists only in the legacy mkv.rs demuxer (ff.rs, the default, demuxes no subtitles); adding sub-cue support to ff.rs is the real fix (Phase E)"
     }
   ],
-
   "library_gaps": {
     "_comment": "Combos the survey found NO real library item can exercise. Not covered by any case above; would need synthetic ffmpeg clips fed via /tmp/poc-url (see README).",
-    "video": ["vp9", "mpeg2", "vc1", "mpeg4-asp", "8-bit-hevc (all HEVC is Main10)", "4k-h264 (all 4k is hevc/av1)", "interlaced"],
-    "audio": ["flac", "pcm/lpcm", "mp3", "dts-only-at-movie-level (only via language selection: Home Alone/Frozen English)"],
-    "subtitles": ["ass/ssa", "vobsub/dvd_subtitle", "mov_text/tx3g soft-render (present in mp4s but not on our pipeline)"],
-    "hdr": ["hlg", "hdr10+", "dovi-p5-ipt (only on Wicked, mp4)"]
+    "video": [
+      "vp9",
+      "mpeg2",
+      "vc1",
+      "mpeg4-asp",
+      "8-bit-hevc (all HEVC is Main10)",
+      "4k-h264 (all 4k is hevc/av1)",
+      "interlaced"
+    ],
+    "audio": [
+      "flac",
+      "pcm/lpcm",
+      "mp3",
+      "dts-only-at-movie-level (only via language selection: Home Alone/Frozen English)"
+    ],
+    "subtitles": [
+      "ass/ssa",
+      "vobsub/dvd_subtitle",
+      "mov_text/tx3g soft-render (present in mp4s but not on our pipeline)"
+    ],
+    "hdr": [
+      "hlg",
+      "hdr10+",
+      "dovi-p5-ipt (only on Wicked, mp4)"
+    ]
   }
 }
