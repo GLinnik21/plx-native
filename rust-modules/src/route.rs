@@ -304,6 +304,37 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
     )
 }
 
+/// Container-only REMUX params: the source codecs ARE direct-playable but the container (mp4/mov)
+/// our demuxer can't stream. directStream=1 (+ directStreamAudio) with the same capability profile
+/// makes Plex COPY the video (h264/hevc) and the selected audio into a progressive MKV — no
+/// re-encode, so 4K/HDR is preserved. Unlike transcode_base it sets NO videoResolution/
+/// maxVideoBitrate cap (which would force a re-encode). Served via the same start.mkv endpoint.
+fn remux_base(rk: &str, cfg: &Cfg) -> String {
+    let profe = profile_extra();
+    let session = sess();
+    let audio_p = match cur_audio_sid() {
+        0 => String::new(),
+        a => format!("&audioStreamID={a}"),
+    };
+    let sub_p = if BURN_FALLBACK {
+        match cur_sub_sid() {
+            0 => String::new(),
+            s => format!("&subtitleStreamID={s}&subtitleSize=100&subtitles=burn"),
+        }
+    } else {
+        String::new()
+    };
+    format!(
+        "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
+         &directPlay=0&directStream=1&directStreamAudio=1\
+         {audio_p}{sub_p}\
+         &session={session}&X-Plex-Session-Identifier={session}{id}\
+         &X-Plex-Client-Profile-Name=Generic&X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
+        id = identity_qs(),
+        tok = cfg.token
+    )
+}
+
 /// Select the audio + subtitle streams server-side for the current part before a
 /// transcode. The transcoder encodes the part's SELECTED audio and BURNS its SELECTED
 /// subtitle (our client profile advertises no soft-sub support, so Plex's decision is
@@ -455,6 +486,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // video-downscaling transcode). Falls back to the server /decision (then the local codec
     // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
     let video_dp = matches!(vcodec, "h264" | "hevc");
+    // Our buffer-feed demuxer streams MKV/Matroska (sequential clusters). MP4/MOV need per-sample
+    // random seeks our reopen-per-seek HTTP AVIO can't sustain — it dies after AU#0 (black screen).
+    // So a direct-playable codec in a non-MKV container is NOT direct-played; it goes to Plex for a
+    // container-only REMUX to progressive MKV (copy the codecs, no re-encode — keeps 4K/HDR).
+    let streamable = part_is_mkv(part);
     let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(rk, acodec) };
     let directplay = if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265.
@@ -462,6 +498,8 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
         // /decision says directplay (it adjudicates the panel's decoders, not our payload). This
         // gate is why the local sample path (rk empty) is the only other non-transcode case.
         false
+    } else if !streamable {
+        false // non-MKV container → remux (the transcode branch copies the source codecs)
     } else if audio_sel.is_some() {
         true
     } else if rk.is_empty() {
@@ -496,17 +534,34 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
             String::new(),
         );
     }
-    // transcode: PMS re-encodes to HEVC/AC3 in MKV (HEVC target keeps 4K + HDR10; see
-    // profile_extra + the server's "HEVC encoding = Always" pref), so the Load payload must be
-    // H265/AC3 (NOT the source av1/eac3).
-    unsafe {
-        *addr_of_mut!(STREAM_VCODEC) = "hevc".to_string();
-        *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
-    }
-    let base = transcode_base(rk, cfg);
+    // Transcode OR container-remux, both served via start.mkv. If the SOURCE video is
+    // direct-playable (h264/hevc) we only reached here because the container isn't streamable, so
+    // ask Plex to REMUX — copy both codecs into MKV, no re-encode (keeps 4K + HDR10); the Load
+    // payload then uses the SOURCE codecs. Otherwise it's a real RE-ENCODE to the hevc+ac3 target
+    // (HEVC target keeps 4K + HDR10; see profile_extra + the server's "HEVC encoding = Always").
+    let base = if video_dp {
+        let achosen = audio_sel.as_ref().map(|(_, c)| c.clone()).unwrap_or_else(|| acodec.to_string());
+        unsafe {
+            *addr_of_mut!(STREAM_VCODEC) = vcodec.to_string();
+            *addr_of_mut!(STREAM_ACODEC) = achosen;
+        }
+        // if a non-default audio track was chosen, feed/select it (mirrors the direct-play path)
+        if let Some((aidx, _)) = audio_sel {
+            if aidx >= 0 {
+                crate::player::set_audio_track(aidx);
+            }
+        }
+        remux_base(rk, cfg)
+    } else {
+        unsafe {
+            *addr_of_mut!(STREAM_VCODEC) = "hevc".to_string();
+            *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
+        }
+        transcode_base(rk, cfg)
+    };
     // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
     unsafe { *addr_of_mut!(TBASE) = base.clone() };
-    put_selection(cfg); // audio/subtitle selection drives the encode + burn
+    put_selection(cfg); // audio/subtitle selection drives the encode/remux + burn
     // the universal transcoder needs /decision to REGISTER the session before start.mkv streams
     let dpath = format!("/video/:/transcode/universal/decision?{base}");
     let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
@@ -544,6 +599,15 @@ fn pick_dp_audio(rk: &str, default_acodec: &str) -> Option<(i32, String)> {
     }
     // 3. any direct-playable track (smart direct-play over a non-DP default)
     tracks.iter().position(|(c, _)| dp(c)).map(|i| (i as i32, tracks[i].0.clone()))
+}
+
+/// True when the part's container is MKV/Matroska — the only container our buffer-feed demuxer
+/// streams reliably (sequential clusters). Non-MKV (mp4/mov/…) is sent to Plex for a container
+/// remux instead of direct-play. Matches the container extension in the part-key filename.
+fn part_is_mkv(part_key: &str) -> bool {
+    let name = part_key.rsplit('/').next().unwrap_or(part_key);
+    let name = name.split('?').next().unwrap_or(name);
+    name.ends_with(".mkv")
 }
 
 /// Extract the numeric Part id from a Plex part key (/library/parts/{id}/…/file.mkv).
