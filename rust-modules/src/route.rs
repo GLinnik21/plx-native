@@ -38,6 +38,8 @@ static mut PQ_ITEM_ID: String = String::new();
 // the H265 Load payload for a native HEVC direct-play and the matching audio codec.
 static mut STREAM_VCODEC: String = String::new();
 static mut STREAM_ACODEC: String = String::new();
+// Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
+static mut STREAM_FPS: f64 = 0.0;
 // When true, a selected subtitle is BURNED into the transcode (server-side) — the
 // pre-WebVTT behavior, kept as an escape hatch. When false (default), a selected
 // subtitle rides a soft WebVTT sidecar (player::request_soft_subs + transcode_subtitles_url)
@@ -110,6 +112,10 @@ pub(crate) fn stream_vcodec() -> String {
 }
 pub(crate) fn stream_acodec() -> String {
     unsafe { (*addr_of!(STREAM_ACODEC)).clone() }
+}
+/// direct-play source video fps for the Load esInfo (0 = unknown/transcode → omit)
+pub(crate) fn stream_fps() -> f64 {
+    unsafe { *addr_of!(STREAM_FPS) }
 }
 /// Override the audio codec used to build the Load payload — set by a native audio-track
 /// switch to the chosen track's codec before the direct-play reload.
@@ -427,6 +433,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
         Some(c) => c,
         None => return (String::new(), String::new()),
     };
+    unsafe { *addr_of_mut!(STREAM_FPS) = 0.0 }; // set to the source fps only on the direct-play path below
     // fresh per-playback session id (BOTH direct-play and transcode report through it) +
     // a PlayQueue so the server tracks this as a real player with a playQueueItemID.
     let session = new_sess(rk);
@@ -465,9 +472,13 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
         // them (h264/hevc + the chosen audio track's codec). If the chosen track isn't the
         // default (aidx >= 0), tell the demuxer to feed that stream.
         let (aidx, achosen) = audio_sel.unwrap_or((-1, acodec.to_string()));
+        // source fps for the Load esInfo — only from the currently-loaded Detail if it IS this item
+        // (the play_movie home path builds the stream before load_detail runs → no match → omit).
+        let fps = crate::metadata::current().filter(|d| d.rk == rk).map(|d| d.video_fps).unwrap_or(0.0);
         unsafe {
             *addr_of_mut!(STREAM_VCODEC) = vcodec.to_string();
             *addr_of_mut!(STREAM_ACODEC) = achosen;
+            *addr_of_mut!(STREAM_FPS) = fps;
         }
         if aidx >= 0 {
             crate::player::set_audio_track(aidx); // feed the direct-playable non-default track
