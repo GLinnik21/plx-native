@@ -6,8 +6,6 @@
 use std::os::raw::{c_int, c_long, c_uchar, c_void};
 use std::ptr;
 
-const AQ_MAX_BYTES: c_long = 6 * 1024 * 1024;
-
 #[repr(C)]
 pub struct AuNode {
     next: *mut AuNode,
@@ -23,6 +21,7 @@ pub struct AuQueue {
     head: *mut AuNode,
     tail: *mut AuNode,
     queued_bytes: c_long,
+    max_bytes: c_long, // per-queue backpressure cap; the caller chooses it (see aq_new)
     eof: c_int,
     abort: c_int,
     m: libc::pthread_mutex_t,
@@ -49,10 +48,20 @@ pub(crate) unsafe fn au_fields(n: *mut AuNode) -> (c_int, c_int, i64, c_int, *co
     ((*n).es, (*n).key, (*n).pts, (*n).len, node_data(n) as *const u8)
 }
 
-pub(crate) fn aq_init(q: *mut AuQueue) {
+/// allocate + initialize a boxed queue with an explicit backpressure byte cap (mirrors
+/// `stream::http_stream_boxed`; the two-lane feed gives each ES its own cap).
+pub(crate) fn aq_new(cap: c_long) -> Box<AuQueue> {
+    let mut q: Box<AuQueue> = Box::new(unsafe { std::mem::zeroed() });
+    aq_init_cap(&mut *q, cap);
+    q
+}
+
+/// initialize an already-allocated queue with an explicit backpressure byte cap.
+fn aq_init_cap(q: *mut AuQueue, cap: c_long) {
     if q.is_null() { return; }
     unsafe {
         ptr::write_bytes(q as *mut u8, 0, core::mem::size_of::<AuQueue>());
+        (*q).max_bytes = cap;
         libc::pthread_mutex_init(ptr::addr_of_mut!((*q).m), ptr::null());
         libc::pthread_cond_init(ptr::addr_of_mut!((*q).not_full), ptr::null());
         libc::pthread_cond_init(ptr::addr_of_mut!((*q).not_empty), ptr::null());
@@ -68,8 +77,8 @@ pub(crate) fn aq_destroy(q: *mut AuQueue) {
     }
 }
 
-/// Producer: append one AU (copies `len` bytes). Blocks over AQ_MAX_BYTES unless
-/// aborting. Returns 0 on success, -1 if aborting or OOM.
+/// Producer: append one AU (copies `len` bytes). Blocks over the queue's `max_bytes` cap
+/// unless aborting. Returns 0 on success, -1 if aborting or OOM.
 pub(crate) fn aq_push(q: *mut AuQueue, data: *const c_uchar, len: c_int,
                           pts: i64, key: c_int, es: c_int) -> c_int {
     if q.is_null() || len < 0 { return -1; }
@@ -85,7 +94,7 @@ pub(crate) fn aq_push(q: *mut AuQueue, data: *const c_uchar, len: c_int,
             ptr::copy_nonoverlapping(data, node_data(n), len as usize);
         }
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
-        while (*q).queued_bytes > AQ_MAX_BYTES && (*q).abort == 0 {
+        while (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
             libc::pthread_cond_wait(ptr::addr_of_mut!((*q).not_full), ptr::addr_of_mut!((*q).m));
         }
         if (*q).abort != 0 {

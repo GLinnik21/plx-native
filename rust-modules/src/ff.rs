@@ -809,10 +809,11 @@ unsafe fn packet_to_annexb(
 
 static DIAG_FIRST: AtomicBool = AtomicBool::new(true);
 
-pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
     DIAG_FIRST.store(true, Ordering::Relaxed);
     ensure_registered();
-    let aq_p = aq.0;
+    let aq_p = aq.0; // VIDEO lane (also the AVIO abort ptr + EOF marker)
+    let aqa_p = aqa.0; // AUDIO lane (es=2) — always a distinct queue on the ff (two-lane) path
     let hs_p = hs.0;
     let mut host_c = CString::new(host).unwrap_or_default();
     let mut path_c = CString::new(path).unwrap_or_default();
@@ -1026,7 +1027,7 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                     let ast = *streams.add(ai as usize);
                     let pts = pts_ns(pkt, ast);
-                    crate::aq::aq_push(aq_p, (*pkt).data, (*pkt).size, pts, 1, 2);
+                    crate::aq::aq_push(aqa_p, (*pkt).data, (*pkt).size, pts, 1, 2); // AUDIO lane
                     av_packet_unref(pkt);
                 } else if let Some(sub_pos) = sub_streams.iter().position(|(sidx, _, _)| *sidx == si) {
                     // Subtitle packet. Push a cue for EVERY text track (tagged with its file-order
@@ -1117,5 +1118,6 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
         break;
     }
     crate::aq::aq_set_eof(aq_p);
+    crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too
     crate::player::log("ff: demux ended");
 }
