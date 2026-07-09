@@ -5,8 +5,6 @@
 // TEMP: struct fields/accessors are consumed incrementally by the detail UI
 // (increments 1-4); drop this once the About footer (last consumer) lands.
 #![allow(dead_code)]
-use serde_json::Value;
-use std::os::raw::c_int;
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -102,89 +100,38 @@ pub(crate) fn clear() {
     unsafe { *addr_of_mut!(CURRENT) = None }
 }
 
-// ---- JSON helpers ----
-fn jstr(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
-        _ => String::new(),
-    }
-}
-fn jint(v: Option<&Value>) -> i64 {
-    v.and_then(|x| x.as_i64()).unwrap_or(0)
-}
-fn jfloat(v: Option<&Value>) -> f64 {
-    v.and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0.0)
-}
-/// collect the `tag` string of every element of a `Foo[]` array (Genre/Country/Director/…)
-fn tags(item: &Value, key: &str) -> Vec<String> {
-    item.get(key)
-        .and_then(|a| a.as_array())
-        .map(|a| a.iter().filter_map(|t| t.get("tag").and_then(|s| s.as_str()).map(String::from)).collect())
-        .unwrap_or_default()
-}
-fn get_json(host: &str, port: c_int, path: &str) -> Option<Value> {
-    let body = crate::stream::http_get(host, port, path, Some("Accept: application/json\r\n"))?;
-    serde_json::from_slice(&body).ok()
-}
-fn meta0(v: &Value) -> Option<&Value> {
-    v.get("MediaContainer")?.get("Metadata")?.as_array()?.first()
-}
-fn metas(v: &Value) -> Vec<Value> {
-    v.get("MediaContainer")
-        .and_then(|m| m.get("Metadata"))
-        .and_then(|a| a.as_array())
-        .cloned()
-        .unwrap_or_default()
-}
-/// Media[0].Part[0].key of an item (empty if none)
-fn first_part(item: &Value) -> String {
-    item.get("Media")
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first())
-        .and_then(|md| md.get("Part"))
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first())
-        .map(|p| jstr(p.get("key")))
-        .unwrap_or_default()
-}
-
-// ---- fetches ----
-fn fetch_detail(host: &str, port: c_int, token: &str, rk: &str) -> Option<Detail> {
-    let json = get_json(host, port, &format!("/library/metadata/{rk}?X-Plex-Token={token}"))?;
-    let it = meta0(&json)?;
-    let media0 = it.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first());
+// ---- fetches (all via the typed crate::plex client; serde DTOs, no Value scraping) ----
+fn fetch_detail(rk: &str) -> Option<Detail> {
+    let it = crate::plex::client().metadata(rk)?;
+    let media0 = it.media.first();
     let mut d = Detail {
         rk: rk.to_string(),
-        is_show: jstr(it.get("type")) == "show",
-        title: jstr(it.get("title")),
-        year: jint(it.get("year")),
-        rating: jstr(it.get("contentRating")),
-        summary: jstr(it.get("summary")),
-        tagline: jstr(it.get("tagline")),
-        studio: jstr(it.get("studio")),
-        aired: jstr(it.get("originallyAvailableAt")),
-        dur_ms: jint(it.get("duration")),
-        resume_ms: jint(it.get("viewOffset")),
-        part: first_part(it), // empty for a show (no Media on the show container)
-        vcodec: media0.map(|m| jstr(m.get("videoCodec"))).unwrap_or_default(),
-        acodec: media0.map(|m| jstr(m.get("audioCodec"))).unwrap_or_default(),
+        is_show: it.kind == "show",
+        title: it.title.clone(),
+        year: it.year,
+        rating: it.content_rating.clone(),
+        summary: it.summary.clone(),
+        tagline: it.tagline.clone(),
+        studio: it.studio.clone(),
+        aired: it.originally_available_at.clone(),
+        dur_ms: it.duration,
+        resume_ms: it.view_offset,
+        // empty for a show (no Media on the show container)
+        part: it.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+        vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
+        acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
         video_fps: 0.0, // set from the video Stream by parse_streams below
-        art: jstr(it.get("art")),
-        thumb: jstr(it.get("thumb")),
-        genres: tags(it, "Genre"),
-        countries: tags(it, "Country"),
-        directors: tags(it, "Director"),
-        writers: tags(it, "Writer"),
+        art: it.art.clone(),
+        thumb: it.thumb.clone(),
+        genres: it.genre.iter().map(|t| t.tag.clone()).collect(),
+        countries: it.country.iter().map(|t| t.tag.clone()).collect(),
+        directors: it.director.iter().map(|t| t.tag.clone()).collect(),
+        writers: it.writer.iter().map(|t| t.tag.clone()).collect(),
         cast: it
-            .get("Role")
-            .and_then(|a| a.as_array())
-            .map(|a| {
-                a.iter()
-                    .map(|r| Cast { tag: jstr(r.get("tag")), role: jstr(r.get("role")), thumb: jstr(r.get("thumb")) })
-                    .collect()
-            })
-            .unwrap_or_default(),
+            .role
+            .iter()
+            .map(|r| Cast { tag: r.tag.clone(), role: r.role.clone(), thumb: r.thumb.clone() })
+            .collect(),
         audio: Vec::new(),
         subs: Vec::new(),
         seasons: Vec::new(),
@@ -194,38 +141,30 @@ fn fetch_detail(host: &str, port: c_int, token: &str, rk: &str) -> Option<Detail
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).
-    parse_streams(it, &mut d);
+    parse_streams(&it, &mut d);
     Some(d)
 }
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer)
-fn parse_streams(item: &Value, d: &mut Detail) {
-    let part = item
-        .get("Media")
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first())
-        .and_then(|md| md.get("Part"))
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first());
-    let streams = match part.and_then(|p| p.get("Stream")).and_then(|a| a.as_array()) {
-        Some(s) => s,
+fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
+    let streams = match it.first_part() {
+        Some(p) => &p.stream,
         None => return,
     };
     for s in streams {
-        let title = jstr(s.get("title"));
         let st = Stream {
-            id: jint(s.get("id")),
-            lang: jstr(s.get("language")),
-            codec: jstr(s.get("codec")),
-            channels: jint(s.get("channels")),
-            layout: jstr(s.get("audioChannelLayout")),
-            sdh: jint(s.get("hearingImpaired")) != 0,
-            ad: jint(s.get("audioDescription")) != 0 || title.to_lowercase().contains("descri"),
-            forced: jint(s.get("forced")) != 0,
-            title,
+            id: s.id,
+            lang: s.language.clone(),
+            codec: s.codec.clone(),
+            channels: s.channels,
+            layout: s.audio_channel_layout.clone(),
+            sdh: s.hearing_impaired != 0,
+            ad: s.audio_description != 0 || s.title.to_lowercase().contains("descri"),
+            forced: s.forced != 0,
+            title: s.title.clone(),
         };
-        match jint(s.get("streamType")) {
-            1 => d.video_fps = jfloat(s.get("frameRate")), // e.g. 23.976 — for the Load esInfo
+        match s.stream_type {
+            1 => d.video_fps = s.frame_rate, // e.g. 23.976 — for the Load esInfo
             2 => d.audio.push(st),
             3 => d.subs.push(st),
             _ => {}
@@ -237,116 +176,93 @@ fn parse_streams(item: &Value, d: &mut Detail) {
 /// [("ac3","rus"),("eac3","eng")]. Empty on any fetch/parse failure. Used by the route decision
 /// to pick a direct-playable track — preferring a language (English) over the file's default —
 /// and to fall back to a direct-playable sibling when the default codec isn't (TrueHD default).
-pub(crate) fn audio_tracks(host: &str, port: c_int, token: &str, rk: &str) -> Vec<(String, String)> {
-    let json = match get_json(host, port, &format!("/library/metadata/{rk}?X-Plex-Token={token}")) {
-        Some(j) => j,
-        None => return Vec::new(),
-    };
-    let item = match meta0(&json) {
+pub(crate) fn audio_tracks(rk: &str) -> Vec<(String, String)> {
+    let it = match crate::plex::client().metadata(rk) {
         Some(i) => i,
         None => return Vec::new(),
     };
-    let part = item
-        .get("Media")
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first())
-        .and_then(|md| md.get("Part"))
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first());
-    match part.and_then(|p| p.get("Stream")).and_then(|a| a.as_array()) {
-        Some(streams) => streams
-            .iter()
-            .filter(|s| jint(s.get("streamType")) == 2)
-            .map(|s| (jstr(s.get("codec")).to_lowercase(), jstr(s.get("languageCode")).to_lowercase()))
-            .collect(),
-        None => Vec::new(),
-    }
+    let streams = match it.first_part() {
+        Some(p) => &p.stream,
+        None => return Vec::new(),
+    };
+    streams
+        .iter()
+        .filter(|s| s.stream_type == 2)
+        .map(|s| (s.codec.to_lowercase(), s.language_code.to_lowercase()))
+        .collect()
 }
 
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a
 /// show's first-episode audio/subtitle tracks (the show container carries none).
-fn fetch_item_streams(host: &str, port: c_int, token: &str, rk: &str, d: &mut Detail) {
-    if let Some(json) = get_json(host, port, &format!("/library/metadata/{rk}?X-Plex-Token={token}")) {
-        if let Some(it) = meta0(&json) {
-            parse_streams(it, d);
-        }
+fn fetch_item_streams(rk: &str, d: &mut Detail) {
+    if let Some(it) = crate::plex::client().metadata(rk) {
+        parse_streams(&it, d);
     }
 }
 
-fn fetch_seasons(host: &str, port: c_int, token: &str, rk: &str) -> Vec<Season> {
-    let json = match get_json(host, port, &format!("/library/metadata/{rk}/children?X-Plex-Token={token}")) {
-        Some(j) => j,
+fn fetch_seasons(rk: &str) -> Vec<Season> {
+    let mc = match crate::plex::client().children(rk) {
+        Some(m) => m,
         None => return Vec::new(),
     };
-    metas(&json)
+    mc.metadata
         .iter()
-        .filter(|x| jstr(x.get("type")) == "season")
+        .filter(|x| x.kind == "season")
         .map(|x| Season {
-            rk: jstr(x.get("ratingKey")),
-            index: jint(x.get("index")),
-            title: jstr(x.get("title")),
-            leaf_count: jint(x.get("leafCount")),
+            rk: x.rating_key.clone(),
+            index: x.index,
+            title: x.title.clone(),
+            leaf_count: x.leaf_count,
         })
         .collect()
 }
 
-fn fetch_episodes(host: &str, port: c_int, token: &str, season_rk: &str) -> Vec<Episode> {
-    let json = match get_json(host, port, &format!("/library/metadata/{season_rk}/children?X-Plex-Token={token}")) {
-        Some(j) => j,
+fn fetch_episodes(season_rk: &str) -> Vec<Episode> {
+    let mc = match crate::plex::client().children(season_rk) {
+        Some(m) => m,
         None => return Vec::new(),
     };
-    metas(&json)
+    mc.metadata
         .iter()
         .map(|x| {
-            let media0 = x.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first());
+            let media0 = x.media.first();
             Episode {
-                rk: jstr(x.get("ratingKey")),
-                index: jint(x.get("index")),
-                season: jint(x.get("parentIndex")),
-                title: jstr(x.get("title")),
-                summary: jstr(x.get("summary")),
-                aired: jstr(x.get("originallyAvailableAt")),
-                dur_ms: jint(x.get("duration")),
-                thumb: jstr(x.get("thumb")),
-                resume_ms: jint(x.get("viewOffset")),
-                part: first_part(x),
-                rating: jstr(x.get("contentRating")),
-                vcodec: media0.map(|m| jstr(m.get("videoCodec"))).unwrap_or_default(),
-                acodec: media0.map(|m| jstr(m.get("audioCodec"))).unwrap_or_default(),
+                rk: x.rating_key.clone(),
+                index: x.index,
+                season: x.parent_index,
+                title: x.title.clone(),
+                summary: x.summary.clone(),
+                aired: x.originally_available_at.clone(),
+                dur_ms: x.duration,
+                thumb: x.thumb.clone(),
+                resume_ms: x.view_offset,
+                part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+                rating: x.content_rating.clone(),
+                vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
+                acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
             }
         })
         .collect()
 }
 
-fn fetch_related(host: &str, port: c_int, token: &str, rk: &str) -> Vec<Related> {
-    let json = match get_json(host, port, &format!("/library/metadata/{rk}/related?X-Plex-Token={token}")) {
-        Some(j) => j,
+fn fetch_related(rk: &str) -> Vec<Related> {
+    let mc = match crate::plex::client().related(rk) {
+        Some(m) => m,
         None => return Vec::new(),
     };
-    let hubs = json
-        .get("MediaContainer")
-        .and_then(|m| m.get("Hub"))
-        .and_then(|a| a.as_array())
-        .cloned()
-        .unwrap_or_default();
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for h in &hubs {
-        let items = match h.get("Metadata").and_then(|a| a.as_array()) {
-            Some(i) => i,
-            None => continue,
-        };
-        for x in items {
-            let rk = jstr(x.get("ratingKey"));
-            if rk.is_empty() || !seen.insert(rk.clone()) {
+    for h in &mc.hub {
+        for x in &h.metadata {
+            if x.rating_key.is_empty() || !seen.insert(x.rating_key.clone()) {
                 continue;
             }
             out.push(Related {
-                rk,
-                title: jstr(x.get("title")),
-                thumb: jstr(x.get("thumb")),
-                year: jint(x.get("year")),
-                is_show: jstr(x.get("type")) == "show",
+                rk: x.rating_key.clone(),
+                title: x.title.clone(),
+                thumb: x.thumb.clone(),
+                year: x.year,
+                is_show: x.kind == "show",
             });
             if out.len() >= 20 {
                 return out;
@@ -363,27 +279,23 @@ fn fetch_related(host: &str, port: c_int, token: &str, rk: &str) -> Vec<Related>
 pub(crate) fn load_detail(rk: &str) {
     let rk = rk.to_string();
     let _ = catch_unwind(move || {
-        let (host, port, token) = match crate::route::config() {
-            Some(c) => c,
-            None => return,
-        };
-        let mut d = match fetch_detail(&host, port, &token, &rk) {
+        let mut d = match fetch_detail(&rk) {
             Some(d) => d,
             None => return,
         };
         if d.is_show {
-            d.seasons = fetch_seasons(&host, port, &token, &rk);
+            d.seasons = fetch_seasons(&rk);
             if let Some(s0) = d.seasons.first() {
-                d.episodes = fetch_episodes(&host, port, &token, &s0.rk);
+                d.episodes = fetch_episodes(&s0.rk);
             }
             // a show carries no streams itself — backfill the About footer's audio/
             // subtitle tracks from the first episode (one extra round-trip)
             let first_ep_rk = d.episodes.first().map(|e| e.rk.clone());
             if let Some(ep_rk) = first_ep_rk {
-                fetch_item_streams(&host, port, &token, &ep_rk, &mut d);
+                fetch_item_streams(&ep_rk, &mut d);
             }
         }
-        d.related = fetch_related(&host, port, &token, &rk);
+        d.related = fetch_related(&rk);
         crate::player::log(&format!(
             "detail: rk={} '{}' show={} genres={} cast={} seasons={} eps={} related={} audio={} subs={}",
             d.rk, d.title, d.is_show, d.genres.len(), d.cast.len(), d.seasons.len(), d.episodes.len(),
@@ -396,15 +308,11 @@ pub(crate) fn load_detail(rk: &str) {
 /// Switch the loaded show to season `idx`, fetching its episodes (used by the season tabs).
 pub(crate) fn load_season(idx: usize) {
     let _ = catch_unwind(move || {
-        let (host, port, token) = match crate::route::config() {
-            Some(c) => c,
-            None => return,
-        };
         let season_rk = match current().and_then(|d| d.seasons.get(idx)) {
             Some(s) => s.rk.clone(),
             None => return,
         };
-        let eps = fetch_episodes(&host, port, &token, &season_rk);
+        let eps = fetch_episodes(&season_rk);
         unsafe {
             if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
                 d.episodes = eps;

@@ -40,9 +40,6 @@ struct Store {
     clock: c_uint,
     frame: c_uint,
     quit: bool,
-    host: String,
-    port: c_int,
-    token: String,
     workers: Vec<JoinHandle<()>>,
 }
 impl Store {
@@ -50,7 +47,6 @@ impl Store {
         Store {
             slots: [Pslot::ZERO; PT_CAP],
             clock: 0, frame: 0, quit: false,
-            host: String::new(), port: 0, token: String::new(),
             workers: Vec::new(),
         }
     }
@@ -91,15 +87,14 @@ fn set_key(s: &mut Pslot, key: &str) {
 }
 
 /// Build the transcode request path (also the store key). png=1 -> transparent clearLogo.
+/// The path (and token) come from the typed client's `image_transcode_path` — the one place
+/// that assembles a /photo/:/transcode request — so this stays the LRU key AND the fetch path.
 pub(crate) fn poster_key(dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
     if dst.is_null() || cap == 0 {
         return;
     }
     unsafe {
-        let enc = crate::pms::urlenc_str(&cstr(src_path));
-        let tok = store().token.clone();
-        let fmt = if png != 0 { "&format=png" } else { "" };
-        let s = format!("/photo/:/transcode?width={w}&height={h}&minSize=1&url={enc}{fmt}&X-Plex-Token={tok}");
+        let s = crate::plex::client().image_transcode_path(&cstr(src_path), w as i64, h as i64, png != 0);
         let out = std::slice::from_raw_parts_mut(dst as *mut u8, cap);
         let b = s.as_bytes();
         let n = b.len().min(cap - 1);
@@ -254,7 +249,7 @@ pub(crate) fn poster_pump(budget: c_int) {
 /// BACKGROUND worker: claim a P_WANT slot, fetch+decode off-lock, publish P_DECODED.
 fn poster_worker() {
     loop {
-        let (idx, key_s, gen, host, port) = {
+        let (idx, key_s, gen) = {
             let mut g = store();
             let idx = loop {
                 if g.quit {
@@ -276,13 +271,15 @@ fn poster_worker() {
             let key_s = String::from_utf8_lossy(key_bytes(&g.slots[idx])).into_owned();
             let sgen = g.slots[idx].gen;
             g.slots[idx].state = P_LOADING;
-            (idx, key_s, sgen, g.host.clone(), g.port)
+            (idx, key_s, sgen)
         };
 
-        // fetch (Rust http_get boxes the stream off-stack) + decode — no GL here
+        // fetch (Rust http_get boxes the stream off-stack) + decode — no GL here. host/port
+        // come from the typed client singleton (the key_s path already carries the token).
+        let c = crate::plex::client();
         let mut w = 0i32;
         let mut h = 0i32;
-        let px = match stream::http_get(&host, port, &key_s, None) {
+        let px = match stream::http_get(c.host(), c.port(), &key_s, None) {
             Some(b) if !b.is_empty() => img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h),
             _ => std::ptr::null_mut(),
         };
@@ -305,13 +302,11 @@ fn poster_worker() {
     }
 }
 
-pub(crate) fn posters_init(host: *const c_char, port: c_int, token: *const c_char) {
-    let (host_s, token_s) = unsafe { (cstr(host), cstr(token)) };
+/// Spawn the poster workers. Host/port/token are read from the typed client singleton
+/// (`crate::plex::init` must run first), so no config is threaded in here.
+pub(crate) fn posters_init() {
     {
         let mut g = store();
-        g.host = host_s;
-        g.port = port;
-        g.token = token_s;
         g.quit = false;
         g.slots = [Pslot::ZERO; PT_CAP];
         g.workers.clear();

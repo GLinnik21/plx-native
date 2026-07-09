@@ -21,11 +21,11 @@ pub struct MediaContainer {
     pub metadata: Vec<Metadata>,
     #[serde(rename = "Hub", default)]
     pub hub: Vec<Hub>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub size: i64,
-    #[serde(rename = "totalSize", default)]
+    #[serde(rename = "totalSize", default, deserialize_with = "de_i64")]
     pub total_size: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub offset: i64,
 }
 
@@ -58,7 +58,7 @@ pub struct Metadata {
     pub rating_key: String,
     #[serde(default)]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub year: i64,
     #[serde(rename = "contentRating", default)]
     pub content_rating: String,
@@ -70,15 +70,19 @@ pub struct Metadata {
     pub studio: String,
     #[serde(rename = "originallyAvailableAt", default)]
     pub originally_available_at: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub duration: i64, // ms
-    #[serde(rename = "viewOffset", default)]
+    #[serde(rename = "viewOffset", default, deserialize_with = "de_i64")]
     pub view_offset: i64, // ms; resume point
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub index: i64, // season/episode number
-    #[serde(rename = "parentIndex", default)]
+    #[serde(rename = "parentIndex", default, deserialize_with = "de_i64")]
     pub parent_index: i64,
-    #[serde(rename = "leafCount", default)]
+    #[serde(rename = "parentRatingKey", default)]
+    pub parent_rating_key: String, // season → its show
+    #[serde(rename = "grandparentRatingKey", default)]
+    pub grandparent_rating_key: String, // episode → its show
+    #[serde(rename = "leafCount", default, deserialize_with = "de_i64")]
     pub leaf_count: i64,
     #[serde(default)]
     pub thumb: String,
@@ -104,6 +108,14 @@ pub struct Metadata {
     pub ultra_blur_colors: Option<UltraBlurColors>,
 }
 
+impl Metadata {
+    /// Media[0].Part[0] — the primary playable part (None for a show container, which carries
+    /// no Media). The part holds the direct-play `key` and the `Stream[]` list.
+    pub fn first_part(&self) -> Option<&MediaPart> {
+        self.media.first().and_then(|m| m.part.first())
+    }
+}
+
 #[derive(Deserialize, Default)]
 pub struct Media {
     #[serde(rename = "videoCodec", default)]
@@ -116,7 +128,7 @@ pub struct Media {
 
 #[derive(Deserialize, Default)]
 pub struct MediaPart {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub id: i64,
     #[serde(default)]
     pub key: String, // /library/parts/{id}/{changestamp}/file.mkv
@@ -128,15 +140,21 @@ pub struct MediaPart {
 /// omits — kept here. Plex 0/1 booleans stay i64; the app tests `!= 0`.
 #[derive(Deserialize, Default)]
 pub struct Stream {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub id: i64,
-    #[serde(rename = "streamType", default)]
+    #[serde(rename = "streamType", default, deserialize_with = "de_i64")]
     pub stream_type: i64, // 1 video, 2 audio, 3 subtitle
     #[serde(default)]
     pub codec: String,
     #[serde(default)]
     pub language: String,
-    #[serde(default)]
+    #[serde(rename = "languageCode", default)]
+    pub language_code: String, // ISO-639 code, e.g. "eng" (route audio-track pick)
+    // Video stream only: source fps for the Load esInfo. Lenient (number OR numeric string)
+    // so a non-numeric frameRate never fails the whole detail parse — matches the old jfloat.
+    #[serde(rename = "frameRate", default, deserialize_with = "de_f64")]
+    pub frame_rate: f64,
+    #[serde(default, deserialize_with = "de_i64")]
     pub channels: i64,
     #[serde(rename = "audioChannelLayout", default)]
     pub audio_channel_layout: String,
@@ -144,11 +162,11 @@ pub struct Stream {
     pub display_title: String,
     #[serde(default)]
     pub title: String,
-    #[serde(rename = "hearingImpaired", default)]
+    #[serde(rename = "hearingImpaired", default, deserialize_with = "de_i64")]
     pub hearing_impaired: i64,
-    #[serde(rename = "audioDescription", default)]
+    #[serde(rename = "audioDescription", default, deserialize_with = "de_i64")]
     pub audio_description: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub forced: i64,
 }
 
@@ -187,6 +205,44 @@ impl From<String> for HexColor {
             (v & 0xff) as f32 / 255.0,
         ])
     }
+}
+
+/// Lenient f64: a JSON number, a numeric string, or null → 0.0 (matches the old `jfloat`
+/// scrape). Called only when the field is present; a missing field uses `default` (0.0).
+fn de_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumOrStr {
+        N(f64),
+        S(String),
+    }
+    Ok(match Option::<NumOrStr>::deserialize(d)? {
+        Some(NumOrStr::N(n)) => n,
+        Some(NumOrStr::S(s)) => s.parse().unwrap_or(0.0),
+        None => 0.0,
+    })
+}
+
+/// Lenient i64: a JSON integer, a float (truncated), a numeric string, or null → 0. The old
+/// code read every number with `.as_i64().unwrap_or(0)`, degrading a bad value to 0 for THAT
+/// field only. serde's strict i64 would instead fail the WHOLE container parse on a
+/// string-encoded int (PMS does this: e.g. `size:"40"`, `streamType:"2"`), dropping every
+/// item in the response. This keeps one field's-worth of degradation (and actually recovers a
+/// stringy int rather than zeroing it). Applied to every i64 in a parsed DTO.
+fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum IntFloatStr {
+        I(i64),
+        F(f64),
+        S(String),
+    }
+    Ok(match Option::<IntFloatStr>::deserialize(d)? {
+        Some(IntFloatStr::I(n)) => n,
+        Some(IntFloatStr::F(f)) => f as i64,
+        Some(IntFloatStr::S(s)) => s.trim().parse().unwrap_or(0),
+        None => 0,
+    })
 }
 
 /// Accept `{…}` OR `[{…}]` (D-1) and return the first, or None.

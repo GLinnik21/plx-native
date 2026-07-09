@@ -232,14 +232,19 @@ pub extern "C" fn plex_run(
                 _ => compiled,
             }
         };
-        let eff_token_c = std::ffi::CString::new(eff_token.as_str()).unwrap_or_default();
+        // Install the process-wide typed Plex client (the read data layer — pms/metadata/
+        // posters — reads this singleton instead of threading host/port/token). Must precede
+        // the first fetch. route::CFG keeps its own copy for the playback layer (engine's
+        // timeline reporter still reads route::config()).
+        let host_s = std::ffi::CStr::from_ptr(pms_host).to_string_lossy().into_owned();
+        crate::plex::init(&host_s, pms_port, &eff_token);
 
         // fetch the catalog once, then spawn the poster workers
-        let nmov = crate::pms::pms_fetch_hubs(pms_host, pms_port, eff_token_c.as_ptr());
+        let nmov = crate::pms::pms_fetch_hubs();
         log(&format!("pms: nmovies={nmov}"));
-        crate::posters::posters_init(pms_host, pms_port, eff_token_c.as_ptr());
+        crate::posters::posters_init();
         crate::route::set_config(
-            &std::ffi::CStr::from_ptr(pms_host).to_string_lossy(),
+            &host_s,
             pms_port,
             &eff_token,
             &std::ffi::CStr::from_ptr(demo_url).to_string_lossy(),
