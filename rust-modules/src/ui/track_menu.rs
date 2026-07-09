@@ -188,9 +188,10 @@ fn audio_label(i: usize) -> String {
         })
         .unwrap_or_default()
 }
-/// Image (bitmap) subtitle codecs — PGS/VobSub/DVD/DVB. We render subtitles client-side as text
-/// and can't rasterize a bitmap overlay, so these can't display; the menu marks them so a title
-/// with only image subs (e.g. a Blu-ray rip) doesn't look silently broken.
+/// Image (bitmap) subtitle codecs — PGS/VobSub/DVD/DVB. The demuxer software-decodes these to
+/// RGBA and the player composites them over the video (ff.rs decode_bitmap_cue +
+/// player_hud::draw_subtitle_bitmap), so they render on the direct-play path; the menu still
+/// tags the codec for clarity.
 pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
     matches!(
         codec.to_ascii_lowercase().as_str(),
@@ -208,7 +209,7 @@ fn sub_label(i: usize) -> String {
                 format!("{} \u{2014} {}", lang, s.title)
             };
             if is_image_sub_codec(&s.codec) {
-                format!("{base}  (image, unsupported)")
+                format!("{base}  ({})", s.codec.to_uppercase()) // PGS/VobSub — client-rendered now
             } else {
                 base
             }

@@ -847,6 +847,7 @@ pub extern "C" fn plex_run(
                 crate::system::clear_opaque_region();
                 glClearColor(0.0, 0.0, 0.0, 0.0);
                 glClear(GL_COLOR_BUFFER_BIT);
+                crate::ui::player_hud::draw_subtitle_bitmap(); // PGS/VobSub image subs
                 crate::ui::player_hud::draw_subtitles(now < hud_until() || paused());
                 if now < hud_until() || paused() {
                     crate::ui::player_hud::draw_hud();

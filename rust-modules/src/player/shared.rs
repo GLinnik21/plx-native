@@ -25,6 +25,22 @@ pub(crate) struct SubCue {
     pub text: String,
 }
 
+/// one decoded image-subtitle cue (PGS/VobSub/DVB). `rgba` is a straight-alpha bitmap of
+/// `w`×`h` at position (`x`,`y`) in the PGS 1920×1080 authoring canvas — 1:1 with our UI, so
+/// it draws at those pixel coords directly. `end_ns` is i64::MAX until a CLEAR display-set
+/// (or a superseding set) truncates it. Unlike text cues we push ONLY the selected track
+/// (bitmaps are heavier than text on this RAM-tight TV), keyed by `start_ns` for the renderer.
+pub(crate) struct SubBitmap {
+    pub track: i32,
+    pub start_ns: i64,
+    pub end_ns: i64,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub rgba: Vec<u8>,
+}
+
 pub(crate) struct Shared {
     // library callback thread (K) -> main (M)
     pub playpos_ns: AtomicI64,               // g_playpos_ns
@@ -73,6 +89,7 @@ pub(crate) struct Shared {
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
     pub desired_sub_idx: AtomicI32,
     pub sub_cues: Mutex<Vec<SubCue>>,
+    pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (selected track only)
 
     // demux (D) -> main (M)
     pub file_size: AtomicI64,                 // g_file_size
@@ -125,6 +142,7 @@ impl Shared {
             report_stop: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
             sub_cues: Mutex::new(Vec::new()),
+            sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             cues: Mutex::new(Vec::new()),
@@ -162,6 +180,7 @@ impl Shared {
         self.report_stop.store(false, Ordering::Relaxed);
         self.desired_sub_idx.store(-1, Ordering::Relaxed);
         self.sub_cues.lock().unwrap().clear();
+        self.sub_bitmaps.lock().unwrap().clear();
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);

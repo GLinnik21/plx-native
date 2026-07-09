@@ -10,7 +10,7 @@ mod pump;
 mod shared;
 pub(crate) mod threads;
 
-use shared::{Shared, SubCue, Transport};
+use shared::{Shared, SubBitmap, SubCue, Transport};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -136,6 +136,64 @@ pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
         .rev()
         .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
         .map(|c| c.text.clone())
+}
+
+/// Image-subtitle store (PGS/VobSub). The demux (D) thread decodes the SELECTED track's
+/// bitmaps and pushes them here; the renderer (M) reads the active one for the playpos. A new
+/// display-set supersedes any still-open cue on the same track (PGS signals the end via a later
+/// CLEAR or a superseding set, both handled here). Bounded by time like the text store.
+pub(crate) fn push_subtitle_bitmap(track: i32, start_ns: i64, x: i32, y: i32, w: i32, h: i32, rgba: Vec<u8>) {
+    let mut v = SHARED.sub_bitmaps.lock().unwrap();
+    for c in v.iter_mut() {
+        if c.track == track && c.end_ns == i64::MAX {
+            c.end_ns = start_ns; // this set replaces the one still showing
+        }
+    }
+    let floor = SHARED.playpos_ns.load(Relaxed) - 2_000_000_000;
+    v.retain(|c| c.end_ns >= floor);
+    v.push(SubBitmap { track, start_ns, end_ns: i64::MAX, x, y, w, h, rgba });
+    // Hard RAM ceiling: decoding ALL image tracks means several are buffered at once, so bound
+    // the store by total RGBA bytes (not count) and evict the oldest first. The time-retain above
+    // already drops most cues behind the playhead; this is the safety valve for many-track 4K
+    // titles. ~24 MB is comfortable headroom on the direct-play path.
+    const BUDGET: usize = 24 * 1024 * 1024;
+    let mut total: usize = v.iter().map(|c| c.rgba.len()).sum();
+    while total > BUDGET && v.len() > 1 {
+        total -= v[0].rgba.len();
+        v.remove(0);
+    }
+}
+/// A CLEAR display-set (num_rects==0): close the currently-open cue on this track at `end_ns`.
+pub(crate) fn close_subtitle_bitmap(track: i32, end_ns: i64) {
+    let mut v = SHARED.sub_bitmaps.lock().unwrap();
+    for c in v.iter_mut() {
+        if c.track == track && c.end_ns == i64::MAX {
+            c.end_ns = end_ns;
+        }
+    }
+}
+/// Cheap per-frame lookup: the `start_ns` key of the selected track's image cue active at
+/// `now_ns`, or None. The renderer only re-uploads its GL texture when this key changes.
+pub(crate) fn active_bitmap_key(now_ns: i64) -> Option<i64> {
+    let sel = SHARED.desired_sub_idx.load(Relaxed);
+    if sel < 0 {
+        return None;
+    }
+    let v = SHARED.sub_bitmaps.lock().unwrap();
+    v.iter()
+        .rev()
+        .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
+        .map(|c| c.start_ns)
+}
+/// Fetch (x,y,w,h,rgba) for the selected track's cue with this `start_ns` key. Clones the
+/// bitmap once (only when the renderer sees a new key), so the per-frame path stays cheap.
+pub(crate) fn bitmap_by_key(key: i64) -> Option<(i32, i32, i32, i32, Vec<u8>)> {
+    let sel = SHARED.desired_sub_idx.load(Relaxed);
+    let v = SHARED.sub_bitmaps.lock().unwrap();
+    v.iter()
+        .rev()
+        .find(|c| c.track == sel && c.start_ns == key)
+        .map(|c| (c.x, c.y, c.w, c.h, c.rgba.clone()))
 }
 /// extract displayable text from a subtitle block (SRT = raw UTF-8; ASS = the field
 /// after the 8th comma), stripping tags/override codes and normalizing line breaks.
