@@ -7,7 +7,7 @@ use super::shared::Stage;
 use super::{ffi, log, threads, ACB_OK, PTYPE, SHARED, TX};
 use crate::aq::{AuNode, AuQueue};
 use crate::stream::HttpStream;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
@@ -24,6 +24,13 @@ const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","optio
 const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.glin.plexpoc","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plexpoc"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
 static VTOT: AtomicI64 = AtomicI64::new(0); // total video AUs fed (log cadence only)
+static ATOT: AtomicI64 = AtomicI64::new(0); // total audio AUs fed (log cadence only)
+
+// Per-lane queue byte caps (two-lane feed). Video matches the pipeline's srcBufferLevelVideo (8MB);
+// audio is kept small (the TV is RAM-tight and audio frames are tiny) yet large enough to cushion
+// the single demux thread briefly blocking on a full video lane.
+const AQ_VIDEO_BYTES: c_long = 8 * 1024 * 1024;
+const AQ_AUDIO_BYTES: c_long = 1024 * 1024;
 
 pub(crate) struct SampleBuf {
     pub data: Vec<u8>,
@@ -53,22 +60,30 @@ pub(crate) struct Engine {
     pub flushed: bool,         // Kodi m_flushed: set on an in-place seek flush; the first
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.
-    pub max_fed_pts: i64,      // g_max_fed_pts
+    pub max_fed_video_pts: i64, // high-water fed pts, VIDEO lane (g_max_fed_pts)
+    pub max_fed_audio_pts: i64, // high-water fed pts, AUDIO lane (two-lane feed)
     pub seek_base_pts: i64,    // fed pts of the first post-seek keyframe (prime measures buffer
-    // depth as max_fed_pts - seek_base_pts, since the in-place seek feeds REAL pts, not 0-based)
+    // depth as max_fed_video_pts - seek_base_pts, since the in-place seek feeds REAL pts, not 0-based)
     // prime-then-play: after a seek/resume the pipeline is PAUSED and data is buffered before
     // Play, so the clock doesn't free-run through the demux reopen / transcode-restart gap (that
     // gap is what makes video "fast-forward" to catch the audio clock on resume). feed_stream
     // fires Play once max_fed_pts reaches PRIME_NS.
     pub prime_play: bool,
-    pub aq: Option<Box<AuQueue>>, // g_aq (M owns; ptr handed to D)
+    // Two-lane feed (Kodi m_messageQueueVideo/Audio): the ff demuxer routes es=1 video to aq_video
+    // and es=2 audio to aq_audio; each lane is fed independently so a video BufferFull can't stall
+    // the audio lane (the audioSync master clock). Both are allocated for a stream; the legacy mkv
+    // path feeds its mixed es stream into aq_video and leaves aq_audio empty. (None only pre-start
+    // and on the local-sample source.)
+    pub aq_video: Option<Box<AuQueue>>, // g_aq (M owns; ptr handed to D)
+    pub aq_audio: Option<Box<AuQueue>>, // audio lane
     // hs/hs2/payload are RAII: held alive for the workers (which hold raw ptrs into
     // them) and freed only after join — never read back through the field.
     #[allow(dead_code)]
     pub hs: Box<HttpStream>, // demux socket (M owns; D uses via raw ptr)
     #[allow(dead_code)]
     pub hs2: Box<HttpStream>, // cue-preflight socket
-    pub pending: Option<AuBox>, // bf_pending (held across BufferFull)
+    pub pending_video: Option<AuBox>, // bf_pending, VIDEO lane (held across BufferFull)
+    pub pending_audio: Option<AuBox>, // bf_pending, AUDIO lane
     #[allow(dead_code)]
     pub payload: std::ffi::CString, // bf_payload (kept alive for the session)
     pub source: Source,
@@ -239,7 +254,8 @@ pub(crate) fn start_bufferfeed() -> bool {
     let mut hs = crate::stream::http_stream_boxed();
     let mut hs2 = crate::stream::http_stream_boxed();
     let mut hs3 = crate::stream::http_stream_boxed(); // soft-subs sidecar (spawned lazily by the pump)
-    let mut aq_box: Option<Box<AuQueue>> = None;
+    let mut aqv_box: Option<Box<AuQueue>> = None;
+    let mut aqa_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
     let mut cues_th = None;
     let source;
@@ -247,9 +263,13 @@ pub(crate) fn start_bufferfeed() -> bool {
     if stream {
         let (host, port, path) = parse_stream_url(&url);
         log(&format!("stream: host={host} port={port} path={}", &path[..path.len().min(80)]));
-        let mut q: Box<AuQueue> = Box::new(unsafe { std::mem::zeroed() });
-        crate::aq::aq_init(&mut *q);
-        let aq_raw = &mut *q as *mut AuQueue;
+        // Two-lane feed: the ff demuxer routes es=1 video to aq_video and es=2 audio to aq_audio,
+        // each with its own cap + feeder. Both are always allocated; the legacy single-queue mkv
+        // path just leaves aq_audio empty (it feeds its mixed es stream into aq_video).
+        let mut qv = crate::aq::aq_new(AQ_VIDEO_BYTES);
+        let mut qa = crate::aq::aq_new(AQ_AUDIO_BYTES);
+        let aqv_raw = &mut *qv as *mut AuQueue;
+        let aqa_raw = &mut *qa as *mut AuQueue;
         let hs_raw = &mut *hs as *mut HttpStream;
         let hs2_raw = &mut *hs2 as *mut HttpStream;
         let hs3_raw = &mut *hs3 as *mut HttpStream;
@@ -259,9 +279,10 @@ pub(crate) fn start_bufferfeed() -> bool {
         SHARED.seek_byte.store(-1, Ordering::Relaxed);
         {
             let (h, p) = (host.clone(), path.clone());
-            let aqp = threads::SendPtr(aq_raw);
+            let aqp = threads::SendPtr(aqv_raw);
+            let aqap = threads::SendPtr(aqa_raw);
             let hsp = threads::SendPtr(hs_raw);
-            stream_th = Some(std::thread::spawn(move || threads::stream_thread(h, port, p, aqp, hsp)));
+            stream_th = Some(std::thread::spawn(move || threads::stream_thread(h, port, p, aqp, aqap, hsp)));
         }
         // skip the cue preflight for a transcode (no byte-cues; a 2nd conn cuts the stream)
         if !SHARED.cues_ready.load(Ordering::Relaxed) && crate::route::transcode_session().is_empty() {
@@ -270,7 +291,8 @@ pub(crate) fn start_bufferfeed() -> bool {
             let hs2p = threads::SendPtr(hs2_raw);
             cues_th = Some(std::thread::spawn(move || threads::cues_thread(h, port, p, hs2p)));
         }
-        aq_box = Some(q);
+        aqv_box = Some(qv);
+        aqa_box = Some(qa);
         let _ = (host, port, path); // consumed above; keep the bindings' last use explicit
         source = Source::Stream;
     } else {
@@ -303,13 +325,16 @@ pub(crate) fn start_bufferfeed() -> bool {
         // false (first keyframe is already ~0).
         rebase_pending: SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0,
         flushed: false,
-        max_fed_pts: 0,
+        max_fed_video_pts: 0,
+        max_fed_audio_pts: 0,
         seek_base_pts: 0,
         prime_play: false,
-        aq: aq_box,
+        aq_video: aqv_box,
+        aq_audio: aqa_box,
         hs,
         hs2,
-        pending: None,
+        pending_video: None,
+        pending_audio: None,
         payload: payload_c,
         source,
         stream_th,
@@ -442,7 +467,8 @@ fn teardown(keep_cues: bool, for_reload: bool) {
     SHARED.subs_abort.store(true, Ordering::Release); // stop the soft-subs sidecar thread
     SHARED.report_stop.store(true, Ordering::Release); // stop the /:/timeline reporter
     if stream {
-        if let Some(q) = eng.aq.as_mut() {
+        // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
+        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()].into_iter().flatten() {
             crate::aq::aq_abort(&mut **q);
         }
         let p = SHARED.hs_ptr.load(Ordering::Acquire);
@@ -488,14 +514,13 @@ fn teardown(keep_cues: bool, for_reload: bool) {
         }
         unsafe { ffi::sf_destroy() };
     }
-    // 4. drain + destroy the queue
+    // 4. drain + destroy both queues (drain_aq also clears both pendings)
     if stream {
         drain_aq(&mut eng);
-        if let Some(q) = eng.aq.as_mut() {
+        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()].into_iter().flatten() {
             crate::aq::aq_destroy(&mut **q);
         }
     }
-    eng.pending = None;
     // 5. reset shared + transport. On a real stop also stop the server transcode + clear the
     // URL; on a reload KEEP them so start_bufferfeed restarts the same item (a direct-play
     // reload has no transcode session anyway, so the skip only matters for the URL).
@@ -537,9 +562,16 @@ pub(crate) fn cue_byte_for(t: i64) -> Option<i64> {
     Some(v[if best < 0 { 0 } else { best as usize }].byte)
 }
 
-/// free every queued AU + the held pending one (seek + teardown).
+/// free every queued AU + the held pending one, BOTH lanes (seek + teardown).
 pub(crate) fn drain_aq(eng: &mut Engine) {
-    if let Some(q) = eng.aq.as_mut() {
+    drain_one(eng.aq_video.as_mut());
+    drain_one(eng.aq_audio.as_mut());
+    eng.pending_video = None;
+    eng.pending_audio = None;
+}
+
+fn drain_one(q: Option<&mut Box<AuQueue>>) {
+    if let Some(q) = q {
         let qp = &mut **q as *mut AuQueue;
         let mut eof: c_int = 0;
         loop {
@@ -550,7 +582,6 @@ pub(crate) fn drain_aq(eng: &mut Engine) {
             unsafe { libc::free(n as *mut c_void) };
         }
     }
-    eng.pending = None;
 }
 
 /// feed streamed AUs from the demux queue; hold the current AU across ticks on
@@ -566,9 +597,16 @@ const PRIME_NS: i64 = 700_000_000;
 // ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
 const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
 const AUDIO_SLACK_NS: i64 = 2_000_000_000;
+// A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
+// distance) → drop it rather than feed a backward jump.
+const STALE_BACKJUMP_NS: i64 = 2_000_000_000;
 
+/// VIDEO lane feeder (two-lane ff path: aq_video is video-only; legacy mkv path: aq_video holds
+/// the mixed es stream). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
+/// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
+/// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
 pub(crate) fn feed_stream(eng: &mut Engine) {
-    let qp = match eng.aq.as_mut() {
+    let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
         None => return,
     };
@@ -576,15 +614,15 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
     while fed < 120 {
         // Feed each AU, throttled to ~MAX_FEED_AHEAD_NS ahead of the presented position per lane
         // (see the throttle below) rather than greedily to BufferFull.
-        if eng.pending.is_none() {
+        if eng.pending_video.is_none() {
             let mut eof: c_int = 0;
             let n = crate::aq::aq_pop(qp, &mut eof);
             if n.is_null() {
                 break;
             }
-            eng.pending = Some(AuBox(n));
+            eng.pending_video = Some(AuBox(n));
         }
-        let n = eng.pending.as_ref().unwrap().0;
+        let n = eng.pending_video.as_ref().unwrap().0;
         let (es, key, pts, len, data) = unsafe { crate::aq::au_fields(n) };
         if eng.rebase_pending {
             if es == 1 && key != 0 {
@@ -612,18 +650,18 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
                     // fresh Load's pipeline expects a 0-based feed; disp_base carries the offset).
                     SHARED.pts_shift.store(-pts, Ordering::Relaxed);
                 }
-                eng.rebase_pending = false;
+                eng.rebase_pending = false; // releases the AUDIO lane (which holds until this clears)
                 eng.seek_base_pts = pts + SHARED.pts_shift.load(Ordering::Relaxed); // fed-pts base
                 log(&format!("rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
                     SHARED.pts_shift.load(Ordering::Relaxed)));
             } else {
-                eng.pending = None; // drop pre-keyframe AUs
+                eng.pending_video = None; // drop pre-keyframe AUs
                 continue;
             }
         }
         let mut fp = pts + SHARED.pts_shift.load(Ordering::Relaxed);
-        if fp < eng.max_fed_pts - 2_000_000_000 {
-            eng.pending = None; // stale (a big backward jump)
+        if fp < eng.max_fed_video_pts - STALE_BACKJUMP_NS {
+            eng.pending_video = None; // stale (a big backward jump)
             continue;
         }
         if fp < 0 {
@@ -631,8 +669,8 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         }
         // Feed-ahead throttle: don't feed an AU that's already more than its lane's budget ahead
         // of the presented position — keep it pending and retry once the pipeline presents more.
-        // Skipped while priming (feed freely to reach PRIME_NS before Play). The FIFO is pts-
-        // ordered, so if the head is over budget everything behind it is too; breaking is correct.
+        // Skipped while priming (feed freely to reach PRIME_NS before Play). Each lane's queue is
+        // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
         if !eng.prime_play {
             let pres = SHARED.pres_fed.load(Ordering::Relaxed);
             let budget = if es == 1 { MAX_FEED_AHEAD_NS } else { MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS };
@@ -641,16 +679,16 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
             }
         }
         let r = unsafe { ffi::sf_feed(data, len as u32, fp, es) };
-        if fp > eng.max_fed_pts {
-            eng.max_fed_pts = fp;
+        if fp > eng.max_fed_video_pts {
+            eng.max_fed_video_pts = fp;
         }
         // prime-then-play: once PRIME_NS of the fresh (post-seek/resume) stream is buffered,
         // start the clock. The pipeline was paused through the reopen gap, so it now presents
         // from the seek point in A/V sync instead of fast-forwarding to a clock that ran ahead.
-        if eng.prime_play && eng.max_fed_pts - eng.seek_base_pts >= PRIME_NS {
+        if eng.prime_play && eng.max_fed_video_pts - eng.seek_base_pts >= PRIME_NS {
             unsafe { ffi::sf_play() };
             eng.prime_play = false;
-            log(&format!("primed: {}ms buffered -> Play", (eng.max_fed_pts - eng.seek_base_pts) / 1_000_000));
+            log(&format!("primed: {}ms buffered -> Play", (eng.max_fed_video_pts - eng.seek_base_pts) / 1_000_000));
         }
         if es == 1 {
             let v = VTOT.fetch_add(1, Ordering::Relaxed) + 1;
@@ -660,9 +698,68 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
             }
         }
         if (r as u8) != b'O' {
-            break; // 'B' BufferFull -> keep pending, retry next tick
+            break; // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
         }
-        eng.pending = None;
+        eng.pending_video = None;
+        fed += 1;
+    }
+}
+
+/// AUDIO lane feeder (two-lane ff path only). Independent of the video lane: its own queue, its
+/// own fed-pts high-water, its own BufferFull retry — so a video BufferFull never starves audio.
+/// HOLDS while a seek rebase is pending (the VIDEO lane sets pts_shift on its first post-seek
+/// keyframe; feeding audio before that would use a stale shift → A/V desync). No prime/Play here —
+/// only the video lane starts the clock. Called AFTER feed_stream each tick, so a same-tick rebase
+/// is already visible.
+pub(crate) fn feed_audio_lane(eng: &mut Engine) {
+    if eng.rebase_pending {
+        return; // wait for the video lane to publish pts_shift
+    }
+    let qp = match eng.aq_audio.as_mut() {
+        Some(q) => &mut **q as *mut AuQueue,
+        None => return,
+    };
+    // hoisted out of the loop: pts_shift is stable once rebase clears (only the video lane's rebase
+    // arm writes it, on this same thread), and one pres_fed sample per tick is plenty against the
+    // multi-second audio budget.
+    let shift = SHARED.pts_shift.load(Ordering::Relaxed);
+    let pres = SHARED.pres_fed.load(Ordering::Relaxed);
+    let mut fed = 0;
+    while fed < 120 {
+        if eng.pending_audio.is_none() {
+            let mut eof: c_int = 0;
+            let n = crate::aq::aq_pop(qp, &mut eof);
+            if n.is_null() {
+                break;
+            }
+            eng.pending_audio = Some(AuBox(n));
+        }
+        let n = eng.pending_audio.as_ref().unwrap().0;
+        let (es, _key, pts, len, data) = unsafe { crate::aq::au_fields(n) };
+        let mut fp = pts + shift;
+        if fp < eng.max_fed_audio_pts - STALE_BACKJUMP_NS {
+            eng.pending_audio = None; // stale (a big backward jump)
+            continue;
+        }
+        if fp < 0 {
+            fp = 0;
+        }
+        if !eng.prime_play && fp - pres > MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS {
+            break;
+        }
+        let r = unsafe { ffi::sf_feed(data, len as u32, fp, es) };
+        if fp > eng.max_fed_audio_pts {
+            eng.max_fed_audio_pts = fp;
+        }
+        let a = ATOT.fetch_add(1, Ordering::Relaxed) + 1;
+        if a <= 4 || a % 200 == 0 {
+            let qb = crate::aq::aq_bytes(qp);
+            log(&format!("feed a#{a} sz={len} fed={fp} reply={} qbytes={qb}", r as u8 as char));
+        }
+        if (r as u8) != b'O' {
+            break; // 'B' BufferFull -> keep pending, retry next tick (AUDIO lane only)
+        }
+        eng.pending_audio = None;
         fed += 1;
     }
 }

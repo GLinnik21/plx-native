@@ -1,7 +1,7 @@
 //! player::pump — the main-thread pump (was bufferfeed_pump). Runs each frame from
 //! plex_run: the pending-seek handler, the ACB-bind state machine (Stage), and the
 //! feed dispatch. All ACB/Starfish control calls happen here on the main thread.
-use super::engine::{cue_byte_for, drain_aq, engine, feed_sample, feed_stream, Engine, Source};
+use super::engine::{cue_byte_for, drain_aq, engine, feed_audio_lane, feed_sample, feed_stream, Engine, Source};
 use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
 use std::os::raw::c_char;
@@ -126,7 +126,8 @@ pub(crate) fn pump(now: u32) {
         // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;
-        eng.max_fed_pts = 0;
+        eng.max_fed_video_pts = 0;
+        eng.max_fed_audio_pts = 0;
         eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
         // legacy-mkv seek landing while already Streaming: its plane is bound to frames sf_flush
         // just dropped → "Playing error". Fall back to Bound so the pump re-sends
@@ -195,7 +196,12 @@ pub(crate) fn pump(now: u32) {
     // present the file start for a frame before the seek repositions — a visible jump. ----------
     if eng.stage >= Stage::Playing && !TX.paused.load(Relaxed) && TX.seek_to_ns.load(Relaxed) < 0 {
         if stream {
+            // Two-lane feed: VIDEO lane first — it owns the seek rebase (clears rebase_pending +
+            // publishes pts_shift) — then the AUDIO lane, which sees that fresh shift the same tick.
+            // A BufferFull in one lane no longer stalls the other. On the legacy mkv path aq_audio
+            // is empty, so feed_audio_lane feeds nothing and feed_stream drains the mixed queue.
             feed_stream(eng);
+            feed_audio_lane(eng);
         } else {
             feed_sample(eng);
         }

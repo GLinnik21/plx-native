@@ -57,13 +57,16 @@ extern "C" fn cue_cb(ud: *mut c_void, time_ticks: i64, byte: i64) {
 /// demux: open the PMS part URL, run the MKV demuxer pushing AUs to the queue. Loop
 /// for seeks — the pump sets seek_byte + closes the socket to interrupt the read; we
 /// re-open with a byte Range and resync to the next cluster.
-pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
     // Bisect: /tmp/poc-demux=ff routes the demux through the libavformat demuxer (ff.rs);
-    // otherwise the hand-rolled MKV path below runs (default).
+    // otherwise the hand-rolled MKV path below runs (default). Two-lane feed: `aq` is the video
+    // lane, `aqa` the audio lane. The legacy mkv path is single-queue → it feeds its mixed es
+    // stream into `aq` and leaves `aqa` empty.
     if crate::ff::use_ff() {
-        crate::ff::demux(host, port, path, aq, hs);
+        crate::ff::demux(host, port, path, aq, aqa, hs);
         return;
     }
+    let _ = aqa; // mkv path feeds only the video lane (`aq`)
     // unwrap_or_default: an interior NUL (only reachable via a malformed /tmp/poc-url)
     // yields an empty CString -> http_open fails gracefully, matching the C's degradation
     // (never a thread panic).
