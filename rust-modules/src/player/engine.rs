@@ -630,6 +630,12 @@ fn drain_one(q: Option<&mut Box<AuQueue>>) {
 /// prime-then-play buffer depth: how much of the post-seek stream to buffer (paused) before
 /// starting the clock. Enough to cover the pipeline's decode latency so the first frame is ready.
 const PRIME_NS: i64 = 700_000_000;
+// Prime the AUDIO lane too before starting the (audioSync master) clock — else a rapid-seek drain
+// can start Play on an empty audio queue and leave audio silent until the next seek. Fallback:
+// start anyway once video buffers PRIME_VIDEO_MAX_NS without audio (audioless / briefly starved),
+// so a genuinely audioless region can't hang.
+const PRIME_AUDIO_NS: i64 = 300_000_000;
+const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
 // Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
 // position (SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
 // ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
@@ -737,10 +743,16 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         // prime-then-play: once PRIME_NS of the fresh (post-seek/resume) stream is buffered,
         // start the clock. The pipeline was paused through the reopen gap, so it now presents
         // from the seek point in A/V sync instead of fast-forwarding to a clock that ran ahead.
-        if eng.prime_play && eng.max_fed_video_pts - eng.seek_base_pts >= PRIME_NS {
+        // Start the clock once BOTH lanes are buffered past the seek base: video to PRIME_NS AND
+        // audio to PRIME_AUDIO_NS. Priming on video ALONE started the audioSync MASTER clock with
+        // an empty audio queue, so a rapid-seek drain could leave audio silent until the next seek.
+        // The video-buffer fallback still starts an audioless/briefly-starved stream (no hang).
+        let vbuf = eng.max_fed_video_pts - eng.seek_base_pts;
+        let abuf = eng.max_fed_audio_pts - eng.seek_base_pts;
+        if eng.prime_play && vbuf >= PRIME_NS && (abuf >= PRIME_AUDIO_NS || vbuf >= PRIME_VIDEO_MAX_NS) {
             unsafe { ffi::sf_play() };
             eng.prime_play = false;
-            log(&format!("primed: {}ms buffered -> Play", (eng.max_fed_video_pts - eng.seek_base_pts) / 1_000_000));
+            log(&format!("primed: v={}ms a={}ms -> Play", vbuf / 1_000_000, abuf / 1_000_000));
         }
         if es == 1 {
             let v = VTOT.fetch_add(1, Ordering::Relaxed) + 1;
