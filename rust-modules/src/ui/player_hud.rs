@@ -3,9 +3,10 @@
 //! playpos_ns/duration_ns) and the route HUD strings via route::title_cptr/ctxline_cptr.
 //! A View/ProgressBar refactor onto retui is a follow-up.
 #![allow(dead_code)]
-use crate::gfx::{draw_rect, draw_rrect};
+use crate::gfx::{delete_tex, draw_rect, draw_rrect, draw_tex, upload_rgba};
 use crate::text::draw_text;
 use std::ffi::CString;
+use std::os::raw::c_uint;
 use std::sync::atomic::Ordering::Relaxed;
 
 const SCR_W: f32 = 1920.0;
@@ -120,6 +121,43 @@ pub(crate) fn draw_subtitles(hud_up: bool) {
                 draw_text(cs.as_ptr(), cx + dx, top + 4.0 + dy, sz, outline.as_ptr(), 1, 1);
             }
             draw_text(cs.as_ptr(), cx, top + 4.0, sz, white.as_ptr(), 1, 1);
+        }
+    }
+}
+
+/// Client-rendered IMAGE subtitles (PGS/VobSub): composite the active decoded bitmap over the
+/// video at its 1920×1080 canvas coords (== our UI, so used directly). Caches the GL texture and
+/// re-uploads only when the active cue changes (every few seconds). Main-thread only (GL). This
+/// is the image counterpart to draw_subtitles — a selected track is either text or image, so at
+/// most one of the two draws a cue at a time.
+pub(crate) fn draw_subtitle_bitmap() {
+    static mut TEX: c_uint = 0;
+    static mut KEY: i64 = i64::MIN;
+    static mut RECT: (f32, f32, f32, f32) = (0.0, 0.0, 0.0, 0.0);
+    unsafe {
+        if crate::player::desired_sub_idx() < 0 {
+            if TEX != 0 {
+                delete_tex(TEX);
+                TEX = 0;
+            }
+            KEY = i64::MIN;
+            return;
+        }
+        match crate::player::active_bitmap_key(crate::player::playpos_ns()) {
+            None => KEY = i64::MIN, // gap between cues — draw nothing this frame
+            Some(k) => {
+                if k != KEY {
+                    if let Some((x, y, w, h, rgba)) = crate::player::bitmap_by_key(k) {
+                        TEX = upload_rgba(TEX, w, h, rgba.as_ptr());
+                        RECT = (x as f32, y as f32, w as f32, h as f32);
+                        KEY = k;
+                    } else {
+                        return; // cue evicted between key lookup and fetch
+                    }
+                }
+                let white = [1.0f32, 1.0, 1.0, 1.0];
+                draw_tex(TEX, RECT.0, RECT.1, RECT.2, RECT.3, 0.0, white.as_ptr());
+            }
         }
     }
 }

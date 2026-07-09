@@ -59,7 +59,23 @@ extern "C" {
     fn glBlendFunc(sfactor: c_uint, dfactor: c_uint);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: c_uint);
+    fn glGenTextures(n: c_int, textures: *mut c_uint);
+    fn glDeleteTextures(n: c_int, textures: *const c_uint);
+    fn glPixelStorei(pname: c_uint, param: c_int);
+    fn glTexImage2D(target: c_uint, level: c_int, ifmt: c_int, w: c_int, h: c_int, border: c_int,
+                    format: c_uint, ty: c_uint, pixels: *const c_void);
+    fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
 }
+
+const GL_RGBA: c_uint = 0x1908;
+const GL_UNSIGNED_BYTE: c_uint = 0x1401;
+const GL_UNPACK_ALIGNMENT: c_uint = 0x0CF5;
+const GL_TEXTURE_MIN_FILTER: c_uint = 0x2801;
+const GL_TEXTURE_MAG_FILTER: c_uint = 0x2800;
+const GL_TEXTURE_WRAP_S: c_uint = 0x2802;
+const GL_TEXTURE_WRAP_T: c_uint = 0x2803;
+const GL_LINEAR: c_int = 0x2601;
+const GL_CLAMP_TO_EDGE: c_int = 0x812F;
 
 const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 
@@ -311,6 +327,33 @@ pub(crate) fn init_image() {
         IL_RADIUS = glGetUniformLocation(IPROG, c"u_iradius".as_ptr());
         IL_TEX = glGetUniformLocation(IPROG, c"u_tex".as_ptr());
         glUseProgram(PROG);
+    }
+}
+
+/// Upload a straight-alpha RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses
+/// `prev` if non-zero (re-specs it), else allocates a new id. Returns the texture id. Used for
+/// image-subtitle (PGS/VobSub) overlays, which change only every few seconds. Main-thread only.
+pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -> c_uint {
+    unsafe {
+        let mut tex = prev;
+        if tex == 0 {
+            glGenTextures(1, &mut tex);
+        }
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as c_int, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels as *const c_void);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        tex
+    }
+}
+
+/// Delete a texture created by upload_rgba (0 = no-op). Main-thread only.
+pub(crate) fn delete_tex(tex: c_uint) {
+    if tex != 0 {
+        unsafe { glDeleteTextures(1, &tex) };
     }
 }
 
