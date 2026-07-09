@@ -127,6 +127,13 @@ pub(crate) fn pump(now: u32) {
         eng.rebase_pending = true;
         eng.max_fed_video_pts = 0;
         eng.max_fed_audio_pts = 0;
+        // Drop any AU held from BEFORE the seek (the per-lane BufferFull retry). drain_aq cleared the
+        // QUEUES but not these pending AUs; feeding a stale pre-seek AU after the seek re-bases it to
+        // the NEW pts_shift → a big A/V desync — the stale audio pts advances max_fed_audio_pts, then
+        // the STALE_BACKJUMP guard drops the fresh post-seek audio as "too far back" → no sound. The
+        // reopened stream supplies fresh post-seek AUs.
+        eng.pending_video = None;
+        eng.pending_audio = None;
         eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
         // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
         // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
