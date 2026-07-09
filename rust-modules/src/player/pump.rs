@@ -62,6 +62,21 @@ pub(crate) fn pump(now: u32) {
     {
         TX.seek_to_ns.store(-1, Relaxed);
         let t = t.max(0);
+        // TRANSCODE seek: restart the encode at the new &offset and do a FULL RELOAD (fresh Load).
+        // A flush()+refeed of the new start.mkv left a STALE GStreamer segment → visual artifacts on
+        // the jump (the same class of bug the in-place seek cured for direct-play; a transcode can't
+        // use the in-place path — the stream content itself changes at the new offset). A fresh Load
+        // rebuilds the segment by construction. reload_transcode REPLACES the ENGINE, so `eng`
+        // dangles after it — return immediately and let the next pump() tick drive the fresh engine.
+        if is_transcode {
+            let secs = t / 1_000_000_000;
+            if crate::route::transcode_seek(secs).is_some() {
+                super::engine::reload_transcode(t);
+            } else {
+                super::log("seek(transcode): rebuild failed");
+            }
+            return;
+        }
         // DIRECT-PLAY seek: reload the whole pipeline at t. A plain flush()+refeed leaves a
         // STALE GStreamer segment → the HW sink stops draining ~48 s later → permanent
         // BufferFull + "Playing error" (root-caused by decompiling libpipeline/lxvideosink;
@@ -82,23 +97,7 @@ pub(crate) fn pump(now: u32) {
             ffi::sf_pause(); // freeze the clock; feed_stream Plays once PRIME_NS is buffered
         }
         drain_aq(eng);
-        if is_transcode {
-            // restart the transcode at &offset=SECS; re-point the demux at the new start.mkv
-            // (opened from byte 0). The fed timeline rebases on the first keyframe as usual;
-            // the new stream is 0-based at content=SECS, so add SECS back for the displayed
-            // position (integer seconds — the granularity the server's fastSeek honors).
-            let secs = t / 1_000_000_000;
-            match crate::route::transcode_seek(secs) {
-                Some(url) => {
-                    *SHARED.next_url.lock().unwrap() = Some(url);
-                    SHARED.seek_byte.store(0, Release); // fresh stream from byte 0
-                    SHARED.disp_base.store(secs * 1_000_000_000, Relaxed);
-                    subs_reopen(eng, secs); // re-point the soft-subs sidecar at the new offset
-                    super::log(&format!("seek(transcode): t={t} offset={secs}s"));
-                }
-                None => super::log("seek(transcode): rebuild failed"),
-            }
-        } else if crate::ff::use_ff() {
+        if crate::ff::use_ff() {
             // in-place ff direct-play seek: reopen the AVFormatContext on the same part URL +
             // av_seek to t (the demux outer loop reopens on next_url/seek_byte, av_seeks on
             // seek_to_ns). eng.flushed → feed_stream fires setTimeToDecode+sendSegmentEvent on
@@ -132,8 +131,8 @@ pub(crate) fn pump(now: u32) {
         // legacy-mkv seek landing while already Streaming: its plane is bound to frames sf_flush
         // just dropped → "Playing error". Fall back to Bound so the pump re-sends
         // setMediaVideoData once post-seek frames decode. ff keeps the plane (sendSegmentEvent
-        // re-anchors it, no rebind); transcode reloads via next_url.
-        if !is_transcode && !crate::ff::use_ff() && eng.stage > Stage::Bound {
+        // re-anchors it, no rebind). (Transcode seeks reload above and never reach here.)
+        if !crate::ff::use_ff() && eng.stage > Stage::Bound {
             eng.stage = Stage::Bound;
             eng.video_info_sent = false;
         }
@@ -204,23 +203,6 @@ pub(crate) fn pump(now: u32) {
             feed_audio_lane(eng);
         } else {
             feed_sample(eng);
-        }
-    }
-}
-
-/// Re-point a RUNNING soft-subs sidecar at `secs` on the same transcode session (used from
-/// the transcode-seek and audio-switch/retranscode arms). Publish the new-offset subtitles
-/// URL + clear stale cues + close hs3 to unblock the read — the thread re-opens on it.
-/// Called AFTER disp_base is stored, so the first post-seek cue is rebased correctly.
-fn subs_reopen(eng: &mut Engine, secs: i64) {
-    if eng.subs_th.is_some() && eng.subs_active_sid > 0 {
-        if let Some(surl) = crate::route::transcode_subtitles_url(eng.subs_active_sid, secs) {
-            *SHARED.subs_next_url.lock().unwrap() = Some(surl);
-            SHARED.sub_cues.lock().unwrap().clear();
-            let p = SHARED.hs3_ptr.load(Acquire);
-            if !p.is_null() {
-                crate::stream::http_close(p);
-            }
         }
     }
 }

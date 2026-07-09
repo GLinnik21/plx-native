@@ -86,6 +86,14 @@ pub(crate) fn request_audio_track(audio_idx: i32, codec: &str) {
 pub(crate) fn reset_audio_track() {
     SHARED.desired_audio_idx.store(-1, Relaxed);
 }
+/// reset the subtitle selection to Off — called on a NEW item. Like desired_audio_idx, the
+/// subtitle selection PERSISTS across seeks/reloads (it is no longer cleared in reset_session),
+/// so a reload-based seek (transcode, or the direct-play reload fallback) keeps the chosen sub
+/// instead of silently turning subtitles off.
+pub(crate) fn reset_subtitle() {
+    SHARED.desired_sub_idx.store(-1, Relaxed);
+    SHARED.subs_want_sid.store(0, Relaxed);
+}
 /// select the audio stream index the demuxer feeds at the FIRST Load (before start_bufferfeed) —
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
 /// a TrueHD-default item). -1 = default/best.
