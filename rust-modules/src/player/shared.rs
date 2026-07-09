@@ -178,7 +178,10 @@ impl Shared {
         self.reparse_next.store(false, Ordering::Relaxed);
         self.pending_retranscode.store(false, Ordering::Relaxed);
         self.report_stop.store(false, Ordering::Relaxed);
-        self.desired_sub_idx.store(-1, Ordering::Relaxed);
+        // NB: desired_sub_idx / subs_want_sid are NOT reset here — like desired_audio_idx they
+        // persist across seeks/reloads so a reload-based seek keeps the chosen subtitle. They are
+        // reset on a new item (player::reset_subtitle). The cue/bitmap STORES below are transient
+        // render state and DO clear (the fresh demuxer re-populates them).
         self.sub_cues.lock().unwrap().clear();
         self.sub_bitmaps.lock().unwrap().clear();
         self.file_size.store(0, Ordering::Relaxed);
@@ -188,7 +191,6 @@ impl Shared {
         self.hs3_ptr.store(std::ptr::null_mut(), Ordering::Release);
         self.subs_abort.store(false, Ordering::Relaxed);
         *self.subs_next_url.lock().unwrap() = None;
-        self.subs_want_sid.store(0, Ordering::Relaxed);
     }
 }
 

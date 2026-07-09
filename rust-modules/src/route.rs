@@ -577,6 +577,7 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
         addr_of_mut!(CUR_SUB_SID).write(0);
     }
     crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
+    crate::player::reset_subtitle(); // subs Off on a new item (selection persists across seeks/reloads)
     let part = cfield(&m.part);
     let (url, session) = build_stream(&rk, &part, &cfield(&m.vcodec), &cfield(&m.acodec));
     unsafe {
@@ -602,6 +603,7 @@ pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud
         addr_of_mut!(CUR_SUB_SID).write(0);
     }
     crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
+    crate::player::reset_subtitle(); // subs Off on a new item (selection persists across seeks/reloads)
     let (url, session) = build_stream(rk, part, vcodec, acodec);
     unsafe {
         *addr_of_mut!(URL) = url;
