@@ -144,12 +144,47 @@ fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
 /// the sink envelope.
 fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
-    PAYLOAD_AV
+    let mut p = PAYLOAD_AV
         .replace(r#""video":"H264""#, &format!(r#""video":"{video}""#))
         .replace(r#""audio":"AC3""#, &format!(r#""audio":"{audio}""#))
         .replace(r#""maxWidth":1920"#, &format!(r#""maxWidth":{mw}"#))
         .replace(r#""maxHeight":1080"#, &format!(r#""maxHeight":{mh}"#))
-        .replace(r#""maxFrameRate":30"#, r#""maxFrameRate":60"#)
+        .replace(r#""maxFrameRate":30"#, r#""maxFrameRate":60"#);
+    // Real source frame rate (direct-play only; 0 on transcode → skip): give the pipeline the true
+    // fps for A/V timing instead of the sink-envelope default, + adaptiveResolution so it adapts if
+    // the coded dims change. libpf parses videoFpsValue/videoFpsScale/adaptiveResolution (verified).
+    if let Some((num, den)) = fps_rational(crate::route::stream_fps()) {
+        p = p
+            .replace(
+                r#""seperatedPTS":true}"#,
+                &format!(r#""seperatedPTS":true,"videoFpsValue":{num},"videoFpsScale":{den}}}"#),
+            )
+            .replace(r#""audioOnly":false"#, r#""audioOnly":false,"adaptiveResolution":true"#);
+        log(&format!("esInfo: videoFps {num}/{den} + adaptiveResolution (src {:.3})", crate::route::stream_fps()));
+    }
+    p
+}
+
+/// Plex decimal fps → (value, scale) rational for the Load esInfo. Broadcast rates map to their
+/// exact NTSC/film ratios; integer rates to n/1; anything else to milli-fps. None if fps is unknown.
+fn fps_rational(fps: f64) -> Option<(i64, i64)> {
+    if fps <= 0.0 {
+        return None;
+    }
+    let near = |a: f64, tol: f64| (fps - a).abs() < tol;
+    Some(if near(23.976, 0.01) {
+        (24000, 1001)
+    } else if near(29.97, 0.01) {
+        (30000, 1001)
+    } else if near(59.94, 0.02) {
+        (60000, 1001)
+    } else if near(47.952, 0.02) {
+        (48000, 1001)
+    } else if fps.fract().abs() < 0.001 {
+        (fps.round() as i64, 1)
+    } else {
+        ((fps * 1000.0).round() as i64, 1000)
+    })
 }
 
 /// parse http://HOST[:PORT]/PATH?query -> (host, port, path)
@@ -605,6 +640,10 @@ const AUDIO_SLACK_NS: i64 = 2_000_000_000;
 // A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
 // distance) → drop it rather than feed a backward jump.
 const STALE_BACKJUMP_NS: i64 = 2_000_000_000;
+// Sentinel for SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
+// throttle treats it as feed-freely (don't compare the new fed pts against a stale pre-seek
+// presented position). Set on a seek; the first presented frame overwrites it with a real pts.
+pub(crate) const PRES_NONE: i64 = i64::MIN;
 
 /// VIDEO lane feeder (two-lane ff path: aq_video is video-only; legacy mkv path: aq_video holds
 /// the mixed es stream). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
@@ -687,7 +726,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         if !eng.prime_play {
             let pres = SHARED.pres_fed.load(Ordering::Relaxed);
             let budget = if es == 1 { MAX_FEED_AHEAD_NS } else { MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS };
-            if fp - pres > budget {
+            if pres != PRES_NONE && fp - pres > budget {
                 break;
             }
         }
@@ -757,7 +796,7 @@ pub(crate) fn feed_audio_lane(eng: &mut Engine) {
         if fp < 0 {
             fp = 0;
         }
-        if !eng.prime_play && fp - pres > MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS {
+        if !eng.prime_play && pres != PRES_NONE && fp - pres > MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS {
             break;
         }
         let r = unsafe { ffi::sf_feed(data, len as u32, fp, es) };

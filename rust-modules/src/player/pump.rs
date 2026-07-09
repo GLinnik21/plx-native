@@ -128,6 +128,10 @@ pub(crate) fn pump(now: u32) {
         eng.max_fed_video_pts = 0;
         eng.max_fed_audio_pts = 0;
         eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
+        // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
+        // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
+        // presented position (which would wrongly break feeding on a forward in-place seek).
+        SHARED.pres_fed.store(super::engine::PRES_NONE, Relaxed);
         // legacy-mkv seek landing while already Streaming: its plane is bound to frames sf_flush
         // just dropped → "Playing error". Fall back to Bound so the pump re-sends
         // setMediaVideoData once post-seek frames decode. ff keeps the plane (sendSegmentEvent

@@ -74,6 +74,7 @@ pub(crate) struct Detail {
     pub(crate) part: String,   // Media[0].Part[0].key for a leaf (movie/episode); empty for a show
     pub(crate) vcodec: String, // Media[0].videoCodec (drives the direct-play/transcode decision)
     pub(crate) acodec: String, // Media[0].audioCodec
+    pub(crate) video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
     pub(crate) art: String,
     pub(crate) thumb: String,
     pub(crate) genres: Vec<String>,
@@ -111,6 +112,9 @@ fn jstr(v: Option<&Value>) -> String {
 }
 fn jint(v: Option<&Value>) -> i64 {
     v.and_then(|x| x.as_i64()).unwrap_or(0)
+}
+fn jfloat(v: Option<&Value>) -> f64 {
+    v.and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0.0)
 }
 /// collect the `tag` string of every element of a `Foo[]` array (Genre/Country/Director/…)
 fn tags(item: &Value, key: &str) -> Vec<String> {
@@ -165,6 +169,7 @@ fn fetch_detail(host: &str, port: c_int, token: &str, rk: &str) -> Option<Detail
         part: first_part(it), // empty for a show (no Media on the show container)
         vcodec: media0.map(|m| jstr(m.get("videoCodec"))).unwrap_or_default(),
         acodec: media0.map(|m| jstr(m.get("audioCodec"))).unwrap_or_default(),
+        video_fps: 0.0, // set from the video Stream by parse_streams below
         art: jstr(it.get("art")),
         thumb: jstr(it.get("thumb")),
         genres: tags(it, "Genre"),
@@ -220,6 +225,7 @@ fn parse_streams(item: &Value, d: &mut Detail) {
             title,
         };
         match jint(s.get("streamType")) {
+            1 => d.video_fps = jfloat(s.get("frameRate")), // e.g. 23.976 — for the Load esInfo
             2 => d.audio.push(st),
             3 => d.subs.push(st),
             _ => {}
