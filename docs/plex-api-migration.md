@@ -1,5 +1,28 @@
 # Plex API migration map — raw calls → typed `crate::plex` client
 
+> **Status (2026-07 — read layer landed).** The **read data layer is migrated** onto the typed
+> client and is live: `pms.rs` (P1–P3: `sections`/`section_items`/`home_hubs`), `metadata.rs`
+> (M1–M5: `metadata`/`children`/`related` + `audio_tracks`), `posters.rs` (D1:
+> `image_transcode_path`), and boot `plex::init` (app.rs). The `plex::Metadata`/`Stream` DTOs
+> gained `grandparent_rating_key`, `parent_rating_key`, `frame_rate` (lenient — PMS sends both
+> `29.976` and `"29.976"`), `language_code`, and a `first_part()` helper; **every numeric field
+> is now lenient (`de_i64`/`de_f64`)** so a single string-encoded int can't fail a whole
+> container. The dead full-library-browse path (`pms_fetch_movies`/`fetch_section`) was deleted
+> (its `sections`/`section_items` methods remain for a future Library screen).
+>
+> The **playback layer is intentionally NOT migrated** (R1–R6, T1, the `engine.rs` timeline +
+> `StreamUrl::parse` sibling sites below). Since this doc was written, `route.rs` grew a real
+> Media-Decision-Engine handshake (`hasMDE=1`), a 4K-HEVC capability profile, PlayQueue creation,
+> per-playback session correlation (`X-Plex-Session-Identifier`), and identity params — none of
+> which the typed `transcoder.rs`/`timeline.rs`/`direct_play_url` model. Migrating the playback
+> calls onto today's typed layer would **regress** transcode quality + session tracking, and those
+> are server-side behaviors that need on-device verification. Bring the typed transcode/timeline
+> surface up to `route.rs` parity first, then migrate R1–R6/T1 with a TV to verify. `route::CFG`
+> (host/port/token + `demo_url`) stays as the playback layer's config source until then.
+>
+> The R1–R6 / M / P / D sections below are the ORIGINAL plan; treat the read sections as
+> implemented (modulo the parity notes above) and the playback sections as the deferred backlog.
+
 Call-site-by-call-site plan to move every hand-built Plex path/query in the app onto the typed
 `Client` in `rust-modules/src/plex/` (surface: `docs/plex-api-design.md`). Scope: `pms.rs`,
 `metadata.rs`, `route.rs`, `posters.rs`, `player/threads.rs` (plus the two sibling sites in

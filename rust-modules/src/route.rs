@@ -134,7 +134,9 @@ pub(crate) fn identity_qs() -> String {
 pub(crate) fn demo_url() -> String {
     unsafe { (*addr_of!(CFG)).as_ref().map(|c| c.demo_url.clone()).unwrap_or_default() }
 }
-/// PMS (host, port, token) — used by the metadata layer for detail/children/related fetches.
+/// PMS (host, port, token) — read by the engine's timeline reporter (engine.rs). The catalog/
+/// metadata/poster read layer now uses the typed `plex::client()` singleton, not this; `CFG`
+/// stays because it also owns `demo_url` and feeds the (not-yet-migrated) playback path.
 pub(crate) fn config() -> Option<(String, c_int, String)> {
     unsafe { (*addr_of!(CFG)).as_ref().map(|c| (c.host.clone(), c.port, c.token.clone())) }
 }
@@ -453,7 +455,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // video-downscaling transcode). Falls back to the server /decision (then the local codec
     // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
     let video_dp = matches!(vcodec, "h264" | "hevc");
-    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(rk, acodec, cfg) };
+    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(rk, acodec) };
     let directplay = if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265.
         // Anything else (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's
@@ -525,9 +527,9 @@ const PREF_AUDIO_LANG: &str = "eng";
 ///   2. the file's default track, if its codec is direct-playable;
 ///   3. any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling — smart-DP).
 /// None when NO audio track is direct-playable (→ transcode). Fetches the track list once.
-fn pick_dp_audio(rk: &str, default_acodec: &str, cfg: &Cfg) -> Option<(i32, String)> {
+fn pick_dp_audio(rk: &str, default_acodec: &str) -> Option<(i32, String)> {
     let dp = |c: &str| matches!(c, "aac" | "ac3" | "eac3");
-    let tracks = crate::metadata::audio_tracks(&cfg.host, cfg.port, &cfg.token, rk);
+    let tracks = crate::metadata::audio_tracks(rk);
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
         return if dp(default_acodec) { Some((-1, default_acodec.to_string())) } else { None };

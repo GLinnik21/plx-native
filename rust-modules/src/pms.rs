@@ -1,9 +1,9 @@
 //! Plex library fetch/parse into the private catalog (was src/pms.c), read by the UI
-//! via movie_ptr()/nmovies(), plus urlenc_str (shared by posters/route). The
-//! hand-rolled JSON string-scrape is replaced with serde_json navigation.
+//! via movie_ptr()/nmovies(), plus urlenc_str (shared by posters/route). The fetch +
+//! JSON parse go through the typed `crate::plex` client (serde DTOs) — no hand-built
+//! paths or `Value` scraping here.
 #![allow(non_upper_case_globals)]
-use serde_json::Value;
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_int;
 use std::panic::catch_unwind;
 
 const PMS_MAX_MOVIES: usize = 256;
@@ -63,31 +63,6 @@ pub(crate) fn index_of_rk(rk: &str) -> c_int {
 }
 
 // ---- helpers ----
-unsafe fn cstr(p: *const c_char) -> String {
-    if p.is_null() {
-        String::new()
-    } else {
-        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
-    }
-}
-
-fn jstr(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
-        _ => String::new(),
-    }
-}
-
-fn hex3(hex: &str) -> [f32; 3] {
-    let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
-    [
-        ((v >> 16) & 0xff) as f32 / 255.0,
-        ((v >> 8) & 0xff) as f32 / 255.0,
-        (v & 0xff) as f32 / 255.0,
-    ]
-}
-
 /// copy `s` into a fixed C char buffer (truncate, NUL-terminate, newlines->spaces)
 fn set_field(dst: &mut [u8], s: &str) {
     if dst.is_empty() {
@@ -116,9 +91,9 @@ pub(crate) fn urlenc_str(src: &str) -> String {
 }
 
 /// Parse one Plex `Metadata` item (from a section listing OR a hub) into a catalog row.
-fn parse_item(m: &mut PmsMovie, item: &Value) {
+fn parse_item(m: &mut PmsMovie, it: &crate::plex::Metadata) {
     *m = PmsMovie::ZERO;
-    m.kind = match jstr(item.get("type")).as_str() {
+    m.kind = match it.kind.as_str() {
         "show" => 1,
         "season" => 2,
         "episode" => 3,
@@ -127,127 +102,54 @@ fn parse_item(m: &mut PmsMovie, item: &Value) {
     match m.kind {
         3 => {
             // episode: parent show = grandparent, season number = parentIndex
-            set_field(&mut m.show_rk, &jstr(item.get("grandparentRatingKey")));
-            m.season_index = item.get("parentIndex").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
+            set_field(&mut m.show_rk, &it.grandparent_rating_key);
+            m.season_index = it.parent_index as c_int;
         }
         2 => {
             // season: parent show = parent, season number = index
-            set_field(&mut m.show_rk, &jstr(item.get("parentRatingKey")));
-            m.season_index = item.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
+            set_field(&mut m.show_rk, &it.parent_rating_key);
+            m.season_index = it.index as c_int;
         }
         _ => {}
     }
-    set_field(&mut m.title, &jstr(item.get("title")));
-    m.year = item.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as c_int;
-    set_field(&mut m.rating, &jstr(item.get("contentRating")));
-    let durms = item.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
-    m.dur_ns = if durms > 0 { durms * 1_000_000 } else { 0 };
-    m.resume_ms = item.get("viewOffset").and_then(|v| v.as_i64()).unwrap_or(0);
+    set_field(&mut m.title, &it.title);
+    m.year = it.year as c_int;
+    set_field(&mut m.rating, &it.content_rating);
+    m.dur_ns = if it.duration > 0 { it.duration * 1_000_000 } else { 0 };
+    m.resume_ms = it.view_offset;
     // poster: prefer the show poster for episodes (grandparentThumb) so a landscape
     // episode still doesn't fill a portrait card
-    let thumb = item
-        .get("grandparentThumb")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| jstr(item.get("thumb")));
-    set_field(&mut m.thumb, &thumb);
-    set_field(&mut m.art, &jstr(item.get("art")));
-    set_field(&mut m.summary, &jstr(item.get("summary")));
-    set_field(&mut m.rk, &jstr(item.get("ratingKey")));
+    let thumb = if it.grandparent_thumb.is_empty() { &it.thumb } else { &it.grandparent_thumb };
+    set_field(&mut m.thumb, thumb);
+    set_field(&mut m.art, &it.art);
+    set_field(&mut m.summary, &it.summary);
+    set_field(&mut m.rk, &it.rating_key);
     // Media[0]: codecs + Part[0].key (movies/episodes; a show container has none)
-    if let Some(md) = item.get("Media").and_then(|a| a.as_array()).and_then(|a| a.first()) {
-        set_field(&mut m.vcodec, &jstr(md.get("videoCodec")));
-        set_field(&mut m.acodec, &jstr(md.get("audioCodec")));
-        if let Some(p0) = md.get("Part").and_then(|a| a.as_array()).and_then(|a| a.first()) {
-            set_field(&mut m.part, &jstr(p0.get("key")));
+    if let Some(md) = it.media.first() {
+        set_field(&mut m.vcodec, &md.video_codec);
+        set_field(&mut m.acodec, &md.audio_codec);
+        if let Some(p0) = md.part.first() {
+            set_field(&mut m.part, &p0.key);
         }
     }
-    // UltraBlurColors -> ambient gradient
-    if let Some(ub) = item.get("UltraBlurColors") {
-        if let Some(tl) = ub.get("topLeft").and_then(|v| v.as_str()) {
-            m.blur[0] = hex3(tl);
-            m.blur[1] = hex3(ub.get("topRight").and_then(|v| v.as_str()).unwrap_or("000000"));
-            m.blur[2] = hex3(ub.get("bottomRight").and_then(|v| v.as_str()).unwrap_or("000000"));
-            m.blur[3] = hex3(ub.get("bottomLeft").and_then(|v| v.as_str()).unwrap_or("000000"));
+    // UltraBlurColors -> ambient gradient. The typed model (de_ultrablur) accepts BOTH the
+    // array and object shapes PMS returns; the old object-only read missed the array form
+    // (D-1), so blur now populates where it was previously blank. Guard against a
+    // malformed/empty envelope (corners defaulted to black) so we don't flag a pure-black
+    // gradient as present — the old code keyed this on topLeft being a present string.
+    if let Some(ub) = it.ultra_blur_colors {
+        let blur = [ub.top_left.0, ub.top_right.0, ub.bottom_right.0, ub.bottom_left.0];
+        if blur.iter().any(|c| *c != [0.0, 0.0, 0.0]) {
+            m.blur = blur;
             m.has_blur = 1;
         }
     }
 }
 
-/// Fetch one library section's items and APPEND them to the catalog starting at
-/// index `start`. Returns the new total count.
-unsafe fn fetch_section(host: &str, port: c_int, token: &str, sec: i64, start: usize) -> usize {
-    let path = format!("/library/sections/{sec}/all?X-Plex-Token={token}");
-    let body = match crate::stream::http_get(host, port, &path, Some("Accept: application/json\r\n")) {
-        Some(b) => b,
-        None => return start,
-    };
-    let json: Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(_) => return start,
-    };
-    let meta = match json.get("MediaContainer").and_then(|m| m.get("Metadata")).and_then(|a| a.as_array()) {
-        Some(m) => m,
-        None => return start,
-    };
-    let movies = std::slice::from_raw_parts_mut(
-        std::ptr::addr_of_mut!(pms_movies) as *mut PmsMovie,
-        PMS_MAX_MOVIES,
-    );
-    let mut n = start;
-    for item in meta {
-        if n >= PMS_MAX_MOVIES {
-            break;
-        }
-        let m = &mut movies[n];
-        parse_item(m, item);
-        // movies need a playable Part; shows are containers (episodes carry the parts)
-        if m.title[0] != 0 && (m.part[0] != 0 || m.kind == 1) {
-            n += 1;
-        }
-    }
-    n
-}
-
-/// Fetch every movie + show library into the catalog (movies first, shows after),
-/// discovering the section keys from /library/sections. Returns the total count.
-pub(crate) fn pms_fetch_movies(host: *const c_char, port: c_int, token: *const c_char) -> c_int {
-    let r = catch_unwind(|| unsafe {
-        std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), 0);
-        let host_s = cstr(host);
-        let token_s = cstr(token);
-        // discover the section keys once, then fetch movies first, shows after — so
-        // movie rows keep their existing order and the hero (movie_at(0,0)) stays a
-        // movie; shows append into the later grid rows.
-        let secpath = format!("/library/sections?X-Plex-Token={token_s}");
-        let mut sections: Vec<(i64, bool)> = Vec::new(); // (key, is_show)
-        if let Some(body) = crate::stream::http_get(&host_s, port, &secpath, Some("Accept: application/json\r\n")) {
-            if let Ok(json) = serde_json::from_slice::<Value>(&body) {
-                if let Some(dirs) = json.get("MediaContainer").and_then(|m| m.get("Directory")).and_then(|a| a.as_array()) {
-                    for is_show in [false, true] {
-                        let want = if is_show { "show" } else { "movie" };
-                        for d in dirs {
-                            if jstr(d.get("type")) != want {
-                                continue;
-                            }
-                            if let Some(key) = d.get("key").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()) {
-                                sections.push((key, is_show));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let mut n = 0usize;
-        for (key, _is_show) in sections {
-            n = fetch_section(&host_s, port, &token_s, key, n);
-        }
-        std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), n as c_int);
-        n as c_int
-    });
-    r.unwrap_or(0)
-}
+// The full-library browse path (fetch every section's items via the typed
+// `client().sections()` + `.section_items()`) was removed as dead code — the home is
+// hub-driven (`pms_fetch_hubs`). Those two client methods remain available for a future
+// A-Z "Library" screen; re-add a ~30-line consumer here when one is built.
 
 // ---- home hubs: each hub is a titled slice of the catalog (pms_movies) ----
 struct HubRow {
@@ -285,45 +187,33 @@ pub(crate) fn hub_item_ptr(hub: usize, col: usize) -> *mut PmsMovie {
 
 /// Fetch the home hubs (Continue Watching, On Deck, Recently Added, collections) into
 /// the catalog + the HUBS grouping. Skips music/photo/playlist hubs + empty ones.
-pub(crate) fn pms_fetch_hubs(host: *const c_char, port: c_int, token: *const c_char) -> c_int {
+pub(crate) fn pms_fetch_hubs() -> c_int {
     let r = catch_unwind(|| unsafe {
         std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), 0);
         if let Some(v) = std::ptr::addr_of_mut!(HUBS).as_mut() {
             v.clear();
         }
-        let host_s = cstr(host);
-        let token_s = cstr(token);
-        let path = format!("/hubs?count=12&excludeContinueWatching=0&X-Plex-Token={token_s}");
-        let body = match crate::stream::http_get(&host_s, port, &path, Some("Accept: application/json\r\n")) {
-            Some(b) => b,
-            None => return 0,
-        };
-        let json: Value = match serde_json::from_slice(&body) {
-            Ok(v) => v,
-            Err(_) => return 0,
-        };
-        let hubs = match json.get("MediaContainer").and_then(|m| m.get("Hub")).and_then(|a| a.as_array()) {
-            Some(h) => h,
+        let mc = match crate::plex::client().home_hubs(12) {
+            Some(m) => m,
             None => return 0,
         };
         let movies =
             std::slice::from_raw_parts_mut(std::ptr::addr_of_mut!(pms_movies) as *mut PmsMovie, PMS_MAX_MOVIES);
         const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
         let mut n = 0usize;
-        for hub in hubs {
-            if SKIP.contains(&jstr(hub.get("type")).as_str()) {
+        for hub in &mc.hub {
+            if SKIP.contains(&hub.kind.as_str()) {
                 continue;
             }
-            let items = match hub.get("Metadata").and_then(|a| a.as_array()) {
-                Some(it) if !it.is_empty() => it,
-                _ => continue,
-            };
+            if hub.metadata.is_empty() {
+                continue;
+            }
             let start = n;
-            for item in items {
+            for item in &hub.metadata {
                 if n >= PMS_MAX_MOVIES {
                     break;
                 }
-                if SKIP.contains(&jstr(item.get("type")).as_str()) {
+                if SKIP.contains(&item.kind.as_str()) {
                     continue;
                 }
                 let m = &mut movies[n];
@@ -334,7 +224,7 @@ pub(crate) fn pms_fetch_hubs(host: *const c_char, port: c_int, token: *const c_c
             }
             if n > start {
                 if let Some(v) = std::ptr::addr_of_mut!(HUBS).as_mut() {
-                    v.push(HubRow { title: jstr(hub.get("title")), start, len: n - start });
+                    v.push(HubRow { title: hub.title.clone(), start, len: n - start });
                 }
             }
         }
