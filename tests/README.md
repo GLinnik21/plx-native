@@ -17,6 +17,23 @@ logs, or writes it — progress URLs are redacted to `<token>` in output. The TV
 credentials are already in the committed `Makefile`, so the runner shells out to `make` /
 `sshpass` for device I/O (no new secret is introduced).
 
+## Test identity — runs as Guest (no watch-history pollution)
+
+By default the harness plays **as the Plex Home managed user in `manifest.json` → `test_user`**
+(Guest, id 762808621), so test playback + timeline scrobbles land on *that* user's history and
+your real account stays clean. It works without storing any new secret:
+
+- `run.py` uses the owner token (from `config.local.h`) to look up that user's **per-server
+  access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
+  `userID`). The managed user must already have the libraries shared with it (Guest here does).
+- That token is used for the `/:/progress` resume seed **and** written to `/tmp/poc-token` on the
+  TV. The app reads `/tmp/poc-token` at boot and overrides its compiled-in owner token with it
+  (see `plex_run`), so the **app itself** plays and scrobbles as the managed user — not just the
+  seed. The token value is never printed (redacted to `<Guest …>`), and `poc-token` is cleared
+  between cases like every other trigger.
+- Pass **`--owner`** to run as the `config.local.h` owner token instead (history *will* be
+  affected). If the manifest has no `test_user`, the runner falls back to owner with a warning.
+
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: `zig`, `sshpass`, and (for `--build`) the Rust
@@ -43,6 +60,9 @@ credentials are already in the committed `Makefile`, so the runner shells out to
 
 # point at a different TV
 ./tests/run.py --tv 192.168.0.50 --filter substance
+
+# run as the OWNER token instead of the Guest test_user (history WILL be affected)
+./tests/run.py --owner --filter substance
 ```
 
 The runner prints per-assertion PASS/FAIL with the failing evidence line, then a final
@@ -94,6 +114,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `morning_show_audio_native` | 1804 | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
 | `home_alone_audio_transcode` | 3 | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
 | `substance_subtitle_srt` | 4 | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] "text"` lines |
+| `toy_story2_subtitle_pgs` | 1919 | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y` (op flagged `"image": true`) |
 
 ### Key log signals asserted (filter `smp_cb type=43 num=0 str=$` first)
 
@@ -107,7 +128,9 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 - **seek:** `seek(ff in-place)` / `in-place seek: ... sendSegment=1` / `seek(transcode)` /
   `reload_at: fresh Load at 140s`.
 - **audio switch:** `audio switch (native)` / `re-transcode:` + `reload_transcode:`.
-- **subtitles:** `sub cue [<a>..<b>ms] "<text>"`.
+- **subtitles (text):** `sub cue [<a>..<b>ms] "<text>"`.
+- **subtitles (image PGS/VobSub):** `image cue [<t>ms] <W>x<H> at <x>,<y>` (a decoded bitmap
+  display-set pushed to the render store).
 
 ## Gotchas the harness handles for you
 
@@ -127,9 +150,11 @@ The **default libavformat demuxer (`ff.rs`) now demuxes embedded text subtitles*
 ASS/SSA, mov_text) and emits `sub cue [..] "text"` lines, so the subtitle case runs on the
 default path — no `poc-demux=mkv` forcing. It pushes cues for **all** text tracks (tagged by
 index) and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
-instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are skipped — client rendering
-can't rasterize a bitmap overlay; the webOS pipeline's own subtitle engine is only reachable in
-its URI/demuxer playback mode, not our in-process buffer-feed (see project memory).
+instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are now client-rendered too:
+`ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each
+display-set to RGBA, and `player_hud::draw_subtitle_bitmap` composites it over the video as a GL
+texture (the webOS pipeline's own HW subtitle engine is only reachable in URI/demuxer mode, not
+our in-process buffer-feed — see project memory). Verified on Toy Story 2 (rk 1919, 6× PGS).
 
 The case targets `The Substance` (rk 4) — the local copy is Russian-dubbed with four text
 tracks `[RU-forced, RU, EN, EN-SDH]`, so it picks **row 3 = the English track** (row 0 is Off;

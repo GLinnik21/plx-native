@@ -49,7 +49,7 @@ ALL_TRIGGERS = [
     "poc-detail", "poc-detailplay", "poc-detailsec", "poc-detailcol",
     "poc-autoseek", "poc-menupick", "poc-menu", "poc-noaudio", "poc-demux",
     "poc-grid", "poc-autoplay", "poc-h265", "poc-playidx", "poc-url",
-    "poc-play", "poc-ffprobe",
+    "poc-play", "poc-ffprobe", "poc-token",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
@@ -71,6 +71,39 @@ def read_token():
     if not m:
         sys.exit(f"no PMS_TOKEN macro found in {CONFIG_LOCAL_H}")
     return m.group(1)
+
+
+CID = "plexpoc-test-harness"  # stable X-Plex-Client-Identifier for the plex.tv calls below
+
+
+def _pms_machine_id(host, port, admin_token):
+    """The server's machineIdentifier (needed to look up its shared_servers on plex.tv)."""
+    url = f"http://{host}:{port}/?X-Plex-Token={admin_token}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.load(resp)["MediaContainer"]["machineIdentifier"]
+
+
+def fetch_managed_user_token(admin_token, host, port, user_id):
+    """Resolve a Plex Home managed user's PER-SERVER access token from the owner's
+    shared_servers list (keyed by userID), so test playback runs as that user and its watch
+    history never touches the owner's real account. Uses only the admin token already on hand --
+    no new secret is stored. Returns the token string (never printed) or exits on failure."""
+    import xml.etree.ElementTree as ET
+    mid = _pms_machine_id(host, port, admin_token)
+    url = f"https://plex.tv/api/servers/{mid}/shared_servers"
+    req = urllib.request.Request(url, headers={
+        "X-Plex-Token": admin_token, "X-Plex-Client-Identifier": CID})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        root = ET.fromstring(resp.read())
+    for s in root.findall("SharedServer"):
+        if s.get("userID") == str(user_id):
+            tok = s.get("accessToken")
+            if tok:
+                return tok
+            sys.exit(f"managed user {user_id} is shared but has no accessToken")
+    sys.exit(f"managed user {user_id} has no shared_servers entry on this server "
+             f"(share the libraries with it first, or run with --owner)")
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +199,10 @@ RE_DECISION = re.compile(r"decision: part=.* -> (DIRECT PLAY|TRANSCODE)")
 RE_CODEC = re.compile(r"ff: v=#0 codec_id=(\d+)\s+(\d+)x(\d+)")
 RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
 RE_SUBCUE = re.compile(r'sub cue \[\d+\.\.\d+ms\]\s+"(.*)"')
+# image (PGS/VobSub) subtitle cue: the demuxer decoded a bitmap display-set for the selected
+# track and pushed it to the render store (ff.rs decode_bitmap_cue). Distinct from the text
+# `sub cue` signal — image subs carry no text, only geometry.
+RE_IMGCUE = re.compile(r"image cue \[\d+ms\]\s+\d+x\d+ at \d+,\d+")
 # the `stream: host=.. path=<url>` line the demux logs when it opens the media URL -- the
 # ground truth of direct-play (`/library/parts/..`) vs transcode (`/transcode/universal/..`).
 # This is the ONLY universal decision signal: the smart/fast direct-play path in build_stream
@@ -331,6 +368,15 @@ def op_subtitle(lines):
     return False, "no `sub cue [..] \"text\"` line with non-empty text"
 
 
+def op_image_subtitle(lines):
+    """PGS/VobSub: the demuxer must decode a bitmap display-set for the selected track and log
+    an `image cue` line (which the renderer composites over the video as a GL texture)."""
+    for ln in lines:
+        if RE_IMGCUE.search(ln):
+            return True, f"image sub cue decoded + stored :: {ln.strip()}"
+    return False, "no `image cue [..] WxH at X,Y` line (PGS/VobSub bitmap not decoded)"
+
+
 def op_resume_directplay(lines, offset_s):
     ts = timeline_secs(lines)
     if not ts:
@@ -397,6 +443,8 @@ def evaluate(case, lines):
             results.append(("audio_native", *op_audio_native(lines)))
         elif k == "audio_switch":
             results.append(("audio_transcode", *op_audio_transcode(lines)))
+        elif k == "subtitle" and op.get("image"):
+            results.append(("image_subtitle", *op_image_subtitle(lines)))
         elif k == "subtitle":
             results.append(("subtitle", *op_subtitle(lines)))
         elif k == "resume" and op.get("mode") == "transcode":
@@ -429,6 +477,14 @@ def run_case(case, cfg, token, verbose):
     apply_triggers(tv, files)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown}")
+
+    # 3b. inject the effective PMS token so the APP itself plays (and scrobbles) as this user.
+    # Written in its own ssh round-trip so the token value never reaches stdout; poc-token was
+    # just cleared by apply_triggers (it's in ALL_TRIGGERS). Skipped for --owner (the binary's
+    # compiled token is already the owner, so no override is needed).
+    if cfg.get("inject_token"):
+        ssh(tv, f"printf '%s' '{token}' > /tmp/poc-token")
+        print(f"    poc-token: <{cfg['user_label']}, redacted>")
 
     # 4. run + fetch log
     print(f"    make run RUN_SECS={run_secs} ...")
@@ -483,6 +539,9 @@ def main():
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest)")
     ap.add_argument("--verbose", action="store_true", help="print evidence for passing assertions too")
+    ap.add_argument("--owner", action="store_true",
+                    help="run as the config.local.h OWNER token (default: run as the manifest "
+                         "test_user, e.g. Guest, so watch history stays off your real account)")
     args = ap.parse_args()
 
     with open(MANIFEST) as f:
@@ -504,7 +563,24 @@ def main():
     if not cases:
         sys.exit(f"no cases match --filter {args.filter!r}")
 
-    token = read_token()  # never printed
+    admin_token = read_token()  # owner token from config.local.h; never printed
+
+    # Resolve the identity every case plays as. Default = the manifest test_user (Guest), so
+    # playback + timeline scrobbles land on that user's history and the owner's real account
+    # stays clean. --owner opts back into the owner token. Neither token is ever printed.
+    test_user = manifest.get("test_user")
+    if args.owner or not test_user:
+        token = admin_token
+        cfg["user_label"] = "owner (config.local.h)"
+        cfg["inject_token"] = False
+        if not args.owner:
+            print("NOTE: no test_user in manifest -> running as OWNER (history WILL be affected)")
+    else:
+        token = fetch_managed_user_token(admin_token, cfg["pms"]["host"], cfg["pms"]["port"],
+                                         test_user["id"])
+        cfg["user_label"] = f'{test_user.get("title", "managed")} (id={test_user["id"]})'
+        cfg["inject_token"] = True
+    print(f"test identity: {cfg['user_label']}  (playback + watch-history isolation)")
 
     if args.build:
         do_build(cfg["tv"])

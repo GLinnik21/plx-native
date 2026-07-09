@@ -5,6 +5,11 @@
     "host": "192.168.0.3",
     "port": 32400
   },
+  "_test_user_comment": "By default the harness runs as this Plex Home managed user so test playback + timeline scrobbles land on THIS user's history, never the owner's real account. run.py fetches this user's per-server accessToken via the admin token (shared_servers) at runtime -- no secret is stored. Pass --owner to run as the config.local.h owner token instead. The user must already have library access shared (Guest here already does).",
+  "test_user": {
+    "id": 762808621,
+    "title": "Guest"
+  },
   "tv": "192.168.0.114",
   "cases": [
     {
@@ -427,6 +432,41 @@
         "no_playing_error": true,
         "require_video_bound": true
       }
+    },
+    {
+      "name": "toy_story2_subtitle_pgs",
+      "rk": "1919",
+      "kind": "movie",
+      "title": "Toy Story 2 (PGS image subtitle, client-rendered)",
+      "covers": [
+        "subtitle-pgs",
+        "image-sub-bitmap",
+        "hevc-4k-directplay",
+        "ff-demuxer"
+      ],
+      "run_secs": 90,
+      "setup": {
+        "viewOffset_ms": 600000
+      },
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "subtitle",
+          "tab": 1,
+          "row": 1,
+          "image": true
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "codec_id": 174,
+        "min_video_width": 3000,
+        "min_timeline_climb_s": 8,
+        "no_playing_error": true,
+        "require_video_bound": true
+      }
     }
   ],
   "library_gaps": {
@@ -448,7 +488,7 @@
     ],
     "subtitles": [
       "ass/ssa",
-      "vobsub/dvd_subtitle",
+      "vobsub/dvd_subtitle (image-sub RENDERING is covered by toy_story2_subtitle_pgs; VobSub-specifically has no library item to exercise the dvdsub decoder)",
       "mov_text/tx3g soft-render (present in mp4s but not on our pipeline)"
     ],
     "hdr": [
