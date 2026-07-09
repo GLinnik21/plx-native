@@ -809,6 +809,31 @@ unsafe fn packet_to_annexb(
 
 static DIAG_FIRST: AtomicBool = AtomicBool::new(true);
 
+/// ADTS sampling_frequency_index (4 bits) for a sample rate; None if not a standard AAC rate.
+fn adts_freq_index(rate: c_int) -> Option<u8> {
+    Some(match rate {
+        96000 => 0, 88200 => 1, 64000 => 2, 48000 => 3, 44100 => 4, 32000 => 5,
+        24000 => 6, 22050 => 7, 16000 => 8, 12000 => 9, 11025 => 10, 8000 => 11, 7350 => 12,
+        _ => return None,
+    })
+}
+
+/// 7-byte ADTS header for a raw AAC frame of `payload_len` bytes. LG's Starfish decodes
+/// ADTS-framed AAC (ss4s: aacInfo format="adts"); mp4/matroska carry RAW AAC, so we reframe.
+/// Emits AAC-LC (ADTS profile 1 = object type 2 - 1); buffer fullness = VBR (0x7FF).
+fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
+    let frame_len = (payload_len + 7) as u32; // total incl. header, 13 bits
+    [
+        0xFF,
+        0xF1, // sync(1111) | MPEG-4(0) | layer(00) | protection_absent(1)
+        (1 << 6) | (freq_idx << 2) | (chan_cfg >> 2), // profile(01=LC) | freq_idx | chan hi bit
+        ((chan_cfg & 3) << 6) | ((frame_len >> 11) as u8 & 0x03),
+        ((frame_len >> 3) & 0xFF) as u8,
+        (((frame_len & 0x07) as u8) << 5) | 0x1F, // frame_len lo 3 | fullness hi 5 (11111)
+        0xFC, // fullness lo 6 (111111) | num_blocks(00)
+    ]
+}
+
 pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
     DIAG_FIRST.store(true, Ordering::Relaxed);
     ensure_registered();
@@ -901,6 +926,25 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
             let streams = (*fmt).streams;
             let vst = *streams.add(vi as usize);
             let vcp = stream_codecpar(vst);
+            // AAC needs ADTS framing for LG's decoder (mp4/mkv carry raw AAC). Precompute the
+            // per-frame ADTS fields (freq index + channel config) for the selected audio stream;
+            // None => not AAC (or a non-standard rate) => fed verbatim.
+            let aac_adts: Option<(u8, u8)> = if ai >= 0 {
+                let acp = stream_codecpar(*streams.add(ai as usize));
+                if (*acp).codec_id == AV_CODEC_ID_AAC {
+                    adts_freq_index((*acp).sample_rate).map(|fi| {
+                        let ch = (*acp).channels;
+                        (fi, if (1..=7).contains(&ch) { ch as u8 } else { 2 })
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if aac_adts.is_some() {
+                crate::player::log("ff: AAC → ADTS reframing on");
+            }
             let dur = (*fmt).duration;
             if dur > 0 {
                 SHARED.duration_ns.store(dur.saturating_mul(1000), Ordering::Relaxed);
@@ -1027,7 +1071,16 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                     let ast = *streams.add(ai as usize);
                     let pts = pts_ns(pkt, ast);
-                    crate::aq::aq_push(aqa_p, (*pkt).data, (*pkt).size, pts, 1, 2); // AUDIO lane
+                    if let Some((freq_idx, chan_cfg)) = aac_adts {
+                        // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
+                        let plen = (*pkt).size as usize;
+                        let mut framed = Vec::with_capacity(7 + plen);
+                        framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
+                        framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
+                        crate::aq::aq_push(aqa_p, framed.as_ptr(), framed.len() as c_int, pts, 1, 2);
+                    } else {
+                        crate::aq::aq_push(aqa_p, (*pkt).data, (*pkt).size, pts, 1, 2); // AUDIO lane
+                    }
                     av_packet_unref(pkt);
                 } else if let Some(sub_pos) = sub_streams.iter().position(|(sidx, _, _)| *sidx == si) {
                     // Subtitle packet. Push a cue for EVERY text track (tagged with its file-order
