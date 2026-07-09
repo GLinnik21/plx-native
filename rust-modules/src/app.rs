@@ -218,14 +218,30 @@ pub extern "C" fn plex_run(
         crate::text::init_text();
         crate::gfx::init_image();
 
+        // Effective PMS token: the one compiled into the binary (owner), unless the dev trigger
+        // /tmp/poc-token holds an override — used by the regression harness to run as the Guest
+        // user so test playback/scrobbles land on Guest's history, not the real account. The
+        // value is NEVER logged (only that an override is in effect).
+        let eff_token = {
+            let compiled = std::ffi::CStr::from_ptr(pms_token).to_string_lossy().into_owned();
+            match std::fs::read_to_string("/tmp/poc-token") {
+                Ok(s) if !s.trim().is_empty() => {
+                    log("token: using /tmp/poc-token override (test/guest user)");
+                    s.trim().to_owned()
+                }
+                _ => compiled,
+            }
+        };
+        let eff_token_c = std::ffi::CString::new(eff_token.as_str()).unwrap_or_default();
+
         // fetch the catalog once, then spawn the poster workers
-        let nmov = crate::pms::pms_fetch_hubs(pms_host, pms_port, pms_token);
+        let nmov = crate::pms::pms_fetch_hubs(pms_host, pms_port, eff_token_c.as_ptr());
         log(&format!("pms: nmovies={nmov}"));
-        crate::posters::posters_init(pms_host, pms_port, pms_token);
+        crate::posters::posters_init(pms_host, pms_port, eff_token_c.as_ptr());
         crate::route::set_config(
             &std::ffi::CStr::from_ptr(pms_host).to_string_lossy(),
             pms_port,
-            &std::ffi::CStr::from_ptr(pms_token).to_string_lossy(),
+            &eff_token,
             &std::ffi::CStr::from_ptr(demo_url).to_string_lossy(),
         );
 
