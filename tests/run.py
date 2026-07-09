@@ -322,10 +322,13 @@ def op_seek_inplace(lines, target_s):
 
 
 def op_seek_transcode(lines, target_s):
-    hit = find(lines, "seek(transcode)") or find(lines, "reload_at: fresh Load at 140s") \
+    # transcode seeks now RELOAD the pipeline (reload_transcode: fresh Load = correct GStreamer
+    # segment, no stale-segment artifacts). Older builds flushed+refed (`seek(transcode)`) or fell
+    # back to reload_at.
+    hit = find(lines, "reload_transcode: fresh Load at offset") or find(lines, "seek(transcode)") \
         or find(lines, "reload_at: fresh Load at %ds" % target_s)
     if hit is None:
-        return False, "neither `seek(transcode)` nor `reload_at: fresh Load at 140s` present"
+        return False, "no transcode-seek signal (reload_transcode / seek(transcode) / reload_at) present"
     ts = timeline_secs(lines)
     reached = max((t for t, _ in ts), default=-1)
     if reached < target_s - 6:
