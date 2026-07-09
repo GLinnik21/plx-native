@@ -17,6 +17,7 @@ long long _ZN17StarfishMediaAPIs18getCurrentPlaytimeEv(void) { return 0; }
 void _ZN17StarfishMediaAPIs18setCurrentPlaytimeEx(void) {}
 void _ZN17StarfishMediaAPIs4SeekEPKc(void) {}
 void _ZN17StarfishMediaAPIs5flushEv(void) {}
+void _ZN17StarfishMediaAPIs7pushEOSEv(void) {}      /* pushEOS (Kodi EOF drain) */
 void _ZN17StarfishMediaAPIs11SetPlayRateEPKc(void) {}
 /* Kodi in-place seek: setTimeToDecode (libplayerAPIs) + CustomPipeline::sendSegmentEvent
  * (real body in libpf-1.0.so.1, already in scope via libplayerAPIs' DT_NEEDED). */

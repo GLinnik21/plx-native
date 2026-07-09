@@ -33,10 +33,31 @@ pub(crate) use engine::{acb_init, resume_at, start_bufferfeed, stop_bufferfeed};
 pub(crate) use pump::pump;
 pub(crate) fn pause() {
     unsafe { ffi::sf_pause(); }
+    acb_mirror_playstate(false);
 } // playback_pause
 pub(crate) fn resume() {
     unsafe { ffi::sf_play(); }
+    acb_mirror_playstate(true);
 } // playback_resume
+
+/// Kodi parity: mirror the ACB PLAYSTATE on transport pause/resume (the pipeline Pause/Play alone
+/// leaves the app-owned sink's ACB state stale). Only once the plane is bound — firing
+/// setState(PAUSED/PLAYING) before setMediaId/LOADED would corrupt the bind ordering.
+fn acb_mirror_playstate(playing: bool) {
+    if !ACB_OK.load(Relaxed) {
+        return;
+    }
+    if !engine::engine().is_some_and(|e| e.stage >= shared::Stage::Bound) {
+        return;
+    }
+    unsafe {
+        if playing {
+            ffi::acb_resume();
+        } else {
+            ffi::acb_pause();
+        }
+    }
+}
 
 // ---- transport accessors app.rs / player_hud.rs call ----
 pub(crate) fn is_started() -> bool { TX.started.load(Relaxed) }

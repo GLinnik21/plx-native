@@ -11,6 +11,7 @@ extern "C" {
     pub(crate) fn sf_play() -> c_int;
     pub(crate) fn sf_pause() -> c_int;
     pub(crate) fn sf_flush() -> c_int;
+    pub(crate) fn sf_push_eos() -> c_int;
     pub(crate) fn sf_set_playtime(t: i64);
     pub(crate) fn sf_set_time_to_decode(position_ns: i64) -> c_int;
     pub(crate) fn sf_set_content_info(position_ns: i64) -> c_int;
@@ -24,4 +25,6 @@ extern "C" {
     pub(crate) fn acb_send_video_data(source_info: *const c_char) -> c_int;
     pub(crate) fn acb_start(x: c_long, y: c_long, w: c_long, h: c_long);
     pub(crate) fn acb_unload();
+    pub(crate) fn acb_pause();
+    pub(crate) fn acb_resume();
 }
