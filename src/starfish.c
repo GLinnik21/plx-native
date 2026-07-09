@@ -29,6 +29,7 @@ extern void AcbAPI_destroy(long acbId);
 #define PLAYSTATE_UNLOADED  0
 #define PLAYSTATE_LOADED    1
 #define PLAYSTATE_PLAYING   2
+#define PLAYSTATE_PAUSED    3
 
 /* ---- LG StarfishMediaAPIs (libplayerAPIs): mangled C++ symbols. `this` is an
  * over-allocated buffer we construct in place (object size unknown, so never
@@ -47,6 +48,9 @@ extern int  SMP_isLoadCompleted(void *self) __asm__("_ZN17StarfishMediaAPIs15isL
 extern int  SMP_Pause(void *self) __asm__("_ZN17StarfishMediaAPIs5PauseEv");
 extern void SMP_setCurrentPlaytime(void *self, long long t) __asm__("_ZN17StarfishMediaAPIs18setCurrentPlaytimeEx");
 extern int  SMP_flush(void *self) __asm__("_ZN17StarfishMediaAPIs5flushEv");
+/* Kodi-parity: signal true end-of-stream so the pipeline drains the last frames instead of
+ * hanging on them. Verified present on webOS 4.5 (nm: _ZN17StarfishMediaAPIs7pushEOSEv, defined). */
+extern int  SMP_pushEOS(void *self) __asm__("_ZN17StarfishMediaAPIs7pushEOSEv");
 /* Kodi in-place seek: setTimeToDecode(JSON {"position":<ns>}) + the CustomPipeline's
  * sendSegmentEvent() (called ON the pipeline pointer, reached from the object below). */
 extern int  SMP_setTimeToDecode(void *self, const char *json)
@@ -90,6 +94,7 @@ int  sf_is_load_completed(void)   { return g_smp_ready ? SMP_isLoadCompleted(g_s
 int  sf_play(void)                { return g_smp_ready ? SMP_Play(g_smp) : 0; }
 int  sf_pause(void)               { return g_smp_ready ? SMP_Pause(g_smp) : 0; }
 int  sf_flush(void)               { return g_smp_ready ? SMP_flush(g_smp) : 0; }
+int  sf_push_eos(void)            { return g_smp_ready ? SMP_pushEOS(g_smp) : 0; }
 void sf_set_playtime(long long t) { if (g_smp_ready) SMP_setCurrentPlaytime(g_smp, t); }
 void sf_unload(void)              { if (g_smp_ready) SMP_Unload(g_smp); }
 void sf_destroy(void)             { if (g_smp_ready) { SMP_dtor(g_smp); g_smp_ready = 0; } }
@@ -180,6 +185,10 @@ void acb_start(long x, long y, long w, long h) {
 void acb_unload(void) {
     if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &g_taskId);
 }
+/* Kodi-parity: mirror the ACB PLAYSTATE on transport pause/resume (the app owns the sink; the
+ * pipeline Pause/Play alone leaves the ACB state stale). Only meaningful once the plane is bound. */
+void acb_pause(void)  { if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PAUSED,  &g_taskId); }
+void acb_resume(void) { if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId); }
 void acb_destroy(void) {
     if (g_acb) { AcbAPI_finalize(g_acb); AcbAPI_destroy(g_acb); g_acb = 0; }
 }

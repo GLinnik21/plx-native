@@ -56,6 +56,7 @@ impl Drop for AuBox {
 pub(crate) struct Engine {
     pub stage: Stage,
     pub video_info_sent: bool, // videoInfoSent
+    pub eos_pushed: bool,      // Kodi VIDEO_DRAIN: pushEOS() sent once at true EOF
     pub rebase_pending: bool,  // g_rebase_pending
     pub flushed: bool,         // Kodi m_flushed: set on an in-place seek flush; the first
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
@@ -319,6 +320,7 @@ pub(crate) fn start_bufferfeed() -> bool {
     let eng = Engine {
         stage: Stage::Loading,
         video_info_sent: false,
+        eos_pushed: false,
         // if a seek is armed for the FIRST open (resume, or reload_at), rebase the first
         // post-seek keyframe to fed-pts 0 so the pipeline sees a 0-based timeline identical
         // to fresh play (disp_base carries the content offset). Plain fresh play leaves this
@@ -506,7 +508,10 @@ fn teardown(keep_cues: bool, for_reload: bool) {
         let _ = crate::stream::http_post(&h, p, &path, None);
         log(&format!("timeline stopped t={}s/{}s", pos / 1000, dur / 1000));
     }
-    // 3. unload + destruct the pipeline, release the plane
+    // 3. unload + destruct the pipeline, release the plane. (Kodi waits for UNLOADCOMPLETED before
+    // destructing, but on webOS 4.5 that event arrives as smp_cb type=23 with no detectable string,
+    // SAM force-kills the app during a real stop anyway, and reload — which reconstructs g_smp per
+    // seek — has shown no race with immediate destroy across the full suite. So no blocking wait.)
     if unsafe { ffi::sf_ready() } != 0 {
         unsafe { ffi::sf_unload() };
         if ACB_OK.load(Ordering::Relaxed) {
@@ -618,6 +623,14 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
             let mut eof: c_int = 0;
             let n = crate::aq::aq_pop(qp, &mut eof);
             if n.is_null() {
+                // true EOF (producer done + video lane drained): signal end-of-stream ONCE so the
+                // pipeline drains its last frames instead of hanging on them (Kodi keys EOS to the
+                // video drain). Keyed on the video lane only.
+                if eof != 0 && !eng.eos_pushed && eng.stage >= Stage::Streaming {
+                    unsafe { ffi::sf_push_eos() };
+                    eng.eos_pushed = true;
+                    log("EOS pushed at true EOF");
+                }
                 break;
             }
             eng.pending_video = Some(AuBox(n));
