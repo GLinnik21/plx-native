@@ -368,7 +368,7 @@ pub extern "C" fn plex_run(
                         scrub_hold = false;
                         ptr_drag = false;
                         set_scrub(-1);
-                        crate::player::stop_bufferfeed(true);
+                        crate::player::suspend_bufferfeed(); // preserve the session for a clean fg reload
                         playing = false;
                     }
                 } else if et == 0x105 || et == 0x106 {
@@ -379,16 +379,21 @@ pub extern "C" fn plex_run(
                         // only resume if a PLAY key didn't already restart playback in the
                         // WILL->DID window (a second start would drop the live Engine -> UAF)
                         if !playing {
+                            // Restore at the saved position with a SINGLE Load: arm the position via
+                            // resume_at() BEFORE start_bufferfeed (same as the Continue-Watching
+                            // resume). The old start+request_seek order did an in-place seek right
+                            // after the fresh Load, whose reopen stalled the video decoder (BufferFull
+                            // — black plane) while audio kept playing.
+                            let mut rt = bg_pos;
+                            if !bg_was_paused {
+                                rt -= RESUME_REWIND_NS;
+                                if rt < 0 {
+                                    rt = 0;
+                                }
+                            }
+                            crate::player::resume_at(rt);
                             playing = crate::player::start_bufferfeed();
                             if playing {
-                                let mut rt = bg_pos;
-                                if !bg_was_paused {
-                                    rt -= RESUME_REWIND_NS;
-                                    if rt < 0 {
-                                        rt = 0;
-                                    }
-                                }
-                                request_seek(rt);
                                 set_hud(SDL_GetTicks() + 4500);
                                 set_resume_pend(bg_was_paused);
                             }
@@ -460,7 +465,13 @@ pub extern "C" fn plex_run(
                     }
                     // the Info card is modal too — it swallows every key while open
                     if playing && info_open {
-                        if sym == SDLK_UP || sym == SDLK_DOWN {
+                        if sym == SDLK_DOWN && crate::ui::info_panel::at_last() {
+                            // past the bottom of the card → drop focus back onto the tabs
+                            crate::ui::info_panel::close();
+                            info_open = false;
+                            hud_focus = 2;
+                            set_hud(last_input + 4500);
+                        } else if sym == SDLK_UP || sym == SDLK_DOWN {
                             crate::ui::info_panel::move_focus(sym as c_int);
                             set_hud(last_input + 8000);
                         } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
@@ -472,9 +483,9 @@ pub extern "C" fn plex_run(
                                         crate::player::resume();
                                     }
                                 }
-                                crate::ui::info_panel::InfoAction::GoToMovie => {
-                                    // stop playback and open the movie's detail page (more info)
-                                    if let Some(rk) = crate::metadata::current().map(|d| d.rk.clone()) {
+                                crate::ui::info_panel::InfoAction::GoToDetail(rk) => {
+                                    // stop playback and open the show (episode) or movie detail page
+                                    if !rk.is_empty() {
                                         crate::player::stop_bufferfeed(false);
                                         playing = false;
                                         crate::ui::detail::open_rk(&rk);
@@ -509,6 +520,12 @@ pub extern "C" fn plex_run(
                                 }
                             }
                             chapters_open = false;
+                            set_hud(last_input + 4500);
+                        } else if sym == SDLK_DOWN {
+                            // drop focus back onto the tabs below the strip
+                            crate::ui::chapters_panel::close();
+                            chapters_open = false;
+                            hud_focus = 2;
                             set_hud(last_input + 4500);
                         } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
                             crate::ui::chapters_panel::close();

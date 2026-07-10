@@ -102,10 +102,15 @@ struct TCacheEntry {
     tex: c_uint,
     w: c_int,
     h: c_int,
+    // vertical *ink* bounds within the h-tall texture: the first/last rows that actually contain
+    // visible glyph pixels. Lets callers centre by what's drawn, not the font's line box.
+    ink_t: c_int,
+    ink_b: c_int,
     use_: c_uint,
 }
 impl TCacheEntry {
-    const ZERO: TCacheEntry = TCacheEntry { s: [0; 96], sz: 0, bold: 0, tex: 0, w: 0, h: 0, use_: 0 };
+    const ZERO: TCacheEntry =
+        TCacheEntry { s: [0; 96], sz: 0, bold: 0, tex: 0, w: 0, h: 0, ink_t: 0, ink_b: 0, use_: 0 };
 }
 const TCACHE: usize = 48;
 static mut TCACHE_A: [TCacheEntry; TCACHE] = [TCacheEntry::ZERO; TCACHE];
@@ -176,28 +181,62 @@ fn set_entry_key(e: &mut TCacheEntry, s: &[u8]) {
     e.s[..n].copy_from_slice(&s[..n]);
 }
 
-/// returns (GL texture id (0 on failure), w, h)
-unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -> (c_uint, c_int, c_int) {
+/// scan a freshly-rendered TTF surface for its vertical ink bounds — the first and last rows that
+/// hold a visible (non-transparent) pixel. Blended text is white-on-clear, so alpha (byte 3 of each
+/// ARGB8888 pixel) is the coverage. An all-blank string (e.g. a space) reports the full box.
+unsafe fn surface_ink_v(surf: *const SdlSurface) -> (c_int, c_int) {
+    let (w, h, pitch) = ((*surf).w, (*surf).h, (*surf).pitch as isize);
+    let base = (*surf).pixels as *const u8;
+    if base.is_null() || w <= 0 || h <= 0 {
+        return (0, h.max(0));
+    }
+    let (mut top, mut bot) = (h, -1);
+    for y in 0..h {
+        let row = base.offset(y as isize * pitch);
+        let mut ink = false;
+        for x in 0..w {
+            if *row.offset(x as isize * 4 + 3) > 24 {
+                ink = true;
+                break;
+            }
+        }
+        if ink {
+            if y < top {
+                top = y;
+            }
+            bot = y;
+        }
+    }
+    if bot < 0 {
+        (0, h)
+    } else {
+        (top, bot + 1)
+    }
+}
+
+/// returns (GL texture id (0 on failure), w, h, ink_top, ink_bottom)
+unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -> (c_uint, c_int, c_int, c_int, c_int) {
     {
         let cache = &mut *addr_of_mut!(TCACHE_A);
         for e in cache.iter_mut() {
             if e.tex != 0 && e.sz == sz && e.bold == bold && entry_key(e) == s_bytes {
                 TCLOCK = TCLOCK.wrapping_add(1);
                 e.use_ = TCLOCK;
-                return (e.tex, e.w, e.h);
+                return (e.tex, e.w, e.h, e.ink_t, e.ink_b);
             }
         }
     }
     let f = font_at(sz, bold);
     if f.is_null() {
-        return (0, 0, 0);
+        return (0, 0, 0, 0, 0);
     }
     let white = SdlColor { r: 255, g: 255, b: 255, a: 255 };
     let surf = TTF_RenderUTF8_Blended(f, s_c, white);
     if surf.is_null() {
-        return (0, 0, 0);
+        return (0, 0, 0, 0, 0);
     }
     let (sw, sh, pixels) = ((*surf).w, (*surf).h, (*surf).pixels);
+    let (ink_t, ink_b) = surface_ink_v(surf);
     let mut tex: c_uint = 0;
     glGenTextures(1, &mut tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -231,9 +270,11 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
     cache[slot].tex = tex;
     cache[slot].w = sw;
     cache[slot].h = sh;
+    cache[slot].ink_t = ink_t;
+    cache[slot].ink_b = ink_b;
     TCLOCK = TCLOCK.wrapping_add(1);
     cache[slot].use_ = TCLOCK;
-    (tex, sw, sh)
+    (tex, sw, sh, ink_t, ink_b)
 }
 
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
@@ -249,7 +290,7 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
         if b.is_empty() {
             return 0.0;
         }
-        let (_tex, w, _h) = text_tex(b, s, sz, bold);
+        let (_tex, w, _h, _it, _ib) = text_tex(b, s, sz, bold);
         w as f32
     }
 }
@@ -261,9 +302,33 @@ pub(crate) fn text_height(sz: c_int, bold: c_int) -> f32 {
         if TEXT_OK == 0 {
             return sz as f32;
         }
-        let (_tex, _w, h) = text_tex(b"0", c"0".as_ptr(), sz, bold);
+        let (_tex, _w, h, _it, _ib) = text_tex(b"0", c"0".as_ptr(), sz, bold);
         h as f32
     }
+}
+
+/// The font's **cap band** at `sz`/`bold`: (cap_top, baseline) offsets from the draw-y, measured
+/// once from a reference capital ("H", which is flat-topped and sits on the baseline). This is the
+/// stable, string-independent band UI toolkits centre type on — it deliberately ignores descenders
+/// (g j y p q) and ascenders, so every label of a given size aligns the same way. Falls back to a
+/// rough em band without TTF.
+pub(crate) fn text_cap_band(sz: c_int, bold: c_int) -> (f32, f32) {
+    unsafe {
+        if TEXT_OK == 0 {
+            return (sz as f32 * 0.15, sz as f32 * 0.9);
+        }
+        let (_t, _w, _h, it, ib) = text_tex(b"H", c"H".as_ptr(), sz, bold);
+        (it as f32, ib as f32)
+    }
+}
+
+/// The draw-`y` (texture top) at which text of `sz`/`bold` centres its **cap band** on `cy`. Centres
+/// on the font's cap-top→baseline band rather than the specific string's ink, so a label with
+/// descenders ("From Beginning") and one without ("Go to Movie") land identically — descenders hang
+/// below the optical centre instead of dragging the whole line up.
+pub(crate) fn text_vcenter_y(sz: c_int, bold: c_int, cy: f32) -> f32 {
+    let (ct, cb) = text_cap_band(sz, bold);
+    cy - (ct + cb) * 0.5
 }
 
 pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
@@ -276,7 +341,7 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
         if s_bytes.is_empty() {
             return 0.0;
         }
-        let (tex, w, h) = text_tex(s_bytes, s, sz, bold);
+        let (tex, w, h, _it, _ib) = text_tex(s_bytes, s, sz, bold);
         if tex == 0 {
             return 0.0;
         }

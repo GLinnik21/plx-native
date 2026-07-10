@@ -485,6 +485,14 @@ pub(crate) fn stop_bufferfeed(keep_cues: bool) {
     teardown(keep_cues, false);
 }
 
+/// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
+/// backgrounded) but PRESERVE the playback session — keep the URL + transcode session + cues, and
+/// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
+/// (resume_at + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
+pub(crate) fn suspend_bufferfeed() {
+    teardown(true, true);
+}
+
 /// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
 /// stop: preserve the playback session so start_bufferfeed can restart the SAME item — skip
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
