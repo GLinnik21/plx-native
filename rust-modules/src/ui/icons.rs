@@ -41,10 +41,13 @@ struct Entry {
 }
 static mut CACHE: Vec<Entry> = Vec::new();
 
-// Supersample: rasterize the mask at SS× the draw size and let GL's bilinear filter downsample it.
-// A thin stroke rasterized 1:1 is mostly partial-coverage pixels (reads as faint/transparent);
-// rendering it large first gives a solid, cleanly-anti-aliased edge when scaled down.
-const SS: i32 = 3;
+// Antialias the way text does — rasterise the vector at the *exact* draw size and keep nanosvg's own
+// coverage-AA edge (SS = 1: no supersample). The old path rasterised SS× larger and let GL minify it
+// down, but GL_LINEAR only samples 2×2 texels for an SS×SS footprint, so it under-filtered and
+// re-aliased the edge (and GLES2 can't mipmap these NPOT masks). Drawing 1:1 keeps the edge crisp.
+// `downsample_alpha` then just normalises rgb → white so straight-alpha edges never fringe dark.
+// (Bump SS to supersample + box-downsample here if a size ever looks jaggy.)
+const SS: i32 = 1;
 
 fn tex_for(id: Icon, px: i32) -> c_uint {
     unsafe {
@@ -52,14 +55,40 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
         if let Some(e) = cache.iter().find(|e| e.id == id && e.px == px) {
             return e.tex;
         }
-        let hi = (px * SS).clamp(24, 256);
+        let target = px.clamp(8, 96);
+        let hi = target * SS;
         let tex = match crate::svg::rasterize(src(id), hi, hi) {
-            Some(rgba) => upload_rgba(0, hi, hi, rgba.as_ptr()),
+            Some(rgba) => {
+                let small = downsample_alpha(&rgba, hi, SS);
+                upload_rgba(0, target, target, small.as_ptr())
+            }
             None => 0,
         };
         cache.push(Entry { id, px, tex });
         tex
     }
+}
+
+/// Box-average each `ss`×`ss` block of the supersampled mask into one output texel. The alpha is the
+/// mean coverage (the clean AA edge); rgb is forced white so bilinear/compositing never darkens the
+/// edge — the icon's colour comes entirely from the draw tint (`FS_IMG`: `c.rgb*tint.rgb`, coverage
+/// `c.a`), so straight-alpha edge pixels would otherwise fringe dark.
+fn downsample_alpha(src: &[u8], sw: i32, ss: i32) -> Vec<u8> {
+    let dw = sw / ss;
+    let mut out = vec![255u8; (dw * dw * 4) as usize];
+    let n = (ss * ss) as u32;
+    for y in 0..dw {
+        for x in 0..dw {
+            let mut a = 0u32;
+            for jy in 0..ss {
+                for jx in 0..ss {
+                    a += src[(((y * ss + jy) * sw + (x * ss + jx)) * 4 + 3) as usize] as u32;
+                }
+            }
+            out[((y * dw + x) * 4 + 3) as usize] = (a / n) as u8;
+        }
+    }
+    out
 }
 
 /// Draw icon `id` filling `r` (rasterized+cached at r's pixel size), tinted `tint` (a white mask

@@ -82,6 +82,8 @@ pub struct Metadata {
     pub parent_rating_key: String, // season → its show
     #[serde(rename = "grandparentRatingKey", default)]
     pub grandparent_rating_key: String, // episode → its show
+    #[serde(rename = "grandparentTitle", default)]
+    pub grandparent_title: String, // episode → show title
     #[serde(rename = "leafCount", default, deserialize_with = "de_i64")]
     pub leaf_count: i64,
     #[serde(default)]

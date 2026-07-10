@@ -16,6 +16,7 @@ pub mod detail;
 pub mod home;
 pub mod icons;
 pub mod info_panel;
+pub mod label;
 pub mod player_hud;
 pub mod table;
 pub mod track_menu;

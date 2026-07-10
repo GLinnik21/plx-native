@@ -68,6 +68,11 @@ pub(crate) struct Chapter {
 pub(crate) struct Detail {
     pub(crate) rk: String,
     pub(crate) is_show: bool,
+    pub(crate) kind: String,       // this item's own type: movie | episode | show | season
+    pub(crate) show_title: String, // grandparentTitle — the show name, when this item is an episode
+    pub(crate) show_rk: String,    // grandparentRatingKey — the show's rk (episode → its show)
+    pub(crate) season: i64,        // parentIndex — season number, when an episode
+    pub(crate) index: i64,         // index — episode number, when an episode
     pub(crate) title: String,
     pub(crate) year: i64,
     pub(crate) rating: String, // contentRating
@@ -109,6 +114,66 @@ pub(crate) fn clear() {
     unsafe { *addr_of_mut!(CURRENT) = None }
 }
 
+/// A compact descriptor of the item currently *playing*, for the in-player Info card. Unlike
+/// `current()` (which stays on the detail page's show/movie), this always describes the playing
+/// **leaf**: an episode carries the show title + SxEy + episode name + its still; a movie carries the
+/// movie title + landscape art. Set by the play paths — `sync_now_playing()` after a leaf load, or
+/// explicitly by show-page episode play (where `current()` is still the show).
+pub(crate) struct NowPlaying {
+    pub(crate) is_episode: bool,
+    pub(crate) title: String,     // big title: show title (episode) or movie title
+    pub(crate) ep_title: String,  // episode name (episode only)
+    pub(crate) season: i64,
+    pub(crate) index: i64,
+    pub(crate) summary: String,
+    pub(crate) year: i64,
+    pub(crate) dur_ms: i64,
+    pub(crate) rating: String,
+    pub(crate) thumb: String,     // 16:9 still (episode) / landscape art (movie)
+    pub(crate) detail_rk: String, // "Go to Show"/"Go to Movie" target
+}
+static mut NOW: Option<NowPlaying> = None;
+pub(crate) fn now_playing() -> Option<&'static NowPlaying> {
+    unsafe { (*addr_of!(NOW)).as_ref() }
+}
+pub(crate) fn set_now_playing(np: Option<NowPlaying>) {
+    unsafe { *addr_of_mut!(NOW) = np }
+}
+/// Refresh `now_playing` from `current()` — call after a leaf `load_detail` (Continue-Watching /
+/// off-catalog play, where `current()` becomes the played leaf). A show/season load leaves it None.
+pub(crate) fn sync_now_playing() {
+    let np = current().and_then(|d| match d.kind.as_str() {
+        "episode" => Some(NowPlaying {
+            is_episode: true,
+            title: d.show_title.clone(),
+            ep_title: d.title.clone(),
+            season: d.season,
+            index: d.index,
+            summary: d.summary.clone(),
+            year: d.year,
+            dur_ms: d.dur_ms,
+            rating: d.rating.clone(),
+            thumb: d.thumb.clone(),
+            detail_rk: d.show_rk.clone(),
+        }),
+        "movie" => Some(NowPlaying {
+            is_episode: false,
+            title: d.title.clone(),
+            ep_title: String::new(),
+            season: 0,
+            index: 0,
+            summary: d.summary.clone(),
+            year: d.year,
+            dur_ms: d.dur_ms,
+            rating: d.rating.clone(),
+            thumb: if !d.art.is_empty() { d.art.clone() } else { d.thumb.clone() },
+            detail_rk: d.rk.clone(),
+        }),
+        _ => None, // show / season → not a playing leaf
+    });
+    set_now_playing(np);
+}
+
 // ---- fetches (all via the typed crate::plex client; serde DTOs, no Value scraping) ----
 fn fetch_detail(rk: &str) -> Option<Detail> {
     let it = crate::plex::client().metadata(rk)?;
@@ -116,6 +181,11 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
     let mut d = Detail {
         rk: rk.to_string(),
         is_show: it.kind == "show",
+        kind: it.kind.clone(),
+        show_title: it.grandparent_title.clone(),
+        show_rk: it.grandparent_rating_key.clone(),
+        season: it.parent_index,
+        index: it.index,
         title: it.title.clone(),
         year: it.year,
         rating: it.content_rating.clone(),
@@ -322,6 +392,8 @@ pub(crate) fn load_detail(rk: &str) {
             d.related.len(), d.audio.len(), d.subs.len()
         ));
         unsafe { *addr_of_mut!(CURRENT) = Some(d) }
+        // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
+        sync_now_playing();
     });
 }
 

@@ -7,6 +7,7 @@
 //! metadata: the caller builds the sections, drives selection, and reads `sel` back — so the
 //! same widget serves the in-player track menu today and a settings screen later.
 #![allow(dead_code)]
+use crate::ui::label::{HAlign, Label};
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 
@@ -65,7 +66,8 @@ impl Section {
 }
 
 const ROW_H: f32 = 60.0; // a plain row (label only) — mockup rowBase padding 13 + 34px label
-const ROW_H_TALL: f32 = 88.0; // a row that carries a detail sub-line (title 32 + detail 25)
+const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title 32 + detail 25)
+const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
 const HDR_H: f32 = 58.0; // panel header ("Audio"/"Subtitles"), 30px
 const DIV_H: f32 = 24.0; // gap + hairline between sections
 const TOP_PAD: f32 = 20.0;
@@ -207,8 +209,7 @@ impl TableView {
     pub fn draw(&self, p: Painter, frame: Rect) {
         if self.n_rows() == 0 {
             let dim = [0.60f32, 0.62, 0.68, 1.0];
-            p.text(c"No tracks".as_ptr(), frame.x + frame.w * 0.5, frame.y + frame.h * 0.5 - 16.0,
-                26, dim, 1, 0);
+            Label::new(c"No tracks".as_ptr(), 26, dim).h(HAlign::Center).draw(p, frame);
             return;
         }
         let top0 = frame.y + TOP_PAD;
@@ -275,16 +276,30 @@ impl TableView {
             }
             // reserve the inline-badge run so the label elides before it
             let badge_reserve: f32 = row.badges.iter().map(|b| badge_width(b.text()) + 10.0).sum();
-            let (ty, bcy) = if row.detail.is_empty() {
-                (cyc - 32.0 * 0.58, cyc) // label vertically centered
+            // Single-line rows centre their label on the row by cap band. Two-line rows stack a
+            // title over a detail sub-line: lay the pair out off both cap bands and centre it in the
+            // tall row, with an explicit gap between the title baseline and the detail cap-top
+            // (layout ≠ paint — the old fixed offsets left the two lines cramped after centring).
+            let two_line = !row.detail.is_empty();
+            let (title_y, detail_y, bcy) = if two_line {
+                let (t_top, t_base) = crate::text::text_cap_band(32, 1);
+                let (d_top, d_base) = crate::text::text_cap_band(25, 0);
+                let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
+                let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
+                let pair_top = sy + (h - (t_cap + pair_gap + d_cap)) * 0.5; // title cap-top
+                (pair_top - t_top, pair_top + t_cap + pair_gap - d_top, pair_top + t_cap * 0.5)
             } else {
-                (sy + 13.0, sy + 13.0 + 16.0) // title over a detail sub-line — block centered below
+                (0.0, 0.0, cyc) // title_y/detail_y unused single-line; Label centres the label
             };
             // title/label, then inline badges (mockup: "Original: …" with an AD chip after it)
             let lbl = elide(&row.label, text_right - label_x - trailing - badge_reserve, 32, 1);
             let mut bx = label_x;
             if let Ok(cs) = CString::new(lbl) {
-                bx += p.text(cs.as_ptr(), label_x, ty, 32, base, 0, 1);
+                bx += if two_line {
+                    p.text(cs.as_ptr(), label_x, title_y, 32, base, 0, 1)
+                } else {
+                    Label::new(cs.as_ptr(), 32, base).bold().draw(p, Rect::new(label_x, sy, 0.0, h))
+                };
             }
             bx += 12.0;
             for b in row.badges.iter() {
@@ -295,7 +310,7 @@ impl TableView {
                 let sub = if focused { [0.0f32, 0.0, 0.0, 0.6] } else { dimc };
                 let detail = elide(&row.detail, text_right - label_x, 25, 0);
                 if let Ok(cd) = CString::new(detail) {
-                    p.text(cd.as_ptr(), label_x, sy + 47.0, 25, sub, 0, 0);
+                    p.text(cd.as_ptr(), label_x, detail_y, 25, sub, 0, 0);
                 }
             }
         });

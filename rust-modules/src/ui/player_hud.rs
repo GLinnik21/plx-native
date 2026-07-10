@@ -214,8 +214,19 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     let track = [1.0f32, 1.0, 1.0, 0.24];
 
     if transport {
-    p.text(crate::route::ctxline_cptr(), SB_X, SCR_H - 312.0, 24, dim, 0, 0);
-    p.text(crate::route::title_cptr(), SB_X, SCR_H - 278.0, 54, white, 0, 1);
+    // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
+    // SHOW title; for a movie, the route ctxline over the movie title. (Apple-TV layout.)
+    if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_episode) {
+        if let Ok(cs) = CString::new(format!("S{}, E{} · {}", n.season, n.index, n.ep_title)) {
+            p.text(cs.as_ptr(), SB_X, SCR_H - 312.0, 24, white, 0, 1);
+        }
+        if let Ok(cs) = CString::new(n.title.clone()) {
+            p.text(cs.as_ptr(), SB_X, SCR_H - 278.0, 54, white, 0, 1);
+        }
+    } else {
+        p.text(crate::route::ctxline_cptr(), SB_X, SCR_H - 312.0, 24, dim, 0, 0);
+        p.text(crate::route::title_cptr(), SB_X, SCR_H - 278.0, 54, white, 0, 1);
+    }
 
     // right control buttons: Subtitles, Audio
     TransportButton::new(0, Rect::new(btn_x(0), BTN_Y, BTN_S, BTN_S)).focused(focus == 1 && btn == 0).draw(&e, p);
@@ -298,8 +309,10 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     } else {
         &["Info"]
     };
-    let py = SCR_H - 128.0;
-    let ph = 48.0f32;
+    // tabs match the transport control buttons' height (BTN_S), centred vertically between the
+    // play bar (scrubber, at SB_Y) and the bottom edge of the screen
+    let ph = BTN_S; // = 64, same as the Subtitles/Audio buttons
+    let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
     let mut px = SB_X;
     for (i, label) in tabs.iter().enumerate() {
         let on = focus == 2 && tab == i as i32;

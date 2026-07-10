@@ -771,6 +771,21 @@ fn play_episode_at(i: c_int) -> bool {
     let show = d.title.clone();
     let hud_title = if ep.title.is_empty() { show.clone() } else { ep.title.clone() };
     let hud_ctx = format!("{}  \u{b7}  S{} E{}", show, ep.season, ep.index);
+    // describe the playing episode for the in-player Info card (current() stays on the show here)
+    let ep_year = ep.aired.get(0..4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    metadata::set_now_playing(Some(metadata::NowPlaying {
+        is_episode: true,
+        title: show.clone(),
+        ep_title: ep.title.clone(),
+        season: ep.season,
+        index: ep.index,
+        summary: ep.summary.clone(),
+        year: ep_year,
+        dur_ms: ep.dur_ms,
+        rating: ep.rating.clone(),
+        thumb: ep.thumb.clone(),
+        detail_rk: d.rk.clone(),
+    }));
     set_resume(ep.resume_ms, ep.dur_ms);
     crate::route::play_episode(&ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
     true

@@ -290,19 +290,23 @@ impl TabPill {
 impl View for TabPill {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
+        // same treatment as the transport control buttons (TransportButton): a solid dark disc when
+        // idle, the accent fill when focused — so the Info/Chapters tabs read as the same family
         let (bg, ink) = if self.focused {
-            ([0.95f32, 0.96, 0.98, 0.97], [0.07f32, 0.08, 0.10, 1.0])
+            (crate::ui::ACCENT, crate::ui::ACCENT_INK)
         } else {
-            ([1.0f32, 1.0, 1.0, 0.10], [0.84f32, 0.86, 0.92, 1.0])
+            ([0.145f32, 0.145, 0.153, 0.92], [1.0f32, 1.0, 1.0, 1.0])
         };
         p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
-        p.text(self.label, r.cx(), r.y + r.h * 0.5 - self.sz as f32 * 0.58, self.sz, ink, 1, 1);
+        use crate::ui::label::{HAlign, Label};
+        Label::new(self.label, self.sz, ink).bold().h(HAlign::Center).draw(p, r);
     }
 }
 
 // ---- Button: a pill with a label and an optional leading icon, centered together as one group
-// (icon + gap + label is centered in the pill). Focused = accent fill + dark ink; idle = faint
-// fill + white. A reusable action button. ----
+// (icon + gap + label is centered in the pill). Focused = accent fill + dark ink; idle = the same
+// solid dark disc as the transport control buttons (TransportButton) so the two read as one family.
+// A reusable action button. ----
 pub struct Button {
     pub frame: Rect,
     pub label: *const c_char,
@@ -329,11 +333,14 @@ impl View for Button {
         let (bg, ink) = if self.focused {
             (crate::ui::ACCENT, crate::ui::ACCENT_INK)
         } else {
-            ([1.0f32, 1.0, 1.0, 0.14], [1.0f32, 1.0, 1.0, 1.0])
+            // solid dark disc, identical to TransportButton's idle fill (so the info-card action
+            // buttons match the transport's subtitle/audio controls instead of a see-through pill)
+            ([0.145f32, 0.145, 0.153, 0.92], [1.0f32, 1.0, 1.0, 1.0])
         };
         p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
-        // center the [icon + gap + label] group in the pill
-        let ty = r.y + r.h * 0.5 - self.sz as f32 * 0.58;
+        // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
+        // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
+        let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
         let tw = crate::text::text_width(self.label, self.sz, 1);
         let (isz, gap) = if self.icon.is_some() { (self.sz as f32 * 1.15, 12.0) } else { (0.0, 0.0) };
         let gl = r.cx() - (isz + gap + tw) * 0.5;

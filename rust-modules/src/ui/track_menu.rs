@@ -322,10 +322,10 @@ pub(crate) fn draw() {
     let rise = (1.0 - appear) * 20.0; // slide up into place
     let p = Painter::root().alpha(appear).translate(0.0, rise);
 
-    // frosted panel card — mockup rgba(34,34,36,0.9); ~0.92 here so a little video shows through
-    // (no true backdrop blur on the GLES plane, so a near-opaque dark card approximates it)
-    let ptop = [0.133f32, 0.133, 0.141, 0.92];
-    let pbot = [0.114f32, 0.114, 0.122, 0.92];
+    // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
+    // dark card approximates it); only a hint of video shows through
+    let ptop = [0.129f32, 0.129, 0.137, 0.985];
+    let pbot = [0.106f32, 0.106, 0.114, 0.985];
     p.rect(r, 28.0, ptop, pbot, 0.0);
 
     table().draw(p, r);
