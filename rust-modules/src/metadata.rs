@@ -24,6 +24,7 @@ pub(crate) struct Stream {
     pub(crate) sdh: bool,
     pub(crate) ad: bool,
     pub(crate) forced: bool,
+    pub(crate) default: bool, // the file's default track (drives the "Original:" audio label)
 }
 
 pub(crate) struct Episode {
@@ -161,6 +162,7 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
             sdh: s.hearing_impaired != 0,
             ad: s.audio_description != 0 || s.title.to_lowercase().contains("descri"),
             forced: s.forced != 0,
+            default: s.is_default != 0,
             title: s.title.clone(),
         };
         match s.stream_type {

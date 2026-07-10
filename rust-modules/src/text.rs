@@ -237,6 +237,23 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
 }
 
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
+/// pixel width of `s` at `sz`/`bold` without drawing (renders+caches the glyph texture, like
+/// draw_text, then returns just its width). Used for eliding long labels to a budget.
+pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
+    unsafe {
+        if TEXT_OK == 0 || s.is_null() {
+            return 0.0;
+        }
+        let cs = CStr::from_ptr(s);
+        let b = cs.to_bytes();
+        if b.is_empty() {
+            return 0.0;
+        }
+        let (_tex, w, _h) = text_tex(b, s, sz, bold);
+        w as f32
+    }
+}
+
 pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
     unsafe {
         if TEXT_OK == 0 || s.is_null() {

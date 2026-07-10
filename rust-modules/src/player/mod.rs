@@ -65,7 +65,19 @@ pub(crate) fn playpos_ns() -> i64 { SHARED.playpos_ns.load(Relaxed) }
 pub(crate) fn frames() -> i32 { SHARED.frames.load(Relaxed) }
 pub(crate) fn duration_ns() -> i64 { SHARED.duration_ns.load(Relaxed) }
 pub(crate) fn seek_pending() -> i64 { TX.seek_to_ns.load(Relaxed) }
-pub(crate) fn request_seek(ns: i64) { TX.seek_to_ns.store(ns, Relaxed) }
+/// true once the pipeline has drained to true end-of-stream (see pump's EOS check). app.rs polls
+/// this to tear the player down at the credits.
+pub(crate) fn ended() -> bool { SHARED.ended.load(Relaxed) }
+pub(crate) fn request_seek(ns: i64) {
+    SHARED.ended.store(false, Relaxed); // seeking back from the end un-ends the stream
+    SHARED.seeking.store(true, Relaxed); // HUD: spinner + freeze the playhead until it lands
+    SHARED.seek_display_ns.store(ns, Relaxed);
+    TX.seek_to_ns.store(ns, Relaxed);
+}
+/// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
+/// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
+pub(crate) fn loading() -> bool { SHARED.seeking.load(Relaxed) }
+pub(crate) fn seek_display_ns() -> i64 { SHARED.seek_display_ns.load(Relaxed) }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
 /// transcode with that source audio at the current position next tick.
 pub(crate) fn request_audio_switch(sid: i64) {

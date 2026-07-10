@@ -58,6 +58,14 @@ pub(crate) struct Engine {
     pub video_info_sent: bool, // videoInfoSent
     pub eos_pushed: bool,      // Kodi VIDEO_DRAIN: pushEOS() sent once at true EOF
     pub rebase_pending: bool,  // g_rebase_pending
+    // In-place seek only: keyframes this far AHEAD of the seek target are stale frames the demuxer
+    // produced from its pre-flush read position before the reopen+av_seek won the race (playback
+    // drifts forward during a long scrub) — reject them so the rebase anchors on the REAL post-seek
+    // keyframe, not the drifted one. `rebase_drops` caps the rejections so a sparse-keyframe file or
+    // a genuinely-failed av_seek can't hang the rebase.
+    pub rebase_drops: i32,
+    pub seek_armed_at: u32,    // SDL-ticks when the current in-place seek was armed (stuck watchdog)
+    pub seek_retries: i32,     // cheap reopen-retries attempted before escalating to a full reload
     pub flushed: bool,         // Kodi m_flushed: set on an in-place seek flush; the first
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.
@@ -361,6 +369,9 @@ pub(crate) fn start_bufferfeed() -> bool {
         // to fresh play (disp_base carries the content offset). Plain fresh play leaves this
         // false (first keyframe is already ~0).
         rebase_pending: SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0,
+        rebase_drops: 0,
+        seek_armed_at: 0,
+        seek_retries: 0,
         flushed: false,
         max_fed_video_pts: 0,
         max_fed_audio_pts: 0,
@@ -646,6 +657,18 @@ const AUDIO_SLACK_NS: i64 = 2_000_000_000;
 // A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
 // distance) → drop it rather than feed a backward jump.
 const STALE_BACKJUMP_NS: i64 = 2_000_000_000;
+// In-place-seek rebase guard: a first-keyframe this far from the seek target is a stale pre-reopen
+// frame from the drifted read position, not the real post-seek keyframe. av_seek(BACKWARD) lands
+// AT/BEFORE the target, so a valid anchor is never ahead and is at most ~one GOP behind — hence a
+// tight AHEAD bound and a looser BEHIND bound (to tolerate sparse keyframes). Capped by MAX_REBASE_DROPS.
+const SEEK_STALE_AHEAD_NS: i64 = 6_000_000_000;
+const SEEK_STALE_BEHIND_NS: i64 = 30_000_000_000;
+const MAX_REBASE_DROPS: i32 = 240;
+// Audio counterpart of the rebase guard: an audio AU this far AHEAD of the video high-water is a
+// stale drifted frame (the demuxer's pre-reopen audio after a seek). Feeding it poisons
+// max_fed_audio_pts and stalls the audio master clock. Normal audio never leads the video by this
+// much (both feed ~MAX_FEED_AHEAD ahead of the presented position), so this only catches stale AUs.
+const AUDIO_STALE_AHEAD_NS: i64 = 15_000_000_000;
 // Sentinel for SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
 // throttle treats it as feed-freely (don't compare the new fed pts against a stale pre-seek
 // presented position). Set on a seek; the first presented frame overwrites it with a real pts.
@@ -684,6 +707,23 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         let (es, key, pts, len, data) = unsafe { crate::aq::au_fields(n) };
         if eng.rebase_pending {
             if es == 1 && key != 0 {
+                // In-place seek: drop a keyframe that landed well AHEAD of the target — it's a stale
+                // frame from the pre-flush read position (the reopen+av_seek hasn't taken effect yet),
+                // not the real post-seek keyframe. Capped so a failed av_seek can't hang the rebase.
+                if eng.flushed {
+                    let target = SHARED.seek_target_ns.load(Ordering::Relaxed);
+                    let stale = target >= 0
+                        && (pts - target > SEEK_STALE_AHEAD_NS || target - pts > SEEK_STALE_BEHIND_NS);
+                    if stale && eng.rebase_drops < MAX_REBASE_DROPS {
+                        eng.rebase_drops += 1;
+                        if eng.rebase_drops == 1 {
+                            log(&format!("rebase: dropping stale kf pts={}s (target {}s)",
+                                pts / 1_000_000_000, target / 1_000_000_000));
+                        }
+                        eng.pending_video = None;
+                        continue;
+                    }
+                }
                 if eng.flushed {
                     // Kodi IN-PLACE seek (exact): feed the REAL content PTS (no rebase), tell the
                     // pipeline the real decode position, then inject a fresh GStreamer SEGMENT —
@@ -752,6 +792,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         if eng.prime_play && vbuf >= PRIME_NS && (abuf >= PRIME_AUDIO_NS || vbuf >= PRIME_VIDEO_MAX_NS) {
             unsafe { ffi::sf_play() };
             eng.prime_play = false;
+            SHARED.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
             log(&format!("primed: v={}ms a={}ms -> Play", vbuf / 1_000_000, abuf / 1_000_000));
         }
         if es == 1 {
@@ -801,6 +842,12 @@ pub(crate) fn feed_audio_lane(eng: &mut Engine) {
         let n = eng.pending_audio.as_ref().unwrap().0;
         let (es, _key, pts, len, data) = unsafe { crate::aq::au_fields(n) };
         let mut fp = pts + shift;
+        // Stale drifted audio from before a seek's reopen: far AHEAD of the freshly-anchored video.
+        // Drop it (else it poisons max_fed_audio_pts and stalls the audio clock → playback sticks).
+        if eng.max_fed_video_pts > 0 && fp > eng.max_fed_video_pts + AUDIO_STALE_AHEAD_NS {
+            eng.pending_audio = None;
+            continue;
+        }
         if fp < eng.max_fed_audio_pts - STALE_BACKJUMP_NS {
             eng.pending_audio = None; // stale (a big backward jump)
             continue;

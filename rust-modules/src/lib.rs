@@ -15,6 +15,7 @@ mod pms;
 mod posters;
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod stream;
+mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod text;
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
