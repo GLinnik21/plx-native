@@ -20,6 +20,8 @@ static mut SELECTED: c_int = -1;
 static mut SECTION: c_int = 0; // 0=hero buttons, 1=season tabs, 2=episodes
 static mut COL: c_int = 0; // focused item within the section
 static mut SCROLL: Spring = Spring::at(0.0);
+static mut CARD_SCALE: Spring = Spring::at(1.0); // focused card-row item pop (springs on selection change)
+static mut EP_HSCROLL: Spring = Spring::at(0.0); // episode row horizontal scroll — glides instead of snapping
 // resume position (ns) for the item on_ok just started (0 = from the beginning);
 // app.rs reads it after start_bufferfeed to seek once the pipeline is ready.
 static mut LAST_RESUME_NS: i64 = 0;
@@ -173,6 +175,7 @@ pub(crate) fn move_focus(sym: c_int) {
             let nc = if sym == SDLK_LEFT { (col - 1).max(0) } else { (col + 1).min(n - 1) };
             if nc != col {
                 addr_of_mut!(COL).write(nc);
+                (*addr_of_mut!(CARD_SCALE)).jump(1.0); // re-pop the newly-focused card
                 // focusing a season tab switches to that season (brief blocking fetch)
                 if sec == 1 {
                     metadata::load_season(nc as usize);
@@ -185,6 +188,7 @@ pub(crate) fn move_focus(sym: c_int) {
             let ns = avail[np];
             if ns != sec {
                 addr_of_mut!(SECTION).write(ns);
+                (*addr_of_mut!(CARD_SCALE)).jump(1.0); // pop the card in the newly-entered row
                 // land on the active season when entering the tabs; else the first item
                 let start = if ns == 1 {
                     metadata::current().map(|d| d.cur_season as c_int).unwrap_or(0)
@@ -197,8 +201,31 @@ pub(crate) fn move_focus(sym: c_int) {
     }
 }
 
+/// episode-row horizontal scroll target: pin the focused card to the 2nd slot (0 when the episode
+/// row isn't the focused section, so it glides back to the start)
+fn ep_hscroll_target() -> f32 {
+    let (sec, col) = unsafe { (addr_of!(SECTION).read(), addr_of!(COL).read()) };
+    if sec == 2 && col > 1 {
+        (col as f32 - 1.0) * (EP_W + EP_GAP)
+    } else {
+        0.0
+    }
+}
+
 pub(crate) fn update(dt: f32) {
-    unsafe { (*addr_of_mut!(SCROLL)).step(scroll_target(), K_SCROLL, dt) }
+    unsafe {
+        let sct = scroll_target();
+        let sc = &mut *addr_of_mut!(SCROLL);
+        sc.step(sct, K_SCROLL, dt);
+        crate::ui::anim::probe("detail.scroll", sc.pos, sc.vel, sct, dt);
+        let scl = &mut *addr_of_mut!(CARD_SCALE);
+        scl.step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
+        crate::ui::anim::probe("detail.card", scl.pos, scl.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
+        let hst = ep_hscroll_target();
+        let hs = &mut *addr_of_mut!(EP_HSCROLL);
+        hs.step(hst, 240.0, dt);
+        crate::ui::anim::probe("detail.epscroll", hs.pos, hs.vel, hst, dt);
+    }
 }
 
 fn env_of(dt: f32) -> Env {
@@ -470,8 +497,10 @@ fn draw_episodes(p: Painter) {
     let sec = unsafe { addr_of!(SECTION).read() };
     let col = unsafe { addr_of!(COL).read() };
     let focus_col = if sec == 2 { col } else { -1 };
-    // keep the focused card on-screen (scroll so it sits in the 2nd slot)
-    let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * (EP_W + EP_GAP) } else { 0.0 };
+    let scale = unsafe { addr_of!(CARD_SCALE).read() }.pos;
+    // keep the focused card on-screen (spring-scrolled so it glides to the 2nd slot instead of
+    // snapping — matches the chapters strip; fixes the "scatter" on LEFT/RIGHT)
+    let sx = unsafe { addr_of!(EP_HSCROLL).read() }.pos;
     let pe = p.translate(-sx, 0.0);
     let dimc = [0.58, 0.60, 0.64, 1.0];
     for (i, ep) in d.episodes.iter().enumerate() {
@@ -481,29 +510,15 @@ fn draw_episodes(p: Painter) {
         }
         let focused = i as c_int == focus_col;
         let card = Rect::new(x, EP_Y, EP_W, EP_H);
-        // episode still (else a dark placeholder)
-        let mut drew = false;
-        if !ep.thumb.is_empty() {
-            if let Ok(tp) = CString::new(ep.thumb.clone()) {
-                let t = resolve_tex(tp.as_ptr(), 640, 360, 0);
-                if t != 0 {
-                    pe.tex(t, card, 12.0, [1.0; 4]);
-                    drew = true;
-                }
-            }
-        }
-        if !drew {
-            pe.rrect(card, 12.0, 12.0, [0.12, 0.13, 0.16, 1.0]);
-        }
-        // resume bar
+        // episode still + focus ring + scale-pop (shared with the chapters strip)
+        crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, focused, scale);
+        // resume bar (tracks the scaled card when focused)
         if ep.resume_ms > 0 && ep.dur_ms > 0 {
+            let cr = if focused { card.scaled(scale) } else { card };
             let frac = (ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0);
-            let bar = Rect::new(x + 12.0, EP_Y + EP_H - 16.0, EP_W - 24.0, 5.0);
+            let bar = Rect::new(cr.x + 12.0, cr.y + cr.h - 16.0, cr.w - 24.0, 5.0);
             pe.rrect(bar, 2.5, 2.5, [1.0, 1.0, 1.0, 0.28]);
             pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), 2.5, 2.5, [1.0, 1.0, 1.0, 0.95]);
-        }
-        if focused {
-            pe.ring(card, 6.0, 14.0, 1.0);
         }
         // under-card metadata
         let ty = EP_Y + EP_H + 30.0;

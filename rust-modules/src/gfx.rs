@@ -248,20 +248,26 @@ pub(crate) fn draw_ptri(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
     }
 }
 
-static mut SPRING_LASTK: f32 = -1.0;
-static mut SPRING_LASTC: f32 = 0.0;
-
-/// critically-damped spring step
+/// Critically-damped spring step — the **exact analytic** solution of `x'' + 2ω·x' + ω²·x = 0`
+/// (ω = √k, offset `x = pos − target`) integrated over `dt`.
+///
+/// Because it is the closed form, it is unconditionally stable at any `dt` *and* never overshoots
+/// (critical damping does not ring, by definition). It replaces two flawed discretizations:
+/// - explicit Euler (`vel += (k·x − c·vel)·dt`) had transition-matrix `det = 1 − 2√k·dt`, so at the
+///   clamped `dt = 0.05` any spring with `k ≳ 275` grew every frame and exploded — a k=300 focus-pop
+///   reached a scale of 5·10⁵ (the "scatter"); and
+/// - implicit-damped Euler stayed bounded but was underdamped at large `dt`, so it rang (~4%
+///   overshoot — a visible "bounce").
+///
+/// `x(t) = (x₀ + (v₀ + ω·x₀)·t)·e^(−ω·t)`, and its derivative for the velocity.
 pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
     unsafe {
-        if k != SPRING_LASTK {
-            SPRING_LASTK = k;
-            SPRING_LASTC = 2.0 * k.sqrt();
-        }
-        let c = SPRING_LASTC;
-        let a = k * (target - *pos) - c * (*vel);
-        *vel += a * dt;
-        *pos += *vel * dt;
+        let w = k.sqrt(); // natural frequency; critical damping is c = 2ω
+        let e = (-w * dt).exp();
+        let x = *pos - target; // offset from target
+        let b = *vel + w * x;
+        *pos = target + (x + b * dt) * e;
+        *vel = (*vel - w * b * dt) * e;
     }
 }
 

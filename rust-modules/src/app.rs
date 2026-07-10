@@ -273,6 +273,11 @@ pub extern "C" fn plex_run(
         crate::ui::home::home_init();
         crate::player::acb_init();
         crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/poc-ffprobe ABI probe
+        // dev: the animation-diagnostic overlay is OFF by default; /tmp/poc-anim enables it (its
+        // trace goes to /tmp/poc-anim.log, a separate stream from the main event log)
+        if std::path::Path::new("/tmp/poc-anim").exists() {
+            crate::ui::anim::set_enabled(true);
+        }
 
         let mut last_input = SDL_GetTicks();
         let t0 = SDL_GetTicks();
@@ -325,6 +330,7 @@ pub extern "C" fn plex_run(
         let mut detail_open = false; // the detail page is showing (between home and player)
         let mut menu_open = false; // the in-player track menu (audio/subtitles) is showing
         let mut info_open = false; // the in-player Info card is showing
+        let mut chapters_open = false; // the in-player Chapters strip is showing
 
         let mut auto_tried = false;
         let mut grid_tried = false;
@@ -333,6 +339,7 @@ pub extern "C" fn plex_run(
         let mut play_tried = false;
         let mut menu_tried = false;
         let mut menupick_tried = false;
+        let mut pause_tried = false;
         let mut prev = 0u32;
         let mut last_wheel = 0u32;
 
@@ -485,6 +492,31 @@ pub extern "C" fn plex_run(
                         }
                         continue;
                     }
+                    // the Chapters strip is modal too — LEFT/RIGHT pick, OK seeks, BACK closes
+                    if playing && chapters_open {
+                        if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == 417 || wcode == 417 || sym == 412 || wcode == 412 {
+                            let l = sym == SDLK_LEFT || sym == 412 || wcode == 412;
+                            let key = if l { SDLK_LEFT } else { SDLK_RIGHT };
+                            crate::ui::chapters_panel::move_focus(key as c_int);
+                            set_hud(last_input + 8000);
+                        } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
+                            let ns = crate::ui::chapters_panel::on_ok();
+                            if ns >= 0 {
+                                request_seek(ns);
+                                if paused() {
+                                    set_paused(false);
+                                    crate::player::resume();
+                                }
+                            }
+                            chapters_open = false;
+                            set_hud(last_input + 4500);
+                        } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
+                            crate::ui::chapters_panel::close();
+                            chapters_open = false;
+                            set_hud(last_input + 4500);
+                        }
+                        continue;
+                    }
                     // playing: UP/DOWN move the HUD focus (scrubber ↔ buttons ↔ tabs). The first
                     // press on a hidden HUD just reveals it (focused on the scrubber); pressing UP
                     // with nothing focusable above (the buttons row) hides the HUD again.
@@ -562,8 +594,10 @@ pub extern "C" fn plex_run(
                                 if hud_tab == 0 {
                                     crate::ui::info_panel::open(); // Info card
                                     info_open = true;
+                                } else if hud_tab == 1 {
+                                    crate::ui::chapters_panel::open(); // Chapters strip
+                                    chapters_open = true;
                                 }
-                                // Chapters (hud_tab == 1) — not wired yet
                             } else {
                                 let np = !paused();
                                 set_paused(np);
@@ -675,7 +709,8 @@ pub extern "C" fn plex_run(
                         if hud_focus == 1 {
                             hud_btn = (hud_btn + if fwd { 1 } else { -1 }).clamp(0, 1);
                         } else if hud_focus == 2 {
-                            hud_tab = (hud_tab + if fwd { 1 } else { -1 }).clamp(0, 1);
+                            let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
+                            hud_tab = (hud_tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
                         } else if dur() > 0 {
                             // scrubber focus, FRESH press (0x001): the fixed 10s jump. A held key's
                             // 0x101 repeats (handled above) then engage the continuous scrub; the
@@ -684,7 +719,20 @@ pub extern "C" fn plex_run(
                             scrub_commit_at = 0; // more input → cancel a pending tap commit
                             scrub_alive = last_input;
                             if scrub_dir == 0 && scrub() < 0 {
-                                set_scrub(playpos()); // seed a new scrub sequence at the playhead
+                                // Seed a new scrub at the INTENDED playhead. If a prior commit's
+                                // seek is still landing, playpos() is stale (it still reports the
+                                // pre-seek spot), so a quick re-press would jump back to where we
+                                // started and resume there — interrupting the scrub. While a seek is
+                                // in flight, seed from its target instead.
+                                let seed = if crate::player::loading() && crate::player::seek_display_ns() >= 0 {
+                                    let t = crate::player::seek_display_ns();
+                                    log(&format!("scrub: seed at in-flight target {}s (playpos {}s stale)",
+                                        t / 1_000_000_000, playpos() / 1_000_000_000));
+                                    t
+                                } else {
+                                    playpos()
+                                };
+                                set_scrub(seed);
                             }
                             if !scrub_hold {
                                 let mut s = scrub().max(0) + if fwd { SCRUB_STEP_NS } else { -SCRUB_STEP_NS };
@@ -938,6 +986,14 @@ pub extern "C" fn plex_run(
                     request_seek(140 * 1_000_000_000);
                 }
             }
+            // dev: /tmp/poc-autopause pauses once (headless paused-HUD capture)
+            if !pause_tried && playing && now.wrapping_sub(t0) > 6000 {
+                pause_tried = true;
+                if std::path::Path::new("/tmp/poc-autopause").exists() {
+                    set_paused(true);
+                    set_hud(now + 60000);
+                }
+            }
             // dev: /tmp/poc-menu=<tab> opens the in-player track menu once (headless capture)
             if !menu_tried && playing && now.wrapping_sub(t0) > 6000 {
                 menu_tried = true;
@@ -952,6 +1008,14 @@ pub extern "C" fn plex_run(
                     info_open = true;
                     hud_focus = 2;
                     hud_tab = 0;
+                    set_hud(now + 60000);
+                }
+                // dev: /tmp/poc-chapters opens the Chapters strip once (headless capture)
+                if std::path::Path::new("/tmp/poc-chapters").exists() {
+                    crate::ui::chapters_panel::open();
+                    chapters_open = true;
+                    hud_focus = 2;
+                    hud_tab = 1;
                     set_hud(now + 60000);
                 }
             }
@@ -981,6 +1045,8 @@ pub extern "C" fn plex_run(
                 menu_open = false;
                 info_open = false;
                 crate::ui::info_panel::close();
+                chapters_open = false;
+                crate::ui::chapters_panel::close();
                 hud_focus = 0;
             }
             // client-side long-press repeat: scrolls the track menu, or the home grid. Driven by a
@@ -991,8 +1057,8 @@ pub extern "C" fn plex_run(
                     crate::ui::home::home_move_focus(held_sym);
                 }
             }
-            // keep the HUD alive while the track menu / Info card is open
-            if playing && (menu_open || info_open) {
+            // keep the HUD alive while the track menu / Info card / Chapters strip is open
+            if playing && (menu_open || info_open || chapters_open) {
                 set_hud(now + 4500);
             }
             // scrub: continuous accelerating advance while a key is held (scrub_hold set by 0x101).
@@ -1075,6 +1141,9 @@ pub extern "C" fn plex_run(
             if info_open {
                 crate::ui::info_panel::update(dt);
             }
+            if chapters_open {
+                crate::ui::chapters_panel::update(dt);
+            }
             crate::posters::poster_pump(3);
 
             glViewport(0, 0, SCR_W, SCR_H);
@@ -1085,8 +1154,9 @@ pub extern "C" fn plex_run(
                 crate::ui::player_hud::draw_subtitle_bitmap(); // PGS/VobSub image subs
                 let hud_up = hud_shown(now, hud_until(), paused(), hud_dismissed) || crate::player::loading();
                 crate::ui::player_hud::draw_subtitles(hud_up || menu_open);
-                if hud_up || menu_open || info_open {
-                    crate::ui::player_hud::draw_hud(hud_focus, hud_btn, hud_tab, now, !info_open);
+                if hud_up || menu_open || info_open || chapters_open {
+                    // hide the transport middle behind the Info card / Chapters strip
+                    crate::ui::player_hud::draw_hud(hud_focus, hud_btn, hud_tab, now, !(info_open || chapters_open));
                 }
                 if menu_open {
                     crate::ui::track_menu::draw();
@@ -1094,6 +1164,10 @@ pub extern "C" fn plex_run(
                 if info_open {
                     crate::ui::info_panel::draw();
                 }
+                if chapters_open {
+                    crate::ui::chapters_panel::draw();
+                }
+                crate::ui::anim::draw_overlay();
                 SDL_GL_SwapWindow(win);
                 frames_ct += 1;
                 if now.wrapping_sub(fps_t) >= 1000 {
@@ -1109,6 +1183,7 @@ pub extern "C" fn plex_run(
             }
             let fps_col = [0.4f32, 1.0, 0.55, 1.0];
             crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
+            crate::ui::anim::draw_overlay(); // home/detail animations (episode scale-pop, scroll)
             SDL_GL_SwapWindow(win);
             frames_ct += 1;
             if now.wrapping_sub(fps_t) >= 1000 {

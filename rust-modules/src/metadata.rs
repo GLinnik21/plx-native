@@ -58,6 +58,13 @@ pub(crate) struct Related {
     pub(crate) is_show: bool,
 }
 
+pub(crate) struct Chapter {
+    pub(crate) index: i64,    // 1-based chapter number
+    pub(crate) start_ms: i64, // startTimeOffset — the seek target + timestamp label
+    pub(crate) title: String, // Chapter.tag; empty → UI shows "Chapter {index}"
+    pub(crate) thumb: String, // server image path → resolve_tex (empty if no chapter thumbs)
+}
+
 pub(crate) struct Detail {
     pub(crate) rk: String,
     pub(crate) is_show: bool,
@@ -87,6 +94,7 @@ pub(crate) struct Detail {
     pub(crate) episodes: Vec<Episode>, // the currently-selected season
     pub(crate) cur_season: usize,
     pub(crate) related: Vec<Related>,
+    pub(crate) chapters: Vec<Chapter>,
 }
 
 // The one loaded detail item (the detail page shows a single item at a time).
@@ -139,6 +147,16 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         episodes: Vec::new(),
         cur_season: 0,
         related: Vec::new(),
+        chapters: it
+            .chapter
+            .iter()
+            .map(|c| Chapter {
+                index: c.index,
+                start_ms: c.start_time_offset,
+                title: c.tag.clone(),
+                thumb: c.thumb.clone(),
+            })
+            .collect(),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).

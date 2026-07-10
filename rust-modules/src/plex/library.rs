@@ -26,11 +26,12 @@ impl Client {
     }
 
     /// GET /library/metadata/{rating_key} → the single item (`.metadata[0]`), or None.
+    /// `includeChapters=1` — PMS omits the `Chapter[]` array from the default response.
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
-        self.get_json(&format!("/library/metadata/{rating_key}"))?
-            .metadata
-            .into_iter()
-            .next()
+        let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
+            .int("includeChapters", 1)
+            .build();
+        self.get_json(&path)?.metadata.into_iter().next()
     }
 
     /// GET /library/metadata/{csv} — batch (spec `ids` is a CSV array); `.metadata[]`.
