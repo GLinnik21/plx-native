@@ -254,6 +254,18 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     }
 }
 
+/// rendered height in px of a line of text at `sz`/`bold` — the font's line height, independent of
+/// the string. Used to vertically center a glyph on a text line (e.g. the transport clock).
+pub(crate) fn text_height(sz: c_int, bold: c_int) -> f32 {
+    unsafe {
+        if TEXT_OK == 0 {
+            return sz as f32;
+        }
+        let (_tex, _w, h) = text_tex(b"0", c"0".as_ptr(), sz, bold);
+        h as f32
+    }
+}
+
 pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
     unsafe {
         if TEXT_OK == 0 || s.is_null() {

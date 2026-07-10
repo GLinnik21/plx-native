@@ -29,6 +29,33 @@ pub(crate) fn draw_poster(p: Painter, m: Option<&PmsMovie>, r: Rect, rad: f32) {
     p.rect(r, rad, SK_T, SK_B, 0.0);
 }
 
+/// The scale a focused card pops to (shared by every animated card row).
+pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
+
+/// A landscape media card shared by the episode picker and the chapters strip so they animate
+/// identically: the thumbnail (resolved at `res`, or a dark placeholder until loaded), a focus
+/// ring, and a focus **scale-pop** about the frame's centre (applied only when `focused`; the
+/// caller owns the `scale` spring and pops it on selection change).
+pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int), radius: f32, focused: bool, scale: f32) {
+    let r = if focused { frame.scaled(scale) } else { frame };
+    let mut drew = false;
+    if !thumb.is_empty() {
+        if let Ok(tp) = std::ffi::CString::new(thumb) {
+            let t = resolve_tex(tp.as_ptr(), res.0, res.1, 0);
+            if t != 0 {
+                p.tex(t, r, radius, [1.0; 4]);
+                drew = true;
+            }
+        }
+    }
+    if !drew {
+        p.rrect(r, radius, radius, [0.12, 0.13, 0.16, 1.0]);
+    }
+    if focused {
+        p.ring(r, 6.0, 14.0, 1.0);
+    }
+}
+
 /// read a NUL-terminated C-string field into a Rust String
 pub(crate) fn cfield(b: &[u8]) -> String {
     let n = b.iter().position(|&x| x == 0).unwrap_or(b.len());

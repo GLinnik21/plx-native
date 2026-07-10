@@ -102,6 +102,8 @@ pub struct Metadata {
     pub writer: Vec<Tag>,
     #[serde(rename = "Role", default)]
     pub role: Vec<Tag>,
+    #[serde(rename = "Chapter", default)]
+    pub chapter: Vec<Chapter>,
     // D-1: PMS returns UltraBlurColors as an ARRAY `[{…}]` (the old code reads it as an object
     // and misses it). `de_ultrablur` accepts object OR array and yields the first.
     #[serde(rename = "UltraBlurColors", default, deserialize_with = "de_ultrablur")]
@@ -184,6 +186,24 @@ pub struct Tag {
     pub role: String, // Role[] only (character name)
     #[serde(default)]
     pub thumb: String, // Role[] headshot
+}
+
+/// Plex `Chapter[]` on a leaf item (movies/episodes with chapter data). Sibling of `Media[]`,
+/// present only with `?includeChapters=1`. `tag` is the title (often empty → synthesize
+/// "Chapter N"); `thumb` is a server image path for the poster pipeline (empty if the server
+/// never generated chapter thumbs). Offsets are ms; PMS string-encodes them → de_i64.
+#[derive(Deserialize, Default)]
+pub struct Chapter {
+    #[serde(default, deserialize_with = "de_i64")]
+    pub index: i64,
+    #[serde(rename = "startTimeOffset", default, deserialize_with = "de_i64")]
+    pub start_time_offset: i64,
+    #[serde(rename = "endTimeOffset", default, deserialize_with = "de_i64")]
+    pub end_time_offset: i64,
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default)]
+    pub thumb: String,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]

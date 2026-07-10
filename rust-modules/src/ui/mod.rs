@@ -9,6 +9,8 @@
 
 use std::os::raw::{c_char, c_int};
 
+pub mod anim;
+pub mod chapters_panel;
 pub mod consts;
 pub mod detail;
 pub mod home;

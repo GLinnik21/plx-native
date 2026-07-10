@@ -273,28 +273,31 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
             p.text(cs.as_ptr(), sx + sw, ty, 25, dim, 2, 0);
         }
     }
-    // transport play/pause glyph (SVG) just past the elapsed clock — the mockup's toggle: playing →
-    // pause, paused → play; a loading spinner takes its place during a seek. Drops to the clock's
-    // LEFT when the right side is against the remaining label / screen edge.
-    let isz = 22.0f32;
-    let need = isz + 6.0;
-    let right_ok = el_r + 14.0 + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
-    let gx = if right_ok { el_r + 14.0 } else { el_l - 14.0 - need };
-    let icy = ty + 9.0; // ~vertical center of the 25px clock line
-    if loading {
-        Spinner::new(gx + isz * 0.5, icy, 12.0).phase(now).tint(white).draw(&e, p);
-    } else {
-        let icon = if crate::player::TX.paused.load(Relaxed) {
-            crate::ui::icons::Icon::Play
+    // transport state indicator just past the elapsed clock — a Pause glyph while paused, a loading
+    // spinner while a seek resolves, and NOTHING while playing (a state read-out, not an action
+    // toggle). Centered on the clock's line box; drops to the clock's LEFT when the right side is
+    // against the remaining label / screen edge.
+    let paused = crate::player::TX.paused.load(Relaxed);
+    if loading || paused {
+        let isz = 22.0f32;
+        let need = isz + 6.0;
+        let right_ok = el_r + 14.0 + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
+        let gx = if right_ok { el_r + 14.0 } else { el_l - 14.0 - need };
+        let icy = ty + crate::text::text_height(25, 1) * 0.5; // vertical center of the clock line
+        if loading {
+            Spinner::new(gx + isz * 0.5, icy, 12.0).phase(now).tint(white).draw(&e, p);
         } else {
-            crate::ui::icons::Icon::Pause
-        };
-        crate::ui::icons::draw(p, icon, Rect::new(gx, icy - isz * 0.5, isz, isz), white);
+            crate::ui::icons::draw(p, crate::ui::icons::Icon::Pause, Rect::new(gx, icy - isz * 0.5, isz, isz), white);
+        }
     }
     } // end `if transport`
 
-    // bottom tabs (Info / Chapters) as pills — the focused one is a light pill, the rest faint
-    let tabs = ["Info", "Chapters"];
+    // bottom tabs as pills — Chapters only appears when the item actually has chapters
+    let tabs: &[&str] = if crate::ui::chapters_panel::has_chapters() {
+        &["Info", "Chapters"]
+    } else {
+        &["Info"]
+    };
     let py = SCR_H - 128.0;
     let ph = 48.0f32;
     let mut px = SB_X;
