@@ -63,6 +63,14 @@ pub(crate) struct Shared {
     // main/pump (M) -> demux (D)
     pub seek_byte: AtomicI64,                 // g_seek_byte (-1 = none)
     pub seek_to_ns: AtomicI64,                // direct-play demux seek target ns (-1=none); pump -> ff demux
+    // the in-place seek's target content-ns, for the feed's rebase guard (drop stale drifted
+    // keyframes). Distinct from seek_to_ns (which the demuxer consumes on reopen). -1 = none.
+    pub seek_target_ns: AtomicI64,
+    // UI loading state: true from a seek request until playback resumes at the new position (prime→
+    // Play). The HUD shows a spinner + freezes the playhead at `seek_display_ns` so it doesn't
+    // wobble through the reopen/rebase. -1 display = not loading.
+    pub seeking: AtomicBool,
+    pub seek_display_ns: AtomicI64,
     // a transcode SEEK re-points the demux at a NEW start.mkv?&offset= URL (a live
     // transcode has no byte-Cues); byte-Range seeks leave this None. Taken on re-open.
     pub next_url: Mutex<Option<String>>,
@@ -94,6 +102,9 @@ pub(crate) struct Shared {
     // demux (D) -> main (M)
     pub file_size: AtomicI64,                 // g_file_size
     pub duration_ns: AtomicI64,               // was g_mkv.duration_ns (published)
+    // set once the pipeline has drained to true end-of-stream (EOS pushed AND the last fed frame
+    // has been presented). app.rs polls player::ended() to tear the player down at the credits.
+    pub ended: AtomicBool,
 
     // cue preflight (C) <-> main (M)
     pub cues: Mutex<Vec<CueEnt>>,             // g_cues (+ g_ncues = .len())
@@ -133,6 +144,9 @@ impl Shared {
             disp_base: AtomicI64::new(0),
             seek_byte: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
+            seek_target_ns: AtomicI64::new(-1),
+            seeking: AtomicBool::new(false),
+            seek_display_ns: AtomicI64::new(-1),
             next_url: Mutex::new(None),
             pending_audio_sid: AtomicI64::new(-1),
             pending_audio_idx: AtomicI32::new(-1),
@@ -145,6 +159,7 @@ impl Shared {
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
+            ended: AtomicBool::new(false),
             cues: Mutex::new(Vec::new()),
             cues_ready: AtomicBool::new(false),
             cues_abort: AtomicBool::new(false),
@@ -170,6 +185,9 @@ impl Shared {
         self.disp_base.store(0, Ordering::Relaxed);
         self.seek_byte.store(-1, Ordering::Relaxed);
         self.seek_to_ns.store(-1, Ordering::Relaxed);
+        self.seek_target_ns.store(-1, Ordering::Relaxed);
+        self.seeking.store(false, Ordering::Relaxed);
+        self.seek_display_ns.store(-1, Ordering::Relaxed);
         *self.next_url.lock().unwrap() = None;
         self.pending_audio_sid.store(-1, Ordering::Relaxed);
         self.pending_audio_idx.store(-1, Ordering::Relaxed);
@@ -186,6 +204,7 @@ impl Shared {
         self.sub_bitmaps.lock().unwrap().clear();
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
+        self.ended.store(false, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
         self.hs2_ptr.store(std::ptr::null_mut(), Ordering::Release);
         self.hs3_ptr.store(std::ptr::null_mut(), Ordering::Release);

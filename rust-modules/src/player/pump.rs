@@ -8,7 +8,6 @@ use std::os::raw::c_char;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 pub(crate) fn pump(now: u32) {
-    let _ = now;
     let eng = match engine() {
         Some(e) => e,
         None => return,
@@ -48,6 +47,32 @@ pub(crate) fn pump(now: u32) {
         }
     }
 
+    // ---------- an in-place seek is still resolving (flushed, not yet re-anchored): COALESCE.
+    // Firing another now would race the demux reopen (rapid tap-seeks) and the rebase guard would
+    // then eat everything → stuck. Hold the latest requested target (it stays in TX.seek_to_ns) and
+    // process it once this seek anchors. If it hasn't anchored within SEEK_STUCK_MS the reopen was
+    // lost — first RETRY the reopen cheaply (re-interrupt the demuxer + re-arm), and only fall back
+    // to a full (slow) reload if the retries also fail.
+    const SEEK_STUCK_MS: u32 = 500;
+    if eng.flushed && eng.rebase_pending && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS {
+        let tgt = SHARED.seek_target_ns.load(Relaxed).max(0);
+        if eng.seek_retries < 2 {
+            eng.seek_retries += 1;
+            *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
+            SHARED.seek_byte.store(0, Release);
+            SHARED.seek_to_ns.store(tgt, Release);
+            let p = SHARED.hs_ptr.load(Acquire);
+            if !p.is_null() {
+                crate::stream::http_close(p); // re-interrupt: the first close raced the reopen
+            }
+            eng.seek_armed_at = now;
+            super::log(&format!("seek: in-place stuck → retry reopen at {}s (#{})", tgt / 1_000_000_000, eng.seek_retries));
+        } else {
+            super::log(&format!("seek: in-place stuck → reload at {}s", tgt / 1_000_000_000));
+            super::engine::reload_at(tgt); // REPLACES the engine — eng dangles, return
+            return;
+        }
+    }
     // ---------- pending seek: flush, drop queued AUs, re-point the demux ----------
     let t = TX.seek_to_ns.load(Relaxed);
     // A live transcode has NO Content-Length / byte-Cues (file_size stays -1), so gate
@@ -56,6 +81,7 @@ pub(crate) fn pump(now: u32) {
     let is_transcode = !crate::route::transcode_session().is_empty();
     if stream
         && t >= 0
+        && !(eng.flushed && eng.rebase_pending) // coalesce: don't stack in-place seeks
         && eng.stage >= Stage::Playing
         && SHARED.duration_ns.load(Relaxed) > 0
         && (is_transcode || SHARED.file_size.load(Relaxed) > 0)
@@ -106,6 +132,7 @@ pub(crate) fn pump(now: u32) {
             *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
             SHARED.seek_byte.store(0, Release); // reopen trigger
             SHARED.seek_to_ns.store(t, Release); // post-reopen av_seek target
+            SHARED.seek_target_ns.store(t, Relaxed); // rebase guard: reject stale drifted keyframes
             SHARED.disp_base.store(0, Relaxed);
             super::log(&format!("seek(ff in-place): reopen+seek t={t}"));
         } else {
@@ -125,6 +152,9 @@ pub(crate) fn pump(now: u32) {
         // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;
+        eng.rebase_drops = 0;
+        eng.seek_armed_at = now; // stuck-watchdog start (see the coalesce/escape above)
+        eng.seek_retries = 0;
         eng.max_fed_video_pts = 0;
         eng.max_fed_audio_pts = 0;
         // Drop any AU held from BEFORE the seek (the per-lane BufferFull retry). drain_aq cleared the
@@ -214,6 +244,21 @@ pub(crate) fn pump(now: u32) {
             feed_audio_lane(eng);
         } else {
             feed_sample(eng);
+        }
+    }
+
+    // ---------- end-of-stream: the producer hit file EOF (eos_pushed → all AUs to the end were
+    // fed) and the pipeline has now played out to within EOS_TAIL of the duration. Mark ended so
+    // app.rs tears the player down at the credits instead of freezing on the last frame. Paused
+    // at the end stays paused (playpos won't climb) — correct; it fires when resumed. Any seek
+    // clears the flag (request_seek), so seeking back from the end doesn't re-trigger. ----------
+    const EOS_TAIL_NS: i64 = 1_000_000_000;
+    if eng.eos_pushed && !SHARED.ended.load(Relaxed) {
+        let dur = SHARED.duration_ns.load(Relaxed);
+        let pos = SHARED.playpos_ns.load(Relaxed);
+        if dur > 0 && pos >= dur - EOS_TAIL_NS {
+            SHARED.ended.store(true, Relaxed);
+            super::log(&format!("EOS reached: playpos={}s/{}s → ended", pos / 1_000_000_000, dur / 1_000_000_000));
         }
     }
 }

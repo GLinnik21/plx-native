@@ -132,6 +132,12 @@ fn set_paused(v: bool) { crate::player::TX.paused.store(v, Relaxed) }
 fn hud_until() -> u32 { crate::player::TX.hud_until.load(Relaxed) }
 #[inline]
 fn set_hud(x: u32) { crate::player::TX.hud_until.store(x, Relaxed) }
+/// the transport HUD is shown while its timer is live OR playback is paused, unless the user
+/// explicitly dismissed it (UP from the top row) — the dismiss holds until the next key.
+#[inline]
+fn hud_shown(now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
+    (now < until || is_paused) && !dismissed
+}
 #[inline]
 fn scrub() -> i64 { crate::player::TX.scrub_ns.load(Relaxed) }
 #[inline]
@@ -150,6 +156,20 @@ fn frames() -> i32 { crate::player::frames() }
 fn seek_pending() -> i64 { crate::player::seek_pending() }
 #[inline]
 fn request_seek(x: i64) { crate::player::request_seek(x) }
+/// Commit a scrub to `target` and clear the preview. If we were PAUSED, STAY paused: the feed gate
+/// (pump) needs `!paused` to prime the new position, so drop paused just long enough for the seek
+/// to present its landed frame, then arm `resume_pend` so the per-frame loop re-freezes on it (same
+/// mechanism as background-restore). `repause_at` is that re-freeze wait target. A scrub while
+/// playing takes the else branch and simply resumes at the new position.
+fn commit_seek(target: i64, repause_at: &mut i64) {
+    request_seek(target);
+    set_scrub(-1);
+    if paused() {
+        *repause_at = target;
+        set_resume_pend(true);
+        set_paused(false);
+    }
+}
 #[inline]
 fn is_started() -> bool { crate::player::is_started() }
 /// resume position (ns) for a directly-played item: only if past 10s and before 95% of
@@ -264,9 +284,33 @@ pub extern "C" fn plex_run(
         let mut held_sym = 0u32;
         let mut held_since = 0u32;
         let mut last_rep = 0u32;
-        let mut scrub_last = 0u32;
-        let mut scrub_t = 0u32;
+        // Scrub state. This Magic Remote emits a HELD key as auto-repeat keydowns (state 0x101,
+        // ~50ms apart) followed by ONE keyup on release; a TAP is a lone keydown(0x001)+keyup(0x000).
+        // So: a fresh press does the fixed jump; the 0x101 repeats engage the continuous scrub; the
+        // keyup is a reliable release. Taps commit on a short debounce so quick taps accumulate.
+        let mut scrub_t = 0u32; // last continuous-advance tick
         let mut scrub_dir = 0i32;
+        let mut scrub_hold = false; // a 0x101 repeat arrived → continuous accelerating scrub engaged
+        let mut scrub_hold_since = 0u32;
+        let mut scrub_alive = 0u32; // last held (0x101) event — for the lost-keyup safety commit
+        let mut scrub_commit_at = 0u32; // tap released → commit at this tick (0 = none; a new press cancels)
+        // player HUD focus: 0 = scrubber, 1 = right buttons (Subtitles/Audio), 2 = bottom tabs.
+        let mut hud_focus = 0i32;
+        let mut hud_btn = 0i32; // 0 = Subtitles, 1 = Audio (within the buttons row)
+        let mut hud_tab = 0i32; // 0 = Info, 1 = Chapters (within the tabs row)
+        // UP-from-the-top explicitly dismisses the HUD even while paused; any other player input
+        // clears it. Without this, paused() would force the HUD permanently visible.
+        let mut hud_dismissed = false;
+        let mut menu_rep = 0u32; // track-menu scroll throttle (a held UP/DOWN repeats via 0x101)
+        // scrub tuning: a press jumps SCRUB_STEP_NS; holding engages a continuous scrub ramping
+        // SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second).
+        const SCRUB_STEP_NS: i64 = 10_000_000_000; // 10s per press
+        const SCRUB_BASE: f32 = 10.0;
+        const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
+        const SCRUB_MAX: f32 = 140.0;
+        const TAP_COMMIT_MS: u32 = 240; // tap released → commit after this (further taps accumulate)
+        const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+        const MENU_REPEAT_MS: u32 = 110; // held-menu scroll cadence (0x101 arrives faster; throttle)
         let mut bg_was_playing = false;
         let mut bg_was_paused = false;
         let mut bg_pos = 0i64;
@@ -280,6 +324,7 @@ pub extern "C" fn plex_run(
         let mut playing = false;
         let mut detail_open = false; // the detail page is showing (between home and player)
         let mut menu_open = false; // the in-player track menu (audio/subtitles) is showing
+        let mut info_open = false; // the in-player Info card is showing
 
         let mut auto_tried = false;
         let mut grid_tried = false;
@@ -313,6 +358,7 @@ pub extern "C" fn plex_run(
                         bg_was_playing = true;
                         bg_was_paused = paused();
                         scrub_dir = 0;
+                        scrub_hold = false;
                         ptr_drag = false;
                         set_scrub(-1);
                         crate::player::stop_bufferfeed(true);
@@ -348,30 +394,52 @@ pub extern "C" fn plex_run(
                     let sym = rd_u32(&ev, 24);
                     let isnav = sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == 417 || wcode == 417 || sym == 412 || wcode == 412;
                     if (state & 0xff) != 1 {
-                        // real key-up → commit the scrub as a seek
+                        // key-up = a reliable release (the remote sends exactly one per press).
                         if sym == held_sym {
                             held_sym = 0;
                         }
                         if playing && scrub_dir != 0 && isnav {
-                            request_seek(scrub());
-                            set_scrub(-1);
-                            scrub_dir = 0;
-                            scrub_t = 0;
+                            if scrub_hold {
+                                log(&format!("scrub: keyup commit (held) {}s", scrub() / 1_000_000_000));
+                                commit_seek(scrub(), &mut bg_pos); // a held scrub → commit on release
+                                scrub_dir = 0;
+                                scrub_hold = false;
+                            } else {
+                                // a tap → commit on a short debounce so quick taps accumulate first
+                                scrub_commit_at = SDL_GetTicks().wrapping_add(TAP_COMMIT_MS);
+                            }
                         }
                         continue;
                     }
                     if state & 0x100 != 0 {
-                        // auto-repeat
-                        if playing && scrub_dir != 0 && isnav {
-                            scrub_last = SDL_GetTicks();
+                        // hardware AUTO-REPEAT (held key): drive the continuous scrub / menu scroll.
+                        let n = SDL_GetTicks();
+                        if playing && menu_open {
+                            if (sym == SDLK_UP || sym == SDLK_DOWN) && n.wrapping_sub(menu_rep) > MENU_REPEAT_MS {
+                                menu_rep = n;
+                                crate::ui::track_menu::move_focus(sym as c_int);
+                                set_hud(n + 8000);
+                            }
+                        } else if playing && hud_focus == 0 && scrub_dir != 0 && isnav {
+                            scrub_alive = n;
+                            scrub_commit_at = 0; // holding → not a tap
+                            if !scrub_hold {
+                                scrub_hold = true;
+                                scrub_hold_since = n;
+                                scrub_t = n;
+                                log("scrub: hold engaged (0x101 repeat)");
+                            }
                         }
                         continue;
                     }
                     last_input = SDL_GetTicks();
+                    hud_dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
                     // the in-player track menu is modal — it swallows every key while open
                     if playing && menu_open {
                         if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
+                            // move once on the fresh press; a held UP/DOWN repeats via the 0x101 path
                             crate::ui::track_menu::move_focus(sym as c_int);
+                            menu_rep = last_input;
                             set_hud(last_input + 8000);
                         } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
                             crate::ui::track_menu::on_ok();
@@ -383,11 +451,81 @@ pub extern "C" fn plex_run(
                         }
                         continue;
                     }
-                    // UP during playback opens the track menu
-                    if playing && sym == SDLK_UP {
-                        crate::ui::track_menu::open();
-                        menu_open = true;
-                        set_hud(last_input + 8000);
+                    // the Info card is modal too — it swallows every key while open
+                    if playing && info_open {
+                        if sym == SDLK_UP || sym == SDLK_DOWN {
+                            crate::ui::info_panel::move_focus(sym as c_int);
+                            set_hud(last_input + 8000);
+                        } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
+                            match crate::ui::info_panel::on_ok() {
+                                crate::ui::info_panel::InfoAction::FromBeginning => {
+                                    request_seek(0);
+                                    if paused() {
+                                        set_paused(false);
+                                        crate::player::resume();
+                                    }
+                                }
+                                crate::ui::info_panel::InfoAction::GoToMovie => {
+                                    // stop playback and open the movie's detail page (more info)
+                                    if let Some(rk) = crate::metadata::current().map(|d| d.rk.clone()) {
+                                        crate::player::stop_bufferfeed(false);
+                                        playing = false;
+                                        crate::ui::detail::open_rk(&rk);
+                                        detail_open = true;
+                                    }
+                                }
+                                crate::ui::info_panel::InfoAction::None => {}
+                            }
+                            info_open = false;
+                            set_hud(last_input + 4500);
+                        } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
+                            crate::ui::info_panel::close();
+                            info_open = false;
+                            set_hud(last_input + 4500);
+                        }
+                        continue;
+                    }
+                    // playing: UP/DOWN move the HUD focus (scrubber ↔ buttons ↔ tabs). The first
+                    // press on a hidden HUD just reveals it (focused on the scrubber); pressing UP
+                    // with nothing focusable above (the buttons row) hides the HUD again.
+                    if playing && (sym == SDLK_UP || sym == SDLK_DOWN) {
+                        if !cur_hidden {
+                            SDL_webOSCursorVisibility(0);
+                            cur_hidden = true;
+                        }
+                        let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
+                        let mut hide = false;
+                        if !vis {
+                            hud_focus = 0; // reveal, on the scrubber
+                        } else if sym == SDLK_UP {
+                            match hud_focus {
+                                0 => hud_focus = 1, // scrubber → buttons
+                                2 => hud_focus = 0, // tabs → scrubber
+                                _ => {
+                                    hide = true; // buttons: nothing above → hide the HUD
+                                    hud_focus = 0;
+                                }
+                            }
+                        } else {
+                            match hud_focus {
+                                0 => hud_focus = 2, // scrubber → tabs
+                                1 => hud_focus = 0, // buttons → scrubber
+                                _ => {}             // tabs: nothing below → stay
+                            }
+                        }
+                        if hud_focus != 0 || hide {
+                            // leaving the bar cancels any in-progress scrub preview
+                            if scrub() >= 0 {
+                                set_scrub(-1);
+                            }
+                            scrub_dir = 0;
+                            scrub_hold = false;
+                        }
+                        if hide {
+                            hud_dismissed = true; // stays hidden even while paused, until the next key
+                        } else {
+                            set_hud(last_input + 4500);
+                        }
                         continue;
                     }
                     if !playing && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN) {
@@ -415,12 +553,25 @@ pub extern "C" fn plex_run(
                         // LG pointer auto-hidden; ignore
                     } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
                         if playing {
-                            let np = !paused();
-                            set_paused(np);
-                            if np {
-                                crate::player::pause();
+                            let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
+                            if vis && hud_focus == 1 {
+                                // OK on a control button opens its panel (Subtitles / Audio)
+                                crate::ui::track_menu::open_tab(if hud_btn == 0 { 1 } else { 0 });
+                                menu_open = true;
+                            } else if vis && hud_focus == 2 {
+                                if hud_tab == 0 {
+                                    crate::ui::info_panel::open(); // Info card
+                                    info_open = true;
+                                }
+                                // Chapters (hud_tab == 1) — not wired yet
                             } else {
-                                crate::player::resume();
+                                let np = !paused();
+                                set_paused(np);
+                                if np {
+                                    crate::player::pause();
+                                } else {
+                                    crate::player::resume();
+                                }
                             }
                             set_hud(last_input + 4500);
                         } else if detail_open {
@@ -505,10 +656,8 @@ pub extern "C" fn plex_run(
                         crate::player::stop_bufferfeed(false);
                         playing = false;
                     } else if playing
-                        && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN
-                            || sym == 417 || wcode == 417 || sym == 412 || wcode == 412)
+                        && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == 417 || wcode == 417 || sym == 412 || wcode == 412)
                     {
-                        set_hud(last_input + 4500);
                         if !cur_hidden {
                             SDL_webOSCursorVisibility(0);
                             cur_hidden = true;
@@ -518,22 +667,36 @@ pub extern "C" fn plex_run(
                             set_scrub(-1);
                         }
                         let fwd = sym == SDLK_RIGHT || sym == 417 || wcode == 417;
-                        let back = sym == SDLK_LEFT || sym == 412 || wcode == 412;
-                        if (fwd || back) && dur() > 0 {
-                            if scrub() < 0 {
-                                set_scrub(playpos());
-                            }
-                            let mut s = scrub() + (if fwd { 10i64 } else { -10i64 }) * 1_000_000_000;
+                        let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
+                        set_hud(last_input + 4500);
+                        if !vis {
+                            hud_focus = 0; // first LEFT/RIGHT reveals the HUD on the scrubber
+                        }
+                        if hud_focus == 1 {
+                            hud_btn = (hud_btn + if fwd { 1 } else { -1 }).clamp(0, 1);
+                        } else if hud_focus == 2 {
+                            hud_tab = (hud_tab + if fwd { 1 } else { -1 }).clamp(0, 1);
+                        } else if dur() > 0 {
+                            // scrubber focus, FRESH press (0x001): the fixed 10s jump. A held key's
+                            // 0x101 repeats (handled above) then engage the continuous scrub; the
+                            // keyup commits. Quick re-taps before scrub_commit_at accumulate.
                             let cap = dur() - 3 * 1_000_000_000;
-                            if s < 0 {
-                                s = 0;
+                            scrub_commit_at = 0; // more input → cancel a pending tap commit
+                            scrub_alive = last_input;
+                            if scrub_dir == 0 && scrub() < 0 {
+                                set_scrub(playpos()); // seed a new scrub sequence at the playhead
                             }
-                            if cap > 0 && s > cap {
-                                s = cap;
+                            if !scrub_hold {
+                                let mut s = scrub().max(0) + if fwd { SCRUB_STEP_NS } else { -SCRUB_STEP_NS };
+                                if s < 0 {
+                                    s = 0;
+                                }
+                                if cap > 0 && s > cap {
+                                    s = cap;
+                                }
+                                set_scrub(s);
                             }
-                            set_scrub(s);
                             scrub_dir = if fwd { 1 } else { -1 };
-                            scrub_last = last_input;
                         }
                     } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
                         // webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
@@ -562,6 +725,7 @@ pub extern "C" fn plex_run(
                     prev_mx = mx;
                     prev_my = my;
                     if playing {
+                        hud_dismissed = false;
                         set_hud(last_input + 4500);
                         if ptr_drag && dur() > 0 {
                             let sbx = 90.0f32;
@@ -574,7 +738,6 @@ pub extern "C" fn plex_run(
                                 frac = 1.0;
                             }
                             set_scrub((frac * dur() as f64) as i64);
-                            scrub_last = last_input;
                         }
                         continue;
                     }
@@ -588,6 +751,7 @@ pub extern "C" fn plex_run(
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
                     if playing {
+                        hud_dismissed = false;
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
                         let sbx = 90.0f32;
@@ -597,15 +761,16 @@ pub extern "C" fn plex_run(
                             && cy < SCR_H as f32 - 110.0
                             && cx >= sbx
                             && cx <= sbx + sbw;
-                        // the subtitles(1612)/audio(1692) control icons (player_hud row: y=SCR_H-288, 58px)
-                        let on_icons =
-                            cy >= SCR_H as f32 - 288.0 && cy <= SCR_H as f32 - 230.0 && cx >= 1612.0 && cx <= 1750.0;
+                        // the Subtitles/Audio control icons (player_hud::icon_hit is the shared geometry)
+                        let icon = crate::ui::player_hud::icon_hit(cx, cy);
                         if menu_open {
                             crate::ui::track_menu::close();
                             menu_open = false;
-                        } else if on_icons {
-                            crate::ui::track_menu::open_tab(if cx < 1682.0 { 1 } else { 0 });
+                        } else if let Some(idx) = icon {
+                            crate::ui::track_menu::open_tab(if idx == 0 { 1 } else { 0 }); // Subtitles button → subtitles tab
                             menu_open = true;
+                            hud_focus = 1;
+                            hud_btn = idx;
                         } else if on_scrub {
                             let mut frac = ((cx - sbx) / sbw) as f64;
                             if frac < 0.0 {
@@ -621,7 +786,6 @@ pub extern "C" fn plex_run(
                             }
                             set_scrub(t);
                             ptr_drag = true;
-                            scrub_last = last_input;
                         } else {
                             let np = !paused();
                             set_paused(np);
@@ -638,8 +802,7 @@ pub extern "C" fn plex_run(
                     if ptr_drag {
                         ptr_drag = false;
                         if scrub() >= 0 {
-                            request_seek(scrub());
-                            set_scrub(-1);
+                            commit_seek(scrub(), &mut bg_pos);
                         }
                         set_hud(last_input + 4500);
                     }
@@ -783,6 +946,14 @@ pub extern "C" fn plex_run(
                     menu_open = true;
                     set_hud(now + 60000);
                 }
+                // dev: /tmp/poc-info opens the Info card once (headless capture)
+                if std::path::Path::new("/tmp/poc-info").exists() {
+                    crate::ui::info_panel::open();
+                    info_open = true;
+                    hud_focus = 2;
+                    hud_tab = 0;
+                    set_hud(now + 60000);
+                }
             }
             // dev: /tmp/poc-menupick="<tab>,<row>" opens the menu, selects that row, and
             // confirms it (headless track switch: e.g. "0,4" = audio tab, row 4).
@@ -802,46 +973,83 @@ pub extern "C" fn plex_run(
             if is_started() {
                 crate::player::pump(now);
             }
-            // client-side long-press repeat (grid nav; not while the detail page is up)
-            if held_sym != 0 && now.wrapping_sub(held_since) > 400 && now.wrapping_sub(last_rep) > 130 {
+            // end-of-stream: the pipeline drained at the credits → leave the player (back to the
+            // detail page or home, whichever is behind), instead of freezing on the last frame.
+            if playing && crate::player::ended() {
+                crate::player::stop_bufferfeed(false);
+                playing = false;
+                menu_open = false;
+                info_open = false;
+                crate::ui::info_panel::close();
+                hud_focus = 0;
+            }
+            // client-side long-press repeat: scrolls the track menu, or the home grid. Driven by a
+            // held-key timer so it doesn't depend on the remote's hardware auto-repeat delay.
+            if held_sym != 0 && now.wrapping_sub(held_since) > 380 && now.wrapping_sub(last_rep) > 110 {
                 last_rep = now;
-                if !detail_open && g_snap() > 0.5 {
+                if !playing && !detail_open && g_snap() > 0.5 {
                     crate::ui::home::home_move_focus(held_sym);
                 }
             }
-            // LEFT/RIGHT scrub advance
-            if scrub() >= 0 && scrub_dir != 0 && !ptr_drag {
-                if now.wrapping_sub(scrub_last) > 1200 {
-                    request_seek(scrub());
-                    set_scrub(-1);
-                    scrub_dir = 0;
-                    scrub_t = 0;
-                } else {
-                    let mut sdt = if scrub_t != 0 { now.wrapping_sub(scrub_t) as f32 / 1000.0 } else { 0.016 };
-                    if sdt > 0.1 {
-                        sdt = 0.1;
-                    }
-                    let mut s = scrub() + (scrub_dir as f64 * 35.0 * sdt as f64 * 1e9) as i64;
-                    let cap = dur() - 3 * 1_000_000_000;
-                    if s < 0 {
-                        s = 0;
-                    }
-                    if cap > 0 && s > cap {
-                        s = cap;
-                    }
-                    set_scrub(s);
-                    set_hud(now + 4500);
-                    scrub_t = now;
+            // keep the HUD alive while the track menu / Info card is open
+            if playing && (menu_open || info_open) {
+                set_hud(now + 4500);
+            }
+            // scrub: continuous accelerating advance while a key is held (scrub_hold set by 0x101).
+            if scrub_dir != 0 && scrub_hold && scrub() >= 0 && !ptr_drag {
+                let held = now.wrapping_sub(scrub_hold_since) as f32 / 1000.0;
+                let speed = (SCRUB_BASE + SCRUB_ACCEL * held).min(SCRUB_MAX);
+                let mut sdt = now.wrapping_sub(scrub_t) as f32 / 1000.0;
+                if sdt > 0.1 {
+                    sdt = 0.1;
                 }
+                let mut s = scrub() + (scrub_dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64;
+                let cap = dur() - 3 * 1_000_000_000;
+                if s < 0 {
+                    s = 0;
+                }
+                if cap > 0 && s > cap {
+                    s = cap;
+                }
+                set_scrub(s);
+                set_hud(now + 4500);
+                scrub_t = now;
+                // lost-keyup safety: commit if the 0x101 repeats stop without a keyup
+                if now.wrapping_sub(scrub_alive) > SCRUB_LOST_MS {
+                    commit_seek(scrub(), &mut bg_pos);
+                    scrub_dir = 0;
+                    scrub_hold = false;
+                }
+            }
+            // tap release debounce: commit the accumulated jump(s) once no further tap arrives
+            if scrub_commit_at != 0 && now.wrapping_sub(scrub_commit_at) < 0x8000_0000 {
+                if scrub() >= 0 {
+                    log(&format!("scrub: tap commit {}s", scrub() / 1_000_000_000));
+                    commit_seek(scrub(), &mut bg_pos);
+                } else {
+                    set_scrub(-1);
+                }
+                scrub_dir = 0;
+                scrub_hold = false;
+                scrub_commit_at = 0;
+            }
+            // when the HUD auto-hides, park focus back on the scrubber so the next reveal is clean
+            if playing && !hud_shown(now, hud_until(), paused(), hud_dismissed) {
+                hud_focus = 0;
+                hud_btn = 0;
+                hud_tab = 0;
             }
             // hide the idle pointer during playback
             if playing && !cur_hidden && !ptr_drag && last_ptr_motion != 0 && now.wrapping_sub(last_ptr_motion) > 3000 {
                 SDL_webOSCursorVisibility(0);
                 cur_hidden = true;
             }
-            // re-pause after a resume once the seek's frame is on screen
+            // re-pause after a resume the INSTANT the seek's frame is on screen. `frames()` counts
+            // real "frame presented" callbacks (reset on seek), so >= 1 means the target frame is
+            // already composited — re-freezing then shows it with the shortest possible play-blip
+            // (a paused scrub must briefly Play to decode the frame; buffer-feed has no preroll).
             if resume_pend() && playing && !paused()
-                && seek_pending() < 0 && frames() >= 3 && playpos() + 15 * 1_000_000_000 >= bg_pos
+                && seek_pending() < 0 && frames() >= 1 && playpos() + 15 * 1_000_000_000 >= bg_pos
             {
                 set_paused(true);
                 crate::player::pause();
@@ -861,6 +1069,12 @@ pub extern "C" fn plex_run(
             if detail_open {
                 crate::ui::detail::update(dt);
             }
+            if menu_open {
+                crate::ui::track_menu::update(dt); // pill slide + open fade
+            }
+            if info_open {
+                crate::ui::info_panel::update(dt);
+            }
             crate::posters::poster_pump(3);
 
             glViewport(0, 0, SCR_W, SCR_H);
@@ -869,12 +1083,16 @@ pub extern "C" fn plex_run(
                 glClearColor(0.0, 0.0, 0.0, 0.0);
                 glClear(GL_COLOR_BUFFER_BIT);
                 crate::ui::player_hud::draw_subtitle_bitmap(); // PGS/VobSub image subs
-                crate::ui::player_hud::draw_subtitles(now < hud_until() || paused());
-                if now < hud_until() || paused() {
-                    crate::ui::player_hud::draw_hud();
+                let hud_up = hud_shown(now, hud_until(), paused(), hud_dismissed) || crate::player::loading();
+                crate::ui::player_hud::draw_subtitles(hud_up || menu_open);
+                if hud_up || menu_open || info_open {
+                    crate::ui::player_hud::draw_hud(hud_focus, hud_btn, hud_tab, now, !info_open);
                 }
                 if menu_open {
                     crate::ui::track_menu::draw();
+                }
+                if info_open {
+                    crate::ui::info_panel::draw();
                 }
                 SDL_GL_SwapWindow(win);
                 frames_ct += 1;

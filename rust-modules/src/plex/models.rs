@@ -168,6 +168,12 @@ pub struct Stream {
     pub audio_description: i64,
     #[serde(default, deserialize_with = "de_i64")]
     pub forced: i64,
+    // "default"/"selected" mark the file's default track and the server's current pick. Lenient
+    // (number OR numeric string) like the other flags. `default` drives the "Original:" audio label.
+    #[serde(rename = "default", default, deserialize_with = "de_i64")]
+    pub is_default: i64,
+    #[serde(default, deserialize_with = "de_i64")]
+    pub selected: i64,
 }
 
 #[derive(Deserialize, Default)]
@@ -232,15 +238,21 @@ fn de_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
 fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum IntFloatStr {
+    enum IntFloatStrBool {
         I(i64),
         F(f64),
         S(String),
+        // PMS sends the flag fields (default/selected/forced/…) as JSON booleans on some
+        // endpoints (e.g. Stream inside /hubs) and as "1"/"0" strings on others. A missing bool
+        // arm here fails the untagged enum → the WHOLE MediaContainer parse fails (blast radius),
+        // so accept it: true→1, false→0.
+        B(bool),
     }
-    Ok(match Option::<IntFloatStr>::deserialize(d)? {
-        Some(IntFloatStr::I(n)) => n,
-        Some(IntFloatStr::F(f)) => f as i64,
-        Some(IntFloatStr::S(s)) => s.trim().parse().unwrap_or(0),
+    Ok(match Option::<IntFloatStrBool>::deserialize(d)? {
+        Some(IntFloatStrBool::I(n)) => n,
+        Some(IntFloatStrBool::F(f)) => f as i64,
+        Some(IntFloatStrBool::S(s)) => s.trim().parse().unwrap_or(0),
+        Some(IntFloatStrBool::B(b)) => b as i64,
         None => 0,
     })
 }

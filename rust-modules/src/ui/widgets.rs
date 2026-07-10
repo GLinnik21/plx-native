@@ -160,6 +160,163 @@ impl View for PageDots {
     }
 }
 
+// ---- Spinner: dots around a circle, the leading one bright and trailing into a fade. A loading/
+// buffering indicator (e.g. the player HUD while a seek resolves). `phase` (ms) drives rotation. ----
+pub struct Spinner {
+    pub cx: f32,
+    pub cy: f32,
+    pub r: f32,
+    pub phase: u32,
+    pub col: [f32; 4],
+    pub dots: usize,
+    pub dot_r: f32,
+}
+impl Spinner {
+    pub fn new(cx: f32, cy: f32, r: f32) -> Self {
+        Self { cx, cy, r, phase: 0, col: [1.0, 1.0, 1.0, 1.0], dots: 10, dot_r: 3.4 }
+    }
+    pub fn phase(mut self, ms: u32) -> Self {
+        self.phase = ms;
+        self
+    }
+    pub fn tint(mut self, c: [f32; 4]) -> Self {
+        self.col = c;
+        self
+    }
+}
+impl View for Spinner {
+    fn draw(&self, _e: &Env, p: Painter) {
+        const PERIOD: u32 = 760;
+        let t = (self.phase % PERIOD) as f32 / PERIOD as f32;
+        for i in 0..self.dots {
+            let ang = i as f32 / self.dots as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+            let lead = (t - i as f32 / self.dots as f32).rem_euclid(1.0);
+            let a = (1.0 - lead) * 0.85 + 0.12; // bright at the leading dot, fading behind it
+            let c = [self.col[0], self.col[1], self.col[2], self.col[3] * a];
+            let (dx, dy) = (self.cx + self.r * ang.cos(), self.cy + self.r * ang.sin());
+            let d = self.dot_r;
+            p.rect(Rect::new(dx - d, dy - d, 2.0 * d, 2.0 * d), d, c, c, 0.0);
+        }
+    }
+}
+
+// ---- TransportButton: circular control button with a runtime-rasterized SVG glyph
+// (0 = subtitles/CC, 1 = audio). Focused = accent fill + dark icon; idle = faint fill + white
+// icon. Mirrors the mockup's round icon buttons. ----
+pub struct TransportButton {
+    pub frame: Rect,
+    pub which: i32,
+    pub focused: bool,
+}
+impl TransportButton {
+    pub fn new(which: i32, frame: Rect) -> Self {
+        Self { frame, which, focused: false }
+    }
+    pub fn focused(mut self, f: bool) -> Self {
+        self.focused = f;
+        self
+    }
+}
+impl View for TransportButton {
+    fn draw(&self, _e: &Env, p: Painter) {
+        use crate::ui::icons::Icon;
+        let r = self.frame;
+        let (bg, ink) = if self.focused {
+            (crate::ui::ACCENT, crate::ui::ACCENT_INK)
+        } else {
+            // solid clean dark disc (matches the icon mock ≈ #252525), so the white glyph reads the
+            // same over any scene instead of a washed translucent circle
+            ([0.145f32, 0.145, 0.153, 0.92], [1.0f32, 1.0, 1.0, 1.0])
+        };
+        p.rect(r, r.w * 0.5, bg, bg, 0.0); // circular
+        let id = match self.which {
+            1 => Icon::Audio,
+            _ => Icon::Cc,
+        };
+        let s = (r.w * 0.54).round();
+        let ir = Rect::new(r.x + (r.w - s) * 0.5, r.y + (r.h - s) * 0.5, s, s);
+        crate::ui::icons::draw(p, id, ir, ink);
+    }
+}
+
+// ---- TabPill: a rounded pill with a centered label. Focused = light pill + dark ink; idle =
+// faint fill + dim ink. `pill_w(label, sz)` sizes it to fit. ----
+pub struct TabPill {
+    pub frame: Rect,
+    pub label: *const c_char,
+    pub sz: c_int,
+    pub focused: bool,
+}
+impl TabPill {
+    /// pill width for a `chars`-long label at `sz` (label advance + horizontal padding)
+    pub fn width(chars: usize, sz: c_int) -> f32 {
+        chars as f32 * sz as f32 * 0.56 + 44.0
+    }
+    pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
+        Self { frame, label, sz, focused: false }
+    }
+    pub fn focused(mut self, f: bool) -> Self {
+        self.focused = f;
+        self
+    }
+}
+impl View for TabPill {
+    fn draw(&self, _e: &Env, p: Painter) {
+        let r = self.frame;
+        let (bg, ink) = if self.focused {
+            ([0.95f32, 0.96, 0.98, 0.97], [0.07f32, 0.08, 0.10, 1.0])
+        } else {
+            ([1.0f32, 1.0, 1.0, 0.10], [0.84f32, 0.86, 0.92, 1.0])
+        };
+        p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
+        p.text(self.label, r.cx(), r.y + r.h * 0.5 - self.sz as f32 * 0.58, self.sz, ink, 1, 1);
+    }
+}
+
+// ---- Button: a pill with a label and an optional leading icon, centered together as one group
+// (icon + gap + label is centered in the pill). Focused = accent fill + dark ink; idle = faint
+// fill + white. A reusable action button. ----
+pub struct Button {
+    pub frame: Rect,
+    pub label: *const c_char,
+    pub sz: c_int,
+    pub icon: Option<crate::ui::icons::Icon>,
+    pub focused: bool,
+}
+impl Button {
+    pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
+        Self { frame, label, sz, icon: None, focused: false }
+    }
+    pub fn icon(mut self, i: crate::ui::icons::Icon) -> Self {
+        self.icon = Some(i);
+        self
+    }
+    pub fn focused(mut self, f: bool) -> Self {
+        self.focused = f;
+        self
+    }
+}
+impl View for Button {
+    fn draw(&self, _e: &Env, p: Painter) {
+        let r = self.frame;
+        let (bg, ink) = if self.focused {
+            (crate::ui::ACCENT, crate::ui::ACCENT_INK)
+        } else {
+            ([1.0f32, 1.0, 1.0, 0.14], [1.0f32, 1.0, 1.0, 1.0])
+        };
+        p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
+        // center the [icon + gap + label] group in the pill
+        let ty = r.y + r.h * 0.5 - self.sz as f32 * 0.58;
+        let tw = crate::text::text_width(self.label, self.sz, 1);
+        let (isz, gap) = if self.icon.is_some() { (self.sz as f32 * 1.15, 12.0) } else { (0.0, 0.0) };
+        let gl = r.cx() - (isz + gap + tw) * 0.5;
+        if let Some(icon) = self.icon {
+            crate::ui::icons::draw(p, icon, Rect::new(gl, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+        }
+        p.text(self.label, gl + isz + gap, ty, self.sz, ink, 0, 1); // left-aligned after the icon
+    }
+}
+
 // ---- ProgressBar: the future player-HUD scrubber. Proves cross-screen reuse. ----
 pub struct ProgressBar {
     pub frame: Rect,
