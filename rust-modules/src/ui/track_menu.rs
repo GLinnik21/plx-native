@@ -288,13 +288,16 @@ fn rebuild(tab: c_int, slide: bool) {
 fn panel_rect() -> Rect {
     let tab = unsafe { addr_of!(TAB).read() };
     let pw = if tab == 0 { 560.0f32 } else { 448.0f32 }; // audio / subtitles (mockup panel widths)
-    let ph = table().measured_height().clamp(160.0, 860.0);
     let px = SCR_W - 80.0 - pw; // right:80 (mockup)
-    // bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a small,
-    // equal margin — the panel opens off those buttons, so it should sit right on them, not float
-    // high. Switching Audio↔Subtitles keeps a steady bottom edge; the panel only grows upward.
-    let bottom = SCR_H - 300.0;
-    let py = (bottom - ph).max(40.0);
+    // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
+    // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
+    // crosses `top_min` — so a long list (Toy Story's many audio dubs) SCROLLS inside the panel
+    // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
+    // the bottom edge steady.
+    let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
+    let top_min = 60.0;
+    let ph = table().measured_height().clamp(160.0, bottom - top_min);
+    let py = bottom - ph; // ≥ top_min by construction
     Rect::new(px, py, pw, ph)
 }
 

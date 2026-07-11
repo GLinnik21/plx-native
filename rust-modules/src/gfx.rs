@@ -56,6 +56,8 @@ extern "C" {
     fn glBindTexture(target: c_uint, texture: c_uint);
     fn glActiveTexture(texture: c_uint);
     fn glEnable(cap: c_uint);
+    fn glDisable(cap: c_uint);
+    fn glScissor(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glBlendFunc(sfactor: c_uint, dfactor: c_uint);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: c_uint);
@@ -79,6 +81,30 @@ const GL_LINEAR: c_int = 0x2601;
 const GL_CLAMP_TO_EDGE: c_int = 0x812F;
 
 const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
+const GL_SCISSOR_TEST: c_uint = 0x0C11;
+
+/// Hard-clip subsequent draws to the UI-space rect (top-left origin, 1920×1080 authored coords).
+/// GL scissor is bottom-left window pixels, but the panel is 1:1 at 1080p (no DPI scale — see
+/// CLAUDE.md), so the only transform is the Y flip. Pair with [`clip_clear`]. Scrolling lists use
+/// this so a partial row is cut cleanly at the frame edge instead of poking over the video / buttons
+/// (`Painter` otherwise has no clip). Rect is clamped to the framebuffer so a negative edge can't
+/// underflow the unsigned scissor box.
+pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
+    let x0 = x.max(0.0);
+    let y_top = y.max(0.0);
+    let x1 = (x + w).min(SCR_W);
+    let y1 = (y + h).min(SCR_H);
+    let (wi, hi) = ((x1 - x0).max(0.0), (y1 - y_top).max(0.0));
+    unsafe {
+        glEnable(GL_SCISSOR_TEST);
+        // GL y is bottom-up: the box's bottom in GL space is SCR_H - (top + height)
+        glScissor(x0 as c_int, (SCR_H - (y_top + hi)) as c_int, wi as c_int, hi as c_int);
+    }
+}
+/// Remove the scissor clip set by [`clip_set`].
+pub(crate) fn clip_clear() {
+    unsafe { glDisable(GL_SCISSOR_TEST) }
+}
 
 /// clear the framebuffer to an opaque color — the retui frame's first op, so the
 /// framework doesn't have to link GLES itself (it draws only through gfx/text).

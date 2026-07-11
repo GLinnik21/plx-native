@@ -11,6 +11,8 @@ void glCreateProgram(void){}
 void glCreateShader(void){}
 void glDrawArrays(void){}
 void glEnable(void){}
+void glDisable(void){}
+void glScissor(void){}
 void glEnableVertexAttribArray(void){}
 void glGenBuffers(void){}
 void glGetProgramiv(void){}

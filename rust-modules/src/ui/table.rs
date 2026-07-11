@@ -212,6 +212,11 @@ impl TableView {
             Label::new(c"No tracks".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, frame);
             return;
         }
+        // Hard-clip everything below to the panel frame: the list overflows, so a partial edge row is
+        // cut cleanly at the frame instead of poking over the video / control buttons — and, unlike the
+        // old fade masks, a tall two-line edge row is cut uniformly (the fade left its title bright but
+        // faded its detail line, which read as a broken clip). Released at the end of this fn.
+        p.clip(frame);
         let top0 = frame.y + TOP_PAD;
         let scroll = self.scroll.pos;
         let vis_top = frame.y;
@@ -236,8 +241,8 @@ impl TableView {
         self.walk(|cy, gi, si| {
             let sy = top0 + cy - scroll;
             if gi == -1 {
-                // panel/section header (+ hairline divider above later sections)
-                if sy - 1.0 > vis_top && sy < vis_bot {
+                // panel/section header (+ hairline divider above later sections); scissor-clipped to `frame`
+                if sy + HDR_H > vis_top && sy < vis_bot {
                     let sec = &self.sections[si];
                     if si > 0 {
                         p.rect(Rect::new(content_x, sy - DIV_H * 0.5, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
@@ -252,7 +257,7 @@ impl TableView {
             let row = self.rows_at(gi);
             let h = row.height();
             if sy + h < vis_top || sy > vis_bot {
-                return; // culled (scrolled out)
+                return; // fully scrolled out; a partial edge row is drawn and scissor-clipped to `frame`
             }
             let focused = gi == self.sel;
             let base = if focused { ink } else if row.dim { dimc } else { white };
@@ -314,14 +319,7 @@ impl TableView {
             }
         });
 
-        // ---- top/bottom fade masks when the list overflows (hide partial rows at the edges) ----
-        let content_h = self.content_h();
-        if scroll > 1.0 {
-            fade(p, Rect::new(frame.x, frame.y, frame.w, 40.0), PANEL_BG, true);
-        }
-        if scroll + frame.h < content_h + TOP_PAD + BOT_PAD - 1.0 {
-            fade(p, Rect::new(frame.x, frame.y + frame.h - 40.0, frame.w, 40.0), PANEL_BG, false);
-        }
+        p.clip_clear();
     }
 
     fn rows_at(&self, gi: i32) -> &Row {
@@ -362,12 +360,4 @@ fn draw_badge(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], bg: [f32; 
         p.text(cs.as_ptr(), x + w * 0.5, ty, sz, col, 1, 1);
     }
     w
-}
-
-/// a vertical fade to the panel color, masking partially-scrolled rows at an edge
-fn fade(p: Painter, r: Rect, col: [f32; 4], top_solid: bool) {
-    let solid = col;
-    let clear = [col[0], col[1], col[2], 0.0];
-    let (t, b) = if top_solid { (solid, clear) } else { (clear, solid) };
-    p.rect(r, 0.0, t, b, 0.0);
 }

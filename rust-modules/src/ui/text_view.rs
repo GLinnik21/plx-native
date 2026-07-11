@@ -156,6 +156,13 @@ impl<'a> TextView<'a> {
         self.wrap(width).lines.len().max(1) as f32 * self.line_h()
     }
 
+    /// whether wrapping to `width` under the current `max_lines` hides any text — i.e. there is more
+    /// to read. Drives an out-of-flow "MORE" affordance when the inline [`trailing`](Self::trailing)
+    /// run isn't wanted (e.g. a corner label). Shares the memoised wrap, so it's free next to a draw.
+    pub fn truncates(&self, width: f32) -> bool {
+        self.wrap(width).truncated
+    }
+
     /// Draw into `frame`: `frame.w` is the wrap width, `frame.x/y` the top-left. Line 0's cap band
     /// sits at `frame.y`, each subsequent line one `leading` below. Returns the consumed height.
     pub fn draw(&self, p: Painter, frame: Rect) -> f32 {
