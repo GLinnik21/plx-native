@@ -200,6 +200,15 @@ impl Card {
     fn new(row: usize, col: usize) -> Self {
         Card { row, col, scale: Spring::at(1.0) }
     }
+    /// Step this cell's focus-scale spring toward its target (1.055 focused, 1.0 idle). The
+    /// card owns its spring, so the grid only calls `cards[c].update(env)` — motion is identical
+    /// to the old inline Shelf loop (same 1.055/K_SCALE that the ring scalar `(s-1)/0.055` is
+    /// tied to; see Grid::draw). Inherent, not a trait draw — the focused-last z-order (a card is
+    /// drawn by the grid's two passes, not self-contained) keeps Card out of the View trait.
+    fn update(&mut self, env: &Env) {
+        let target = if self.row == env.fr as usize && self.col == env.fc as usize { 1.055 } else { 1.0 };
+        self.scale.step(target, K_SCALE, env.dt);
+    }
 }
 
 // ---- Shelf: one hub row = [Card;MAX_ITEMS] (only hub_len used) + its own scroll spring
@@ -214,11 +223,11 @@ impl Shelf {
         Shelf { row, cards: std::array::from_fn(|c| Card::new(row, c)), scroll_x: Spring::at(0.0), base_y: 0.0 }
     }
     fn update(&mut self, env: &Env) {
-        let (f_r, f_c) = (env.fr as usize, env.fc as usize);
+        let f_c = env.fc as usize;
         let n = crate::pms::hub_len(self.row);
+        // every cell steps its own spring (all MAX_ITEMS every frame — invariant #10)
         for c in 0..MAX_ITEMS {
-            let target = if self.row == f_r && c == f_c { 1.055 } else { 1.0 };
-            self.cards[c].scale.step(target, K_SCALE, env.dt);
+            self.cards[c].update(env);
         }
         // only the focused row's scroll animates (matches ui_home.c: springs scrollX[fr] alone)
         if env.fr as usize == self.row && n > 0 {
@@ -252,10 +261,7 @@ struct Grid {
     shelves: [Shelf; MAX_HUBS],
     scroll_y: Spring,
 }
-impl Grid {
-    fn new() -> Self {
-        Grid { shelves: std::array::from_fn(Shelf::new), scroll_y: Spring::at(0.0) }
-    }
+impl View for Grid {
     fn update(&mut self, env: &Env) {
         for s in self.shelves.iter_mut() {
             s.update(env);
@@ -265,7 +271,9 @@ impl Grid {
         let want_y = (env.fr as f32 * ROW_PITCH - ROW_PITCH * 0.6).clamp(0.0, max_y);
         self.scroll_y.step(want_y, K_SCROLL, env.dt);
     }
-    fn layout(&mut self, env: &Env) {
+    fn layout(&mut self, _frame: Rect, env: &Env) {
+        // full-screen root view: positions absolutely from PEEK_Y/GRID_TOP_Y by env.sp, so the
+        // trait's frame rect (env.screen) is unused.
         let shelf_top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * env.sp; // 828 -> 150
         for r in 0..MAX_HUBS {
             self.shelves[r].base_y = shelf_top + r as f32 * ROW_PITCH - self.scroll_y.pos * env.sp;
@@ -310,6 +318,11 @@ impl Grid {
                 p.text(mm.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, theme::TEXT_PRIMARY, 1, 1);
             }
         }
+    }
+}
+impl Grid {
+    fn new() -> Self {
+        Grid { shelves: std::array::from_fn(Shelf::new), scroll_y: Spring::at(0.0) }
     }
     // ---- navigation: writes the fr/fc globals (never caches focus) ----
     fn nav(&self, sym: c_uint) {
@@ -394,6 +407,19 @@ impl Home {
         Env { dt, screen: Rect::FULL, fr: cfr, fc: cfc, sp, hero_a: (1.0 - sp / 0.55).clamp(0.0, 1.0) }
     }
 }
+impl View for Home {
+    // Compose the tree: flat backdrop, the hero group faded as one under p.alpha(hero_a), then the
+    // grid. The grid's layout (base_y, &mut) is done by the home_draw wrapper just before this, and
+    // snap-step + grid.update happen in home_update — the wrapper owns those because building `env`
+    // depends on the freshly-stepped snap, which View::update/draw can't sequence.
+    fn draw(&self, env: &Env, p: Painter) {
+        self.bg.draw(env, p);
+        if env.hero_a > 0.01 {
+            self.hero.draw(env, p.alpha(env.hero_a));
+        }
+        self.grid.draw(env, p);
+    }
+}
 
 static mut SCENE: Option<Home> = None;
 #[inline]
@@ -428,13 +454,8 @@ pub(crate) fn home_draw() {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let h = scene();
         let env = h.env(0.0);
-        let p = Painter::root();
-        h.bg.draw(&env, p);
-        if env.hero_a > 0.01 {
-            h.hero.draw(&env, p.alpha(env.hero_a));
-        }
-        h.grid.layout(&env);
-        h.grid.draw(&env, p);
+        h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
+        h.draw(&env, Painter::root());
     });
 }
 
