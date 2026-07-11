@@ -12,7 +12,7 @@ use crate::ui::consts::*;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton};
-use crate::ui::{Env, Painter, Rect, Spring, View}; // View: Button/CircleButton::draw
+use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr::addr_of_mut;
@@ -110,24 +110,31 @@ pub(crate) fn focus() -> c_int {
 /// available sections for the loaded item (hero always; tabs/episodes only for shows;
 /// related/cast for both when present). Section ids: 0 hero, 1 tabs, 2 episodes,
 /// 3 related, 4 cast.
-fn sections() -> Vec<c_int> {
-    let mut v = vec![0];
+fn sections() -> ([c_int; 6], usize) {
+    // fixed stack array (max ids 0..=5) + a live count — no per-frame heap alloc on the draw path.
+    let mut v = [0 as c_int; 6];
+    let mut n = 1; // hero (0) always present; v[0] is already 0
     if let Some(d) = metadata::current() {
         if d.is_show && !d.seasons.is_empty() {
-            v.push(1);
+            v[n] = 1;
+            n += 1;
         }
         if d.is_show && !d.episodes.is_empty() {
-            v.push(2);
+            v[n] = 2;
+            n += 1;
         }
         if !d.related.is_empty() {
-            v.push(3);
+            v[n] = 3;
+            n += 1;
         }
         if !d.cast.is_empty() {
-            v.push(4);
+            v[n] = 4;
+            n += 1;
         }
-        v.push(5); // About footer — always present when an item is loaded
+        v[n] = 5; // About footer — always present when an item is loaded
+        n += 1;
     }
-    v
+    (v, n)
 }
 fn n_items(section: c_int) -> c_int {
     match section {
@@ -157,7 +164,8 @@ fn block_h(section: c_int) -> f32 {
 fn section_y(target: c_int) -> f32 {
     let mut y = CONTENT_TOP;
     let mut prev: Option<c_int> = None;
-    for &s in sections().iter() {
+    let (secs, n) = sections();
+    for &s in &secs[..n] {
         if s == 0 {
             continue; // hero is pinned, not part of the scroll stack
         }
@@ -240,7 +248,8 @@ pub(crate) fn move_focus(sym: c_int) {
             }
         }
     } else if sym == SDLK_UP || sym == SDLK_DOWN {
-        let avail = sections();
+        let (secs, n) = sections();
+        let avail = &secs[..n];
         let pos = avail.iter().position(|&s| s == sec).unwrap_or(0);
         let np = if sym == SDLK_UP { pos.saturating_sub(1) } else { (pos + 1).min(avail.len().saturating_sub(1)) };
         let ns = avail[np];
@@ -298,7 +307,7 @@ pub(crate) fn draw() {
     let scroll = view().scroll.pos;
     use crate::ui::profile::phase;
     phase("dt.backdrop", || draw_backdrop(p, m, scroll));
-    let hero_a = (1.0 - scroll / 400.0).clamp(0.0, 1.0);
+    let hero_a = hero_alpha(scroll, 400.0);
     let ps = p.translate(0.0, -scroll);
     // hero fades out as the page scrolls down into the rows
     if hero_a > 0.01 {
@@ -313,10 +322,7 @@ pub(crate) fn draw() {
     // call (measured at ~35ms/frame for cast+about while they sit far below the hero fold). A section
     // spans [top, top+block_h) after the scroll; draw it only when that band meets the viewport. The
     // focused section is always in view (scroll lifts it to TOP_MARGIN), so focus never gets culled.
-    let visible = |s: c_int| {
-        let top = section_y(s) - scroll;
-        top < SCR_H && top + block_h(s).max(1.0) > 0.0
-    };
+    let visible = |s: c_int| on_axis(section_y(s) - scroll, block_h(s), SCR_H, 0.0);
     if is_show() {
         if visible(1) {
             phase("dt.tabs", || draw_tabs(ps));
@@ -578,7 +584,7 @@ fn draw_episodes(p: Painter) {
     let ep_y = section_y(2);
     for (i, ep) in d.episodes.iter().enumerate() {
         let x = MARGIN_X + i as f32 * (EP_W + EP_GAP);
-        if x - sx > SCR_W || x - sx + EP_W < 0.0 {
+        if !on_axis(x - sx, EP_W, SCR_W, 0.0) {
             continue; // off-screen
         }
         let focused = i as c_int == focus_col;
@@ -641,7 +647,7 @@ fn draw_related(p: Painter) {
             continue; // focused poster drawn last
         }
         let x = MARGIN_X + i as f32 * (REL_W + REL_GAP);
-        if x - sx > SCR_W || x - sx + REL_W < 0.0 {
+        if !on_axis(x - sx, REL_W, SCR_W, 0.0) {
             continue;
         }
         let s = view().related.scale(i);
@@ -679,7 +685,7 @@ fn draw_cast(p: Painter) {
     let pc = p.translate(-sx, 0.0);
     for (i, c) in d.cast.iter().enumerate() {
         let cxc = MARGIN_X + CAST_D * 0.5 + i as f32 * CAST_SLOT; // circle center x
-        if cxc - sx > SCR_W + CAST_D || cxc - sx + CAST_D < 0.0 {
+        if !on_axis(cxc - sx, CAST_D, SCR_W + CAST_D, 0.0) {
             continue;
         }
         let focused = i as c_int == focus_col;

@@ -11,7 +11,7 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{cfield, Art, Button, CircleButton, ControlStyle, PageDots};
-use crate::ui::{Env, Painter, Rect, Spring, View};
+use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr::{addr_of, addr_of_mut};
@@ -220,7 +220,7 @@ impl View for Grid {
         // drawn LAST below so it overlaps neighbouring rows: cross-row z-order, invariant #3).
         for r in 0..nh {
             let row_y = self.shelves[r].base_y;
-            if row_y > SCR_H || row_y + CARD_H < 0.0 {
+            if !on_axis(row_y, CARD_H, SCR_H, 0.0) {
                 continue;
             }
             // hub title above the row; it rises as the row's focused card magnifies so
@@ -243,7 +243,7 @@ impl View for Grid {
                 let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
                 let Some(mm) = m else { continue };
                 let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
-                if x > SCR_W || x + CARD_W < -GLOW_PAD {
+                if !on_axis(x, CARD_W, SCR_W, GLOW_PAD) {
                     continue;
                 }
                 let s = self.shelves[r].scale(c);
@@ -350,7 +350,7 @@ impl Home {
         let cfr = g_fr().clamp(0, (nh - 1).min(MAX_HUBS as c_int - 1));
         let ncols = crate::pms::hub_len(cfr as usize).max(1) as c_int;
         let cfc = g_fc().clamp(0, (ncols - 1).min(MAX_ITEMS as c_int - 1));
-        Env { dt, screen: Rect::FULL, fr: cfr, fc: cfc, sp, hero_a: (1.0 - sp / 0.55).clamp(0.0, 1.0) }
+        Env { dt, screen: Rect::FULL, fr: cfr, fc: cfc, sp, hero_a: hero_alpha(sp, 0.55) }
     }
 }
 impl View for Home {
