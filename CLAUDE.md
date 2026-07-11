@@ -4,11 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A **native (C) proof-of-concept Plex client for LG webOS 4.5 TVs**, cross-compiled from
-macOS and sideloaded onto a rooted 32-bit ARM TV. It renders an Apple-TV-style gallery/shelf
-UI with SDL2 + OpenGL ES 2 and plays video from a Plex Media Server (PMS) entirely in-app.
-The whole app is essentially one file: `src/main.c` (~2000 lines) plus three header-only
-modules that form the streaming pipeline (`stream.h`, `mkv.h`, `aq.h`).
+A **real, native Plex client for LG webOS 4.5 TVs** — built toward production quality, not a
+throwaway. (The `plexpoc` name and `com.glin.plexpoc` app id are historical; this is not a
+"proof of concept" and **"it's a POC" is never a reason to cut a corner** — build proper,
+reusable, well-factored components and finish them. See `rust-modules/src/ui/CLAUDE.md` for how
+the UI is expected to be built.) It's cross-compiled from macOS and sideloaded onto a rooted
+32-bit ARM TV, renders an Apple-TV-style gallery/shelf UI with SDL2 + OpenGL ES 2, and plays
+video from a Plex Media Server (PMS) entirely in-app.
+
+The native entry + ACB/Starfish glue + streaming pipeline live on the C side (`src/main.c` plus
+header-only `stream.h`/`mkv.h`/`aq.h`); the UI, player orchestration, and Plex data layer are
+Rust in `rust-modules/src/` (linked in as a static lib — see the Makefile).
 
 Target device (per `Makefile`/memory): LG 49SM9000PLA, webOS 4.5, rooted, `root@192.168.0.114`
 (ssh password `alpine`, already committed in the Makefile). App id `com.glin.plexpoc`.
@@ -88,7 +94,12 @@ audio frames.
 ## Key files
 
 - `Makefile` — build/deploy/run/ipk; toolchain, stub SONAME rules, TV ssh creds.
-- `src/main.c` — the whole app: GLES2 UI, HUD, input, ACB + Starfish glue, pipeline orchestration.
+- `src/main.c` — native entry + ACB/Starfish glue + pipeline orchestration (the C side).
+- `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
+  (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
+  and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
+  contribution guide — read it before touching UI: use tokens + components, never inline colors or
+  hand-place text.** Full design/status: `docs/ui-system-migration.md`.
 - `src/stream.h` — blocking HTTP/1.1 GET over a raw TCP socket (numeric IP, Content-Length/close
   delimited; **no chunked decoding**, no DNS).
 - `src/mkv.h` — streaming Matroska demuxer → H264 Annex-B AUs + raw audio frames; also parses

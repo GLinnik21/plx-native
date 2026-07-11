@@ -19,14 +19,16 @@ pub mod info_panel;
 pub mod label;
 pub mod player_hud;
 pub mod table;
+pub mod text_view;
+pub mod theme;
 pub mod track_menu;
 pub mod widgets;
 
 /// Player HUD accent palette — the mockup's "Snow": a warm off-white focus fill with near-black
 /// ink/icons over it. The focused control (button, pill, menu row) fills ACCENT; its label/glyph
 /// draws in ACCENT_INK. Idle controls use a faint white fill + white ink.
-pub const ACCENT: [f32; 4] = [0.914, 0.902, 0.878, 1.0]; // #e9e6e0
-pub const ACCENT_INK: [f32; 4] = [0.03, 0.03, 0.04, 1.0]; // over ACCENT
+/// Canonical values now live in [`theme`]; re-exported so existing `crate::ui::ACCENT` sites hold.
+pub use theme::{ACCENT, ACCENT_INK};
 
 #[derive(Clone, Copy, Default)]
 pub struct Rect {

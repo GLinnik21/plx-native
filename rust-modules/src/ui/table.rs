@@ -8,6 +8,7 @@
 //! same widget serves the in-player track menu today and a settings screen later.
 #![allow(dead_code)]
 use crate::ui::label::{HAlign, Label};
+use crate::ui::theme;
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 
@@ -78,7 +79,7 @@ const CHECK_W: f32 = 32.0; // leading check column
 const GAP: f32 = 16.0; // check→label gap
 const PILL_RAD: f32 = 18.0; // focused-row pill corner radius
 const PILL_INSET: f32 = 3.0; // pill inset from the row's top/bottom
-const PANEL_BG: [f32; 4] = [0.133, 0.133, 0.141, 1.0]; // opaque panel colour — fade masks + badge knockout
+const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade masks + badge knockout
 
 pub struct TableView {
     pub sections: Vec<Section>,
@@ -208,8 +209,7 @@ impl TableView {
 
     pub fn draw(&self, p: Painter, frame: Rect) {
         if self.n_rows() == 0 {
-            let dim = [0.60f32, 0.62, 0.68, 1.0];
-            Label::new(c"No tracks".as_ptr(), 26, dim).h(HAlign::Center).draw(p, frame);
+            Label::new(c"No tracks".as_ptr(), 26, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, frame);
             return;
         }
         let top0 = frame.y + TOP_PAD;
@@ -217,8 +217,8 @@ impl TableView {
         let vis_top = frame.y;
         let vis_bot = frame.y + frame.h;
 
-        let white = [0.98f32, 0.98, 1.0, 1.0];
-        let dimc = [0.541f32, 0.541, 0.557, 1.0]; // #8a8a8e
+        let white = theme::TEXT_PRIMARY;
+        let dimc = theme::TEXT_TERTIARY; // was #8a8a8e; unified onto the tertiary grey
         let ink = crate::ui::ACCENT_INK; // text/glyph over the light pill
         let content_x = frame.x + SIDE + CONTENT_PAD;
         let label_x = content_x + CHECK_W + GAP;
@@ -240,9 +240,8 @@ impl TableView {
                 if sy - 1.0 > vis_top && sy < vis_bot {
                     let sec = &self.sections[si];
                     if si > 0 {
-                        let line = [1.0f32, 1.0, 1.0, 0.10];
                         p.rect(Rect::new(content_x, sy - DIV_H * 0.5, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
-                            0.0, line, line, 0.0);
+                            0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                     }
                     if let Ok(cs) = CString::new(sec.header.as_str()) {
                         p.text(cs.as_ptr(), content_x, sy + 8.0, 30, dimc, 0, 0);
@@ -395,8 +394,9 @@ fn draw_badge(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], bg: [f32; 
     p.rrect(r, 6.0, 6.0, col); // border
     p.rrect(Rect::new(r.x + bw, r.y + bw, r.w - 2.0 * bw, r.h - 2.0 * bw), 5.0, 5.0, bg); // knockout
     if let Ok(cs) = CString::new(text) {
-        // draw_text's y is the glyph-cell TOP; ~0.58·sz above center reads as vertically centered
-        p.text(cs.as_ptr(), x + w * 0.5, cy - (sz as f32) * 0.58, sz, col, 1, 1);
+        // cap-band vertical centre on cy (layout ≠ paint — replaces the old ~0.58·sz guess)
+        let ty = crate::text::text_vcenter_y(sz, 1, cy);
+        p.text(cs.as_ptr(), x + w * 0.5, ty, sz, col, 1, 1);
     }
     w
 }

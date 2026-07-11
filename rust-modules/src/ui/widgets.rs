@@ -1,8 +1,9 @@
 //! Reusable retui leaves + shared helpers. These are the "reusable UI elements":
-//! PillButton, CircleButton, PageDots, ProgressBar (the future player-HUD
+//! Button, CircleButton, PageDots, ProgressBar (the future player-HUD
 //! scrubber), plus the poster-resolve + text-wrap helpers Card/Hero share.
 #![allow(dead_code)]
 use crate::pms::PmsMovie;
+use crate::ui::theme;
 use crate::ui::{Env, Painter, Rect, Size, Spring, View};
 use std::os::raw::{c_char, c_int};
 
@@ -13,47 +14,67 @@ pub(crate) fn resolve_tex(path: *const c_char, w: c_int, h: c_int, png: c_int) -
     crate::posters::poster_get(key.as_ptr() as *const c_char)
 }
 
-/// a poster card: artwork if loaded, else a dark skeleton (the Card + Grid draw op)
-pub(crate) fn draw_poster(p: Painter, m: Option<&PmsMovie>, r: Rect, rad: f32) {
-    const SK_T: [f32; 4] = [0.13, 0.14, 0.17, 1.0];
-    const SK_B: [f32; 4] = [0.08, 0.09, 0.11, 1.0];
-    if let Some(m) = m {
-        if m.thumb[0] != 0 {
-            let t = resolve_tex(m.thumb.as_ptr() as *const c_char, 250, 375, 0);
+/// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton) or any
+/// keyed thumbnail at an explicit resolution (flat placeholder skeleton).
+pub(crate) enum Art<'a> {
+    Poster(Option<&'a PmsMovie>),
+    Thumb { key: &'a str, res: (c_int, c_int) },
+}
+
+/// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton), draws it at `frame`
+/// scaled about its centre when `focused`, then an optional focus ring `(pad, rad)` at focus=1.0.
+/// Every art tile routes through here — the home grid posters (via [`draw_poster`]) and the
+/// episode/chapters strips + detail Related (via [`draw_card`]) — so they resolve, skeleton, and
+/// ring identically. (Home draws its own bigger glow ring with a custom focus scalar, so its shim
+/// passes `ring: None`.)
+pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, ring: Option<(f32, f32)>) {
+    let r = if focused { frame.scaled(scale) } else { frame };
+    match art {
+        Art::Poster(m) => {
+            let t = m
+                .filter(|m| m.thumb[0] != 0)
+                .map(|m| resolve_tex(m.thumb.as_ptr() as *const c_char, 250, 375, 0))
+                .unwrap_or(0);
             if t != 0 {
-                p.tex(t, r, rad, [1.0; 4]);
-                return;
+                p.tex(t, r, rad, theme::TINT_WHITE);
+            } else {
+                p.rect(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT, 0.0);
+            }
+        }
+        Art::Thumb { key, res } => {
+            let t = if key.is_empty() {
+                0
+            } else {
+                std::ffi::CString::new(key).ok().map(|tp| resolve_tex(tp.as_ptr(), res.0, res.1, 0)).unwrap_or(0)
+            };
+            if t != 0 {
+                p.tex(t, r, rad, theme::TINT_WHITE);
+            } else {
+                p.rrect(r, rad, rad, theme::CARD_PLACEHOLDER);
             }
         }
     }
-    p.rect(r, rad, SK_T, SK_B, 0.0);
+    if let Some((pad, ring_rad)) = ring {
+        if focused {
+            p.ring(r, pad, ring_rad, 1.0);
+        }
+    }
+}
+
+/// a poster card (home grid): artwork if loaded, else a dark skeleton. The rect is already scaled by
+/// the caller, which draws its own big glow ring, so no scale-pop/ring here.
+pub(crate) fn draw_poster(p: Painter, m: Option<&PmsMovie>, r: Rect, rad: f32) {
+    card(p, r, Art::Poster(m), rad, false, 1.0, None);
 }
 
 /// The scale a focused card pops to (shared by every animated card row).
 pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
 
-/// A landscape media card shared by the episode picker and the chapters strip so they animate
-/// identically: the thumbnail (resolved at `res`, or a dark placeholder until loaded), a focus
-/// ring, and a focus **scale-pop** about the frame's centre (applied only when `focused`; the
-/// caller owns the `scale` spring and pops it on selection change).
+/// A media card shared by the episode picker, the chapters strip, and the detail Related row so they
+/// resolve + animate identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop
+/// about the centre + a tight focus ring when `focused` (the caller owns the `scale` spring).
 pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int), radius: f32, focused: bool, scale: f32) {
-    let r = if focused { frame.scaled(scale) } else { frame };
-    let mut drew = false;
-    if !thumb.is_empty() {
-        if let Ok(tp) = std::ffi::CString::new(thumb) {
-            let t = resolve_tex(tp.as_ptr(), res.0, res.1, 0);
-            if t != 0 {
-                p.tex(t, r, radius, [1.0; 4]);
-                drew = true;
-            }
-        }
-    }
-    if !drew {
-        p.rrect(r, radius, radius, [0.12, 0.13, 0.16, 1.0]);
-    }
-    if focused {
-        p.ring(r, 6.0, 14.0, 1.0);
-    }
+    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, Some((6.0, 14.0)));
 }
 
 /// read a NUL-terminated C-string field into a Rust String
@@ -62,97 +83,41 @@ pub(crate) fn cfield(b: &[u8]) -> String {
     String::from_utf8_lossy(&b[..n]).into_owned()
 }
 
-/// wrap a synopsis to two lines on a word boundary (mirrors ui_home.c's rule)
-pub(crate) fn wrap_two(s: &str) -> (String, String) {
-    let bytes = s.as_bytes();
-    let n = bytes.len();
-    let mut brk = n;
-    if n > 62 {
-        brk = 62;
-        while brk > 24 && bytes[brk] != b' ' {
-            brk -= 1;
-        }
-    }
-    let c1 = brk.min(87);
-    let l1 = String::from_utf8_lossy(&bytes[..c1]).into_owned();
-    if brk >= n {
-        return (l1, String::new());
-    }
-    let s2 = &bytes[brk + 1..];
-    let m = s2.len();
-    let mut c2 = m;
-    if m > 66 {
-        c2 = 66;
-        while c2 > 24 && s2[c2] != b' ' {
-            c2 -= 1;
-        }
-    }
-    c2 = c2.min(92);
-    let mut l2 = String::from_utf8_lossy(&s2[..c2]).into_owned();
-    if c2 < m {
-        l2.push('\u{2026}'); // …
-    }
-    (l1, l2)
-}
-
-// ---- PillButton: rounded fill + optional play triangle + label, as a group ----
-pub struct PillButton {
+// ---- CircleButton: circular disc + centered glyph, same ControlStyle family as Button /
+// TransportButton (focused = ACCENT, idle = solid dark disc). The hero + detail +/i/> circles. ----
+pub struct CircleButton {
     pub frame: Rect,
-    pub label: *const c_char,
-    pub tri: bool,
-    pub fill: [f32; 4],
-    pub ink: [f32; 4],
+    pub glyph: *const c_char,
+    pub focused: bool,
+    pub style: ControlStyle,
 }
-impl PillButton {
-    pub fn play(label: *const c_char) -> Self {
-        Self { frame: Rect::new(0.0, 0.0, 168.0, 60.0), label, tri: true,
-               fill: [0.97, 0.98, 0.99, 1.0], ink: [0.05, 0.06, 0.08, 1.0] }
+impl CircleButton {
+    pub fn new(glyph: *const c_char) -> Self {
+        Self { frame: Rect::new(0.0, 0.0, 60.0, 60.0), glyph, focused: false, style: ControlStyle::Accent }
     }
     pub fn at(mut self, x: f32, y: f32) -> Self {
         self.frame.x = x;
         self.frame.y = y;
         self
     }
-}
-impl View for PillButton {
-    fn draw(&self, _e: &Env, p: Painter) {
-        let r = self.frame;
-        p.rrect(r, r.h * 0.5, r.h * 0.5, self.fill);
-        if self.tri {
-            let th = r.h * 0.40;
-            p.ptri(Rect::new(r.x + 40.0, r.y + (r.h - th) * 0.5, th, th), self.ink);
-        }
-        p.text(self.label, r.x + 76.0, r.y + (r.h - 30.0) * 0.5 - 1.0, 30, self.ink, 0, 1);
+    pub fn focused(mut self, f: bool) -> Self {
+        self.focused = f;
+        self
     }
-    fn measure(&self) -> Size {
-        Size { w: self.frame.w, h: self.frame.h }
-    }
-}
-
-// ---- CircleButton: circular face + centered glyph ----
-pub struct CircleButton {
-    pub frame: Rect,
-    pub glyph: *const c_char,
-    pub face: [f32; 4],
-    pub ink: [f32; 4],
-}
-impl CircleButton {
-    pub fn new(glyph: *const c_char) -> Self {
-        Self { frame: Rect::new(0.0, 0.0, 60.0, 60.0), glyph,
-               face: [0.42, 0.44, 0.50, 0.5], ink: [0.92, 0.94, 0.97, 1.0] }
-    }
-    pub fn at(mut self, x: f32, y: f32) -> Self {
-        self.frame.x = x;
-        self.frame.y = y;
+    pub fn style(mut self, s: ControlStyle) -> Self {
+        self.style = s;
         self
     }
 }
 impl View for CircleButton {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
-        let d = r.w;
-        p.rect(r, d * 0.5, self.face, self.face, 0.0);
-        p.text(self.glyph, r.x + d * 0.5, r.y + (d - 32.0) * 0.5 - 2.0, 32, self.ink, 1, 1);
+        let (face, ink) = self.style.colors(self.focused);
+        p.rect(r, r.w * 0.5, face, face, 0.0);
+        // glyph centred on the disc by its cap band (layout ≠ paint), not a hand-tuned y
+        crate::ui::label::Label::new(self.glyph, 32, ink)
+            .h(crate::ui::label::HAlign::Center)
+            .draw(p, r);
     }
     fn measure(&self) -> Size {
         Size { w: self.frame.w, h: self.frame.h }
@@ -253,7 +218,7 @@ impl View for TransportButton {
         } else {
             // solid clean dark disc (matches the icon mock ≈ #252525), so the white glyph reads the
             // same over any scene instead of a washed translucent circle
-            ([0.145f32, 0.145, 0.153, 0.92], [1.0f32, 1.0, 1.0, 1.0])
+            (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK)
         };
         p.rect(r, r.w * 0.5, bg, bg, 0.0); // circular
         let id = match self.which {
@@ -268,11 +233,25 @@ impl View for TransportButton {
 
 // ---- TabPill: a rounded pill with a centered label. Focused = light pill + dark ink; idle =
 // faint fill + dim ink. `pill_w(label, sz)` sizes it to fit. ----
+/// How a `TabPill` reads. The player Info/Chapters tabs are always-filled buttons; the detail season
+/// tabs are a segmented control with two *independent* states — a **selected** segment (the active
+/// one, whose content shows) and a **highlighted** one (where the remote focus is).
+#[derive(Clone, Copy)]
+enum TabStyle {
+    /// always a pill — focused → ACCENT, idle → solid dark disc (player Info/Chapters).
+    Button,
+    /// segmented control (detail season tabs): the focused segment is a bright ACCENT pill; the
+    /// selected segment gets a subtle pill while focus is elsewhere; the rest are plain dim text.
+    Segment { selected: bool },
+}
+
+// ---- TabPill: a rounded pill with a centered label, in one of two state models (TabStyle). ----
 pub struct TabPill {
     pub frame: Rect,
     pub label: *const c_char,
     pub sz: c_int,
     pub focused: bool,
+    style: TabStyle,
 }
 impl TabPill {
     /// pill width for a `chars`-long label at `sz` (label advance + horizontal padding)
@@ -280,43 +259,80 @@ impl TabPill {
         chars as f32 * sz as f32 * 0.56 + 44.0
     }
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, focused: false }
+        Self { frame, label, sz, focused: false, style: TabStyle::Button }
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
+        self
+    }
+    /// switch to the segmented-control look (detail season tabs); `selected` = the active segment.
+    pub fn segment(mut self, selected: bool) -> Self {
+        self.style = TabStyle::Segment { selected };
         self
     }
 }
 impl View for TabPill {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
-        // same treatment as the transport control buttons (TransportButton): a solid dark disc when
-        // idle, the accent fill when focused — so the Info/Chapters tabs read as the same family
-        let (bg, ink) = if self.focused {
-            (crate::ui::ACCENT, crate::ui::ACCENT_INK)
-        } else {
-            ([0.145f32, 0.145, 0.153, 0.92], [1.0f32, 1.0, 1.0, 1.0])
+        // (fill, ink, bold): a highlighted (focused) tab is a bright ACCENT pill; a selected-but-
+        // unfocused segment is a subtle pill; a plain segment is dim text with no pill at all.
+        let (fill, ink, bold) = match self.style {
+            TabStyle::Button if self.focused => (Some(crate::ui::ACCENT), crate::ui::ACCENT_INK, true),
+            TabStyle::Button => (Some(theme::CONTROL_IDLE_FILL), theme::CONTROL_IDLE_INK, true),
+            TabStyle::Segment { .. } if self.focused => (Some(crate::ui::ACCENT), crate::ui::ACCENT_INK, true),
+            TabStyle::Segment { selected: true } => (Some(theme::OVERLAY_FOCUS_PILL), theme::TEXT_PRIMARY, true),
+            TabStyle::Segment { .. } => (None, theme::TEXT_TERTIARY, false),
         };
-        p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
+        if let Some(bg) = fill {
+            p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
+        }
         use crate::ui::label::{HAlign, Label};
-        Label::new(self.label, self.sz, ink).bold().h(HAlign::Center).draw(p, r);
+        let mut lab = Label::new(self.label, self.sz, ink).h(HAlign::Center);
+        if bold {
+            lab = lab.bold();
+        }
+        lab.draw(p, r);
+    }
+}
+
+/// Which colour treatment a control (Button / CircleButton) wears. One control widget, three looks —
+/// so the hero Play CTA, the focus-driven detail/info buttons, and one-off cases all share code.
+#[derive(Clone, Copy)]
+pub enum ControlStyle {
+    /// focus-driven: focused → warm ACCENT + dark ink; idle → solid dark disc + white ink. The
+    /// default, and the shared look of the transport buttons / info-card actions / detail buttons.
+    Accent,
+    /// always the cool-white primary CTA (never darkens) — the hero Play button.
+    Primary,
+    /// caller supplies the exact fill + ink.
+    Custom { fill: [f32; 4], ink: [f32; 4] },
+}
+impl ControlStyle {
+    /// (fill, ink) for this style at the given focus state.
+    pub(crate) fn colors(self, focused: bool) -> ([f32; 4], [f32; 4]) {
+        match self {
+            ControlStyle::Accent if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
+            ControlStyle::Accent => (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK),
+            ControlStyle::Primary => (theme::FILL_PRIMARY, theme::INK_ON_PRIMARY),
+            ControlStyle::Custom { fill, ink } => (fill, ink),
+        }
     }
 }
 
 // ---- Button: a pill with a label and an optional leading icon, centered together as one group
-// (icon + gap + label is centered in the pill). Focused = accent fill + dark ink; idle = the same
-// solid dark disc as the transport control buttons (TransportButton) so the two read as one family.
-// A reusable action button. ----
+// (icon + gap + label is centered in the pill). Colour per `ControlStyle` (default Accent). The one
+// reusable action button — hero Play (Primary), detail/info actions (Accent), etc. ----
 pub struct Button {
     pub frame: Rect,
     pub label: *const c_char,
     pub sz: c_int,
     pub icon: Option<crate::ui::icons::Icon>,
     pub focused: bool,
+    pub style: ControlStyle,
 }
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, icon: None, focused: false }
+        Self { frame, label, sz, icon: None, focused: false, style: ControlStyle::Accent }
     }
     pub fn icon(mut self, i: crate::ui::icons::Icon) -> Self {
         self.icon = Some(i);
@@ -326,17 +342,15 @@ impl Button {
         self.focused = f;
         self
     }
+    pub fn style(mut self, s: ControlStyle) -> Self {
+        self.style = s;
+        self
+    }
 }
 impl View for Button {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
-        let (bg, ink) = if self.focused {
-            (crate::ui::ACCENT, crate::ui::ACCENT_INK)
-        } else {
-            // solid dark disc, identical to TransportButton's idle fill (so the info-card action
-            // buttons match the transport's subtitle/audio controls instead of a see-through pill)
-            ([0.145f32, 0.145, 0.153, 0.92], [1.0f32, 1.0, 1.0, 1.0])
-        };
+        let (bg, ink) = self.style.colors(self.focused);
         p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
@@ -364,7 +378,7 @@ pub struct ProgressBar {
 impl ProgressBar {
     pub fn new() -> Self {
         Self { frame: Rect::new(90.0, 890.0, 1740.0, 6.0), value: Spring::at(0.0), target: 0.0,
-               buffered: 0.0, track: [1.0, 1.0, 1.0, 0.20], fill: [1.0, 1.0, 1.0, 0.95], knob: true }
+               buffered: 0.0, track: theme::RAIL_TRACK, fill: theme::RAIL_FILL, knob: true }
     }
     pub fn set(&mut self, v: f32) {
         self.target = v.clamp(0.0, 1.0);
@@ -382,7 +396,7 @@ impl View for ProgressBar {
         let rad = r.h * 0.5;
         p.rrect(r, rad, rad, self.track);
         if self.buffered > 0.0 {
-            p.rrect(Rect::new(r.x, r.y, r.w * self.buffered, r.h), rad, rad, [1.0, 1.0, 1.0, 0.28]);
+            p.rrect(Rect::new(r.x, r.y, r.w * self.buffered, r.h), rad, rad, theme::RAIL_BUFFERED);
         }
         let fw = (r.w * self.value.pos).max(r.h);
         p.rrect(Rect::new(r.x, r.y, fw, r.h), rad, rad, self.fill);
