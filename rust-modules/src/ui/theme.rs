@@ -21,6 +21,35 @@ pub const TEXT_SECONDARY: [f32; 4] = [0.72, 0.75, 0.80, 1.0];
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
 pub const TEXT_TERTIARY: [f32; 4] = [0.58, 0.60, 0.64, 1.0];
 
+// ── Type scale ───────────────────────────────────────────────────────────────
+/// The one legibility-tuned ladder of text sizes for the whole UI — the *size* axis of the design
+/// system (colours above, focus geometry below). Authored for a 1920×1080 panel viewed from a
+/// couch, so [`size::CAPTION`] (24) is a **hard floor**: nothing in the product chrome renders
+/// smaller, because sub-24 text is unreadable at that distance (the old raw 17/18/19/20/21 sizes
+/// were exactly what read badly). Pass these to `Painter::text` / `Label` / `TextView` /
+/// `text::elide` in place of a raw integer — a size is a *role*, not a magic number (mirrors the
+/// "never a raw colour literal" rule). Rungs step ~1.15–1.25×; a role picks the nearest rung.
+///
+/// Two deliberate carve-outs sit outside the ladder (documented at their call site, not raw
+/// literals): the player-HUD now-playing **display title** (larger than [`size::TITLE`]) and the
+/// client-rendered **subtitle** caption — both media chrome with their own legibility contract, and
+/// both already well above the floor. The boot splash (`anim.rs`) is likewise its own one-off.
+pub mod size {
+    use std::os::raw::c_int;
+    /// Full-bleed hero title — the home + detail hero headline.
+    pub const HERO: c_int = 72;
+    /// Screen / panel title — the in-player Info card title, the scrolled compact title, About column heads.
+    pub const TITLE: c_int = 40;
+    /// Section headers ("Related", "Cast & Crew") + list-row titles.
+    pub const HEADLINE: c_int = 32;
+    /// Default reading text (synopsis, hero meta, About paragraphs, empty states) + control labels (Play / action buttons, tabs, pills — one rung under a header).
+    pub const BODY: c_int = 28;
+    /// Secondary labels — card / episode / chapter titles, cast names, list detail, meta chips.
+    pub const LABEL: c_int = 26;
+    /// Couch legibility **FLOOR** — kickers, timecodes, cast roles, badges, field labels. Nothing smaller.
+    pub const CAPTION: c_int = 24;
+}
+
 // ── Accent / control ─────────────────────────────────────────────────────────
 /// The mockup's "Snow": warm off-white focus fill (#e9e6e0). Focused controls fill this.
 pub const ACCENT: [f32; 4] = [0.914, 0.902, 0.878, 1.0];

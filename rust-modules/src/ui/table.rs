@@ -67,9 +67,9 @@ impl Section {
 }
 
 const ROW_H: f32 = 60.0; // a plain row (label only) — mockup rowBase padding 13 + 34px label
-const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title 32 + detail 25)
+const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEADLINE + detail CAPTION)
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
-const HDR_H: f32 = 58.0; // panel header ("Audio"/"Subtitles"), 30px
+const HDR_H: f32 = 58.0; // panel header ("Audio"/"Subtitles"), HEADLINE
 const DIV_H: f32 = 24.0; // gap + hairline between sections
 const TOP_PAD: f32 = 20.0;
 const BOT_PAD: f32 = 20.0;
@@ -209,7 +209,7 @@ impl TableView {
 
     pub fn draw(&self, p: Painter, frame: Rect) {
         if self.n_rows() == 0 {
-            Label::new(c"No tracks".as_ptr(), 26, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, frame);
+            Label::new(c"No tracks".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, frame);
             return;
         }
         let top0 = frame.y + TOP_PAD;
@@ -244,7 +244,7 @@ impl TableView {
                             0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                     }
                     if let Ok(cs) = CString::new(sec.header.as_str()) {
-                        p.text(cs.as_ptr(), content_x, sy + 8.0, 30, dimc, 0, 0);
+                        p.text(cs.as_ptr(), content_x, sy + 8.0, theme::size::HEADLINE, dimc, 0, 0);
                     }
                 }
                 return;
@@ -281,8 +281,8 @@ impl TableView {
             // (layout ≠ paint — the old fixed offsets left the two lines cramped after centring).
             let two_line = !row.detail.is_empty();
             let (title_y, detail_y, bcy) = if two_line {
-                let (t_top, t_base) = crate::text::text_cap_band(32, 1);
-                let (d_top, d_base) = crate::text::text_cap_band(25, 0);
+                let (t_top, t_base) = crate::text::text_cap_band(theme::size::HEADLINE, 1);
+                let (d_top, d_base) = crate::text::text_cap_band(theme::size::CAPTION, 0);
                 let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
                 let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
                 let pair_top = sy + (h - (t_cap + pair_gap + d_cap)) * 0.5; // title cap-top
@@ -291,13 +291,13 @@ impl TableView {
                 (0.0, 0.0, cyc) // title_y/detail_y unused single-line; Label centres the label
             };
             // title/label, then inline badges (mockup: "Original: …" with an AD chip after it)
-            let lbl = crate::text::elide(&row.label, text_right - label_x - trailing - badge_reserve, 32, 1, false);
+            let lbl = crate::text::elide(&row.label, text_right - label_x - trailing - badge_reserve, theme::size::HEADLINE, 1, false);
             let mut bx = label_x;
             if let Ok(cs) = CString::new(lbl) {
                 bx += if two_line {
-                    p.text(cs.as_ptr(), label_x, title_y, 32, base, 0, 1)
+                    p.text(cs.as_ptr(), label_x, title_y, theme::size::HEADLINE, base, 0, 1)
                 } else {
-                    Label::new(cs.as_ptr(), 32, base).bold().draw(p, Rect::new(label_x, sy, 0.0, h))
+                    Label::new(cs.as_ptr(), theme::size::HEADLINE, base).bold().draw(p, Rect::new(label_x, sy, 0.0, h))
                 };
             }
             bx += 12.0;
@@ -307,9 +307,9 @@ impl TableView {
             // detail sub-line, elided (long Cyrillic descriptors would run off the edge)
             if !row.detail.is_empty() {
                 let sub = if focused { [0.0f32, 0.0, 0.0, 0.6] } else { dimc };
-                let detail = crate::text::elide(&row.detail, text_right - label_x, 25, 0, false);
+                let detail = crate::text::elide(&row.detail, text_right - label_x, theme::size::CAPTION, 0, false);
                 if let Ok(cd) = CString::new(detail) {
-                    p.text(cd.as_ptr(), label_x, detail_y, 25, sub, 0, 0);
+                    p.text(cd.as_ptr(), label_x, detail_y, theme::size::CAPTION, sub, 0, 0);
                 }
             }
         });
@@ -341,7 +341,7 @@ impl TableView {
 
 /// pixel width a badge chip will occupy (kept in sync with draw_badge)
 fn badge_width(text: &str) -> f32 {
-    let sz = 19.0f32;
+    let sz = theme::size::CAPTION as f32;
     text.chars().count() as f32 * (sz * 0.62) + 20.0
 }
 
@@ -349,9 +349,9 @@ fn badge_width(text: &str) -> f32 {
 /// `col` is the border + text colour; `bg` fills the interior (the row background, so the outline
 /// reads clean over both the light pill and the dark panel). Mirrors the mockup's AD/FORCED chips.
 fn draw_badge(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], bg: [f32; 4]) -> f32 {
-    let sz = 19;
+    let sz = theme::size::CAPTION;
     let w = badge_width(text);
-    let h = 26.0f32;
+    let h = 34.0f32;
     let bw = 2.0f32; // border width
     let r = Rect::new(x, cy - h * 0.5, w, h);
     p.rrect(r, 6.0, 6.0, col); // border

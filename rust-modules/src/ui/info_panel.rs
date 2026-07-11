@@ -126,7 +126,7 @@ fn audio_badge(codec: &str) -> Option<&'static str> {
 /// an outlined metadata chip at left edge `x`, centered on `cy`; returns its width. Mirrors the
 /// mockup's 18+/4K/CC pills (2px border, radius 6).
 fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
-    let sz = 22;
+    let sz = theme::size::CAPTION;
     let w = text.chars().count() as f32 * (sz as f32 * 0.60) + 22.0;
     let h = 34.0f32;
     let col = theme::TEXT_HEADING;
@@ -194,9 +194,12 @@ fn wrapped(title_src: &str, summary_src: &str, tw: f32) -> (String, String, Stri
                 return (c.title.clone(), c.syn1.clone(), c.syn2.clone());
             }
         }
-        let title = crate::text::elide(title_src, tw, 40, 1, false);
-        let (syn1, syn2) =
-            if summary_src.is_empty() { (String::new(), String::new()) } else { wrap2(summary_src, tw, 28) };
+        let title = crate::text::elide(title_src, tw, theme::size::TITLE, 1, false);
+        let (syn1, syn2) = if summary_src.is_empty() {
+            (String::new(), String::new())
+        } else {
+            wrap2(summary_src, tw, theme::size::BODY)
+        };
         *addr_of_mut!(WRAP) = Some(WrapCache {
             title_src: title_src.to_string(),
             summary_src: summary_src.to_string(),
@@ -280,7 +283,7 @@ pub(crate) fn draw() {
     for (i, label) in acts.iter().enumerate() {
         let icon = if *label == "From Beginning" { Icon::Play } else { Icon::Info };
         if let Ok(cs) = CString::new(*label) {
-            crate::ui::widgets::Button::new(cs.as_ptr(), 30, Rect::new(bx, by, bw, bh))
+            crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, Rect::new(bx, by, bw, bh))
                 .icon(icon)
                 .focused(i as c_int == focus)
                 .draw(&env, p);
@@ -315,12 +318,12 @@ pub(crate) fn draw() {
 
     // Cap-band centring: visual top is the title cap-top, visual bottom is the tag badge box (or,
     // tag-less, the last synopsis baseline). Descenders never enter the maths.
-    let (tcap_t, tcap_b) = crate::text::text_cap_band(40, 1);
+    let (tcap_t, tcap_b) = crate::text::text_cap_band(theme::size::TITLE, 1);
     let syn_span = if n_syn > 0 { gap_title + n_syn as f32 * syn_lh } else { 0.0 };
     let span_bottom = if has_tags {
         title_h + syn_span + gap_tags + tag_h
     } else if n_syn > 0 {
-        let (_st, sbase) = crate::text::text_cap_band(28, 0);
+        let (_st, sbase) = crate::text::text_cap_band(theme::size::BODY, 0);
         title_h + gap_title + (n_syn as f32 - 1.0) * syn_lh + sbase
     } else {
         tcap_b
@@ -329,7 +332,7 @@ pub(crate) fn draw() {
 
     // title
     if let Ok(cs) = CString::new(title) {
-        p.text(cs.as_ptr(), tx, ty, 40, white, 0, 1);
+        p.text(cs.as_ptr(), tx, ty, theme::size::TITLE, white, 0, 1);
     }
     ty += title_h;
     // synopsis (up to 2 lines)
@@ -340,7 +343,7 @@ pub(crate) fn draw() {
                 continue;
             }
             if let Ok(cs) = CString::new(l.as_str()) {
-                p.text(cs.as_ptr(), tx, ty, 28, dim, 0, 0);
+                p.text(cs.as_ptr(), tx, ty, theme::size::BODY, dim, 0, 0);
             }
             ty += syn_lh;
         }
@@ -365,8 +368,8 @@ pub(crate) fn draw() {
         if !meta.is_empty() {
             let line = meta.join("   ·   ");
             if let Ok(cs) = CString::new(line) {
-                let ly = crate::text::text_vcenter_y(24, 1, my);
-                mx += p.text(cs.as_ptr(), tx, ly, 24, white, 0, 1);
+                let ly = crate::text::text_vcenter_y(theme::size::CAPTION, 1, my);
+                mx += p.text(cs.as_ptr(), tx, ly, theme::size::CAPTION, white, 0, 1);
             }
             mx += 18.0;
         }

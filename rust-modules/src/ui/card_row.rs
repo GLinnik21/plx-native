@@ -112,7 +112,7 @@ pub(crate) fn draw_focused(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowSt
         resume_bar(p, rect, frac);
     }
     if !title.is_null() {
-        p.text(title, rect.cx(), rect.y + rect.h + 12.0, 26, theme::TEXT_PRIMARY, 1, 1);
+        p.text(title, rect.cx(), rect.y + rect.h + 12.0, theme::size::LABEL, theme::TEXT_PRIMARY, 1, 1);
     }
 }
 

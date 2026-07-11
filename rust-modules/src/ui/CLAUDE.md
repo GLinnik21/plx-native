@@ -11,7 +11,7 @@ player HUD are all *compositions of the same tokens + components*. When you add 
 with hard-coded colors and hand-tuned text offsets. That is exactly the drift this system exists to
 kill. Full design + migration status: `docs/ui-system-migration.md`.
 
-## The three rules
+## The four rules
 
 1. **Never write a raw color literal.** Every color comes from `theme.rs` as a named token
    (`theme::TEXT_PRIMARY`, `theme::CONTROL_IDLE_FILL`, `theme::scrim(a)`, …). Need a shade that
@@ -19,13 +19,23 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    that — don't inline `[0.9, 0.9, 0.9, 1.0]`. If your shade is within a hair of an existing token,
    use the existing one; the point is one value per role, not a value per call site.
 
-2. **Never hand-place text with a magic y.** `y - sz*0.58` guesses are banned — they mis-center the
+2. **Never write a raw text size.** Every size comes from the `theme::size` type scale as a named
+   rung — `size::HERO` 72 / `size::TITLE` 40 / `size::HEADLINE` 32 / `size::BODY` 28 / `size::LABEL`
+   26 / `size::CAPTION` 24 — the *size* axis of the design system, with a hard **couch legibility
+   floor at `CAPTION` (24)**: nothing in the product chrome renders smaller (sub-24 text was exactly
+   what read badly from the sofa). Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide`
+   instead of a bare `24`/`28`/… — a size is a role, not a magic number; pick the nearest rung.
+   Exactly two carve-outs live outside the scale (the player-HUD display title `HUD_TITLE_SZ` and the
+   subtitle caption); both are **named + commented at their call site**, never bare literals — don't
+   add a third without the same treatment. `anim.rs` is a dev-diagnostic overlay, not chrome.
+
+3. **Never hand-place text with a magic y.** `y - sz*0.58` guesses are banned — they mis-center the
    moment a string has a descender (g j y p). Text is positioned by its **cap band** (layout ≠
    paint): use `ui::label::Label` (single run) or `ui::text_view::TextView` (multi-line, pixel-
    wrapped), or if you must call `Painter::text` directly, derive the y from `text::text_vcenter_y` /
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
 
-3. **Improve a component before forking one.** If a shared widget almost does what you need, add a
+4. **Improve a component before forking one.** If a shared widget almost does what you need, add a
    builder method / style variant to it (e.g. `Button::style(ControlStyle)`), don't copy it. A new
    bespoke widget is only justified when nothing here is close — and then it lands *here*, as a
    reusable `View`, so the next screen gets it for free.
@@ -34,7 +44,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 
 | File | Owns |
 |---|---|
-| `theme.rs` | **all color tokens** + `scrim`/`scrim_black`/`with_a` helpers + focus-ring geometry consts. The single palette. |
+| `theme.rs` | **all color tokens** + the **`size` type scale** (HERO…CAPTION, floor 24) + `scrim`/`scrim_black`/`with_a`/`dim` helpers + focus-ring geometry consts. The single palette + type ladder. |
 | `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait, and the shared screen primitives `on_axis` (the ONE off-screen cull test — `Painter` has no clip/scissor, so scrolling rows/sections skip off-frame children with it) / `hero_alpha` (the ONE hero-fade curve both screens call) / `ScrollColumn`+`Column` (the scroll-into-content container detail's below-hero flow is composed from). |
 | `label.rs` | `Label` — single-run cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
 | `text_view.rs` | `TextView` — multi-line cap-band text: pixel word-wrap + ellipsis + `measure_h`, wrap-cached. |
