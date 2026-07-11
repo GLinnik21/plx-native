@@ -12,7 +12,7 @@ use crate::ui::consts::*;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton};
-use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View}; // View: Button/CircleButton::draw
+use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr::addr_of_mut;
@@ -26,7 +26,9 @@ struct DetailView {
     selected: c_int,
     section: c_int, // 0=hero buttons, 1=season tabs, 2=episodes, 3=related, 4=cast, 5=about
     col: c_int,     // focused item within the section
-    scroll: Spring,
+    // the below-hero sections are a shared ScrollColumn: it owns the vertical scroll spring, the
+    // section flow (child_top == the old section_y), and the off-screen band cull (via on_axis).
+    column: ScrollColumn,
     card_scale: Spring, // focused card-row item pop (springs on selection change)
     ep_hscroll: Spring, // episode row horizontal scroll — glides instead of snapping
     related: CardRow,   // the Related row = the SAME animated shelf component the home grid uses
@@ -38,7 +40,7 @@ impl DetailView {
             selected: -1,
             section: 0,
             col: 0,
-            scroll: Spring::at(0.0),
+            column: ScrollColumn::new(CONTENT_TOP, TOP_MARGIN),
             card_scale: Spring::at(1.0),
             ep_hscroll: Spring::at(0.0),
             related: CardRow::new(),
@@ -56,12 +58,13 @@ const PW: f32 = 168.0; // Play pill width
 const CGAP: f32 = 20.0;
 const CD: f32 = 60.0; // circle button diameter
 
-// Below-the-hero content is ONE vertical scroll of stacked blocks. Each block's pre-scroll top Y is
-// COMPUTED (`section_y`) by stacking the *present* blocks' heights from CONTENT_TOP with a single
-// SECTION_GAP between them — no hard-coded per-section Y constants to keep in sync. A block's height
-// is derived from its content (e.g. the Related block tracks REL_H, which tracks the shared home
-// poster size), so resizing one block reflows everything below it automatically. The scroll lifts
-// the focused block's top to TOP_MARGIN under the compact title.
+// Below-the-hero content is ONE vertical scroll of stacked blocks, driven by the shared retui
+// `ScrollColumn` (`impl Column for DetailView`): its `child_top` COMPUTES each block's pre-scroll top
+// by stacking the *present* blocks' heights (`block_h`, via `Column::height`) from CONTENT_TOP with a
+// single SECTION_GAP between them (season tabs → episodes hug with TAB_EP_GAP) — no hard-coded
+// per-section Y to keep in sync. A block's height is content-derived (e.g. the Related block tracks
+// REL_H → the shared home poster size), so resizing one block reflows everything below it. The
+// container's scroll lifts the focused block's top to TOP_MARGIN under the compact title.
 const TOP_MARGIN: f32 = 120.0;
 const CONTENT_TOP: f32 = 920.0; // first block sits just under the hero buttons
 const SECTION_GAP: f32 = 110.0; // vertical padding between top-level blocks
@@ -158,37 +161,23 @@ fn block_h(section: c_int) -> f32 {
         _ => 0.0,
     }
 }
-/// pre-scroll top Y of a section: stack the present blocks from CONTENT_TOP, SECTION_GAP between each
-/// (season tabs → episodes hug with TAB_EP_GAP so they read as one unit). The single source of every
-/// below-hero Y — both the draws and the scroll target read it.
-fn section_y(target: c_int) -> f32 {
-    let mut y = CONTENT_TOP;
-    let mut prev: Option<c_int> = None;
-    let (secs, n) = sections();
-    for &s in &secs[..n] {
-        if s == 0 {
-            continue; // hero is pinned, not part of the scroll stack
-        }
-        if let Some(p) = prev {
-            y += if p == 1 && s == 2 { TAB_EP_GAP } else { SECTION_GAP };
-        }
-        if s == target {
-            return y;
-        }
-        y += block_h(s);
-        prev = Some(s);
-    }
-    y
-}
 /// scroll offset that lifts the focused section's top to TOP_MARGIN
 fn scroll_target() -> f32 {
-    let sec = view().section;
-    if sec == 0 {
+    let v = view();
+    if v.section == 0 {
         return 0.0;
     }
     // episodes anchor on the season tabs above them, so the tabs stay visible while browsing episodes
-    let anchor = if sec == 2 { 1 } else { sec };
-    (section_y(anchor) - TOP_MARGIN).max(0.0)
+    let anchor = if v.section == 2 { 1 } else { v.section };
+    let (s, n) = sections();
+    // the anchor's non-hero ScrollColumn index; lift its top to margin (== the old section_y math)
+    match s[..n].iter().position(|&x| x == anchor) {
+        Some(pos) if pos >= 1 => {
+            let col = v.column;
+            col.lift_target(v, pos - 1)
+        }
+        _ => 0.0,
+    }
 }
 /// the selected catalog row pointer (for the app to play a movie), or null
 pub(crate) fn selected_ptr() -> *mut PmsMovie {
@@ -211,7 +200,7 @@ pub(crate) fn open(idx: c_int) {
     v.selected = idx;
     v.section = 0;
     v.col = 0;
-    v.scroll.jump(0.0);
+    v.column.scroll.jump(0.0);
     if idx >= 0 && (idx as usize) < crate::pms::nmovies() {
         if let Some(m) = unsafe { crate::pms::movie_ptr(idx as usize).as_ref() } {
             let rk = cfield(&m.rk);
@@ -284,8 +273,8 @@ pub(crate) fn update(dt: f32) {
     let sct = scroll_target();
     let hst = ep_hscroll_target();
     let v = view();
-    v.scroll.step(sct, K_SCROLL, dt);
-    crate::ui::anim::probe("detail.scroll", v.scroll.pos, v.scroll.vel, sct, dt);
+    v.column.scroll.step(sct, K_SCROLL, dt);
+    crate::ui::anim::probe("detail.scroll", v.column.scroll.pos, v.column.scroll.vel, sct, dt);
     v.card_scale.step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
     crate::ui::anim::probe("detail.card", v.card_scale.pos, v.card_scale.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
     v.ep_hscroll.step(hst, 240.0, dt);
@@ -304,41 +293,67 @@ pub(crate) fn draw() {
     let p = Painter::root();
     let env = env_of(0.0);
     let m = selected();
-    let scroll = view().scroll.pos;
+    let scroll = view().column.scroll.pos;
     use crate::ui::profile::phase;
     phase("dt.backdrop", || draw_backdrop(p, m, scroll));
     let hero_a = hero_alpha(scroll, 400.0);
     let ps = p.translate(0.0, -scroll);
-    // hero fades out as the page scrolls down into the rows
+    // hero fades out as the page scrolls down into the rows (pinned but scrolled)
     if hero_a > 0.01 {
         phase("dt.hero", || draw_hero(ps.alpha(hero_a), &env, m));
     }
-    // compact centered title fades in at the top of the scrolled view
+    // compact centered title fades in at the top of the scrolled view (pinned, not scrolled)
     if hero_a < 0.99 {
         phase("dt.ctitle", || draw_compact_title(p.alpha(1.0 - hero_a), m));
     }
-    // Below-hero sections, scrolled. CULL the ones fully off-screen: Painter has no clip/scissor, so
-    // an off-screen section would otherwise still build its per-frame strings and issue every draw
-    // call (measured at ~35ms/frame for cast+about while they sit far below the hero fold). A section
-    // spans [top, top+block_h) after the scroll; draw it only when that band meets the viewport. The
-    // focused section is always in view (scroll lifts it to TOP_MARGIN), so focus never gets culled.
-    let visible = |s: c_int| on_axis(section_y(s) - scroll, block_h(s), SCR_H, 0.0);
-    if is_show() {
-        if visible(1) {
-            phase("dt.tabs", || draw_tabs(ps));
+    // Below-hero sections through the shared ScrollColumn: it owns the flow (child_top == the old
+    // section_y), the scroll, and the off-screen cull (on_axis) — Painter has no clip/scissor, so a
+    // section fully below the fold (~35ms/frame of wasted strings+draws) is SKIPPED, not clipped. Each
+    // present section draws local-coord under a painter pre-translated to its child origin (see the
+    // `impl Column for DetailView` dispatch). The focused section is never culled.
+    let col = view().column;
+    col.draw(view(), &env, p);
+}
+
+// The below-hero sections ARE the ScrollColumn's children (the hero at section id 0 is pinned, drawn
+// separately, and excluded here). Column index i maps to the (i+1)-th present section id, so child 0
+// is the first non-hero section sitting at CONTENT_TOP.
+impl Column for DetailView {
+    fn len(&self) -> usize {
+        let (_, n) = sections();
+        n - 1 // exclude the pinned hero (section id 0 at index 0)
+    }
+    fn height(&self, i: usize) -> f32 {
+        let (s, _) = sections();
+        block_h(s[i + 1])
+    }
+    fn gap_before(&self, i: usize) -> f32 {
+        // gap between the previous child (section s[i]) and this one (s[i+1]); tabs→episodes hug
+        let (s, _) = sections();
+        if s[i] == 1 && s[i + 1] == 2 {
+            TAB_EP_GAP
+        } else {
+            SECTION_GAP
         }
-        if visible(2) {
-            phase("dt.eps", || draw_episodes(ps));
+    }
+    fn focus_child(&self) -> Option<usize> {
+        if self.section == 0 {
+            return None; // hero focused → no scrolling child is focused
         }
+        let (s, n) = sections();
+        s[..n].iter().position(|&x| x == self.section).map(|p| p - 1)
     }
-    if visible(3) {
-        phase("dt.related", || draw_related(ps));
-    }
-    if visible(4) {
-        phase("dt.cast", || draw_cast(ps));
-    }
-    if visible(5) {
-        phase("dt.about", || draw_about(ps));
+    fn draw_child(&self, i: usize, _env: &Env, p: Painter) {
+        use crate::ui::profile::phase;
+        let (s, _) = sections();
+        match s[i + 1] {
+            1 => phase("dt.tabs", || draw_tabs(p)),
+            2 => phase("dt.eps", || draw_episodes(p)),
+            3 => phase("dt.related", || draw_related(p)),
+            4 => phase("dt.cast", || draw_cast(p)),
+            5 => phase("dt.about", || draw_about(p)),
+            _ => {}
+        }
     }
 }
 
@@ -539,7 +554,7 @@ fn draw_tabs(p: Painter) {
     }
     let sec = view().section;
     let col = view().col;
-    let tab_y = section_y(1);
+    let tab_y = 0.0; // local origin — the ScrollColumn pre-translates the painter to this section's top
     // segmented control: the *selected* season carries a subtle pill (bright ACCENT while the tab row
     // is focused); non-selected seasons are plain dim text. (TabPill handles the state → look.)
     let e = Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 };
@@ -581,7 +596,7 @@ fn draw_episodes(p: Painter) {
     let sx = view().ep_hscroll.pos;
     let pe = p.translate(-sx, 0.0);
     let dimc = theme::TEXT_TERTIARY;
-    let ep_y = section_y(2);
+    let ep_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     for (i, ep) in d.episodes.iter().enumerate() {
         let x = MARGIN_X + i as f32 * (EP_W + EP_GAP);
         if !on_axis(x - sx, EP_W, SCR_W, 0.0) {
@@ -632,7 +647,7 @@ fn draw_related(p: Painter) {
     if d.related.is_empty() {
         return;
     }
-    let related_y = section_y(3);
+    let related_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     p.text(c"Related".as_ptr(), MARGIN_X, related_y, 28, theme::TEXT_HEADING, 0, 1);
     let focus_col = if view().section == 3 { view().col } else { -1 };
     let row_y = related_y + REL_LABEL_H;
@@ -675,7 +690,7 @@ fn draw_cast(p: Painter) {
     if d.cast.is_empty() {
         return;
     }
-    let cast_y = section_y(4);
+    let cast_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, 28, theme::TEXT_HEADING, 0, 1);
     let sec = view().section;
     let col = view().col;
@@ -788,7 +803,7 @@ pub(crate) fn open_rk(rk: &str) {
     v.selected = idx;
     v.section = 0;
     v.col = 0;
-    v.scroll.jump(0.0);
+    v.column.scroll.jump(0.0);
     metadata::load_detail(rk);
 }
 
@@ -867,7 +882,7 @@ fn draw_about(p: Painter) {
         None => return,
     };
     let tx = MARGIN_X;
-    let about_y = section_y(5);
+    let about_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     let hd = theme::TEXT_PRIMARY; // headings (brighter)
     let val = theme::TEXT_HEADING; // values (a step below headings)
     let lbl = theme::TEXT_TERTIARY; // dim labels
