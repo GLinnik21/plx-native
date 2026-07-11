@@ -18,22 +18,24 @@ use std::ffi::CString;
 use std::hash::{Hash, Hasher};
 use std::os::raw::c_int;
 use std::ptr::addr_of_mut;
+use std::rc::Rc;
 
 // Wrapping is pixel-measured (text_width per word), which is far too slow to redo every frame for
 // every block — the text is stable, so memoize the wrapped lines by (text, sz, bold, width, lines).
-// Main-thread only (immediate-mode draw), like the poster/icon caches.
-static mut WRAP_CACHE: Option<HashMap<u64, Vec<String>>> = None;
+// The lines are shared via Rc, so a cache hit is a refcount bump (not a Vec<String> deep-copy) each
+// frame. Main-thread only (immediate-mode draw), like the poster/icon caches.
+static mut WRAP_CACHE: Option<HashMap<u64, Rc<Vec<String>>>> = None;
 
-fn wrap_memo(key: u64, compute: impl FnOnce() -> Vec<String>) -> Vec<String> {
+fn wrap_memo(key: u64, compute: impl FnOnce() -> Vec<String>) -> Rc<Vec<String>> {
     let cache = unsafe { (*addr_of_mut!(WRAP_CACHE)).get_or_insert_with(HashMap::new) };
     if let Some(v) = cache.get(&key) {
-        return v.clone();
+        return Rc::clone(v);
     }
     if cache.len() > 512 {
         cache.clear(); // crude cap — plenty for a page's worth of blocks across a few items
     }
-    let v = compute();
-    cache.insert(key, v.clone());
+    let v = Rc::new(compute());
+    cache.insert(key, Rc::clone(&v));
     v
 }
 
@@ -82,7 +84,7 @@ impl<'a> TextView<'a> {
     }
 
     /// wrapped lines for `width`, memoized (the pixel-wrap is too costly to redo every frame).
-    fn wrap(&self, width: f32) -> Vec<String> {
+    fn wrap(&self, width: f32) -> Rc<Vec<String>> {
         let mut h = DefaultHasher::new();
         self.text.hash(&mut h);
         self.sz.hash(&mut h);
@@ -119,6 +121,15 @@ impl<'a> TextView<'a> {
             // more text than fits — ellipsize the last placed line to width
             if let Some(last) = lines.last_mut() {
                 *last = ellipsize(last, width, self.sz, self.bold);
+            }
+        }
+        // safety: a lone token wider than the column can't be word-broken (a long URL/compound word,
+        // or a space-less script that yields one "word") — ellipsize any over-wide line so it never
+        // paints past the column (Painter has no clip). Also covers the whole-text-is-one-token case
+        // that slips past the truncation gate above.
+        for ln in lines.iter_mut() {
+            if self.measure(ln) > width {
+                *ln = ellipsize(ln, width, self.sz, self.bold);
             }
         }
         lines

@@ -1,6 +1,7 @@
 //! Reusable retui leaves + shared helpers. These are the "reusable UI elements":
-//! Button, CircleButton, PageDots, ProgressBar (the future player-HUD
-//! scrubber), plus the poster-resolve + text-wrap helpers Card/Hero share.
+//! Button, CircleButton, TabPill, TransportButton, PageDots, ProgressBar, plus the shared art-card
+//! core (`card`/`draw_poster`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
+//! now lives in the `TextView` primitive in `text_view.rs`.)
 #![allow(dead_code)]
 use crate::pms::PmsMovie;
 use crate::ui::theme;
@@ -74,7 +75,7 @@ pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
 /// resolve + animate identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop
 /// about the centre + a tight focus ring when `focused` (the caller owns the `scale` spring).
 pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int), radius: f32, focused: bool, scale: f32) {
-    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, Some((6.0, 14.0)));
+    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, Some((theme::CARD_RING_PAD_STRIP, theme::CARD_RING_RAD)));
 }
 
 /// read a NUL-terminated C-string field into a Rust String

@@ -94,14 +94,10 @@ pub const OVERLAY_BORDER: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
 pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-// ── Focus-ring geometry (color is shader-baked in gfx.rs; only geometry is tunable) ──
-/// Grid card focus-ring inflation (big glow band around a hero-grid poster).
-pub const CARD_RING_PAD_GRID: f32 = 48.0;
-/// Strip/tile card focus-ring inflation (tight ring around a shelf/related tile).
+// ── Focus-ring geometry (the ring *color* is shader-baked in gfx.rs; only geometry is tunable) ──
+// The hero-grid card's wide glow uses `consts::GLOW_PAD` (shared with off-screen culling, so it has
+// one home there); the tile/strip cards (shelf / related / episode / chapters) use these:
+/// Strip/tile card focus-ring inflation (tight ring around a shelf/related/episode tile).
 pub const CARD_RING_PAD_STRIP: f32 = 6.0;
 /// Focus-ring corner radius.
 pub const CARD_RING_RAD: f32 = 14.0;
-/// Focus scalar — fully focused.
-pub const FOCUS_ON: f32 = 1.0;
-/// Focus scalar — unfocused.
-pub const FOCUS_OFF: f32 = 0.0;

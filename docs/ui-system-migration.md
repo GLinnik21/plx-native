@@ -116,17 +116,21 @@ centers the **cap band** (not the top-anchored y), each migrated run needs a der
 `VAlign::CapTop` puts cap-top on `frame.y`, closely matching `draw_text`'s top-left `y`
 (verify the small `cap_top` offset on-device).
 
-### `TextBlock` (a.k.a. Paragraph) — **new** (`widgets.rs`)
+### `TextView` — **SHIPPED** (`text_view.rs`; was planned here as `TextBlock` in `widgets.rs`)
 ```rust
-TextBlock::new(lines: &[*const c_char], sz: c_int, col: [f32;4]) -> TextBlock
-    .bold() .leading(px: f32)
-    .draw(&self, p: Painter, frame: Rect) -> f32   // consumed height / bottom y
+TextView::new(text: &str, sz: c_int, col: [f32;4]) -> TextView
+    .bold() .leading(px: f32) .h(HAlign) .max_lines(n: usize)
+    .measure_h(&self, width: f32) -> f32
+    .draw(&self, p: Painter, frame: Rect) -> f32   // consumed height; frame.w = wrap width
 ```
-The one thing `Label` cannot express: multi-line flow. Stacks one cap-band `Label` per line
-at fixed leading. Feeds off the existing `wrap_two` (`widgets.rs:66`) / `wrap_ep` /
-`wrap_lines` output. Unblocks ~10 detail runs (synopsis, episode summary `detail.rs:532-542`,
-About values `:858`) and home's 2-line hero synopsis (`home.rs:174-183`). Deliberately dumb —
-caller owns the wrap + the `CString` vec; **not** a reflow engine.
+The one thing `Label` cannot express: multi-line flow. It went further than the planned
+`TextBlock`: instead of taking pre-wrapped `*const c_char` lines, it takes a raw `&str` and does
+its **own pixel word-wrap** (measured, not char-count), cap-band `Label` per line, ellipsis at
+`max_lines`, and reports height. So it **replaced** the char-count `wrap_two`/`wrap_ep` helpers
+(deleted) at the hero synopses (`home.rs`, `detail.rs`), episode summaries, and About columns
+(`draw_pair`/Languages/Accessibility). Wrapping is memoized (`WRAP_CACHE`, `Rc`-shared) so the
+per-frame cost is a hash + refcount bump. Not a reflow engine; the About summary's inline `MORE`
+tail still uses `wrap_lines` pending a trailing-run hook.
 
 ### `Button` — **generalize** (`widgets.rs:310`)
 ```rust
