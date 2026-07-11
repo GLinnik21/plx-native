@@ -1,4 +1,4 @@
-//! The home screen as a retui tree: Backdrop + Hero + Grid([Shelf;5]×[Card;10]).
+//! The home screen as a retui tree: Backdrop + Hero + Grid([CardRow; MAX_HUBS]).
 //! fr/fc/snapTarget are the focus source of truth (private module state); the tree
 //! reads them live each frame via Env and writes back through nav. plex_run drives it
 //! through home_init/update/draw/move_focus/pointer_focus/wheel (crate path) and the
@@ -7,9 +7,10 @@
 use crate::pms::PmsMovie;
 use crate::ui::consts::*;
 use crate::ui::icons::Icon;
+use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{cfield, draw_poster, Button, CircleButton, ControlStyle, PageDots};
+use crate::ui::widgets::{cfield, Art, Button, CircleButton, ControlStyle, PageDots};
 use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
@@ -47,8 +48,8 @@ fn g_fc() -> c_int {
 }
 
 // Home grid is now N hub shelves of varying length (not the old fixed ROWS×COLS).
-// The Shelf/Grid arrays are sized to these maxima; the *actual* counts come from
-// pms::hub_count()/hub_len().
+// The Grid's CardRow array + each row's cell springs are sized to these maxima; the
+// *actual* counts come from pms::hub_count()/hub_len().
 const MAX_HUBS: usize = 16; // Continue Watching, On Deck, Recently Added, collections…
 const MAX_ITEMS: usize = 24; // cards per shelf
 
@@ -60,16 +61,10 @@ pub(crate) fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie {
     crate::pms::hub_item_ptr(r as usize, c as usize)
 }
 
-/// resume bar along a card bottom (Continue Watching); no-op if not in progress
-fn resume_bar(p: Painter, r: Rect, m: &PmsMovie) {
-    if m.resume_ms > 0 && m.dur_ns > 0 {
-        let frac = (m.resume_ms as f32 * 1_000_000.0 / m.dur_ns as f32).clamp(0.0, 1.0);
-        let bh = 5.0f32;
-        let (bx, bw) = (r.x + 8.0, r.w - 16.0);
-        let by = r.y + r.h - bh - 8.0;
-        p.rrect(Rect::new(bx, by, bw, bh), bh * 0.5, bh * 0.5, theme::RAIL_BUFFERED);
-        p.rrect(Rect::new(bx, by, bw * frac, bh), bh * 0.5, bh * 0.5, theme::RESUME_FILL);
-    }
+/// played fraction (0..1) for a Continue-Watching card's resume bar, or None if not in progress.
+/// The bar itself is drawn by `card_row::draw_tile`/`draw_focused`; this just supplies the frac.
+fn resume_frac(m: &PmsMovie) -> Option<f32> {
+    (m.resume_ms > 0 && m.dur_ns > 0).then(|| (m.resume_ms as f32 * 1_000_000.0 / m.dur_ns as f32).clamp(0.0, 1.0))
 }
 
 // ---- Backdrop: ambient wash + backdrop art (parallax/fade) + scrim. Uses
@@ -190,81 +185,21 @@ impl View for Hero {
     }
 }
 
-// ---- Card: hot collection cell (in [Card;COLS], not boxed). Owns its scale spring.
-struct Card {
-    row: usize,
-    col: usize,
-    scale: Spring,
-}
-impl Card {
-    fn new(row: usize, col: usize) -> Self {
-        Card { row, col, scale: Spring::at(1.0) }
-    }
-    /// Step this cell's focus-scale spring toward its target (1.055 focused, 1.0 idle). The
-    /// card owns its spring, so the grid only calls `cards[c].update(env)` — motion is identical
-    /// to the old inline Shelf loop (same 1.055/K_SCALE that the ring scalar `(s-1)/0.055` is
-    /// tied to; see Grid::draw). Inherent, not a trait draw — the focused-last z-order (a card is
-    /// drawn by the grid's two passes, not self-contained) keeps Card out of the View trait.
-    fn update(&mut self, env: &Env) {
-        let target = if self.row == env.fr as usize && self.col == env.fc as usize { 1.055 } else { 1.0 };
-        self.scale.step(target, K_SCALE, env.dt);
-    }
-}
-
-// ---- Shelf: one hub row = [Card;MAX_ITEMS] (only hub_len used) + its own scroll spring
-struct Shelf {
-    row: usize,
-    cards: [Card; MAX_ITEMS],
-    scroll_x: Spring,
-    base_y: f32,
-}
-impl Shelf {
-    fn new(row: usize) -> Self {
-        Shelf { row, cards: std::array::from_fn(|c| Card::new(row, c)), scroll_x: Spring::at(0.0), base_y: 0.0 }
-    }
-    fn update(&mut self, env: &Env) {
-        let f_c = env.fc as usize;
-        let n = crate::pms::hub_len(self.row);
-        // every cell steps its own spring (all MAX_ITEMS every frame — invariant #10)
-        for c in 0..MAX_ITEMS {
-            self.cards[c].update(env);
-        }
-        // only the focused row's scroll animates (matches ui_home.c: springs scrollX[fr] alone)
-        if env.fr as usize == self.row && n > 0 {
-            let max_sx = (n as f32 * (CARD_W + GAP) - GAP - (SCR_W - 2.0 * MARGIN_X)).max(0.0);
-            let want = (f_c as f32 * (CARD_W + GAP) - (CARD_W + GAP)).clamp(0.0, max_sx);
-            self.scroll_x.step(want, K_SCROLL, env.dt);
-        }
-    }
-    fn draw_cells(&self, env: &Env, p: Painter) {
-        for c in 0..crate::pms::hub_len(self.row) {
-            if self.row == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
-                continue; // focused card drawn last (grid z-order)
-            }
-            let m = unsafe { movie_at(self.row as c_int, c as c_int).as_ref() };
-            let Some(mm) = m else { continue };
-            let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.scroll_x.pos * env.sp;
-            if x > SCR_W || x + CARD_W < -GLOW_PAD {
-                continue;
-            }
-            let s = self.cards[c].scale.pos;
-            let r = Rect::new(x, self.base_y + 12.0, CARD_W, CARD_H).scaled(s);
-            draw_poster(p, m, r, 14.0 * s);
-            resume_bar(p, r, mm);
-        }
-    }
-}
-
-// ---- Grid: the collection view. Holds [Shelf;ROWS] + the vertical scroll spring,
-// drives nav/hit-test/wheel, draws all non-focused cells then the focused card last.
+// ---- Grid: the collection view. Holds one CardRow per hub (the shared animated shelf component) +
+// the vertical scroll spring; drives nav/hit-test/wheel, draws all non-focused cells then the single
+// focused card LAST (cross-row z-order, invariant #3). CardRow owns the per-cell scale springs + the
+// scroll spring + the tile rendering — the same component detail's Related row uses.
 struct Grid {
-    shelves: [Shelf; MAX_HUBS],
+    shelves: [CardRow; MAX_HUBS],
     scroll_y: Spring,
 }
 impl View for Grid {
     fn update(&mut self, env: &Env) {
-        for s in self.shelves.iter_mut() {
-            s.update(env);
+        // delegate each row's per-cell scale springs + scroll spring to the shared CardRow (only the
+        // focused row's scroll animates — focused=None freezes it, matching the old Shelf::update).
+        for r in 0..MAX_HUBS {
+            let focused = (env.fr as usize == r).then_some(env.fc as usize);
+            self.shelves[r].update(crate::pms::hub_len(r), focused, &RowStyle::HOME, env.dt);
         }
         let nh = crate::pms::hub_count().max(1);
         let max_y = (nh as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0);
@@ -281,6 +216,8 @@ impl View for Grid {
     }
     fn draw(&self, env: &Env, p: Painter) {
         let nh = crate::pms::hub_count();
+        // PASS 1 — every shelf's non-focused cells (the globally-focused cell is skipped in grid mode,
+        // drawn LAST below so it overlaps neighbouring rows: cross-row z-order, invariant #3).
         for r in 0..nh {
             let row_y = self.shelves[r].base_y;
             if row_y > SCR_H || row_y + CARD_H < 0.0 {
@@ -290,7 +227,7 @@ impl View for Grid {
             // the title-to-card gap stays proportional (Apple-TV behavior).
             if env.sp > 0.02 {
                 let fs = if r == env.fr as usize {
-                    self.shelves[r].cards[(env.fc as usize).min(MAX_ITEMS - 1)].scale.pos
+                    self.shelves[r].scale((env.fc as usize).min(MAX_ITEMS - 1))
                 } else {
                     1.0
                 };
@@ -299,30 +236,39 @@ impl View for Grid {
                     p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, 28, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
                 }
             }
-            self.shelves[r].draw_cells(env, p);
+            for c in 0..crate::pms::hub_len(r) {
+                if r == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
+                    continue; // focused card drawn last (grid z-order)
+                }
+                let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
+                let Some(mm) = m else { continue };
+                let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
+                if x > SCR_W || x + CARD_W < -GLOW_PAD {
+                    continue;
+                }
+                let s = self.shelves[r].scale(c);
+                let rect = Rect::new(x, row_y + 12.0, CARD_W, CARD_H).scaled(s);
+                card_row::draw_tile(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume_frac(mm));
+            }
         }
-        // focused card + ring + title, drawn LAST for z-order (grid mode only)
+        // PASS 2 — the single focused card + ring + title, drawn LAST for cross-row z-order (grid mode).
         if env.sp > 0.5 {
             let (r, c) = (env.fr as usize, env.fc as usize);
             if r >= nh {
                 return;
             }
-            let s = self.shelves[r].cards[c.min(MAX_ITEMS - 1)].scale.pos;
-            let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x.pos * env.sp;
+            let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1));
+            let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
             let rect = Rect::new(x, self.shelves[r].base_y + 12.0, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
-            draw_poster(p, m, rect, 14.0 * s);
-            p.ring(rect, GLOW_PAD, theme::CARD_RING_RAD * s, (s - 1.0) / 0.055);
-            if let Some(mm) = m {
-                resume_bar(p, rect, mm);
-                p.text(mm.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, theme::TEXT_PRIMARY, 1, 1);
-            }
+            let title = m.map(|mm| mm.title.as_ptr() as *const c_char).unwrap_or(std::ptr::null());
+            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, m.and_then(resume_frac), title);
         }
     }
 }
 impl Grid {
     fn new() -> Self {
-        Grid { shelves: std::array::from_fn(Shelf::new), scroll_y: Spring::at(0.0) }
+        Grid { shelves: [CardRow::new(); MAX_HUBS], scroll_y: Spring::at(0.0) }
     }
     // ---- navigation: writes the fr/fc globals (never caches focus) ----
     fn nav(&self, sym: c_uint) {
@@ -343,9 +289,9 @@ impl Grid {
     /// vertical move keeping VISUAL column alignment across rows' animated scroll
     unsafe fn vert(&self, dir: c_int) {
         let (cur, ncur) = (g_fr(), g_fr() + dir);
-        let cx = MARGIN_X + g_fc() as f32 * (CARD_W + GAP) - self.shelves[cur as usize].scroll_x.pos + CARD_W * 0.5;
+        let cx = MARGIN_X + g_fc() as f32 * (CARD_W + GAP) - self.shelves[cur as usize].scroll_x() + CARD_W * 0.5;
         let mut nc =
-            ((cx - MARGIN_X - CARD_W * 0.5 + self.shelves[ncur as usize].scroll_x.pos) / (CARD_W + GAP) + 0.5) as c_int;
+            ((cx - MARGIN_X - CARD_W * 0.5 + self.shelves[ncur as usize].scroll_x()) / (CARD_W + GAP) + 0.5) as c_int;
         let ncount = crate::pms::hub_len(ncur as usize) as c_int;
         nc = nc.clamp(0, (ncount - 1).max(0));
         fr = ncur;
@@ -359,7 +305,7 @@ impl Grid {
                     continue;
                 }
                 for c in 0..crate::pms::hub_len(r) {
-                    let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x.pos;
+                    let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x();
                     if mx >= x && mx <= x + CARD_W {
                         fr = r as c_int;
                         fc = c as c_int;

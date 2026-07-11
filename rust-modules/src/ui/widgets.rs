@@ -1,6 +1,6 @@
 //! Reusable retui leaves + shared helpers. These are the "reusable UI elements":
 //! Button, CircleButton, TabPill, TransportButton, PageDots, ProgressBar, plus the shared art-card
-//! core (`card`/`draw_poster`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
+//! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
 #![allow(dead_code)]
 use crate::pms::PmsMovie;
@@ -24,10 +24,10 @@ pub(crate) enum Art<'a> {
 
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton), draws it at `frame`
 /// scaled about its centre when `focused`, then an optional focus ring `(pad, rad)` at focus=1.0.
-/// Every art tile routes through here — the home grid posters (via [`draw_poster`]) and the
-/// episode/chapters strips + detail Related (via [`draw_card`]) — so they resolve, skeleton, and
-/// ring identically. (Home draws its own bigger glow ring with a custom focus scalar, so its shim
-/// passes `ring: None`.)
+/// Every art tile routes through here — the home grid + detail Related posters (via
+/// [`card_row`](crate::ui::card_row), which draws its own bigger glow ring, so it passes `ring:
+/// None`) and the episode/chapters strips (via [`draw_card`]) — so they all resolve, skeleton, and
+/// ring identically.
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, ring: Option<(f32, f32)>) {
     let r = if focused { frame.scaled(scale) } else { frame };
     match art {
@@ -60,12 +60,6 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             p.ring(r, pad, ring_rad, 1.0);
         }
     }
-}
-
-/// a poster card (home grid): artwork if loaded, else a dark skeleton. The rect is already scaled by
-/// the caller, which draws its own big glow ring, so no scale-pop/ring here.
-pub(crate) fn draw_poster(p: Painter, m: Option<&PmsMovie>, r: Rect, rad: f32) {
-    card(p, r, Art::Poster(m), rad, false, 1.0, None);
 }
 
 /// The scale a focused card pops to (shared by every animated card row).
