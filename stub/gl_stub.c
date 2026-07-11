@@ -5,6 +5,7 @@ void glBlendFunc(void){}
 void glBufferData(void){}
 void glClear(void){}
 void glClearColor(void){}
+void glFinish(void){}
 void glCompileShader(void){}
 void glCreateProgram(void){}
 void glCreateShader(void){}

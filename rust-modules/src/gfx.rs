@@ -59,6 +59,7 @@ extern "C" {
     fn glBlendFunc(sfactor: c_uint, dfactor: c_uint);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: c_uint);
+    fn glFinish();
     fn glGenTextures(n: c_int, textures: *mut c_uint);
     fn glDeleteTextures(n: c_int, textures: *const c_uint);
     fn glPixelStorei(pname: c_uint, param: c_int);
@@ -86,6 +87,13 @@ pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
         glClearColor(r, g, b, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
     }
+}
+
+/// Block until the GPU has finished all queued commands. Used ONLY by the draw profiler
+/// (`ui::profile`) to attribute per-phase GPU cost — it serializes the pipeline, so never call it
+/// on the normal render path.
+pub(crate) fn gl_finish() {
+    unsafe { glFinish() }
 }
 
 static mut PROG: c_uint = 0;

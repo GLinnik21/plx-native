@@ -18,6 +18,7 @@ pub mod icons;
 pub mod info_panel;
 pub mod label;
 pub mod player_hud;
+pub mod profile;
 pub mod table;
 pub mod text_view;
 pub mod theme;

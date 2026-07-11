@@ -289,52 +289,74 @@ pub(crate) fn draw() {
     let env = env_of(0.0);
     let m = selected();
     let scroll = view().scroll.pos;
-    draw_backdrop(p, m, scroll);
+    use crate::ui::profile::phase;
+    phase("dt.backdrop", || draw_backdrop(p, m, scroll));
     let hero_a = (1.0 - scroll / 400.0).clamp(0.0, 1.0);
     let ps = p.translate(0.0, -scroll);
     // hero fades out as the page scrolls down into the rows
     if hero_a > 0.01 {
-        draw_hero(ps.alpha(hero_a), &env, m);
+        phase("dt.hero", || draw_hero(ps.alpha(hero_a), &env, m));
     }
     // compact centered title fades in at the top of the scrolled view
     if hero_a < 0.99 {
-        draw_compact_title(p.alpha(1.0 - hero_a), m);
+        phase("dt.ctitle", || draw_compact_title(p.alpha(1.0 - hero_a), m));
     }
-    // season tabs + episode row (shows only), then related + cast (both), scrolled
+    // Below-hero sections, scrolled. CULL the ones fully off-screen: Painter has no clip/scissor, so
+    // an off-screen section would otherwise still build its per-frame strings and issue every draw
+    // call (measured at ~35ms/frame for cast+about while they sit far below the hero fold). A section
+    // spans [top, top+block_h) after the scroll; draw it only when that band meets the viewport. The
+    // focused section is always in view (scroll lifts it to TOP_MARGIN), so focus never gets culled.
+    let visible = |s: c_int| {
+        let top = section_y(s) - scroll;
+        top < SCR_H && top + block_h(s).max(1.0) > 0.0
+    };
     if is_show() {
-        draw_tabs(ps);
-        draw_episodes(ps);
+        if visible(1) {
+            phase("dt.tabs", || draw_tabs(ps));
+        }
+        if visible(2) {
+            phase("dt.eps", || draw_episodes(ps));
+        }
     }
-    draw_related(ps);
-    draw_cast(ps);
-    draw_about(ps);
+    if visible(3) {
+        phase("dt.related", || draw_related(ps));
+    }
+    if visible(4) {
+        phase("dt.cast", || draw_cast(ps));
+    }
+    if visible(5) {
+        phase("dt.about", || draw_about(ps));
+    }
 }
 
 fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
     // 0 at the hero, 1 when scrolled down into the rows
     let sf = (scroll / SCROLLED).clamp(0.0, 1.0);
-    // ambient wash from the item's UltraBlur corners — kept as the dark warm glow when scrolled
+    // Backdrop art: prefer the catalog row's art, else the loaded detail's art. Fades out as the page
+    // scrolls into the rows so the episode/row text reads over a dark bg. Resolved FIRST (the texture
+    // is cached — this is a cheap lookup) so the ambient wash below can be skipped whenever the opaque
+    // full-screen art already covers it — drawing both is a wasted full-screen pass on the weak GPU
+    // (the hero's fill-rate cost; mirrors home's Backdrop which draws art OR ambient, never both).
+    let art_a = 1.0 - sf;
+    let art_tex = if art_a > 0.01 {
+        m.filter(|m| m.art[0] != 0)
+            .map(|m| cfield(&m.art))
+            .or_else(|| metadata::current().map(|d| d.art.clone()).filter(|s| !s.is_empty()))
+            .and_then(|art| CString::new(art).ok())
+            .map(|ap| resolve_tex(ap.as_ptr(), 1920, 1080, 0))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    // ambient wash from the item's UltraBlur corners — the dark warm glow, drawn ONLY when it will
+    // actually show: no art texture yet, or the art has faded on scroll enough to reveal it beneath.
     if let Some(m) = m {
-        if m.has_blur != 0 {
+        if m.has_blur != 0 && (art_tex == 0 || art_a < 0.99) {
             p.ambient(Rect::FULL, 0.55, m.blur);
         }
     }
-    // backdrop art: prefer the catalog row's art, else the loaded detail's art. Fades
-    // out as the page scrolls into the rows so the episode/row text reads over a dark bg.
-    let art_a = 1.0 - sf;
-    if art_a > 0.01 {
-        let art = m
-            .filter(|m| m.art[0] != 0)
-            .map(|m| cfield(&m.art))
-            .or_else(|| metadata::current().map(|d| d.art.clone()).filter(|s| !s.is_empty()));
-        if let Some(art) = art {
-            if let Ok(ap) = CString::new(art) {
-                let t = resolve_tex(ap.as_ptr(), 1920, 1080, 0);
-                if t != 0 {
-                    p.tex(t, Rect::FULL, 0.0, theme::with_a(theme::TINT_WHITE, art_a));
-                }
-            }
-        }
+    if art_tex != 0 {
+        p.tex(art_tex, Rect::FULL, 0.0, theme::with_a(theme::TINT_WHITE, art_a));
     }
     // bottom scrim for the hero's lower-left content (only while the hero is visible)
     if sf < 0.99 {

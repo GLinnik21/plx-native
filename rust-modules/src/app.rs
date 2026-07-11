@@ -278,6 +278,11 @@ pub extern "C" fn plex_run(
         if std::path::Path::new("/tmp/poc-anim").exists() {
             crate::ui::anim::set_enabled(true);
         }
+        // dev: /tmp/poc-profile turns on the per-phase draw profiler (ui::profile) — logs mean
+        // ms/frame per draw phase to the event log (GPU-synced, so absolute FPS drops while it's on).
+        if std::path::Path::new("/tmp/poc-profile").exists() {
+            crate::ui::profile::set_enabled(true);
+        }
 
         let mut last_input = SDL_GetTicks();
         let t0 = SDL_GetTicks();
@@ -1224,6 +1229,7 @@ pub extern "C" fn plex_run(
                 }
                 crate::ui::anim::draw_overlay();
                 SDL_GL_SwapWindow(win);
+                crate::ui::profile::frame_end();
                 frames_ct += 1;
                 if now.wrapping_sub(fps_t) >= 1000 {
                     frames_ct = 0;
@@ -1240,11 +1246,15 @@ pub extern "C" fn plex_run(
             crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
             crate::ui::anim::draw_overlay(); // home/detail animations (episode scale-pop, scroll)
             SDL_GL_SwapWindow(win);
+            crate::ui::profile::frame_end();
             frames_ct += 1;
             if now.wrapping_sub(fps_t) >= 1000 {
                 fps_shown = (frames_ct as f32 * 1000.0 / now.wrapping_sub(fps_t) as f32 + 0.5) as i32;
                 frames_ct = 0;
                 fps_t = now;
+                // once/sec render heartbeat on the home/detail path (quiet in the log, unlike the
+                // feed-stat-heavy player path) — so FPS is greppable without reading the on-screen counter
+                log(&format!("FPS={fps_shown} route={}", if matches!(route, Route::Detail) { "detail" } else { "home" }));
             }
         }
 
