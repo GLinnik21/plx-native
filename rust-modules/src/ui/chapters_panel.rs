@@ -160,7 +160,7 @@ pub(crate) fn draw() {
         } else {
             ch.title.clone()
         };
-        if let Ok(tc) = CString::new(elide(&name, CH_W, 24, 1)) {
+        if let Ok(tc) = CString::new(crate::text::elide(&name, CH_W, 24, 1, false)) {
             p.text(tc.as_ptr(), x, ty, 24, titc, 0, 1);
         }
         if let Ok(sc) = CString::new(fmt_ts(ch.start_ms)) {
@@ -169,32 +169,3 @@ pub(crate) fn draw() {
     }
 }
 
-/// truncate `s` with an ellipsis so it fits `budget` px at `sz`/`bold`.
-fn elide(s: &str, budget: f32, sz: i32, bold: i32) -> String {
-    let full = match CString::new(s) {
-        Ok(c) => c,
-        Err(_) => return s.to_string(),
-    };
-    if budget <= 0.0 || crate::text::text_width(full.as_ptr(), sz, bold) <= budget {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let mut cand: String = chars[..mid].iter().collect();
-        cand.push('…');
-        let fits = CString::new(cand.as_str())
-            .ok()
-            .map(|c| crate::text::text_width(c.as_ptr(), sz, bold) <= budget)
-            .unwrap_or(false);
-        if fits {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let mut out: String = chars[..lo].iter().collect();
-    out.push('…');
-    out
-}

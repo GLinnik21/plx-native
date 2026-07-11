@@ -2,7 +2,10 @@
 //! draw_text. Main-thread only (all GL), so the caches are plain statics (no
 //! locking). Uses gfx's gfx_compile/gfx_use_base (crate path). Mostly GL/TTF FFI —
 //! the retui text backend.
-use std::ffi::CStr;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::addr_of_mut;
 
@@ -298,6 +301,57 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
         let (_tex, w, _h, _it, _ib) = text_tex(b, s, sz, bold);
         w as f32
     }
+}
+
+static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
+
+/// Truncate `s` to fit `budget` px at `sz`/`bold`, ellipsised — and **memoised**. The per-frame
+/// binary search over candidate widths (each candidate a `text_width` call) is the text-measure
+/// thrash that dropped the player Info panel to ~1fps; caching the RESULT by (text, budget, sz, bold,
+/// cont) makes every later frame a hash lookup, thrash-proof no matter how long the input. `cont=false`
+/// returns `s` unchanged when it already fits (a plain elide — track menu / chapters / info card);
+/// `cont=true` always marks the result with `…` (a continued line whose caller already knows more text
+/// follows — `TextView`). The single truncation impl for the whole UI. Main-thread only, like the
+/// glyph cache.
+pub(crate) fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
+    let mut hh = DefaultHasher::new();
+    s.hash(&mut hh);
+    (budget as i32).hash(&mut hh);
+    sz.hash(&mut hh);
+    bold.hash(&mut hh);
+    cont.hash(&mut hh);
+    let key = hh.finish();
+    let cache = unsafe { (*addr_of_mut!(ELIDE_CACHE)).get_or_insert_with(HashMap::new) };
+    if let Some(v) = cache.get(&key) {
+        return v.clone();
+    }
+    let out = elide_compute(s, budget, sz, bold, cont);
+    if cache.len() > 512 {
+        cache.clear(); // crude cap — plenty for every label/line across a few screens
+    }
+    cache.insert(key, out.clone());
+    out
+}
+
+fn elide_compute(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
+    let measure = |t: &str| CString::new(t).ok().map(|c| text_width(c.as_ptr(), sz, bold)).unwrap_or(0.0);
+    let target = if cont { format!("{s}\u{2026}") } else { s.to_string() };
+    if budget <= 0.0 || measure(&target) <= budget {
+        return target;
+    }
+    // largest char-prefix of `s` whose "prefix…" still fits `budget`
+    let chars: Vec<char> = s.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let cand = chars[..mid].iter().collect::<String>().trim_end().to_string() + "\u{2026}";
+        if measure(&cand) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    chars[..lo].iter().collect::<String>().trim_end().to_string() + "\u{2026}"
 }
 
 /// rendered height in px of a line of text at `sz`/`bold` — the font's line height, independent of

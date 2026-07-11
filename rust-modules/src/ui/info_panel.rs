@@ -167,17 +167,8 @@ fn wrap2(s: &str, budget: f32, sz: i32) -> (String, String) {
             rest.push(' ');
         }
     }
-    // elide line 2 with an ellipsis
-    let mut l2 = rest.trim().to_string();
-    while !l2.is_empty() && !fits(&format!("{l2}…")) {
-        l2.pop();
-        while l2.ends_with(' ') {
-            l2.pop();
-        }
-    }
-    if !rest.trim().is_empty() && rest.trim() != l2 {
-        l2.push('…');
-    }
+    // line 2: the remaining words, elided via the shared memoised truncation
+    let l2 = crate::text::elide(rest.trim(), budget, sz, 0, false);
     (l1, l2)
 }
 
@@ -203,7 +194,7 @@ fn wrapped(title_src: &str, summary_src: &str, tw: f32) -> (String, String, Stri
                 return (c.title.clone(), c.syn1.clone(), c.syn2.clone());
             }
         }
-        let title = elide(title_src, tw, 40, 1);
+        let title = crate::text::elide(title_src, tw, 40, 1, false);
         let (syn1, syn2) =
             if summary_src.is_empty() { (String::new(), String::new()) } else { wrap2(summary_src, tw, 28) };
         *addr_of_mut!(WRAP) = Some(WrapCache {
@@ -401,32 +392,3 @@ pub(crate) fn draw() {
     }
 }
 
-/// truncate `s` with an ellipsis so it fits `budget` px at `sz`/`bold`.
-fn elide(s: &str, budget: f32, sz: i32, bold: i32) -> String {
-    let full = match CString::new(s) {
-        Ok(c) => c,
-        Err(_) => return s.to_string(),
-    };
-    if budget <= 0.0 || crate::text::text_width(full.as_ptr(), sz, bold) <= budget {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let mut cand: String = chars[..mid].iter().collect();
-        cand.push('…');
-        let fits = CString::new(cand.as_str())
-            .ok()
-            .map(|c| crate::text::text_width(c.as_ptr(), sz, bold) <= budget)
-            .unwrap_or(false);
-        if fits {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let mut out: String = chars[..lo].iter().collect();
-    out.push('…');
-    out
-}

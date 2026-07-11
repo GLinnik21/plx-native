@@ -291,7 +291,7 @@ impl TableView {
                 (0.0, 0.0, cyc) // title_y/detail_y unused single-line; Label centres the label
             };
             // title/label, then inline badges (mockup: "Original: …" with an AD chip after it)
-            let lbl = elide(&row.label, text_right - label_x - trailing - badge_reserve, 32, 1);
+            let lbl = crate::text::elide(&row.label, text_right - label_x - trailing - badge_reserve, 32, 1, false);
             let mut bx = label_x;
             if let Ok(cs) = CString::new(lbl) {
                 bx += if two_line {
@@ -307,7 +307,7 @@ impl TableView {
             // detail sub-line, elided (long Cyrillic descriptors would run off the edge)
             if !row.detail.is_empty() {
                 let sub = if focused { [0.0f32, 0.0, 0.0, 0.6] } else { dimc };
-                let detail = elide(&row.detail, text_right - label_x, 25, 0);
+                let detail = crate::text::elide(&row.detail, text_right - label_x, 25, 0, false);
                 if let Ok(cd) = CString::new(detail) {
                     p.text(cd.as_ptr(), label_x, detail_y, 25, sub, 0, 0);
                 }
@@ -337,43 +337,6 @@ impl TableView {
         // unreachable for a valid gi (draw early-returns when there are no rows)
         self.sections.iter().flat_map(|s| s.rows.iter()).next().unwrap()
     }
-}
-
-/// truncate `s` with an ellipsis so it fits `budget` px at `sz`/`bold` (exact, via text_width).
-/// Returns `s` unchanged when it already fits.
-fn elide(s: &str, budget: f32, sz: i32, bold: i32) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-    let full = match CString::new(s) {
-        Ok(c) => c,
-        Err(_) => return s.to_string(),
-    };
-    if budget <= 0.0 {
-        return String::new();
-    }
-    if crate::text::text_width(full.as_ptr(), sz, bold) <= budget {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let mut cand: String = chars[..mid].iter().collect();
-        cand.push('\u{2026}');
-        let fits = CString::new(cand.as_str())
-            .ok()
-            .map(|c| crate::text::text_width(c.as_ptr(), sz, bold) <= budget)
-            .unwrap_or(false);
-        if fits {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let mut out: String = chars[..lo].iter().collect();
-    out.push('\u{2026}');
-    out
 }
 
 /// pixel width a badge chip will occupy (kept in sync with draw_badge)
