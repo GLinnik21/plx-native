@@ -143,7 +143,10 @@ pub(crate) fn draw() {
     let rise = (1.0 - appear) * 20.0;
     let p = Painter::root().alpha(appear).translate(-scroll, rise);
 
-    let dimc = theme::TEXT_TERTIARY;
+    // timecode uses SECONDARY (not the dim TERTIARY): it's drawn straight over the video, where the
+    // dim grey washed out even up close. SECONDARY matches the (readable) chapter-name grey; the
+    // name still leads by size (LABEL vs CAPTION) + bold.
+    let dimc = theme::TEXT_SECONDARY;
     for (i, ch) in d.chapters.iter().enumerate() {
         let x = MARGIN_X + i as f32 * (CH_W + CH_GAP);
         if x - scroll > SCR_W || x - scroll + CH_W < 0.0 {
@@ -160,11 +163,11 @@ pub(crate) fn draw() {
         } else {
             ch.title.clone()
         };
-        if let Ok(tc) = CString::new(crate::text::elide(&name, CH_W, 24, 1, false)) {
-            p.text(tc.as_ptr(), x, ty, 24, titc, 0, 1);
+        if let Ok(tc) = CString::new(crate::text::elide(&name, CH_W, theme::size::LABEL, 1, false)) {
+            p.text(tc.as_ptr(), x, ty, theme::size::LABEL, titc, 0, 1);
         }
         if let Ok(sc) = CString::new(fmt_ts(ch.start_ms)) {
-            p.text(sc.as_ptr(), x, ty + 30.0, 20, dimc, 0, 0);
+            p.text(sc.as_ptr(), x, ty + 34.0, theme::size::CAPTION, dimc, 0, 0);
         }
     }
 }

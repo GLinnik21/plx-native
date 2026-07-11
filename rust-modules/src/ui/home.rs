@@ -118,7 +118,7 @@ impl Hero {
         let pill_y = 510.0 + 200.0; // titleY + 200
         let (pw, cgap, cd) = (168.0f32, 20.0f32, 60.0f32);
         Hero {
-            play: Button::new(c"Play".as_ptr(), 30, Rect::new(tx, pill_y, pw, cd))
+            play: Button::new(c"Play".as_ptr(), theme::size::BODY, Rect::new(tx, pill_y, pw, cd))
                 .icon(Icon::Play)
                 .style(ControlStyle::Primary),
             actions: [
@@ -160,19 +160,19 @@ impl View for Hero {
             }
             p.tex(lt, Rect::new(tx, title_y + 80.0 - hh, ww, hh), 0.0, w_a);
         } else {
-            p.text(hero.title.as_ptr() as *const c_char, tx, title_y, 66, w_a, 0, 1);
+            p.text(hero.title.as_ptr() as *const c_char, tx, title_y, theme::size::HERO, w_a, 0, 1);
         }
         // meta line
         let rating = cfield(&hero.rating);
         let meta = format!("Movie \u{b7} {} \u{b7} {}", hero.year, if rating.is_empty() { "NR" } else { &rating });
         if let Ok(m) = CString::new(meta) {
-            p.text(m.as_ptr(), tx, title_y + 92.0, 26, d_a, 0, 0);
+            p.text(m.as_ptr(), tx, title_y + 92.0, theme::size::BODY, d_a, 0, 0);
         }
         // synopsis: pixel-wrapped to the hero text column, 2 lines max, ellipsized
         let summary = cfield(&hero.summary);
         if !summary.is_empty() {
-            TextView::new(&summary, 24, d_a)
-                .leading(30.0)
+            TextView::new(&summary, theme::size::BODY, d_a)
+                .leading(34.0)
                 .max_lines(2)
                 .draw(p, Rect::new(tx, title_y + 128.0, 660.0, 0.0));
         }
@@ -233,7 +233,7 @@ impl View for Grid {
                 };
                 let lift = CARD_H * (fs - 1.0) * 0.5;
                 if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
-                    p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, 28, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
+                    p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, theme::size::HEADLINE, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
                 }
             }
             for c in 0..crate::pms::hub_len(r) {

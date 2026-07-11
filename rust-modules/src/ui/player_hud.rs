@@ -20,6 +20,12 @@ fn hud_env() -> Env {
 const SCR_W: f32 = 1920.0;
 const SCR_H: f32 = 1080.0;
 
+// The now-playing title under the playbar is a HUD *display* title — deliberately larger than
+// `theme::size::TITLE`, so it sits OUTSIDE the shared type scale as a documented carve-out (like the
+// subtitle caption in `draw_subtitles`). Both are media chrome with their own legibility contract and
+// both are already well above the couch floor; they're named here rather than left as bare literals.
+const HUD_TITLE_SZ: i32 = 54;
+
 fn fmt_time(ns: i64, neg: bool) -> String {
     let t = if ns > 0 { ns / 1_000_000_000 } else { 0 };
     let (h, m, s) = ((t / 3600) as i32, ((t / 60) % 60) as i32, (t % 60) as i32);
@@ -76,7 +82,7 @@ pub(crate) fn draw_subtitles(hud_up: bool) {
     if lines.is_empty() {
         return;
     }
-    let sz = 36;
+    let sz = 36; // subtitle caption: media chrome, a documented carve-out from theme::size (see HUD_TITLE_SZ)
     let lh = 48.0f32;
     let n = lines.len() as f32;
     let cx = SCR_W * 0.5;
@@ -219,14 +225,14 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     // SHOW title; for a movie, the route ctxline over the movie title. (Apple-TV layout.)
     if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_episode) {
         if let Ok(cs) = CString::new(format!("S{}, E{} · {}", n.season, n.index, n.ep_title)) {
-            p.text(cs.as_ptr(), SB_X, SCR_H - 312.0, 24, white, 0, 1);
+            p.text(cs.as_ptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, white, 0, 1);
         }
         if let Ok(cs) = CString::new(n.title.clone()) {
-            p.text(cs.as_ptr(), SB_X, SCR_H - 278.0, 54, white, 0, 1);
+            p.text(cs.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, white, 0, 1);
         }
     } else {
-        p.text(crate::route::ctxline_cptr(), SB_X, SCR_H - 312.0, 24, dim, 0, 0);
-        p.text(crate::route::title_cptr(), SB_X, SCR_H - 278.0, 54, white, 0, 1);
+        p.text(crate::route::ctxline_cptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, dim, 0, 0);
+        p.text(crate::route::title_cptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, white, 0, 1);
     }
 
     // right control buttons: Subtitles, Audio
@@ -275,14 +281,14 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
     // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
     let ty = sy + 30.0;
-    let (el_l, el_r) = draw_clock(p, &fmt_time(dispos, false), hx, ty, 25, white, sx, sx + sw);
+    let (el_l, el_r) = draw_clock(p, &fmt_time(dispos, false), hx, ty, theme::size::CAPTION, white, sx, sx + sw);
     let rem = fmt_time(dur - dispos, true);
-    let rem_w = rem.chars().count() as f32 * 25.0 * 0.52;
+    let rem_w = rem.chars().count() as f32 * theme::size::CAPTION as f32 * 0.52;
     let rem_l = sx + sw - rem_w;
     let rem_shown = el_r + 20.0 < rem_l;
     if rem_shown {
         if let Ok(cs) = CString::new(rem.as_str()) {
-            p.text(cs.as_ptr(), sx + sw, ty, 25, dim, 2, 0);
+            p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
         }
     }
     // transport state indicator just past the elapsed clock — a Pause glyph while paused, a loading
@@ -295,7 +301,7 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
         let need = isz + 6.0;
         let right_ok = el_r + 14.0 + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
         let gx = if right_ok { el_r + 14.0 } else { el_l - 14.0 - need };
-        let icy = ty + crate::text::text_height(25, 1) * 0.5; // vertical center of the clock line
+        let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
         if loading {
             Spinner::new(gx + isz * 0.5, icy, 12.0).phase(now).tint(white).draw(&e, p);
         } else {
@@ -317,9 +323,9 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     let mut px = SB_X;
     for (i, label) in tabs.iter().enumerate() {
         let on = focus == 2 && tab == i as i32;
-        let pw = TabPill::width(label.chars().count(), 28);
+        let pw = TabPill::width(label.chars().count(), theme::size::BODY);
         if let Ok(cs) = CString::new(*label) {
-            TabPill::new(cs.as_ptr(), 28, Rect::new(px, py, pw, ph)).focused(on).draw(&e, p);
+            TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph)).focused(on).draw(&e, p);
         }
         px += pw + 16.0;
     }

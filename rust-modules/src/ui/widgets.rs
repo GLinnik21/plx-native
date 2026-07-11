@@ -110,7 +110,7 @@ impl View for CircleButton {
         let (face, ink) = self.style.colors(self.focused);
         p.rect(r, r.w * 0.5, face, face, 0.0);
         // glyph centred on the disc by its cap band (layout ≠ paint), not a hand-tuned y
-        crate::ui::label::Label::new(self.glyph, 32, ink)
+        crate::ui::label::Label::new(self.glyph, crate::ui::theme::size::HEADLINE, ink)
             .h(crate::ui::label::HAlign::Center)
             .draw(p, r);
     }

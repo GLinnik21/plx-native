@@ -77,7 +77,7 @@ const TAB_ROW_H: f32 = 44.0;
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
-const EP_META_H: f32 = 170.0; // kicker/title/summary/date drawn below the still
+const EP_META_H: f32 = 190.0; // kicker/title/summary/date drawn below the still (sized on the type-scale rungs)
 // Related row (portrait posters) reuses the home shelf poster geometry (consts::CARD_*) so a poster
 // is one size app-wide (its texture request was already 250×375 → now drawn 1:1 sharp).
 const REL_W: f32 = CARD_W; // 250
@@ -89,7 +89,7 @@ const REL_UNDER_H: f32 = 54.0; // poster row → tile title → block bottom
 const CAST_D: f32 = 150.0; // headshot diameter
 const CAST_SLOT: f32 = 200.0; // per-member horizontal pitch (room for the name)
 const CAST_LABEL_H: f32 = 60.0; // "Cast & Crew" heading → headshot row
-const CAST_UNDER_H: f32 = 76.0; // headshot → name/role → block bottom
+const CAST_UNDER_H: f32 = 92.0; // headshot → name/role → block bottom (name LABEL + role CAPTION)
 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
@@ -439,7 +439,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     }
     if !drew_logo {
         if let Ok(t) = CString::new(title.clone()) {
-            p.text(t.as_ptr(), tx, title_bottom - 68.0, 72, w_a, 0, 1);
+            p.text(t.as_ptr(), tx, title_bottom - 68.0, theme::size::HERO, w_a, 0, 1);
         }
     }
 
@@ -456,15 +456,15 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     }
     let meta_y = title_bottom + 36.0;
     if let Ok(mc) = CString::new(parts.join("   \u{b7}   ")) {
-        p.text(mc.as_ptr(), tx, meta_y, 26, d_a, 0, 0);
+        p.text(mc.as_ptr(), tx, meta_y, theme::size::BODY, d_a, 0, 0);
     }
 
     // ---- synopsis: pixel-wrapped to the hero text column, 2 lines max ----
     let summary = d.map(|d| d.summary.clone()).or_else(|| m.map(|m| cfield(&m.summary))).unwrap_or_default();
     let syn_y = meta_y + 46.0;
     if !summary.is_empty() {
-        TextView::new(&summary, 24, d_a)
-            .leading(30.0)
+        TextView::new(&summary, theme::size::BODY, d_a)
+            .leading(34.0)
             .max_lines(2)
             .draw(p, Rect::new(tx, syn_y, 900.0, 0.0));
     }
@@ -482,7 +482,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
             info.push_str(&if h > 0 { format!("{h} hr {mm} min") } else { format!("{mm} min") });
         }
         if let Ok(ic) = CString::new(info) {
-            p.text(ic.as_ptr(), tx, date_y, 23, dim, 0, 0);
+            p.text(ic.as_ptr(), tx, date_y, theme::size::CAPTION, dim, 0, 0);
         }
     }
 
@@ -496,8 +496,8 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
             let names: Vec<String> = d.cast.iter().take(3).map(|c| c.tag.clone()).collect();
             if let Ok(sc) = CString::new(format!("Starring {}", names.join(", "))) {
                 // right-aligned against the right margin (measured directly, no invisible fake-draw)
-                let w = crate::text::text_width(sc.as_ptr(), 24, 1);
-                p.text(sc.as_ptr(), SCR_W - MARGIN_X - w, btn_y + 16.0, 24, d_a, 0, 1);
+                let w = crate::text::text_width(sc.as_ptr(), theme::size::LABEL, 1);
+                p.text(sc.as_ptr(), SCR_W - MARGIN_X - w, btn_y + 16.0, theme::size::LABEL, d_a, 0, 1);
             }
         }
     }
@@ -512,7 +512,7 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     let cx1 = tx + PW + CGAP;
     let cx2 = cx1 + CD + CGAP;
 
-    Button::new(c"Play".as_ptr(), 30, Rect::new(tx, y, PW, CD))
+    Button::new(c"Play".as_ptr(), theme::size::BODY, Rect::new(tx, y, PW, CD))
         .icon(crate::ui::icons::Icon::Play)
         .focused(focus == 0)
         .draw(env, p);
@@ -542,7 +542,7 @@ fn draw_compact_title(p: Painter, m: Option<&PmsMovie>) {
         }
     }
     if let Ok(t) = CString::new(title) {
-        p.text(t.as_ptr(), cx, 54.0, 40, theme::TEXT_PRIMARY, 1, 1);
+        p.text(t.as_ptr(), cx, 54.0, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
     }
 }
 
@@ -572,8 +572,8 @@ fn draw_tabs(p: Painter) {
         let focused = sec == 1 && col == i as c_int;
         // pill sized to the (bold) label; layout preserved — text sits at x, pill padded ±18, tabs
         // advance by label width + 52.
-        let w = crate::text::text_width(lc.as_ptr(), 30, 1);
-        crate::ui::widgets::TabPill::new(lc.as_ptr(), 30, Rect::new(x - 18.0, tab_y - 8.0, w + 36.0, 50.0))
+        let w = crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1);
+        crate::ui::widgets::TabPill::new(lc.as_ptr(), theme::size::BODY, Rect::new(x - 18.0, tab_y - 8.0, w + 36.0, 50.0))
             .segment(selected)
             .focused(focused)
             .draw(&e, p);
@@ -621,21 +621,21 @@ fn draw_episodes(p: Painter) {
         let ty = ep_y + EP_H + 30.0;
         let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
         if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
-            pe.text(ec.as_ptr(), x, ty, 18, dimc, 0, 1);
+            pe.text(ec.as_ptr(), x, ty, theme::size::CAPTION, dimc, 0, 1);
         }
         if let Ok(tc) = CString::new(ep.title.clone()) {
-            pe.text(tc.as_ptr(), x, ty + 26.0, 24, titc, 0, 1);
+            pe.text(tc.as_ptr(), x, ty + 34.0, theme::size::LABEL, titc, 0, 1);
         }
         if !ep.summary.is_empty() {
-            TextView::new(&ep.summary, 20, dimc)
-                .leading(26.0)
+            TextView::new(&ep.summary, theme::size::CAPTION, dimc)
+                .leading(30.0)
                 .max_lines(2)
-                .draw(pe, Rect::new(x, ty + 62.0, EP_W, 0.0));
+                .draw(pe, Rect::new(x, ty + 72.0, EP_W, 0.0));
         }
         let date = pretty_date(&ep.aired, 0);
         if !date.is_empty() {
             if let Ok(dc) = CString::new(date) {
-                pe.text(dc.as_ptr(), x, ty + 124.0, 19, dimc, 0, 0);
+                pe.text(dc.as_ptr(), x, ty + 138.0, theme::size::CAPTION, dimc, 0, 0);
             }
         }
     }
@@ -651,7 +651,7 @@ fn draw_related(p: Painter) {
         return;
     }
     let related_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
-    p.text(c"Related".as_ptr(), MARGIN_X, related_y, 28, theme::TEXT_HEADING, 0, 1);
+    p.text(c"Related".as_ptr(), MARGIN_X, related_y, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let focus_col = if view().section == 3 { view().col } else { -1 };
     let row_y = related_y + REL_LABEL_H;
     // The Related row is a real instance of the home shelf: view().related owns the animated per-card
@@ -694,7 +694,7 @@ fn draw_cast(p: Painter) {
         return;
     }
     let cast_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
-    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, 28, theme::TEXT_HEADING, 0, 1);
+    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let sec = view().section;
     let col = view().col;
     let focus_col = if sec == 4 { col } else { -1 };
@@ -727,13 +727,17 @@ fn draw_cast(p: Painter) {
             let fc = Rect::new(cxc - CAST_D * 0.5, row_y, CAST_D, CAST_D);
             pc.ring(fc, 6.0, CAST_D * 0.5, 1.0);
         }
+        // name + role are centred on the headshot and can be long ("Benedict Cumberbatch"), so
+        // elide each to the per-member slot — at the couch-legible sizes they'd otherwise run into
+        // the neighbouring member.
         let name_c = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-        if let Ok(nc) = CString::new(c.tag.clone()) {
-            pc.text(nc.as_ptr(), cxc, row_y + CAST_D + 22.0, 21, name_c, 1, if focused { 1 } else { 0 });
+        let slot_budget = CAST_SLOT - 12.0;
+        if let Ok(nc) = CString::new(crate::text::elide(&c.tag, slot_budget, theme::size::LABEL, 1, false)) {
+            pc.text(nc.as_ptr(), cxc, row_y + CAST_D + 26.0, theme::size::LABEL, name_c, 1, if focused { 1 } else { 0 });
         }
         if !c.role.is_empty() {
-            if let Ok(rc) = CString::new(c.role.clone()) {
-                pc.text(rc.as_ptr(), cxc, row_y + CAST_D + 48.0, 17, theme::TEXT_TERTIARY, 1, 0);
+            if let Ok(rc) = CString::new(crate::text::elide(&c.role, slot_budget, theme::size::CAPTION, 1, false)) {
+                pc.text(rc.as_ptr(), cxc, row_y + CAST_D + 58.0, theme::size::CAPTION, theme::TEXT_TERTIARY, 1, 0);
             }
         }
     }
@@ -864,18 +868,18 @@ fn text_at(p: Painter, x: f32, y: f32, sz: c_int, col: [f32; 4], bold: c_int, s:
 
 /// a dim label over one/two pixel-wrapped value lines; returns the vertical advance
 fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str, lbl: [f32; 4], val: [f32; 4]) -> f32 {
-    text_at(p, x, y, 20, lbl, 0, label);
-    let h = TextView::new(value, 24, val).bold().leading(26.0).max_lines(2).draw(p, Rect::new(x, y + 30.0, 520.0, 0.0));
-    30.0 + h.max(26.0) + 22.0
+    text_at(p, x, y, theme::size::CAPTION, lbl, 0, label);
+    let h = TextView::new(value, theme::size::LABEL, val).bold().leading(30.0).max_lines(2).draw(p, Rect::new(x, y + 34.0, 520.0, 0.0));
+    34.0 + h.max(30.0) + 22.0
 }
 
 /// a small rounded accessibility badge (CC / SDH / AD)
 fn draw_badge(p: Painter, x: f32, y: f32, label: &str) {
-    let (w, h) = (48.0f32, 30.0f32);
+    let (w, h) = (56.0f32, 34.0f32);
     p.rrect(Rect::new(x, y, w, h), 7.0, 7.0, [0.86, 0.88, 0.92, 0.20]);
     if let Ok(t) = CString::new(label) {
-        let ty = crate::text::text_vcenter_y(20, 1, y + h * 0.5);
-        p.text(t.as_ptr(), x + w * 0.5, ty, 20, theme::TEXT_HEADING, 1, 1);
+        let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 1, y + h * 0.5);
+        p.text(t.as_ptr(), x + w * 0.5, ty, theme::size::CAPTION, theme::TEXT_HEADING, 1, 1);
     }
 }
 
@@ -891,7 +895,7 @@ fn draw_about(p: Painter) {
     let lbl = theme::TEXT_TERTIARY; // dim labels
     let dim = theme::TEXT_TERTIARY;
 
-    text_at(p, tx, about_y, 30, hd, 1, "About");
+    text_at(p, tx, about_y, theme::size::HEADLINE, hd, 1, "About");
 
     // ---- selection highlight: the translucent rounded panel is a FOCUS indicator that
     // sits under whichever About block is selected (card / Information / Languages /
@@ -909,12 +913,14 @@ fn draw_about(p: Painter) {
     }
     // ---- card: title, genres, summary + MORE ----
     let ix = tx + pad;
-    text_at(p, ix, cy + pad, 30, hd, 1, &d.title);
+    text_at(p, ix, cy + pad, theme::size::HEADLINE, hd, 1, &d.title);
     if !d.genres.is_empty() {
-        text_at(p, ix, cy + pad + 44.0, 22, dim, 0, &d.genres.join(", "));
+        text_at(p, ix, cy + pad + 44.0, theme::size::CAPTION, dim, 0, &d.genres.join(", "));
     }
     let sy = cy + pad + 100.0;
-    TextView::new(&d.summary, 22, val)
+    // CAPTION (not BODY): in the dense About card the body-size synopsis read oversized next to the
+    // compact columns — match it to the Accessibility descriptions below (same CAPTION rung).
+    TextView::new(&d.summary, theme::size::CAPTION, val)
         .leading(30.0)
         .max_lines(5)
         .trailing("MORE", hd) // only painted when the summary is actually cut off
@@ -924,7 +930,7 @@ fn draw_about(p: Painter) {
     let col_y = about_y + 430.0;
 
     // Information
-    text_at(p, tx, col_y, 30, hd, 1, "Information");
+    text_at(p, tx, col_y, theme::size::HEADLINE, hd, 1, "Information");
     let mut yy = col_y + 68.0;
     let released = pretty_date(&d.aired, d.year);
     if !released.is_empty() {
@@ -942,14 +948,14 @@ fn draw_about(p: Painter) {
 
     // Languages
     let lx = 760.0f32;
-    text_at(p, lx, col_y, 30, hd, 1, "Languages");
+    text_at(p, lx, col_y, theme::size::HEADLINE, hd, 1, "Languages");
     let mut ly = col_y + 68.0;
     if let Some(a0) = d.audio.first() {
         let orig = if a0.lang.is_empty() { "Unknown".to_string() } else { a0.lang.clone() };
         ly += draw_pair(p, lx, ly, "Original Audio", &orig, lbl, val);
     }
     if !d.audio.is_empty() {
-        text_at(p, lx, ly, 20, lbl, 0, "Audio");
+        text_at(p, lx, ly, theme::size::CAPTION, lbl, 0, "Audio");
         let list: Vec<String> = d
             .audio
             .iter()
@@ -959,12 +965,12 @@ fn draw_about(p: Painter) {
                 format!("{} ({})", lang, a.codec.to_uppercase())
             })
             .collect();
-        TextView::new(&list.join(", "), 22, val).leading(28.0).max_lines(6).draw(p, Rect::new(lx, ly + 30.0, 500.0, 0.0));
+        TextView::new(&list.join(", "), theme::size::LABEL, val).leading(32.0).max_lines(6).draw(p, Rect::new(lx, ly + 34.0, 500.0, 0.0));
     }
 
     // Accessibility
     let ax = 1360.0f32;
-    text_at(p, ax, col_y, 30, hd, 1, "Accessibility");
+    text_at(p, ax, col_y, theme::size::HEADLINE, hd, 1, "Accessibility");
     let cc = !d.subs.is_empty();
     let sdh = d.subs.iter().any(|s| s.sdh);
     let ad = d.audio.iter().any(|a| a.ad);
@@ -981,11 +987,11 @@ fn draw_about(p: Painter) {
         }
         any = true;
         draw_badge(p, ax, ay, label);
-        let h = TextView::new(desc, 20, val).leading(26.0).max_lines(4).draw(p, Rect::new(ax, ay + 46.0, 500.0, 0.0));
-        ay += 46.0 + h + 26.0;
+        let h = TextView::new(desc, theme::size::CAPTION, val).leading(30.0).max_lines(4).draw(p, Rect::new(ax, ay + 52.0, 500.0, 0.0));
+        ay += 52.0 + h + 26.0;
     }
     if !any {
-        text_at(p, ax, col_y + 68.0, 22, dim, 0, "\u{2014}");
+        text_at(p, ax, col_y + 68.0, theme::size::CAPTION, dim, 0, "\u{2014}");
     }
 }
 
