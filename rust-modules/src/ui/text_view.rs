@@ -12,6 +12,7 @@
 //! ever needs it, cache by `(text, width)` — the API already isolates the wrap step.
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::{Painter, Rect};
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -24,9 +25,15 @@ use std::rc::Rc;
 // every block — the text is stable, so memoize the wrapped lines by (text, sz, bold, width, lines).
 // The lines are shared via Rc, so a cache hit is a refcount bump (not a Vec<String> deep-copy) each
 // frame. Main-thread only (immediate-mode draw), like the poster/icon caches.
-static mut WRAP_CACHE: Option<HashMap<u64, Rc<Vec<String>>>> = None;
+/// Wrapped lines plus whether `max_lines` cut the text off — the latter drives the optional
+/// trailing run (a "MORE" affordance only makes sense when there is hidden text).
+struct Wrapped {
+    lines: Vec<String>,
+    truncated: bool,
+}
+static mut WRAP_CACHE: Option<HashMap<u64, Rc<Wrapped>>> = None;
 
-fn wrap_memo(key: u64, compute: impl FnOnce() -> Vec<String>) -> Rc<Vec<String>> {
+fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
     let cache = unsafe { (*addr_of_mut!(WRAP_CACHE)).get_or_insert_with(HashMap::new) };
     if let Some(v) = cache.get(&key) {
         return Rc::clone(v);
@@ -46,12 +53,13 @@ pub struct TextView<'a> {
     bold: c_int,
     leading: f32,     // line pitch; 0 = derive from sz
     align: HAlign,
-    max_lines: usize, // 0 = unlimited
+    max_lines: usize,                       // 0 = unlimited
+    trailing: Option<(&'a str, [f32; 4])>,  // inline run after the last line when truncated (e.g. "MORE")
 }
 
 impl<'a> TextView<'a> {
     pub fn new(text: &'a str, sz: c_int, col: [f32; 4]) -> Self {
-        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0 }
+        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None }
     }
     pub fn bold(mut self) -> Self {
         self.bold = 1;
@@ -71,6 +79,13 @@ impl<'a> TextView<'a> {
         self.max_lines = n;
         self
     }
+    /// An inline run (drawn bold in `col`) placed right after the last line — ONLY when the text was
+    /// truncated by `max_lines`, i.e. there is hidden content. The classic "… MORE" affordance. It's
+    /// positioned by the measured pixel width of the last line, so it hugs the text on left-aligned blocks.
+    pub fn trailing(mut self, run: &'a str, col: [f32; 4]) -> Self {
+        self.trailing = Some((run, col));
+        self
+    }
 
     fn line_h(&self) -> f32 {
         if self.leading > 0.0 { self.leading } else { self.sz as f32 * 1.32 }
@@ -84,7 +99,7 @@ impl<'a> TextView<'a> {
     }
 
     /// wrapped lines for `width`, memoized (the pixel-wrap is too costly to redo every frame).
-    fn wrap(&self, width: f32) -> Rc<Vec<String>> {
+    fn wrap(&self, width: f32) -> Rc<Wrapped> {
         let mut h = DefaultHasher::new();
         self.text.hash(&mut h);
         self.sz.hash(&mut h);
@@ -95,7 +110,7 @@ impl<'a> TextView<'a> {
     }
 
     /// greedy word-wrap to `width` px; the last line is ellipsized if `max_lines` truncates the text.
-    fn wrap_uncached(&self, width: f32) -> Vec<String> {
+    fn wrap_uncached(&self, width: f32) -> Wrapped {
         let words: Vec<&str> = self.text.split_whitespace().collect();
         let mut lines: Vec<String> = Vec::new();
         let mut cur = String::new();
@@ -117,7 +132,8 @@ impl<'a> TextView<'a> {
             lines.push(cur);
             i = words.len();
         }
-        if i < words.len() {
+        let truncated = i < words.len(); // unplaced words remain → the block was cut off
+        if truncated {
             // more text than fits — ellipsize the last placed line to width
             if let Some(last) = lines.last_mut() {
                 *last = ellipsize(last, width, self.sz, self.bold);
@@ -132,29 +148,54 @@ impl<'a> TextView<'a> {
                 *ln = ellipsize(ln, width, self.sz, self.bold);
             }
         }
-        lines
+        Wrapped { lines, truncated }
     }
 
     /// the height this occupies when wrapped to `width` (line count × pitch).
     pub fn measure_h(&self, width: f32) -> f32 {
-        self.wrap(width).len().max(1) as f32 * self.line_h()
+        self.wrap(width).lines.len().max(1) as f32 * self.line_h()
     }
 
     /// Draw into `frame`: `frame.w` is the wrap width, `frame.x/y` the top-left. Line 0's cap band
     /// sits at `frame.y`, each subsequent line one `leading` below. Returns the consumed height.
     pub fn draw(&self, p: Painter, frame: Rect) -> f32 {
         let lh = self.line_h();
-        let lines = self.wrap(frame.w);
+        let wrapped = self.wrap(frame.w);
+        let lines = &wrapped.lines;
+        let n = lines.len();
+        // a trailing run ("MORE") paints only when max_lines actually hid words
+        let run = self.trailing.filter(|_| wrapped.truncated);
+        // reserve the run's (bold) width so the last line clips short and "… MORE" never spills the column
+        let reserve = run
+            .and_then(|(r, _)| CString::new(r).ok())
+            .map(|c| crate::text::text_width(c.as_ptr(), self.sz, 1) + 16.0)
+            .unwrap_or(0.0);
         for (i, ln) in lines.iter().enumerate() {
-            let Ok(cs) = CString::new(ln.as_str()) else { continue };
+            let is_last = i + 1 == n;
+            let text: Cow<str> = if is_last && reserve > 0.0 && self.measure(ln) + reserve > frame.w {
+                Cow::Owned(ellipsize(ln, (frame.w - reserve).max(0.0), self.sz, self.bold))
+            } else {
+                Cow::Borrowed(ln.as_str())
+            };
             let row = Rect::new(frame.x, frame.y + i as f32 * lh, frame.w, 0.0);
-            let mut lab = Label::new(cs.as_ptr(), self.sz, self.col).h(self.align).v(VAlign::CapTop);
-            if self.bold == 1 {
-                lab = lab.bold();
+            if let Ok(cs) = CString::new(text.as_ref()) {
+                let mut lab = Label::new(cs.as_ptr(), self.sz, self.col).h(self.align).v(VAlign::CapTop);
+                if self.bold == 1 {
+                    lab = lab.bold();
+                }
+                lab.draw(p, row);
             }
-            lab.draw(p, row);
+            // the run hugs the (possibly clipped) last line, positioned by its measured width
+            if is_last {
+                if let Some((r, rc)) = run {
+                    if let Ok(cs) = CString::new(r) {
+                        let rx = frame.x + self.measure(text.as_ref()) + 8.0;
+                        Label::new(cs.as_ptr(), self.sz, rc).bold().h(HAlign::Left).v(VAlign::CapTop).draw(p, Rect::new(rx, row.y, frame.w, 0.0));
+                    }
+                }
+            }
         }
-        lines.len() as f32 * lh
+        n as f32 * lh
     }
 }
 

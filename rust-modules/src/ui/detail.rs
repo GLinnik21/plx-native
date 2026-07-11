@@ -792,35 +792,6 @@ fn play_episode_at(i: c_int) -> bool {
 
 // ---- About footer (section 5): heading + card + Information/Languages/Accessibility ----
 
-/// wrap `s` into up to `max_lines` lines of ~`budget` chars (word boundaries); the
-/// last line gets an ellipsis if the text was truncated.
-fn wrap_lines(s: &str, budget: usize, max_lines: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for w in s.split_whitespace() {
-        if !cur.is_empty() && cur.len() + 1 + w.len() > budget {
-            lines.push(std::mem::take(&mut cur));
-        }
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(w);
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
-    }
-    if lines.len() > max_lines {
-        lines.truncate(max_lines);
-        if let Some(last) = lines.last_mut() {
-            while last.len() > budget.saturating_sub(1) {
-                last.pop();
-            }
-            last.push('\u{2026}');
-        }
-    }
-    lines
-}
-
 fn text_at(p: Painter, x: f32, y: f32, sz: c_int, col: [f32; 4], bold: c_int, s: &str) -> f32 {
     match CString::new(s) {
         Ok(t) => p.text(t.as_ptr(), x, y, sz, col, 0, bold),
@@ -880,13 +851,11 @@ fn draw_about(p: Painter) {
         text_at(p, ix, cy + pad + 44.0, 22, dim, 0, &d.genres.join(", "));
     }
     let sy = cy + pad + 100.0;
-    let lines = wrap_lines(&d.summary, 52, 5);
-    for (i, ln) in lines.iter().enumerate() {
-        let w = text_at(p, ix, sy + i as f32 * 30.0, 22, val, 0, ln);
-        if i + 1 == lines.len() {
-            text_at(p, ix + w + 8.0, sy + i as f32 * 30.0, 22, hd, 1, "MORE");
-        }
-    }
+    TextView::new(&d.summary, 22, val)
+        .leading(30.0)
+        .max_lines(5)
+        .trailing("MORE", hd) // only painted when the summary is actually cut off
+        .draw(p, Rect::new(ix, sy, cw - 2.0 * pad, 0.0));
 
     // ---- three columns ----
     let col_y = about_y + 430.0;
