@@ -14,24 +14,13 @@ use crate::ui::widgets::{cfield, resolve_tex, Button, CircleButton};
 use crate::ui::{Env, Painter, Rect, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
-use std::ptr::{addr_of, addr_of_mut};
+use std::ptr::addr_of_mut;
 
-// Selected catalog row (the grid cell that opened detail — gives the backdrop art +
-// blur), the two-axis focus (which section, which item in it), and the page scroll.
-static mut SELECTED: c_int = -1;
-static mut SECTION: c_int = 0; // 0=hero buttons, 1=season tabs, 2=episodes
-static mut COL: c_int = 0; // focused item within the section
-static mut SCROLL: Spring = Spring::at(0.0);
-static mut CARD_SCALE: Spring = Spring::at(1.0); // focused card-row item pop (springs on selection change)
-static mut EP_HSCROLL: Spring = Spring::at(0.0); // episode row horizontal scroll — glides instead of snapping
-// resume position (ns) for the item on_ok just started (0 = from the beginning);
-// app.rs reads it after start_bufferfeed to seek once the pipeline is ready.
-static mut LAST_RESUME_NS: i64 = 0;
-
-// ---- retained view-tree migration (step 6): the loose statics above fold into DetailView, reached
-// through the lazy view() accessor. The frozen pub(crate) fns become thin forwarders onto its
-// methods (identical signatures). LAZY init (unlike home's eager scene()) because detail has no
-// detail_init C-ABI — open/open_rk are always the first calls, but draw before open must not panic.
+// ---- retained view-tree migration (step 6.2): detail's mutable state lives in DetailView, reached
+// through the lazy view() accessor. The frozen pub(crate) fns (open/update/draw/move_focus/…) keep
+// their identical signatures and read/write view() fields directly. LAZY init (unlike home's eager
+// scene()) because detail has no detail_init C-ABI — open/open_rk are usually the first calls, but a
+// draw before open must not panic, so view() builds a default DetailView on first touch.
 struct DetailView {
     selected: c_int,
     section: c_int, // 0=hero buttons, 1=season tabs, 2=episodes, 3=related, 4=cast, 5=about
@@ -39,7 +28,7 @@ struct DetailView {
     scroll: Spring,
     card_scale: Spring, // focused card-row item pop (springs on selection change)
     ep_hscroll: Spring, // episode row horizontal scroll — glides instead of snapping
-    last_resume_ns: i64,
+    last_resume_ns: i64, // resume position (ns) on_ok just started (0 = from start); app.rs seeks here
 }
 impl DetailView {
     fn new() -> Self {
@@ -98,7 +87,7 @@ const CAST_UNDER_H: f32 = 76.0; // headshot → name/role → block bottom
 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
-    let idx = unsafe { addr_of!(SELECTED).read() };
+    let idx = view().selected;
     if idx < 0 || idx as usize >= crate::pms::nmovies() {
         return None;
     }
@@ -107,12 +96,11 @@ fn selected() -> Option<&'static PmsMovie> {
 
 /// the focused hero button (0=Play), or -1 when the hero section isn't focused
 pub(crate) fn focus() -> c_int {
-    unsafe {
-        if addr_of!(SECTION).read() == 0 {
-            addr_of!(COL).read()
-        } else {
-            -1
-        }
+    let v = view();
+    if v.section == 0 {
+        v.col
+    } else {
+        -1
     }
 }
 
@@ -183,7 +171,7 @@ fn section_y(target: c_int) -> f32 {
 }
 /// scroll offset that lifts the focused section's top to TOP_MARGIN
 fn scroll_target() -> f32 {
-    let sec = unsafe { addr_of!(SECTION).read() };
+    let sec = view().section;
     if sec == 0 {
         return 0.0;
     }
@@ -193,7 +181,7 @@ fn scroll_target() -> f32 {
 }
 /// the selected catalog row pointer (for the app to play a movie), or null
 pub(crate) fn selected_ptr() -> *mut PmsMovie {
-    let idx = unsafe { addr_of!(SELECTED).read() };
+    let idx = view().selected;
     if idx < 0 || idx as usize >= crate::pms::nmovies() {
         return std::ptr::null_mut();
     }
@@ -208,12 +196,11 @@ pub(crate) fn is_show() -> bool {
 /// reset focus/scroll.
 pub(crate) fn open(idx: c_int) {
     crate::ui::track_menu::reset(); // fresh item → drop the previous item's track selection
-    unsafe {
-        addr_of_mut!(SELECTED).write(idx);
-        addr_of_mut!(SECTION).write(0);
-        addr_of_mut!(COL).write(0);
-        (*addr_of_mut!(SCROLL)).jump(0.0);
-    }
+    let v = view();
+    v.selected = idx;
+    v.section = 0;
+    v.col = 0;
+    v.scroll.jump(0.0);
     if idx >= 0 && (idx as usize) < crate::pms::nmovies() {
         if let Some(m) = unsafe { crate::pms::movie_ptr(idx as usize).as_ref() } {
             let rk = cfield(&m.rk);
@@ -227,44 +214,43 @@ pub(crate) fn open(idx: c_int) {
 /// Leave the detail page (drop the loaded item).
 pub(crate) fn close() {
     metadata::clear();
-    unsafe { addr_of_mut!(SELECTED).write(-1) }
+    view().selected = -1;
 }
 
 pub(crate) fn move_focus(sym: c_int) {
     let sym = sym as u32;
-    unsafe {
-        let sec = addr_of!(SECTION).read();
-        let col = addr_of!(COL).read();
-        if sym == SDLK_LEFT || sym == SDLK_RIGHT {
-            let n = n_items(sec);
-            if n <= 0 {
-                return;
+    let v = view();
+    let sec = v.section;
+    let col = v.col;
+    if sym == SDLK_LEFT || sym == SDLK_RIGHT {
+        let n = n_items(sec);
+        if n <= 0 {
+            return;
+        }
+        let nc = if sym == SDLK_LEFT { (col - 1).max(0) } else { (col + 1).min(n - 1) };
+        if nc != col {
+            v.col = nc;
+            v.card_scale.jump(1.0); // re-pop the newly-focused card
+            // focusing a season tab switches to that season (brief blocking fetch)
+            if sec == 1 {
+                metadata::load_season(nc as usize);
             }
-            let nc = if sym == SDLK_LEFT { (col - 1).max(0) } else { (col + 1).min(n - 1) };
-            if nc != col {
-                addr_of_mut!(COL).write(nc);
-                (*addr_of_mut!(CARD_SCALE)).jump(1.0); // re-pop the newly-focused card
-                // focusing a season tab switches to that season (brief blocking fetch)
-                if sec == 1 {
-                    metadata::load_season(nc as usize);
-                }
-            }
-        } else if sym == SDLK_UP || sym == SDLK_DOWN {
-            let avail = sections();
-            let pos = avail.iter().position(|&s| s == sec).unwrap_or(0);
-            let np = if sym == SDLK_UP { pos.saturating_sub(1) } else { (pos + 1).min(avail.len().saturating_sub(1)) };
-            let ns = avail[np];
-            if ns != sec {
-                addr_of_mut!(SECTION).write(ns);
-                (*addr_of_mut!(CARD_SCALE)).jump(1.0); // pop the card in the newly-entered row
-                // land on the active season when entering the tabs; else the first item
-                let start = if ns == 1 {
-                    metadata::current().map(|d| d.cur_season as c_int).unwrap_or(0)
-                } else {
-                    0
-                };
-                addr_of_mut!(COL).write(start);
-            }
+        }
+    } else if sym == SDLK_UP || sym == SDLK_DOWN {
+        let avail = sections();
+        let pos = avail.iter().position(|&s| s == sec).unwrap_or(0);
+        let np = if sym == SDLK_UP { pos.saturating_sub(1) } else { (pos + 1).min(avail.len().saturating_sub(1)) };
+        let ns = avail[np];
+        if ns != sec {
+            v.section = ns;
+            v.card_scale.jump(1.0); // pop the card in the newly-entered row
+            // land on the active season when entering the tabs; else the first item
+            let start = if ns == 1 {
+                metadata::current().map(|d| d.cur_season as c_int).unwrap_or(0)
+            } else {
+                0
+            };
+            v.col = start;
         }
     }
 }
@@ -272,7 +258,8 @@ pub(crate) fn move_focus(sym: c_int) {
 /// episode-row horizontal scroll target: pin the focused card to the 2nd slot (0 when the episode
 /// row isn't the focused section, so it glides back to the start)
 fn ep_hscroll_target() -> f32 {
-    let (sec, col) = unsafe { (addr_of!(SECTION).read(), addr_of!(COL).read()) };
+    let v = view();
+    let (sec, col) = (v.section, v.col);
     if sec == 2 && col > 1 {
         (col as f32 - 1.0) * (EP_W + EP_GAP)
     } else {
@@ -281,19 +268,16 @@ fn ep_hscroll_target() -> f32 {
 }
 
 pub(crate) fn update(dt: f32) {
-    unsafe {
-        let sct = scroll_target();
-        let sc = &mut *addr_of_mut!(SCROLL);
-        sc.step(sct, K_SCROLL, dt);
-        crate::ui::anim::probe("detail.scroll", sc.pos, sc.vel, sct, dt);
-        let scl = &mut *addr_of_mut!(CARD_SCALE);
-        scl.step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
-        crate::ui::anim::probe("detail.card", scl.pos, scl.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
-        let hst = ep_hscroll_target();
-        let hs = &mut *addr_of_mut!(EP_HSCROLL);
-        hs.step(hst, 240.0, dt);
-        crate::ui::anim::probe("detail.epscroll", hs.pos, hs.vel, hst, dt);
-    }
+    // targets read view() internally — compute them before borrowing v for the springs
+    let sct = scroll_target();
+    let hst = ep_hscroll_target();
+    let v = view();
+    v.scroll.step(sct, K_SCROLL, dt);
+    crate::ui::anim::probe("detail.scroll", v.scroll.pos, v.scroll.vel, sct, dt);
+    v.card_scale.step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
+    crate::ui::anim::probe("detail.card", v.card_scale.pos, v.card_scale.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
+    v.ep_hscroll.step(hst, 240.0, dt);
+    crate::ui::anim::probe("detail.epscroll", v.ep_hscroll.pos, v.ep_hscroll.vel, hst, dt);
 }
 
 fn env_of(dt: f32) -> Env {
@@ -304,7 +288,7 @@ pub(crate) fn draw() {
     let p = Painter::root();
     let env = env_of(0.0);
     let m = selected();
-    let scroll = unsafe { (*addr_of!(SCROLL)).pos };
+    let scroll = view().scroll.pos;
     draw_backdrop(p, m, scroll);
     let hero_a = (1.0 - scroll / 400.0).clamp(0.0, 1.0);
     let ps = p.translate(0.0, -scroll);
@@ -518,8 +502,8 @@ fn draw_tabs(p: Painter) {
     if d.seasons.is_empty() {
         return;
     }
-    let sec = unsafe { addr_of!(SECTION).read() };
-    let col = unsafe { addr_of!(COL).read() };
+    let sec = view().section;
+    let col = view().col;
     let tab_y = section_y(1);
     // segmented control: the *selected* season carries a subtle pill (bright ACCENT while the tab row
     // is focused); non-selected seasons are plain dim text. (TabPill handles the state → look.)
@@ -553,13 +537,13 @@ fn draw_episodes(p: Painter) {
     if d.episodes.is_empty() {
         return;
     }
-    let sec = unsafe { addr_of!(SECTION).read() };
-    let col = unsafe { addr_of!(COL).read() };
+    let sec = view().section;
+    let col = view().col;
     let focus_col = if sec == 2 { col } else { -1 };
-    let scale = unsafe { addr_of!(CARD_SCALE).read() }.pos;
+    let scale = view().card_scale.pos;
     // keep the focused card on-screen (spring-scrolled so it glides to the 2nd slot instead of
     // snapping — matches the chapters strip; fixes the "scatter" on LEFT/RIGHT)
-    let sx = unsafe { addr_of!(EP_HSCROLL).read() }.pos;
+    let sx = view().ep_hscroll.pos;
     let pe = p.translate(-sx, 0.0);
     let dimc = theme::TEXT_TERTIARY;
     let ep_y = section_y(2);
@@ -615,8 +599,8 @@ fn draw_related(p: Painter) {
     }
     let related_y = section_y(3);
     p.text(c"Related".as_ptr(), MARGIN_X, related_y, 28, theme::TEXT_HEADING, 0, 1);
-    let sec = unsafe { addr_of!(SECTION).read() };
-    let col = unsafe { addr_of!(COL).read() };
+    let sec = view().section;
+    let col = view().col;
     let focus_col = if sec == 3 { col } else { -1 };
     let row_y = related_y + REL_LABEL_H;
     let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * (REL_W + REL_GAP) } else { 0.0 };
@@ -648,8 +632,8 @@ fn draw_cast(p: Painter) {
     }
     let cast_y = section_y(4);
     p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, 28, theme::TEXT_HEADING, 0, 1);
-    let sec = unsafe { addr_of!(SECTION).read() };
-    let col = unsafe { addr_of!(COL).read() };
+    let sec = view().section;
+    let col = view().col;
     let focus_col = if sec == 4 { col } else { -1 };
     let row_y = cast_y + CAST_LABEL_H;
     let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * CAST_SLOT } else { 0.0 };
@@ -695,7 +679,7 @@ fn draw_cast(p: Painter) {
 /// resume position (ns) for the last on_ok play case (0 = from the beginning). app.rs
 /// captures this after start_bufferfeed and seeks there once the pipeline is ready.
 pub(crate) fn last_resume_ns() -> i64 {
-    unsafe { addr_of!(LAST_RESUME_NS).read() }
+    view().last_resume_ns
 }
 /// apply Plex's resume rule (skip <10s and >95%) and stash the position for app.rs.
 fn set_resume(resume_ms: i64, dur_ms: i64) {
@@ -704,15 +688,15 @@ fn set_resume(resume_ms: i64, dur_ms: i64) {
     } else {
         0
     };
-    unsafe { addr_of_mut!(LAST_RESUME_NS).write(ns) }
+    view().last_resume_ns = ns;
 }
 
 /// OK/SELECT on the detail page: returns true if playback should start (the route
 /// URL/HUD have already been set). Section 0 = hero Play, 1 = season tab, 2 = episode.
 pub(crate) fn on_ok() -> bool {
-    unsafe { addr_of_mut!(LAST_RESUME_NS).write(0) }; // default: no resume (set below for plays)
-    let sec = unsafe { addr_of!(SECTION).read() };
-    let col = unsafe { addr_of!(COL).read() };
+    view().last_resume_ns = 0; // default: no resume (set below for plays)
+    let sec = view().section;
+    let col = view().col;
     match sec {
         0 => {
             if col != 0 {
@@ -755,12 +739,11 @@ pub(crate) fn on_ok() -> bool {
 /// falls back to the loaded detail's own art (no blur).
 pub(crate) fn open_rk(rk: &str) {
     let idx = crate::pms::index_of_rk(rk);
-    unsafe {
-        addr_of_mut!(SELECTED).write(idx);
-        addr_of_mut!(SECTION).write(0);
-        addr_of_mut!(COL).write(0);
-        (*addr_of_mut!(SCROLL)).jump(0.0);
-    }
+    let v = view();
+    v.selected = idx;
+    v.section = 0;
+    v.col = 0;
+    v.scroll.jump(0.0);
     metadata::load_detail(rk);
 }
 
@@ -880,9 +863,9 @@ fn draw_about(p: Painter) {
     // sits under whichever About block is selected (card / Information / Languages /
     // Accessibility) and moves with focus — NOT a fixed card background. ----
     let (cw, ch, cy, pad) = (640.0f32, 330.0f32, about_y + 50.0, 30.0f32);
-    if unsafe { addr_of!(SECTION).read() } == 5 {
+    if view().section == 5 {
         let cy2 = about_y + 430.0 - 36.0; // column highlight top (col_y - pad)
-        let hl = match unsafe { addr_of!(COL).read() } {
+        let hl = match view().col {
             0 => Rect::new(tx, cy, cw, ch),               // card
             1 => Rect::new(tx - 26.0, cy2, 600.0, 384.0), // Information
             2 => Rect::new(734.0, cy2, 560.0, 384.0),     // Languages
