@@ -166,6 +166,17 @@ impl Painter {
         let c = self.c(col);
         crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
     }
+    /// Hard-clip subsequent draws to `r` (in this painter's space — the cascade translate is folded
+    /// in). `Painter` otherwise has no clip/scissor; a scrolling list uses this so a partial row is
+    /// cut cleanly at its frame edge instead of poking over the video / control buttons. ALWAYS pair
+    /// with [`clip_clear`](Self::clip_clear) before the frame ends — scissor is global GL state.
+    pub fn clip(self, r: Rect) {
+        crate::gfx::clip_set(r.x + self.dx, r.y + self.dy, r.w, r.h);
+    }
+    /// Release the clip set by [`clip`](Self::clip).
+    pub fn clip_clear(self) {
+        crate::gfx::clip_clear();
+    }
 }
 
 // ---- Shared scroll / cull / hero primitives -------------------------------------------------

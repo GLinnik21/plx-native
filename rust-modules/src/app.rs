@@ -310,6 +310,7 @@ pub extern "C" fn plex_run(
         let mut held_sym = 0u32;
         let mut held_since = 0u32;
         let mut last_rep = 0u32;
+        let mut held_alive = 0u32; // last hardware 0x101 for the held key — a lost-keyup liveness net
         // Scrub state. This Magic Remote emits a HELD key as auto-repeat keydowns (state 0x101,
         // ~50ms apart) followed by ONE keyup on release; a TAP is a lone keydown(0x001)+keyup(0x000).
         // So: a fresh press does the fixed jump; the 0x101 repeats engage the continuous scrub; the
@@ -327,7 +328,6 @@ pub extern "C" fn plex_run(
         // UP-from-the-top explicitly dismisses the HUD even while paused; any other player input
         // clears it. Without this, paused() would force the HUD permanently visible.
         let mut hud_dismissed = false;
-        let mut menu_rep = 0u32; // track-menu scroll throttle (a held UP/DOWN repeats via 0x101)
         // scrub tuning: a press jumps SCRUB_STEP_NS; holding engages a continuous scrub ramping
         // SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second).
         const SCRUB_STEP_NS: i64 = 10_000_000_000; // 10s per press
@@ -336,7 +336,6 @@ pub extern "C" fn plex_run(
         const SCRUB_MAX: f32 = 140.0;
         const TAP_COMMIT_MS: u32 = 240; // tap released → commit after this (further taps accumulate)
         const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
-        const MENU_REPEAT_MS: u32 = 110; // held-menu scroll cadence (0x101 arrives faster; throttle)
         let mut bg_was_playing = false;
         let mut bg_was_paused = false;
         let mut bg_pos = 0i64;
@@ -405,6 +404,7 @@ pub extern "C" fn plex_run(
                         scrub_dir = 0;
                         scrub_hold = false;
                         ptr_drag = false;
+                        held_sym = 0; // this async route flip must not leave a held key repeating into Home
                         set_scrub(-1);
                         crate::player::suspend_bufferfeed(); // preserve the session for a clean fg reload
                         route = Route::Home;
@@ -463,15 +463,16 @@ pub extern "C" fn plex_run(
                         continue;
                     }
                     if state & 0x100 != 0 {
-                        // hardware AUTO-REPEAT (held key): drive the continuous scrub / menu scroll.
+                        // hardware AUTO-REPEAT (held key): the ONLY thing it drives directly is the
+                        // player's continuous accelerating scrub (a ramp, not a discrete move). Every
+                        // discrete focus list — home grid, detail, track menu, info, chapters — repeats
+                        // through the unified client-side held-key timer below, so hold-to-move feels
+                        // identical everywhere and doesn't depend on the remote's hardware repeat delay.
                         let n = SDL_GetTicks();
-                        if matches!(route, Route::Player { overlay: Overlay::Menu }) {
-                            if (sym == SDLK_UP || sym == SDLK_DOWN) && n.wrapping_sub(menu_rep) > MENU_REPEAT_MS {
-                                menu_rep = n;
-                                crate::ui::track_menu::move_focus(sym as c_int);
-                                set_hud(n + 8000);
-                            }
-                        } else if matches!(route, Route::Player { .. }) && hud_focus == 0 && scrub_dir != 0 && isnav {
+                        if held_sym != 0 && sym == held_sym {
+                            held_alive = n; // heartbeat: this held key's hardware repeats are still arriving
+                        }
+                        if matches!(route, Route::Player { .. }) && hud_focus == 0 && scrub_dir != 0 && isnav {
                             scrub_alive = n;
                             scrub_commit_at = 0; // holding → not a tap
                             if !scrub_hold {
@@ -488,9 +489,11 @@ pub extern "C" fn plex_run(
                     // the in-player track menu is modal — it swallows every key while open
                     if matches!(route, Route::Player { overlay: Overlay::Menu }) {
                         if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
-                            // move once on the fresh press; a held UP/DOWN repeats via the 0x101 path
+                            // move once on the fresh press; holding repeats via the client-side timer
                             crate::ui::track_menu::move_focus(sym as c_int);
-                            menu_rep = last_input;
+                            held_sym = sym;
+                            held_since = last_input;
+                            last_rep = last_input;
                             set_hud(last_input + 8000);
                         } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
                             crate::ui::track_menu::on_ok();
@@ -512,6 +515,9 @@ pub extern "C" fn plex_run(
                             set_hud(last_input + 4500);
                         } else if sym == SDLK_UP || sym == SDLK_DOWN {
                             crate::ui::info_panel::move_focus(sym as c_int);
+                            held_sym = sym; // holding repeats via the client-side timer
+                            held_since = last_input;
+                            last_rep = last_input;
                             set_hud(last_input + 8000);
                         } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
                             match crate::ui::info_panel::on_ok() {
@@ -550,6 +556,14 @@ pub extern "C" fn plex_run(
                             let l = sym == SDLK_LEFT || sym == 412 || wcode == 412;
                             let key = if l { SDLK_LEFT } else { SDLK_RIGHT };
                             crate::ui::chapters_panel::move_focus(key as c_int);
+                            // hold-repeat via the client-side timer, but only when the direction is a
+                            // real SDLK_* (keyup clears held_sym by matching sym; arming it with a
+                            // normalized key for the alt-d-pad wcodes would stick on release).
+                            if sym == SDLK_LEFT || sym == SDLK_RIGHT {
+                                held_sym = sym;
+                                held_since = last_input;
+                                last_rep = last_input;
+                            }
                             set_hud(last_input + 8000);
                         } else if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
                             let ns = crate::ui::chapters_panel::on_ok();
@@ -974,39 +988,41 @@ pub extern "C" fn plex_run(
                 if let Ok(rk) = std::fs::read_to_string("/tmp/poc-detail") {
                     let rk = rk.trim();
                     if !rk.is_empty() {
+                        // in-catalog rk keeps the catalog backdrop; an off-catalog rk still opens the
+                        // page (open_rk falls back to the item's own art) so tests can target ANY rk.
                         let idx = crate::pms::index_of_rk(rk);
                         if idx >= 0 {
                             crate::ui::detail::open(idx);
-                            route = Route::Detail;
-                            // dev: /tmp/poc-detailsec=N jumps N sections down (headless episode/row capture)
-                            if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailsec") {
-                                for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
-                                    crate::ui::detail::move_focus(SDLK_DOWN as c_int);
-                                }
-                            }
-                            // dev: /tmp/poc-detailcol=N then moves the focus N to the right
-                            if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailcol") {
-                                for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
-                                    crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
-                                }
-                            }
-                            // dev: /tmp/poc-detailplay activates the focused control (headless play test)
-                            if std::path::Path::new("/tmp/poc-detailplay").exists()
-                                && crate::ui::detail::on_ok()
-                            {
-                                let resume = crate::ui::detail::last_resume_ns();
-                                if resume > 0 {
-                                    crate::player::resume_at(resume); // seek AT the first Load (direct-play) or restart the transcode at &offset
-                                }
-                                if crate::player::start_bufferfeed() {
-                                    played_from_detail = matches!(route, Route::Detail);
-                                    route = Route::Player { overlay: Overlay::None };
-                                }
-                                set_paused(false);
-                                set_hud(now + 60000);
-                            }
                         } else {
-                            crate::metadata::load_detail(rk); // off-catalog rk: load data only
+                            crate::ui::detail::open_rk(rk);
+                        }
+                        route = Route::Detail;
+                        // dev: /tmp/poc-detailsec=N jumps N sections down (headless episode/row capture)
+                        if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailsec") {
+                            for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
+                                crate::ui::detail::move_focus(SDLK_DOWN as c_int);
+                            }
+                        }
+                        // dev: /tmp/poc-detailcol=N then moves the focus N to the right
+                        if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailcol") {
+                            for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
+                                crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
+                            }
+                        }
+                        // dev: /tmp/poc-detailplay activates the focused control (headless play test)
+                        if std::path::Path::new("/tmp/poc-detailplay").exists()
+                            && crate::ui::detail::on_ok()
+                        {
+                            let resume = crate::ui::detail::last_resume_ns();
+                            if resume > 0 {
+                                crate::player::resume_at(resume); // seek AT the first Load (direct-play) or restart the transcode at &offset
+                            }
+                            if crate::player::start_bufferfeed() {
+                                played_from_detail = matches!(route, Route::Detail);
+                                route = Route::Player { overlay: Overlay::None };
+                            }
+                            set_paused(false);
+                            set_hud(now + 60000);
                         }
                     }
                 }
@@ -1124,13 +1140,39 @@ pub extern "C" fn plex_run(
                 crate::ui::info_panel::close();
                 crate::ui::chapters_panel::close();
                 hud_focus = 0;
+                held_sym = 0; // async route flip: don't repeat a still-held key into detail/home
             }
-            // client-side long-press repeat: scrolls the track menu, or the home grid. Driven by a
-            // held-key timer so it doesn't depend on the remote's hardware auto-repeat delay.
+            // lost-keyup safety: the remote streams 0x101 repeats (~50ms) while a key is physically down,
+            // so once past the initial settle a stale heartbeat means the release keyup was dropped —
+            // clear the held key so it can't repeat forever (mirrors the scrub's SCRUB_LOST_MS). The
+            // 500ms gate leaves the first repeat and the heartbeat's own start-up untouched; a normal
+            // release clears via the keyup long before this fires.
+            if held_sym != 0 && now.wrapping_sub(held_since) > 500 && now.wrapping_sub(held_alive) > 350 {
+                held_sym = 0;
+            }
+            // client-side long-press repeat — the ONE hold-to-move path for every discrete focus list
+            // (home grid, detail, track menu, info card, chapters). Driven by a held-key timer so it's
+            // identical everywhere and independent of the remote's hardware auto-repeat delay. held_sym
+            // is armed by each view's fresh-press handler (always a standard SDLK_*) and cleared on the
+            // keyup. The player scrubber is deliberately excluded — holding it runs the continuous scrub.
             if held_sym != 0 && now.wrapping_sub(held_since) > 380 && now.wrapping_sub(last_rep) > 110 {
                 last_rep = now;
-                if matches!(route, Route::Home) && g_snap() > 0.5 {
-                    crate::ui::home::home_move_focus(held_sym);
+                match route {
+                    Route::Home if g_snap() > 0.5 => crate::ui::home::home_move_focus(held_sym),
+                    Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
+                    Route::Player { overlay: Overlay::Menu } => {
+                        crate::ui::track_menu::move_focus(held_sym as c_int);
+                        set_hud(now + 8000);
+                    }
+                    Route::Player { overlay: Overlay::Info } => {
+                        crate::ui::info_panel::move_focus(held_sym as c_int);
+                        set_hud(now + 8000);
+                    }
+                    Route::Player { overlay: Overlay::Chapters } => {
+                        crate::ui::chapters_panel::move_focus(held_sym as c_int);
+                        set_hud(now + 8000);
+                    }
+                    _ => {}
                 }
             }
             // keep the HUD alive while the track menu / Info card / Chapters strip is open
