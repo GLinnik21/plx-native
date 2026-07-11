@@ -1192,6 +1192,12 @@ pub extern "C" fn plex_run(
             prev = now;
 
             crate::ui::home::home_update(dt);
+            // dev: /tmp/poc-detailosc perpetually swings the detail scroll hero<->bottom so the FPS
+            // heartbeat samples the scroll TRANSITION (the settled ends already hold 60).
+            if matches!(route, Route::Detail) && std::path::Path::new("/tmp/poc-detailosc").exists() {
+                let sym = if (now / 450) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
+                crate::ui::detail::move_focus(sym as c_int);
+            }
             if matches!(route, Route::Detail) {
                 crate::ui::detail::update(dt);
             }

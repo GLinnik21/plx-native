@@ -359,11 +359,12 @@ impl View for Home {
     // snap-step + grid.update happen in home_update — the wrapper owns those because building `env`
     // depends on the freshly-stepped snap, which View::update/draw can't sequence.
     fn draw(&self, env: &Env, p: Painter) {
-        self.bg.draw(env, p);
+        use crate::ui::profile::phase;
+        phase("hm.backdrop", || self.bg.draw(env, p));
         if env.hero_a > 0.01 {
-            self.hero.draw(env, p.alpha(env.hero_a));
+            phase("hm.hero", || self.hero.draw(env, p.alpha(env.hero_a)));
         }
-        self.grid.draw(env, p);
+        phase("hm.grid", || self.grid.draw(env, p));
     }
 }
 

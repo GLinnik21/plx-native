@@ -360,6 +360,9 @@ impl Column for DetailView {
 fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
     // 0 at the hero, 1 when scrolled down into the rows
     let sf = (scroll / SCROLLED).clamp(0.0, 1.0);
+    // Overall scroll-darkening for row-text legibility. Folded into the wash + art tints below
+    // instead of a separate full-screen dim pass — one fewer full-screen blit per scrolled frame.
+    let d = 1.0 - sf * 0.55;
     // Backdrop art: prefer the catalog row's art, else the loaded detail's art. Fades out as the page
     // scrolls into the rows so the episode/row text reads over a dark bg. Resolved FIRST (the texture
     // is cached — this is a cheap lookup) so the ambient wash below can be skipped whenever the opaque
@@ -376,30 +379,30 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
     } else {
         0
     };
-    // ambient wash from the item's UltraBlur corners — the dark warm glow, drawn ONLY when it will
-    // actually show: no art texture yet, or the art has faded on scroll enough to reveal it beneath.
+    // ambient wash from the item's UltraBlur corners, dimmed by the scroll (`d`), drawn ONLY when it
+    // will actually show: no art texture yet, or the art has faded on scroll enough to reveal it.
+    // Because black-over-at-alpha is a linear multiply, dimming each source layer by `d` is
+    // pixel-identical to the old separate full-screen dim overlay, one fewer full-screen pass.
     if let Some(m) = m {
         if m.has_blur != 0 && (art_tex == 0 || art_a < 0.99) {
-            p.ambient(Rect::FULL, 0.55, m.blur);
+            p.ambient(Rect::FULL, 0.55 * d, m.blur);
         }
     }
     if art_tex != 0 {
-        p.tex(art_tex, Rect::FULL, 0.0, theme::with_a(theme::TINT_WHITE, art_a));
+        p.tex(art_tex, Rect::FULL, 0.0, [d, d, d, art_a]); // TINT_WHITE dimmed by the scroll `d`
     }
-    // bottom scrim for the hero's lower-left content (only while the hero is visible)
-    if sf < 0.99 {
+    // bottom scrim for the hero's lower-left content — tied to the hero's own fade (it serves that
+    // text), so it clears once the hero is gone rather than lingering the whole scroll (a wasted
+    // full-screen-width pass through the back half of the transition).
+    let hero_vis = hero_alpha(scroll, 400.0);
+    if hero_vis > 0.01 {
         p.rect(
             Rect::new(0.0, SCR_H * 0.34, SCR_W, SCR_H * 0.66),
             0.0,
             theme::scrim(0.0),
-            theme::scrim(0.95 * (1.0 - sf)),
+            theme::scrim(0.95 * hero_vis),
             0.0,
         );
-    }
-    // overall dim as the page scrolls into the rows (legibility for the row text)
-    let dk = sf * 0.55;
-    if dk > 0.001 {
-        p.rect(Rect::FULL, 0.0, theme::scrim(dk), theme::scrim(dk), 0.0);
     }
 }
 
