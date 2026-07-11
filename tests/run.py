@@ -50,6 +50,8 @@ ALL_TRIGGERS = [
     "poc-autoseek", "poc-menupick", "poc-menu", "poc-noaudio", "poc-demux",
     "poc-grid", "poc-autoplay", "poc-h265", "poc-playidx", "poc-url",
     "poc-play", "poc-ffprobe", "poc-token",
+    # UI/FPS scenes (poc-profile MUST be cleared — a stale one glFinish-tanks FPS and false-fails)
+    "poc-detailosc", "poc-info", "poc-chapters", "poc-profile",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
@@ -533,6 +535,116 @@ def do_build(tv):
 
 
 # ---------------------------------------------------------------------------
+# FPS regression suite (UI perf gate — separate from the playback cases above).
+# The app logs a once/sec `FPS=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]`
+# heartbeat. Each scene sets its poc-* triggers, runs the app profiler-OFF, then asserts the steady
+# framerate for that screen stays above a floor. This is the automated form of the by-hand FPS
+# hunting that found the hero / cast+about / info-panel regressions.
+# ---------------------------------------------------------------------------
+FPS_RE = re.compile(r"FPS=(\d+) route=(\w+)(?: overlay=(\w+))?")
+
+
+def parse_fps(lines, route, overlay):
+    """The FPS heartbeat samples (ints) whose route (+overlay, if the scene pins one) match."""
+    out = []
+    for ln in lines:
+        m = FPS_RE.search(ln)
+        if not m or m.group(2) != route:
+            continue
+        if overlay and (m.group(3) or "none") != overlay:
+            continue
+        out.append(int(m.group(1)))
+    return out
+
+
+def fps_stats(vals):
+    s = sorted(vals)
+    n = len(s)
+    # The gate is the 2nd-lowest sample: it tolerates ONE transient dip (a mid-run texture upload or
+    # GC pause) while a *sustained* regression — every sample low — still fails.
+    robust_min = s[1] if n >= 2 else (s[0] if s else 0)
+    return {"n": n, "min": s[0] if s else 0, "median": s[n // 2] if n else 0, "robust_min": robust_min}
+
+
+def run_fps_scene(scene, cfg, token):
+    name = scene["name"]
+    tv = cfg["tv"]
+    route = scene["route"]
+    overlay = scene.get("overlay")  # None for home/detail
+    floor = scene["floor"]
+    warmup = scene.get("warmup_s", 5)
+    run_secs = scene.get("run_secs", 18)
+    is_player = scene.get("tier", "ui") == "player"
+    tag = route + (f"/{overlay}" if overlay else "")
+    print(f"\n=== fps:{name}  (route={tag}, floor {floor}fps) ===")
+
+    make(["kill", f"TV={tv}"], timeout=40)
+    files = []
+    for tname, tval in scene.get("triggers", {}).items():
+        if tval is True:
+            files.append((tname, None))
+        elif tval == "$rk":
+            files.append((tname, str(scene["rk"])))
+        else:
+            files.append((tname, str(tval)))
+    apply_triggers(tv, files)  # clears every poc-* (incl. poc-profile) then writes this scene's
+    # player-tier scenes actually decode video, so inject the test-user token (its own ssh round-trip,
+    # so the value never reaches stdout) exactly like the playback cases do.
+    if is_player and cfg.get("inject_token"):
+        ssh(tv, f"printf '%s' '{token}' > /tmp/poc-token")
+    shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
+    print(f"    triggers: {shown or '(none)'}   run {run_secs}s, skip first {warmup} sample(s)")
+
+    try:
+        proc = make(["run", f"TV={tv}", f"RUN_SECS={run_secs}"], timeout=run_secs + 90)
+    except subprocess.TimeoutExpired:
+        print("    [FAIL] make run timed out")
+        return False, "make run timed out"
+    lines = filter_log(proc.stdout + "\n" + proc.stderr)
+
+    alls = parse_fps(lines, route, overlay)
+    samples = alls[warmup:]  # heartbeat is ~1/sec, so drop the first `warmup` matching samples
+    st = fps_stats(samples)
+
+    # False-negative guard: too few post-warmup samples means the scene never really reached this
+    # screen (app crash, or a detail/play trigger that didn't open — e.g. an rk not in the home
+    # catalog). That is a FAIL, never a vacuous pass.
+    if st["n"] < 5:
+        msg = (f"only {st['n']} post-warmup FPS samples for route={tag} (need >= 5) — scene never "
+               f"entered this screen? ({len(alls)} total matched before warmup)")
+        print(f"    [FAIL] {msg}")
+        return False, msg
+
+    ok = st["robust_min"] >= floor
+    detail = f"robust_min={st['robust_min']}fps (min={st['min']}, median={st['median']}, n={st['n']}) vs floor {floor}"
+    print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
+    return ok, detail
+
+
+def run_fps_suite(scenes, cfg, token, include_player):
+    tiers = {"ui"} | ({"player"} if include_player else set())
+    scenes = [s for s in scenes if s.get("tier", "ui") in tiers]
+    if not scenes:
+        sys.exit("no FPS scenes defined in the manifest for the selected tier(s)")
+    print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)} ===")
+    results = []
+    for s in scenes:
+        try:
+            ok, detail = run_fps_scene(s, cfg, token)
+        except Exception as e:  # keep the batch going
+            ok, detail = False, f"ERROR: {e}"
+            print(f"    [FAIL] ERROR: {e}")
+        results.append((s["name"], ok, detail))
+
+    print("\n" + "=" * 72 + "\nFPS SUMMARY\n" + "=" * 72)
+    nfail = sum(1 for _, ok, _ in results if not ok)
+    for name, ok, detail in results:
+        print(f"  [{'PASS' if ok else 'FAIL'}] fps:{name}   {detail}")
+    print(f"\n{len(results) - nfail} passed, {nfail} failed of {len(results)}")
+    return 0 if nfail == 0 else 1
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main():
@@ -545,6 +657,10 @@ def main():
     ap.add_argument("--owner", action="store_true",
                     help="run as the config.local.h OWNER token (default: run as the manifest "
                          "test_user, e.g. Guest, so watch history stays off your real account)")
+    ap.add_argument("--fps", action="store_true",
+                    help="run the FPS regression suite (UI tier: home/detail, no video needed)")
+    ap.add_argument("--fps-player", action="store_true",
+                    help="FPS suite INCLUDING player-tier scenes (info/menu — needs playback, slower)")
     args = ap.parse_args()
 
     with open(MANIFEST) as f:
@@ -561,7 +677,28 @@ def main():
         for c in manifest["cases"]:
             ops = "+".join(o["op"] for o in c["operations"])
             print(f"{c['name']:32s} rk={c['rk']:<5} {ops:20s} {', '.join(c.get('covers', []))}")
+        for s in manifest.get("fps_scenes", []):
+            tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
+            print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} floor={s['floor']}")
         return 0
+
+    # FPS regression suite — a separate path from the playback cases. UI-tier scenes need no video
+    # (and no PMS token); --fps-player adds the info/menu scenes, which decode video as the test user.
+    if args.fps or args.fps_player:
+        include_player = args.fps_player
+        token = None
+        if include_player:
+            admin_token = read_token()
+            test_user = manifest.get("test_user")
+            if args.owner or not test_user:
+                token, cfg["inject_token"] = admin_token, False
+            else:
+                token = fetch_managed_user_token(admin_token, cfg["pms"]["host"],
+                                                 cfg["pms"]["port"], test_user["id"])
+                cfg["inject_token"] = True
+        if args.build:
+            do_build(cfg["tv"])
+        return run_fps_suite(manifest.get("fps_scenes", []), cfg, token, include_player)
 
     if not cases:
         sys.exit(f"no cases match --filter {args.filter!r}")

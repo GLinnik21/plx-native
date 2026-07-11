@@ -69,6 +69,39 @@ The runner prints per-assertion PASS/FAIL with the failing evidence line, then a
 summary table. **Exit code is nonzero if any selected case fails** (CI-friendly).
 Add `--verbose` to print evidence for passing assertions too.
 
+## FPS regression suite (`--fps`)
+
+A separate mode that guards **UI framerate**, not playback correctness. The app logs a once/sec
+`FPS=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]` heartbeat; each *scene* in
+the manifest's `fps_scenes` sets its `poc-*` triggers (profiler **off**), runs, and asserts the
+steady framerate for that screen stays above a floor. This is the automated form of the by-hand FPS
+hunting that found the hero / cast+about / info-panel regressions.
+
+```bash
+# UI tier only — home hero, home grid, detail scroll transition. No video, no PMS token needed.
+./tests/run.py --fps
+
+# add the player tier (info panel, track menu) — these decode video as the Guest test_user, slower.
+./tests/run.py --fps-player
+
+# build first, or list the scenes:
+./tests/run.py --build --fps-player
+./tests/run.py --list          # scenes print as `fps:<name>`
+```
+
+- **Metric:** after skipping `warmup_s` samples (one-time texture-upload / scroll-in transients), the
+  gate is the **2nd-lowest** sample vs `floor` — tolerates one transient dip, but a *sustained* drop
+  (every sample low) fails. Reports `robust_min / min / median / n`.
+- **Floors have margin** (50 for the steady home scenes, 45 for the transition/player scenes) because
+  the panel GPU thermally throttles; a real regression drops well below, normal 55–60 jitter passes.
+- **False-negative guard:** a scene with <5 post-warmup samples for its route FAILs (it never reached
+  that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
+  pass. `detail-transition`'s `rk` must be an **in-home-catalog (recently-added / on-deck) movie**.
+- Validated by injection: reverting the glyph-cache fix (`TCACHE 160→48`) makes `detail-transition`
+  fail (~34fps) while the unaffected home scenes still pass.
+- Same nonzero-exit-on-failure contract as the case suite. Tune floors / rks / scenes in
+  `manifest.json → fps_scenes`; the harness stays library-agnostic.
+
 ### What each case does (per case, automatically)
 
 1. `make kill` — close the app (luna-send `closeByAppId` + `fuser -k`) **first**.
