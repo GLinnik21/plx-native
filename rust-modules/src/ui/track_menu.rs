@@ -8,6 +8,7 @@
 use crate::metadata;
 use crate::ui::consts::{SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
 use crate::ui::table::{Badge, Row, Section, TableView};
+use crate::ui::theme;
 use crate::ui::{Painter, Rect, Spring};
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
@@ -314,8 +315,7 @@ pub(crate) fn draw() {
     let appear = unsafe { addr_of!(APPEAR).read() }.pos.clamp(0.0, 1.0);
     // modal scrim over the whole screen (dims the video plane showing through). Its own root
     // Painter — the panel's appear-alpha/rise below must not fold into the full-screen dim.
-    let da = 0.58 * appear;
-    let dim = [0.0f32, 0.0, 0.0, da];
+    let dim = theme::scrim_black(0.58 * appear);
     Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
 
     let r = panel_rect();
@@ -324,9 +324,7 @@ pub(crate) fn draw() {
 
     // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
     // dark card approximates it); only a hint of video shows through
-    let ptop = [0.129f32, 0.129, 0.137, 0.985];
-    let pbot = [0.106f32, 0.106, 0.114, 0.985];
-    p.rect(r, 28.0, ptop, pbot, 0.0);
+    p.rect(r, 28.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
 
     table().draw(p, r);
 }

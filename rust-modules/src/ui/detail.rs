@@ -8,8 +8,10 @@
 use crate::metadata;
 use crate::pms::PmsMovie;
 use crate::ui::consts::*;
-use crate::ui::widgets::{cfield, resolve_tex, wrap_two, CircleButton, PillButton};
-use crate::ui::{Env, Painter, Rect, Spring, View}; // View: PillButton/CircleButton::draw
+use crate::ui::text_view::TextView;
+use crate::ui::theme;
+use crate::ui::widgets::{cfield, resolve_tex, Button, CircleButton};
+use crate::ui::{Env, Painter, Rect, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr::{addr_of, addr_of_mut};
@@ -31,25 +33,37 @@ const PW: f32 = 168.0; // Play pill width
 const CGAP: f32 = 20.0;
 const CD: f32 = 60.0; // circle button diameter
 
-// Below-the-hero layout: each section has an absolute pre-scroll Y (section_top); the
-// scroll target lifts the focused section's top to TOP_MARGIN, just under the compact
-// title. SCROLLED is the scroll distance past which the backdrop is fully dark.
+// Below-the-hero content is ONE vertical scroll of stacked blocks. Each block's pre-scroll top Y is
+// COMPUTED (`section_y`) by stacking the *present* blocks' heights from CONTENT_TOP with a single
+// SECTION_GAP between them — no hard-coded per-section Y constants to keep in sync. A block's height
+// is derived from its content (e.g. the Related block tracks REL_H, which tracks the shared home
+// poster size), so resizing one block reflows everything below it automatically. The scroll lifts
+// the focused block's top to TOP_MARGIN under the compact title.
 const TOP_MARGIN: f32 = 120.0;
-const SCROLLED: f32 = 800.0; // = TAB_Y - TOP_MARGIN; backdrop-dim saturation reference
-const TAB_Y: f32 = 920.0; // tabs peek just under the hero buttons in the hero view
-const EP_Y: f32 = 985.0;
+const CONTENT_TOP: f32 = 920.0; // first block sits just under the hero buttons
+const SECTION_GAP: f32 = 110.0; // vertical padding between top-level blocks
+const TAB_EP_GAP: f32 = 21.0; // season tabs → their episode row (they read as one unit)
+const SCROLLED: f32 = CONTENT_TOP - TOP_MARGIN; // backdrop-dim saturation reference (= 800)
+
+// Season tabs (header for the episode row)
+const TAB_ROW_H: f32 = 44.0;
+// Episodes: landscape stills + under-card metadata
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
-// Related row (portrait posters) + Cast & Crew row (circular headshots)
-const RELATED_Y: f32 = 1670.0;
-const REL_W: f32 = 200.0;
-const REL_H: f32 = 300.0;
-const REL_GAP: f32 = 28.0;
-const CAST_Y: f32 = 2210.0;
+const EP_META_H: f32 = 170.0; // kicker/title/summary/date drawn below the still
+// Related row (portrait posters) reuses the home shelf poster geometry (consts::CARD_*) so a poster
+// is one size app-wide (its texture request was already 250×375 → now drawn 1:1 sharp).
+const REL_W: f32 = CARD_W; // 250
+const REL_H: f32 = CARD_H; // 375
+const REL_GAP: f32 = GAP; // 30
+const REL_LABEL_H: f32 = 46.0; // "Related" heading → poster row
+const REL_UNDER_H: f32 = 54.0; // poster row → tile title → block bottom
+// Cast & Crew row (circular headshots)
 const CAST_D: f32 = 150.0; // headshot diameter
 const CAST_SLOT: f32 = 200.0; // per-member horizontal pitch (room for the name)
-const ABOUT_Y: f32 = 2730.0; // About footer (heading + card + 3 info columns); gap clears the cast row
+const CAST_LABEL_H: f32 = 60.0; // "Cast & Crew" heading → headshot row
+const CAST_UNDER_H: f32 = 76.0; // headshot → name/role → block bottom
 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
@@ -104,24 +118,47 @@ fn n_items(section: c_int) -> c_int {
         _ => 0,
     }
 }
-/// pre-scroll top Y of a section (drives the scroll target)
-fn section_top(section: c_int) -> f32 {
+/// content height of a scrollable block — how far the next block is pushed down. Content-derived, so
+/// changing a size (poster, still) reflows the stack. About (5) is last, so its height pushes nothing.
+fn block_h(section: c_int) -> f32 {
     match section {
-        1 | 2 => TAB_Y, // tabs + episodes share one scrolled block
-        3 => RELATED_Y,
-        4 => CAST_Y,
-        5 => ABOUT_Y,
-        _ => TOP_MARGIN, // hero -> scroll target 0
+        1 => TAB_ROW_H,
+        2 => EP_H + EP_META_H,
+        3 => REL_LABEL_H + REL_H + REL_UNDER_H,
+        4 => CAST_LABEL_H + CAST_D + CAST_UNDER_H,
+        _ => 0.0,
     }
+}
+/// pre-scroll top Y of a section: stack the present blocks from CONTENT_TOP, SECTION_GAP between each
+/// (season tabs → episodes hug with TAB_EP_GAP so they read as one unit). The single source of every
+/// below-hero Y — both the draws and the scroll target read it.
+fn section_y(target: c_int) -> f32 {
+    let mut y = CONTENT_TOP;
+    let mut prev: Option<c_int> = None;
+    for &s in sections().iter() {
+        if s == 0 {
+            continue; // hero is pinned, not part of the scroll stack
+        }
+        if let Some(p) = prev {
+            y += if p == 1 && s == 2 { TAB_EP_GAP } else { SECTION_GAP };
+        }
+        if s == target {
+            return y;
+        }
+        y += block_h(s);
+        prev = Some(s);
+    }
+    y
 }
 /// scroll offset that lifts the focused section's top to TOP_MARGIN
 fn scroll_target() -> f32 {
     let sec = unsafe { addr_of!(SECTION).read() };
     if sec == 0 {
-        0.0
-    } else {
-        (section_top(sec) - TOP_MARGIN).max(0.0)
+        return 0.0;
     }
+    // episodes anchor on the season tabs above them, so the tabs stay visible while browsing episodes
+    let anchor = if sec == 2 { 1 } else { sec };
+    (section_y(anchor) - TOP_MARGIN).max(0.0)
 }
 /// the selected catalog row pointer (for the app to play a movie), or null
 pub(crate) fn selected_ptr() -> *mut PmsMovie {
@@ -279,7 +316,7 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
             if let Ok(ap) = CString::new(art) {
                 let t = resolve_tex(ap.as_ptr(), 1920, 1080, 0);
                 if t != 0 {
-                    p.tex(t, Rect::FULL, 0.0, [1.0, 1.0, 1.0, art_a]);
+                    p.tex(t, Rect::FULL, 0.0, theme::with_a(theme::TINT_WHITE, art_a));
                 }
             }
         }
@@ -289,23 +326,23 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
         p.rect(
             Rect::new(0.0, SCR_H * 0.34, SCR_W, SCR_H * 0.66),
             0.0,
-            [0.02, 0.02, 0.03, 0.0],
-            [0.02, 0.02, 0.03, 0.95 * (1.0 - sf)],
+            theme::scrim(0.0),
+            theme::scrim(0.95 * (1.0 - sf)),
             0.0,
         );
     }
     // overall dim as the page scrolls into the rows (legibility for the row text)
     let dk = sf * 0.55;
     if dk > 0.001 {
-        p.rect(Rect::FULL, 0.0, [0.02, 0.02, 0.03, dk], [0.02, 0.02, 0.03, dk], 0.0);
+        p.rect(Rect::FULL, 0.0, theme::scrim(dk), theme::scrim(dk), 0.0);
     }
 }
 
 fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     let tx = MARGIN_X;
-    let w_a = [0.97, 0.98, 0.99, 1.0];
-    let d_a = [0.74, 0.77, 0.82, 1.0];
-    let dim = [0.60, 0.62, 0.66, 1.0];
+    let w_a = theme::TEXT_PRIMARY;
+    let d_a = theme::TEXT_SECONDARY;
+    let dim = theme::TEXT_TERTIARY;
     let d = metadata::current();
 
     // ---- title: clearLogo (transparent PNG) if loaded, else bold text ----
@@ -354,19 +391,14 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         p.text(mc.as_ptr(), tx, meta_y, 26, d_a, 0, 0);
     }
 
-    // ---- synopsis (two lines) ----
+    // ---- synopsis: pixel-wrapped to the hero text column, 2 lines max ----
     let summary = d.map(|d| d.summary.clone()).or_else(|| m.map(|m| cfield(&m.summary))).unwrap_or_default();
     let syn_y = meta_y + 46.0;
     if !summary.is_empty() {
-        let (l1, l2) = wrap_two(&summary);
-        if let Ok(c1) = CString::new(l1) {
-            p.text(c1.as_ptr(), tx, syn_y, 24, d_a, 0, 0);
-        }
-        if !l2.is_empty() {
-            if let Ok(c2) = CString::new(l2) {
-                p.text(c2.as_ptr(), tx, syn_y + 30.0, 24, d_a, 0, 0);
-            }
-        }
+        TextView::new(&summary, 24, d_a)
+            .leading(30.0)
+            .max_lines(2)
+            .draw(p, Rect::new(tx, syn_y, 900.0, 0.0));
     }
 
     // ---- date · runtime ----
@@ -395,8 +427,8 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         if !d.cast.is_empty() {
             let names: Vec<String> = d.cast.iter().take(3).map(|c| c.tag.clone()).collect();
             if let Ok(sc) = CString::new(format!("Starring {}", names.join(", "))) {
-                // measure (invisible) then draw right-aligned against the right margin
-                let w = p.alpha(0.0).text(sc.as_ptr(), 0.0, -200.0, 24, d_a, 0, 1);
+                // right-aligned against the right margin (measured directly, no invisible fake-draw)
+                let w = crate::text::text_width(sc.as_ptr(), 24, 1);
                 p.text(sc.as_ptr(), SCR_W - MARGIN_X - w, btn_y + 16.0, 24, d_a, 0, 1);
             }
         }
@@ -404,28 +436,20 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 }
 
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
-    // The selected control IS the white one — no ring/stroke. The focused button goes
-    // white with dark content; the others are dark with white content.
-    const WHITE: [f32; 4] = [0.97, 0.98, 0.99, 1.0];
-    const DARK_INK: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
-    const DARK_FILL: [f32; 4] = [0.16, 0.17, 0.20, 0.55];
-    const LIGHT_INK: [f32; 4] = [0.95, 0.96, 0.98, 1.0];
+    // One shared control family (widgets::Button/CircleButton, default ControlStyle::Accent — the
+    // same as the info card): the focused control fills warm ACCENT with dark ink, the rest are
+    // solid dark discs. Play reuses the pill Button; +/i are the disc CircleButton.
     let tx = MARGIN_X;
     let focus = focus();
     let cx1 = tx + PW + CGAP;
     let cx2 = cx1 + CD + CGAP;
 
-    let mut play = PillButton::play(c"Play".as_ptr()).at(tx, y);
-    (play.fill, play.ink) = if focus == 0 { (WHITE, DARK_INK) } else { (DARK_FILL, LIGHT_INK) };
-    play.draw(env, p);
-
-    let mut plus = CircleButton::new(c"+".as_ptr()).at(cx1, y);
-    (plus.face, plus.ink) = if focus == 1 { (WHITE, DARK_INK) } else { (DARK_FILL, LIGHT_INK) };
-    plus.draw(env, p);
-
-    let mut info = CircleButton::new(c"i".as_ptr()).at(cx2, y);
-    (info.face, info.ink) = if focus == 2 { (WHITE, DARK_INK) } else { (DARK_FILL, LIGHT_INK) };
-    info.draw(env, p);
+    Button::new(c"Play".as_ptr(), 30, Rect::new(tx, y, PW, CD))
+        .icon(crate::ui::icons::Icon::Play)
+        .focused(focus == 0)
+        .draw(env, p);
+    CircleButton::new(c"+".as_ptr()).at(cx1, y).focused(focus == 1).draw(env, p);
+    CircleButton::new(c"i".as_ptr()).at(cx2, y).focused(focus == 2).draw(env, p);
 }
 
 /// small centered clearLogo/title shown at the top once the page is scrolled
@@ -444,13 +468,13 @@ fn draw_compact_title(p: Painter, m: Option<&PmsMovie>) {
             if lt != 0 && lh > 0 {
                 let hh = 54.0f32;
                 let ww = hh * lw as f32 / lh as f32;
-                p.tex(lt, Rect::new(cx - ww * 0.5, 40.0, ww, hh), 0.0, [0.97, 0.98, 0.99, 1.0]);
+                p.tex(lt, Rect::new(cx - ww * 0.5, 40.0, ww, hh), 0.0, theme::TEXT_PRIMARY);
                 return;
             }
         }
     }
     if let Ok(t) = CString::new(title) {
-        p.text(t.as_ptr(), cx, 54.0, 40, [0.97, 0.98, 0.99, 1.0], 1, 1);
+        p.text(t.as_ptr(), cx, 54.0, 40, theme::TEXT_PRIMARY, 1, 1);
     }
 }
 
@@ -465,6 +489,10 @@ fn draw_tabs(p: Painter) {
     }
     let sec = unsafe { addr_of!(SECTION).read() };
     let col = unsafe { addr_of!(COL).read() };
+    let tab_y = section_y(1);
+    // segmented control: the *selected* season carries a subtle pill (bright ACCENT while the tab row
+    // is focused); non-selected seasons are plain dim text. (TabPill handles the state → look.)
+    let e = Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 };
     let mut x = MARGIN_X;
     for (i, s) in d.seasons.iter().enumerate() {
         let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
@@ -472,15 +500,15 @@ fn draw_tabs(p: Painter) {
             Ok(c) => c,
             Err(_) => continue,
         };
-        let active = i == d.cur_season;
+        let selected = i == d.cur_season;
         let focused = sec == 1 && col == i as c_int;
-        let bold = if active { 1 } else { 0 };
-        let txt = if active { [0.98, 0.99, 1.0, 1.0] } else { [0.58, 0.60, 0.64, 1.0] };
-        let w = p.alpha(0.0).text(lc.as_ptr(), 0.0, -200.0, 30, txt, 0, bold);
-        if focused {
-            p.rrect(Rect::new(x - 18.0, TAB_Y - 8.0, w + 36.0, 50.0), 25.0, 25.0, [1.0, 1.0, 1.0, 0.14]);
-        }
-        p.text(lc.as_ptr(), x, TAB_Y, 30, txt, 0, bold);
+        // pill sized to the (bold) label; layout preserved — text sits at x, pill padded ±18, tabs
+        // advance by label width + 52.
+        let w = crate::text::text_width(lc.as_ptr(), 30, 1);
+        crate::ui::widgets::TabPill::new(lc.as_ptr(), 30, Rect::new(x - 18.0, tab_y - 8.0, w + 36.0, 50.0))
+            .segment(selected)
+            .focused(focused)
+            .draw(&e, p);
         x += w + 52.0;
     }
 }
@@ -502,14 +530,15 @@ fn draw_episodes(p: Painter) {
     // snapping — matches the chapters strip; fixes the "scatter" on LEFT/RIGHT)
     let sx = unsafe { addr_of!(EP_HSCROLL).read() }.pos;
     let pe = p.translate(-sx, 0.0);
-    let dimc = [0.58, 0.60, 0.64, 1.0];
+    let dimc = theme::TEXT_TERTIARY;
+    let ep_y = section_y(2);
     for (i, ep) in d.episodes.iter().enumerate() {
         let x = MARGIN_X + i as f32 * (EP_W + EP_GAP);
         if x - sx > SCR_W || x - sx + EP_W < 0.0 {
             continue; // off-screen
         }
         let focused = i as c_int == focus_col;
-        let card = Rect::new(x, EP_Y, EP_W, EP_H);
+        let card = Rect::new(x, ep_y, EP_W, EP_H);
         // episode still + focus ring + scale-pop (shared with the chapters strip)
         crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, focused, scale);
         // resume bar (tracks the scaled card when focused)
@@ -517,12 +546,12 @@ fn draw_episodes(p: Painter) {
             let cr = if focused { card.scaled(scale) } else { card };
             let frac = (ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0);
             let bar = Rect::new(cr.x + 12.0, cr.y + cr.h - 16.0, cr.w - 24.0, 5.0);
-            pe.rrect(bar, 2.5, 2.5, [1.0, 1.0, 1.0, 0.28]);
-            pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), 2.5, 2.5, [1.0, 1.0, 1.0, 0.95]);
+            pe.rrect(bar, 2.5, 2.5, theme::RAIL_BUFFERED);
+            pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), 2.5, 2.5, theme::RAIL_FILL);
         }
         // under-card metadata
-        let ty = EP_Y + EP_H + 30.0;
-        let titc = if focused { [0.98, 0.99, 1.0, 1.0] } else { [0.80, 0.82, 0.86, 1.0] };
+        let ty = ep_y + EP_H + 30.0;
+        let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
         if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
             pe.text(ec.as_ptr(), x, ty, 18, dimc, 0, 1);
         }
@@ -530,15 +559,10 @@ fn draw_episodes(p: Painter) {
             pe.text(tc.as_ptr(), x, ty + 26.0, 24, titc, 0, 1);
         }
         if !ep.summary.is_empty() {
-            let (l1, l2) = wrap_ep(&ep.summary);
-            if let Ok(c1) = CString::new(l1) {
-                pe.text(c1.as_ptr(), x, ty + 62.0, 20, dimc, 0, 0);
-            }
-            if !l2.is_empty() {
-                if let Ok(c2) = CString::new(l2) {
-                    pe.text(c2.as_ptr(), x, ty + 88.0, 20, dimc, 0, 0);
-                }
-            }
+            TextView::new(&ep.summary, 20, dimc)
+                .leading(26.0)
+                .max_lines(2)
+                .draw(pe, Rect::new(x, ty + 62.0, EP_W, 0.0));
         }
         let date = pretty_date(&ep.aired, 0);
         if !date.is_empty() {
@@ -558,11 +582,12 @@ fn draw_related(p: Painter) {
     if d.related.is_empty() {
         return;
     }
-    p.text(c"Related".as_ptr(), MARGIN_X, RELATED_Y, 28, [0.90, 0.92, 0.95, 1.0], 0, 1);
+    let related_y = section_y(3);
+    p.text(c"Related".as_ptr(), MARGIN_X, related_y, 28, theme::TEXT_HEADING, 0, 1);
     let sec = unsafe { addr_of!(SECTION).read() };
     let col = unsafe { addr_of!(COL).read() };
     let focus_col = if sec == 3 { col } else { -1 };
-    let row_y = RELATED_Y + 46.0;
+    let row_y = related_y + REL_LABEL_H;
     let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * (REL_W + REL_GAP) } else { 0.0 };
     let pr = p.translate(-sx, 0.0);
     for (i, r) in d.related.iter().enumerate() {
@@ -571,25 +596,11 @@ fn draw_related(p: Painter) {
             continue;
         }
         let focused = i as c_int == focus_col;
-        let card = Rect::new(x, row_y, REL_W, REL_H);
-        let cr = if focused { card.scaled(1.05) } else { card };
-        let mut drew = false;
-        if !r.thumb.is_empty() {
-            if let Ok(tp) = CString::new(r.thumb.clone()) {
-                let t = resolve_tex(tp.as_ptr(), 250, 375, 0);
-                if t != 0 {
-                    pr.tex(t, cr, 10.0, [1.0; 4]);
-                    drew = true;
-                }
-            }
-        }
-        if !drew {
-            pr.rrect(cr, 10.0, 10.0, [0.12, 0.13, 0.16, 1.0]);
-        }
+        // same shared art card as the episode / chapters strips (portrait poster + tight focus ring)
+        crate::ui::widgets::draw_card(pr, Rect::new(x, row_y, REL_W, REL_H), &r.thumb, (250, 375), 10.0, focused, 1.05);
         if focused {
-            pr.ring(cr, 6.0, 12.0, 1.0);
             if let Ok(tc) = CString::new(r.title.clone()) {
-                pr.text(tc.as_ptr(), x, row_y + REL_H + 30.0, 20, [0.85, 0.87, 0.90, 1.0], 0, 0);
+                pr.text(tc.as_ptr(), x, row_y + REL_H + 30.0, 20, theme::TEXT_HEADING, 0, 0);
             }
         }
     }
@@ -604,11 +615,12 @@ fn draw_cast(p: Painter) {
     if d.cast.is_empty() {
         return;
     }
-    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, CAST_Y, 28, [0.90, 0.92, 0.95, 1.0], 0, 1);
+    let cast_y = section_y(4);
+    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, 28, theme::TEXT_HEADING, 0, 1);
     let sec = unsafe { addr_of!(SECTION).read() };
     let col = unsafe { addr_of!(COL).read() };
     let focus_col = if sec == 4 { col } else { -1 };
-    let row_y = CAST_Y + 60.0;
+    let row_y = cast_y + CAST_LABEL_H;
     let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * CAST_SLOT } else { 0.0 };
     let pc = p.translate(-sx, 0.0);
     for (i, c) in d.cast.iter().enumerate() {
@@ -625,55 +637,28 @@ fn draw_cast(p: Painter) {
             if let Ok(tp) = CString::new(c.thumb.clone()) {
                 let t = resolve_tex(tp.as_ptr(), 300, 300, 0);
                 if t != 0 {
-                    pc.tex(t, circ, dp * 0.5, [1.0; 4]);
+                    pc.tex(t, circ, dp * 0.5, theme::TINT_WHITE);
                     drew = true;
                 }
             }
         }
         if !drew {
-            pc.rect(circ, dp * 0.5, [0.16, 0.17, 0.20, 1.0], [0.10, 0.11, 0.13, 1.0], 0.0);
+            pc.rect(circ, dp * 0.5, theme::SKELETON_TOP, theme::SKELETON_BOT, 0.0);
         }
         if focused {
             let fc = Rect::new(cxc - CAST_D * 0.5, row_y, CAST_D, CAST_D);
             pc.ring(fc, 6.0, CAST_D * 0.5, 1.0);
         }
-        let name_c = if focused { [0.98, 0.99, 1.0, 1.0] } else { [0.80, 0.82, 0.86, 1.0] };
+        let name_c = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
         if let Ok(nc) = CString::new(c.tag.clone()) {
             pc.text(nc.as_ptr(), cxc, row_y + CAST_D + 22.0, 21, name_c, 1, if focused { 1 } else { 0 });
         }
         if !c.role.is_empty() {
             if let Ok(rc) = CString::new(c.role.clone()) {
-                pc.text(rc.as_ptr(), cxc, row_y + CAST_D + 48.0, 17, [0.56, 0.58, 0.62, 1.0], 1, 0);
+                pc.text(rc.as_ptr(), cxc, row_y + CAST_D + 48.0, 17, theme::TEXT_TERTIARY, 1, 0);
             }
         }
     }
-}
-
-/// two-line wrap tuned to the narrower episode-card width
-fn wrap_ep(s: &str) -> (String, String) {
-    let b = s.as_bytes();
-    let n = b.len();
-    if n <= 42 {
-        return (s.to_string(), String::new());
-    }
-    let mut brk = 42;
-    while brk > 20 && b[brk] != b' ' {
-        brk -= 1;
-    }
-    let l1 = String::from_utf8_lossy(&b[..brk]).into_owned();
-    let rest = &b[brk + 1..];
-    let m = rest.len();
-    let mut c2 = m.min(44);
-    if m > 44 {
-        while c2 > 20 && rest[c2] != b' ' {
-            c2 -= 1;
-        }
-    }
-    let mut l2 = String::from_utf8_lossy(&rest[..c2]).into_owned();
-    if c2 < m {
-        l2.push('\u{2026}');
-    }
-    (l1, l2)
 }
 
 /// resume position (ns) for the last on_ok play case (0 = from the beginning). app.rs
@@ -829,14 +814,11 @@ fn text_at(p: Painter, x: f32, y: f32, sz: c_int, col: [f32; 4], bold: c_int, s:
     }
 }
 
-/// a dim label over one/two white value lines; returns the vertical advance
+/// a dim label over one/two pixel-wrapped value lines; returns the vertical advance
 fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str, lbl: [f32; 4], val: [f32; 4]) -> f32 {
     text_at(p, x, y, 20, lbl, 0, label);
-    let wrapped = wrap_lines(value, 40, 2);
-    for (i, ln) in wrapped.iter().enumerate() {
-        text_at(p, x, y + 30.0 + i as f32 * 26.0, 24, val, 1, ln);
-    }
-    30.0 + wrapped.len().max(1) as f32 * 26.0 + 22.0
+    let h = TextView::new(value, 24, val).bold().leading(26.0).max_lines(2).draw(p, Rect::new(x, y + 30.0, 520.0, 0.0));
+    30.0 + h.max(26.0) + 22.0
 }
 
 /// a small rounded accessibility badge (CC / SDH / AD)
@@ -844,7 +826,8 @@ fn draw_badge(p: Painter, x: f32, y: f32, label: &str) {
     let (w, h) = (48.0f32, 30.0f32);
     p.rrect(Rect::new(x, y, w, h), 7.0, 7.0, [0.86, 0.88, 0.92, 0.20]);
     if let Ok(t) = CString::new(label) {
-        p.text(t.as_ptr(), x + w * 0.5, y + (h - 20.0) * 0.5 - 1.0, 20, [0.9, 0.92, 0.96, 1.0], 1, 1);
+        let ty = crate::text::text_vcenter_y(20, 1, y + h * 0.5);
+        p.text(t.as_ptr(), x + w * 0.5, ty, 20, theme::TEXT_HEADING, 1, 1);
     }
 }
 
@@ -854,26 +837,27 @@ fn draw_about(p: Painter) {
         None => return,
     };
     let tx = MARGIN_X;
-    let hd = [0.95, 0.96, 0.98, 1.0]; // headings
-    let val = [0.90, 0.92, 0.95, 1.0]; // values
-    let lbl = [0.55, 0.57, 0.62, 1.0]; // dim labels
-    let dim = [0.66, 0.68, 0.72, 1.0];
+    let about_y = section_y(5);
+    let hd = theme::TEXT_PRIMARY; // headings (brighter)
+    let val = theme::TEXT_HEADING; // values (a step below headings)
+    let lbl = theme::TEXT_TERTIARY; // dim labels
+    let dim = theme::TEXT_TERTIARY;
 
-    text_at(p, tx, ABOUT_Y, 30, hd, 1, "About");
+    text_at(p, tx, about_y, 30, hd, 1, "About");
 
     // ---- selection highlight: the translucent rounded panel is a FOCUS indicator that
     // sits under whichever About block is selected (card / Information / Languages /
     // Accessibility) and moves with focus — NOT a fixed card background. ----
-    let (cw, ch, cy, pad) = (640.0f32, 330.0f32, ABOUT_Y + 50.0, 30.0f32);
+    let (cw, ch, cy, pad) = (640.0f32, 330.0f32, about_y + 50.0, 30.0f32);
     if unsafe { addr_of!(SECTION).read() } == 5 {
-        let cy2 = ABOUT_Y + 430.0 - 36.0; // column highlight top (col_y - pad)
+        let cy2 = about_y + 430.0 - 36.0; // column highlight top (col_y - pad)
         let hl = match unsafe { addr_of!(COL).read() } {
             0 => Rect::new(tx, cy, cw, ch),               // card
             1 => Rect::new(tx - 26.0, cy2, 600.0, 384.0), // Information
             2 => Rect::new(734.0, cy2, 560.0, 384.0),     // Languages
             _ => Rect::new(1334.0, cy2, 560.0, 384.0),    // Accessibility
         };
-        p.rrect(hl, 18.0, 18.0, [1.0, 1.0, 1.0, 0.07]);
+        p.rrect(hl, 18.0, 18.0, theme::OVERLAY_FOCUS_SOFT);
     }
     // ---- card: title, genres, summary + MORE ----
     let ix = tx + pad;
@@ -891,7 +875,7 @@ fn draw_about(p: Painter) {
     }
 
     // ---- three columns ----
-    let col_y = ABOUT_Y + 430.0;
+    let col_y = about_y + 430.0;
 
     // Information
     text_at(p, tx, col_y, 30, hd, 1, "Information");
@@ -929,9 +913,7 @@ fn draw_about(p: Painter) {
                 format!("{} ({})", lang, a.codec.to_uppercase())
             })
             .collect();
-        for (i, ln) in wrap_lines(&list.join(", "), 44, 6).iter().enumerate() {
-            text_at(p, lx, ly + 30.0 + i as f32 * 28.0, 22, val, 0, ln);
-        }
+        TextView::new(&list.join(", "), 22, val).leading(28.0).max_lines(6).draw(p, Rect::new(lx, ly + 30.0, 500.0, 0.0));
     }
 
     // Accessibility
@@ -953,11 +935,8 @@ fn draw_about(p: Painter) {
         }
         any = true;
         draw_badge(p, ax, ay, label);
-        let wrapped = wrap_lines(desc, 40, 4);
-        for (i, ln) in wrapped.iter().enumerate() {
-            text_at(p, ax, ay + 46.0 + i as f32 * 26.0, 20, val, 0, ln);
-        }
-        ay += 46.0 + wrapped.len() as f32 * 26.0 + 26.0;
+        let h = TextView::new(desc, 20, val).leading(26.0).max_lines(4).draw(p, Rect::new(ax, ay + 46.0, 500.0, 0.0));
+        ay += 46.0 + h + 26.0;
     }
     if !any {
         text_at(p, ax, col_y + 68.0, 22, dim, 0, "\u{2014}");

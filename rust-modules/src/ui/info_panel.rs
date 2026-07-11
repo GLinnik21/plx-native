@@ -6,6 +6,7 @@
 use crate::metadata;
 use crate::ui::consts::{SDLK_DOWN, SDLK_UP};
 use crate::ui::icons::Icon;
+use crate::ui::theme;
 use crate::ui::widgets::resolve_tex;
 use crate::ui::{Painter, Rect, Spring, View};
 use std::ffi::CString;
@@ -128,11 +129,11 @@ fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
     let sz = 22;
     let w = text.chars().count() as f32 * (sz as f32 * 0.60) + 22.0;
     let h = 34.0f32;
-    let col = [0.90f32, 0.90, 0.90, 1.0];
-    let border = [1.0f32, 1.0, 1.0, 0.55];
+    let col = theme::TEXT_HEADING;
+    let border = theme::OVERLAY_BORDER;
     let r = Rect::new(x, cy - h * 0.5, w, h);
     p.rrect(r, 6.0, 6.0, border);
-    p.rrect(Rect::new(r.x + 2.0, r.y + 2.0, r.w - 4.0, r.h - 4.0), 5.0, 5.0, [0.133, 0.133, 0.141, 1.0]);
+    p.rrect(Rect::new(r.x + 2.0, r.y + 2.0, r.w - 4.0, r.h - 4.0), 5.0, 5.0, theme::SURFACE_PANEL);
     if let Ok(cs) = CString::new(text) {
         let ty = crate::text::text_vcenter_y(sz, 1, cy);
         p.text(cs.as_ptr(), x + w * 0.5, ty, sz, col, 1, 1);
@@ -215,7 +216,7 @@ pub(crate) fn draw() {
     let cyt = SCR_H - 176.0 - ch; // sit just above the Info/Chapters tabs (tabs at SCR_H-128)
     let card = Rect::new(cx, cyt, cw, ch);
     // near-opaque dark card keeps the title/synopsis legible over any scene
-    let cardbg = [0.129f32, 0.129, 0.137, 0.985];
+    let cardbg = theme::PANEL_TOP;
     p.rrect(card, 28.0, 28.0, cardbg);
 
     let pad = 28.0f32;
@@ -230,13 +231,13 @@ pub(crate) fn draw() {
         if let Ok(ap) = CString::new(thumb_path) {
             let t = resolve_tex(ap.as_ptr(), 480, 270, 0);
             if t != 0 {
-                p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, [1.0; 4]);
+                p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
                 drawn = true;
             }
         }
     }
     if !drawn {
-        p.rrect(Rect::new(sx, sy, sw, sh), 16.0, 16.0, [0.12, 0.13, 0.16, 1.0]);
+        p.rrect(Rect::new(sx, sy, sw, sh), 16.0, 16.0, theme::CARD_PLACEHOLDER);
     }
 
     // action buttons (right column)
@@ -265,8 +266,8 @@ pub(crate) fn draw() {
     let tx = sx + sw + 34.0;
     let tright = bx - 34.0;
     let tw = tright - tx;
-    let white = [0.97f32, 0.98, 1.0, 1.0];
-    let dim = [0.69f32, 0.69, 0.71, 1.0]; // #b0b0b3-ish
+    let white = theme::TEXT_PRIMARY;
+    let dim = theme::TEXT_SECONDARY;
 
     let info_title = if is_ep { ep_name.clone() } else { big_title.clone() };
     let title = elide(&info_title, tw, 40, 1);

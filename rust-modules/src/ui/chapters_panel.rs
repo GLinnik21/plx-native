@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 use crate::metadata;
 use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+use crate::ui::theme;
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -142,7 +143,7 @@ pub(crate) fn draw() {
     let rise = (1.0 - appear) * 20.0;
     let p = Painter::root().alpha(appear).translate(-scroll, rise);
 
-    let dimc = [0.62f32, 0.64, 0.68, 1.0];
+    let dimc = theme::TEXT_TERTIARY;
     for (i, ch) in d.chapters.iter().enumerate() {
         let x = MARGIN_X + i as f32 * (CH_W + CH_GAP);
         if x - scroll > SCR_W || x - scroll + CH_W < 0.0 {
@@ -153,7 +154,7 @@ pub(crate) fn draw() {
         crate::ui::widgets::draw_card(p, card, &ch.thumb, (480, 270), 10.0, focused, scale);
         // name + timestamp beneath the card
         let ty = CH_TOP + CH_H + 26.0;
-        let titc = if focused { [0.98f32, 0.99, 1.0, 1.0] } else { [0.80f32, 0.82, 0.86, 1.0] };
+        let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
         let name = if ch.title.trim().is_empty() {
             format!("Chapter {}", ch.index)
         } else {

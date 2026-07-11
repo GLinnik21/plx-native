@@ -6,7 +6,10 @@
 #![allow(non_upper_case_globals)]
 use crate::pms::PmsMovie;
 use crate::ui::consts::*;
-use crate::ui::widgets::{cfield, draw_poster, wrap_two, CircleButton, PageDots, PillButton};
+use crate::ui::icons::Icon;
+use crate::ui::text_view::TextView;
+use crate::ui::theme;
+use crate::ui::widgets::{cfield, draw_poster, Button, CircleButton, ControlStyle, PageDots};
 use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
@@ -64,8 +67,8 @@ fn resume_bar(p: Painter, r: Rect, m: &PmsMovie) {
         let bh = 5.0f32;
         let (bx, bw) = (r.x + 8.0, r.w - 16.0);
         let by = r.y + r.h - bh - 8.0;
-        p.rrect(Rect::new(bx, by, bw, bh), bh * 0.5, bh * 0.5, [1.0, 1.0, 1.0, 0.28]);
-        p.rrect(Rect::new(bx, by, bw * frac, bh), bh * 0.5, bh * 0.5, [0.98, 0.72, 0.18, 0.95]);
+        p.rrect(Rect::new(bx, by, bw, bh), bh * 0.5, bh * 0.5, theme::RAIL_BUFFERED);
+        p.rrect(Rect::new(bx, by, bw * frac, bh), bh * 0.5, bh * 0.5, theme::RESUME_FILL);
     }
 }
 
@@ -83,7 +86,7 @@ impl View for Backdrop {
         let hero = unsafe { movie_at(0, 0).as_ref() };
         // flat dark-gray base — the shelves sit on this (so card focus shadows read),
         // NOT the hero's ambient wash. Only the hero itself carries a backdrop.
-        let g = [0.10, 0.10, 0.115, 1.0];
+        let g = theme::SURFACE_APP;
         p.rect(env.screen, 0.0, g, g, 0.0);
         let mut bt = 0u32;
         if let Some(h) = hero {
@@ -102,7 +105,7 @@ impl View for Backdrop {
         if env.hero_a > 0.01 {
             let sa = 0.30 + 0.64 * env.hero_a;
             p.rect(Rect::new(0.0, SCR_H * 0.46, SCR_W, SCR_H * 0.54), 0.0,
-                [0.02, 0.02, 0.03, 0.0], [0.02, 0.02, 0.03, sa], 0.0);
+                theme::scrim(0.0), theme::scrim(sa), 0.0);
         }
     }
 }
@@ -110,7 +113,7 @@ impl View for Backdrop {
 // ---- Hero: low-left content composite. Drawn under p.alpha(hero_a) so the whole
 // group fades as one; widgets carry base alphas that the cascade scales.
 struct Hero {
-    play: PillButton,
+    play: Button,
     actions: [CircleButton; 3],
     dots: PageDots,
 }
@@ -120,7 +123,9 @@ impl Hero {
         let pill_y = 510.0 + 200.0; // titleY + 200
         let (pw, cgap, cd) = (168.0f32, 20.0f32, 60.0f32);
         Hero {
-            play: PillButton::play(c"Play".as_ptr()).at(tx, pill_y),
+            play: Button::new(c"Play".as_ptr(), 30, Rect::new(tx, pill_y, pw, cd))
+                .icon(Icon::Play)
+                .style(ControlStyle::Primary),
             actions: [
                 CircleButton::new(c"+".as_ptr()).at(tx + pw + cgap, pill_y),
                 CircleButton::new(c"i".as_ptr()).at(tx + pw + cgap + (cd + cgap), pill_y),
@@ -137,8 +142,8 @@ impl View for Hero {
         };
         let tx = MARGIN_X;
         let title_y = 510.0f32;
-        let w_a = [0.97, 0.98, 0.99, 1.0]; // cascade applies hero_a
-        let d_a = [0.70, 0.73, 0.78, 1.0];
+        let w_a = theme::TEXT_PRIMARY; // cascade applies hero_a
+        let d_a = theme::TEXT_SECONDARY;
         // title: clearLogo (transparent PNG) if loaded, else bold text
         let mut lt = 0u32;
         let (mut lw, mut lh) = (0i32, 0i32);
@@ -168,18 +173,13 @@ impl View for Hero {
         if let Ok(m) = CString::new(meta) {
             p.text(m.as_ptr(), tx, title_y + 92.0, 26, d_a, 0, 0);
         }
-        // synopsis, two lines on a word boundary
+        // synopsis: pixel-wrapped to the hero text column, 2 lines max, ellipsized
         let summary = cfield(&hero.summary);
         if !summary.is_empty() {
-            let (l1, l2) = wrap_two(&summary);
-            if let Ok(c1) = CString::new(l1) {
-                p.text(c1.as_ptr(), tx, title_y + 128.0, 24, d_a, 0, 0);
-            }
-            if !l2.is_empty() {
-                if let Ok(c2) = CString::new(l2) {
-                    p.text(c2.as_ptr(), tx, title_y + 158.0, 24, d_a, 0, 0);
-                }
-            }
+            TextView::new(&summary, 24, d_a)
+                .leading(30.0)
+                .max_lines(2)
+                .draw(p, Rect::new(tx, title_y + 128.0, 660.0, 0.0));
         }
         // fixed-position action group (cascade scales their base alphas)
         self.play.draw(env, p);
@@ -288,7 +288,7 @@ impl Grid {
                 };
                 let lift = CARD_H * (fs - 1.0) * 0.5;
                 if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
-                    p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, 28, [0.93, 0.95, 0.98, env.sp], 0, 1);
+                    p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, 28, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
                 }
             }
             self.shelves[r].draw_cells(env, p);
@@ -307,7 +307,7 @@ impl Grid {
             p.ring(rect, GLOW_PAD, 14.0 * s, (s - 1.0) / 0.055);
             if let Some(mm) = m {
                 resume_bar(p, rect, mm);
-                p.text(mm.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, [0.96, 0.97, 0.98, 1.0], 1, 1);
+                p.text(mm.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, theme::TEXT_PRIMARY, 1, 1);
             }
         }
     }
@@ -425,7 +425,7 @@ pub(crate) fn home_update(dt: f32) {
 
 pub(crate) fn home_draw() {
     guard(|| {
-        crate::gfx::frame_clear(0.03, 0.03, 0.045);
+        crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let h = scene();
         let env = h.env(0.0);
         let p = Painter::root();

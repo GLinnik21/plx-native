@@ -5,6 +5,7 @@
 //! primitives (they composite directly over the video plane, outside the transport HUD).
 #![allow(dead_code)]
 use crate::gfx::{delete_tex, upload_rgba};
+use crate::ui::theme;
 use crate::ui::widgets::{Spinner, TabPill, TransportButton};
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
@@ -82,8 +83,8 @@ pub(crate) fn draw_subtitles(hud_up: bool) {
     // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up
     let baseline = if hud_up { SCR_H - 300.0 } else { SCR_H - 100.0 };
     let block_top = baseline - n * lh;
-    let white = [1.0f32, 1.0, 1.0, 1.0];
-    let outline = [0.0f32, 0.0, 0.0, 0.85];
+    let white = [1.0f32, 1.0, 1.0, 1.0]; // subtitles stay pure white for legibility (carve-out)
+    let outline = theme::scrim_black(0.85);
     let p = Painter::root();
     for (i, ln) in lines.iter().enumerate() {
         let top = block_top + i as f32 * lh;
@@ -205,13 +206,13 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     let e = hud_env();
 
     // bottom scrim: transparent -> dark
-    let clr = [0.0f32, 0.0, 0.0, 0.0];
-    let drk = [0.0f32, 0.0, 0.0, 0.86];
+    let clr = theme::scrim_black(0.0);
+    let drk = theme::scrim_black(0.86);
     p.rect(Rect::new(0.0, SCR_H - 470.0, SCR_W, 470.0), 0.0, clr, drk, 0.0);
 
-    let white = [0.98f32, 0.98, 1.0, 1.0];
-    let dim = [0.72f32, 0.74, 0.80, 0.95];
-    let track = [1.0f32, 1.0, 1.0, 0.24];
+    let white = theme::TEXT_PRIMARY;
+    let dim = theme::TEXT_SECONDARY;
+    let track = theme::RAIL_TRACK;
 
     if transport {
     // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
