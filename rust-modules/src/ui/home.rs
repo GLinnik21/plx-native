@@ -304,7 +304,7 @@ impl Grid {
             let rect = Rect::new(x, self.shelves[r].base_y + 12.0, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
             draw_poster(p, m, rect, 14.0 * s);
-            p.ring(rect, GLOW_PAD, 14.0 * s, (s - 1.0) / 0.055);
+            p.ring(rect, GLOW_PAD, theme::CARD_RING_RAD * s, (s - 1.0) / 0.055);
             if let Some(mm) = m {
                 resume_bar(p, rect, mm);
                 p.text(mm.title.as_ptr() as *const c_char, rect.cx(), rect.y + rect.h + 12.0, 26, theme::TEXT_PRIMARY, 1, 1);

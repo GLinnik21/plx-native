@@ -21,9 +21,9 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 
 2. **Never hand-place text with a magic y.** `y - sz*0.58` guesses are banned — they mis-center the
    moment a string has a descender (g j y p). Text is positioned by its **cap band** (layout ≠
-   paint): use `ui::label::Label` (single run) or `TextBlock` (multi-line), or if you must call
-   `Painter::text` directly, derive the y from `text::text_vcenter_y` / `text::text_cap_band`. See
-   `label.rs`'s module docs for the rule.
+   paint): use `ui::label::Label` (single run) or `ui::text_view::TextView` (multi-line, pixel-
+   wrapped), or if you must call `Painter::text` directly, derive the y from `text::text_vcenter_y` /
+   `text::text_cap_band`. See `label.rs`'s module docs for the rule.
 
 3. **Improve a component before forking one.** If a shared widget almost does what you need, add a
    builder method / style variant to it (e.g. `Button::style(ControlStyle)`), don't copy it. A new
@@ -36,18 +36,18 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 |---|---|
 | `theme.rs` | **all color tokens** + `scrim`/`scrim_black`/`with_a` helpers + focus-ring geometry consts. The single palette. |
 | `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait. |
-| `label.rs` | `Label` — cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
-| `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, `Card`*, `TextBlock`*, plus `draw_poster`/`draw_card` and the text-wrap helpers. |
+| `label.rs` | `Label` — single-run cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
+| `text_view.rs` | `TextView` — multi-line cap-band text: pixel word-wrap + ellipsis + `measure_h`, wrap-cached. |
+| `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, the shared art-card core (`card`/`draw_poster`/`draw_card` + `Art`), plus the poster-resolve helper. |
 | `table.rs` | `TableView`/`Section`/`Row`/`Badge` — the animated list (settings/track-menu look). |
 | `icons.rs` | `Icon` enum + antialiased SVG rasterizer; color is the `tint` you pass. |
 | `home.rs` / `detail.rs` / `player_hud.rs` / `info_panel.rs` / `track_menu.rs` / `chapters_panel.rs` | **screens** — compose the above; hold their own springs + input. Should contain almost no color literals. |
 
-\* landing progressively through the `docs/ui-system-migration.md` steps.
-
 ## Gotchas that bite
 
-- **`Label`/`Button`/`TextBlock` hold a non-owning `*const c_char`.** Keep the `CString` alive for
-  the whole draw frame (bind it to a `let` in the same scope) or you'll draw freed memory.
+- **`Label`/`Button` hold a non-owning `*const c_char`.** Keep the `CString` alive for the whole
+  draw frame (bind it to a `let` in the same scope) or you'll draw freed memory. (`TextView` is the
+  exception — it borrows a `&str` and builds its own `CString`s internally, so it's memory-safe.)
 - **The focus ring/glow is shader-baked** (`gfx.rs` `FS_SRC`): `Painter::ring` exposes only a
   `focus: f32` scalar and the ring *geometry* (`theme::CARD_RING_PAD_*`, `CARD_RING_RAD`). Its color
   cannot be tokenized — don't try, and don't re-add it as a literal.
