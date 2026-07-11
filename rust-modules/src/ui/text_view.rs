@@ -136,7 +136,7 @@ impl<'a> TextView<'a> {
         if truncated {
             // more text than fits — ellipsize the last placed line to width
             if let Some(last) = lines.last_mut() {
-                *last = ellipsize(last, width, self.sz, self.bold);
+                *last = crate::text::elide(last, width, self.sz, self.bold, true);
             }
         }
         // safety: a lone token wider than the column can't be word-broken (a long URL/compound word,
@@ -145,7 +145,7 @@ impl<'a> TextView<'a> {
         // that slips past the truncation gate above.
         for ln in lines.iter_mut() {
             if self.measure(ln) > width {
-                *ln = ellipsize(ln, width, self.sz, self.bold);
+                *ln = crate::text::elide(ln, width, self.sz, self.bold, true);
             }
         }
         Wrapped { lines, truncated }
@@ -173,7 +173,7 @@ impl<'a> TextView<'a> {
         for (i, ln) in lines.iter().enumerate() {
             let is_last = i + 1 == n;
             let text: Cow<str> = if is_last && reserve > 0.0 && self.measure(ln) + reserve > frame.w {
-                Cow::Owned(ellipsize(ln, (frame.w - reserve).max(0.0), self.sz, self.bold))
+                Cow::Owned(crate::text::elide(ln, (frame.w - reserve).max(0.0), self.sz, self.bold, true))
             } else {
                 Cow::Borrowed(ln.as_str())
             };
@@ -199,23 +199,3 @@ impl<'a> TextView<'a> {
     }
 }
 
-/// truncate `s` to `"prefix…"` fitting `width` px (binary search on the char prefix).
-fn ellipsize(s: &str, width: f32, sz: c_int, bold: c_int) -> String {
-    let measure = |t: &str| CString::new(t).ok().map(|c| crate::text::text_width(c.as_ptr(), sz, bold)).unwrap_or(0.0);
-    let full = format!("{s}\u{2026}");
-    if measure(&full) <= width {
-        return full;
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let cand: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
-        if measure(&cand) <= width {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    chars[..lo].iter().collect::<String>() + "\u{2026}"
-}
