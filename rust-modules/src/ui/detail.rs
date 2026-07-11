@@ -389,7 +389,7 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
         }
     }
     if art_tex != 0 {
-        p.tex(art_tex, Rect::FULL, 0.0, [d, d, d, art_a]); // TINT_WHITE dimmed by the scroll `d`
+        p.tex(art_tex, Rect::FULL, 0.0, theme::with_a(theme::dim(theme::TINT_WHITE, d), art_a)); // white dimmed by scroll `d`
     }
     // bottom scrim for the hero's lower-left content — tied to the hero's own fade (it serves that
     // text), so it clears once the hero is gone rather than lingering the whole scroll (a wasted

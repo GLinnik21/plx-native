@@ -73,6 +73,11 @@ pub const fn scrim_black(a: f32) -> [f32; 4] {
 pub const fn with_a(c: [f32; 4], a: f32) -> [f32; 4] {
     [c[0], c[1], c[2], a]
 }
+/// Scale a token's rgb by `k` toward black, keeping its alpha — e.g. folding a scroll-darken into a
+/// layer tint. Pair with [`with_a`] when the alpha also changes.
+pub const fn dim(c: [f32; 4], k: f32) -> [f32; 4] {
+    [c[0] * k, c[1] * k, c[2] * k, c[3]]
+}
 
 // ── Rails / overlays / accents ───────────────────────────────────────────────
 /// Unfilled progress/scrubber track.

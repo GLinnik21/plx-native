@@ -152,6 +152,19 @@ fn dur() -> i64 { crate::player::duration_ns() }
 fn playpos() -> i64 { crate::player::playpos_ns() }
 #[inline]
 fn frames() -> i32 { crate::player::frames() }
+/// Advance the once-per-second FPS window: bump `frames_ct` and, when a full second has elapsed,
+/// recompute `fps_shown`, reset the window, and return `true` so the caller logs the heartbeat with
+/// its own route/overlay tag. Shared by the player and home/detail draw paths.
+fn fps_tick(frames_ct: &mut i32, fps_t: &mut u32, fps_shown: &mut i32, now: u32) -> bool {
+    *frames_ct += 1;
+    if now.wrapping_sub(*fps_t) < 1000 {
+        return false;
+    }
+    *fps_shown = (*frames_ct as f32 * 1000.0 / now.wrapping_sub(*fps_t) as f32 + 0.5) as i32;
+    *frames_ct = 0;
+    *fps_t = now;
+    true
+}
 #[inline]
 fn seek_pending() -> i64 { crate::player::seek_pending() }
 #[inline]
@@ -283,6 +296,9 @@ pub extern "C" fn plex_run(
         if std::path::Path::new("/tmp/poc-profile").exists() {
             crate::ui::profile::set_enabled(true);
         }
+        // dev: /tmp/poc-detailosc (read once at boot, like the other triggers) makes the detail scroll
+        // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
+        let detail_osc = std::path::Path::new("/tmp/poc-detailosc").exists();
 
         let mut last_input = SDL_GetTicks();
         let t0 = SDL_GetTicks();
@@ -1192,13 +1208,13 @@ pub extern "C" fn plex_run(
             prev = now;
 
             crate::ui::home::home_update(dt);
-            // dev: /tmp/poc-detailosc perpetually swings the detail scroll hero<->bottom so the FPS
-            // heartbeat samples the scroll TRANSITION (the settled ends already hold 60).
-            if matches!(route, Route::Detail) && std::path::Path::new("/tmp/poc-detailosc").exists() {
-                let sym = if (now / 450) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
-                crate::ui::detail::move_focus(sym as c_int);
-            }
             if matches!(route, Route::Detail) {
+                // dev: poc-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
+                // transition (the settled ends already hold 60).
+                if detail_osc {
+                    let sym = if (now / 450) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
+                    crate::ui::detail::move_focus(sym as c_int);
+                }
                 crate::ui::detail::update(dt);
             }
             if matches!(route, Route::Player { overlay: Overlay::Menu }) {
@@ -1236,13 +1252,9 @@ pub extern "C" fn plex_run(
                 crate::ui::anim::draw_overlay();
                 SDL_GL_SwapWindow(win);
                 crate::ui::profile::frame_end();
-                frames_ct += 1;
-                if now.wrapping_sub(fps_t) >= 1000 {
-                    fps_shown = (frames_ct as f32 * 1000.0 / now.wrapping_sub(fps_t) as f32 + 0.5) as i32;
-                    frames_ct = 0;
-                    fps_t = now;
-                    // render heartbeat for the player path (which has no on-screen counter): tags the
-                    // open overlay so an Info/Chapters/Menu perf drop is greppable in the event log.
+                if fps_tick(&mut frames_ct, &mut fps_t, &mut fps_shown, now) {
+                    // player path has no on-screen counter — tag the open overlay so an
+                    // Info/Chapters/Menu perf drop is greppable in the event log.
                     let ov = match route {
                         Route::Player { overlay: Overlay::Info } => "info",
                         Route::Player { overlay: Overlay::Chapters } => "chapters",
@@ -1263,13 +1275,8 @@ pub extern "C" fn plex_run(
             crate::ui::anim::draw_overlay(); // home/detail animations (episode scale-pop, scroll)
             SDL_GL_SwapWindow(win);
             crate::ui::profile::frame_end();
-            frames_ct += 1;
-            if now.wrapping_sub(fps_t) >= 1000 {
-                fps_shown = (frames_ct as f32 * 1000.0 / now.wrapping_sub(fps_t) as f32 + 0.5) as i32;
-                frames_ct = 0;
-                fps_t = now;
-                // once/sec render heartbeat on the home/detail path (quiet in the log, unlike the
-                // feed-stat-heavy player path) — so FPS is greppable without reading the on-screen counter
+            if fps_tick(&mut frames_ct, &mut fps_t, &mut fps_shown, now) {
+                // once/sec render heartbeat — greppable without reading the on-screen counter
                 log(&format!("FPS={fps_shown} route={}", if matches!(route, Route::Detail) { "detail" } else { "home" }));
             }
         }
