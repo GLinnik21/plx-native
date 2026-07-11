@@ -112,7 +112,12 @@ impl TCacheEntry {
     const ZERO: TCacheEntry =
         TCacheEntry { s: [0; 96], sz: 0, bold: 0, tex: 0, w: 0, h: 0, ink_t: 0, ink_b: 0, use_: 0 };
 }
-const TCACHE: usize = 48;
+// Big enough to hold every distinct string visible in one frame WITHOUT eviction. The detail About
+// panel (~30 runs) + Cast row (~14) + episodes/related/hero titles push well past ~48; at that point
+// an LRU thrashes — each frame re-renders dozens of lines via TTF (+ a full-surface ink scan) and
+// re-uploads them, which showed up as ~22ms About / ~12ms Cast (sub-30fps scrolling into them). With
+// headroom past the ~80 simultaneous worst case, stable text is a pure cache hit after first paint.
+const TCACHE: usize = 160;
 static mut TCACHE_A: [TCacheEntry; TCACHE] = [TCacheEntry::ZERO; TCACHE];
 static mut TCLOCK: c_uint = 0;
 
