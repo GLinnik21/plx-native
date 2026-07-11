@@ -181,9 +181,11 @@ impl Painter {
 
 // ---- Shared scroll / cull / hero primitives -------------------------------------------------
 // Both screens (home, detail) have the same shape: a top hero that fades as below-hero content
-// scrolls up over it, with off-screen children skipped BY HAND because `Painter` has no clip/scissor
-// (this is an immediate-mode renderer — every frame clears + redraws the whole tree, so the way to
-// "avoid drawing" is to CULL what isn't visible, not to dirty-track what changed). These are the ONE
+// scrolls up over it, with off-screen children skipped BY HAND via CULLING — the scroll flow culls
+// off-frame children by index rather than scissor-clipping them (`Painter::clip` exists but is
+// reserved for a bounded panel like the track menu; culling the whole document flow avoids per-frame
+// scissor churn). This is an immediate-mode renderer — every frame clears + redraws the whole tree,
+// so the way to "avoid drawing" is to CULL what isn't visible, not to dirty-track what changed. These are the ONE
 // mechanism each: `on_axis` is the single off-screen cull test both screens call; `hero_alpha` the
 // single hero-fade curve. `ScrollColumn`/`Column` is the scroll-into-content container detail
 // composes its below-hero flow from (home's fixed-pitch grid is not a document flow, so it uses only
@@ -250,8 +252,8 @@ impl ScrollColumn {
     pub fn lift_target(&self, c: &impl Column, i: usize) -> f32 {
         (self.child_top(c, i) - self.margin).max(0.0)
     }
-    /// Draw every present child, scrolled and band-culled — off-screen children are SKIPPED (never
-    /// clipped; `Painter` has no scissor). The focused child is never culled (the scroll keeps it at
+    /// Draw every present child, scrolled and band-culled — off-screen children are SKIPPED by
+    /// culling (this flow culls rather than using the `Painter::clip` scissor). The focused child is never culled (the scroll keeps it at
     /// `margin`). The child `Painter` is pre-translated to the child origin, so children draw 0-based.
     pub fn draw(&self, c: &impl Column, env: &Env, p: Painter) {
         let ps = p.translate(0.0, -self.scroll.pos);
