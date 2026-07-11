@@ -1238,8 +1238,18 @@ pub extern "C" fn plex_run(
                 crate::ui::profile::frame_end();
                 frames_ct += 1;
                 if now.wrapping_sub(fps_t) >= 1000 {
+                    fps_shown = (frames_ct as f32 * 1000.0 / now.wrapping_sub(fps_t) as f32 + 0.5) as i32;
                     frames_ct = 0;
                     fps_t = now;
+                    // render heartbeat for the player path (which has no on-screen counter): tags the
+                    // open overlay so an Info/Chapters/Menu perf drop is greppable in the event log.
+                    let ov = match route {
+                        Route::Player { overlay: Overlay::Info } => "info",
+                        Route::Player { overlay: Overlay::Chapters } => "chapters",
+                        Route::Player { overlay: Overlay::Menu } => "menu",
+                        _ => "none",
+                    };
+                    log(&format!("FPS={fps_shown} route=player overlay={ov}"));
                 }
                 continue;
             }

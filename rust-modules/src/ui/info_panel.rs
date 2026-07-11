@@ -181,6 +181,43 @@ fn wrap2(s: &str, budget: f32, sz: i32) -> (String, String) {
     (l1, l2)
 }
 
+// Memoised title/synopsis wrap. `elide`/`wrap2` above each measure MANY throwaway candidate strings
+// through `text_width` — a `TTF_RenderUTF8_Blended` + full-surface ink scan + GL upload PER candidate.
+// Re-running that every frame (the panel's whole open lifetime) thrashed the glyph cache and dropped
+// the panel to ~1fps. The wrapped result only changes when the title/summary/column-width do, so cache
+// it and every subsequent frame is three cheap string clones.
+struct WrapCache {
+    title_src: String,
+    summary_src: String,
+    tw: f32,
+    title: String,
+    syn1: String,
+    syn2: String,
+}
+static mut WRAP: Option<WrapCache> = None;
+
+fn wrapped(title_src: &str, summary_src: &str, tw: f32) -> (String, String, String) {
+    unsafe {
+        if let Some(c) = &*addr_of!(WRAP) {
+            if c.title_src == title_src && c.summary_src == summary_src && (c.tw - tw).abs() < 0.5 {
+                return (c.title.clone(), c.syn1.clone(), c.syn2.clone());
+            }
+        }
+        let title = elide(title_src, tw, 40, 1);
+        let (syn1, syn2) =
+            if summary_src.is_empty() { (String::new(), String::new()) } else { wrap2(summary_src, tw, 28) };
+        *addr_of_mut!(WRAP) = Some(WrapCache {
+            title_src: title_src.to_string(),
+            summary_src: summary_src.to_string(),
+            tw,
+            title: title.clone(),
+            syn1: syn1.clone(),
+            syn2: syn2.clone(),
+        });
+        (title, syn1, syn2)
+    }
+}
+
 pub(crate) fn draw() {
     if !is_open() {
         return;
@@ -270,12 +307,7 @@ pub(crate) fn draw() {
     let dim = theme::TEXT_SECONDARY;
 
     let info_title = if is_ep { ep_name.clone() } else { big_title.clone() };
-    let title = elide(&info_title, tw, 40, 1);
-    let (syn1, syn2) = if summary.is_empty() {
-        (String::new(), String::new())
-    } else {
-        wrap2(&summary, tw, 28)
-    };
+    let (title, syn1, syn2) = wrapped(&info_title, &summary, tw);
     let n_syn = (!syn1.is_empty()) as i32 + (!syn2.is_empty()) as i32;
     let has_tags = year > 0
         || dur_ms > 0
