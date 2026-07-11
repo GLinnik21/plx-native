@@ -7,10 +7,11 @@
 #![allow(dead_code)]
 use crate::metadata;
 use crate::pms::PmsMovie;
+use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{cfield, resolve_tex, Button, CircleButton};
+use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton};
 use crate::ui::{Env, Painter, Rect, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
@@ -28,6 +29,7 @@ struct DetailView {
     scroll: Spring,
     card_scale: Spring, // focused card-row item pop (springs on selection change)
     ep_hscroll: Spring, // episode row horizontal scroll — glides instead of snapping
+    related: CardRow,   // the Related row = the SAME animated shelf component the home grid uses
     last_resume_ns: i64, // resume position (ns) on_ok just started (0 = from start); app.rs seeks here
 }
 impl DetailView {
@@ -39,6 +41,7 @@ impl DetailView {
             scroll: Spring::at(0.0),
             card_scale: Spring::at(1.0),
             ep_hscroll: Spring::at(0.0),
+            related: CardRow::new(),
             last_resume_ns: 0,
         }
     }
@@ -278,6 +281,10 @@ pub(crate) fn update(dt: f32) {
     crate::ui::anim::probe("detail.card", v.card_scale.pos, v.card_scale.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
     v.ep_hscroll.step(hst, 240.0, dt);
     crate::ui::anim::probe("detail.epscroll", v.ep_hscroll.pos, v.ep_hscroll.vel, hst, dt);
+    // Related is the shared home-shelf component now: step its per-card scale springs + scroll spring
+    // (focused only when the Related section holds focus, else the scales ease back and scroll freezes).
+    let rfoc = (v.section == 3).then_some(v.col.max(0) as usize);
+    v.related.update(n_items(3) as usize, rfoc, &RowStyle::HOME, dt);
 }
 
 fn env_of(dt: f32) -> Env {
@@ -621,24 +628,34 @@ fn draw_related(p: Painter) {
     }
     let related_y = section_y(3);
     p.text(c"Related".as_ptr(), MARGIN_X, related_y, 28, theme::TEXT_HEADING, 0, 1);
-    let sec = view().section;
-    let col = view().col;
-    let focus_col = if sec == 3 { col } else { -1 };
+    let focus_col = if view().section == 3 { view().col } else { -1 };
     let row_y = related_y + REL_LABEL_H;
-    let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * (REL_W + REL_GAP) } else { 0.0 };
+    // The Related row is a real instance of the home shelf: view().related owns the animated per-card
+    // scale springs + the animated scroll spring (RowStyle::HOME), so it pops + glides + rings + titles
+    // exactly like a home shelf. A lone row has no cross-row neighbour, so the focused-last pass is just
+    // in-row: non-focused posters first, then the focused one (over its neighbours) last.
+    let sx = view().related.scroll_x();
     let pr = p.translate(-sx, 0.0);
     for (i, r) in d.related.iter().enumerate() {
+        if i as c_int == focus_col {
+            continue; // focused poster drawn last
+        }
         let x = MARGIN_X + i as f32 * (REL_W + REL_GAP);
         if x - sx > SCR_W || x - sx + REL_W < 0.0 {
             continue;
         }
-        let focused = i as c_int == focus_col;
-        // same shared art card as the episode / chapters strips (portrait poster + tight focus ring)
-        crate::ui::widgets::draw_card(pr, Rect::new(x, row_y, REL_W, REL_H), &r.thumb, (250, 375), 10.0, focused, 1.05);
-        if focused {
-            if let Ok(tc) = CString::new(r.title.clone()) {
-                pr.text(tc.as_ptr(), x, row_y + REL_H + 30.0, 20, theme::TEXT_HEADING, 0, 0);
-            }
+        let s = view().related.scale(i);
+        let rect = Rect::new(x, row_y, REL_W, REL_H).scaled(s);
+        card_row::draw_tile(pr, Art::Thumb { key: &r.thumb, res: (250, 375) }, rect, s, &RowStyle::HOME, None);
+    }
+    if focus_col >= 0 {
+        if let Some(r) = d.related.get(focus_col as usize) {
+            let x = MARGIN_X + focus_col as f32 * (REL_W + REL_GAP);
+            let s = view().related.scale(focus_col as usize);
+            let rect = Rect::new(x, row_y, REL_W, REL_H).scaled(s);
+            let tc = CString::new(r.title.clone()).ok(); // kept alive across the draw call
+            let title = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+            card_row::draw_focused(pr, Art::Thumb { key: &r.thumb, res: (250, 375) }, rect, s, &RowStyle::HOME, None, title);
         }
     }
 }

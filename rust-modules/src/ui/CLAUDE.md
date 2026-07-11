@@ -38,7 +38,8 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 | `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait. |
 | `label.rs` | `Label` — single-run cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
 | `text_view.rs` | `TextView` — multi-line cap-band text: pixel word-wrap + ellipsis + `measure_h`, wrap-cached. |
-| `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, the shared art-card core (`card`/`draw_poster`/`draw_card` + `Art`), plus the poster-resolve helper. |
+| `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, the shared art-tile core (`card`/`draw_card` + `Art`), plus the poster-resolve helper. |
+| `card_row.rs` | `CardRow` — the animated poster-shelf component shared by the home grid and detail Related (`RowStyle::HOME` = the single source of shelf motion+geometry; owns per-cell scale springs + scroll spring + `draw_tile`/`draw_focused`). Callers keep their own x/scroll/z-order loop (home's cross-row focused-last stays in `Grid`). |
 | `table.rs` | `TableView`/`Section`/`Row`/`Badge` — the animated list (settings/track-menu look). |
 | `icons.rs` | `Icon` enum + antialiased SVG rasterizer; color is the `tint` you pass. |
 | `profile.rs` | draw profiler (diagnostic). `profile::phase("name", \|\| draw_x())` brackets a phase with `glFinish` to log its real per-frame GPU cost; on via `/tmp/poc-profile`, zero-overhead off. Use it to find fill/overdraw before guessing. FPS is also logged once/sec (grep `FPS=`). |
