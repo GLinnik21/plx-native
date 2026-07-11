@@ -28,6 +28,37 @@ static mut EP_HSCROLL: Spring = Spring::at(0.0); // episode row horizontal scrol
 // app.rs reads it after start_bufferfeed to seek once the pipeline is ready.
 static mut LAST_RESUME_NS: i64 = 0;
 
+// ---- retained view-tree migration (step 6): the loose statics above fold into DetailView, reached
+// through the lazy view() accessor. The frozen pub(crate) fns become thin forwarders onto its
+// methods (identical signatures). LAZY init (unlike home's eager scene()) because detail has no
+// detail_init C-ABI — open/open_rk are always the first calls, but draw before open must not panic.
+struct DetailView {
+    selected: c_int,
+    section: c_int, // 0=hero buttons, 1=season tabs, 2=episodes, 3=related, 4=cast, 5=about
+    col: c_int,     // focused item within the section
+    scroll: Spring,
+    card_scale: Spring, // focused card-row item pop (springs on selection change)
+    ep_hscroll: Spring, // episode row horizontal scroll — glides instead of snapping
+    last_resume_ns: i64,
+}
+impl DetailView {
+    fn new() -> Self {
+        Self {
+            selected: -1,
+            section: 0,
+            col: 0,
+            scroll: Spring::at(0.0),
+            card_scale: Spring::at(1.0),
+            ep_hscroll: Spring::at(0.0),
+            last_resume_ns: 0,
+        }
+    }
+}
+static mut VIEW: Option<DetailView> = None;
+fn view() -> &'static mut DetailView {
+    unsafe { (*addr_of_mut!(VIEW)).get_or_insert_with(DetailView::new) }
+}
+
 const NBTN: c_int = 3;
 const PW: f32 = 168.0; // Play pill width
 const CGAP: f32 = 20.0;
