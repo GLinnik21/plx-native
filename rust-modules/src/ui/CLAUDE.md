@@ -41,6 +41,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 | `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, the shared art-card core (`card`/`draw_poster`/`draw_card` + `Art`), plus the poster-resolve helper. |
 | `table.rs` | `TableView`/`Section`/`Row`/`Badge` — the animated list (settings/track-menu look). |
 | `icons.rs` | `Icon` enum + antialiased SVG rasterizer; color is the `tint` you pass. |
+| `profile.rs` | draw profiler (diagnostic). `profile::phase("name", \|\| draw_x())` brackets a phase with `glFinish` to log its real per-frame GPU cost; on via `/tmp/poc-profile`, zero-overhead off. Use it to find fill/overdraw before guessing. FPS is also logged once/sec (grep `FPS=`). |
 | `home.rs` / `detail.rs` / `player_hud.rs` / `info_panel.rs` / `track_menu.rs` / `chapters_panel.rs` | **screens** — compose the above; hold their own springs + input. Should contain almost no color literals. |
 
 ## Gotchas that bite
