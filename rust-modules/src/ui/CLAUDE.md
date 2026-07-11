@@ -35,7 +35,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 | File | Owns |
 |---|---|
 | `theme.rs` | **all color tokens** + `scrim`/`scrim_black`/`with_a` helpers + focus-ring geometry consts. The single palette. |
-| `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait. |
+| `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait, and the shared screen primitives `on_axis` (the ONE off-screen cull test — `Painter` has no clip/scissor, so scrolling rows/sections skip off-frame children with it) / `hero_alpha` (the ONE hero-fade curve both screens call) / `ScrollColumn`+`Column` (the scroll-into-content container detail's below-hero flow is composed from). |
 | `label.rs` | `Label` — single-run cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
 | `text_view.rs` | `TextView` — multi-line cap-band text: pixel word-wrap + ellipsis + `measure_h`, wrap-cached. |
 | `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, the shared art-tile core (`card`/`draw_card` + `Art`), plus the poster-resolve helper. |
@@ -53,11 +53,14 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 - **The focus ring/glow is shader-baked** (`gfx.rs` `FS_SRC`): `Painter::ring` exposes only a
   `focus: f32` scalar and the ring *geometry* (`theme::CARD_RING_PAD_*`, `CARD_RING_RAD`). Its color
   cannot be tokenized — don't try, and don't re-add it as a literal.
-- **`detail.rs` below-hero layout is a computed flow, not magic constants.** Every section's Y comes
-  from `section_y()`, which stacks the *present* blocks' `block_h()` heights from `CONTENT_TOP` with
-  one `SECTION_GAP`. To resize/space a section, change its `block_h` (content-derived — e.g. Related
-  tracks `REL_H`=`CARD_H`) or `SECTION_GAP` — never reintroduce a hard-coded per-section Y. Both the
-  draws and `scroll_target` read `section_y`, so they can't drift apart.
+- **`detail.rs` below-hero layout is a computed flow, not magic constants.** The below-hero sections
+  are the children of a shared `ScrollColumn` (`impl Column for DetailView`): the container's
+  `child_top(i)` stacks the *present* blocks' `block_h()` heights (via `Column::height`) from
+  `CONTENT_TOP` with one `SECTION_GAP` (season tabs → episodes hug with `TAB_EP_GAP`). To resize/space
+  a section, change its `block_h` (content-derived — e.g. Related tracks `REL_H`=`CARD_H`) or the gap —
+  never reintroduce a hard-coded per-section Y. `ScrollColumn::draw` culls off-screen sections with
+  `on_axis` and pre-translates each child painter to its origin, so each `draw_*` draws from local
+  y=0; the same `child_top` feeds `scroll_target` (via `lift_target`), so draws and scroll can't drift.
 - **A few things are deliberately immediate-mode** (documented in `docs/ui-system-migration.md` §D):
   home's `Backdrop` per-element alphas, `player_hud`'s `SCR_H`-offset geometry (shared with `app.rs`
   pointer hit-tests), and the subtitle renderer. Leave them; wrapping them in a `View` breaks a

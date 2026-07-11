@@ -201,7 +201,9 @@ pub fn hero_alpha(progress: f32, fade_end: f32) -> f32 {
 /// cull. It holds NO child views (that would force per-frame boxing/dynamic dispatch — banned on the
 /// weak-ARM hot path); instead the caller implements [`Column`] to supply the present children, their
 /// measured heights, gaps, focus, and a local-coord draw. Generic over `impl Column`, so it
-/// monomorphizes with no vtable/alloc.
+/// monomorphizes with no vtable/alloc. `Copy` so a caller holding `&mut self` can copy it out and
+/// pass `self` back as the `&impl Column` without a borrow conflict.
+#[derive(Clone, Copy)]
 pub struct ScrollColumn {
     pub scroll: Spring,
     pub top: f32,    // first child's pre-scroll top

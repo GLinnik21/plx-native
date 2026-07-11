@@ -361,3 +361,44 @@ and is the correct thing to sacrifice.
   fade. → keep both immediate-mode even inside their View structs.
 - **Perf** (#18): no per-frame allocation on the weak-ARM 60fps hot path — View methods and
   `matches!()` stay alloc-free (Painter/Env are Copy); no per-cell boxed Views, no per-frame Vec.
+
+---
+
+## (G) Step 8 — share the scroll/cull/hero infra (DONE; supersedes the "stop at 7a" valve)
+
+The old §E stopped at 7a and the 6.3 valve refused to promote detail's below-hero blocks, citing
+"reflow/perf **with no test**." That blocker went stale once the draw profiler (`ui::profile`,
+glFinish-bracketed per-phase GPU ms, `/tmp/poc-profile`) + the once/sec `FPS=` log landed — reflow and
+fill-rate are now directly measurable on-device. So the migration was extended to unify the two
+screens' *shared* machinery (both are: backdrop → top hero that fades as content scrolls up → hand-rolled
+off-screen culling, since `Painter` has no clip/scissor):
+
+- **8.1** — three retui-core primitives in `mod.rs`: `on_axis(start,extent,span,lead)` (the ONE cull
+  test), `hero_alpha(progress,fade_end)` (the ONE hero-fade curve), and `ScrollColumn`+`Column` (the
+  scroll-into-content container).
+- **8.2** — detail `sections() -> Vec<c_int>` becomes `([c_int;6], usize)` (deletes the one hot-path
+  heap alloc, prerequisite for the container calling `len()/height()` per frame).
+- **8.3** — BOTH screens adopt `on_axis` (all 6 hand-rolled band/index culls) + `hero_alpha` (home's
+  `Env.hero_a`, detail's hero + compact-title crossfade). Home's two culls flip `<=/>=`→`</>`, a
+  zero-visible-pixel edge micro-divergence only. Home keeps its two-pass focused-last grid + Backdrop
+  alphas verbatim.
+- **8.4** — detail's below-hero flow becomes a `ScrollColumn` (`impl Column for DetailView`):
+  `child_top` replaces `section_y` as the sole Y source (deleted), `ScrollColumn::draw` owns the scroll +
+  `on_axis` cull, each `draw_*` draws local-coord (`section_y(N)` → `0.0`) under a pre-translated child
+  painter. **Deviation from the design's full 8.4:** the sections stay free `draw_*` fns and the springs
+  (`card_scale`/`ep_hscroll`/`related`) stay on `DetailView` — NOT promoted to per-section Views owning
+  their springs. This keeps invariant #14 untouched and avoids the reflow/spring-relocation risk for
+  marginal architectural gain; detail still becomes a real container-composed screen sharing the infra.
+- **8.5** — docs (this section + `ui/CLAUDE.md`).
+
+**Home is NOT forced into `ScrollColumn`** — its fixed-pitch grid is not a variable-height document flow,
+so it shares only the two leaf primitives (`on_axis`/`hero_alpha`) and keeps its cross-row focused-last
+draw. `ScrollColumn::draw_with_overlay` exists as the supported hook if home is ever migrated.
+
+Parity was proven by algebra + an adversarial review (child_top(i) == old section_y(s[i+1]) on movie
+and show; cull/scroll/borrow/#14 all sound). On-device profiler/FPS/capture verification is the final gate.
+
+**New stop condition:** stop after 8.5. Off-screen culling and the hero-fade are ONE core mechanism each,
+detail is a container-composed screen, home is unchanged bar the two primitives. **7b (unified FocusPath)
+remains the deferred/optional step** — the profiler does not de-risk the manual snap-boundary sweep, so it
+stays the correct thing to sacrifice.
