@@ -45,7 +45,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 | File | Owns |
 |---|---|
 | `theme.rs` | **all color tokens** + the **`size` type scale** (HERO…CAPTION, floor 24) + `scrim`/`scrim_black`/`with_a`/`dim` helpers + focus-ring geometry consts. The single palette + type ladder. |
-| `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait, and the shared screen primitives `on_axis` (the ONE off-screen cull test — `Painter` has no clip/scissor, so scrolling rows/sections skip off-frame children with it) / `hero_alpha` (the ONE hero-fade curve both screens call) / `ScrollColumn`+`Column` (the scroll-into-content container detail's below-hero flow is composed from). |
+| `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait, and the shared screen primitives `on_axis` (the ONE off-screen cull test the scroll flow uses to skip off-frame children — culling, not the `Painter::clip` scissor) / `hero_alpha` (the ONE hero-fade curve both screens call) / `ScrollColumn`+`Column` (the scroll-into-content container detail's below-hero flow is composed from). |
 | `label.rs` | `Label` — single-run cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
 | `text_view.rs` | `TextView` — multi-line cap-band text: pixel word-wrap + ellipsis + `measure_h`, wrap-cached. |
 | `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, the shared art-tile core (`card`/`draw_card` + `Art`), plus the poster-resolve helper. |
@@ -75,8 +75,14 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
   home's `Backdrop` per-element alphas, `player_hud`'s `SCR_H`-offset geometry (shared with `app.rs`
   pointer hit-tests), and the subtitle renderer. Leave them; wrapping them in a `View` breaks a
   load-bearing contract.
-- **`Painter` has no clip/scissor.** Scrolling rows cull off-frame cells by index and hand-roll edge
-  fade masks — follow that pattern rather than assuming a clip rect exists.
+- **Clipping: prefer culling; use `Painter::clip` only for a hard-bounded panel.** A real GL scissor
+  clip exists now — `Painter::clip(rect)` / `clip_clear()` (backed by `gfx::clip_set`/`clip_clear`). It
+  is **global GL state**, so you MUST pair set/clear inside the same frame (see `TableView::draw`, its
+  one user — a fixed panel whose overflowing list is cut cleanly at the frame). Do NOT reach for it in
+  the big scroll flow: `ScrollColumn`/the shelves deliberately **cull** off-frame children by index
+  (`on_axis`) instead, which avoids per-frame scissor churn and needs no clean-up. So: bounded list/panel
+  → `clip`; long scrolling document → cull. (The old edge-fade-mask trick is gone — a linear fade can't
+  cut a tall two-line row evenly, which read as a broken clip; scissor replaced it.)
 
 ## When you're done
 
