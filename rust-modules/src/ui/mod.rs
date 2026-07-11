@@ -167,3 +167,99 @@ impl Painter {
         crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
     }
 }
+
+// ---- Shared scroll / cull / hero primitives -------------------------------------------------
+// Both screens (home, detail) have the same shape: a top hero that fades as below-hero content
+// scrolls up over it, with off-screen children skipped BY HAND because `Painter` has no clip/scissor
+// (this is an immediate-mode renderer — every frame clears + redraws the whole tree, so the way to
+// "avoid drawing" is to CULL what isn't visible, not to dirty-track what changed). These are the ONE
+// mechanism each: `on_axis` is the single off-screen cull test both screens call; `hero_alpha` the
+// single hero-fade curve. `ScrollColumn`/`Column` is the scroll-into-content container detail
+// composes its below-hero flow from (home's fixed-pitch grid is not a document flow, so it uses only
+// the two leaf fns and keeps its own two-pass focused-last draw).
+
+/// Is a child visible along one axis? `start` = its leading edge ALREADY in screen space (the caller
+/// subtracted the scroll/offset), `extent` = its size along the axis, `span` = the viewport extent
+/// (`SCR_W`/`SCR_H`), `lead` = slack past the near (0) edge (e.g. home's `GLOW_PAD` room for the
+/// focus glow). Pure + `#[inline]`, so culling stays zero-alloc on the hot path.
+#[inline]
+pub fn on_axis(start: f32, extent: f32, span: f32, lead: f32) -> bool {
+    start < span && start + extent.max(1.0) > -lead
+}
+
+/// The hero-fade curve: a top hero fades to 0 as `progress` rises to `fade_end`. The caller keeps its
+/// own `fade_end` (home 0.55 on the snap continuum, detail 400px of scroll) so the motion constants
+/// stay byte-identical at the call site. `1.0 - hero_alpha(..)` is the complementary compact-title
+/// alpha.
+#[inline]
+pub fn hero_alpha(progress: f32, fade_end: f32) -> f32 {
+    (1.0 - progress / fade_end).clamp(0.0, 1.0)
+}
+
+/// A vertical scroll-into-content container: owns the scroll `Spring` + the cumulative child flow
+/// ([`child_top`](ScrollColumn::child_top), the single below-hero Y source) + the off-screen band
+/// cull. It holds NO child views (that would force per-frame boxing/dynamic dispatch — banned on the
+/// weak-ARM hot path); instead the caller implements [`Column`] to supply the present children, their
+/// measured heights, gaps, focus, and a local-coord draw. Generic over `impl Column`, so it
+/// monomorphizes with no vtable/alloc.
+pub struct ScrollColumn {
+    pub scroll: Spring,
+    pub top: f32,    // first child's pre-scroll top
+    pub margin: f32, // the focused child lifts to this distance from the screen top
+}
+
+/// The content a [`ScrollColumn`] lays out: the PRESENT children in document order, their measured
+/// heights + inter-child gaps, which one holds focus (never culled), and a local-coord draw (the
+/// `Painter` is pre-translated to the child's origin, so the child draws from y=0).
+pub trait Column {
+    fn len(&self) -> usize;
+    fn height(&self, i: usize) -> f32;
+    fn gap_before(&self, i: usize) -> f32;
+    fn focus_child(&self) -> Option<usize>;
+    fn draw_child(&self, i: usize, env: &Env, p: Painter);
+}
+
+impl ScrollColumn {
+    pub const fn new(top: f32, margin: f32) -> Self {
+        Self { scroll: Spring::at(0.0), top, margin }
+    }
+    /// The pre-scroll top of child `i`: stacks the present children's heights from `top`, adding
+    /// `gap_before(k)` before each child k>0. This IS the flow — the single below-hero Y source.
+    pub fn child_top(&self, c: &impl Column, i: usize) -> f32 {
+        let mut y = self.top;
+        for k in 1..=i {
+            y += c.gap_before(k);
+            y += c.height(k - 1);
+        }
+        y
+    }
+    /// The scroll offset that lifts child `i`'s top to `margin` (clamped at 0).
+    pub fn lift_target(&self, c: &impl Column, i: usize) -> f32 {
+        (self.child_top(c, i) - self.margin).max(0.0)
+    }
+    /// Draw every present child, scrolled and band-culled — off-screen children are SKIPPED (never
+    /// clipped; `Painter` has no scissor). The focused child is never culled (the scroll keeps it at
+    /// `margin`). The child `Painter` is pre-translated to the child origin, so children draw 0-based.
+    pub fn draw(&self, c: &impl Column, env: &Env, p: Painter) {
+        let ps = p.translate(0.0, -self.scroll.pos);
+        let f = c.focus_child();
+        let mut y = self.top;
+        for i in 0..c.len() {
+            if i > 0 {
+                y += c.gap_before(i);
+            }
+            let h = c.height(i);
+            if Some(i) == f || on_axis(y - self.scroll.pos, h, env.screen.h, 0.0) {
+                c.draw_child(i, env, ps.translate(0.0, y));
+            }
+            y += h;
+        }
+    }
+    /// [`Self::draw`] then a DEFERRED overlay pass on the scrolled layer — the supported hook for a
+    /// focused-last / cross-row z-order carve-out (home's single focused card would go here if home
+    /// were ever a `Column`; detail's sections don't overlap, so detail just calls [`Self::draw`]).
+    pub fn draw_with_overlay(&self, c: &impl Column, env: &Env, p: Painter, overlay: impl FnOnce(Painter)) {
+        self.draw(c, env, p);
+        overlay(p.translate(0.0, -self.scroll.pos));
+    }
+}
