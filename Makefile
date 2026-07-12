@@ -20,13 +20,13 @@ RUN_SECS ?= 18
 ZIG       = zig cc -target arm-linux-gnueabi.2.24 -mcpu=cortex_a53
 CFLAGS    = -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE  # -Isrc: module cross-headers; -Ivendor/nanosvg: runtime SVG rasterizer (src/svg.c); -D_GNU_SOURCE: strcasestr
 LIBS      = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 -lAcbAPI \
-            -lwayland-client -lplayerAPIs -lavformat -lavcodec -lavutil
+            -lwayland-client -lplayerAPIs -lavformat -lavcodec -lavutil -lcurl
 STUBFLAGS = -shared -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables
 
 STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
         stub/libwayland-client.so stub/libluna-service2.so stub/libglib-2.0.so \
         stub/libAcbAPI.so stub/libplayerAPIs.so \
-        stub/libavformat.so stub/libavcodec.so stub/libavutil.so
+        stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libcurl.so
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
@@ -88,6 +88,9 @@ stub/libavcodec.so: stub/avcodec_stub.c
 	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavcodec.so.57 -o $@ $<
 stub/libavutil.so: stub/avutil_stub.c
 	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavutil.so.55 -o $@ $<
+# libcurl (present on the TV): HTTPS/DNS/TLS for the plex.tv account+login calls (net.rs).
+stub/libcurl.so: stub/curl_stub.c
+	$(ZIG) $(STUBFLAGS) -Wl,-soname,libcurl.so.5 -o $@ $<
 
 # tmp+mv so deploy works while the old binary is still executing (ETXTBSY)
 deploy: pkg/plexpoc

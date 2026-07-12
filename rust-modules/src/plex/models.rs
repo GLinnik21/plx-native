@@ -43,6 +43,8 @@ pub struct LibrarySection {
 pub struct Hub {
     #[serde(rename = "type", default)]
     pub kind: String,
+    #[serde(rename = "hubIdentifier", default)]
+    pub hub_identifier: String, // e.g. home.continue, home.ondeck — stable, locale-independent
     #[serde(default)]
     pub title: String,
     #[serde(rename = "Metadata", default)]
@@ -74,6 +76,8 @@ pub struct Metadata {
     pub duration: i64, // ms
     #[serde(rename = "viewOffset", default, deserialize_with = "de_i64")]
     pub view_offset: i64, // ms; resume point
+    #[serde(rename = "lastViewedAt", default, deserialize_with = "de_i64")]
+    pub last_viewed_at: i64, // unix secs; drives Continue Watching recency sort
     #[serde(default, deserialize_with = "de_i64")]
     pub index: i64, // season/episode number
     #[serde(rename = "parentIndex", default, deserialize_with = "de_i64")]

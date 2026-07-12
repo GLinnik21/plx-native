@@ -9,6 +9,7 @@
 
 use std::os::raw::{c_char, c_int};
 
+pub mod account_menu; // Home top-left profile popover (change profile / sign out)
 pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;
@@ -18,6 +19,8 @@ pub mod home;
 pub mod icons;
 pub mod info_panel;
 pub mod label;
+pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
 pub mod profile;
 pub mod table;

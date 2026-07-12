@@ -50,6 +50,24 @@ pub mod size {
     pub const CAPTION: c_int = 24;
 }
 
+/// The **spacing scale** — the vertical/horizontal *gap* axis of the design system, the sibling of
+/// [`size`]. Gaps between stacked elements come from a named rung, never a hand-tuned pixel offset,
+/// so vertical rhythm stays consistent instead of drifting per-screen (the same reason colours and
+/// sizes are tokenised). Rungs step ~1.6×; a gap picks the nearest rung by role. Positions still
+/// flow off *measured* element heights — a rung is the gap *between* blocks, not an absolute Y.
+pub mod space {
+    /// Hairline gap — an icon and its label, chips in a row.
+    pub const XS: f32 = 8.0;
+    /// Tight — closely related lines (a meta line under its title).
+    pub const SM: f32 = 16.0;
+    /// Default — a heading and its body text, label→value pairs.
+    pub const MD: f32 = 24.0;
+    /// Block gap — one content block to the next (synopsis → action row).
+    pub const LG: f32 = 40.0;
+    /// Major gap — separates whole regions (a title band from the metadata beneath it).
+    pub const XL: f32 = 64.0;
+}
+
 // ── Accent / control ─────────────────────────────────────────────────────────
 /// The mockup's "Snow": warm off-white focus fill (#e9e6e0). Focused controls fill this.
 pub const ACCENT: [f32; 4] = [0.914, 0.902, 0.878, 1.0];

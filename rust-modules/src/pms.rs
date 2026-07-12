@@ -154,10 +154,29 @@ fn parse_item(m: &mut PmsMovie, it: &crate::plex::Metadata) {
 // ---- home hubs: each hub is a titled slice of the catalog (pms_movies) ----
 struct HubRow {
     title: String,
+    hub_id: String, // locale-independent hubIdentifier ("home.continue", "home.movies.recent", …)
     start: usize,
     len: usize,
 }
 static mut HUBS: Vec<HubRow> = Vec::new();
+
+// ---- rotating hero pool: curated catalog indices (Continue Watching then Recently Added) ----
+const HERO_MAX: usize = 8;
+static mut HERO_POOL: Vec<usize> = Vec::new();
+
+/// number of items in the rotating hero pool
+pub(crate) fn hero_pool_len() -> usize {
+    unsafe { std::ptr::addr_of!(HERO_POOL).as_ref().map(|v| v.len()).unwrap_or(0) }
+}
+/// pointer to hero-pool item `i`, or null
+pub(crate) fn hero_pool_ptr(i: usize) -> *mut PmsMovie {
+    unsafe {
+        if let Some(&idx) = std::ptr::addr_of!(HERO_POOL).as_ref().and_then(|v| v.get(i)) {
+            return movie_ptr(idx);
+        }
+    }
+    std::ptr::null_mut()
+}
 
 /// number of home hubs
 pub(crate) fn hub_count() -> usize {
@@ -200,21 +219,57 @@ pub(crate) fn pms_fetch_hubs() -> c_int {
         let movies =
             std::slice::from_raw_parts_mut(std::ptr::addr_of_mut!(pms_movies) as *mut PmsMovie, PMS_MAX_MOVIES);
         const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
-        let mut n = 0usize;
+
+        // Build the display shelves as ordered lists of item refs. Continue Watching
+        // (home.continue) and On Deck (home.ondeck) are merged into one "Continue
+        // Watching" shelf — the official-app behaviour: in-progress items unified with
+        // next-up episodes, deduped by ratingKey (the same episode carries one rk in
+        // both hubs; a next-up episode has its own). The merged shelf is then sorted by
+        // lastViewedAt desc so "most recently played" leads, interleaving resume points
+        // and next-up by recency rather than by which hub they came from.
+        let mut shelves: Vec<(String, String, Vec<&crate::plex::Metadata>)> = Vec::new(); // (title, hubIdentifier, items)
+        let mut cw_idx: Option<usize> = None; // shelves slot of the merged Continue Watching
+        let mut cw_seen: Vec<&str> = Vec::new(); // ratingKeys already merged in
         for hub in &mc.hub {
-            if SKIP.contains(&hub.kind.as_str()) {
+            if SKIP.contains(&hub.kind.as_str()) || hub.metadata.is_empty() {
                 continue;
             }
-            if hub.metadata.is_empty() {
-                continue;
+            if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
+                if cw_idx.is_none() {
+                    // synthetic id: the merged shelf spans home.continue + home.ondeck; tag it with
+                    // the former so the hero-pool eligibility can recognize it locale-independently.
+                    shelves.push(("Continue Watching".to_string(), "home.continue".to_string(), Vec::new()));
+                    cw_idx = Some(shelves.len() - 1);
+                }
+                let si = cw_idx.unwrap();
+                for item in &hub.metadata {
+                    if SKIP.contains(&item.kind.as_str()) {
+                        continue;
+                    }
+                    let rk = item.rating_key.as_str();
+                    if !rk.is_empty() && cw_seen.contains(&rk) {
+                        continue;
+                    }
+                    if !rk.is_empty() {
+                        cw_seen.push(rk);
+                    }
+                    shelves[si].2.push(item);
+                }
+            } else {
+                shelves.push((hub.title.clone(), hub.hub_identifier.clone(), hub.metadata.iter().collect()));
             }
+        }
+        if let Some(si) = cw_idx {
+            // stable sort: most recently played first; equal timestamps keep hub order.
+            shelves[si].2.sort_by(|a, b| b.last_viewed_at.cmp(&a.last_viewed_at));
+        }
+
+        let mut n = 0usize;
+        for (title, hub_id, items) in &shelves {
             let start = n;
-            for item in &hub.metadata {
+            for item in items {
                 if n >= PMS_MAX_MOVIES {
                     break;
-                }
-                if SKIP.contains(&item.kind.as_str()) {
-                    continue;
                 }
                 let m = &mut movies[n];
                 parse_item(m, item);
@@ -224,11 +279,42 @@ pub(crate) fn pms_fetch_hubs() -> c_int {
             }
             if n > start {
                 if let Some(v) = std::ptr::addr_of_mut!(HUBS).as_mut() {
-                    v.push(HubRow { title: hub.title.clone(), start, len: n - start });
+                    v.push(HubRow { title: title.clone(), hub_id: hub_id.clone(), start, len: n - start });
                 }
             }
         }
         std::ptr::write(std::ptr::addr_of_mut!(pms_nmovies), n as c_int);
+
+        // Rebuild the rotating hero pool: Continue Watching items first, then Recently Added,
+        // deduped by ratingKey. Require landscape `art` (the hero draws a full-bleed backdrop) and
+        // skip seasons (a bare "Season 1" makes a poor billboard). Capped at HERO_MAX.
+        if let Some(pool) = std::ptr::addr_of_mut!(HERO_POOL).as_mut() {
+            pool.clear();
+            if let Some(hubs) = std::ptr::addr_of!(HUBS).as_ref() {
+                for hub in hubs {
+                    // Match on the locale-independent hubIdentifier, not the localized display title:
+                    // "home.continue" plus every Recently Added variant (home.movies.recent,
+                    // home.television.recent, promoted <type>.recentlyadded.<id>) all carry "recent".
+                    let eligible = hub.hub_id == "home.continue" || hub.hub_id.contains("recent");
+                    if !eligible {
+                        continue;
+                    }
+                    for idx in hub.start..hub.start + hub.len {
+                        if pool.len() >= HERO_MAX {
+                            break;
+                        }
+                        let m = &movies[idx];
+                        if m.art[0] == 0 || m.kind == 2 {
+                            continue; // need landscape art; skip seasons
+                        }
+                        if pool.iter().any(|&j| movies[j].rk == m.rk) {
+                            continue; // dedup by ratingKey
+                        }
+                        pool.push(idx);
+                    }
+                }
+            }
+        }
         n as c_int
     });
     r.unwrap_or(0)
