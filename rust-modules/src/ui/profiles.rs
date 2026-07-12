@@ -143,7 +143,7 @@ pub fn draw() {
         let cx = start_x + i as f32 * slot + sty.w * 0.5 - scroll;
         let base = Rect::new(cx - sty.w * 0.5, ROW_Y, sty.w, sty.h);
         let sc = s.row.scale(i);
-        card_row::draw_focused(p, Art::Thumb { key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, std::ptr::null());
+        card_row::draw_focused(p, Art::Thumb { key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, std::ptr::null(), std::ptr::null());
         draw_name(p, u, cx, true);
     }
 
