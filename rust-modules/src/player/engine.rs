@@ -638,9 +638,11 @@ const SEEK_STALE_BEHIND_NS: i64 = 30_000_000_000;
 const MAX_REBASE_DROPS: i32 = 240;
 // Audio counterpart of the rebase guard: an audio AU this far AHEAD of the video high-water is a
 // stale drifted frame (the demuxer's pre-reopen audio after a seek). Feeding it poisons
-// max_fed_audio_pts and stalls the audio master clock. Normal audio never leads the video by this
-// much (both feed ~MAX_FEED_AHEAD ahead of the presented position), so this only catches stale AUs.
-const AUDIO_STALE_AHEAD_NS: i64 = 15_000_000_000;
+// max_fed_audio_pts (and then the backjump guard drops all LEGIT audio until the demux catches
+// up to the poisoned mark → seconds of silence). Legit audio lead is bounded by the throttle to
+// ~MAX_FEED_AHEAD+AUDIO_SLACK (3.6s), so 5s has margin. It was 15s, and a stuck-retry seek fed
+// stale audio 14.9s ahead — 13s of user-audible silence after a rapid 10s-back tap burst.
+const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 // Sentinel for SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
 // throttle treats it as feed-freely (don't compare the new fed pts against a stale pre-seek
 // presented position). Set on a seek; the first presented frame overwrites it with a real pts.
