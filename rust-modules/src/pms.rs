@@ -28,13 +28,15 @@ pub struct PmsMovie {
     pub(crate) resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub(crate) show_rk: [u8; 16],   // parent show rk (episode: grandparent; season: parent)
     pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
+    pub(crate) show_title: [u8; 128], // episode only: grandparentTitle (the hero headlines the SHOW)
+    pub(crate) ep_index: c_int,       // episode only: episode number within the season
 }
 impl PmsMovie {
     const ZERO: PmsMovie = PmsMovie {
         title: [0; 128], year: 0, rating: [0; 12], dur_ns: 0, part: [0; 256],
         thumb: [0; 128], art: [0; 128], summary: [0; 600], rk: [0; 16],
         vcodec: [0; 12], acodec: [0; 12], blur: [[0.0; 3]; 4], has_blur: 0, kind: 0, resume_ms: 0,
-        show_rk: [0; 16], season_index: 0,
+        show_rk: [0; 16], season_index: 0, show_title: [0; 128], ep_index: 0,
     };
 }
 
@@ -104,6 +106,8 @@ fn parse_item(m: &mut PmsMovie, it: &crate::plex::Metadata) {
             // episode: parent show = grandparent, season number = parentIndex
             set_field(&mut m.show_rk, &it.grandparent_rating_key);
             m.season_index = it.parent_index as c_int;
+            set_field(&mut m.show_title, &it.grandparent_title);
+            m.ep_index = it.index as c_int;
         }
         2 => {
             // season: parent show = parent, season number = index
@@ -193,6 +197,17 @@ pub(crate) fn hub_title(i: usize) -> &'static str {
 pub(crate) fn hub_len(i: usize) -> usize {
     unsafe { std::ptr::addr_of!(HUBS).as_ref().and_then(|v| v.get(i)).map(|h| h.len).unwrap_or(0) }
 }
+/// whether hub `i` is the merged Continue Watching shelf (its tiles play directly on OK, so the
+/// home grid stamps the play-hint badge on them). Matched on the locale-independent hubIdentifier.
+pub(crate) fn hub_is_continue(i: usize) -> bool {
+    unsafe {
+        std::ptr::addr_of!(HUBS)
+            .as_ref()
+            .and_then(|v| v.get(i))
+            .map(|h| h.hub_id == "home.continue")
+            .unwrap_or(false)
+    }
+}
 /// pointer to item `col` of hub `hub`, or null
 pub(crate) fn hub_item_ptr(hub: usize, col: usize) -> *mut PmsMovie {
     unsafe {
@@ -203,6 +218,15 @@ pub(crate) fn hub_item_ptr(hub: usize, col: usize) -> *mut PmsMovie {
         }
     }
     std::ptr::null_mut()
+}
+
+/// Refetch the home hubs and reconcile the surfaces that index into the rebuilt catalog: an open
+/// detail page re-resolves its selected row (home's focus self-clamps at its read accessors).
+/// The ONE post-mutation refresh ritual — player exit and the watched toggle both call this.
+pub(crate) fn refetch_hubs_reconcile() -> c_int {
+    let n = pms_fetch_hubs();
+    crate::ui::detail::reselect();
+    n
 }
 
 /// Fetch the home hubs (Continue Watching, On Deck, Recently Added, collections) into

@@ -98,8 +98,10 @@ audio frames.
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
-  contribution guide — read it before touching UI: use tokens + components, never inline colors or
-  hand-place text.** Full design/status: `docs/ui-system-migration.md`.
+  contribution guide — read it before touching UI: use tokens + components, never inline colors,
+  never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
+  a documented rung when a new role needs one), never hand-place text.** Full design/status:
+  `docs/ui-system-migration.md`.
 - `src/stream.h` — blocking HTTP/1.1 GET over a raw TCP socket (numeric IP, Content-Length/close
   delimited; **no chunked decoding**, no DNS).
 - `src/mkv.h` — streaming Matroska demuxer → H264 Annex-B AUs + raw audio frames; also parses

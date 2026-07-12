@@ -11,7 +11,7 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton};
+use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton, ControlStyle};
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -47,7 +47,7 @@ impl DetailView {
             selected: -1,
             section: 0,
             col: 0,
-            column: ScrollColumn::new(CONTENT_TOP, TOP_MARGIN),
+            column: ScrollColumn::new(CONTENT_TOP, TOP_MARGIN), // top re-derived per frame (update)
             card_scale: Spring::at(1.0),
             ep_hscroll: Spring::at(0.0),
             tab_hscroll: Spring::at(0.0),
@@ -64,7 +64,7 @@ fn view() -> &'static mut DetailView {
     unsafe { (*addr_of_mut!(VIEW)).get_or_insert_with(DetailView::new) }
 }
 
-const NBTN: c_int = 3;
+const NBTN: c_int = 2; // Play + watched toggle (an info disc would be a no-op on its own page)
 const PW: f32 = 168.0; // Play pill width
 const CGAP: f32 = 20.0;
 const CD: f32 = 60.0; // circle button diameter
@@ -77,15 +77,15 @@ const CD: f32 = 60.0; // circle button diameter
 // REL_H → the shared home poster size), so resizing one block reflows everything below it. The
 // container's scroll lifts the focused block's top to TOP_MARGIN under the compact title.
 const TOP_MARGIN: f32 = 120.0;
-const CONTENT_TOP: f32 = 920.0; // first block sits just under the hero buttons
-const SECTION_GAP: f32 = 110.0; // vertical padding between top-level blocks
-const TAB_EP_GAP: f32 = 21.0; // season tabs → their episode row (they read as one unit)
+const CONTENT_TOP: f32 = 920.0; // nominal flow top; update() re-derives it from the hero buttons
+const SECTION_GAP: f32 = theme::space::XL; // vertical padding between top-level blocks (64)
+const TAB_EP_GAP: f32 = theme::space::MD; // season tabs → their episode row (they read as one unit)
 const SCROLLED: f32 = CONTENT_TOP - TOP_MARGIN; // backdrop-dim saturation reference (= 800)
+const BTN_CONTENT_GAP: f32 = theme::space::XL; // hero button row → first below-hero block (64)
 
 // Season tabs (header for the episode row)
-const TAB_ROW_H: f32 = 44.0;
+const TAB_ROW_H: f32 = CD; // tab pills stand as tall as the hero buttons (one control height)
 const TAB_ADVANCE: f32 = 52.0; // per-tab horizontal advance past the label width
-const TAB_LEAD: f32 = 200.0; // context kept left of the focused tab once the row scrolls
 const SEASON_SETTLE: f32 = 0.2; // hold a season tab this long (s) before its episodes are fetched
 // Episodes: landscape stills + under-card metadata
 const EP_W: f32 = 420.0;
@@ -97,9 +97,8 @@ const EP_GAP: f32 = 28.0;
 const EP_META_TOP: f32 = 30.0; // still bottom → kicker
 const EP_TITLE_DY: f32 = 34.0; // kicker → title
 const EP_TITLE_LEAD: f32 = 30.0; // title line pitch (title wraps to at most 2 lines)
-const EP_TITLE_DATE_GAP: f32 = 10.0; // title bottom → date (flows off the ACTUAL title height)
-const EP_DATE_H: f32 = 30.0; // date line height
-const EP_DATE_SUMMARY_GAP: f32 = 10.0; // date → summary
+const EP_TITLE_DATE_GAP: f32 = 12.0; // title last-line BASELINE → date cap top (cap-band derived)
+const EP_DATE_SUMMARY_GAP: f32 = 12.0; // date baseline → summary cap top
 const EP_SUMMARY_LEAD: f32 = 30.0;
 const EP_SUMMARY_MAXLINES: usize = 8; // bounds the pathological case; ordinary episode blurbs fit fully
 const EP_META_BOT_PAD: f32 = 24.0;
@@ -199,9 +198,16 @@ fn ep_meta_layout(title: &str, aired: &str, summary: &str) -> (f32, f32, f32) {
         .leading(EP_TITLE_LEAD)
         .max_lines(2)
         .measure_h(EP_W);
-    let date_y = EP_TITLE_DY + title_h + EP_TITLE_DATE_GAP;
+    // Cap-band-derived pacing: the date hangs EP_TITLE_DATE_GAP under the title's last-line INK
+    // (baseline), not under its leading box — the leading slack + raw-texture anchoring used to
+    // make the title→date air read visibly wider than kicker→title. (`date_y` stays a raw
+    // Painter::text draw-y; the cap offsets translate ink-space gaps into it.)
+    let (lt, lb) = crate::text::text_cap_band(theme::size::LABEL, 1); // title cap-top/baseline offsets
+    let (ct, cb) = crate::text::text_cap_band(theme::size::CAPTION, 0); // date offsets
+    let title_base = EP_TITLE_DY + (title_h - EP_TITLE_LEAD) + (lb - lt); // last-line baseline below ty
     let has_date = !pretty_date(aired, 0).is_empty();
-    let summary_y = if has_date { date_y + EP_DATE_H + EP_DATE_SUMMARY_GAP } else { date_y };
+    let date_y = title_base + EP_TITLE_DATE_GAP - ct;
+    let summary_y = if has_date { date_y + cb + EP_DATE_SUMMARY_GAP } else { title_base + EP_TITLE_DATE_GAP };
     let summary_h = if summary.is_empty() {
         0.0
     } else {
@@ -371,48 +377,80 @@ pub(crate) fn move_focus(sym: c_int) {
     }
 }
 
-/// content-space left edge (px) of the focused season tab — sums the widths of the tabs before it,
-/// mirroring draw_tabs' `x` advance so the scroll target and the draw can't drift.
-fn tab_focus_left() -> f32 {
+/// content-space geometry (label x, label width) of the focused season tab — sums the widths of
+/// the tabs before it, mirroring draw_tabs' `x` advance so the scroll target and the draw can't
+/// drift.
+fn tab_focus_geom() -> (f32, f32) {
     let d = match metadata::current() {
         Some(d) => d,
-        None => return MARGIN_X,
+        None => return (MARGIN_X, 0.0),
     };
     let col = view().col.max(0) as usize;
     let mut x = MARGIN_X;
     for (i, s) in d.seasons.iter().enumerate() {
-        if i == col {
-            break;
-        }
         let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
-        if let Ok(lc) = CString::new(label) {
-            x += crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1) + TAB_ADVANCE;
+        let w = CString::new(label)
+            .ok()
+            .map(|lc| crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1))
+            .unwrap_or(0.0);
+        if i == col {
+            return (x, w);
         }
+        x += w + TAB_ADVANCE;
     }
-    x
+    (x, 0.0)
 }
-/// season-tab-row horizontal scroll target: keep the focused tab on-screen with ~one tab of context
-/// to its left; 0 (glide back to the start) when the tab row isn't the focused section.
+/// season-tab-row horizontal scroll target: minimal scroll-into-view (the CardRow rule) — move
+/// only when the focused tab's pill (± one tab-gap of context) would clip the viewport; 0 (glide
+/// back to the start) when the tab row isn't the focused section.
 fn tab_hscroll_target() -> f32 {
-    if view().section != 1 {
+    let v = view();
+    if v.section != 1 {
         return 0.0;
     }
-    (tab_focus_left() - MARGIN_X - TAB_LEAD).max(0.0)
+    let (x, w) = tab_focus_geom();
+    let lo = x + w + 18.0 + TAB_ADVANCE - (SCR_W - MARGIN_X); // pill right edge (+context) on screen
+    let hi = x - 18.0 - TAB_ADVANCE - MARGIN_X; // pill left edge (−context) on screen
+    card_row::reveal(v.tab_hscroll.pos, lo, hi, f32::MAX) // no content-max: hi already bounds it
 }
 
-/// episode-row horizontal scroll target: pin the focused card to the 2nd slot (0 when the episode
-/// row isn't the focused section, so it glides back to the start)
+/// episode-row horizontal scroll target: minimal scroll-into-view via the shared CardRow rule
+/// (0 when the episode row isn't the focused section, so it glides back to the start)
 fn ep_hscroll_target() -> f32 {
     let v = view();
-    let (sec, col) = (v.section, v.col);
-    if sec == 2 && col > 1 {
-        (col as f32 - 1.0) * (EP_W + EP_GAP)
-    } else {
-        0.0
+    if v.section != 2 {
+        return 0.0;
     }
+    let n = n_items(2).max(0) as usize;
+    card_row::scroll_into_view(v.ep_hscroll.pos, v.col.max(0) as usize, n, EP_W, EP_GAP, SCR_W - 2.0 * MARGIN_X)
+}
+
+/// The ONE hero-synopsis TextView (rung / leading / line cap live here once) — shared by the
+/// flow measure (hero_layout) and the paint (draw_hero) so they cannot diverge.
+fn hero_synopsis(summary: &str) -> TextView<'_> {
+    TextView::new(summary, theme::size::MICRO, theme::TEXT_SECONDARY).leading(27.0).max_lines(4)
+}
+
+/// The hero text column's y-chain — title bottom (566) → meta (+36) → synopsis (+46, MEASURED) →
+/// date (+20) → buttons (+46) — computed ONCE for both the painter (draw_hero) and the flow
+/// (update()'s column.top), so the pixels and the scroll math cannot desync. A 4-line synopsis
+/// used to push the Play pill to within 2px of the season tabs; the flow now keeps one
+/// standardized gap (`BTN_CONTENT_GAP`) under the buttons for every title.
+/// Returns (meta_y, syn_y, date_y, btn_y).
+fn hero_layout(m: Option<&PmsMovie>) -> (f32, f32, f32, f32) {
+    let d = metadata::current();
+    let owned = if d.is_none() { m.map(|m| cfield(&m.summary)).unwrap_or_default() } else { String::new() };
+    let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&owned);
+    let syn_h = if summary.is_empty() { 0.0 } else { hero_synopsis(summary).measure_h(900.0) };
+    let meta_y = 566.0 + 36.0;
+    let syn_y = meta_y + 46.0;
+    let date_y = syn_y + syn_h.max(34.0) + 20.0;
+    (meta_y, syn_y, date_y, date_y + 46.0)
 }
 
 pub(crate) fn update(dt: f32) {
+    // the flow top rides the measured hero: buttons bottom + one standardized gap (hero_layout)
+    view().column.top = hero_layout(selected()).3 + CD + BTN_CONTENT_GAP;
     // targets read view() internally — compute them before borrowing v for the springs
     let sct = scroll_target();
     let hst = ep_hscroll_target();
@@ -465,9 +503,15 @@ pub(crate) fn draw() {
     if hero_a > 0.01 {
         phase("dt.hero", || draw_hero(ps.alpha(hero_a), &env, m));
     }
-    // compact centered title fades in at the top of the scrolled view (pinned, not scrolled)
+    // compact centered title fades in at the top of the scrolled view (pinned, not scrolled) —
+    // but only while the scroll sits in the season/episode band; diving into cast/related/about
+    // fades it back out (the logo identifies the show while season-browsing, then gets out of the
+    // way — it doesn't fit the tightened section gap anyway).
     if hero_a < 0.99 {
-        phase("dt.ctitle", || draw_compact_title(p.alpha(1.0 - hero_a), m));
+        let la = (1.0 - hero_a) * compact_title_vis(scroll);
+        if la > 0.01 {
+            phase("dt.ctitle", || draw_compact_title(p.alpha(la), m));
+        }
     }
     // Below-hero sections through the shared ScrollColumn: it owns the flow (child_top == the old
     // section_y), the scroll, and the off-screen cull (on_axis) — Painter has no clip/scissor, so a
@@ -606,27 +650,21 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
             parts.push(&d.rating);
         }
     }
-    let meta_y = title_bottom + 36.0;
+    // the whole y-chain below comes from the ONE shared layout (also feeds the scroll flow)
+    let (meta_y, syn_y, date_y, btn_y) = hero_layout(m);
     if let Ok(mc) = CString::new(parts.join("   \u{b7}   ")) {
         p.text(mc.as_ptr(), tx, meta_y, theme::size::BODY, d_a, 0, 0);
     }
 
-    // ---- synopsis: pixel-wrapped to the hero text column, up to 4 lines; the date/buttons below
-    // flow off its MEASURED height so a long synopsis pushes them down instead of overlapping ----
+    // ---- synopsis: the shared fine-print TextView (hero_synopsis — one size app-wide, matches
+    // the home hero); its measured height is already folded into date_y/btn_y by hero_layout ----
     let summary_owned = if d.is_none() { m.map(|m| cfield(&m.summary)).unwrap_or_default() } else { String::new() };
     let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&summary_owned);
-    let syn_y = meta_y + 46.0;
-    let syn_h = if !summary.is_empty() {
-        TextView::new(summary, theme::size::BODY, d_a)
-            .leading(34.0)
-            .max_lines(4)
-            .draw(p, Rect::new(tx, syn_y, 900.0, 0.0))
-    } else {
-        0.0
-    };
+    if !summary.is_empty() {
+        hero_synopsis(summary).draw(p, Rect::new(tx, syn_y, 900.0, 0.0));
+    }
 
     // ---- date · runtime ----
-    let date_y = syn_y + syn_h.max(34.0) + 20.0;
     if let Some(d) = d {
         let mut info = pretty_date(&d.aired, d.year);
         if d.dur_ms >= 60_000 {
@@ -640,8 +678,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         }
     }
 
-    // ---- buttons ----
-    let btn_y = date_y + 46.0;
+    // ---- buttons (btn_y from hero_layout) ----
     draw_buttons(p, env, btn_y);
 
     // ---- "Starring …" right-aligned near the bottom-right ----
@@ -660,18 +697,46 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // One shared control family (widgets::Button/CircleButton, default ControlStyle::Accent — the
     // same as the info card): the focused control fills warm ACCENT with dark ink, the rest are
-    // solid dark discs. Play reuses the pill Button; +/i are the disc CircleButton.
+    // solid dark discs. Play reuses the pill Button; the check disc is the watched toggle (its
+    // glyph lights RESUME amber while the item is marked watched).
     let tx = MARGIN_X;
     let focus = focus();
     let cx1 = tx + PW + CGAP;
-    let cx2 = cx1 + CD + CGAP;
 
     Button::new(c"Play".as_ptr(), theme::size::BODY, Rect::new(tx, y, PW, CD))
         .icon(crate::ui::icons::Icon::Play)
         .focused(focus == 0)
         .draw(env, p);
-    CircleButton::new(c"+".as_ptr()).at(cx1, y).focused(focus == 1).draw(env, p);
-    CircleButton::new(c"i".as_ptr()).at(cx2, y).focused(focus == 2).draw(env, p);
+    let watched = metadata::current().map(|d| d.watched).unwrap_or(false);
+    let wstyle = if watched && focus != 1 {
+        ControlStyle::Custom { fill: theme::CONTROL_IDLE_FILL, ink: theme::RESUME_FILL }
+    } else {
+        ControlStyle::Accent
+    };
+    CircleButton::new(c"".as_ptr())
+        .icon(crate::ui::icons::Icon::Check)
+        .style(wstyle)
+        .at(cx1, y)
+        .focused(focus == 1)
+        .draw(env, p);
+}
+
+/// Visibility (0..1) of the pinned compact title at scroll depth `scroll`: 1 while the first
+/// below-hero sections (season tabs + episodes) hold the top, fading to 0 across the 300px before
+/// the first DEEP section (cast/related/about) lifts to the top margin.
+fn compact_title_vis(scroll: f32) -> f32 {
+    let v = view();
+    let (s, n) = sections();
+    let hide_at = s[..n]
+        .iter()
+        .position(|&x| x >= 3) // first deep section id (cast=4 / related=3 / about=5)
+        .filter(|&pos| pos >= 1)
+        .map(|pos| {
+            let col = v.column;
+            col.lift_target(v, pos - 1)
+        })
+        .unwrap_or(f32::MAX);
+    ((hide_at - scroll) / 300.0).clamp(0.0, 1.0)
 }
 
 /// small centered clearLogo/title shown at the top once the page is scrolled
@@ -719,11 +784,12 @@ fn draw_tabs(p: Painter) {
         };
         let selected = i == d.cur_season;
         let focused = sec == 1 && col == i as c_int;
-        // pill sized to the (bold) label; layout preserved — text sits at x, pill padded ±18, tabs
-        // advance by label width + TAB_ADVANCE.
+        // pill sized to the (bold) label — text sits at x, pill padded ±18, tabs advance by label
+        // width + TAB_ADVANCE. The pill fills the block height (TAB_ROW_H == the hero-button CD),
+        // so tabs and buttons read as one control family.
         let w = crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1);
         if on_axis(x - 18.0 - sx, w + 36.0, SCR_W, 0.0) {
-            crate::ui::widgets::TabPill::new(lc.as_ptr(), theme::size::BODY, Rect::new(x - 18.0, tab_y - 8.0, w + 36.0, 50.0))
+            crate::ui::widgets::TabPill::new(lc.as_ptr(), theme::size::BODY, Rect::new(x - 18.0, tab_y, w + 36.0, TAB_ROW_H))
                 .segment(selected)
                 .focused(focused)
                 .draw(&e, pt);
@@ -858,8 +924,10 @@ fn draw_related(p: Painter) {
         return;
     }
     let related_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
-    p.text(c"Related".as_ptr(), MARGIN_X, related_y, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let focus_col = if view().section == 3 { view().col } else { -1 };
+    let focused = (focus_col >= 0).then_some(focus_col as usize);
+    let lift = card_row::title_lift(&view().related, focused, &RowStyle::HOME, view().related.scroll_x());
+    p.text(c"Related".as_ptr(), MARGIN_X, related_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     draw_strip(
         p,
         &view().related,
@@ -889,8 +957,10 @@ fn draw_cast(p: Painter) {
         return;
     }
     let cast_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
-    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let focus_col = if view().section == 4 { view().col } else { -1 };
+    let focused = (focus_col >= 0).then_some(focus_col as usize);
+    let lift = card_row::title_lift(&view().cast, focused, &RowStyle::CAST, view().cast.scroll_x());
+    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let row_y = cast_y + CAST_LABEL_H;
     draw_strip(
         p,
@@ -941,17 +1011,41 @@ pub(crate) fn on_ok() -> bool {
     let col = view().col;
     match sec {
         0 => {
+            if col == 1 {
+                // watched toggle: scrobble/unscrobble, then re-fetch so the button state, the
+                // resume bars and the Continue Watching shelf all reflect the new view state.
+                if let Some((rk, watched, season)) =
+                    metadata::current().map(|d| (d.rk.clone(), d.watched, d.cur_season))
+                {
+                    if watched {
+                        crate::plex::client().unscrobble(&rk);
+                    } else {
+                        crate::plex::client().scrobble(&rk);
+                    }
+                    metadata::load_detail(&rk);
+                    if season != 0 {
+                        metadata::load_season(season); // keep the season the user was browsing
+                    }
+                    crate::pms::refetch_hubs_reconcile(); // CW shelf changes with the view state
+                }
+                return false;
+            }
             if col != 0 {
-                return false; // only Play acts (watchlist/info are placeholders)
+                return false; // watched (col 1) handled above; everything else inert
             }
             if is_show() {
                 play_episode_at(0)
             } else {
                 let m = selected_ptr();
-                if m.is_null() {
+                if !m.is_null() {
+                    crate::route::play_movie(m);
+                } else if let Some(d) = metadata::current() {
+                    // a hub refetch can orphan the page's catalog row (the item left the hubs) —
+                    // the loaded Detail carries everything the string-based route entry needs
+                    crate::route::play_episode(&d.rk, &d.part, &d.vcodec, &d.acodec, &d.title, "");
+                } else {
                     return false;
                 }
-                crate::route::play_movie(m);
                 set_resume(
                     metadata::current().map(|d| d.resume_ms).unwrap_or(0),
                     metadata::current().map(|d| d.dur_ms).unwrap_or(0),
@@ -974,6 +1068,14 @@ pub(crate) fn on_ok() -> bool {
             false
         }
         _ => false, // cast (4): headshots are not actionable
+    }
+}
+
+/// Re-resolve the selected catalog row after a hub refetch rebuilt the catalog underneath an open
+/// detail page (indices move; the rk is the stable identity).
+pub(crate) fn reselect() {
+    if let Some(rk) = metadata::current().map(|d| d.rk.clone()) {
+        view().selected = crate::pms::index_of_rk(&rk);
     }
 }
 
@@ -1127,8 +1229,16 @@ fn draw_about(p: Painter) {
 
     text_at(p, tx, about_y, theme::size::HEADLINE, hd, 1, "About");
 
-    // card + column geometry
-    let (cw, ch, cy, pad) = (640.0f32, 330.0f32, about_y + 50.0, 30.0f32);
+    // card + column geometry — the card's height HUGS its measured content (title + genres +
+    // wrapped synopsis + padding); a fixed 330px box used to leave up to ~180px of dead space
+    // inside the focus highlight for a short blurb.
+    let (cw, cy, pad) = (640.0f32, about_y + 50.0, 30.0f32);
+    let syn_w0 = cw - 2.0 * pad;
+    let syn_h = TextView::new(&d.summary, theme::size::CAPTION, theme::TEXT_HEADING)
+        .leading(30.0)
+        .max_lines(5)
+        .measure_h(syn_w0);
+    let ch = pad + 100.0 + syn_h + pad;
     let col_y = about_y + 430.0;
     let lx = 760.0f32; // Languages column x
     let ax = 1360.0f32; // Accessibility column x
@@ -1161,11 +1271,13 @@ fn draw_about(p: Painter) {
     if view().section == 5 {
         const HL_TOP: f32 = 36.0; // pad above the column heading
         const HL_BOT: f32 = 24.0; // pad below the last content line
+        // the Information/Accessibility extents end in a per-row trailing gap (22 / 26px) that is
+        // flow spacing, not content — trim it so the highlight hugs the last line's ink evenly.
         let hl = match view().col {
             0 => Rect::new(tx, cy, cw, ch),
-            1 => Rect::new(tx - 26.0, col_y - HL_TOP, 600.0, info_off + HL_TOP + HL_BOT),
+            1 => Rect::new(tx - 26.0, col_y - HL_TOP, 600.0, info_off - 22.0 + HL_TOP + HL_BOT),
             2 => Rect::new(lx - 26.0, col_y - HL_TOP, 560.0, lang_off + HL_TOP + HL_BOT),
-            _ => Rect::new(ax - 26.0, col_y - HL_TOP, 560.0, access_off + HL_TOP + HL_BOT),
+            _ => Rect::new(ax - 26.0, col_y - HL_TOP, 560.0, access_off - 26.0 + HL_TOP + HL_BOT),
         };
         p.rrect(hl, 18.0, 18.0, theme::OVERLAY_FOCUS_SOFT);
     }

@@ -19,15 +19,17 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    that — don't inline `[0.9, 0.9, 0.9, 1.0]`. If your shade is within a hair of an existing token,
    use the existing one; the point is one value per role, not a value per call site.
 
-2. **Never write a raw text size.** Every size comes from the `theme::size` type scale as a named
-   rung — `size::HERO` 72 / `size::TITLE` 40 / `size::HEADLINE` 32 / `size::BODY` 28 / `size::LABEL`
-   26 / `size::CAPTION` 24 — the *size* axis of the design system, with a hard **couch legibility
-   floor at `CAPTION` (24)**: nothing in the product chrome renders smaller (sub-24 text was exactly
-   what read badly from the sofa). Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide`
-   instead of a bare `24`/`28`/… — a size is a role, not a magic number; pick the nearest rung.
-   Exactly two carve-outs live outside the scale (the player-HUD display title `HUD_TITLE_SZ` and the
-   subtitle caption); both are **named + commented at their call site**, never bare literals — don't
-   add a third without the same treatment. `anim.rs` is a dev-diagnostic overlay, not chrome.
+2. **Never write a raw text size — every text size in the UI is a `theme::size` token.** The named
+   rungs are `size::HERO` 72 / `size::TITLE` 40 / `size::HEADLINE` 32 / `size::BODY` 28 /
+   `size::LABEL` 26 / `size::CAPTION` 24 / `size::MICRO` 16 — the *size* axis of the design system.
+   `CAPTION` (24) is the **couch legibility floor for anything that must be read**; `MICRO` exists
+   solely for one-line de-emphasized kickers beside outsized titles (the hero meta line), never for
+   content. Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide` instead of a bare
+   `24`/`28`/… — a size is a role, not a magic number; pick the nearest rung, and if no rung fits a
+   genuinely new role, **add a documented rung to `theme.rs`**, don't inline a literal. Exactly two
+   carve-outs live outside the scale (the player-HUD display title `HUD_TITLE_SZ` and the subtitle
+   caption); both are **named + commented at their call site**, never bare literals — don't add a
+   third; new roles go on the scale. `anim.rs` is a dev-diagnostic overlay, not chrome.
 
 3. **Never hand-place text with a magic y.** `y - sz*0.58` guesses are banned — they mis-center the
    moment a string has a descender (g j y p). Text is positioned by its **cap band** (layout ≠

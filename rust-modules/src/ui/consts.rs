@@ -18,7 +18,9 @@ pub const SCR_H: f32 = 1080.0;
 
 // hero <-> grid continuum
 pub const PEEK_Y: f32 = 828.0; // shelf top in hero view
-pub const GRID_TOP_Y: f32 = 150.0; // shelf top in grid view
+// shelf top in grid view — leaves the first hub title (row_y − 34, lifted up to ~10 more when its
+// leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 108)
+pub const GRID_TOP_Y: f32 = 176.0;
 
 // SDL keycodes (scancode | SDLK_SCANCODE_MASK, or ASCII)
 pub const SDLK_RIGHT: c_uint = 79 | (1 << 30);

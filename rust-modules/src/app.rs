@@ -103,8 +103,6 @@ fn rd_i32(ev: &[u8], off: usize) -> i32 {
 #[inline]
 fn g_fr() -> c_int { crate::ui::home::row() }
 #[inline]
-fn g_fc() -> c_int { crate::ui::home::col() }
-#[inline]
 fn g_snap() -> f32 { crate::ui::home::snap_target() }
 #[inline]
 fn set_fr(v: c_int) { crate::ui::home::set_row(v) }
@@ -350,7 +348,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let detail_osc = std::path::Path::new("/tmp/poc-detailosc").exists();
 
         let mut last_input = SDL_GetTicks();
-        let t0 = SDL_GetTicks();
+        let t0 = last_input;
         let mut fps_t = t0;
         let mut frames_ct = 0i32;
         let mut fps_shown = 0i32;
@@ -468,6 +466,116 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::ui::chapters_panel::close();
         }
 
+        /// The ONE leave-playback ritual (Stop key, BACK, EOS): close the overlays, stop the
+        /// engine, return to the origin route, and arm the deferred hub refresh so Continue
+        /// Watching reflects the session that just ended. A new exit path that skips this quietly
+        /// re-introduces the stale-CW bug.
+        fn exit_player(route: &mut Route, played_from_detail: bool, refresh_hubs_at: &mut u32) {
+            close_player_overlays();
+            crate::player::stop_bufferfeed(false);
+            *route = if played_from_detail { Route::Detail } else { Route::Home };
+            *refresh_hubs_at = unsafe { SDL_GetTicks() }.wrapping_add(800).max(1);
+        }
+
+        /// Direct-play a LEAF catalog item (movie or episode) — the hero-pill / Continue-Watching
+        /// "play now" ritual: route cfg + streams metadata + the shared start ritual.
+        unsafe fn play_item_now(
+            m: *mut crate::pms::PmsMovie,
+            hud_until: u32,
+            route: &mut Route,
+            played_from_detail: &mut bool,
+        ) {
+            let Some(mm) = m.as_ref() else { return };
+            let rk = crate::ui::widgets::cfield(&mm.rk);
+            if rk.is_empty() {
+                return;
+            }
+            crate::route::play_movie(m);
+            crate::metadata::load_detail(&rk); // streams for the in-player audio/subtitle lists
+            start_playback(
+                crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000),
+                false,
+                hud_until,
+                route,
+                played_from_detail,
+            );
+        }
+
+        /// The ONE home activation (OK key AND pointer click): `hf` is the hero action-row focus
+        /// (-1 chip / 0 pill / 1 info / 2 chevron) in hero view, `i32::MIN` for a grid card.
+        /// Pill / Continue-Watching tiles / episodes launch playback immediately (a show or season
+        /// opens its page under the hood and fires its Play, which resolves the right episode +
+        /// resume); the info circle and ordinary grid cards open the detail page.
+        unsafe fn home_activate(
+            hf: c_int,
+            hud_until: u32,
+            route: &mut Route,
+            played_from_detail: &mut bool,
+        ) {
+            let hero_view = hf != c_int::MIN;
+            if hf == -1 {
+                crate::ui::account_menu::open();
+                *route = Route::Account;
+                return;
+            }
+            if hf == 2 {
+                crate::ui::home::hero_flip(1);
+                return;
+            }
+            let m = if hero_view {
+                crate::ui::home::hero_item()
+            } else {
+                crate::ui::home::movie_at(crate::ui::home::row(), crate::ui::home::col())
+            };
+            let Some(mm) = m.as_ref() else { return };
+            let rk = crate::ui::widgets::cfield(&mm.rk);
+            if rk.is_empty() {
+                return;
+            }
+            let want_play = hf == 0
+                || (!hero_view
+                    && (crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize) || mm.kind == 3));
+            if want_play {
+                match mm.kind {
+                    0 | 3 => play_item_now(m, hud_until, route, played_from_detail),
+                    _ => {
+                        // show / season: open its page (blocking) and fire its Play — but only
+                        // once the load actually landed on the expected item (a failed fetch
+                        // leaves the PREVIOUS detail in place; blindly firing on_ok would play
+                        // whatever page was open before).
+                        let expect = if mm.kind == 2 { crate::ui::widgets::cfield(&mm.show_rk) } else { rk.clone() };
+                        if mm.kind == 2 {
+                            crate::ui::detail::open_rk_season(&expect, mm.season_index);
+                        } else {
+                            crate::ui::detail::open_rk(&expect);
+                        }
+                        let loaded = crate::metadata::current().map(|d| d.rk.as_str() == expect).unwrap_or(false);
+                        if loaded && crate::ui::detail::on_ok() {
+                            start_playback(crate::ui::detail::last_resume_ns(), false, hud_until, route, played_from_detail);
+                        } else {
+                            *route = Route::Detail; // nothing playable / load failed — land on the page
+                        }
+                    }
+                }
+            } else if mm.kind == 2 {
+                // season: open the SHOW page with that season selected
+                crate::ui::detail::open_rk_season(&crate::ui::widgets::cfield(&mm.show_rk), mm.season_index);
+                *route = Route::Detail;
+            } else if mm.kind == 3 {
+                // an episode's page is its show's page — landed on the EPISODE'S season, so the
+                // item the hero/tile advertised is actually in view (mirrors the season arm)
+                if mm.season_index > 0 {
+                    crate::ui::detail::open_rk_season(&crate::ui::widgets::cfield(&mm.show_rk), mm.season_index);
+                } else {
+                    crate::ui::detail::open_rk(&crate::ui::widgets::cfield(&mm.show_rk));
+                }
+                *route = Route::Detail;
+            } else {
+                crate::ui::detail::open_rk(&rk);
+                *route = Route::Detail;
+            }
+        }
+
         let mut auto_tried = false;
         let mut grid_tried = false;
         let mut seek_tried = false;
@@ -478,6 +586,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut pause_tried = false;
         let mut prev = 0u32;
         let mut last_wheel = 0u32;
+        // hero click-hold pager: set when a click lands on the chevron, cleared on button-up; the
+        // per-frame pump keeps paging while it stays held (the pointer twin of holding RIGHT).
+        let mut ptr_hold_pager = 0u32;
+        // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched a
+        // beat later so the final timeline PUT lands first — Continue Watching then shows the new
+        // resume point / next episode instead of the state from boot.
+        let mut refresh_hubs_at = 0u32;
 
         let mut ev = [0u8; 128];
         while running {
@@ -782,13 +897,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::detail::move_focus(sym as c_int);
                         } else if g_snap() < 0.5 {
                             if sym == SDLK_DOWN {
-                                set_snap(1.0);
-                                set_fr(0);
+                                if crate::ui::home::hero_focus() < 0 {
+                                    crate::ui::home::set_hero_focus(0); // chip → back to the action row
+                                } else {
+                                    set_snap(1.0);
+                                    set_fr(0);
+                                }
                             } else if sym == SDLK_LEFT || sym == SDLK_RIGHT {
-                                crate::ui::home::home_hero_key(sym); // page the rotating hero
+                                crate::ui::home::home_hero_key(sym); // walk the action row; RIGHT on the chevron pages
                             } else if sym == SDLK_UP {
-                                crate::ui::account_menu::open(); // hero view: UP opens the profile menu
-                                route = Route::Account;
+                                // hero view: UP focuses the profile chip (OK then opens the menu —
+                                // the chip is selectable, it no longer springs the menu unbidden)
+                                crate::ui::home::set_hero_focus(-1);
                             }
                         } else if sym == SDLK_UP && g_fr() == 0 {
                             set_snap(0.0);
@@ -838,50 +958,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 );
                             }
                         } else {
-                            // home: route by the focused hub item's type. Gate on the spring
-                            // POSITION (what's on screen), not the snap target: a DOWN press flips
-                            // the target to grid instantly while the hero stays visible ~130ms, so a
-                            // quick DOWN→OK must still launch the hero shown, not the grid's card 0.
-                            let m = if crate::ui::home::snap_pos() < 0.5 {
-                                crate::ui::home::hero_item()
+                            // home: dispatch through the ONE activation (shared with pointer
+                            // clicks). Gate hero-vs-grid on the spring POSITION (what's on
+                            // screen), not the snap target: a DOWN press flips the target to grid
+                            // instantly while the hero stays visible ~130ms, so a quick DOWN→OK
+                            // must still act on the hero shown, not the grid's card 0.
+                            let hf = if crate::ui::home::snap_pos() < 0.5 {
+                                crate::ui::home::hero_focus()
                             } else {
-                                crate::ui::home::movie_at(g_fr(), g_fc())
+                                c_int::MIN
                             };
-                            if let Some(mm) = m.as_ref() {
-                                let rk = crate::ui::widgets::cfield(&mm.rk);
-                                if !rk.is_empty() {
-                                    if mm.kind == 3 {
-                                        // episode (Continue Watching / On Deck): play directly,
-                                        // no detail page — Back returns to the home hubs. Load the
-                                        // episode metadata (streams) so the in-player audio/
-                                        // subtitle lists are populated.
-                                        crate::route::play_movie(m);
-                                        crate::metadata::load_detail(&rk);
-                                        start_playback(
-                                            crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000),
-                                            false,
-                                            last_input + 4500,
-                                            &mut route,
-                                            &mut played_from_detail,
-                                        );
-                                    } else if mm.kind == 2 {
-                                        // season: open the SHOW page with that season selected
-                                        crate::ui::detail::open_rk_season(
-                                            &crate::ui::widgets::cfield(&mm.show_rk),
-                                            mm.season_index,
-                                        );
-                                        route = Route::Detail;
-                                    } else {
-                                        // movie / show: open the detail page
-                                        crate::ui::detail::open_rk(&rk);
-                                        route = Route::Detail;
-                                    }
-                                    if !dpad_mode {
-                                        SDL_webOSCursorVisibility(0);
-                                        dpad_mode = true;
-                                        cur_hidden = true;
-                                    }
-                                }
+                            home_activate(hf, last_input + 4500, &mut route, &mut played_from_detail);
+                            if !dpad_mode {
+                                SDL_webOSCursorVisibility(0);
+                                dpad_mode = true;
+                                cur_hidden = true;
                             }
                         }
                     } else if wcode == 72 || sym == 415 || wcode == 415 {
@@ -914,9 +1005,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         set_hud(last_input + 4500);
                     } else if matches!(route, Route::Player { .. }) && (sym == 413 || wcode == 413) {
                         // Stop
-                        close_player_overlays();
-                        crate::player::stop_bufferfeed(false);
-                        route = if played_from_detail { Route::Detail } else { Route::Home };
+                        exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
                     } else if matches!(route, Route::Player { .. })
                         && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == 417 || wcode == 417 || sym == 412 || wcode == 412)
                     {
@@ -978,9 +1067,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
                         // Back stack: player -> detail (if opened from there) -> grid -> hero -> exit.
                         if matches!(route, Route::Player { .. }) {
-                            close_player_overlays();
-                            crate::player::stop_bufferfeed(false);
-                            route = if played_from_detail { Route::Detail } else { Route::Home };
+                            exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
                         } else if matches!(route, Route::Detail) {
                             crate::ui::detail::close();
                             route = Route::Home;
@@ -1018,8 +1105,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     if matches!(route, Route::Profiles) {
                         crate::ui::profiles::pointer_focus(mx, my);
-                    } else {
-                        crate::ui::home::home_pointer_focus(mx, my);
+                    } else if matches!(route, Route::Account) {
+                        crate::ui::account_menu::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Home) {
+                        // hover moves focus on the route that owns the screen — and ONLY there
+                        // (Detail/Login hover used to silently mutate home's focus behind them)
+                        if crate::ui::home::snap_pos() < 0.5 {
+                            crate::ui::home::hero_pointer_focus(mx, my);
+                        } else {
+                            crate::ui::home::home_pointer_focus(mx, my);
+                        }
                     }
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
@@ -1062,13 +1157,44 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if crate::ui::home::profile_chip_click(cx, cy) {
                             crate::ui::account_menu::open(); // top-left avatar → profile menu
                             route = Route::Account;
-                        } else if g_snap() < 0.5 {
-                            // hero visible: a pointer click on the flip chevron rotates the carousel
-                            crate::ui::home::hero_chevron_click(cx, cy);
+                        } else if crate::ui::home::snap_pos() < 0.5 {
+                            // hero visible: clicks act on the action row via the ONE activation;
+                            // holding the click on the chevron keeps paging (see the per-frame pump)
+                            let b = crate::ui::home::hero_button_at(cx, cy);
+                            if b >= 0 {
+                                crate::ui::home::set_hero_focus(b);
+                                home_activate(b, last_input + 4500, &mut route, &mut played_from_detail);
+                                if b == 2 {
+                                    ptr_hold_pager = last_input;
+                                }
+                            }
+                        } else if crate::ui::home::home_card_click(cx, cy) {
+                            // grid card: click = OK (play a Continue-Watching tile / open detail)
+                            home_activate(c_int::MIN, last_input + 4500, &mut route, &mut played_from_detail);
                         }
                     } else if matches!(route, Route::Account) {
-                        crate::ui::account_menu::close(); // a click anywhere dismisses the popover
-                        route = Route::Home;
+                        let cx = rd_i32(&ev, 20) as f32;
+                        let cy = rd_i32(&ev, 24) as f32;
+                        // a click on a row commits it; anywhere else dismisses the popover
+                        match crate::ui::account_menu::click(cx, cy) {
+                            crate::ui::account_menu::Action::ChangeProfile => {
+                                crate::auth::start_switch();
+                                crate::ui::profiles::enter();
+                                route = Route::Profiles;
+                            }
+                            crate::ui::account_menu::Action::SignIn => {
+                                crate::auth::start_login();
+                                route = Route::Login;
+                            }
+                            crate::ui::account_menu::Action::SignOut => {
+                                crate::auth::sign_out();
+                                route = Route::Login;
+                            }
+                            crate::ui::account_menu::Action::None => {
+                                crate::ui::account_menu::close();
+                                route = Route::Home;
+                            }
+                        }
                     } else if matches!(route, Route::Profiles) {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -1079,6 +1205,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 } else if et == SDL_MOUSEBUTTONUP {
                     last_input = SDL_GetTicks();
+                    ptr_hold_pager = 0; // releasing the click stops the hero click-hold pager
                     if ptr_drag {
                         ptr_drag = false;
                         if scrub() >= 0 {
@@ -1087,11 +1214,26 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         set_hud(last_input + 4500);
                     }
                 } else if et == SDL_MOUSEWHEEL {
-                    let wnow = SDL_GetTicks();
-                    last_input = wnow;
-                    if wnow.wrapping_sub(last_wheel) > 250 {
-                        last_wheel = wnow;
-                        crate::ui::home::home_wheel(rd_i32(&ev, 20));
+                    last_input = SDL_GetTicks();
+                    if last_input.wrapping_sub(last_wheel) > 250 {
+                        last_wheel = last_input;
+                        let dy = rd_i32(&ev, 20);
+                        // the wheel scrolls VERTICALLY only, and only on routes with a vertical
+                        // flow (it used to drive home's focus behind every other screen)
+                        if matches!(route, Route::Home) {
+                            if crate::ui::home::snap_pos() < 0.5 {
+                                if dy < 0 {
+                                    set_snap(1.0); // hero → dive into the grid
+                                    set_fr(0);
+                                }
+                            } else if dy > 0 && g_fr() == 0 {
+                                set_snap(0.0); // grid top → back up to the hero
+                            } else {
+                                crate::ui::home::home_wheel(dy);
+                            }
+                        } else if matches!(route, Route::Detail) {
+                            crate::ui::detail::move_focus(if dy < 0 { SDLK_DOWN } else { SDLK_UP } as c_int);
+                        }
                     }
                 }
             }
@@ -1273,11 +1415,30 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // end-of-stream: the pipeline drained at the credits → leave the player (back to the
             // detail page or home, whichever is behind), instead of freezing on the last frame.
             if matches!(route, Route::Player { .. }) && crate::player::ended() {
-                close_player_overlays();
-                crate::player::stop_bufferfeed(false);
-                route = if played_from_detail { Route::Detail } else { Route::Home };
+                exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
                 hud_focus = 0;
                 held_sym = 0; // async route flip: don't repeat a still-held key into detail/home
+            }
+            // post-playback home refresh (armed by every exit_player): refetch the hubs so
+            // Continue Watching shows the new resume point / next episode; the small delay lets
+            // the final timeline PUT land server-side first. Blocking (~100ms LAN) but the user
+            // just navigated, so a one-frame hitch here is invisible.
+            if refresh_hubs_at != 0
+                && now.wrapping_sub(refresh_hubs_at) < 0x8000_0000
+                && !matches!(route, Route::Player { .. })
+            {
+                refresh_hubs_at = 0;
+                let nmov = crate::pms::refetch_hubs_reconcile();
+                log(&format!("home: hubs refreshed after playback ({nmov} items)"));
+            }
+            // hero click-hold pager: while the click stays down on the chevron, keep paging (the
+            // pointer twin of holding RIGHT; hero_flip's cooldown sets the pace).
+            if ptr_hold_pager != 0
+                && now.wrapping_sub(ptr_hold_pager) > 450
+                && matches!(route, Route::Home)
+                && crate::ui::home::snap_pos() < 0.5
+            {
+                crate::ui::home::hero_flip(1);
             }
             // lost-keyup safety: the remote streams 0x101 repeats (~50ms) while a key is physically down,
             // so once past the initial settle a stale heartbeat means the release keyup was dropped —

@@ -47,8 +47,32 @@ pub fn open() {
     } else {
         Section::new(name).row(Row::new("Sign in").chevron(true))
     };
+    table().compact = true; // small one-word action list — BODY labels, not menu-size HEADLINE bold
     table().set_sections(vec![sec], 0, false);
     pop().open();
+}
+
+/// Pointer hover: focus follows the cursor over the popover rows.
+pub fn pointer_focus(mx: f32, my: f32) {
+    if !is_open() {
+        return;
+    }
+    if let Some(gi) = table().hit_row(panel_rect(), mx, my) {
+        table().sel = gi;
+    }
+}
+
+/// Pointer click: commit the row under the cursor (same as OK); a click elsewhere reports
+/// Action::None and the caller dismisses like BACK.
+pub fn click(mx: f32, my: f32) -> Action {
+    if !is_open() {
+        return Action::None;
+    }
+    if let Some(gi) = table().hit_row(panel_rect(), mx, my) {
+        table().sel = gi;
+        return on_ok();
+    }
+    Action::None
 }
 
 pub fn close() {

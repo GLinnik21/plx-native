@@ -54,4 +54,14 @@ impl Client {
         self.get_json(&format!("/library/metadata/{rating_key}/related"))
     }
 
+    /// GET /:/scrobble — mark watched without a playback time (docs/pms-api.md §timeline).
+    /// On a show/season it marks every leaf watched.
+    pub fn scrobble(&self, rating_key: &str) {
+        self.get_void(&format!("/:/scrobble?key={rating_key}&identifier=com.plexapp.plugins.library"));
+    }
+
+    /// GET /:/unscrobble — mark unwatched (clears viewCount + viewOffset).
+    pub fn unscrobble(&self, rating_key: &str) {
+        self.get_void(&format!("/:/unscrobble?key={rating_key}&identifier=com.plexapp.plugins.library"));
+    }
 }
