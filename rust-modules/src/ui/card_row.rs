@@ -54,13 +54,13 @@ impl RowStyle {
     /// Detail "Cast & Crew": circular headshots, a gentle pop, the tight strip ring. Same motion as
     /// HOME (spring magnification + scroll), so cast animates like the poster shelves.
     pub(crate) const CAST: RowStyle = RowStyle {
-        w: 190.0,
+        w: 190.0,          // = detail CAST_D
         h: 190.0,
-        gap: 60.0,
+        gap: 40.0,         // w+gap = 230 = detail CAST_SLOT (per-member pitch)
         margin_x: MARGIN_X,
         radius: 95.0, // = w/2 (circle); draw_* recomputes per-rect anyway when `circular`
         focus_scale: 1.06,
-        ring_pad: theme::CARD_RING_PAD_STRIP,
+        ring_pad: 14.0, // matches the detail cast headshot ring (hugs the popped circle)
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,

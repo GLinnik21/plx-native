@@ -38,6 +38,7 @@ struct DetailView {
     pending_season: c_int, // tab focused but not yet loaded (-1 = none / already loaded)
     season_settle: f32,    // seconds the pending season has been stable
     related: CardRow,   // the Related row = the SAME animated shelf component the home grid uses
+    cast: CardRow,      // Cast & Crew row — the same component, circular RowStyle::CAST
     last_resume_ns: i64, // resume position (ns) on_ok just started (0 = from start); app.rs seeks here
 }
 impl DetailView {
@@ -53,6 +54,7 @@ impl DetailView {
             pending_season: -1,
             season_settle: 0.0,
             related: CardRow::new(),
+            cast: CardRow::new(),
             last_resume_ns: 0,
         }
     }
@@ -410,6 +412,9 @@ pub(crate) fn update(dt: f32) {
     // (focused only when the Related section holds focus, else the scales ease back and scroll freezes).
     let rfoc = (v.section == 3).then_some(v.col.max(0) as usize);
     v.related.update(n_items(3) as usize, rfoc, &RowStyle::HOME, dt);
+    // Cast is the same shared shelf component (circular RowStyle::CAST): spring magnification + scroll.
+    let cfoc = (v.section == 4).then_some(v.col.max(0) as usize);
+    v.cast.update(n_items(4) as usize, cfoc, &RowStyle::CAST, dt);
     // debounced season fetch: load the queued season only after its tab has held focus for a beat, so
     // scanning tabs (a hold, or fast taps) coalesces into ONE blocking `/children` fetch, not one per step.
     if v.pending_season >= 0 {
@@ -839,7 +844,10 @@ fn draw_related(p: Painter) {
     }
 }
 
-/// "Cast & Crew" — a horizontal row of circular headshots with names
+/// "Cast & Crew" — circular headshots with names, on the shared [`CardRow`] (circular
+/// `RowStyle::CAST`): spring focus-magnification + animated scroll + glow ring, exactly like the
+/// poster/Related shelves. The caller draws the per-member name/role labels (a poster row shows a
+/// title only on focus; cast shows every name), and the focused headshot draws LAST for its z-order.
 fn draw_cast(p: Painter) {
     let d = match metadata::current() {
         Some(d) => d,
@@ -850,52 +858,46 @@ fn draw_cast(p: Painter) {
     }
     let cast_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
-    let sec = view().section;
-    let col = view().col;
-    let focus_col = if sec == 4 { col } else { -1 };
+    let focus_col = if view().section == 4 { view().col } else { -1 };
     let row_y = cast_y + CAST_LABEL_H;
-    let sx = if focus_col > 1 { (focus_col as f32 - 1.0) * CAST_SLOT } else { 0.0 };
+    let sx = view().cast.scroll_x();
     let pc = p.translate(-sx, 0.0);
+    let sty = &RowStyle::CAST;
     for (i, c) in d.cast.iter().enumerate() {
-        let cxc = MARGIN_X + CAST_D * 0.5 + i as f32 * CAST_SLOT; // circle center x
-        if !on_axis(cxc - sx, CAST_D, SCR_W + CAST_D, 0.0) {
+        if i as c_int == focus_col {
+            continue; // focused headshot drawn last
+        }
+        let x = MARGIN_X + i as f32 * CAST_SLOT;
+        if !on_axis(x - sx, CAST_D, SCR_W + CAST_D, 0.0) {
             continue;
         }
-        let focused = i as c_int == focus_col;
-        let dp = if focused { CAST_D * 1.06 } else { CAST_D };
-        let circ = Rect::new(cxc - dp * 0.5, row_y + (CAST_D - dp) * 0.5, dp, dp);
-        // headshot (external metadata-static URL → PMS photo transcoder), circular
-        let mut drew = false;
-        if !c.thumb.is_empty() {
-            if let Ok(tp) = CString::new(c.thumb.clone()) {
-                let t = resolve_tex(tp.as_ptr(), 300, 300, 0);
-                if t != 0 {
-                    pc.tex(t, circ, dp * 0.5, theme::TINT_WHITE);
-                    drew = true;
-                }
-            }
+        let s = view().cast.scale(i);
+        let rect = Rect::new(x, row_y, CAST_D, CAST_D).scaled(s);
+        card_row::draw_tile(pc, Art::Thumb { key: &c.thumb, res: (300, 300) }, rect, s, sty, None);
+        cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, false);
+    }
+    if focus_col >= 0 {
+        if let Some(c) = d.cast.get(focus_col as usize) {
+            let x = MARGIN_X + focus_col as f32 * CAST_SLOT;
+            let s = view().cast.scale(focus_col as usize);
+            let rect = Rect::new(x, row_y, CAST_D, CAST_D).scaled(s);
+            card_row::draw_focused(pc, Art::Thumb { key: &c.thumb, res: (300, 300) }, rect, s, sty, None, std::ptr::null());
+            cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, true);
         }
-        if !drew {
-            pc.rect(circ, dp * 0.5, theme::SKELETON_TOP, theme::SKELETON_BOT, 0.0);
-        }
-        if focused {
-            // ring hugs the ENLARGED (popped) headshot — sized to `dp`, not the base CAST_D. The old
-            // CAST_D ring sat a hair inside the popped photo, and its tight pad clipped the focus glow,
-            // so the selection read as clipping the circle's edge. `circ` shares the photo's centre.
-            pc.ring(circ, 14.0, dp * 0.5, 1.0);
-        }
-        // name + role are centred on the headshot and can be long ("Benedict Cumberbatch"), so
-        // elide each to the per-member slot — at the couch-legible sizes they'd otherwise run into
-        // the neighbouring member.
-        let name_c = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-        let slot_budget = CAST_SLOT - 12.0;
-        if let Ok(nc) = CString::new(crate::text::elide(&c.tag, slot_budget, theme::size::LABEL, 1, false)) {
-            pc.text(nc.as_ptr(), cxc, row_y + CAST_D + 26.0, theme::size::LABEL, name_c, 1, if focused { 1 } else { 0 });
-        }
-        if !c.role.is_empty() {
-            if let Ok(rc) = CString::new(crate::text::elide(&c.role, slot_budget, theme::size::CAPTION, 1, false)) {
-                pc.text(rc.as_ptr(), cxc, row_y + CAST_D + 58.0, theme::size::CAPTION, theme::TEXT_TERTIARY, 1, 0);
-            }
+    }
+}
+
+/// A cast member's name + role, centred under the headshot and elided to the per-member slot (long
+/// names like "Benedict Cumberbatch" would otherwise run into the neighbour at couch-legible sizes).
+fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: bool) {
+    let name_c = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+    let budget = CAST_SLOT - 12.0;
+    if let Ok(nc) = CString::new(crate::text::elide(name, budget, theme::size::LABEL, 1, false)) {
+        p.text(nc.as_ptr(), cx, row_y + CAST_D + 26.0, theme::size::LABEL, name_c, 1, if focused { 1 } else { 0 });
+    }
+    if !role.is_empty() {
+        if let Ok(rc) = CString::new(crate::text::elide(role, budget, theme::size::CAPTION, 1, false)) {
+            p.text(rc.as_ptr(), cx, row_y + CAST_D + 58.0, theme::size::CAPTION, theme::TEXT_TERTIARY, 1, 0);
         }
     }
 }
