@@ -183,26 +183,54 @@ pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle
 }
 
 /// The focused cell body — the caller draws this LAST for its z-order: the art tile, the big glow
-/// ring, an optional resume bar, then the centered title (skipped when `title` is null). (The home
-/// grid's focused-last cell, verbatim.)
-pub(crate) fn draw_focused(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle, resume: Option<f32>, title: *const c_char) {
+/// ring, an optional resume bar, then the metadata beneath: the centered title plus an optional
+/// caption line ("S1 • E8" / a year — only the FOCUSED item carries metadata). Null `title`/
+/// `caption` skip their line. (The home grid's focused-last cell, verbatim.)
+pub(crate) fn draw_focused(
+    p: Painter,
+    art: Art,
+    rect: Rect,
+    s: f32,
+    sty: &RowStyle,
+    resume: Option<f32>,
+    title: *const c_char,
+    caption: *const c_char,
+) {
     let rad = sty.tile_radius(rect, s);
     card(p, rect, art, rad, false, 1.0, None);
     p.ring(rect, sty.ring_pad, rad, (s - 1.0) / sty.ring_denom());
     if let Some(frac) = resume {
         resume_bar(p, rect, frac);
     }
+    let mut ty = rect.y + rect.h + 12.0;
     if !title.is_null() {
-        // elide to the tile-plus-gaps budget and keep the centered run inside the screen edges —
-        // a long episode title under an edge tile used to run off the panel
-        let budget = rect.w + 2.0 * sty.gap;
-        let s = unsafe { std::ffi::CStr::from_ptr(title) }.to_string_lossy();
-        let short = crate::text::elide(&s, budget, theme::size::LABEL, 1, false);
-        if let Ok(tc) = std::ffi::CString::new(short) {
-            let half = crate::text::text_width(tc.as_ptr(), theme::size::LABEL, 1) * 0.5;
-            let cx = rect.cx().clamp(half + 16.0, SCR_W - half - 16.0);
-            p.text(tc.as_ptr(), cx, rect.y + rect.h + 12.0, theme::size::LABEL, theme::TEXT_PRIMARY, 1, 1);
-        }
+        under_label(p, rect, sty, title, ty, theme::size::LABEL, 1, theme::TEXT_PRIMARY);
+        ty += 34.0;
+    }
+    if !caption.is_null() {
+        under_label(p, rect, sty, caption, ty, theme::size::CAPTION, 0, theme::TEXT_SECONDARY);
+    }
+}
+
+/// One centered metadata line under a focused tile: elided to the tile-plus-gaps budget and kept
+/// inside the screen edges — a long episode title under an edge tile used to run off the panel.
+fn under_label(
+    p: Painter,
+    rect: Rect,
+    sty: &RowStyle,
+    text: *const c_char,
+    y: f32,
+    sz: std::os::raw::c_int,
+    bold: std::os::raw::c_int,
+    col: [f32; 4],
+) {
+    let budget = rect.w + 2.0 * sty.gap;
+    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+    let short = crate::text::elide(&s, budget, sz, bold, false);
+    if let Ok(tc) = std::ffi::CString::new(short) {
+        let half = crate::text::text_width(tc.as_ptr(), sz, bold) * 0.5;
+        let cx = rect.cx().clamp(half + 16.0, SCR_W - half - 16.0);
+        p.text(tc.as_ptr(), cx, y, sz, col, 1, bold);
     }
 }
 

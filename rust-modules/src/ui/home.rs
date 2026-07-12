@@ -398,7 +398,7 @@ impl View for Grid {
         // move the page when the focused row's block — title band above, card + focused label
         // below — would clip the viewport; a fully visible row never re-seats the page.
         let top = env.fr as f32 * ROW_PITCH;
-        let lo = top + GRID_TOP_Y + CARD_H + 66.0 - (SCR_H - 24.0); // card bottom + focused title visible
+        let lo = top + GRID_TOP_Y + CARD_H + 96.0 - (SCR_H - 24.0); // card + title/caption metadata visible
         let hi = top + GRID_TOP_Y - 66.0 - 96.0; // hub title band clear below the chip row
         self.scroll_y.step(card_row::reveal(self.scroll_y.pos, lo, hi, max_y), K_SCROLL, env.dt);
     }
@@ -448,7 +448,8 @@ impl View for Grid {
                 }
             }
         }
-        // PASS 2 — the single focused card + ring + title, drawn LAST for cross-row z-order (grid mode).
+        // PASS 2 — the single focused card + ring + metadata (title / "S1 • E8" / year), drawn
+        // LAST for cross-row z-order (grid mode).
         if env.sp > 0.5 {
             let (r, c) = (env.fr as usize, env.fc as usize);
             if r >= nh {
@@ -459,8 +460,10 @@ impl View for Grid {
             let rect = Rect::new(x, self.shelves[r].base_y + 12.0, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
             let title = m.map(|mm| mm.title.as_ptr() as *const c_char).unwrap_or(std::ptr::null());
+            let caption = m.and_then(focused_caption); // keep the CString alive through the draw
+            let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
             let resume = m.and_then(resume_frac);
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title);
+            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr);
             if crate::pms::hub_is_continue(r) {
                 if let Some(mm) = m {
                     card_row::play_hint(p, rect, cw_hint_label(mm), resume.is_some());
@@ -468,6 +471,23 @@ impl View for Grid {
             }
         }
     }
+}
+
+/// Metadata caption under the FOCUSED poster: episodes read "S1 • E8", movies their year — the
+/// selected item's info lives with the selected poster instead of floating between the rows.
+fn focused_caption(m: &PmsMovie) -> Option<CString> {
+    let s = if m.kind == 3 && m.ep_index > 0 {
+        if m.season_index > 0 {
+            format!("S{} \u{2022} E{}", m.season_index, m.ep_index)
+        } else {
+            format!("E{}", m.ep_index)
+        }
+    } else if m.kind == 0 && m.year > 0 {
+        m.year.to_string()
+    } else {
+        return None;
+    };
+    CString::new(s).ok()
 }
 
 /// Continue-Watching badge caption: a next-up episode (no resume point yet) says "Next episode"

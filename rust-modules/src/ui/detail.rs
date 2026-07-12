@@ -907,7 +907,7 @@ fn draw_strip<'a>(
         let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
         let tc = title(i); // kept alive across the draw call
         let tp = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-        card_row::draw_focused(pr, art(i), rect, s, sty, None, tp);
+        card_row::draw_focused(pr, art(i), rect, s, sty, None, tp, std::ptr::null());
         extra(pr, i, x, true);
     }
 }
