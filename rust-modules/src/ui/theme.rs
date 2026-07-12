@@ -85,8 +85,13 @@ pub const FILL_PRIMARY: [f32; 4] = [0.97, 0.98, 0.99, 1.0];
 pub const INK_ON_PRIMARY: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
 
 // ── Surfaces / backgrounds ───────────────────────────────────────────────────
-/// Flat shelf/app base (both gradient stops).
-pub const SURFACE_APP: [f32; 4] = [0.10, 0.10, 0.115, 1.0];
+/// Flat shelf/app base (both gradient stops). Snapped to exact 8-bit codes (k/255): the old
+/// `0.10` maps to 25.5 — a dead half-code — so `GL_DITHER` (on by default in GLES2) resolved this
+/// large flat fill by alternating codes 25↔26 row-to-row. With only R+G on the half-code and B
+/// (0.115≈29.3) held near-integer, the up-dithered rows read warmer than the cool base → faint
+/// "reddish" horizontal banding. Landing every channel on an integer code leaves nothing to
+/// dither. (25,25,29) keeps the intended cool bias. Keep new dark flat fills on the k/255 grid.
+pub const SURFACE_APP: [f32; 4] = [25.0 / 255.0, 25.0 / 255.0, 29.0 / 255.0, 1.0];
 /// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). Overdrawn by [`SURFACE_APP`].
 pub const CLEAR_RGB: (f32, f32, f32) = (0.03, 0.03, 0.045);
 /// Opaque menu panel / fade mask / badge knockout interior.
