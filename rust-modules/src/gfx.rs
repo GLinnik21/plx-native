@@ -8,6 +8,14 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 const SCR_W: f32 = 1920.0;
 const SCR_H: f32 = 1080.0;
 
+/// SDF edge headroom, in px. The fill AA is `1 - smoothstep(-1, 1, d)` — a 2px band centred on the
+/// shape edge (`d = 0`). Its outer half (`d ∈ [0, 1]`, alpha 0.5→0) lies OUTSIDE the shape, so unless
+/// the drawn quad extends past the edge those fragments are never rasterised and the edge aliases
+/// (asymmetrically, at the mercy of each edge's subpixel alignment — the "zipper" on one side). We
+/// inflate the quad by this much on every side (and bump `u_pad` to match, keeping `hsz` unchanged)
+/// so the falloff has geometry to fade into. 1px exactly covers the band's outer half.
+const AA_BLEED: f32 = 1.0;
+
 const VS_SRC: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_rect;\nuniform vec2 u_screen;\nvarying vec2 v_uv;\nvoid main(){\n  v_uv = a_pos;\n  vec2 px = u_rect.xy + a_pos * u_rect.zw;\n  vec2 ndc = px / u_screen * 2.0 - 1.0;\n  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}\n";
 const FS_SRC: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec2 u_size;\nuniform float u_pad;\nuniform float u_radius;\nuniform vec4 u_colTop;\nuniform vec4 u_colBot;\nuniform float u_focus;\nuniform float u_shape;\nuniform float u_radR;\nfloat sdBox(vec2 p, vec2 b, float r){\n  vec2 q = abs(p) - b + vec2(r);\n  return length(max(q,0.0)) + min(max(q.x,q.y),0.0) - r;\n}\nvoid main(){\n  if (u_shape > 0.5) {\n    float tri = step(0.5*v_uv.x, v_uv.y) * step(v_uv.y, 1.0 - 0.5*v_uv.x);\n    gl_FragColor = vec4(u_colTop.rgb * tri, tri * u_colTop.a);\n    return;\n  }\n  if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {\n    gl_FragColor = mix(u_colTop, u_colBot, v_uv.y);\n    return;\n  }\n  vec2 p = (v_uv - 0.5) * u_size;\n  vec2 hsz = u_size * 0.5 - vec2(u_pad);\n  float rad = (p.x > 0.0) ? u_radR : u_radius;\n  float d = sdBox(p, hsz, rad);\n  vec4 fill = mix(u_colTop, u_colBot, v_uv.y);\n  float aFill = 1.0 - smoothstep(-1.0, 1.0, d);\n  vec3 rgb = fill.rgb * aFill;\n  float a = aFill * fill.a;\n  if (u_focus > 0.001) {\n    float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;\n    float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);\n    rgb += vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow;\n    a = max(a, max(ring, glow));\n  }\n  gl_FragColor = vec4(rgb, a);\n}\n";
 const FS_AMBIENT: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec4 u_atl, u_atr, u_abr, u_abl;\nvoid main(){\n  vec3 top = mix(u_atl.rgb, u_atr.rgb, v_uv.x);\n  vec3 bot = mix(u_abl.rgb, u_abr.rgb, v_uv.x);\n  gl_FragColor = vec4(mix(top, bot, v_uv.y), 1.0);\n}\n";
@@ -227,9 +235,12 @@ pub(crate) fn init_gl() {
 
 pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, top: *const f32, bot: *const f32, focus: f32) {
     unsafe {
-        glUniform4f(LOC_RECT, x, y, w, h);
-        glUniform2f(LOC_SIZE, w, h);
-        glUniform1f(LOC_PAD, pad);
+        // Only the rounded/focus SDF path needs the AA bleed; a plain rect takes the fast-path fill
+        // and must stay exactly its bounds (a 1px overhang would fatten scrims/backgrounds).
+        let aa = if radius >= 0.5 || focus > 0.001 { AA_BLEED } else { 0.0 };
+        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform1f(LOC_PAD, pad + aa);
         glUniform1f(LOC_RADIUS, radius);
         glUniform1f(LOC_RADR, radius);
         glUniform4fv(LOC_COLTOP, 1, top);
@@ -257,9 +268,11 @@ pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const 
 
 pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
     unsafe {
-        glUniform4f(LOC_RECT, x, y, w, h);
-        glUniform2f(LOC_SIZE, w, h);
-        glUniform1f(LOC_PAD, 0.0);
+        // Rounded corners always take the SDF path, so always give the edge band its bleed.
+        let aa = if rad_l >= 0.5 || rad_r >= 0.5 { AA_BLEED } else { 0.0 };
+        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform1f(LOC_PAD, aa);
         glUniform1f(LOC_RADIUS, rad_l);
         glUniform1f(LOC_RADR, rad_r);
         glUniform4fv(LOC_COLTOP, 1, col);
