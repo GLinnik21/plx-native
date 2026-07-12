@@ -18,7 +18,7 @@ FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by 
 static FILE *clogf = NULL;  /* persistent crash log: opened "a", never truncated, so a
                              * crash tracer survives the next relaunch (poc-crash.log). */
 
-extern int plex_run(const char *pms_host, int pms_port, const char *pms_token, const char *demo_url);  /* Rust app core */
+extern int plex_run(const char *pms_host, int pms_port);  /* Rust app core (no creds — session or /tmp/poc-token) */
 
 /* crash tracer: log the faulting PC + the /proc/self/maps line containing it, so
  * we can tell which library (libplayerAPIs, gstreamer, ours) faulted. Runs in a
@@ -94,5 +94,5 @@ int main(int argc, char **argv) {
     install_crash_tracer();
     /* request BACK key delivery from the webOS access policy (before SDL init) */
     setenv("SDL_WEBOS_ACCESS_POLICY_KEYS_BACK", "true", 1);
-    return plex_run(PMS_HOST, PMS_PORT, PMS_TOKEN, DEMO_STREAM_URL);
+    return plex_run(PMS_HOST, PMS_PORT);
 }

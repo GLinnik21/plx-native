@@ -1,9 +1,11 @@
-/* Copy this file to config.local.h and fill in your Plex Media Server host and
- * X-Plex-Token. config.local.h is gitignored so your token never gets committed.
- * These override the placeholders in main.c. Find a token in Plex → any item →
- * Get Info → View XML. */
+/* Copy this file to config.local.h and fill in your Plex Media Server host.
+ * config.local.h is gitignored. Only PMS_HOST/PMS_PORT are compiled into the app —
+ * the binary carries NO credentials: PMS access comes from the in-app QR sign-in,
+ * or from the /tmp/poc-token dev trigger for automated runs.
+ *
+ * PMS_TOKEN is read by tests/run.py on the BUILD HOST only (it injects the token
+ * onto the TV at test time via /tmp/poc-token); it is never compiled into the app.
+ * Find a token in Plex → any item → Get Info → View XML. */
 #define PMS_HOST  "YOUR_PMS_HOST"
 #define PMS_PORT  32400
 #define PMS_TOKEN "YOUR_PLEX_TOKEN"
-/* Fallback demo part played if the library fetch is unavailable. */
-#define DEMO_STREAM_URL "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"

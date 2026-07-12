@@ -485,8 +485,8 @@ def run_case(case, cfg, token, verbose):
 
     # 3b. inject the effective PMS token so the APP itself plays (and scrobbles) as this user.
     # Written in its own ssh round-trip so the token value never reaches stdout; poc-token was
-    # just cleared by apply_triggers (it's in ALL_TRIGGERS). Skipped for --owner (the binary's
-    # compiled token is already the owner, so no override is needed).
+    # just cleared by apply_triggers (it's in ALL_TRIGGERS). Always required: the binary carries
+    # no baked token — /tmp/poc-token is the only way an automated run gets PMS access.
     if cfg.get("inject_token"):
         ssh(tv, f"printf '%s' '{token}' > /tmp/poc-token")
         print(f"    poc-token: <{cfg['user_label']}, redacted>")
@@ -691,7 +691,7 @@ def main():
             admin_token = read_token()
             test_user = manifest.get("test_user")
             if args.owner or not test_user:
-                token, cfg["inject_token"] = admin_token, False
+                token, cfg["inject_token"] = admin_token, True  # no baked token in the binary
             else:
                 token = fetch_managed_user_token(admin_token, cfg["pms"]["host"],
                                                  cfg["pms"]["port"], test_user["id"])
@@ -712,7 +712,7 @@ def main():
     if args.owner or not test_user:
         token = admin_token
         cfg["user_label"] = "owner (config.local.h)"
-        cfg["inject_token"] = False
+        cfg["inject_token"] = True  # the binary has NO baked token; every identity is injected
         if not args.owner:
             print("NOTE: no test_user in manifest -> running as OWNER (history WILL be affected)")
     else:

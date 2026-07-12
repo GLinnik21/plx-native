@@ -77,6 +77,15 @@ pub fn update(dt: f32) {
     s.row.update(n, focus, &RowStyle::PROFILES, dt);
 }
 
+/// Avatar-row geometry: (first tile's left x before scroll, per-tile stride). Centered when the
+/// roster fits, else left-aligned so CardRow can scroll it. Shared by draw + the pointer hit-test.
+fn row_geom(n: usize) -> (f32, f32) {
+    let sty = RowStyle::PROFILES;
+    let slot = sty.w + sty.gap;
+    let total = (n as f32 * slot - sty.gap).max(0.0);
+    (((SCR_W as f32 - total) * 0.5).max(sty.margin_x), slot)
+}
+
 pub fn draw() {
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let p = Painter::root();
@@ -90,12 +99,9 @@ pub fn draw() {
         p.text(t.as_ptr(), SCR_W as f32 * 0.5, 168.0, theme::size::HERO, theme::TEXT_PRIMARY, 1, 1);
     }
 
-    // avatar row — centered when the roster fits, else left-aligned so CardRow can scroll it.
     let sty = RowStyle::PROFILES;
     let n = users.len();
-    let slot = sty.w + sty.gap;
-    let total = (n as f32 * slot - sty.gap).max(0.0);
-    let start_x = ((SCR_W as f32 - total) * 0.5).max(sty.margin_x);
+    let (start_x, slot) = row_geom(n);
     let scroll = s.row.scroll_x();
 
     let mut focused: Option<usize> = None;
@@ -118,6 +124,24 @@ pub fn draw() {
         let sc = s.row.scale(i);
         card_row::draw_focused(p, Art::Thumb { key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, std::ptr::null());
         draw_name(p, u, cx, true);
+    }
+
+    // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a blank page
+    if users.is_empty() {
+        Spinner::new(SCR_W as f32 * 0.5, ROW_Y + sty.h * 0.5, 26.0)
+            .phase(s.spin_ms as u32)
+            .tint(theme::TEXT_PRIMARY)
+            .draw(&env, p);
+    }
+
+    // a failed switch (wrong PIN, offline) drops the flow back here with an error — show it,
+    // or the spinner just vanishes and the picker looks like it ignored the choice.
+    let err = auth::error();
+    if !err.is_empty() && !s.pad.open && auth::phase() == Phase::Profiles {
+        if let Ok(e) = CString::new(err) {
+            let ey = crate::text::text_vcenter_y(theme::size::BODY, 0, ROW_Y + sty.h + 96.0);
+            p.text(e.as_ptr(), SCR_W as f32 * 0.5, ey, theme::size::BODY, theme::TEXT_SECONDARY, 1, 0);
+        }
     }
 
     // switching spinner / keypad overlay
@@ -162,15 +186,10 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
         dx += dot + dgap;
     }
     // keypad grid
-    let key = 108.0f32;
-    let kg = 20.0f32;
-    let gw = 3.0 * key + 2.0 * kg;
-    let gx = SCR_W as f32 * 0.5 - gw * 0.5;
-    let gy = 452.0f32;
     for (r, row) in KEYS.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
             let Some(k) = cell else { continue };
-            let rect = Rect::new(gx + c as f32 * (key + kg), gy + r as f32 * (key + kg), key, key);
+            let rect = pad_key_rect(r, c);
             let foc = r as c_int == s.pad.fr && c as c_int == s.pad.fc;
             let (fill, ink) = if foc {
                 (theme::ACCENT, theme::ACCENT_INK)
@@ -188,6 +207,91 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
     let _ = env;
 }
 
+/// Keypad cell geometry — shared by draw_pad and the pointer hit-test.
+fn pad_key_rect(r: usize, c: usize) -> Rect {
+    const KEY: f32 = 108.0;
+    const KGAP: f32 = 20.0;
+    let gx = SCR_W as f32 * 0.5 - (3.0 * KEY + 2.0 * KGAP) * 0.5;
+    Rect::new(gx + c as f32 * (KEY + KGAP), 452.0 + r as f32 * (KEY + KGAP), KEY, KEY)
+}
+
+/// The roster tile under the pointer (tile body or its name label; None in the gaps).
+fn tile_at(s: &Scene, mx: f32, my: f32) -> Option<usize> {
+    let n = auth::users().len();
+    if n == 0 {
+        return None;
+    }
+    let sty = RowStyle::PROFILES;
+    if my < ROW_Y - 24.0 || my > ROW_Y + sty.h + 56.0 {
+        return None;
+    }
+    let (start_x, slot) = row_geom(n);
+    let x = mx - (start_x - s.row.scroll_x());
+    if x < 0.0 {
+        return None;
+    }
+    let i = (x / slot) as usize;
+    (i < n && x - i as f32 * slot <= sty.w).then_some(i)
+}
+
+/// The keypad cell under the pointer (skips the empty cell).
+fn pad_key_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
+    for (r, row) in KEYS.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            if cell.is_some() && pad_key_rect(r, c).contains(mx, my) {
+                return Some((r as c_int, c as c_int));
+            }
+        }
+    }
+    None
+}
+
+/// Pointer hover: focus follows the cursor (roster tile, or keypad key while the pad is up).
+pub fn pointer_focus(mx: f32, my: f32) {
+    let s = scene();
+    if s.pad.open {
+        if let Some((r, c)) = pad_key_at(mx, my) {
+            s.pad.fr = r;
+            s.pad.fc = c;
+        }
+        return;
+    }
+    if let Some(i) = tile_at(s, mx, my) {
+        s.fc = i as c_int;
+    }
+}
+
+/// Pointer click: select the tile / press the keypad key under the cursor (same actions as OK);
+/// a click outside an open keypad dismisses it like BACK.
+pub fn click(mx: f32, my: f32) {
+    let s = scene();
+    if s.pad.open {
+        if let Some((r, c)) = pad_key_at(mx, my) {
+            s.pad.fr = r;
+            s.pad.fc = c;
+            if let Some(k) = KEYS[r as usize][c as usize] {
+                press(s, k);
+            }
+        } else {
+            s.pad = Pad::new();
+        }
+        return;
+    }
+    if let Some(i) = tile_at(s, mx, my) {
+        s.fc = i as c_int;
+        select(s, i);
+    }
+}
+
+/// Commit a roster tile (OK or pointer click): protected → PIN pad, else switch.
+fn select(s: &mut Scene, idx: usize) {
+    if auth::users().get(idx).map(|u| u.protected).unwrap_or(false) {
+        s.pad = Pad { open: true, target: idx, entry: String::new(), fr: 0, fc: 0 };
+    } else {
+        auth::select_profile(idx);
+    }
+}
+
 pub fn key(sym: c_uint, wcode: c_uint) {
     let s = scene();
     if s.pad.open {
@@ -203,13 +307,7 @@ pub fn key(sym: c_uint, wcode: c_uint) {
     } else if sym == SDLK_RIGHT {
         s.fc = (s.fc + 1).min(n - 1);
     } else if is_ok(sym) {
-        let idx = s.fc as usize;
-        let protected = auth::users().get(idx).map(|u| u.protected).unwrap_or(false);
-        if protected {
-            s.pad = Pad { open: true, target: idx, entry: String::new(), fr: 0, fc: 0 };
-        } else {
-            auth::select_profile(idx);
-        }
+        select(s, s.fc as usize);
     }
     // BACK on the picker does nothing — you must choose a profile.
 }

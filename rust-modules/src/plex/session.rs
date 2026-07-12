@@ -30,8 +30,12 @@ pub fn current_gen() -> u32 {
     CURRENT_GEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// App data dir on the TV (confirmed writable at runtime). The app id is fixed for this build.
-const AUTH_PATH: &str = "/media/developer/apps/usr/palm/applications/com.glin.plexpoc/auth.json";
+/// Session file — on the dev partition but OUTSIDE the app install dir: appinstalld replaces
+/// `applications/com.glin.plexpoc/` wholesale on every ipk (re)install, which silently signed the
+/// user out when the file lived there. `/media/developer/` itself survives reinstalls.
+const AUTH_PATH: &str = "/media/developer/com.glin.plexpoc-auth.json";
+/// Pre-relocation path (inside the app dir) — read once as a migration fallback.
+const AUTH_PATH_OLD: &str = "/media/developer/apps/usr/palm/applications/com.glin.plexpoc/auth.json";
 
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -46,6 +50,22 @@ pub struct Session {
     pub server: ServerRef,
     #[serde(default)]
     pub user: UserRef,
+    /// The Plex Home roster as of the last successful fetch — lets the who's-watching picker
+    /// render instantly on every boot (and offline) instead of waiting on a plex.tv round-trip.
+    #[serde(default)]
+    pub home_users: Vec<HomeUserRef>,
+}
+
+/// One persisted who's-watching tile (avatar + PIN flag; no tokens live here).
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct HomeUserRef {
+    pub uuid: String,
+    pub title: String,
+    pub thumb: String,
+    #[serde(default)]
+    pub protected: bool,
+    #[serde(default)]
+    pub admin: bool,
 }
 
 /// The chosen server's LAN coordinates. `address`:`port` is reached over plain HTTP by the existing
@@ -89,9 +109,11 @@ impl Session {
 
 /// Load the persisted session, ensuring a stable `client_id` exists (generated + saved on first
 /// boot). Never returns an error — a missing/corrupt file degrades to a fresh, logged-out session.
+/// Falls back to the pre-relocation path once and re-saves at the new one (migration).
 pub fn load() -> Session {
     let mut s: Session = std::fs::read(AUTH_PATH)
         .ok()
+        .or_else(|| std::fs::read(AUTH_PATH_OLD).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     if s.client_id.is_empty() {
@@ -108,9 +130,11 @@ pub fn save(s: &Session) {
     }
 }
 
-/// Clear the persisted session (sign-out) — removes the file; a fresh `client_id` is minted next load.
+/// Clear the persisted session (sign-out) — removes the file; a fresh `client_id` is minted next
+/// load. The old-path copy goes too, or the migration fallback would resurrect the stale session.
 pub fn clear() {
     let _ = std::fs::remove_file(AUTH_PATH);
+    let _ = std::fs::remove_file(AUTH_PATH_OLD);
 }
 
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv

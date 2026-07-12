@@ -14,11 +14,13 @@ use std::ptr::{addr_of, addr_of_mut};
 pub enum Action {
     None,
     ChangeProfile,
+    SignIn,
     SignOut,
 }
 
 static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut TABLE: TableView = TableView::new(); // main-thread only
+static mut SIGNED_IN: bool = false; // captured at open() — decides which row set is shown
 
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
@@ -33,13 +35,18 @@ pub fn is_open() -> bool {
 
 pub fn open() {
     // header = the signed-in profile name (owner with no Plex Home selection → "Account").
-    let name = crate::plex::session::current()
-        .map(|u| u.title)
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "Account".to_string());
-    let sec = Section::new(name)
-        .row(Row::new("Change profile").chevron(true))
-        .row(Row::new("Sign out"));
+    // Signed out (no session — e.g. the compiled dev token, or after Sign out) the only
+    // meaningful action is signing in; offering "Change profile" there dead-ended in an
+    // empty who's-watching screen.
+    let cur = crate::plex::session::current();
+    let signed_in = cur.is_some();
+    unsafe { addr_of_mut!(SIGNED_IN).write(signed_in) };
+    let name = cur.map(|u| u.title).filter(|t| !t.is_empty()).unwrap_or_else(|| "Account".to_string());
+    let sec = if signed_in {
+        Section::new(name).row(Row::new("Change profile").chevron(true)).row(Row::new("Sign out"))
+    } else {
+        Section::new(name).row(Row::new("Sign in").chevron(true))
+    };
     table().set_sections(vec![sec], 0, false);
     pop().open();
 }
@@ -61,6 +68,12 @@ pub fn move_focus(sym: c_int) {
 pub fn on_ok() -> Action {
     let sel = table().sel;
     close();
+    if !unsafe { addr_of!(SIGNED_IN).read() } {
+        return match sel {
+            0 => Action::SignIn,
+            _ => Action::None,
+        };
+    }
     match sel {
         0 => Action::ChangeProfile,
         1 => Action::SignOut,

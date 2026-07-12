@@ -197,8 +197,7 @@ pub(crate) fn start_bufferfeed() -> bool {
         log("start_bufferfeed: already running (no-op)");
         return true;
     }
-    // resolve the URL: route (a selected movie) wins, then /tmp/poc-url, then a local
-    // sample, then the built-in demo movie.
+    // resolve the URL: route (a selected movie) wins, then /tmp/poc-url, then a local sample.
     let mut url = crate::route::url();
     if url.is_empty() {
         if let Ok(s) = std::fs::read_to_string("/tmp/poc-url") {
@@ -229,8 +228,10 @@ pub(crate) fn start_bufferfeed() -> bool {
             is_h265 = true;
             sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
         } else {
-            url = crate::route::demo_url();
-            crate::route::set_url(&url);
+            // nothing to play: no selected item, no /tmp/poc-url, no local sample. (The old
+            // baked-in demo-movie fallback is gone — the binary carries no URLs/credentials.)
+            log("start_bufferfeed: no URL — select an item (or set /tmp/poc-url)");
+            return false;
         }
     }
     let stream = sample.is_none();
