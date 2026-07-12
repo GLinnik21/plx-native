@@ -1197,7 +1197,8 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 path_c = CString::new(su.path).unwrap_or_default();
                 port = su.port;
                 let _ = SHARED.reparse_next.swap(false, Ordering::Acquire);
-                crate::player::log("ff: seek → new transcode url (&offset)");
+                // direct play reopens the SAME url (byte-range); a transcode gets a new &offset url
+                crate::player::log("ff: seek → reopen stream url");
                 continue 'outer;
             }
         }

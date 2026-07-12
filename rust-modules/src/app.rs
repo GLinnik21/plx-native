@@ -383,7 +383,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         const SCRUB_BASE: f32 = 10.0;
         const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
         const SCRUB_MAX: f32 = 140.0;
-        const TAP_COMMIT_MS: u32 = 240; // tap released → commit after this (further taps accumulate)
+        // tap released → commit after this (further taps accumulate). Long enough that a rapid
+        // ±10s tap burst coalesces into ONE seek — each separate commit is a full reopen+prime on
+        // the engine, and back-to-back in-flight seeks are what race the demux (the stale-audio
+        // silence incident); short enough that a single tap still feels immediate.
+        const TAP_COMMIT_MS: u32 = 450;
         const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
         let mut bg_was_playing = false;
         let mut bg_was_paused = false;
