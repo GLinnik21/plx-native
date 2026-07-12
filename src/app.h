@@ -2,8 +2,10 @@
 #define PLEXPOC_APP_H
 #include <stdio.h>                 /* FILE */
 
-/* (1) config.local.h (gitignored real secrets) overrides these placeholders.
- *     Resolves relative to app.h in src/, so src/config.local.h is found. */
+/* (1) config.local.h (gitignored, dev-only) overrides the host placeholder. NO token macro:
+ *     the binary carries no credentials — PMS access comes from the signed-in session, or from
+ *     the /tmp/poc-token dev trigger for automated runs (the token in config.local.h is read by
+ *     tests/run.py on the HOST, never compiled in). */
 #if defined(__has_include)
 #  if __has_include("config.local.h")
 #    include "config.local.h"
@@ -14,12 +16,6 @@
 #endif
 #ifndef PMS_PORT
 #  define PMS_PORT  32400
-#endif
-#ifndef PMS_TOKEN
-#  define PMS_TOKEN "YOUR_PLEX_TOKEN"
-#endif
-#ifndef DEMO_STREAM_URL
-#  define DEMO_STREAM_URL "http://YOUR_PMS_HOST:32400/library/parts/0/0/file.mkv?X-Plex-Token=YOUR_PLEX_TOKEN"
 #endif
 #define RESUME_REWIND_NS (5LL * 1000000000LL)
 

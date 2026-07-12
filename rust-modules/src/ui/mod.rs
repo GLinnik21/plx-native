@@ -63,6 +63,11 @@ impl Rect {
         let (w, h) = (self.w * s, self.h * s);
         Rect::new(self.x - (w - self.w) * 0.5, self.y - (h - self.h) * 0.5, w, h)
     }
+    /// This rect shrunk by `d` on every side (negative grows it).
+    #[inline]
+    pub fn inset(&self, d: f32) -> Rect {
+        Rect::new(self.x + d, self.y + d, self.w - 2.0 * d, self.h - 2.0 * d)
+    }
 }
 
 #[derive(Clone, Copy, Default)]

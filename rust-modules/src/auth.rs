@@ -53,6 +53,24 @@ impl UserTile {
             admin: u.admin,
         }
     }
+    fn of_ref(u: &session::HomeUserRef) -> UserTile {
+        UserTile {
+            title: u.title.clone(),
+            thumb: u.thumb.clone(),
+            uuid: u.uuid.clone(),
+            protected: u.protected,
+            admin: u.admin,
+        }
+    }
+    fn to_ref(&self) -> session::HomeUserRef {
+        session::HomeUserRef {
+            uuid: self.uuid.clone(),
+            title: self.title.clone(),
+            thumb: self.thumb.clone(),
+            protected: self.protected,
+            admin: self.admin,
+        }
+    }
 }
 
 /// PMS credentials the main loop installs once the flow resolves.
@@ -153,27 +171,45 @@ pub fn take_ready() -> Option<ReadyCreds> {
     })
 }
 
-/// Re-open the "who's watching" picker from an already-signed-in session (the Home profile menu's
-/// "Change profile"). Reuses this session's cached roster when present; otherwise re-fetches it with
-/// the stored account token. The caller routes to [`Phase::Profiles`].
+/// Open the "who's watching" picker: the boot gate (picker-at-start) and the Home profile menu's
+/// "Change profile" both land here. Seeds the roster from the persisted session (instant + offline)
+/// and refreshes it from plex.tv in the background — a successful refresh is persisted, a failed
+/// one keeps the cache. Only an *empty* roster that also fails to fetch becomes an error; being
+/// signed out is an error immediately (an empty picker is a dead end). The caller routes on phase.
 pub fn start_switch() {
-    let have = with_ctl(|c| {
-        c.error.clear();
-        c.phase = Phase::Profiles;
-        !c.users.is_empty()
-    });
-    if have {
-        return;
+    let sess = session::load();
+    if sess.account_token.is_empty() {
+        return set_error("You're signed out — sign in to use profiles.");
     }
+    with_ctl(|c| {
+        c.error.clear();
+        if c.users.is_empty() {
+            c.users = sess.home_users.iter().map(UserTile::of_ref).collect();
+        }
+        c.session = sess;
+        c.phase = Phase::Profiles;
+    });
     std::thread::spawn(|| {
-        let sess = session::load();
-        let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
-        let users: Vec<UserTile> = ac.home_users().unwrap_or_default().iter().map(UserTile::of).collect();
-        log(&format!("auth: re-fetched roster n={}", users.len()));
-        with_ctl(|c| {
-            c.session = sess;
-            c.users = users;
-        });
+        let (cid, tok) = with_ctl(|c| (c.session.client_id.clone(), c.session.account_token.clone()));
+        let ac = AccountClient::new(&cid, Some(&tok));
+        match ac.home_users() {
+            Some(us) if !us.is_empty() => {
+                let users: Vec<UserTile> = us.iter().map(UserTile::of).collect();
+                log(&format!("auth: roster refreshed n={}", users.len()));
+                let persist = with_ctl(|c| {
+                    c.session.home_users = users.iter().map(UserTile::to_ref).collect();
+                    c.users = users;
+                    c.session.clone()
+                });
+                session::save(&persist);
+            }
+            _ => {
+                log("auth: roster refresh failed — keeping cached roster");
+                if with_ctl(|c| c.users.is_empty() && c.phase == Phase::Profiles) {
+                    set_error("Couldn't load profiles — check the connection.");
+                }
+            }
+        }
     });
 }
 
@@ -236,9 +272,17 @@ fn login_thread() {
     crate::plex::install(&addr, port as i32, &stok);
     log(&format!("auth: PMS client installed {addr}:{port}"));
 
-    // 4) Plex Home roster → who's-watching, or straight in if there's a single user
+    // 4) Plex Home roster → who's-watching, or straight in if there's a single user. The roster is
+    // kept on the session so it persists with the creds — the boot picker and every later
+    // "Change profile" render from it instantly, online or not.
     let users: Vec<UserTile> = ac.home_users().unwrap_or_default().iter().map(UserTile::of).collect();
     log(&format!("auth: home users n={}", users.len()));
+    with_ctl(|c| c.session.home_users = users.iter().map(UserTile::to_ref).collect());
+    // Persist NOW — the account token + server + roster are durable the moment they exist.
+    // Waiting for take_ready() (a completed profile pick) meant abandoning the app at the
+    // picker lost the whole sign-in; next boot resumes at the picker instead.
+    let snap = with_ctl(|c| c.session.clone());
+    session::save(&snap);
     if users.len() > 1 {
         log("auth: showing who's-watching");
         with_ctl(|c| {
@@ -328,16 +372,35 @@ fn switch_thread(index: usize, pin: Option<String>) {
         Some(t) => t,
         None => return,
     };
+    // Picking the already-active, PIN-free profile needs no network — the stored per-user creds
+    // still apply. This is what lets the boot picker proceed offline for the signed-in profile.
+    // (A protected tile always goes through switch_user so the PIN is actually validated.)
+    let same_user = pin.is_none()
+        && !tile.protected
+        && with_ctl(|c| !c.session.user.uuid.is_empty() && tile.uuid == c.session.user.uuid && !c.session.pms_token().is_empty());
+    if same_user {
+        log(&format!("auth: '{}' already active — no switch needed", tile.title));
+        return with_ctl(|c| {
+            c.error.clear();
+            c.phase = Phase::Ready;
+            c.apply_pending = true;
+        });
+    }
     with_ctl(|c| c.phase = Phase::Switching);
     std::thread::spawn(move || {
         let ac = AccountClient::new(&cid, Some(&account_token));
         let u = match ac.switch_user(&tile.uuid, pin.as_deref()) {
             Some(u) if !u.auth_token.is_empty() => u,
             _ => {
-                // 401 (wrong PIN) and transport errors are indistinguishable at this layer.
+                // 401 (wrong PIN) and transport errors are indistinguishable at this layer;
+                // only blame the PIN when one was actually submitted.
                 log(&format!("auth: switch '{}' -> failed", tile.title));
                 return with_ctl(|c| {
-                    c.error = "Couldn't switch profile — check the PIN.".into();
+                    c.error = if pin.is_some() {
+                        "Couldn't switch profile — check the PIN.".into()
+                    } else {
+                        "Couldn't switch profile — check the connection.".into()
+                    };
                     c.phase = Phase::Profiles;
                 });
             }

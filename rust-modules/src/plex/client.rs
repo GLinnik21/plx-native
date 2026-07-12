@@ -219,7 +219,7 @@ impl StreamUrl {
     pub fn to_url(&self) -> String {
         format!("http://{}:{}{}", self.host, self.port, self.path)
     }
-    /// Parse an EXTERNAL full URL (demo_url, /tmp/poc-url override) back into parts —
+    /// Parse an EXTERNAL full URL (the /tmp/poc-url override) back into parts —
     /// replaces `player::engine::parse_stream_url` (same behavior: default port 32400).
     pub fn parse(url: &str) -> StreamUrl {
         let s = url.strip_prefix("http://").unwrap_or(url);

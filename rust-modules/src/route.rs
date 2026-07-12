@@ -49,15 +49,13 @@ struct Cfg {
     host: String,
     port: c_int,
     token: String,
-    demo_url: String,
 }
 static mut CFG: Option<Cfg> = None;
 
-/// Called once at startup with the PMS config (from the C boot shim via plex_run).
-pub(crate) fn set_config(host: &str, port: c_int, token: &str, demo_url: &str) {
+/// Installed by the boot gate / login flow with the active PMS coordinates + token.
+pub(crate) fn set_config(host: &str, port: c_int, token: &str) {
     unsafe {
-        *addr_of_mut!(CFG) =
-            Some(Cfg { host: host.to_owned(), port, token: token.to_owned(), demo_url: demo_url.to_owned() });
+        *addr_of_mut!(CFG) = Some(Cfg { host: host.to_owned(), port, token: token.to_owned() });
     }
 }
 
@@ -131,12 +129,9 @@ pub(crate) fn identity_qs() -> String {
          &X-Plex-Device-Name=Living%20Room%20TV&X-Plex-Model=49SM9000PLA&X-Plex-Provides=player"
     )
 }
-pub(crate) fn demo_url() -> String {
-    unsafe { (*addr_of!(CFG)).as_ref().map(|c| c.demo_url.clone()).unwrap_or_default() }
-}
 /// PMS (host, port, token) — read by the engine's timeline reporter (engine.rs). The catalog/
 /// metadata/poster read layer now uses the typed `plex::client()` singleton, not this; `CFG`
-/// stays because it also owns `demo_url` and feeds the (not-yet-migrated) playback path.
+/// stays because it feeds the (not-yet-migrated) playback path.
 pub(crate) fn config() -> Option<(String, c_int, String)> {
     unsafe { (*addr_of!(CFG)).as_ref().map(|c| (c.host.clone(), c.port, c.token.clone())) }
 }

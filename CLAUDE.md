@@ -166,5 +166,15 @@ There is no host-side test suite — the code only runs on the TV. Verify by obs
   URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
   `/tmp/poc-autoplay` (auto-press OK for headless capture), `/tmp/poc-autoseek` (one auto-seek),
   and `/tmp/poc-mode` / `/tmp/poc-variant` / `/tmp/poc-ptype` (playback-path bisect knobs).
-- Normal interactive flow: D-pad/pointer to focus a shelf card → **OK** starts the demo movie →
-  OK toggles play/pause, LEFT/RIGHT scrub-seek, **BACK/Stop** returns to the shelf.
+  **Any `/tmp/poc-*` trigger (except the logs/`poc-profile`/`poc-anim`) marks the boot as
+  automated and suppresses the boot who's-watching picker**, and `/tmp/poc-token` beats the
+  stored session entirely — so headless runs always land on a deterministic Home.
+  `/tmp/poc-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.
+- **The binary carries NO credentials** (no compiled PMS token, no demo URL). PMS access comes
+  from the signed-in session (QR login) or, for automated runs only, `/tmp/poc-token` — which
+  `tests/run.py` always injects (it reads the owner token from the gitignored
+  `src/config.local.h` on the HOST; that macro is never compiled in). An interactive boot with
+  no session lands on the QR sign-in screen.
+- Normal interactive flow: who's-watching picker (multi-user) → Home; D-pad/pointer to focus a
+  card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
+  scrub-seek, **BACK/Stop** returns.

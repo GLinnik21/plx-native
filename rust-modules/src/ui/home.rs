@@ -526,8 +526,13 @@ fn draw_chip(p: Painter) {
     }
     if !drew {
         p.rect(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL, 0.0);
-        let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, y + d * 0.5);
-        p.text(initial_c.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
+        if initial_c.as_bytes().is_empty() {
+            // signed out (no session) — a generic person glyph; the menu behind it offers Sign in
+            crate::ui::icons::draw(p, crate::ui::icons::Icon::User, r.inset(14.0), theme::TEXT_SECONDARY);
+        } else {
+            let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, y + d * 0.5);
+            p.text(initial_c.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
+        }
     }
 }
 

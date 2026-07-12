@@ -18,6 +18,7 @@ pub enum Icon {
     Play,
     Pause,
     Info,
+    User,
 }
 
 fn src(id: Icon) -> &'static str {
@@ -29,6 +30,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Play => include_str!("../../../assets/icons/play.svg"),
         Icon::Pause => include_str!("../../../assets/icons/pause.svg"),
         Icon::Info => include_str!("../../../assets/icons/info.svg"),
+        Icon::User => include_str!("../../../assets/icons/user.svg"),
     }
 }
 

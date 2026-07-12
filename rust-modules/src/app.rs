@@ -32,7 +32,7 @@ const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
 const SDL_MOUSEBUTTONUP: u32 = 0x402;
 const SDL_MOUSEWHEEL: u32 = 0x403;
 // keysyms + the OK/BACK predicates live in ui::consts (the single keycode home)
-use crate::ui::consts::{is_back, is_ok, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{is_back, is_ok, SDLK_DOWN, SDLK_LEFT, SDLK_RETURN, SDLK_RIGHT, SDLK_UP};
 const SCR_W: c_int = 1920;
 const SCR_H: c_int = 1080;
 const COLS: c_int = 10;
@@ -175,12 +175,7 @@ fn commit_seek(target: i64, repause_at: &mut i64) {
 fn is_started() -> bool { crate::player::is_started() }
 
 #[no_mangle]
-pub extern "C" fn plex_run(
-    pms_host: *const c_char,
-    pms_port: c_int,
-    pms_token: *const c_char,
-    demo_url: *const c_char,
-) -> c_int {
+pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     install_panic_logger();
     unsafe {
         SDL_SetMainReady();
@@ -230,29 +225,24 @@ pub extern "C" fn plex_run(
         crate::gfx::init_image();
         crate::net::global_init(); // one-time libcurl init (main thread) before any threaded HTTPS call
 
-        // Effective PMS token: the one compiled into the binary (owner), unless the dev trigger
-        // /tmp/poc-token holds an override — used by the regression harness to run as the Guest
-        // user so test playback/scrobbles land on Guest's history, not the real account. The
-        // value is NEVER logged (only that an override is in effect).
-        let eff_token = {
-            let compiled = std::ffi::CStr::from_ptr(pms_token).to_string_lossy().into_owned();
-            match std::fs::read_to_string("/tmp/poc-token") {
-                Ok(s) if !s.trim().is_empty() => {
-                    log("token: using /tmp/poc-token override (test/guest user)");
-                    s.trim().to_owned()
-                }
-                _ => compiled,
+        // NO token is compiled into this binary. PMS access comes from the signed-in session,
+        // or — for automated runs only (the regression harness, headless captures) — from the
+        // /tmp/poc-token dev trigger. The value is NEVER logged (only that one is in effect).
+        let dev_token = match std::fs::read_to_string("/tmp/poc-token") {
+            Ok(s) if !s.trim().is_empty() => {
+                log("token: using /tmp/poc-token (test identity)");
+                s.trim().to_owned()
             }
+            _ => String::new(),
         };
         let host_s = std::ffi::CStr::from_ptr(pms_host).to_string_lossy().into_owned();
-        let demo_s = std::ffi::CStr::from_ptr(demo_url).to_string_lossy().into_owned();
 
         // Install the PMS read-layer client (singleton) + playback config, then fetch the catalog.
         // Used by the boot gate and again when a login resolves; host/port fix on first install, a
         // later call just swaps the token (profile switch). route::CFG keeps the playback copy.
-        let install_pms = |host: &str, port: c_int, token: &str, demo: &str| {
+        let install_pms = |host: &str, port: c_int, token: &str| {
             crate::plex::install(host, port, token);
-            crate::route::set_config(host, port, token, demo);
+            crate::route::set_config(host, port, token);
             let nmov = crate::pms::pms_fetch_hubs();
             log(&format!("pms: nmovies={nmov}"));
         };
@@ -263,23 +253,67 @@ pub extern "C" fn plex_run(
         crate::ui::login::init();
         crate::ui::profiles::init();
 
-        // Boot gate: a stored session (offline-capable LAN server) → Home; else a compiled/override
-        // token (dev + the test harness) → Home; else no creds → the QR login flow. /tmp/poc-login
-        // forces the login screen even when a token exists (to exercise the flow on demand).
+        // Any dev trigger under /tmp marks the boot as automated (the harness token override,
+        // autoplay/detail captures, playback-path knobs): those runs need a deterministic Home,
+        // so the boot who's-watching picker is skipped. Pure diagnostics (the logs, the profiler,
+        // the anim overlay) don't count as automation.
+        let automated_boot = || {
+            const DIAG: [&str; 5] = ["poc-events.log", "poc-stderr.log", "poc-crash.log", "poc-profile", "poc-anim"];
+            std::fs::read_dir("/tmp")
+                .ok()
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok()).any(|e| {
+                        let n = e.file_name().to_string_lossy().into_owned();
+                        n.starts_with("poc-") && !DIAG.contains(&n.as_str())
+                    })
+                })
+                .unwrap_or(false)
+        };
+
+        // Boot gate. Order matters:
+        //  1. /tmp/poc-login forces the QR login screen (to exercise the flow on demand).
+        //  2. /tmp/poc-token (the harness / headless runs) beats the stored session — automation
+        //     must run as the injected test identity no matter who is signed in on the TV.
+        //  3. A stored session (offline-capable LAN server) → Home, through the who's-watching
+        //     picker first when the account has a multi-user Plex Home roster (interactive boots).
+        //  4. Nothing → the QR sign-in flow (no credentials are compiled in — like a real client).
+        enum BootTo {
+            Home,
+            Login,
+            Profiles,
+        }
+        // dev: /tmp/poc-pickuser=<index> — force the boot picker even on an automated boot and
+        // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
+        let mut pick_user: Option<usize> =
+            std::fs::read_to_string("/tmp/poc-pickuser").ok().and_then(|s| s.trim().parse().ok());
         let session = crate::plex::session::load();
-        let force_login = std::path::Path::new("/tmp/poc-login").exists();
-        let start_at_login = if !force_login && session.can_go_local() {
-            install_pms(&session.server.address, session.server.port as c_int, session.pms_token(), &demo_s);
-            crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
-            log("boot: stored session — local server (offline-capable)");
-            false
-        } else if !force_login && !eff_token.is_empty() {
-            install_pms(&host_s, pms_port, &eff_token, &demo_s);
-            false
+        let boot_to = if std::path::Path::new("/tmp/poc-login").exists() {
+            crate::auth::start_login();
+            log("boot: /tmp/poc-login — starting QR login");
+            BootTo::Login
+        } else if !dev_token.is_empty() {
+            install_pms(&host_s, pms_port, &dev_token);
+            BootTo::Home
+        } else if session.can_go_local() {
+            if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
+                // Who's watching first. Only the read client is installed here (the avatars proxy
+                // through the PMS photo transcoder); the catalog fetch + playback config happen in
+                // take_ready once a profile is picked — done now they'd be thrown out on a switch.
+                crate::plex::install(&session.server.address, session.server.port as i32, session.pms_token());
+                crate::plex::session::set_current(Some(session.user.clone()));
+                crate::auth::start_switch(); // seeds the persisted roster + refreshes it online
+                log("boot: stored session — who's watching");
+                BootTo::Profiles
+            } else {
+                install_pms(&session.server.address, session.server.port as c_int, session.pms_token());
+                crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
+                log("boot: stored session — local server (offline-capable)");
+                BootTo::Home
+            }
         } else {
             crate::auth::start_login();
-            log("boot: no session — starting QR login");
-            true
+            log("boot: no session — starting QR sign-in");
+            BootTo::Login
         };
         crate::player::acb_init();
         crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/poc-ffprobe ABI probe
@@ -380,8 +414,13 @@ pub extern "C" fn plex_run(
             Detail,
             Player { overlay: Overlay },
         }
-        // Initial route from the boot gate: Login when we have no usable creds, else Home.
-        let mut route = if start_at_login { Route::Login } else { Route::Home };
+        // Initial route from the boot gate: Login when we have no usable creds, Profiles for the
+        // boot who's-watching picker, else Home.
+        let mut route = match boot_to {
+            BootTo::Home => Route::Home,
+            BootTo::Login => Route::Login,
+            BootTo::Profiles => Route::Profiles,
+        };
         // dev: /tmp/poc-acct auto-opens the profile menu (headless capture of the popover).
         if std::path::Path::new("/tmp/poc-acct").exists() && matches!(route, Route::Home) {
             crate::ui::account_menu::open();
@@ -543,6 +582,17 @@ pub extern "C" fn plex_run(
                     }
                     last_input = SDL_GetTicks();
                     hud_dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+                    // LG pointer convention, GLOBAL (every screen, incl. login/picker which
+                    // dispatch early below): the first D-pad press dismisses the Magic-Remote
+                    // cursor and puts input in D-pad mode; pointer motion brings it back.
+                    if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
+                        if !dpad_mode || !cur_hidden {
+                            SDL_webOSCursorVisibility(0);
+                        }
+                        dpad_mode = true;
+                        cur_hidden = true;
+                        mot_accum = 0.0;
+                    }
                     // onboarding screens (login / who's-watching) own every fresh key — nothing is
                     // behind them, so route the key to the active screen and skip all other handlers.
                     if matches!(route, Route::Login | Route::Profiles) {
@@ -559,7 +609,12 @@ pub extern "C" fn plex_run(
                             match crate::ui::account_menu::on_ok() {
                                 crate::ui::account_menu::Action::ChangeProfile => {
                                     crate::auth::start_switch();
+                                    crate::ui::profiles::enter();
                                     route = Route::Profiles;
+                                }
+                                crate::ui::account_menu::Action::SignIn => {
+                                    crate::auth::start_login();
+                                    route = Route::Login;
                                 }
                                 crate::ui::account_menu::Action::SignOut => {
                                     crate::auth::sign_out();
@@ -683,10 +738,6 @@ pub extern "C" fn plex_run(
                     // press on a hidden HUD just reveals it (focused on the scrubber); pressing UP
                     // with nothing focusable above (the buttons row) hides the HUD again.
                     if matches!(route, Route::Player { .. }) && (sym == SDLK_UP || sym == SDLK_DOWN) {
-                        if !cur_hidden {
-                            SDL_webOSCursorVisibility(0);
-                            cur_hidden = true;
-                        }
                         let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
                         let mut hide = false;
                         if !vis {
@@ -723,11 +774,6 @@ pub extern "C" fn plex_run(
                         continue;
                     }
                     if !matches!(route, Route::Player { .. }) && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN) {
-                        if !dpad_mode {
-                            SDL_webOSCursorVisibility(0);
-                        }
-                        dpad_mode = true;
-                        mot_accum = 0.0;
                         if matches!(route, Route::Detail) {
                             crate::ui::detail::move_focus(sym as c_int);
                         } else if g_snap() < 0.5 {
@@ -829,6 +875,7 @@ pub extern "C" fn plex_run(
                                     if !dpad_mode {
                                         SDL_webOSCursorVisibility(0);
                                         dpad_mode = true;
+                                        cur_hidden = true;
                                     }
                                 }
                             }
@@ -854,6 +901,7 @@ pub extern "C" fn plex_run(
                             if !dpad_mode {
                                 SDL_webOSCursorVisibility(0);
                                 dpad_mode = true;
+                                cur_hidden = true;
                             }
                         } else if paused() {
                             set_paused(false);
@@ -964,7 +1012,11 @@ pub extern "C" fn plex_run(
                         }
                         dpad_mode = false;
                     }
-                    crate::ui::home::home_pointer_focus(mx, my);
+                    if matches!(route, Route::Profiles) {
+                        crate::ui::profiles::pointer_focus(mx, my);
+                    } else {
+                        crate::ui::home::home_pointer_focus(mx, my);
+                    }
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
                     if matches!(route, Route::Player { .. }) {
@@ -1013,6 +1065,13 @@ pub extern "C" fn plex_run(
                     } else if matches!(route, Route::Account) {
                         crate::ui::account_menu::close(); // a click anywhere dismisses the popover
                         route = Route::Home;
+                    } else if matches!(route, Route::Profiles) {
+                        let cx = rd_i32(&ev, 20) as f32;
+                        let cy = rd_i32(&ev, 24) as f32;
+                        crate::ui::profiles::click(cx, cy);
+                    } else if matches!(route, Route::Login) {
+                        // one actionable thing on the login screen (retry on error) — click = OK
+                        crate::ui::login::key(SDLK_RETURN, 0);
                     }
                 } else if et == SDL_MOUSEBUTTONUP {
                     last_input = SDL_GetTicks();
@@ -1328,7 +1387,7 @@ pub extern "C" fn plex_run(
             // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
             if matches!(route, Route::Login | Route::Profiles) {
                 if let Some(c) = crate::auth::take_ready() {
-                    install_pms(&c.host, c.port, &c.token, &demo_s);
+                    install_pms(&c.host, c.port, &c.token);
                     log("login: server installed — entering Home");
                     route = Route::Home;
                 } else {
@@ -1347,6 +1406,14 @@ pub extern "C" fn plex_run(
                 crate::ui::login::update(dt);
             } else if matches!(route, Route::Profiles) {
                 crate::ui::profiles::update(dt);
+                if pick_user.is_some()
+                    && crate::auth::phase() == crate::auth::Phase::Profiles
+                    && !crate::auth::users().is_empty()
+                {
+                    let idx = pick_user.take().unwrap();
+                    log(&format!("pickuser: auto-selecting roster index {idx}"));
+                    crate::auth::select_profile(idx);
+                }
             } else if matches!(route, Route::Home | Route::Account) {
                 // only when home is actually drawn — stepping its 16×24 cell springs during
                 // Player/Detail frames was pure waste on the A53
