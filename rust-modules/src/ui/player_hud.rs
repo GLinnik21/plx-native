@@ -185,31 +185,20 @@ pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
     ((mx - SB_X) / sb_w()).clamp(0.0, 1.0)
 }
 
-/// draw a clock string with its ':' anchored at `cx` (so digit-width changes never shift it),
-/// clamped so the whole label stays inside [lo, hi]. Returns the label's (left, right) x extents.
+/// draw a clock string centred on `cx` as ONE label box, clamped so it stays inside [lo, hi].
+/// (The old last-':'-anchor read visibly lopsided once the clock grew to H:MM:SS — "1:05" left of
+/// the knob vs "53" right.) The box width is measured on a same-shape template with every digit
+/// as '0', so the box — and the returned extents — stay stable while digits tick instead of
+/// wobbling with proportional digit widths. Returns the label's (left, right) x extents.
 fn draw_clock(p: Painter, text: &str, cx: f32, y: f32, sz: i32, col: [f32; 4], lo: f32, hi: f32) -> (f32, f32) {
-    let cw = sz as f32 * 0.52; // approx glyph advance (proportional font — used only for clamping)
-    let ch = sz as f32 * 0.16; // half the ':' column
-    let ci = text.rfind(':');
-    let (left, right) = match ci {
-        Some(i) => (&text[..i], &text[i + 1..]),
-        None => (text, ""),
-    };
-    let lw = left.chars().count() as f32 * cw + ch;
-    let rw = right.chars().count() as f32 * cw + ch;
-    let cx = cx.clamp(lo + lw, (hi - rw).max(lo + lw));
-    if ci.is_some() {
-        if let Ok(cs) = CString::new(left) {
-            p.text(cs.as_ptr(), cx - ch, y, sz, col, 2, 1);
-        }
-        p.text(c":".as_ptr(), cx, y, sz, col, 1, 1);
-        if let Ok(cs) = CString::new(right) {
-            p.text(cs.as_ptr(), cx + ch, y, sz, col, 0, 1);
-        }
-    } else if let Ok(cs) = CString::new(text) {
+    let template: String = text.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
+    let w = CString::new(template).ok().map(|t| crate::text::text_width(t.as_ptr(), sz, 1)).unwrap_or(0.0);
+    let half = w * 0.5;
+    let cx = cx.clamp(lo + half, (hi - half).max(lo + half));
+    if let Ok(cs) = CString::new(text) {
         p.text(cs.as_ptr(), cx, y, sz, col, 1, 1);
     }
-    (cx - lw, cx + rw)
+    (cx - half, cx + half)
 }
 
 /// The transport HUD, composed from retui widgets through a root `Painter`.
@@ -307,7 +296,9 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     // against the remaining label / screen edge.
     let paused = crate::player::TX.paused.load(Relaxed);
     if loading || paused {
-        let isz = 22.0f32;
+        // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
+        // matching the CAPTION clock's cap height so the glyph reads as the label's size.
+        let isz = 30.0f32;
         let need = isz + 6.0;
         let right_ok = el_r + 14.0 + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
         let gx = if right_ok { el_r + 14.0 } else { el_l - 14.0 - need };

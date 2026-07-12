@@ -10,7 +10,7 @@ use crate::ui::icons::Icon;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton, ControlStyle, PageDots};
+use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton, PageDots};
 use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
@@ -22,20 +22,35 @@ static mut fr: c_int = 0;
 static mut fc: c_int = 0;
 static mut snapTarget: f32 = 0.0;
 // rotating hero: current index into pms::hero_pool + a flip debounce (so a held LEFT/RIGHT, via the
-// key-repeat path, can't machine-gun the carousel) + the on-screen chevron rect for pointer clicks.
+// key-repeat path, can't machine-gun the carousel), the slide transition (outgoing index + a 0→1
+// progress spring + direction), an idle auto-flip countdown, the action-row focus, and the
+// on-screen action-button rects for pointer hover/clicks.
 static mut hero_idx: c_int = 0;
 static mut hero_flip_cd: f32 = 0.0;
-static mut hero_chevron: [f32; 4] = [0.0; 4]; // x, y, w, h
+static mut hero_prev: c_int = -1; // outgoing pool index while sliding (-1 = idle)
+static mut hero_slide: Spring = Spring::at(1.0); // slide progress 0→1
+static mut hero_dir: f32 = 1.0; // +1 = next (content slides left), -1 = prev
+static mut hero_auto: f32 = HERO_AUTO_S; // countdown to the next automatic flip
+static mut hero_fc: c_int = 0; // hero focus: -1 = profile chip, 0 = pill, 1 = info, 2 = chevron
+static mut hero_btns: [Rect; HERO_NBTN] = [Rect::new(0.0, 0.0, 0.0, 0.0); HERO_NBTN]; // pill / info / chevron
 const HERO_FLIP_CD: f32 = 0.35;
+const HERO_AUTO_S: f32 = 8.0; // idle seconds between automatic hero flips
+const HERO_NBTN: usize = 3;
+const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 // top-left profile chip (avatar) rect, recorded each draw for pointer hit-testing (opens the
 // account menu). See draw_chip / profile_chip_click.
-static mut profile_chip: [f32; 4] = [0.0; 4];
+static mut profile_chip: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
 
+/// Focus accessors clamp INTO THE LIVE HUB BOUNDS at read time (mirroring Home::env's per-frame
+/// clamp): a hub refetch can shrink the shelves underneath the raw statics, and the OK dispatch
+/// reads these — an unclamped stale index made OK silently no-op on a visibly focused card.
 pub(crate) fn row() -> c_int {
-    unsafe { addr_of!(fr).read() }
+    let nh = crate::pms::hub_count() as c_int;
+    unsafe { addr_of!(fr).read() }.clamp(0, (nh - 1).max(0))
 }
 pub(crate) fn col() -> c_int {
-    unsafe { addr_of!(fc).read() }
+    let nc = crate::pms::hub_len(row().max(0) as usize) as c_int;
+    unsafe { addr_of!(fc).read() }.clamp(0, (nc - 1).max(0))
 }
 pub(crate) fn snap_target() -> f32 {
     unsafe { addr_of!(snapTarget).read() }
@@ -104,9 +119,11 @@ fn hero_index() -> usize {
     unsafe { addr_of!(hero_idx).read() }.clamp(0, n as c_int - 1) as usize
 }
 
-/// Advance the hero to the next (`dir=+1`) / previous (`dir=-1`) pooled item, wrapping. Debounced
-/// by `hero_flip_cd` so a held edge-key (via the repeat path) flips a few times a second, not every
-/// frame — the same machine-gun guard the season tabs needed.
+/// Advance the hero to the next (`dir=+1`) / previous (`dir=-1`) pooled item, wrapping, and start
+/// the slide transition (outgoing item + direction + progress spring reset). Debounced by
+/// `hero_flip_cd` so a held edge-key (via the repeat path) flips a few times a second, not every
+/// frame — the same machine-gun guard the season tabs needed. Any flip (manual or automatic)
+/// restarts the idle auto-flip countdown.
 pub(crate) fn hero_flip(dir: c_int) {
     let n = crate::pms::hero_pool_len() as c_int;
     if n <= 1 {
@@ -117,20 +134,57 @@ pub(crate) fn hero_flip(dir: c_int) {
             return;
         }
         let cur = addr_of!(hero_idx).read().clamp(0, n - 1);
+        addr_of_mut!(hero_prev).write(cur);
+        addr_of_mut!(hero_dir).write(dir as f32);
+        addr_of_mut!(hero_slide).write(Spring::at(0.0));
         addr_of_mut!(hero_idx).write((cur + dir).rem_euclid(n));
         addr_of_mut!(hero_flip_cd).write(HERO_FLIP_CD);
+        addr_of_mut!(hero_auto).write(HERO_AUTO_S);
     }
 }
 
-/// Pointer hit-test on the hero flip chevron (valid while the hero is visible). Flips forward and
-/// returns true when the click lands on it, so the caller can swallow the click.
-pub(crate) fn hero_chevron_click(mx: f32, my: f32) -> bool {
-    let r = unsafe { addr_of!(hero_chevron).read() };
-    if mx >= r[0] && mx <= r[0] + r[2] && my >= r[1] && my <= r[1] + r[3] {
-        hero_flip(1);
-        return true;
+/// The slide transition, or None when idle: (outgoing pool index, outgoing x offset, incoming x
+/// offset). Backdrop and Hero both read it so art and text move as one phase.
+fn hero_slide_state() -> Option<(c_int, f32, f32)> {
+    unsafe {
+        let prev = addr_of!(hero_prev).read();
+        if prev < 0 {
+            return None;
+        }
+        let t = addr_of!(hero_slide).read().pos;
+        let dir = addr_of!(hero_dir).read();
+        Some((prev, -dir * t * SCR_W, dir * (1.0 - t) * SCR_W))
     }
-    false
+}
+
+/// The pooled hero item at index `i`, or null (negative, or out of a shrunken pool — hero_pool_ptr
+/// bounds-checks the upper end).
+fn hero_item_at(i: c_int) -> *mut PmsMovie {
+    if i < 0 {
+        return std::ptr::null_mut();
+    }
+    crate::pms::hero_pool_ptr(i as usize)
+}
+
+/// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info, 2 = chevron.
+pub(crate) fn hero_focus() -> c_int {
+    unsafe { addr_of!(hero_fc).read() }
+}
+pub(crate) fn set_hero_focus(v: c_int) {
+    unsafe { addr_of_mut!(hero_fc).write(v.clamp(-1, HERO_NBTN as c_int - 1)) }
+}
+
+/// Hero pointer hit-test against the action-row rects recorded at draw: returns the button index
+/// (0 pill / 1 info / 2 chevron) or -2 for a miss. `hover` moves the hero focus without acting.
+pub(crate) fn hero_button_at(mx: f32, my: f32) -> c_int {
+    let btns = unsafe { addr_of!(hero_btns).read() };
+    btns.iter().position(|r| r.contains(mx, my)).map(|i| i as c_int).unwrap_or(-2)
+}
+pub(crate) fn hero_pointer_focus(mx: f32, my: f32) {
+    let b = hero_button_at(mx, my);
+    if b >= 0 {
+        set_hero_focus(b);
+    }
 }
 
 /// played fraction (0..1) for a Continue-Watching card's resume bar, or None if not in progress.
@@ -150,23 +204,19 @@ impl Backdrop {
 impl View for Backdrop {
     fn draw(&self, env: &Env, p: Painter) {
         let sp = env.sp;
-        let hero = unsafe { hero_item().as_ref() };
         // flat dark-gray base — the shelves sit on this (so card focus shadows read),
         // NOT the hero's ambient wash. Only the hero itself carries a backdrop.
         let g = theme::SURFACE_APP;
         p.rect(env.screen, 0.0, g, g, 0.0);
-        let mut bt = 0u32;
-        if let Some(h) = hero {
-            if h.art[0] != 0 {
-                bt = crate::ui::widgets::resolve_tex(h.art.as_ptr() as *const c_char, 1280, 720, 0);
-            }
-            // hero backdrop: art if present, else the ambient wash as a fallback — both
-            // confined to the hero view, fading out as the grid rises so the shelf area
-            // stays flat gray
-            if bt != 0 && sp < 0.996 {
-                p.tex(bt, Rect::new(0.0, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, 1.0 - sp]);
-            } else if bt == 0 && h.has_blur != 0 && sp < 0.996 {
-                p.ambient(env.screen, 0.55 * (1.0 - sp), h.blur);
+        // hero backdrop: art if present, else the ambient wash as a fallback — both confined to
+        // the hero view, fading out as the grid rises so the shelf area stays flat gray. During a
+        // flip the outgoing and incoming items' art slide side-by-side (same phase as the text).
+        if sp < 0.996 {
+            if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
+                backdrop_art(p, hero_item_at(prev), sp, dx_out);
+                backdrop_art(p, hero_item(), sp, dx_in);
+            } else {
+                backdrop_art(p, hero_item(), sp, 0.0);
             }
         }
         if env.hero_a > 0.01 {
@@ -174,6 +224,23 @@ impl View for Backdrop {
             p.rect(Rect::new(0.0, SCR_H * 0.46, SCR_W, SCR_H * 0.54), 0.0,
                 theme::scrim(0.0), theme::scrim(sa), 0.0);
         }
+    }
+}
+
+/// One hero item's backdrop layer at horizontal slide offset `dx`: the 1280×720 art (with the
+/// grid-rise parallax/fade) or the ambient wash while the art hasn't resolved.
+fn backdrop_art(p: Painter, item: *mut PmsMovie, sp: f32, dx: f32) {
+    let Some(h) = (unsafe { item.as_ref() }) else {
+        return;
+    };
+    let mut bt = 0u32;
+    if h.art[0] != 0 {
+        bt = crate::ui::widgets::resolve_tex(h.art.as_ptr() as *const c_char, 1280, 720, 0);
+    }
+    if bt != 0 {
+        p.tex(bt, Rect::new(dx, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, 1.0 - sp]);
+    } else if h.has_blur != 0 {
+        p.ambient(Rect::new(dx, 0.0, SCR_W, SCR_H), 0.55 * (1.0 - sp), h.blur);
     }
 }
 
@@ -185,79 +252,125 @@ impl Hero {
         Hero
     }
 }
+/// One hero item's sliding content column: title band (clearLogo or text) → small meta/kicker →
+/// synopsis. For an EPISODE the show is the star: the show's clearLogo/title in the title band and
+/// a "S1 E4 · Episode title" kicker — the episode's own name never headlines. Returns the y where
+/// the (non-sliding) action row starts. Every gap is a `theme::space` rung and every step advances
+/// by the *measured* height of the element just drawn.
+fn hero_content(hero: &PmsMovie, p: Painter) -> f32 {
+    let tx = MARGIN_X;
+    let col_w = 660.0f32; // hero text column
+    let w_a = theme::TEXT_PRIMARY; // cascade applies hero_a
+    let d_a = theme::TEXT_SECONDARY;
+    let mut y = 440.0f32;
+
+    let is_ep = hero.kind == 3;
+    let logo_rk = if is_ep && hero.show_rk[0] != 0 {
+        cfield(&hero.show_rk)
+    } else if hero.rk[0] != 0 {
+        cfield(&hero.rk)
+    } else {
+        String::new()
+    };
+    if let Some((lt, ww, hh)) = crate::posters::logo_tex(&logo_rk, col_w, 96.0) {
+        p.tex(lt, Rect::new(tx, y, ww, hh), 0.0, w_a);
+        y += hh;
+    } else {
+        let title = if is_ep && hero.show_title[0] != 0 { cfield(&hero.show_title) } else { cfield(&hero.title) };
+        let tv = TextView::new(&title, theme::size::HERO, w_a).bold().max_lines(1);
+        tv.draw(p, Rect::new(tx, y, col_w, 0.0));
+        y += tv.measure_h(col_w);
+    }
+
+    // meta/kicker line — episodes: "S1 E4 · Episode title"; else "Movie/Show · YEAR · RATING"
+    let meta = if is_ep {
+        let ep_title = cfield(&hero.title);
+        let mut s = String::new();
+        if hero.season_index > 0 {
+            s.push_str(&format!("S{} ", hero.season_index));
+        }
+        if hero.ep_index > 0 {
+            s.push_str(&format!("E{}", hero.ep_index));
+        }
+        if !s.is_empty() && !ep_title.is_empty() {
+            s.push_str(" \u{b7} ");
+        }
+        s.push_str(&ep_title);
+        s
+    } else {
+        let rating = cfield(&hero.rating);
+        let noun = if hero.kind == 1 { "Show" } else { "Movie" };
+        format!("{} \u{b7} {} \u{b7} {}", noun, hero.year, if rating.is_empty() { "NR" } else { &rating })
+    };
+    let meta_tv = TextView::new(&meta, theme::size::BODY, d_a).max_lines(1);
+    y += theme::space::MD;
+    meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
+    y += meta_tv.measure_h(col_w);
+
+    // synopsis — the hero's fine-print "info" line (size::MICRO per explicit design direction:
+    // ~11px ink), pixel-wrapped to the hero column, 2 lines max. The kicker/meta line above stays
+    // at BODY — it's the label the eye needs to catch.
+    let summary = cfield(&hero.summary);
+    if !summary.is_empty() {
+        // 3 lines is the ceiling here: a 4th would push the page dots into the peeking shelf
+        // (flow starts at 440; PEEK_Y is 828)
+        let syn = TextView::new(&summary, theme::size::MICRO, d_a).leading(27.0).max_lines(3);
+        y += theme::space::SM;
+        syn.draw(p, Rect::new(tx, y, col_w, 0.0));
+        y += syn.measure_h(col_w);
+    }
+    y
+}
+
 impl View for Hero {
     fn draw(&self, env: &Env, p: Painter) {
         let Some(hero) = (unsafe { hero_item().as_ref() }) else {
             return;
         };
         let tx = MARGIN_X;
-        let col_w = 660.0f32; // hero text column
-        let w_a = theme::TEXT_PRIMARY; // cascade applies hero_a
-        let d_a = theme::TEXT_SECONDARY;
 
-        // The hero content is a top-anchored vertical flow: title band → meta → synopsis →
-        // action row → page dots. Every gap is a `theme::space` rung and every step advances by
-        // the *measured* height of the element just drawn, so nothing is glued and the rhythm
-        // holds whether the title renders as a tall logo, a short one, or fallback text.
-        let mut y = 440.0f32;
-
-        // title: clearLogo (transparent PNG) if loaded, else bold HERO text
-        let rk = if hero.rk[0] != 0 { cfield(&hero.rk) } else { String::new() };
-        if let Some((lt, ww, hh)) = crate::posters::logo_tex(&rk, col_w, 96.0) {
-            p.tex(lt, Rect::new(tx, y, ww, hh), 0.0, w_a);
-            y += hh;
+        // per-item content, sliding during a flip (same phase/direction as the backdrop art)
+        let mut y = if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
+            if let Some(ph) = unsafe { hero_item_at(prev).as_ref() } {
+                hero_content(ph, p.translate(dx_out, 0.0));
+            }
+            hero_content(hero, p.translate(dx_in, 0.0))
         } else {
-            let title = cfield(&hero.title);
-            let tv = TextView::new(&title, theme::size::HERO, w_a).bold().max_lines(1);
-            tv.draw(p, Rect::new(tx, y, col_w, 0.0));
-            y += tv.measure_h(col_w);
-        }
+            hero_content(hero, p)
+        };
 
-        // meta line — "Movie · YEAR · RATING"
-        let rating = cfield(&hero.rating);
-        let meta = format!("Movie \u{b7} {} \u{b7} {}", hero.year, if rating.is_empty() { "NR" } else { &rating });
-        let meta_tv = TextView::new(&meta, theme::size::BODY, d_a).max_lines(1);
+        // action row — chrome, does NOT slide. Pill + info + chevron are a real focus row
+        // (hero_fc), so LEFT/RIGHT walk buttons instead of paging; the chevron is the pager.
+        // The pill says "Continue" when the hero item has a resume point, else "Play", and
+        // launches playback directly (the info circle is the road to the detail page).
+        // MD, not LG: the synopsis' leading box already carries ~7px of descender slack, and the
+        // bigger rung read as the button drifting away from its text (it also squeezed the page
+        // dots down onto the peeking shelf).
         y += theme::space::MD;
-        meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
-        y += meta_tv.measure_h(col_w);
-
-        // synopsis — pixel-wrapped to the hero column, 2 lines max
-        let summary = cfield(&hero.summary);
-        if !summary.is_empty() {
-            let syn = TextView::new(&summary, theme::size::BODY, d_a).leading(34.0).max_lines(2);
-            y += theme::space::SM;
-            syn.draw(p, Rect::new(tx, y, col_w, 0.0));
-            y += syn.measure_h(col_w);
-        }
-
-        // action row: the primary pill hugs its label, then the +/i/chevron circles reflow after
-        // it (cascade scales their base alphas). The pill says "Continue" when the hero item has a
-        // resume point (mirrors the official app), else "Play" — same play glyph for both.
-        y += theme::space::LG;
         let pill_y = y;
+        let hf = hero_focus();
         let (cd, cgap) = (60.0f32, 20.0f32); // control diameter + inter-control gap
         let plabel = if hero.resume_ms > 0 { c"Continue" } else { c"Play" };
         let isz = theme::size::BODY as f32 * 1.15; // icon box (mirrors Button's own layout)
         let pw = isz + 12.0 + crate::text::text_width(plabel.as_ptr(), theme::size::BODY, 1) + 68.0;
+        unsafe { (*addr_of_mut!(hero_btns))[0] = Rect::new(tx, pill_y, pw, cd) };
         Button::new(plabel.as_ptr(), theme::size::BODY, Rect::new(tx, pill_y, pw, cd))
             .icon(Icon::Play)
-            .style(ControlStyle::Primary)
+            .focused(hf == 0)
             .draw(env, p);
         let mut cx = tx + pw + cgap;
-        // +/i are text glyphs (both symmetric, read fine); the forward affordance is a real chevron
-        // icon (the ">" character otherwise renders as thin, mis-centred math punctuation).
-        CircleButton::new(c"+".as_ptr()).at(cx, pill_y).draw(env, p);
+        unsafe { (*addr_of_mut!(hero_btns))[1] = Rect::new(cx, pill_y, cd, cd) };
+        CircleButton::new(c"".as_ptr()).icon(Icon::Info).at(cx, pill_y).focused(hf == 1).draw(env, p);
         cx += cd + cgap;
-        CircleButton::new(c"i".as_ptr()).at(cx, pill_y).draw(env, p);
-        cx += cd + cgap;
-        // record the chevron rect so a pointer click on it flips the hero (see hero_chevron_click)
-        unsafe { addr_of_mut!(hero_chevron).write([cx, pill_y, cd, cd]) };
-        CircleButton::new(c"".as_ptr()).icon(Icon::Chevron).at(cx, pill_y).draw(env, p);
+        unsafe { (*addr_of_mut!(hero_btns))[2] = Rect::new(cx, pill_y, cd, cd) };
+        CircleButton::new(c"".as_ptr()).icon(Icon::Chevron).at(cx, pill_y).focused(hf == 2).draw(env, p);
 
-        // page indicator: one dot per pooled hero item, the current one lit
+        // page indicator: one dot per pooled hero item, the current one lit. SM keeps the dots
+        // visually grouped with the action row above — at MD they hovered midway to the peeking
+        // shelf and read as stuck to the poster row.
         let pool_n = crate::pms::hero_pool_len();
         if pool_n > 1 {
-            y = pill_y + cd + theme::space::MD;
+            y = pill_y + cd + theme::space::SM;
             PageDots::new(pool_n).active(hero_index()).at(tx, y).draw(env, p);
         }
     }
@@ -281,8 +394,13 @@ impl View for Grid {
         }
         let nh = crate::pms::hub_count().max(1);
         let max_y = (nh as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0);
-        let want_y = (env.fr as f32 * ROW_PITCH - ROW_PITCH * 0.6).clamp(0.0, max_y);
-        self.scroll_y.step(want_y, K_SCROLL, env.dt);
+        // minimal scroll-into-view (the vertical twin of CardRow's rule, same reveal core): only
+        // move the page when the focused row's block — title band above, card + focused label
+        // below — would clip the viewport; a fully visible row never re-seats the page.
+        let top = env.fr as f32 * ROW_PITCH;
+        let lo = top + GRID_TOP_Y + CARD_H + 66.0 - (SCR_H - 24.0); // card bottom + focused title visible
+        let hi = top + GRID_TOP_Y - 66.0 - 96.0; // hub title band clear below the chip row
+        self.scroll_y.step(card_row::reveal(self.scroll_y.pos, lo, hi, max_y), K_SCROLL, env.dt);
     }
     fn layout(&mut self, _frame: Rect, env: &Env) {
         // full-screen root view: positions absolutely from PEEK_Y/GRID_TOP_Y by env.sp, so the
@@ -301,19 +419,16 @@ impl View for Grid {
             if !on_axis(row_y, CARD_H, SCR_H, 0.0) {
                 continue;
             }
-            // hub title above the row; it rises as the row's focused card magnifies so
-            // the title-to-card gap stays proportional (Apple-TV behavior).
+            // hub title above the row — rises with the magnified card so it's never covered
+            // (the shared card_row::title_lift rule; only lifts when the popped card is under it)
             if env.sp > 0.02 {
-                let fs = if r == env.fr as usize {
-                    self.shelves[r].scale((env.fc as usize).min(MAX_ITEMS - 1))
-                } else {
-                    1.0
-                };
-                let lift = CARD_H * (fs - 1.0) * 0.5;
+                let focused = (r == env.fr as usize).then_some((env.fc as usize).min(MAX_ITEMS - 1));
+                let lift = card_row::title_lift(&self.shelves[r], focused, &RowStyle::HOME, self.shelves[r].scroll_x() * env.sp);
                 if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
                     p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, theme::size::HEADLINE, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
                 }
             }
+            let cw_row = crate::pms::hub_is_continue(r); // Continue Watching: tiles play directly
             for c in 0..crate::pms::hub_len(r) {
                 if r == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
                     continue; // focused card drawn last (grid z-order)
@@ -326,7 +441,11 @@ impl View for Grid {
                 }
                 let s = self.shelves[r].scale(c);
                 let rect = Rect::new(x, row_y + 12.0, CARD_W, CARD_H).scaled(s);
-                card_row::draw_tile(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume_frac(mm));
+                let resume = resume_frac(mm);
+                card_row::draw_tile(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume);
+                if cw_row {
+                    card_row::play_hint(p, rect, cw_hint_label(mm), resume.is_some());
+                }
             }
         }
         // PASS 2 — the single focused card + ring + title, drawn LAST for cross-row z-order (grid mode).
@@ -340,8 +459,24 @@ impl View for Grid {
             let rect = Rect::new(x, self.shelves[r].base_y + 12.0, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
             let title = m.map(|mm| mm.title.as_ptr() as *const c_char).unwrap_or(std::ptr::null());
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, m.and_then(resume_frac), title);
+            let resume = m.and_then(resume_frac);
+            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title);
+            if crate::pms::hub_is_continue(r) {
+                if let Some(mm) = m {
+                    card_row::play_hint(p, rect, cw_hint_label(mm), resume.is_some());
+                }
+            }
         }
+    }
+}
+
+/// Continue-Watching badge caption: a next-up episode (no resume point yet) says "Next episode"
+/// next to the play glyph; an in-progress item gets the glyph alone (the resume bar tells the rest).
+fn cw_hint_label(m: &PmsMovie) -> *const c_char {
+    if m.kind == 3 && m.resume_ms == 0 {
+        c"Next episode".as_ptr()
+    } else {
+        std::ptr::null()
     }
 }
 impl Grid {
@@ -375,22 +510,39 @@ impl Grid {
         fr = ncur;
         fc = nc;
     }
-    fn hit_test(&self, mx: f32, my: f32) {
-        unsafe {
-            for r in 0..crate::pms::hub_count() {
-                let row_y = self.shelves[r].base_y;
-                if my < row_y || my > row_y + CARD_H {
-                    continue;
-                }
-                for c in 0..crate::pms::hub_len(r) {
-                    let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x();
-                    if mx >= x && mx <= x + CARD_W {
-                        fr = r as c_int;
-                        fc = c as c_int;
-                    }
+    /// Card under the pointer, or None. Vertical fly-away guard: a row that is only PARTIALLY on
+    /// screen is not hoverable unless it is already the focused row — hovering it would move `fr`
+    /// and the page spring would chase it (vertical auto-scroll), which is exactly the "pointer
+    /// flies away" the pointer rules ban; horizontal scroll-into-view within a row is kept.
+    fn hit_at(&self, mx: f32, my: f32) -> Option<(usize, usize)> {
+        for r in 0..crate::pms::hub_count() {
+            let row_y = self.shelves[r].base_y;
+            if my < row_y || my > row_y + CARD_H {
+                continue;
+            }
+            let fully_visible = row_y >= 40.0 && row_y + CARD_H <= SCR_H - 20.0;
+            if !fully_visible && r != g_fr() as usize {
+                continue;
+            }
+            for c in 0..crate::pms::hub_len(r) {
+                let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x();
+                if mx >= x && mx <= x + CARD_W {
+                    return Some((r, c));
                 }
             }
         }
+        None
+    }
+    /// hover/click focus write: focus the card under the pointer; reports whether one was hit
+    fn hit_test(&self, mx: f32, my: f32) -> bool {
+        if let Some((r, c)) = self.hit_at(mx, my) {
+            unsafe {
+                fr = r as c_int;
+                fc = c as c_int;
+            }
+            return true;
+        }
+        false
     }
     fn wheel(&self, dy: c_int) {
         unsafe {
@@ -470,6 +622,25 @@ pub(crate) fn home_update(dt: f32) {
             if cd > 0.0 {
                 addr_of_mut!(hero_flip_cd).write((cd - dt).max(0.0));
             }
+            // slide transition: step the progress spring, drop the outgoing layer once landed
+            if addr_of!(hero_prev).read() >= 0 {
+                let sl = &mut *addr_of_mut!(hero_slide);
+                sl.step(1.0, K_SLIDE, dt);
+                if sl.pos > 0.995 {
+                    addr_of_mut!(hero_prev).write(-1);
+                }
+            }
+            // idle auto-flip: only while the billboard is actually showing; any flip (manual or
+            // this one) resets the countdown inside hero_flip.
+            if h.snap.pos < 0.05 && crate::pms::hero_pool_len() > 1 {
+                let a = addr_of!(hero_auto).read() - dt;
+                addr_of_mut!(hero_auto).write(a);
+                if a <= 0.0 {
+                    hero_flip(1);
+                }
+            } else {
+                addr_of_mut!(hero_auto).write(HERO_AUTO_S);
+            }
         }
         let target = unsafe { addr_of!(snapTarget).read() };
         h.snap.step(target, K_SNAP, dt);
@@ -497,8 +668,8 @@ fn draw_chip(p: Painter) {
     static mut CHIP: Option<(u32, CString, CString)> = None; // (gen, thumb path, initial)
     let d = 64.0f32;
     let (x, y) = (MARGIN_X, 44.0f32);
-    unsafe { addr_of_mut!(profile_chip).write([x, y, d, d]) };
     let r = Rect::new(x, y, d, d);
+    unsafe { addr_of_mut!(profile_chip).write(r) };
     let gen = crate::plex::session::current_gen();
     let chip = unsafe { &mut *addr_of_mut!(CHIP) };
     if chip.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
@@ -534,31 +705,55 @@ fn draw_chip(p: Painter) {
             p.text(initial_c.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
         }
     }
+    // chip is a real focus stop now (UP from the hero action row): ring it when focused, so OK
+    // reads as "open the account menu" instead of UP opening the menu unannounced.
+    if hero_focus() == -1 && snap_pos() < 0.5 {
+        p.ring(r, theme::CARD_RING_PAD_STRIP, d * 0.5, 1.0);
+    }
 }
 
 /// Pointer hit-test on the profile chip (returns true so the caller opens the account menu).
 pub(crate) fn profile_chip_click(mx: f32, my: f32) -> bool {
-    let r = unsafe { addr_of!(profile_chip).read() };
-    mx >= r[0] && mx <= r[0] + r[2] && my >= r[1] && my <= r[1] + r[3]
+    unsafe { addr_of!(profile_chip).read() }.contains(mx, my)
 }
 
 pub(crate) fn home_move_focus(sym: c_uint) {
     guard(|| scene().grid.nav(sym));
 }
 
-/// Hero-view horizontal key: LEFT/RIGHT page the rotating billboard — the D-pad counterpart of the
-/// chevron click (`hero_flip` is debounced, so holding the key pages a few times a second). app.rs
-/// calls this only while the snap is in hero view; non-arrow keys are no-ops.
+/// Hero-view horizontal key: LEFT/RIGHT walk the action-row focus (pill → info → chevron); RIGHT
+/// on the chevron pages the billboard — so holding RIGHT at the row's end keeps paging (the
+/// debounced `hero_flip` throttles it), the D-pad counterpart of holding a click on the chevron.
+/// app.rs calls this only while the snap is in hero view; non-arrow keys are no-ops. The chip
+/// (focus -1) has no horizontal neighbours.
 pub(crate) fn home_hero_key(sym: c_uint) {
+    let f = hero_focus();
     match sym {
-        SDLK_RIGHT => hero_flip(1),
-        SDLK_LEFT => hero_flip(-1),
+        SDLK_RIGHT if f >= 0 => {
+            if f < HERO_NBTN as c_int - 1 {
+                set_hero_focus(f + 1);
+            } else {
+                hero_flip(1);
+            }
+        }
+        SDLK_LEFT if f > 0 => set_hero_focus(f - 1),
         _ => {}
     }
 }
 
 pub(crate) fn home_pointer_focus(mx: f32, my: f32) {
-    guard(|| scene().grid.hit_test(mx, my));
+    guard(|| {
+        scene().grid.hit_test(mx, my);
+    });
+}
+
+/// Pointer click on a grid card: focus it and report the hit, so app.rs can run the SAME
+/// activation as OK (play / open detail). Uses hit_at's visibility rules — a click on a
+/// half-visible row is ignored rather than scrolling the page.
+pub(crate) fn home_card_click(mx: f32, my: f32) -> bool {
+    let mut hit = false;
+    guard(|| hit = scene().grid.hit_test(mx, my));
+    hit
 }
 
 pub(crate) fn home_wheel(dy: c_int) {

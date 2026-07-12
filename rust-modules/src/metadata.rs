@@ -105,6 +105,7 @@ pub(crate) struct Detail {
     pub(crate) aired: String,
     pub(crate) dur_ms: i64,
     pub(crate) resume_ms: i64, // viewOffset (0 = not partially watched) — the resume position
+    pub(crate) watched: bool,  // movie: viewCount ≥ 1; show: viewedLeafCount ≥ leafCount
     pub(crate) part: String,   // Media[0].Part[0].key for a leaf (movie/episode); empty for a show
     pub(crate) vcodec: String, // Media[0].videoCodec (drives the direct-play/transcode decision)
     pub(crate) acodec: String, // Media[0].audioCodec
@@ -214,6 +215,11 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         aired: it.originally_available_at.clone(),
         dur_ms: it.duration,
         resume_ms: it.view_offset,
+        watched: if it.kind == "show" || it.kind == "season" {
+            it.leaf_count > 0 && it.viewed_leaf_count >= it.leaf_count
+        } else {
+            it.view_count > 0
+        },
         // empty for a show (no Media on the show container)
         part: it.first_part().map(|p| p.key.clone()).unwrap_or_default(),
         vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),

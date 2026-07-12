@@ -46,8 +46,15 @@ pub mod size {
     pub const BODY: c_int = 28;
     /// Secondary labels — card / episode / chapter titles, cast names, list detail, meta chips.
     pub const LABEL: c_int = 26;
-    /// Couch legibility **FLOOR** — kickers, timecodes, cast roles, badges, field labels. Nothing smaller.
+    /// Couch legibility **FLOOR** for reading text — kickers, timecodes, cast roles, badges, field
+    /// labels. Nothing that must be *read* renders smaller.
     pub const CAPTION: c_int = 24;
+    /// Fine print — deliberately below the couch floor (explicit design direction, 2026-07-12,
+    /// re-tuned on-device from 16): the small info/synopsis text under the home hero's title
+    /// block. De-emphasis is the point — atmosphere copy beside an outsized title, not content
+    /// someone must read; labels the eye needs to catch (the SxEy kicker, meta lines) stay on
+    /// the regular rungs.
+    pub const MICRO: c_int = 20;
 }
 
 /// The **spacing scale** — the vertical/horizontal *gap* axis of the design system, the sibling of

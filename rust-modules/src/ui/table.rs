@@ -84,6 +84,9 @@ const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade
 pub struct TableView {
     pub sections: Vec<Section>,
     pub sel: i32,  // global index across all sections' rows (headers are not selectable)
+    /// compact size class: BODY regular row labels + CAPTION headers (the small account popover;
+    /// the default HEADLINE-bold rows overwhelmed a 440px panel of one-word actions).
+    pub compact: bool,
     // the highlight pill's top and bottom edges spring INDEPENDENTLY (content coords), so moving
     // to a taller/shorter row morphs the pill smoothly instead of snapping its height.
     hl_top: Spring,
@@ -95,10 +98,32 @@ impl TableView {
         Self {
             sections: Vec::new(),
             sel: 0,
+            compact: false,
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
             scroll: Spring::at(0.0),
         }
+    }
+
+    /// The row under the pointer in a `frame`-anchored draw (screen coords), or None — popover
+    /// click support (hover→focus, click→commit) shares the draw's own layout walk.
+    pub fn hit_row(&self, frame: Rect, mx: f32, my: f32) -> Option<i32> {
+        if !frame.contains(mx, my) {
+            return None;
+        }
+        let top0 = frame.y + TOP_PAD;
+        let scroll = self.scroll.pos;
+        let mut hit = None;
+        self.walk(|cy, gi, _| {
+            if gi < 0 {
+                return;
+            }
+            let sy = top0 + cy - scroll;
+            if my >= sy && my <= sy + self.rows_at(gi).height() {
+                hit = Some(gi);
+            }
+        });
+        hit
     }
 
     /// replace the contents and re-anchor selection. `slide=false` snaps the pill to the new
@@ -249,7 +274,8 @@ impl TableView {
                             0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                     }
                     if let Ok(cs) = CString::new(sec.header.as_str()) {
-                        p.text(cs.as_ptr(), content_x, sy + 8.0, theme::size::HEADLINE, dimc, 0, 0);
+                        let hsz = if self.compact { theme::size::CAPTION } else { theme::size::HEADLINE };
+                        p.text(cs.as_ptr(), content_x, sy + 8.0, hsz, dimc, 0, 0);
                     }
                 }
                 return;
@@ -296,14 +322,20 @@ impl TableView {
             } else {
                 (0.0, 0.0, cyc) // title_y/detail_y unused single-line; Label centres the label
             };
-            // title/label, then inline badges (mockup: "Original: …" with an AD chip after it)
-            let lbl = crate::text::elide(&row.label, text_right - label_x - trailing - badge_reserve, theme::size::HEADLINE, 1, false);
+            // title/label, then inline badges (mockup: "Original: …" with an AD chip after it).
+            // compact tables read their single-line labels at BODY regular.
+            let (lsz, lbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
+            let lbl = crate::text::elide(&row.label, text_right - label_x - trailing - badge_reserve, lsz, lbold, false);
             let mut bx = label_x;
             if let Ok(cs) = CString::new(lbl) {
                 bx += if two_line {
                     p.text(cs.as_ptr(), label_x, title_y, theme::size::HEADLINE, base, 0, 1)
                 } else {
-                    Label::new(cs.as_ptr(), theme::size::HEADLINE, base).bold().draw(p, Rect::new(label_x, sy, 0.0, h))
+                    let mut lab = Label::new(cs.as_ptr(), lsz, base);
+                    if lbold == 1 {
+                        lab = lab.bold();
+                    }
+                    lab.draw(p, Rect::new(label_x, sy, 0.0, h))
                 };
             }
             bx += 12.0;

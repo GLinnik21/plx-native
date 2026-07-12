@@ -89,13 +89,15 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
             .draw(env, p);
     }
 
-    // right column
+    // right column — vertically bounded BY THE CARD: the heading's cap band tops out flush with
+    // the card's top edge and the waiting row's spinner sits flush with its bottom edge, so the
+    // text column and the QR read as one aligned block (the row used to overhang the card by 33px).
     let col_x = 860.0;
     let col_w = 660.0;
     TextView::new("Sign in to Plex", theme::size::HERO, theme::TEXT_PRIMARY)
         .bold()
         .max_lines(1)
-        .draw(p, Rect::new(col_x, 348.0, col_w, 90.0));
+        .draw(p, Rect::new(col_x, card.y, col_w, 90.0));
     TextView::new(
         "Scan the code with your phone camera, or go to plex.tv/link and enter this code:",
         theme::size::BODY,
@@ -103,17 +105,19 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     )
     .leading(38.0)
     .max_lines(3)
-    .draw(p, Rect::new(col_x, 452.0, col_w, 130.0));
+    .draw(p, Rect::new(col_x, card.y + 122.0, col_w, 130.0));
 
-    // the short code, large
+    // the short code, large (high enough that its ink clears the waiting spinner below)
     if let Ok(code) = CString::new(auth::pin_code().to_uppercase()) {
-        p.text(code.as_ptr(), col_x, 636.0, theme::size::HERO, theme::TEXT_PRIMARY, 0, 1);
+        p.text(code.as_ptr(), col_x, card.y + 280.0, theme::size::HERO, theme::TEXT_PRIMARY, 0, 1);
     }
 
-    // waiting status
-    Spinner::new(col_x + 16.0, 748.0, 15.0).phase(s.spin_ms as u32).tint(theme::TEXT_TERTIARY).draw(env, p);
+    // waiting status — bottom-aligned with the QR card (spinner circle tangent to the card bottom)
+    let wr = 15.0;
+    let wy = card.y + card.h - wr;
+    Spinner::new(col_x + 16.0, wy, wr).phase(s.spin_ms as u32).tint(theme::TEXT_TERTIARY).draw(env, p);
     if let Ok(w) = CString::new("Waiting for you to sign in\u{2026}") {
-        let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, 748.0);
+        let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, wy);
         p.text(w.as_ptr(), col_x + 44.0, ty, theme::size::CAPTION, theme::TEXT_TERTIARY, 0, 0);
     }
 }

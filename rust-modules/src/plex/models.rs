@@ -90,6 +90,10 @@ pub struct Metadata {
     pub grandparent_title: String, // episode → show title
     #[serde(rename = "leafCount", default, deserialize_with = "de_i64")]
     pub leaf_count: i64,
+    #[serde(rename = "viewedLeafCount", default, deserialize_with = "de_i64")]
+    pub viewed_leaf_count: i64, // shows/seasons: episodes watched (watched = viewed >= leaf)
+    #[serde(rename = "viewCount", default, deserialize_with = "de_i64")]
+    pub view_count: i64, // present only once watched ≥1× (absent = unwatched)
     #[serde(default)]
     pub thumb: String,
     #[serde(default)]

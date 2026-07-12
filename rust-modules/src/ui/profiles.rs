@@ -16,6 +16,24 @@ use std::ptr::addr_of_mut;
 
 const ROW_Y: f32 = 384.0;
 const PIN_LEN: usize = 4;
+const FOOTER_Y: f32 = 780.0; // "Sign out" pill, below the roster/name/error band
+
+// PIN pad geometry: the label, dots and keypad are ONE centered unit (they used three independent
+// hard-coded Ys, which left the whole block sitting low on the panel).
+const PAD_KEY: f32 = 108.0;
+const PAD_KGAP: f32 = 20.0;
+const PAD_GRID_H: f32 = 4.0 * PAD_KEY + 3.0 * PAD_KGAP;
+const PAD_TITLE_DOTS: f32 = 72.0; // title draw-y → dots row
+const PAD_DOTS_GRID: f32 = 80.0; // dots row → keypad top
+
+/// (title_y, dots_y, grid_y) with the whole unit — title ink top through keypad bottom —
+/// vertically centered on the screen.
+fn pad_geom() -> (f32, f32, f32) {
+    let (ct, _) = crate::text::text_cap_band(theme::size::TITLE, 1);
+    let span = PAD_TITLE_DOTS + PAD_DOTS_GRID + PAD_GRID_H - ct;
+    let title_y = (SCR_H - span) * 0.5 - ct;
+    (title_y, title_y + PAD_TITLE_DOTS, title_y + PAD_TITLE_DOTS + PAD_DOTS_GRID)
+}
 
 // keypad: 4 rows × 3 cols. b'D' = delete; None = an empty (unfocusable) cell.
 const KEYS: [[Option<u8>; 3]; 4] = [
@@ -44,6 +62,7 @@ struct Scene {
     fc: c_int,
     spin_ms: f32,
     pad: Pad,
+    footer: bool, // focus is on the "Sign out" pill under the roster
 }
 
 static mut SCENE: Option<Scene> = None;
@@ -54,7 +73,7 @@ fn scene() -> &'static mut Scene {
 
 pub fn init() {
     unsafe {
-        *addr_of_mut!(SCENE) = Some(Scene { row: CardRow::new(), fc: 0, spin_ms: 0.0, pad: Pad::new() });
+        *addr_of_mut!(SCENE) = Some(Scene { row: CardRow::new(), fc: 0, spin_ms: 0.0, pad: Pad::new(), footer: false });
     }
 }
 
@@ -63,6 +82,7 @@ pub fn enter() {
     let s = scene();
     s.fc = 0;
     s.pad = Pad::new();
+    s.footer = false;
 }
 
 pub fn update(dt: f32) {
@@ -72,8 +92,9 @@ pub fn update(dt: f32) {
     if s.fc as usize >= n.max(1) {
         s.fc = 0;
     }
-    // freeze the row focus (springs settle to unfocused) while the keypad is up
-    let focus = if s.pad.open { None } else { Some(s.fc as usize) };
+    // freeze the row focus (springs settle to unfocused) while the keypad is up or while the
+    // Sign out footer holds focus — focus is exclusive, never on two controls at once
+    let focus = if s.pad.open || s.footer { None } else { Some(s.fc as usize) };
     s.row.update(n, focus, &RowStyle::PROFILES, dt);
 }
 
@@ -109,7 +130,7 @@ pub fn draw() {
         let cx = start_x + i as f32 * slot + sty.w * 0.5 - scroll;
         let base = Rect::new(cx - sty.w * 0.5, ROW_Y, sty.w, sty.h);
         let sc = s.row.scale(i);
-        let is_foc = i as c_int == s.fc && !s.pad.open;
+        let is_foc = i as c_int == s.fc && !s.pad.open && !s.footer;
         if is_foc {
             focused = Some(i);
             continue; // draw the focused tile last (ring over neighbours)
@@ -124,6 +145,14 @@ pub fn draw() {
         let sc = s.row.scale(i);
         card_row::draw_focused(p, Art::Thumb { key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, std::ptr::null());
         draw_name(p, u, cx, true);
+    }
+
+    // "Sign out" — the picker is the only surface a user who doesn't recognise these profiles
+    // ever sees, so it must offer a way out of the account.
+    if !s.pad.open {
+        crate::ui::widgets::Button::new(c"Sign out".as_ptr(), theme::size::BODY, footer_rect())
+            .focused(s.footer)
+            .draw(&env, p);
     }
 
     // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a blank page
@@ -144,10 +173,11 @@ pub fn draw() {
         }
     }
 
-    // switching spinner / keypad overlay
+    // switching spinner / keypad overlay — a near-opaque scrim (0.88): the roster behind is
+    // context noise at this point, and a translucent wash read as a rendering glitch.
     match auth::phase() {
         Phase::Switching if !s.pad.open => {
-            p.rect(Rect::FULL, 0.0, theme::scrim_black(0.55), theme::scrim_black(0.55), 0.0);
+            p.rect(Rect::FULL, 0.0, theme::scrim_black(0.88), theme::scrim_black(0.88), 0.0);
             Spinner::new(SCR_W as f32 * 0.5, 500.0, 26.0)
                 .phase(s.spin_ms as u32)
                 .tint(theme::TEXT_PRIMARY)
@@ -169,10 +199,12 @@ fn draw_name(p: Painter, u: &auth::UserTile, cx: f32, focused: bool) {
 }
 
 fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
-    p.rect(Rect::FULL, 0.0, theme::scrim_black(0.72), theme::scrim_black(0.72), 0.0);
+    // near-opaque scrim (0.9): PIN entry is its own screen, not a peek-through overlay
+    p.rect(Rect::FULL, 0.0, theme::scrim_black(0.9), theme::scrim_black(0.9), 0.0);
+    let (title_y, dots_y, _) = pad_geom();
     let name = users.get(s.pad.target).map(|u| u.title.as_str()).unwrap_or("");
     if let Ok(t) = CString::new(format!("Enter {name}'s PIN")) {
-        p.text(t.as_ptr(), SCR_W as f32 * 0.5, 300.0, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
+        p.text(t.as_ptr(), SCR_W as f32 * 0.5, title_y, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
     }
     // 4 entry dots
     let dot = 18.0f32;
@@ -182,7 +214,7 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
     for i in 0..PIN_LEN {
         let filled = i < s.pad.entry.len();
         let col = theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 });
-        p.rect(Rect::new(dx, 372.0, dot, dot), dot * 0.5, col, col, 0.0);
+        p.rect(Rect::new(dx, dots_y, dot, dot), dot * 0.5, col, col, 0.0);
         dx += dot + dgap;
     }
     // keypad grid
@@ -197,8 +229,16 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
                 (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK)
             };
             p.rect(rect, 18.0, fill, fill, 0.0);
-            let label = if *k == b'D' { "⌫".to_string() } else { (*k as char).to_string() };
-            if let Ok(lc) = CString::new(label) {
+            if *k == b'D' {
+                // a real backspace glyph — the ⌫ codepoint is absent from appfont.ttf (drew blank)
+                let d = (rect.w * 0.42).round();
+                crate::ui::icons::draw(
+                    p,
+                    crate::ui::icons::Icon::Backspace,
+                    Rect::new(rect.x + (rect.w - d) * 0.5, rect.y + (rect.h - d) * 0.5, d, d),
+                    ink,
+                );
+            } else if let Ok(lc) = CString::new((*k as char).to_string()) {
                 let ty = crate::text::text_vcenter_y(theme::size::TITLE, 1, rect.y + rect.h * 0.5);
                 p.text(lc.as_ptr(), rect.x + rect.w * 0.5, ty, theme::size::TITLE, ink, 1, 1);
             }
@@ -209,10 +249,16 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
 
 /// Keypad cell geometry — shared by draw_pad and the pointer hit-test.
 fn pad_key_rect(r: usize, c: usize) -> Rect {
-    const KEY: f32 = 108.0;
-    const KGAP: f32 = 20.0;
-    let gx = SCR_W as f32 * 0.5 - (3.0 * KEY + 2.0 * KGAP) * 0.5;
-    Rect::new(gx + c as f32 * (KEY + KGAP), 452.0 + r as f32 * (KEY + KGAP), KEY, KEY)
+    let (_, _, grid_y) = pad_geom();
+    let gx = SCR_W as f32 * 0.5 - (3.0 * PAD_KEY + 2.0 * PAD_KGAP) * 0.5;
+    Rect::new(gx + c as f32 * (PAD_KEY + PAD_KGAP), grid_y + r as f32 * (PAD_KEY + PAD_KGAP), PAD_KEY, PAD_KEY)
+}
+
+/// The centered "Sign out" pill under the roster — shared by draw + pointer hit-tests.
+fn footer_rect() -> Rect {
+    let tw = crate::text::text_width(c"Sign out".as_ptr(), theme::size::BODY, 1);
+    let w = tw + 76.0;
+    Rect::new((SCR_W - w) * 0.5, FOOTER_Y, w, 60.0)
 }
 
 /// The roster tile under the pointer (tile body or its name label; None in the gaps).
@@ -246,7 +292,8 @@ fn pad_key_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
     None
 }
 
-/// Pointer hover: focus follows the cursor (roster tile, or keypad key while the pad is up).
+/// Pointer hover: focus follows the cursor (roster tile / Sign out pill, or keypad key while the
+/// pad is up).
 pub fn pointer_focus(mx: f32, my: f32) {
     let s = scene();
     if s.pad.open {
@@ -258,11 +305,14 @@ pub fn pointer_focus(mx: f32, my: f32) {
     }
     if let Some(i) = tile_at(s, mx, my) {
         s.fc = i as c_int;
+        s.footer = false;
+    } else if footer_rect().contains(mx, my) {
+        s.footer = true;
     }
 }
 
-/// Pointer click: select the tile / press the keypad key under the cursor (same actions as OK);
-/// a click outside an open keypad dismisses it like BACK.
+/// Pointer click: select the tile / press the keypad key / sign out under the cursor (same
+/// actions as OK); a click outside an open keypad dismisses it like BACK.
 pub fn click(mx: f32, my: f32) {
     let s = scene();
     if s.pad.open {
@@ -279,7 +329,10 @@ pub fn click(mx: f32, my: f32) {
     }
     if let Some(i) = tile_at(s, mx, my) {
         s.fc = i as c_int;
+        s.footer = false;
         select(s, i);
+    } else if footer_rect().contains(mx, my) {
+        auth::sign_out();
     }
 }
 
@@ -299,22 +352,39 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         return;
     }
     let n = auth::users().len() as c_int;
-    if n == 0 {
-        return;
+    if sym == SDLK_DOWN {
+        s.footer = true; // Sign out pill (reachable even while the roster is empty/loading)
+    } else if sym == SDLK_UP {
+        s.footer = false;
+    } else if s.footer {
+        if is_ok(sym) {
+            auth::sign_out(); // the phase→route follower lands on the QR sign-in
+        }
+    } else if n > 0 {
+        if sym == SDLK_LEFT {
+            s.fc = (s.fc - 1).max(0);
+        } else if sym == SDLK_RIGHT {
+            s.fc = (s.fc + 1).min(n - 1);
+        } else if is_ok(sym) {
+            select(s, s.fc as usize);
+        }
     }
-    if sym == SDLK_LEFT {
-        s.fc = (s.fc - 1).max(0);
-    } else if sym == SDLK_RIGHT {
-        s.fc = (s.fc + 1).min(n - 1);
-    } else if is_ok(sym) {
-        select(s, s.fc as usize);
-    }
-    // BACK on the picker does nothing — you must choose a profile.
+    // BACK on the picker does nothing — you must choose a profile (or Sign out).
+}
+
+/// Remote number key → keypad digit: SDL gives printable keys their ASCII sym and the webOS
+/// remote's number buttons carry the same 48–57 ('0'–'9') range in `wcode`.
+fn digit_of(sym: c_uint, wcode: c_uint) -> Option<u8> {
+    [sym, wcode].into_iter().find(|v| (48..=57).contains(v)).map(|v| v as u8)
 }
 
 fn pad_key(s: &mut Scene, sym: c_uint, wcode: c_uint) {
     if is_back(sym, wcode) {
         s.pad = Pad::new();
+        return;
+    }
+    if let Some(d) = digit_of(sym, wcode) {
+        press(s, d); // remote number buttons type straight into the PIN
         return;
     }
     if sym == SDLK_LEFT {

@@ -64,6 +64,10 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
 /// The scale a focused card pops to (shared by every animated card row).
 pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
 
+/// Icon box as a fraction of a round control's diameter — the ONE ratio every disc glyph uses
+/// (transport CC/Audio buttons, CircleButton vector icons, the Continue-Watching play badge).
+pub(crate) const DISC_ICON_RATIO: f32 = 0.54;
+
 /// A media card shared by the episode picker, the chapters strip, and the detail Related row so they
 /// resolve + animate identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop
 /// about the centre + a tight focus ring when `focused` (the caller owns the `scale` spring).
@@ -114,10 +118,9 @@ impl View for CircleButton {
         let (face, ink) = self.style.colors(self.focused);
         p.rect(r, r.w * 0.5, face, face, 0.0);
         if let Some(icon) = self.icon {
-            // vector glyph centred on the disc. Stroke icons (chevron) under-fill their own
-            // viewBox, so the box is sized generously (0.66·disc) to read at least as large as the
-            // pill's play glyph and the sibling +/i text glyphs — not the tight cap band.
-            let d = r.w * 0.66;
+            // vector glyph centred on the disc at the shared DISC_ICON_RATIO box, so every round
+            // control carries its icon at one ratio.
+            let d = (r.w * DISC_ICON_RATIO).round();
             crate::ui::icons::draw(p, icon, Rect::new(r.cx() - d * 0.5, r.y + (r.h - d) * 0.5, d, d), ink);
         } else {
             // text glyph centred on the disc by its cap band (layout ≠ paint), not a hand-tuned y
@@ -183,7 +186,9 @@ pub struct Spinner {
 }
 impl Spinner {
     pub fn new(cx: f32, cy: f32, r: f32) -> Self {
-        Self { cx, cy, r, phase: 0, col: [1.0, 1.0, 1.0, 1.0], dots: 10, dot_r: 3.4 }
+        // dot size scales WITH the ring radius (0.28·r ≈ the HUD spinner's original 3.4 at r=12),
+        // so a big spinner reads as a bigger spinner, not the same tiny dots on a wider circle.
+        Self { cx, cy, r, phase: 0, col: [1.0, 1.0, 1.0, 1.0], dots: 10, dot_r: (r * 0.28).max(3.0) }
     }
     pub fn phase(mut self, ms: u32) -> Self {
         self.phase = ms;
@@ -243,7 +248,7 @@ impl View for TransportButton {
             1 => Icon::Audio,
             _ => Icon::Cc,
         };
-        let s = (r.w * 0.54).round();
+        let s = (r.w * DISC_ICON_RATIO).round();
         let ir = Rect::new(r.x + (r.w - s) * 0.5, r.y + (r.h - s) * 0.5, s, s);
         crate::ui::icons::draw(p, id, ir, ink);
     }
