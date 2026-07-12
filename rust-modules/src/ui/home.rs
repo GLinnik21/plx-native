@@ -202,24 +202,8 @@ impl View for Hero {
         let mut y = 440.0f32;
 
         // title: clearLogo (transparent PNG) if loaded, else bold HERO text
-        let mut lt = 0u32;
-        let (mut lw, mut lh) = (0i32, 0i32);
-        if hero.rk[0] != 0 {
-            let rk = cfield(&hero.rk);
-            if let Ok(lpath) = CString::new(format!("/library/metadata/{rk}/clearLogo")) {
-                let mut lk = [0u8; 352];
-                crate::posters::poster_key(lk.as_mut_ptr() as *mut c_char, lk.len(), lpath.as_ptr(), 600, 240, 1);
-                lt = crate::posters::poster_get(lk.as_ptr() as *const c_char);
-                crate::posters::poster_wh(lk.as_ptr() as *const c_char, &mut lw, &mut lh);
-            }
-        }
-        if lt != 0 && lh > 0 {
-            let mut hh = 96.0f32;
-            let mut ww = hh * lw as f32 / lh as f32;
-            if ww > col_w {
-                ww = col_w;
-                hh = ww * lh as f32 / lw as f32;
-            }
+        let rk = if hero.rk[0] != 0 { cfield(&hero.rk) } else { String::new() };
+        if let Some((lt, ww, hh)) = crate::posters::logo_tex(&rk, col_w, 96.0) {
             p.tex(lt, Rect::new(tx, y, ww, hh), 0.0, w_a);
             y += hh;
         } else {
@@ -427,14 +411,13 @@ impl Grid {
 // ---- Home root + the C ABI ----
 struct Home {
     snap: Spring,
-    bg_phase: f32,
     bg: Backdrop,
     hero: Hero,
     grid: Grid,
 }
 impl Home {
     fn new() -> Self {
-        Home { snap: Spring::at(0.0), bg_phase: 0.0, bg: Backdrop::new(), hero: Hero::new(), grid: Grid::new() }
+        Home { snap: Spring::at(0.0), bg: Backdrop::new(), hero: Hero::new(), grid: Grid::new() }
     }
     fn env(&self, dt: f32) -> Env {
         let sp = self.snap.pos;
@@ -482,7 +465,6 @@ pub(crate) fn home_init() {
 pub(crate) fn home_update(dt: f32) {
     guard(|| {
         let h = scene();
-        h.bg_phase += dt * 0.15; // parity (unused by draw, as in C)
         unsafe {
             let cd = addr_of!(hero_flip_cd).read();
             if cd > 0.0 {
@@ -509,34 +491,43 @@ pub(crate) fn home_draw() {
 
 /// The top-left profile chip — the signed-in avatar (or an initial fallback). Records its rect for
 /// pointer hit-testing; a click or UP-in-hero opens the account menu (change profile / sign out).
+/// The session lookup (mutex + 5-String UserRef clone) is snapshotted per profile GENERATION —
+/// re-cloning it every frame for a chip that changes only on a profile switch was waste.
 fn draw_chip(p: Painter) {
+    static mut CHIP: Option<(u32, CString, CString)> = None; // (gen, thumb path, initial)
     let d = 64.0f32;
     let (x, y) = (MARGIN_X, 44.0f32);
     unsafe { addr_of_mut!(profile_chip).write([x, y, d, d]) };
     let r = Rect::new(x, y, d, d);
-    let cur = crate::plex::session::current();
-    let thumb = cur.as_ref().map(|u| u.thumb.clone()).unwrap_or_default();
-    let mut drew = false;
-    if !thumb.is_empty() {
-        if let Ok(tp) = CString::new(thumb) {
-            let t = resolve_tex(tp.as_ptr(), 128, 128, 0);
-            if t != 0 {
-                p.tex(t, r, d * 0.5, theme::TINT_WHITE);
-                drew = true;
-            }
-        }
-    }
-    if !drew {
-        p.rect(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL, 0.0);
+    let gen = crate::plex::session::current_gen();
+    let chip = unsafe { &mut *addr_of_mut!(CHIP) };
+    if chip.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
+        let cur = crate::plex::session::current();
+        let thumb = cur.as_ref().map(|u| u.thumb.clone()).unwrap_or_default();
         let initial = cur
             .as_ref()
             .and_then(|u| u.title.chars().next())
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default();
-        if let Ok(ic) = CString::new(initial) {
-            let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, y + d * 0.5);
-            p.text(ic.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
+        *chip = Some((
+            gen,
+            CString::new(thumb).unwrap_or_default(),
+            CString::new(initial).unwrap_or_default(),
+        ));
+    }
+    let (_, thumb_c, initial_c) = chip.as_ref().unwrap();
+    let mut drew = false;
+    if !thumb_c.as_bytes().is_empty() {
+        let t = resolve_tex(thumb_c.as_ptr(), 128, 128, 0);
+        if t != 0 {
+            p.tex(t, r, d * 0.5, theme::TINT_WHITE);
+            drew = true;
         }
+    }
+    if !drew {
+        p.rect(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL, 0.0);
+        let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, y + d * 0.5);
+        p.text(initial_c.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
     }
 }
 

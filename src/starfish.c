@@ -46,7 +46,6 @@ extern int  SMP_Unload(void *self) __asm__("_ZN17StarfishMediaAPIs6UnloadEv");
 extern void SMP_notifyForeground(void *self) __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv");
 extern int  SMP_isLoadCompleted(void *self) __asm__("_ZN17StarfishMediaAPIs15isLoadCompletedEv");
 extern int  SMP_Pause(void *self) __asm__("_ZN17StarfishMediaAPIs5PauseEv");
-extern void SMP_setCurrentPlaytime(void *self, long long t) __asm__("_ZN17StarfishMediaAPIs18setCurrentPlaytimeEx");
 extern int  SMP_flush(void *self) __asm__("_ZN17StarfishMediaAPIs5flushEv");
 /* Kodi-parity: signal true end-of-stream so the pipeline drains the last frames instead of
  * hanging on them. Verified present on webOS 4.5 (nm: _ZN17StarfishMediaAPIs7pushEOSEv, defined). */
@@ -95,7 +94,6 @@ int  sf_play(void)                { return g_smp_ready ? SMP_Play(g_smp) : 0; }
 int  sf_pause(void)               { return g_smp_ready ? SMP_Pause(g_smp) : 0; }
 int  sf_flush(void)               { return g_smp_ready ? SMP_flush(g_smp) : 0; }
 int  sf_push_eos(void)            { return g_smp_ready ? SMP_pushEOS(g_smp) : 0; }
-void sf_set_playtime(long long t) { if (g_smp_ready) SMP_setCurrentPlaytime(g_smp, t); }
 void sf_unload(void)              { if (g_smp_ready) SMP_Unload(g_smp); }
 void sf_destroy(void)             { if (g_smp_ready) { SMP_dtor(g_smp); g_smp_ready = 0; } }
 
@@ -189,6 +187,3 @@ void acb_unload(void) {
  * pipeline Pause/Play alone leaves the ACB state stale). Only meaningful once the plane is bound. */
 void acb_pause(void)  { if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PAUSED,  &g_taskId); }
 void acb_resume(void) { if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId); }
-void acb_destroy(void) {
-    if (g_acb) { AcbAPI_finalize(g_acb); AcbAPI_destroy(g_acb); g_acb = 0; }
-}

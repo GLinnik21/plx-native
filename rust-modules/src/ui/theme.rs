@@ -148,6 +148,8 @@ pub const OVERLAY_FOCUS_PILL: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
 pub const OVERLAY_FOCUS_SOFT: [f32; 4] = [1.0, 1.0, 1.0, 0.07];
 /// Outlined-badge / meta-badge border.
 pub const OVERLAY_BORDER: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
+/// Filled metadata chip (the About column's CC/SDH/AD accessibility badges).
+pub const BADGE_FILL: [f32; 4] = [0.86, 0.88, 0.92, 0.20];
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
 pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 

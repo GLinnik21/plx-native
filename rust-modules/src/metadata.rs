@@ -2,11 +2,38 @@
 //! audio/subtitle streams), the TV season/episode hierarchy, and the related hub —
 //! fetched on demand into a single CURRENT item. Idiomatic Rust (String/Vec); only
 //! the browse catalog (pms.rs) still uses fixed C buffers from the C port.
-// TEMP: struct fields/accessors are consumed incrementally by the detail UI
-// (increments 1-4); drop this once the About footer (last consumer) lands.
-#![allow(dead_code)]
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
+
+/// Plex's resume rule, in ONE place (home Continue-Watching, the detail Play button, and the
+/// poc-play harness all apply it): resume only past 10s and before 95% watched, else start
+/// from the beginning. Both args are MILLISECONDS; the returned position is NANOSECONDS
+/// (what `player::resume_at` takes).
+pub(crate) fn resume_ns(resume_ms: i64, dur_ms: i64) -> i64 {
+    if resume_ms > 10_000 && (dur_ms <= 0 || (resume_ms as f64) < 0.95 * dur_ms as f64) {
+        resume_ms * 1_000_000
+    } else {
+        0
+    }
+}
+
+/// Friendly display name for an audio/subtitle codec id — the ONE codec→name map (the track
+/// menu's section accessory and the Info card's track line both read it, so the same track
+/// can't be named two ways).
+pub(crate) fn friendly_codec(codec: &str) -> String {
+    match codec.to_lowercase().as_str() {
+        "truehd" => "Dolby TrueHD".to_string(),
+        "eac3" | "ec-3" => "Dolby Digital Plus".to_string(),
+        "ac3" => "Dolby Digital".to_string(),
+        "dts" | "dca" => "DTS".to_string(),
+        "aac" => "AAC".to_string(),
+        "flac" => "FLAC".to_string(),
+        "opus" => "Opus".to_string(),
+        "mp3" => "MP3".to_string(),
+        other if other.is_empty() => String::new(),
+        other => other.to_uppercase(),
+    }
+}
 
 pub(crate) struct Cast {
     pub(crate) tag: String,   // actor name
@@ -16,7 +43,8 @@ pub(crate) struct Cast {
 
 pub(crate) struct Stream {
     pub(crate) id: i64, // Plex stream id (for &audioStreamID / &subtitleStreamID)
-    pub(crate) lang: String,
+    pub(crate) lang: String,      // display name ("English")
+    pub(crate) lang_code: String, // ISO code ("eng") — the route's language preference matches this
     pub(crate) codec: String,
     pub(crate) channels: i64,
     pub(crate) layout: String, // audioChannelLayout, e.g. "5.1(side)"
@@ -47,15 +75,12 @@ pub(crate) struct Season {
     pub(crate) rk: String,
     pub(crate) index: i64,
     pub(crate) title: String,
-    pub(crate) leaf_count: i64,
 }
 
 pub(crate) struct Related {
     pub(crate) rk: String,
     pub(crate) title: String,
     pub(crate) thumb: String,
-    pub(crate) year: i64,
-    pub(crate) is_show: bool,
 }
 
 pub(crate) struct Chapter {
@@ -77,8 +102,6 @@ pub(crate) struct Detail {
     pub(crate) year: i64,
     pub(crate) rating: String, // contentRating
     pub(crate) summary: String,
-    pub(crate) tagline: String,
-    pub(crate) studio: String,
     pub(crate) aired: String,
     pub(crate) dur_ms: i64,
     pub(crate) resume_ms: i64, // viewOffset (0 = not partially watched) — the resume position
@@ -90,8 +113,6 @@ pub(crate) struct Detail {
     pub(crate) thumb: String,
     pub(crate) genres: Vec<String>,
     pub(crate) countries: Vec<String>,
-    pub(crate) directors: Vec<String>,
-    pub(crate) writers: Vec<String>,
     pub(crate) cast: Vec<Cast>,
     pub(crate) audio: Vec<Stream>,
     pub(crate) subs: Vec<Stream>,
@@ -190,8 +211,6 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         year: it.year,
         rating: it.content_rating.clone(),
         summary: it.summary.clone(),
-        tagline: it.tagline.clone(),
-        studio: it.studio.clone(),
         aired: it.originally_available_at.clone(),
         dur_ms: it.duration,
         resume_ms: it.view_offset,
@@ -204,8 +223,6 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         thumb: it.thumb.clone(),
         genres: it.genre.iter().map(|t| t.tag.clone()).collect(),
         countries: it.country.iter().map(|t| t.tag.clone()).collect(),
-        directors: it.director.iter().map(|t| t.tag.clone()).collect(),
-        writers: it.writer.iter().map(|t| t.tag.clone()).collect(),
         cast: it
             .role
             .iter()
@@ -244,6 +261,7 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
         let st = Stream {
             id: s.id,
             lang: s.language.clone(),
+            lang_code: s.language_code.to_lowercase(),
             codec: s.codec.clone(),
             channels: s.channels,
             layout: s.audio_channel_layout.clone(),
@@ -267,6 +285,13 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
 /// to pick a direct-playable track — preferring a language (English) over the file's default —
 /// and to fall back to a direct-playable sibling when the default codec isn't (TrueHD default).
 pub(crate) fn audio_tracks(rk: &str) -> Vec<(String, String)> {
+    // the detail page usually already holds this item's streams — reuse them instead of
+    // re-downloading the full metadata on every Play press (a whole GET on the play path)
+    if let Some(d) = current() {
+        if d.rk == rk && !d.audio.is_empty() {
+            return d.audio.iter().map(|s| (s.codec.to_lowercase(), s.lang_code.clone())).collect();
+        }
+    }
     let it = match crate::plex::client().metadata(rk) {
         Some(i) => i,
         None => return Vec::new(),
@@ -302,7 +327,6 @@ fn fetch_seasons(rk: &str) -> Vec<Season> {
             rk: x.rating_key.clone(),
             index: x.index,
             title: x.title.clone(),
-            leaf_count: x.leaf_count,
         })
         .collect()
 }
@@ -351,8 +375,6 @@ fn fetch_related(rk: &str) -> Vec<Related> {
                 rk: x.rating_key.clone(),
                 title: x.title.clone(),
                 thumb: x.thumb.clone(),
-                year: x.year,
-                is_show: x.kind == "show",
             });
             if out.len() >= 20 {
                 return out;

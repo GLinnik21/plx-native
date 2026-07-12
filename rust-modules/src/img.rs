@@ -8,30 +8,9 @@ use std::ptr;
 extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
-    fn glGenTextures(n: c_int, textures: *mut c_uint);
-    fn glBindTexture(target: c_uint, texture: c_uint);
-    fn glPixelStorei(pname: c_uint, param: c_int);
-    fn glTexImage2D(target: c_uint, level: c_int, internalformat: c_int, width: c_int,
-                    height: c_int, border: c_int, format: c_uint, ty: c_uint, pixels: *const c_void);
-    fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
 }
-const GL_TEXTURE_2D: c_uint = 0x0DE1;
-const GL_RGBA: c_uint = 0x1908;
-const GL_UNSIGNED_BYTE: c_uint = 0x1401;
-const GL_UNPACK_ALIGNMENT: c_uint = 0x0CF5;
-const GL_TEXTURE_MIN_FILTER: c_uint = 0x2801;
-const GL_TEXTURE_MAG_FILTER: c_uint = 0x2800;
-const GL_TEXTURE_WRAP_S: c_uint = 0x2802;
-const GL_TEXTURE_WRAP_T: c_uint = 0x2803;
-const GL_LINEAR: c_int = 0x2601;
-const GL_CLAMP_TO_EDGE: c_int = 0x812F;
 
-fn log(m: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
-        let _ = writeln!(f, "{m}");
-    }
-}
+use crate::log;
 
 pub(crate) fn img_decode_rgba(buf: *const c_uchar, len: c_int,
                                   w: *mut c_int, h: *mut c_int) -> *mut c_uchar {
@@ -65,19 +44,10 @@ pub(crate) fn img_free(px: *mut c_uchar) {
     if !px.is_null() { unsafe { free(px as *mut c_void) } }
 }
 
+/// Upload decoded RGBA pixels into a fresh GL texture (gfx owns the GL bindings). Main thread.
 pub(crate) fn img_upload_rgba(px: *const c_uchar, w: c_int, h: c_int) -> c_uint {
-    if px.is_null() || w <= 0 || h <= 0 { return 0; }
-    let mut t: c_uint = 0;
-    unsafe {
-        glGenTextures(1, &mut t);
-        if t == 0 { return 0; }
-        glBindTexture(GL_TEXTURE_2D, t);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as c_int, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px as *const c_void);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if px.is_null() || w <= 0 || h <= 0 {
+        return 0;
     }
-    t
+    crate::gfx::upload_rgba(0, w, h, px)
 }

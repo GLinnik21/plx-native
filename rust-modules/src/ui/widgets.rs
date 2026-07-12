@@ -1,11 +1,10 @@
 //! Reusable retui leaves + shared helpers. These are the "reusable UI elements":
-//! Button, CircleButton, TabPill, TransportButton, PageDots, ProgressBar, plus the shared art-card
+//! Button, CircleButton, TabPill, TransportButton, PageDots, Badge, plus the shared art-card
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
-#![allow(dead_code)]
 use crate::pms::PmsMovie;
 use crate::ui::theme;
-use crate::ui::{Env, Painter, Rect, Size, Spring, View};
+use crate::ui::{Env, Painter, Rect, View};
 use std::os::raw::{c_char, c_int};
 
 /// build the transcode key on the stack and resolve it to a GL texture (0 until loaded)
@@ -72,11 +71,8 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
     card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, Some((theme::CARD_RING_PAD_STRIP, theme::CARD_RING_RAD)));
 }
 
-/// read a NUL-terminated C-string field into a Rust String
-pub(crate) fn cfield(b: &[u8]) -> String {
-    let n = b.iter().position(|&x| x == 0).unwrap_or(b.len());
-    String::from_utf8_lossy(&b[..n]).into_owned()
-}
+/// read a NUL-terminated C-string field into a Rust String (the shared cbuf reader)
+pub(crate) use crate::cbuf::get as cfield;
 
 // ---- CircleButton: circular disc + centered glyph, same ControlStyle family as Button /
 // TransportButton (focused = ACCENT, idle = solid dark disc). The hero + detail +/i/> circles. ----
@@ -129,9 +125,6 @@ impl View for CircleButton {
                 .h(crate::ui::label::HAlign::Center)
                 .draw(p, r);
         }
-    }
-    fn measure(&self) -> Size {
-        Size { w: self.frame.w, h: self.frame.h }
     }
 }
 
@@ -390,45 +383,51 @@ impl View for Button {
     }
 }
 
-// ---- ProgressBar: the future player-HUD scrubber. Proves cross-screen reuse. ----
-pub struct ProgressBar {
-    pub frame: Rect,
-    pub value: Spring,
-    pub target: f32,
-    pub buffered: f32,
-    pub track: [f32; 4],
-    pub fill: [f32; 4],
-    pub knob: bool,
+// ---- Badge: the small rounded metadata chip (CC / SDH / AD / FORCED / codec tags). ONE leaf for
+// the track-menu rows, the Info card meta line, and the detail About column, so the chip look
+// can't drift. Cap-band-centred bold CAPTION label; width hugs the label with a floor so short
+// tags (CC) still read as a chip. Returns the drawn width so callers can flow chips inline. ----
+pub(crate) enum BadgeStyle {
+    /// 2px border + knockout interior: border+label in `col`, interior filled `bg` (the surface
+    /// behind the chip — keeps the outline clean over a light focus pill or a dark panel).
+    Outlined { col: [f32; 4], bg: [f32; 4] },
+    /// solid translucent fill ([`theme::BADGE_FILL`]), label in [`theme::TEXT_HEADING`] — the
+    /// About column's accessibility chips.
+    Filled,
 }
-impl ProgressBar {
-    pub fn new() -> Self {
-        Self { frame: Rect::new(90.0, 890.0, 1740.0, 6.0), value: Spring::at(0.0), target: 0.0,
-               buffered: 0.0, track: theme::RAIL_TRACK, fill: theme::RAIL_FILL, knob: true }
-    }
-    pub fn set(&mut self, v: f32) {
-        self.target = v.clamp(0.0, 1.0);
-    }
+/// pixel width [`badge`] will occupy for `text` — the layout companion (e.g. reserving the
+/// inline-chip run so a row label elides before it).
+pub(crate) fn badge_w(text: &str) -> f32 {
+    const PAD: f32 = 12.0;
+    const MIN_W: f32 = 56.0;
+    std::ffi::CString::new(text)
+        .ok()
+        .map(|c| (crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1) + 2.0 * PAD).max(MIN_W))
+        .unwrap_or(0.0)
 }
-impl View for ProgressBar {
-    fn update(&mut self, env: &Env) {
-        self.value.step(self.target, 220.0, env.dt);
-    }
-    fn layout(&mut self, f: Rect, _e: &Env) {
-        self.frame = f;
-    }
-    fn draw(&self, _e: &Env, p: Painter) {
-        let r = self.frame;
-        let rad = r.h * 0.5;
-        p.rrect(r, rad, rad, self.track);
-        if self.buffered > 0.0 {
-            p.rrect(Rect::new(r.x, r.y, r.w * self.buffered, r.h), rad, rad, theme::RAIL_BUFFERED);
+/// Draw one chip with its LEFT edge at `x`, vertically centred on `cy`; returns its width.
+pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, style: BadgeStyle) -> f32 {
+    const H: f32 = 34.0;
+    let lc = match std::ffi::CString::new(text) {
+        Ok(c) => c,
+        Err(_) => return 0.0,
+    };
+    let sz = theme::size::CAPTION;
+    let w = badge_w(text);
+    let r = Rect::new(x, cy - H * 0.5, w, H);
+    let ink = match style {
+        BadgeStyle::Outlined { col, bg } => {
+            let bw = 2.0f32;
+            p.rrect(r, 6.0, 6.0, col); // border
+            p.rrect(Rect::new(r.x + bw, r.y + bw, r.w - 2.0 * bw, r.h - 2.0 * bw), 5.0, 5.0, bg);
+            col
         }
-        let fw = (r.w * self.value.pos).max(r.h);
-        p.rrect(Rect::new(r.x, r.y, fw, r.h), rad, rad, self.fill);
-        if self.knob {
-            let d = r.h * 2.6;
-            let kx = r.x + r.w * self.value.pos - d * 0.5;
-            p.rect(Rect::new(kx, r.y + r.h * 0.5 - d * 0.5, d, d), d * 0.5, [1.0; 4], [1.0; 4], 0.0);
+        BadgeStyle::Filled => {
+            p.rrect(r, 7.0, 7.0, theme::BADGE_FILL);
+            theme::TEXT_HEADING
         }
-    }
+    };
+    let ty = crate::text::text_vcenter_y(sz, 1, cy);
+    p.text(lc.as_ptr(), x + w * 0.5, ty, sz, ink, 1, 1);
+    w
 }

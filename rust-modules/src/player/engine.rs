@@ -100,13 +100,6 @@ pub(crate) struct Engine {
     pub cues_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
     pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
-    // soft WebVTT subtitle sidecar (transcode only): the socket box (M owns; subs thread
-    // uses via raw ptr, RAII like hs/hs2), the thread handle (spawned lazily by the pump),
-    // and the sid it is CURRENTLY streaming (0 = none; main-thread-confined).
-    #[allow(dead_code)]
-    pub hs3: Box<HttpStream>,
-    pub subs_th: Option<std::thread::JoinHandle<()>>,
-    pub subs_active_sid: i64,
 }
 
 static mut ENGINE: Option<Engine> = None; // main-thread-only slot
@@ -195,23 +188,6 @@ fn fps_rational(fps: f64) -> Option<(i64, i64)> {
     })
 }
 
-/// parse http://HOST[:PORT]/PATH?query -> (host, port, path)
-pub(crate) fn parse_stream_url(url: &str) -> (String, c_int, String) {
-    let s = url.strip_prefix("http://").unwrap_or(url);
-    let hostend = s.find(|c| c == ':' || c == '/').unwrap_or(s.len());
-    let host = s[..hostend].to_string();
-    let rest = &s[hostend..];
-    if let Some(r) = rest.strip_prefix(':') {
-        let pe = r.find('/').unwrap_or(r.len());
-        let port = r[..pe].parse::<c_int>().unwrap_or(32400);
-        let path = if pe < r.len() { r[pe..].to_string() } else { "/".to_string() };
-        (host, port, path)
-    } else {
-        let path = if rest.is_empty() { "/".to_string() } else { rest.to_string() };
-        (host, 32400, path)
-    }
-}
-
 pub(crate) fn start_bufferfeed() -> bool {
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
     // Engine, detaching its worker threads and freeing the hs/hs2/aq boxes those
@@ -297,7 +273,6 @@ pub(crate) fn start_bufferfeed() -> bool {
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();
     let mut hs2 = crate::stream::http_stream_boxed();
-    let mut hs3 = crate::stream::http_stream_boxed(); // soft-subs sidecar (spawned lazily by the pump)
     let mut aqv_box: Option<Box<AuQueue>> = None;
     let mut aqa_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
@@ -305,7 +280,8 @@ pub(crate) fn start_bufferfeed() -> bool {
     let source;
 
     if stream {
-        let (host, port, path) = parse_stream_url(&url);
+        let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
+        let (host, port, path) = (su.host, su.port, su.path);
         log(&format!("stream: host={host} port={port} path={}", &path[..path.len().min(80)]));
         // Two-lane feed: the ff demuxer routes es=1 video to aq_video and es=2 audio to aq_audio,
         // each with its own cap + feeder. Both are always allocated; the legacy single-queue mkv
@@ -316,10 +292,8 @@ pub(crate) fn start_bufferfeed() -> bool {
         let aqa_raw = &mut *qa as *mut AuQueue;
         let hs_raw = &mut *hs as *mut HttpStream;
         let hs2_raw = &mut *hs2 as *mut HttpStream;
-        let hs3_raw = &mut *hs3 as *mut HttpStream;
         SHARED.hs_ptr.store(hs_raw, Ordering::Release);
         SHARED.hs2_ptr.store(hs2_raw, Ordering::Release);
-        SHARED.hs3_ptr.store(hs3_raw, Ordering::Release);
         SHARED.seek_byte.store(-1, Ordering::Relaxed);
         {
             let (h, p) = (host.clone(), path.clone());
@@ -329,7 +303,7 @@ pub(crate) fn start_bufferfeed() -> bool {
             stream_th = Some(std::thread::spawn(move || threads::stream_thread(h, port, p, aqp, aqap, hsp)));
         }
         // skip the cue preflight for a transcode (no byte-cues; a 2nd conn cuts the stream)
-        if !SHARED.cues_ready.load(Ordering::Relaxed) && crate::route::transcode_session().is_empty() {
+        if !SHARED.cues_ready.load(Ordering::Relaxed) && !crate::route::is_transcoding() {
             SHARED.cues_abort.store(false, Ordering::Relaxed);
             let (h, p) = (host.clone(), path.clone());
             let hs2p = threads::SendPtr(hs2_raw);
@@ -389,9 +363,6 @@ pub(crate) fn start_bufferfeed() -> bool {
         cues_th,
         load_th,
         report_th,
-        hs3,
-        subs_th: None,
-        subs_active_sid: 0,
     };
     unsafe {
         *std::ptr::addr_of_mut!(ENGINE) = Some(eng);
@@ -421,7 +392,7 @@ pub(crate) fn resume_at(resume_ns: i64) {
     if resume_ns <= 0 {
         return;
     }
-    if crate::route::transcode_session().is_empty() {
+    if !crate::route::is_transcoding() {
         arm_seek(resume_ns); // direct-play: av_seek the file at the first open
     } else if crate::route::transcode_seek(resume_ns / 1_000_000_000).is_some() {
         // transcode: the encode restarts at &offset (0-based); disp_base carries the offset
@@ -520,7 +491,6 @@ fn teardown(keep_cues: bool, for_reload: bool) {
 
     // 1. stop the cue preflight FIRST + unblock every thread (abort queue, close sockets)
     SHARED.cues_abort.store(true, Ordering::Release);
-    SHARED.subs_abort.store(true, Ordering::Release); // stop the soft-subs sidecar thread
     SHARED.report_stop.store(true, Ordering::Release); // stop the /:/timeline reporter
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
@@ -535,10 +505,6 @@ fn teardown(keep_cues: bool, for_reload: bool) {
         if !p2.is_null() {
             crate::stream::http_close(p2);
         }
-        let p3 = SHARED.hs3_ptr.load(Ordering::Acquire);
-        if !p3.is_null() {
-            crate::stream::http_close(p3);
-        }
     }
     // 2. JOIN before touching the cue Vec (cue_cb writes it on the preflight thread)
     if let Some(t) = eng.cues_th.take() {
@@ -551,9 +517,6 @@ fn teardown(keep_cues: bool, for_reload: bool) {
         let _ = t.join();
     }
     if let Some(t) = eng.report_th.take() {
-        let _ = t.join();
-    }
-    if let Some(t) = eng.subs_th.take() {
         let _ = t.join();
     }
     // final position report (state=stopped) so the server commits the resume point

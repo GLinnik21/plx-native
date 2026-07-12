@@ -104,7 +104,6 @@ pub(crate) fn reset_audio_track() {
 /// instead of silently turning subtitles off.
 pub(crate) fn reset_subtitle() {
     SHARED.desired_sub_idx.store(-1, Relaxed);
-    SHARED.subs_want_sid.store(0, Relaxed);
 }
 /// select the audio stream index the demuxer feeds at the FIRST Load (before start_bufferfeed) —
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
@@ -130,14 +129,14 @@ pub(crate) fn desired_sub_idx() -> i32 { SHARED.desired_sub_idx.load(Relaxed) }
 /// A new item / transcode re-point clears the store via reset_session / the pump.
 pub(crate) fn request_subtitle(idx: i32) {
     SHARED.desired_sub_idx.store(idx, Relaxed);
-}
-/// desired soft-WebVTT subtitle stream id during a transcode (0 = off). The pump
-/// reconciles the subs thread (spawn / re-point / stop) from this.
-pub(crate) fn request_soft_subs(sid: i64) {
-    SHARED.subs_want_sid.store(sid, Relaxed);
+    if idx < 0 {
+        // subs Off: free the image-cue RGBA store now (the demuxer also stops decoding new
+        // bitmap cues while off — see ff.rs's desired_sub_idx gate)
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+    }
 }
 /// push a ready (already-clean) subtitle cue into the shared store, tagged with its 0-based
-/// track index. Shared sink for the demux path (all text tracks) and the WebVTT-sidecar path.
+/// track index (the demux pushes for every text track).
 /// Bounded by TIME rather than a fixed count: since every track is pushed regardless of
 /// selection, drop cues already well behind the playhead and keep a generous forward window
 /// (the demuxer reads ~10-20s ahead). A hard cap guards against a runaway.
@@ -263,12 +262,7 @@ fn sub_text(payload: &[u8], is_ass: bool) -> String {
     out.trim().to_string()
 }
 
-pub(crate) fn log(m: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
-        let _ = writeln!(f, "{m}");
-    }
-}
+pub(crate) use crate::log; // event-log sink (crate-wide single copy in lib.rs)
 
 fn find(h: &[u8], n: &[u8]) -> bool {
     !n.is_empty() && h.windows(n.len()).any(|w| w == n)

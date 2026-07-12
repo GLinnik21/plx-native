@@ -82,9 +82,4 @@ pub(crate) fn frame_end() {
     unsafe { *addr_of_mut!(FRAMES) = 0 }
 }
 
-fn log(m: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
-        let _ = writeln!(f, "{m}");
-    }
-}
+use crate::log;

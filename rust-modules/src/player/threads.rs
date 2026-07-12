@@ -126,10 +126,10 @@ pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr
             // a TRANSCODE seek re-points us at a fresh start.mkv?&offset= URL (opened from
             // byte 0); a direct-play seek keeps the same URL + a byte Range.
             if let Some(nu) = SHARED.next_url.lock().unwrap().take() {
-                let (h, p, pa) = super::engine::parse_stream_url(&nu);
-                host_c = std::ffi::CString::new(h).unwrap_or_default();
-                path_c = std::ffi::CString::new(pa).unwrap_or_default();
-                port = p;
+                let su = crate::plex::StreamUrl::parse(&nu);
+                host_c = std::ffi::CString::new(su.host).unwrap_or_default();
+                path_c = std::ffi::CString::new(su.path).unwrap_or_default();
+                port = su.port;
                 start = 0;
                 // an audio switch from a direct-play stream needs the transcode's Tracks
                 // re-parsed (mkv_run, via first=true) — its numbering differs from the
@@ -288,68 +288,3 @@ pub(crate) fn timeline_path(rk: &str, state: &str, t_ms: i64, d_ms: i64, token: 
     p
 }
 
-/// soft-subtitle sidecar (transcode only): open the /video/:/transcode/universal/subtitles
-/// URL on the SAME transcode session, read the WebVTT body incrementally, and push cues
-/// into SHARED.sub_cues (rebased by disp_base) — the SAME store the direct-play demuxer
-/// fills, so player_hud::draw_subtitles renders both unchanged. Loops for seek/retranscode/
-/// track-switch: the pump publishes subs_next_url + closes hs3 to interrupt the blocked recv;
-/// we re-open on the new-offset URL and (the pump having cleared) re-seed cues.
-pub(crate) fn subs_thread(host: String, port: c_int, path: String, hs3: SendPtr<HttpStream>) {
-    let host_c = std::ffi::CString::new(host).unwrap_or_default();
-    let mut path_c = std::ffi::CString::new(path).unwrap_or_default();
-    let hs3_p = hs3.0;
-    super::log("subs: sidecar thread start");
-    loop {
-        if crate::stream::http_open(hs3_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
-            super::log(&format!("subs: http_open FAILED status={}", crate::stream::hs_status(hs3_p)));
-        } else {
-            let mut parser = crate::webvtt::VttParser::new();
-            let mut buf = vec![0u8; 65536];
-            loop {
-                let r = crate::stream::http_read(hs3_p, buf.as_mut_ptr(), buf.len() as c_int);
-                if r <= 0 {
-                    break; // EOF, or unblocked by http_close on seek/teardown
-                }
-                if SHARED.subs_abort.load(Ordering::Acquire) {
-                    break;
-                }
-                for cue in parser.push(&buf[..r as usize]) {
-                    push_vtt_cue(cue);
-                }
-            }
-            for cue in parser.finish() {
-                push_vtt_cue(cue);
-            }
-        }
-        crate::stream::http_close(hs3_p);
-        if SHARED.subs_abort.load(Ordering::Acquire) {
-            break;
-        }
-        // re-open on the URL the pump published (seek / retranscode / track switch). Host/port
-        // never change (same PMS) — only the subtitles?…&offset= path.
-        let nu = SHARED.subs_next_url.lock().unwrap().take();
-        if let Some(nu) = nu {
-            let (_, _, pa) = super::engine::parse_stream_url(&nu);
-            path_c = std::ffi::CString::new(pa).unwrap_or_default();
-            continue;
-        }
-        break; // real EOF, no pending re-open
-    }
-    super::log("subs: thread ended");
-}
-
-/// push one parsed WebVTT cue into the shared store, rebased onto content-time ns by the
-/// same disp_base the fed video PTS uses (§4). Logged so on-device verification can see
-/// cues flowing alongside the video feed.
-fn push_vtt_cue(cue: crate::webvtt::VttCue) {
-    if cue.text.trim().is_empty() {
-        return;
-    }
-    let base = SHARED.disp_base.load(Ordering::Relaxed);
-    let (s, e) = (cue.start_ns + base, cue.end_ns + base);
-    super::log(&format!("subs cue [{}..{}ms] {:?}", s / 1_000_000, e / 1_000_000,
-        cue.text.chars().take(34).collect::<String>()));
-    // The transcode sidecar only ever fetches the SELECTED track, so tag with the current
-    // desired index; the render filters on it (the store is cleared on a re-point/re-transcode).
-    super::push_subtitle_text(SHARED.desired_sub_idx.load(Ordering::Relaxed), s, e, cue.text);
-}

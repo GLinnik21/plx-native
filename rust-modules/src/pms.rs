@@ -182,10 +182,11 @@ pub(crate) fn hero_pool_ptr(i: usize) -> *mut PmsMovie {
 pub(crate) fn hub_count() -> usize {
     unsafe { std::ptr::addr_of!(HUBS).as_ref().map(|v| v.len()).unwrap_or(0) }
 }
-/// title of hub `i` (e.g. "Continue Watching")
-pub(crate) fn hub_title(i: usize) -> String {
+/// title of hub `i` (e.g. "Continue Watching") — borrowed from the main-thread hub table (the
+/// per-frame shelf-title draw shouldn't clone a String per row; HUBS only changes on a re-fetch).
+pub(crate) fn hub_title(i: usize) -> &'static str {
     unsafe {
-        std::ptr::addr_of!(HUBS).as_ref().and_then(|v| v.get(i)).map(|h| h.title.clone()).unwrap_or_default()
+        std::ptr::addr_of!(HUBS).as_ref().and_then(|v| v.get(i)).map(|h| h.title.as_str()).unwrap_or("")
     }
 }
 /// item count in hub `i`

@@ -4,30 +4,31 @@
 //! mirrors the detail-page episode picker; modal wiring mirrors info_panel.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+use crate::ui::consts::{MARGIN_X, SCR_W, SDLK_LEFT, SDLK_RIGHT};
+use crate::ui::popover::Popover;
 use crate::ui::theme;
-use crate::ui::{Painter, Rect, Spring};
+use crate::ui::{Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
 
-const SCR_W: f32 = 1920.0;
-const SCR_H: f32 = 1080.0;
-const MARGIN_X: f32 = 90.0;
 const CH_W: f32 = 288.0;
 const CH_H: f32 = 162.0; // 16:9 still
 const CH_GAP: f32 = 24.0;
 const CH_TOP: f32 = 684.0; // thumbnail top — name/time fit above the tabs (SCR_H-128)
 use crate::ui::widgets::CARD_FOCUS_SCALE;
 
-static mut OPEN: bool = false;
+static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut SEL: c_int = 0;
-static mut APPEAR: Spring = Spring::at(0.0);
 static mut SCROLL: Spring = Spring::at(0.0); // horizontal scroll offset (px)
 static mut SCALE: Spring = Spring::at(1.0); // focused-card pop (springs 1.0 → FOCUS_SCALE on each move)
 
+fn pop() -> &'static mut Popover {
+    unsafe { &mut *addr_of_mut!(POP) }
+}
+
 pub(crate) fn is_open() -> bool {
-    unsafe { addr_of!(OPEN).read() }
+    unsafe { (*addr_of!(POP)).is_open() }
 }
 fn n() -> c_int {
     metadata::current().map(|d| d.chapters.len()).unwrap_or(0) as c_int
@@ -45,18 +46,13 @@ pub(crate) fn open() {
         .unwrap_or(0);
     unsafe {
         addr_of_mut!(SEL).write(sel);
-        addr_of_mut!(APPEAR).write(Spring::at(0.0));
         addr_of_mut!(SCROLL).write(Spring::at(scroll_target(sel)));
         addr_of_mut!(SCALE).write(Spring::at(1.0)); // pop in
-        addr_of_mut!(OPEN).write(true);
     }
+    pop().open();
 }
 pub(crate) fn close() {
-    unsafe { addr_of_mut!(OPEN).write(false) }
-}
-pub(crate) fn reset() {
-    close();
-    unsafe { addr_of_mut!(SEL).write(0) }
+    pop().close();
 }
 
 fn scroll_target(sel: c_int) -> f32 {
@@ -102,9 +98,7 @@ pub(crate) fn update(dt: f32) {
     if !is_open() {
         return;
     }
-    let ap = unsafe { &mut *addr_of_mut!(APPEAR) };
-    ap.step(1.0, 300.0, dt);
-    crate::ui::anim::probe("chapters.appear", ap.pos, ap.vel, 1.0, dt);
+    pop().update(dt);
     let sel = unsafe { addr_of!(SEL).read() };
     let sctgt = scroll_target(sel);
     let sc = unsafe { &mut *addr_of_mut!(SCROLL) };
@@ -113,16 +107,6 @@ pub(crate) fn update(dt: f32) {
     let scl = unsafe { &mut *addr_of_mut!(SCALE) };
     scl.step(CARD_FOCUS_SCALE, 300.0, dt);
     crate::ui::anim::probe("chapters.scale", scl.pos, scl.vel, CARD_FOCUS_SCALE, dt);
-}
-
-fn fmt_ts(ms: i64) -> String {
-    let s = (ms / 1000).max(0);
-    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
-    if h > 0 {
-        format!("{h}:{m:02}:{sec:02}")
-    } else {
-        format!("{m}:{sec:02}")
-    }
 }
 
 pub(crate) fn draw() {
@@ -136,12 +120,10 @@ pub(crate) fn draw() {
     if d.chapters.is_empty() {
         return;
     }
-    let appear = unsafe { addr_of!(APPEAR).read() }.pos.clamp(0.0, 1.0);
     let scroll = unsafe { addr_of!(SCROLL).read() }.pos;
     let sel = unsafe { addr_of!(SEL).read() };
     let scale = unsafe { addr_of!(SCALE).read() }.pos;
-    let rise = (1.0 - appear) * 20.0;
-    let p = Painter::root().alpha(appear).translate(-scroll, rise);
+    let p = pop().painter(0.0, 20.0).translate(-scroll, 0.0);
 
     // timecode uses SECONDARY (not the dim TERTIARY): it's drawn straight over the video, where the
     // dim grey washed out even up close. SECONDARY matches the (readable) chapter-name grey; the
@@ -166,7 +148,7 @@ pub(crate) fn draw() {
         if let Ok(tc) = CString::new(crate::text::elide(&name, CH_W, theme::size::LABEL, 1, false)) {
             p.text(tc.as_ptr(), x, ty, theme::size::LABEL, titc, 0, 1);
         }
-        if let Ok(sc) = CString::new(fmt_ts(ch.start_ms)) {
+        if let Ok(sc) = CString::new(crate::ui::fmt::clock(ch.start_ms)) {
             p.text(sc.as_ptr(), x, ty + 34.0, theme::size::CAPTION, dimc, 0, 0);
         }
     }

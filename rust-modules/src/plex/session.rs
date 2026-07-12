@@ -10,16 +10,24 @@ use std::sync::Mutex;
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
 static CURRENT: Mutex<Option<UserRef>> = Mutex::new(None);
+/// Bumped on every [`set_current`]; per-frame readers (the Home profile chip) snapshot by
+/// generation instead of re-cloning the UserRef every frame.
+static CURRENT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Install the active profile for the UI (or clear it on sign-out with `None`).
 pub fn set_current(u: Option<UserRef>) {
     if let Ok(mut g) = CURRENT.lock() {
         *g = u;
     }
+    CURRENT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 /// The active profile (name + avatar), if any. Empty title = the owner with no Plex Home selection.
 pub fn current() -> Option<UserRef> {
     CURRENT.lock().ok().and_then(|g| g.clone())
+}
+/// The profile generation (see [`set_current`]).
+pub fn current_gen() -> u32 {
+    CURRENT_GEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// App data dir on the TV (confirmed writable at runtime). The app id is fixed for this build.

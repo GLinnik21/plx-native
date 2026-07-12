@@ -12,13 +12,11 @@
 
 mod client;
 mod models;
-mod params;
 
 // Op files below only add `impl Client { … }` blocks (Rust allows multiple impls of one
 // type across a crate) — declared here so those methods compile onto `Client`.
 mod hubs;
 mod library;
-mod timeline;
 mod transcoder;
 
 // The plex.tv ACCOUNT surface (login/discovery/home-users) — a separate service from the PMS
@@ -32,5 +30,3 @@ pub(crate) mod session;
 pub use client::{client, init, install, is_installed, Client, StreamUrl};
 #[allow(unused_imports)]
 pub use models::*;
-#[allow(unused_imports)]
-pub use params::*;

@@ -279,7 +279,8 @@ impl TableView {
                 trailing = cs + 14.0;
             }
             // reserve the inline-badge run so the label elides before it
-            let badge_reserve: f32 = row.badges.iter().map(|b| badge_width(b.text()) + 10.0).sum();
+            let badge_reserve: f32 =
+                row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text()) + 10.0).sum();
             // Single-line rows centre their label on the row by cap band. Two-line rows stack a
             // title over a detail sub-line: lay the pair out off both cap bands and centre it in the
             // tall row, with an explicit gap between the title baseline and the detail cap-top
@@ -307,7 +308,9 @@ impl TableView {
             }
             bx += 12.0;
             for b in row.badges.iter() {
-                bx += draw_badge(p, bx, bcy, b.text(), base, row_bg) + 10.0;
+                // the shared chip leaf, in this row's contextual colours (ink over pill/panel)
+                let sty = crate::ui::widgets::BadgeStyle::Outlined { col: base, bg: row_bg };
+                bx += crate::ui::widgets::badge(p, bx, bcy, b.text(), sty) + 10.0;
             }
             // detail sub-line, elided (long Cyrillic descriptors would run off the edge)
             if !row.detail.is_empty() {
@@ -337,27 +340,3 @@ impl TableView {
     }
 }
 
-/// pixel width a badge chip will occupy (kept in sync with draw_badge)
-fn badge_width(text: &str) -> f32 {
-    let sz = theme::size::CAPTION as f32;
-    text.chars().count() as f32 * (sz * 0.62) + 20.0
-}
-
-/// an OUTLINED chip with its LEFT edge at `x`, vertically centered on `cy`; returns its width.
-/// `col` is the border + text colour; `bg` fills the interior (the row background, so the outline
-/// reads clean over both the light pill and the dark panel). Mirrors the mockup's AD/FORCED chips.
-fn draw_badge(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], bg: [f32; 4]) -> f32 {
-    let sz = theme::size::CAPTION;
-    let w = badge_width(text);
-    let h = 34.0f32;
-    let bw = 2.0f32; // border width
-    let r = Rect::new(x, cy - h * 0.5, w, h);
-    p.rrect(r, 6.0, 6.0, col); // border
-    p.rrect(Rect::new(r.x + bw, r.y + bw, r.w - 2.0 * bw, r.h - 2.0 * bw), 5.0, 5.0, bg); // knockout
-    if let Ok(cs) = CString::new(text) {
-        // cap-band vertical centre on cy (layout ≠ paint — replaces the old ~0.58·sz guess)
-        let ty = crate::text::text_vcenter_y(sz, 1, cy);
-        p.text(cs.as_ptr(), x + w * 0.5, ty, sz, col, 1, 1);
-    }
-    w
-}

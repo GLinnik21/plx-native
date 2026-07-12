@@ -17,7 +17,7 @@ const SCR_H: f32 = 1080.0;
 const AA_BLEED: f32 = 1.0;
 
 const VS_SRC: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_rect;\nuniform vec2 u_screen;\nvarying vec2 v_uv;\nvoid main(){\n  v_uv = a_pos;\n  vec2 px = u_rect.xy + a_pos * u_rect.zw;\n  vec2 ndc = px / u_screen * 2.0 - 1.0;\n  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}\n";
-const FS_SRC: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec2 u_size;\nuniform float u_pad;\nuniform float u_radius;\nuniform vec4 u_colTop;\nuniform vec4 u_colBot;\nuniform float u_focus;\nuniform float u_shape;\nuniform float u_radR;\nfloat sdBox(vec2 p, vec2 b, float r){\n  vec2 q = abs(p) - b + vec2(r);\n  return length(max(q,0.0)) + min(max(q.x,q.y),0.0) - r;\n}\nvoid main(){\n  if (u_shape > 0.5) {\n    float tri = step(0.5*v_uv.x, v_uv.y) * step(v_uv.y, 1.0 - 0.5*v_uv.x);\n    gl_FragColor = vec4(u_colTop.rgb * tri, tri * u_colTop.a);\n    return;\n  }\n  if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {\n    gl_FragColor = mix(u_colTop, u_colBot, v_uv.y);\n    return;\n  }\n  vec2 p = (v_uv - 0.5) * u_size;\n  vec2 hsz = u_size * 0.5 - vec2(u_pad);\n  float rad = (p.x > 0.0) ? u_radR : u_radius;\n  float d = sdBox(p, hsz, rad);\n  vec4 fill = mix(u_colTop, u_colBot, v_uv.y);\n  float aFill = 1.0 - smoothstep(-1.0, 1.0, d);\n  vec3 rgb = fill.rgb * aFill;\n  float a = aFill * fill.a;\n  if (u_focus > 0.001) {\n    float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;\n    float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);\n    rgb += vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow;\n    a = max(a, max(ring, glow));\n  }\n  gl_FragColor = vec4(rgb, a);\n}\n";
+const FS_SRC: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec2 u_size;\nuniform float u_pad;\nuniform float u_radius;\nuniform vec4 u_colTop;\nuniform vec4 u_colBot;\nuniform float u_focus;\nuniform float u_radR;\nfloat sdBox(vec2 p, vec2 b, float r){\n  vec2 q = abs(p) - b + vec2(r);\n  return length(max(q,0.0)) + min(max(q.x,q.y),0.0) - r;\n}\nvoid main(){\n  if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {\n    gl_FragColor = mix(u_colTop, u_colBot, v_uv.y);\n    return;\n  }\n  vec2 p = (v_uv - 0.5) * u_size;\n  vec2 hsz = u_size * 0.5 - vec2(u_pad);\n  float rad = (p.x > 0.0) ? u_radR : u_radius;\n  float d = sdBox(p, hsz, rad);\n  vec4 fill = mix(u_colTop, u_colBot, v_uv.y);\n  float aFill = 1.0 - smoothstep(-1.0, 1.0, d);\n  vec3 rgb = fill.rgb * aFill;\n  float a = aFill * fill.a;\n  if (u_focus > 0.001) {\n    float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;\n    float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);\n    rgb += vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow;\n    a = max(a, max(ring, glow));\n  }\n  gl_FragColor = vec4(rgb, a);\n}\n";
 const FS_AMBIENT: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec4 u_atl, u_atr, u_abr, u_abl;\nvoid main(){\n  vec3 top = mix(u_atl.rgb, u_atr.rgb, v_uv.x);\n  vec3 bot = mix(u_abl.rgb, u_abr.rgb, v_uv.x);\n  gl_FragColor = vec4(mix(top, bot, v_uv.y), 1.0);\n}\n";
 const VS_IMG: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nvarying vec2 v_tuv;\nvoid main(){ v_tuv=a_pos; vec2 px=u_trect.xy+a_pos*u_trect.zw;\n  vec2 ndc=px/u_tscreen*2.0-1.0; gl_Position=vec4(ndc.x,-ndc.y,0.0,1.0); }\n";
 const FS_IMG: &CStr = c"precision mediump float;\nvarying vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tint;\nuniform vec2 u_isize;\nuniform float u_iradius;\nfloat sdBox(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+vec2(r);\n  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  vec4 c = texture2D(u_tex, v_tuv);\n  if (u_iradius < 0.5) {\n    gl_FragColor = vec4(c.rgb*u_tint.rgb, c.a*u_tint.a);\n    return;\n  }\n  vec2 p = (v_tuv-0.5)*u_isize;\n  float d = sdBox(p, u_isize*0.5, u_iradius);\n  float m = 1.0 - smoothstep(-1.0, 1.0, d);\n  gl_FragColor = vec4(c.rgb*u_tint.rgb, c.a*u_tint.a*m);\n}\n";
@@ -139,7 +139,6 @@ static mut LOC_RADIUS: c_int = 0;
 static mut LOC_COLTOP: c_int = 0;
 static mut LOC_COLBOT: c_int = 0;
 static mut LOC_FOCUS: c_int = 0;
-static mut LOC_SHAPE: c_int = 0;
 static mut LOC_RADR: c_int = 0;
 
 static mut APROG: c_uint = 0;
@@ -204,7 +203,6 @@ pub(crate) fn init_gl() {
         LOC_COLTOP = glGetUniformLocation(PROG, c"u_colTop".as_ptr());
         LOC_COLBOT = glGetUniformLocation(PROG, c"u_colBot".as_ptr());
         LOC_FOCUS = glGetUniformLocation(PROG, c"u_focus".as_ptr());
-        LOC_SHAPE = glGetUniformLocation(PROG, c"u_shape".as_ptr());
         LOC_RADR = glGetUniformLocation(PROG, c"u_radR".as_ptr());
         glUniform2f(LOC_SCREEN, SCR_W, SCR_H);
 
@@ -246,7 +244,6 @@ pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, t
         glUniform4fv(LOC_COLTOP, 1, top);
         glUniform4fv(LOC_COLBOT, 1, bot);
         glUniform1f(LOC_FOCUS, focus);
-        glUniform1f(LOC_SHAPE, 0.0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -278,19 +275,6 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
         glUniform4fv(LOC_COLTOP, 1, col);
         glUniform4fv(LOC_COLBOT, 1, col);
         glUniform1f(LOC_FOCUS, 0.0);
-        glUniform1f(LOC_SHAPE, 0.0);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    }
-}
-
-pub(crate) fn draw_ptri(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
-    unsafe {
-        glUniform4f(LOC_RECT, x, y, w, h);
-        glUniform2f(LOC_SIZE, w, h);
-        glUniform4fv(LOC_COLTOP, 1, col);
-        glUniform4fv(LOC_COLBOT, 1, col);
-        glUniform1f(LOC_FOCUS, 0.0);
-        glUniform1f(LOC_SHAPE, 1.0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -430,9 +414,4 @@ pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32,
     }
 }
 
-fn log(m: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
-        let _ = writeln!(f, "{m}");
-    }
-}
+use crate::log;

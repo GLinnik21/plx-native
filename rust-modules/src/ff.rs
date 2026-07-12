@@ -818,6 +818,34 @@ fn adts_freq_index(rate: c_int) -> Option<u8> {
     })
 }
 
+/// (freq_idx, chan_cfg) for the ADTS header, read from the stream's AudioSpecificConfig when
+/// present. HE-AAC is why this parses the ASC instead of trusting codecpar: the ASC's FIRST
+/// samplingFrequencyIndex is the AAC **core** rate (e.g. 24 kHz) while `codecpar.sample_rate`
+/// reports the SBR **output** rate (48 kHz). ADTS must carry the core rate (+ LC profile, SBR
+/// stays implicit) so the decoder up-samples through the SBR extension — a 48 kHz header makes
+/// it decode each frame as 1024 plain-LC samples into a 2048-sample slot, an audible gap/crackle
+/// every frame (Maxton Hall, HE-AAC 5.1). Falls back to codecpar for ASC-less streams.
+unsafe fn adts_params(acp: *const AVCodecParameters) -> Option<(u8, u8)> {
+    let chan_fallback = {
+        let ch = (*acp).channels;
+        if (1..=7).contains(&ch) { ch as u8 } else { 2 }
+    };
+    // AudioSpecificConfig: aot(5) freqIdx(4) [+24-bit rate if idx==15] chanCfg(4) …
+    let (ed, n) = ((*acp).extradata, (*acp).extradata_size);
+    if !ed.is_null() && n >= 2 {
+        let (b0, b1) = (*ed as u32, *ed.add(1) as u32);
+        let aot = (b0 >> 3) & 0x1F;
+        let freq_idx = (((b0 & 0x07) << 1) | (b1 >> 7)) as u8;
+        if aot != 31 && freq_idx <= 12 {
+            let chan = ((b1 >> 3) & 0x0F) as u8;
+            let ch = if (1..=7).contains(&chan) { chan } else { chan_fallback };
+            return Some((freq_idx, ch));
+        }
+        // escape-coded AOT / explicit 24-bit rate — exotic; fall through to codecpar
+    }
+    adts_freq_index((*acp).sample_rate).map(|fi| (fi, chan_fallback))
+}
+
 /// 7-byte ADTS header for a raw AAC frame of `payload_len` bytes. LG's Starfish decodes
 /// ADTS-framed AAC (ss4s: aacInfo format="adts"); mp4/matroska carry RAW AAC, so we reframe.
 /// Emits AAC-LC (ADTS profile 1 = object type 2 - 1); buffer fullness = VBR (0x7FF).
@@ -932,18 +960,15 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
             let aac_adts: Option<(u8, u8)> = if ai >= 0 {
                 let acp = stream_codecpar(*streams.add(ai as usize));
                 if (*acp).codec_id == AV_CODEC_ID_AAC {
-                    adts_freq_index((*acp).sample_rate).map(|fi| {
-                        let ch = (*acp).channels;
-                        (fi, if (1..=7).contains(&ch) { ch as u8 } else { 2 })
-                    })
+                    adts_params(acp)
                 } else {
                     None
                 }
             } else {
                 None
             };
-            if aac_adts.is_some() {
-                crate::player::log("ff: AAC → ADTS reframing on");
+            if let Some((fi, ch)) = aac_adts {
+                crate::player::log(&format!("ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"));
             }
             let dur = (*fmt).duration;
             if dur > 0 {
@@ -1098,9 +1123,17 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                         // 10-20s lag). Decoding all tracks means the current cue is already in the
                         // store on enable/switch. Keyed by sub_pos (== desired_sub_idx domain); the
                         // renderer filters by selection. RAM is bounded by the store's byte budget.
-                        let dec = sub_streams[sub_pos].2;
-                        if !dec.is_null() {
-                            decode_bitmap_cue(dec, pkt, sub_pos as c_int, *streams.add(si as usize));
+                        //
+                        // GATED on subs being ON at all: with subtitles Off (the common case) the
+                        // continuous per-display-set RLE decode + the up-to-24MB RGBA store were
+                        // pure waste on the demux core during 4K playback. Turning subs on starts
+                        // decoding from the current read position — a switch between two IMAGE
+                        // tracks stays instant; only the off→on moment can wait for the next cue.
+                        if crate::player::desired_sub_idx() >= 0 {
+                            let dec = sub_streams[sub_pos].2;
+                            if !dec.is_null() {
+                                decode_bitmap_cue(dec, pkt, sub_pos as c_int, *streams.add(si as usize));
+                            }
                         }
                     } else {
                         let sst = *streams.add(si as usize);
@@ -1159,10 +1192,10 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
         let sb = SHARED.seek_byte.swap(-1, Ordering::Acquire);
         if sb >= 0 {
             if let Some(nu) = SHARED.next_url.lock().unwrap().take() {
-                let (h, p, pa) = crate::player::engine::parse_stream_url(&nu);
-                host_c = CString::new(h).unwrap_or_default();
-                path_c = CString::new(pa).unwrap_or_default();
-                port = p;
+                let su = crate::plex::StreamUrl::parse(&nu);
+                host_c = CString::new(su.host).unwrap_or_default();
+                path_c = CString::new(su.path).unwrap_or_default();
+                port = su.port;
                 let _ = SHARED.reparse_next.swap(false, Ordering::Acquire);
                 crate::player::log("ff: seek → new transcode url (&offset)");
                 continue 'outer;
