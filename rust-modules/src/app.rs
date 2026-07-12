@@ -250,6 +250,7 @@ pub extern "C" fn plex_run(
         crate::gfx::init_gl();
         crate::text::init_text();
         crate::gfx::init_image();
+        crate::net::global_init(); // one-time libcurl init (main thread) before any threaded HTTPS call
 
         // Effective PMS token: the one compiled into the binary (owner), unless the dev trigger
         // /tmp/poc-token holds an override — used by the regression harness to run as the Guest
@@ -265,27 +266,63 @@ pub extern "C" fn plex_run(
                 _ => compiled,
             }
         };
-        // Install the process-wide typed Plex client (the read data layer — pms/metadata/
-        // posters — reads this singleton instead of threading host/port/token). Must precede
-        // the first fetch. route::CFG keeps its own copy for the playback layer (engine's
-        // timeline reporter still reads route::config()).
         let host_s = std::ffi::CStr::from_ptr(pms_host).to_string_lossy().into_owned();
-        crate::plex::init(&host_s, pms_port, &eff_token);
+        let demo_s = std::ffi::CStr::from_ptr(demo_url).to_string_lossy().into_owned();
 
-        // fetch the catalog once, then spawn the poster workers
-        let nmov = crate::pms::pms_fetch_hubs();
-        log(&format!("pms: nmovies={nmov}"));
+        // Install the PMS read-layer client (singleton) + playback config, then fetch the catalog.
+        // Used by the boot gate and again when a login resolves; host/port fix on first install, a
+        // later call just swaps the token (profile switch). route::CFG keeps the playback copy.
+        let install_pms = |host: &str, port: c_int, token: &str, demo: &str| {
+            crate::plex::install(host, port, token);
+            crate::route::set_config(host, port, token, demo);
+            let nmov = crate::pms::pms_fetch_hubs();
+            log(&format!("pms: nmovies={nmov}"));
+        };
+
+        // UI infra + poster workers always come up — the login/profiles screens use them too.
         crate::posters::posters_init();
-        crate::route::set_config(
-            &host_s,
-            pms_port,
-            &eff_token,
-            &std::ffi::CStr::from_ptr(demo_url).to_string_lossy(),
-        );
-
         crate::ui::home::home_init();
+        crate::ui::login::init();
+        crate::ui::profiles::init();
+
+        // Boot gate: a stored session (offline-capable LAN server) → Home; else a compiled/override
+        // token (dev + the test harness) → Home; else no creds → the QR login flow. /tmp/poc-login
+        // forces the login screen even when a token exists (to exercise the flow on demand).
+        let session = crate::plex::session::load();
+        let force_login = std::path::Path::new("/tmp/poc-login").exists();
+        let start_at_login = if !force_login && session.can_go_local() {
+            install_pms(&session.server.address, session.server.port as c_int, session.pms_token(), &demo_s);
+            crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
+            log("boot: stored session — local server (offline-capable)");
+            false
+        } else if !force_login && !eff_token.is_empty() {
+            install_pms(&host_s, pms_port, &eff_token, &demo_s);
+            false
+        } else {
+            crate::auth::start_login();
+            log("boot: no session — starting QR login");
+            true
+        };
         crate::player::acb_init();
         crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/poc-ffprobe ABI probe
+        // dev: /tmp/poc-logintest validates the plex.tv account path end-to-end on the device — a
+        // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
+        // public pin id + code length + that authToken is still null (never a token/secret).
+        if std::path::Path::new("/tmp/poc-logintest").exists() {
+            std::thread::spawn(|| {
+                let sess = crate::plex::session::load();
+                let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
+                match ac.create_pin() {
+                    Some(p) => log(&format!(
+                        "logintest: create_pin ok id={} code_len={} authToken_null={}",
+                        p.id,
+                        p.code.len(),
+                        p.auth_token.is_none()
+                    )),
+                    None => log("logintest: create_pin FAILED (transport/TLS/link/deser)"),
+                }
+            });
+        }
         // dev: the animation-diagnostic overlay is OFF by default; /tmp/poc-anim enables it (its
         // trace goes to /tmp/poc-anim.log, a separate stream from the main event log)
         if std::path::Path::new("/tmp/poc-anim").exists() {
@@ -358,11 +395,20 @@ pub extern "C" fn plex_run(
         }
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Route {
+            Login,    // plex.tv sign-in (QR) — shown when there's no usable session
+            Profiles, // "who's watching" Plex Home picker
             Home,
+            Account,  // Home + the top-left profile menu popover (change profile / sign out)
             Detail,
             Player { overlay: Overlay },
         }
-        let mut route = Route::Home;
+        // Initial route from the boot gate: Login when we have no usable creds, else Home.
+        let mut route = if start_at_login { Route::Login } else { Route::Home };
+        // dev: /tmp/poc-acct auto-opens the profile menu (headless capture of the popover).
+        if std::path::Path::new("/tmp/poc-acct").exists() && matches!(route, Route::Home) {
+            crate::ui::account_menu::open();
+            route = Route::Account;
+        }
         // Return target for playback started from a detail page: Stop/BACK/EOS from such a session
         // returns to that detail page, else home. Kept OUTSIDE Route (like bg_was_playing keeps the
         // suspended session) — it's navigation history, not the current node, and Route makes
@@ -486,6 +532,38 @@ pub extern "C" fn plex_run(
                     }
                     last_input = SDL_GetTicks();
                     hud_dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+                    // onboarding screens (login / who's-watching) own every fresh key — nothing is
+                    // behind them, so route the key to the active screen and skip all other handlers.
+                    if matches!(route, Route::Login | Route::Profiles) {
+                        if matches!(route, Route::Profiles) {
+                            crate::ui::profiles::key(sym, wcode);
+                        } else {
+                            crate::ui::login::key(sym, wcode);
+                        }
+                        continue;
+                    }
+                    // the Home profile menu is modal — rows nav, OK commits, BACK closes to Home.
+                    if matches!(route, Route::Account) {
+                        if sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT {
+                            match crate::ui::account_menu::on_ok() {
+                                crate::ui::account_menu::Action::ChangeProfile => {
+                                    crate::auth::start_switch();
+                                    route = Route::Profiles;
+                                }
+                                crate::ui::account_menu::Action::SignOut => {
+                                    crate::auth::sign_out();
+                                    route = Route::Login;
+                                }
+                                crate::ui::account_menu::Action::None => route = Route::Home,
+                            }
+                        } else if sym == SDLK_ESCAPE || sym == 'q' as u32 || wcode == 461 || wcode == 482 {
+                            crate::ui::account_menu::close();
+                            route = Route::Home;
+                        } else {
+                            crate::ui::account_menu::move_focus(sym as c_int);
+                        }
+                        continue;
+                    }
                     // the in-player track menu is modal — it swallows every key while open
                     if matches!(route, Route::Player { overlay: Overlay::Menu }) {
                         if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
@@ -644,6 +722,11 @@ pub extern "C" fn plex_run(
                             if sym == SDLK_DOWN {
                                 set_snap(1.0);
                                 set_fr(0);
+                            } else if sym == SDLK_LEFT || sym == SDLK_RIGHT {
+                                crate::ui::home::home_hero_key(sym); // page the rotating hero
+                            } else if sym == SDLK_UP {
+                                crate::ui::account_menu::open(); // hero view: UP opens the profile menu
+                                route = Route::Account;
                             }
                         } else if sym == SDLK_UP && g_fr() == 0 {
                             set_snap(0.0);
@@ -696,9 +779,12 @@ pub extern "C" fn plex_run(
                                 set_hud(last_input + 4500);
                             }
                         } else {
-                            // home: route by the focused hub item's type
-                            let m = if g_snap() < 0.5 {
-                                crate::ui::home::movie_at(0, 0)
+                            // home: route by the focused hub item's type. Gate on the spring
+                            // POSITION (what's on screen), not the snap target: a DOWN press flips
+                            // the target to grid instantly while the hero stays visible ~130ms, so a
+                            // quick DOWN→OK must still launch the hero shown, not the grid's card 0.
+                            let m = if crate::ui::home::snap_pos() < 0.5 {
+                                crate::ui::home::hero_item()
                             } else {
                                 crate::ui::home::movie_at(g_fr(), g_fc())
                             };
@@ -928,6 +1014,19 @@ pub extern "C" fn plex_run(
                             }
                         }
                         set_hud(last_input + 4500);
+                    } else if matches!(route, Route::Home) {
+                        let cx = rd_i32(&ev, 20) as f32;
+                        let cy = rd_i32(&ev, 24) as f32;
+                        if crate::ui::home::profile_chip_click(cx, cy) {
+                            crate::ui::account_menu::open(); // top-left avatar → profile menu
+                            route = Route::Account;
+                        } else if g_snap() < 0.5 {
+                            // hero visible: a pointer click on the flip chevron rotates the carousel
+                            crate::ui::home::hero_chevron_click(cx, cy);
+                        }
+                    } else if matches!(route, Route::Account) {
+                        crate::ui::account_menu::close(); // a click anywhere dismisses the popover
+                        route = Route::Home;
                     }
                 } else if et == SDL_MOUSEBUTTONUP {
                     last_input = SDL_GetTicks();
@@ -980,6 +1079,12 @@ pub extern "C" fn plex_run(
                 if std::path::Path::new("/tmp/poc-grid").exists() {
                     set_snap(1.0);
                     set_fr(0);
+                }
+                // dev: /tmp/poc-heroidx=<n> jumps the rotating hero to pool index n (flip capture)
+                if let Ok(s) = std::fs::read_to_string("/tmp/poc-heroidx") {
+                    if let Ok(n) = s.trim().parse::<c_int>() {
+                        crate::ui::home::set_hero_idx(n);
+                    }
                 }
             }
             // dev: /tmp/poc-detail=<ratingKey> opens that catalog item's detail page once
@@ -1159,6 +1264,7 @@ pub extern "C" fn plex_run(
                 last_rep = now;
                 match route {
                     Route::Home if g_snap() > 0.5 => crate::ui::home::home_move_focus(held_sym),
+                    Route::Home => crate::ui::home::home_hero_key(held_sym), // hero view: hold LEFT/RIGHT pages the billboard
                     Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
                     Route::Player { overlay: Overlay::Menu } => {
                         crate::ui::track_menu::move_focus(held_sym as c_int);
@@ -1249,7 +1355,35 @@ pub extern "C" fn plex_run(
             };
             prev = now;
 
-            crate::ui::home::home_update(dt);
+            // login flow: install resolved creds on the MAIN thread, then follow the flow phase →
+            // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
+            if matches!(route, Route::Login | Route::Profiles) {
+                if let Some(c) = crate::auth::take_ready() {
+                    install_pms(&c.host, c.port, &c.token, &demo_s);
+                    log("login: server installed — entering Home");
+                    route = Route::Home;
+                } else {
+                    match crate::auth::phase() {
+                        crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
+                            if route != Route::Profiles {
+                                crate::ui::profiles::enter();
+                            }
+                            route = Route::Profiles;
+                        }
+                        _ => route = Route::Login,
+                    }
+                }
+            }
+            if matches!(route, Route::Login) {
+                crate::ui::login::update(dt);
+            } else if matches!(route, Route::Profiles) {
+                crate::ui::profiles::update(dt);
+            } else {
+                crate::ui::home::home_update(dt);
+            }
+            if matches!(route, Route::Account) {
+                crate::ui::account_menu::update(dt);
+            }
             if matches!(route, Route::Detail) {
                 // dev: poc-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
                 // transition (the settled ends already hold 60).
@@ -1307,10 +1441,17 @@ pub extern "C" fn plex_run(
                 }
                 continue;
             }
-            if matches!(route, Route::Detail) {
+            if matches!(route, Route::Login) {
+                crate::ui::login::draw();
+            } else if matches!(route, Route::Profiles) {
+                crate::ui::profiles::draw();
+            } else if matches!(route, Route::Detail) {
                 crate::ui::detail::draw();
             } else {
                 crate::ui::home::home_draw();
+            }
+            if matches!(route, Route::Account) {
+                crate::ui::account_menu::draw(); // profile popover over Home
             }
             let fps_col = [0.4f32, 1.0, 0.55, 1.0];
             crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
@@ -1319,7 +1460,14 @@ pub extern "C" fn plex_run(
             crate::ui::profile::frame_end();
             if fps_tick(&mut frames_ct, &mut fps_t, &mut fps_shown, now) {
                 // once/sec render heartbeat — greppable without reading the on-screen counter
-                log(&format!("FPS={fps_shown} route={}", if matches!(route, Route::Detail) { "detail" } else { "home" }));
+                let rn = match route {
+                    Route::Login => "login",
+                    Route::Profiles => "profiles",
+                    Route::Account => "account",
+                    Route::Detail => "detail",
+                    _ => "home",
+                };
+                log(&format!("FPS={fps_shown} route={rn}"));
             }
         }
 

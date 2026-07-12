@@ -83,16 +83,24 @@ pub(crate) fn cfield(b: &[u8]) -> String {
 pub struct CircleButton {
     pub frame: Rect,
     pub glyph: *const c_char,
+    pub icon: Option<crate::ui::icons::Icon>, // vector glyph; overrides the text glyph when set
     pub focused: bool,
     pub style: ControlStyle,
 }
 impl CircleButton {
     pub fn new(glyph: *const c_char) -> Self {
-        Self { frame: Rect::new(0.0, 0.0, 60.0, 60.0), glyph, focused: false, style: ControlStyle::Accent }
+        Self { frame: Rect::new(0.0, 0.0, 60.0, 60.0), glyph, icon: None, focused: false, style: ControlStyle::Accent }
     }
     pub fn at(mut self, x: f32, y: f32) -> Self {
         self.frame.x = x;
         self.frame.y = y;
+        self
+    }
+    /// Render a vector icon centred on the disc instead of the text glyph (e.g. a real
+    /// chevron rather than a ">" character). Pass a bare-stroke icon — one that carries its
+    /// own outline circle (Info) would double-ring against the disc face.
+    pub fn icon(mut self, i: crate::ui::icons::Icon) -> Self {
+        self.icon = Some(i);
         self
     }
     pub fn focused(mut self, f: bool) -> Self {
@@ -109,10 +117,18 @@ impl View for CircleButton {
         let r = self.frame;
         let (face, ink) = self.style.colors(self.focused);
         p.rect(r, r.w * 0.5, face, face, 0.0);
-        // glyph centred on the disc by its cap band (layout ≠ paint), not a hand-tuned y
-        crate::ui::label::Label::new(self.glyph, crate::ui::theme::size::HEADLINE, ink)
-            .h(crate::ui::label::HAlign::Center)
-            .draw(p, r);
+        if let Some(icon) = self.icon {
+            // vector glyph centred on the disc. Stroke icons (chevron) under-fill their own
+            // viewBox, so the box is sized generously (0.66·disc) to read at least as large as the
+            // pill's play glyph and the sibling +/i text glyphs — not the tight cap band.
+            let d = r.w * 0.66;
+            crate::ui::icons::draw(p, icon, Rect::new(r.cx() - d * 0.5, r.y + (r.h - d) * 0.5, d, d), ink);
+        } else {
+            // text glyph centred on the disc by its cap band (layout ≠ paint), not a hand-tuned y
+            crate::ui::label::Label::new(self.glyph, crate::ui::theme::size::HEADLINE, ink)
+                .h(crate::ui::label::HAlign::Center)
+                .draw(p, r);
+        }
     }
     fn measure(&self) -> Size {
         Size { w: self.frame.w, h: self.frame.h }
@@ -130,6 +146,11 @@ impl PageDots {
     pub fn new(count: usize) -> Self {
         Self { count, active: 0, x: 0.0, y: 0.0 }
     }
+    /// the lit dot (0-based); clamped into range so a stale index degrades to the last dot.
+    pub fn active(mut self, i: usize) -> Self {
+        self.active = if self.count == 0 { 0 } else { i.min(self.count - 1) };
+        self
+    }
     pub fn at(mut self, x: f32, y: f32) -> Self {
         self.x = x;
         self.y = y;
@@ -138,11 +159,20 @@ impl PageDots {
 }
 impl View for PageDots {
     fn draw(&self, _e: &Env, p: Painter) {
+        const GAP: f32 = 12.0; // equal edge-gap between every element (dot↔dot and dot↔pill)
+        const DOT: f32 = 10.0; // inactive diameter (also the pill height)
+        const PILL: f32 = 24.0; // active pill width
+        // Advance by each element's own width + a fixed gap, so the gaps are equal even around the
+        // wider active pill (equal centre-pitch would squeeze the pill's neighbours). The pill just
+        // takes more width and nudges the trailing dots along.
+        let mut x = self.x;
         for d in 0..self.count {
-            let dw = if d == self.active { 26.0 } else { 11.0 };
-            let a = if d == self.active { 0.95 } else { 0.35 };
-            let dc = [0.85, 0.87, 0.9, a];
-            p.rect(Rect::new(self.x + d as f32 * 20.0, self.y, dw, 11.0), 5.5, dc, dc, 0.0);
+            let active = d == self.active;
+            let w = if active { PILL } else { DOT };
+            // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
+            let col = crate::ui::theme::with_a(crate::ui::theme::TEXT_PRIMARY, if active { 1.0 } else { 0.35 });
+            p.rect(Rect::new(x, self.y, w, DOT), DOT * 0.5, col, col, 0.0);
+            x += w + GAP;
         }
     }
 }

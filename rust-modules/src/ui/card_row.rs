@@ -33,6 +33,9 @@ pub(crate) struct RowStyle {
     pub ring_pad: f32,
     pub k_scale: f32,
     pub k_scroll: f32,
+    /// Circular tiles (cast headshots, who's-watching avatars) vs rounded-rect posters. A circle is
+    /// just a tile drawn at `radius = width/2`; the shared springs/scroll/ring are identical.
+    pub circular: bool,
 }
 impl RowStyle {
     /// The home shelf's portrait-poster row: 1.055 focus pop, the big glow ring, animated scroll.
@@ -46,11 +49,50 @@ impl RowStyle {
         ring_pad: GLOW_PAD,
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
+        circular: false,
+    };
+    /// Detail "Cast & Crew": circular headshots, a gentle pop, the tight strip ring. Same motion as
+    /// HOME (spring magnification + scroll), so cast animates like the poster shelves.
+    pub(crate) const CAST: RowStyle = RowStyle {
+        w: 190.0,
+        h: 190.0,
+        gap: 60.0,
+        margin_x: MARGIN_X,
+        radius: 95.0, // = w/2 (circle); draw_* recomputes per-rect anyway when `circular`
+        focus_scale: 1.06,
+        ring_pad: theme::CARD_RING_PAD_STRIP,
+        k_scale: K_SCALE,
+        k_scroll: K_SCROLL,
+        circular: true,
+    };
+    /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
+    /// caller (a short roster), so the scroll spring stays put unless the row overflows.
+    pub(crate) const PROFILES: RowStyle = RowStyle {
+        w: 220.0,
+        h: 220.0,
+        gap: 72.0,
+        margin_x: MARGIN_X,
+        radius: 110.0,
+        focus_scale: 1.08,
+        ring_pad: theme::CARD_RING_PAD_STRIP,
+        k_scale: K_SCALE,
+        k_scroll: K_SCROLL,
+        circular: true,
     };
     /// ring focus scalar denominator — `(s-1)/ring_denom` maps scale∈[1, focus_scale] to [0, 1].
     #[inline]
     fn ring_denom(&self) -> f32 {
         self.focus_scale - 1.0
+    }
+    /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
+    /// style's fixed radius scaled with the focus pop.
+    #[inline]
+    fn tile_radius(&self, rect: Rect, s: f32) -> f32 {
+        if self.circular {
+            rect.w * 0.5
+        } else {
+            self.radius * s
+        }
     }
 }
 
@@ -96,7 +138,7 @@ impl CardRow {
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
 /// already-scaled rect; `s` scales the corner radius. (The home grid's non-focused cell, verbatim.)
 pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle, resume: Option<f32>) {
-    card(p, rect, art, sty.radius * s, false, 1.0, None);
+    card(p, rect, art, sty.tile_radius(rect, s), false, 1.0, None);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac);
     }
@@ -106,8 +148,9 @@ pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle
 /// ring, an optional resume bar, then the centered title (skipped when `title` is null). (The home
 /// grid's focused-last cell, verbatim.)
 pub(crate) fn draw_focused(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle, resume: Option<f32>, title: *const c_char) {
-    card(p, rect, art, sty.radius * s, false, 1.0, None);
-    p.ring(rect, sty.ring_pad, sty.radius * s, (s - 1.0) / sty.ring_denom());
+    let rad = sty.tile_radius(rect, s);
+    card(p, rect, art, rad, false, 1.0, None);
+    p.ring(rect, sty.ring_pad, rad, (s - 1.0) / sty.ring_denom());
     if let Some(frac) = resume {
         resume_bar(p, rect, frac);
     }

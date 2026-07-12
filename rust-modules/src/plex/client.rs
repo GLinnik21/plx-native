@@ -11,7 +11,7 @@
 //! files live in sibling submodules and add `impl Client` blocks, so they need to read the
 //! identity fields and call the helpers — but nothing OUTSIDE `plex` can reach them.
 use super::models::{Envelope, MediaContainer};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 const ACCEPT_JSON: &str = "Accept: application/json\r\n";
 
@@ -21,7 +21,10 @@ const ACCEPT_JSON: &str = "Accept: application/json\r\n";
 pub struct Client {
     pub(super) host: String,      // "192.168.0.3" (numeric; passed straight to http_get/http_open)
     pub(super) port: i32,         // 32400
-    pub(super) token: String,     // X-Plex-Token value
+    // X-Plex-Token value. Interior-mutable because the token changes at runtime after boot: it's
+    // installed once we've logged in, and swapped when the user switches Plex Home profile (same
+    // server, different per-user token). Read in exactly one place (`with_token`).
+    pub(super) token: RwLock<String>,
     pub(super) client_id: String, // X-Plex-Client-Identifier — stable device id
     pub(super) product: String,   // "plexpoc"
     pub(super) version: String,   // "1"
@@ -33,11 +36,19 @@ impl Client {
         Client {
             host: host.to_owned(),
             port,
-            token: token.to_owned(),
+            token: RwLock::new(token.to_owned()),
             client_id: "com.glin.plexpoc".into(),
             product: "plexpoc".into(),
             version: "1".into(),
             platform: "Generic".into(),
+        }
+    }
+
+    /// Swap the `X-Plex-Token` at runtime (Plex Home profile switch — same server, new per-user
+    /// token). Cheap; the next request picks it up via [`Client::with_token`].
+    pub fn set_token(&self, token: &str) {
+        if let Ok(mut g) = self.token.write() {
+            *g = token.to_owned();
         }
     }
     pub fn host(&self) -> &str {
@@ -104,7 +115,8 @@ impl Client {
     /// THE token choke point. Appends `X-Plex-Token=…` with the right separator.
     pub(super) fn with_token(&self, path: &str) -> String {
         let sep = if path.contains('?') { '&' } else { '?' };
-        format!("{path}{sep}X-Plex-Token={}", self.token)
+        let tok = self.token.read().map(|g| g.clone()).unwrap_or_default();
+        format!("{path}{sep}X-Plex-Token={tok}")
     }
 }
 
@@ -114,6 +126,21 @@ static PLEX: OnceLock<Client> = OnceLock::new();
 /// Install the process-wide `Client` (call once at boot). No-op if already set.
 pub fn init(host: &str, port: i32, token: &str) {
     let _ = PLEX.set(Client::new(host, port, token));
+}
+/// Install for a (re)login / profile switch. First call sets the singleton; a later call keeps the
+/// same server (host/port are fixed once set) and just swaps the token — so the login flow can set
+/// the server token, then a Plex Home profile pick swaps in that user's token. Thread-safe.
+pub fn install(host: &str, port: i32, token: &str) {
+    match PLEX.get() {
+        None => {
+            let _ = PLEX.set(Client::new(host, port, token));
+        }
+        Some(c) => c.set_token(token),
+    }
+}
+/// Whether the process-wide client has been installed yet (guards PMS reads before login).
+pub fn is_installed() -> bool {
+    PLEX.get().is_some()
 }
 /// The process-wide `Client`. Panics if `init` was never called.
 pub fn client() -> &'static Client {
