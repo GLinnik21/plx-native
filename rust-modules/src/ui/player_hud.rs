@@ -5,6 +5,7 @@
 //! primitives (they composite directly over the video plane, outside the transport HUD).
 #![allow(dead_code)]
 use crate::gfx::{delete_tex, upload_rgba};
+use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::theme;
 use crate::ui::widgets::{Spinner, TabPill, TransportButton};
 use crate::ui::{Env, Painter, Rect, View};
@@ -17,23 +18,19 @@ fn hud_env() -> Env {
     Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 }
 }
 
-const SCR_W: f32 = 1920.0;
-const SCR_H: f32 = 1080.0;
-
 // The now-playing title under the playbar is a HUD *display* title — deliberately larger than
 // `theme::size::TITLE`, so it sits OUTSIDE the shared type scale as a documented carve-out (like the
 // subtitle caption in `draw_subtitles`). Both are media chrome with their own legibility contract and
 // both are already well above the couch floor; they're named here rather than left as bare literals.
 const HUD_TITLE_SZ: i32 = 54;
 
+/// the shared playback clock ([`crate::ui::fmt::clock`]) with the HUD's leading '-' for remaining
 fn fmt_time(ns: i64, neg: bool) -> String {
-    let t = if ns > 0 { ns / 1_000_000_000 } else { 0 };
-    let (h, m, s) = ((t / 3600) as i32, ((t / 60) % 60) as i32, (t % 60) as i32);
-    let sign = if neg { "-" } else { "" };
-    if h > 0 {
-        format!("{sign}{h}:{m:02}:{s:02}")
+    let c = crate::ui::fmt::clock(ns / 1_000_000);
+    if neg {
+        format!("-{c}")
     } else {
-        format!("{sign}{m}:{s:02}")
+        c
     }
 }
 
@@ -173,6 +170,19 @@ pub(crate) fn icon_hit(cx: f32, cy: f32) -> Option<i32> {
         let x = btn_x(idx);
         cx >= x && cx <= x + BTN_S
     })
+}
+
+/// Pointer hit-test for the scrub-bar grab band (the scrubber's shared geometry, like `icon_hit`
+/// for the buttons): `Some(frac 0..1 along the bar)` when (cx,cy) lands in the band. The band is
+/// deliberately much taller than the bar itself — a pointer grab zone.
+pub(crate) fn scrub_hit(cx: f32, cy: f32) -> Option<f32> {
+    let band = cy > SCR_H - 270.0 && cy < SCR_H - 110.0;
+    (band && cx >= SB_X && cx <= SB_X + sb_w()).then(|| ((cx - SB_X) / sb_w()).clamp(0.0, 1.0))
+}
+/// frac along the bar for a drag at `mx` (x only — an engaged drag tracks the pointer even when
+/// it wanders off the band vertically).
+pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
+    ((mx - SB_X) / sb_w()).clamp(0.0, 1.0)
 }
 
 /// draw a clock string with its ':' anchored at `cx` (so digit-width changes never shift it),

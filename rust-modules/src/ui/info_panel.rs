@@ -4,17 +4,16 @@
 //! while it's open and hides the normal transport middle behind it. Data from crate::metadata.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{SDLK_DOWN, SDLK_UP};
+use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::icons::Icon;
+use crate::ui::popover::Popover;
+use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::resolve_tex;
-use crate::ui::{Painter, Rect, Spring, View};
+use crate::ui::widgets::{badge, resolve_tex, BadgeStyle};
+use crate::ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
-
-const SCR_W: f32 = 1920.0;
-const SCR_H: f32 = 1080.0;
 
 pub enum InfoAction {
     None,
@@ -22,25 +21,22 @@ pub enum InfoAction {
     GoToDetail(String), // rk to open: the show (episode) or the movie
 }
 
-static mut OPEN: bool = false;
+static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut FOCUS: c_int = 0; // index into the action-button column
-static mut APPEAR: Spring = Spring::at(0.0);
+
+fn pop() -> &'static mut Popover {
+    unsafe { &mut *addr_of_mut!(POP) }
+}
 
 pub(crate) fn is_open() -> bool {
-    unsafe { addr_of!(OPEN).read() }
+    unsafe { (*addr_of!(POP)).is_open() }
 }
 pub(crate) fn open() {
-    unsafe {
-        addr_of_mut!(FOCUS).write(0);
-        addr_of_mut!(APPEAR).write(Spring::at(0.0));
-        addr_of_mut!(OPEN).write(true);
-    }
+    unsafe { addr_of_mut!(FOCUS).write(0) }
+    pop().open();
 }
 pub(crate) fn close() {
-    unsafe { addr_of_mut!(OPEN).write(false) }
-}
-pub(crate) fn reset() {
-    close();
+    pop().close();
 }
 
 /// whether the playing item is an episode (→ "Go to Show") rather than a movie ("Go to Movie")
@@ -95,121 +91,21 @@ pub(crate) fn on_ok() -> InfoAction {
 }
 
 pub(crate) fn update(dt: f32) {
-    if !is_open() {
-        return;
-    }
-    unsafe { &mut *addr_of_mut!(APPEAR) }.step(1.0, 300.0, dt);
+    pop().update(dt);
 }
 
 // ---- helpers ----
-fn fmt_dur(ms: i64) -> String {
-    let mins = (ms / 60_000).max(0);
-    let (h, m) = (mins / 60, mins % 60);
-    if h > 0 {
-        format!("{h}h {m}m")
-    } else {
-        format!("{m}m")
-    }
+
+/// A premium audio format worth badging on the meta line, named by the ONE codec map
+/// ([`metadata::friendly_codec`]); everyday codecs (AAC/MP3/…) get no badge.
+fn audio_badge(codec: &str) -> Option<String> {
+    matches!(codec.to_ascii_lowercase().as_str(), "truehd" | "eac3" | "ec-3" | "ac3" | "dts" | "dca")
+        .then(|| metadata::friendly_codec(codec))
 }
 
-/// a friendly one-word audio tag for the badge row ("Dolby TrueHD", "Dolby Digital+", …)
-fn audio_badge(codec: &str) -> Option<&'static str> {
-    match codec.to_ascii_lowercase().as_str() {
-        "truehd" => Some("Dolby TrueHD"),
-        "eac3" | "ec-3" => Some("Dolby Digital+"),
-        "ac3" => Some("Dolby Digital"),
-        "dts" | "dca" => Some("DTS"),
-        _ => None,
-    }
-}
-
-/// an outlined metadata chip at left edge `x`, centered on `cy`; returns its width. Mirrors the
-/// mockup's 18+/4K/CC pills (2px border, radius 6).
+/// the shared outlined chip in this panel's colours (TEXT_HEADING border/label over the card)
 fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
-    let sz = theme::size::CAPTION;
-    let w = text.chars().count() as f32 * (sz as f32 * 0.60) + 22.0;
-    let h = 34.0f32;
-    let col = theme::TEXT_HEADING;
-    let border = theme::OVERLAY_BORDER;
-    let r = Rect::new(x, cy - h * 0.5, w, h);
-    p.rrect(r, 6.0, 6.0, border);
-    p.rrect(Rect::new(r.x + 2.0, r.y + 2.0, r.w - 4.0, r.h - 4.0), 5.0, 5.0, theme::SURFACE_PANEL);
-    if let Ok(cs) = CString::new(text) {
-        let ty = crate::text::text_vcenter_y(sz, 1, cy);
-        p.text(cs.as_ptr(), x + w * 0.5, ty, sz, col, 1, 1);
-    }
-    w
-}
-
-/// wrap `s` to two lines fitting `budget` px at `sz` (word boundary), eliding the second.
-fn wrap2(s: &str, budget: f32, sz: i32) -> (String, String) {
-    let fits = |t: &str| {
-        CString::new(t).ok().map(|c| crate::text::text_width(c.as_ptr(), sz, 0) <= budget).unwrap_or(true)
-    };
-    if fits(s) {
-        return (s.to_string(), String::new());
-    }
-    let mut l1 = String::new();
-    let mut rest = String::new();
-    let mut in_second = false;
-    for w in s.split_whitespace() {
-        if in_second {
-            rest.push_str(w);
-            rest.push(' ');
-            continue;
-        }
-        let cand = if l1.is_empty() { w.to_string() } else { format!("{l1} {w}") };
-        if fits(&cand) {
-            l1 = cand;
-        } else {
-            in_second = true;
-            rest.push_str(w);
-            rest.push(' ');
-        }
-    }
-    // line 2: the remaining words, elided via the shared memoised truncation
-    let l2 = crate::text::elide(rest.trim(), budget, sz, 0, false);
-    (l1, l2)
-}
-
-// Memoised title/synopsis wrap. `elide`/`wrap2` above each measure MANY throwaway candidate strings
-// through `text_width` — a `TTF_RenderUTF8_Blended` + full-surface ink scan + GL upload PER candidate.
-// Re-running that every frame (the panel's whole open lifetime) thrashed the glyph cache and dropped
-// the panel to ~1fps. The wrapped result only changes when the title/summary/column-width do, so cache
-// it and every subsequent frame is three cheap string clones.
-struct WrapCache {
-    title_src: String,
-    summary_src: String,
-    tw: f32,
-    title: String,
-    syn1: String,
-    syn2: String,
-}
-static mut WRAP: Option<WrapCache> = None;
-
-fn wrapped(title_src: &str, summary_src: &str, tw: f32) -> (String, String, String) {
-    unsafe {
-        if let Some(c) = &*addr_of!(WRAP) {
-            if c.title_src == title_src && c.summary_src == summary_src && (c.tw - tw).abs() < 0.5 {
-                return (c.title.clone(), c.syn1.clone(), c.syn2.clone());
-            }
-        }
-        let title = crate::text::elide(title_src, tw, theme::size::TITLE, 1, false);
-        let (syn1, syn2) = if summary_src.is_empty() {
-            (String::new(), String::new())
-        } else {
-            wrap2(summary_src, tw, theme::size::BODY)
-        };
-        *addr_of_mut!(WRAP) = Some(WrapCache {
-            title_src: title_src.to_string(),
-            summary_src: summary_src.to_string(),
-            tw,
-            title: title.clone(),
-            syn1: syn1.clone(),
-            syn2: syn2.clone(),
-        });
-        (title, syn1, syn2)
-    }
+    badge(p, x, cy, text, BadgeStyle::Outlined { col: theme::TEXT_HEADING, bg: theme::SURFACE_PANEL })
 }
 
 pub(crate) fn draw() {
@@ -221,9 +117,7 @@ pub(crate) fn draw() {
     if np.is_none() && d.is_none() {
         return;
     }
-    let appear = unsafe { addr_of!(APPEAR).read() }.pos.clamp(0.0, 1.0);
-    let rise = (1.0 - appear) * 20.0;
-    let p = Painter::root().alpha(appear).translate(0.0, rise);
+    let p = pop().painter(0.0, 20.0); // no scrim — the card floats over the transport
 
     // Resolve the playing leaf's fields: `now_playing` describes the episode (show title + SxEy +
     // its still) or the movie; the loaded `Detail` backs the capability badges + genres.
@@ -301,8 +195,6 @@ pub(crate) fn draw() {
     let dim = theme::TEXT_SECONDARY;
 
     let info_title = if is_ep { ep_name.clone() } else { big_title.clone() };
-    let (title, syn1, syn2) = wrapped(&info_title, &summary, tw);
-    let n_syn = (!syn1.is_empty()) as i32 + (!syn2.is_empty()) as i32;
     let has_tags = year > 0
         || dur_ms > 0
         || !rating.is_empty()
@@ -316,37 +208,23 @@ pub(crate) fn draw() {
     let gap_title = 6.0f32; // title → synopsis
     let gap_tags = 12.0f32; // synopsis → tags
 
-    // Cap-band centring: visual top is the title cap-top, visual bottom is the tag badge box (or,
-    // tag-less, the last synopsis baseline). Descenders never enter the maths.
-    let (tcap_t, tcap_b) = crate::text::text_cap_band(theme::size::TITLE, 1);
-    let syn_span = if n_syn > 0 { gap_title + n_syn as f32 * syn_lh } else { 0.0 };
-    let span_bottom = if has_tags {
-        title_h + syn_span + gap_tags + tag_h
-    } else if n_syn > 0 {
-        let (_st, sbase) = crate::text::text_cap_band(theme::size::BODY, 0);
-        title_h + gap_title + (n_syn as f32 - 1.0) * syn_lh + sbase
-    } else {
-        tcap_b
-    };
-    let mut ty = cyt + ch * 0.5 - (tcap_t + span_bottom) * 0.5; // title draw-y
+    // title (1 line, elided) + synopsis (up to 2 lines, ellipsized) through the shared TextView —
+    // its wrap is memoised internally, replacing this panel's old hand-rolled wrap2/WrapCache.
+    let title_v = TextView::new(&info_title, theme::size::TITLE, white).bold().max_lines(1);
+    let syn_v = TextView::new(&summary, theme::size::BODY, dim).leading(syn_lh).max_lines(2);
+    let syn_h = if summary.is_empty() { 0.0 } else { syn_v.measure_h(tw) };
 
-    // title
-    if let Ok(cs) = CString::new(title) {
-        p.text(cs.as_ptr(), tx, ty, theme::size::TITLE, white, 0, 1);
-    }
+    // centre the [title + synopsis + tag row] group in the card (cap-top coordinates)
+    let span = title_h
+        + if syn_h > 0.0 { gap_title + syn_h } else { 0.0 }
+        + if has_tags { gap_tags + tag_h } else { 0.0 };
+    let mut ty = cyt + (ch - span) * 0.5;
+    title_v.draw(p, Rect::new(tx, ty, tw, 0.0));
     ty += title_h;
-    // synopsis (up to 2 lines)
-    if n_syn > 0 {
+    if syn_h > 0.0 {
         ty += gap_title;
-        for l in [&syn1, &syn2] {
-            if l.is_empty() {
-                continue;
-            }
-            if let Ok(cs) = CString::new(l.as_str()) {
-                p.text(cs.as_ptr(), tx, ty, theme::size::BODY, dim, 0, 0);
-            }
-            ty += syn_lh;
-        }
+        syn_v.draw(p, Rect::new(tx, ty, tw, 0.0));
+        ty += syn_h;
     }
     // metadata line (genres · year · duration) + capability badges, centred on the tag row
     if has_tags {
@@ -362,7 +240,7 @@ pub(crate) fn draw() {
             meta.push(year.to_string());
         }
         if dur_ms > 0 {
-            meta.push(fmt_dur(dur_ms));
+            meta.push(crate::ui::fmt::dur_short(dur_ms));
         }
         let mut mx = tx;
         if !meta.is_empty() {
@@ -379,7 +257,7 @@ pub(crate) fn draw() {
         }
         if let Some(x) = d {
             if let Some(tag) = x.audio.first().and_then(|s| audio_badge(&s.codec)) {
-                mx += meta_badge(p, mx, my, tag) + 12.0;
+                mx += meta_badge(p, mx, my, &tag) + 12.0;
             }
             if !x.subs.is_empty() {
                 mx += meta_badge(p, mx, my, "CC") + 12.0;

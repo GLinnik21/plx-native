@@ -12,18 +12,7 @@ use crate::ui::widgets::{Art, Spinner};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
-use std::ptr::{addr_of, addr_of_mut};
-
-const SDLK_RETURN: c_uint = 13;
-const SDLK_KP_ENTER: c_uint = 88 | (1 << 30);
-const SDLK_SELECT: c_uint = 77 | (1 << 30);
-const SDLK_ESCAPE: c_uint = 27;
-fn is_ok(sym: c_uint) -> bool {
-    sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT
-}
-fn is_back(sym: c_uint, wcode: c_uint) -> bool {
-    sym == SDLK_ESCAPE || wcode == 461 || wcode == 482
-}
+use std::ptr::addr_of_mut;
 
 const ROW_Y: f32 = 384.0;
 const PIN_LEN: usize = 4;

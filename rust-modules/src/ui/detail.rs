@@ -14,7 +14,7 @@ use crate::ui::theme;
 use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton};
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_int;
 use std::ptr::addr_of_mut;
 
 // ---- retained view-tree migration (step 6.2): detail's mutable state lives in DetailView, reached
@@ -214,17 +214,36 @@ fn ep_meta_layout(title: &str, aired: &str, summary: &str) -> (f32, f32, f32) {
 }
 /// dynamic under-still metadata height for the episode row: the TALLEST episode's flowed meta (title
 /// 1–2 lines + date + full summary). Content-derived, so the below-hero flow reflows to fit.
+/// CACHED per episode set — the O(episodes) wrap-measure sweep only changes on a detail/season
+/// load, but `Column::height` re-asks 2-4× per frame (scroll target + per-child draw).
 fn ep_meta_h() -> f32 {
     let d = match metadata::current() {
         Some(d) => d,
         None => return EP_META_TOP + EP_TITLE_DY + EP_META_BOT_PAD,
     };
+    // fingerprint the episode set (item + season + count); recompute only when it changes
+    static mut CACHE: (u64, f32) = (0, 0.0);
+    let fp = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        d.rk.hash(&mut h);
+        d.cur_season.hash(&mut h);
+        d.episodes.len().hash(&mut h);
+        h.finish().max(1) // 0 is the "empty" sentinel
+    };
+    unsafe {
+        if (*addr_of_mut!(CACHE)).0 == fp {
+            return (*addr_of_mut!(CACHE)).1;
+        }
+    }
     let mut maxh = 0.0f32;
     for ep in &d.episodes {
         let (_, _, total) = ep_meta_layout(&ep.title, &ep.aired, &ep.summary);
         maxh = maxh.max(total);
     }
-    EP_META_TOP + maxh + EP_META_BOT_PAD
+    let h = EP_META_TOP + maxh + EP_META_BOT_PAD;
+    unsafe { *addr_of_mut!(CACHE) = (fp, h) }
+    h
 }
 /// scroll offset that lifts the focused section's top to TOP_MARGIN
 fn scroll_target() -> f32 {
@@ -260,7 +279,6 @@ pub(crate) fn is_show() -> bool {
 /// Open the detail page for catalog row `idx`: load its full detail (blocking) and
 /// reset focus/scroll.
 pub(crate) fn open(idx: c_int) {
-    crate::ui::track_menu::reset(); // fresh item → drop the previous item's track selection
     let v = view();
     v.selected = idx;
     v.section = 0;
@@ -558,45 +576,34 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     let dim = theme::TEXT_TERTIARY;
     let d = metadata::current();
 
-    // ---- title: clearLogo (transparent PNG) if loaded, else bold text ----
+    // ---- title: clearLogo (transparent PNG) if loaded, else bold text. Borrow from the loaded
+    // Detail (the common case) — cloning rk/title/summary every frame was pure churn; the catalog
+    // fallback (`m`, pre-load frames only) still allocates via cfield. ----
     let title_bottom = 566.0f32;
-    let rk = d.map(|d| d.rk.clone()).or_else(|| m.map(|m| cfield(&m.rk))).unwrap_or_default();
-    let title = d.map(|d| d.title.clone()).or_else(|| m.map(|m| cfield(&m.title))).unwrap_or_default();
+    let rk_owned = if d.is_none() { m.map(|m| cfield(&m.rk)).unwrap_or_default() } else { String::new() };
+    let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
     let mut drew_logo = false;
-    if !rk.is_empty() {
-        if let Ok(lpath) = CString::new(format!("/library/metadata/{rk}/clearLogo")) {
-            let mut lk = [0u8; 352];
-            crate::posters::poster_key(lk.as_mut_ptr() as *mut c_char, lk.len(), lpath.as_ptr(), 600, 240, 1);
-            let lt = crate::posters::poster_get(lk.as_ptr() as *const c_char);
-            let (mut lw, mut lh) = (0i32, 0i32);
-            crate::posters::poster_wh(lk.as_ptr() as *const c_char, &mut lw, &mut lh);
-            if lt != 0 && lh > 0 {
-                let mut hh = 120.0f32;
-                let mut ww = hh * lw as f32 / lh as f32;
-                if ww > 680.0 {
-                    ww = 680.0;
-                    hh = ww * lh as f32 / lw as f32;
-                }
-                p.tex(lt, Rect::new(tx, title_bottom - hh, ww, hh), 0.0, w_a);
-                drew_logo = true;
-            }
-        }
+    if let Some((lt, ww, hh)) = crate::posters::logo_tex(rk, 680.0, 120.0) {
+        p.tex(lt, Rect::new(tx, title_bottom - hh, ww, hh), 0.0, w_a);
+        drew_logo = true;
     }
     if !drew_logo {
-        if let Ok(t) = CString::new(title.clone()) {
+        let title_owned = if d.is_none() { m.map(|m| cfield(&m.title)).unwrap_or_default() } else { String::new() };
+        let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
+        if let Ok(t) = CString::new(title) {
             p.text(t.as_ptr(), tx, title_bottom - 68.0, theme::size::HERO, w_a, 0, 1);
         }
     }
 
     // ---- meta line: "TV Show · Sci-Fi · Adventure · 18+" ----
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<&str> = Vec::new();
     if let Some(d) = d {
-        parts.push(if d.is_show { "TV Show".into() } else { "Movie".into() });
+        parts.push(if d.is_show { "TV Show" } else { "Movie" });
         for g in d.genres.iter().take(2) {
-            parts.push(g.clone());
+            parts.push(g);
         }
         if !d.rating.is_empty() {
-            parts.push(d.rating.clone());
+            parts.push(&d.rating);
         }
     }
     let meta_y = title_bottom + 36.0;
@@ -606,10 +613,11 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 
     // ---- synopsis: pixel-wrapped to the hero text column, up to 4 lines; the date/buttons below
     // flow off its MEASURED height so a long synopsis pushes them down instead of overlapping ----
-    let summary = d.map(|d| d.summary.clone()).or_else(|| m.map(|m| cfield(&m.summary))).unwrap_or_default();
+    let summary_owned = if d.is_none() { m.map(|m| cfield(&m.summary)).unwrap_or_default() } else { String::new() };
+    let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&summary_owned);
     let syn_y = meta_y + 46.0;
     let syn_h = if !summary.is_empty() {
-        TextView::new(&summary, theme::size::BODY, d_a)
+        TextView::new(summary, theme::size::BODY, d_a)
             .leading(34.0)
             .max_lines(4)
             .draw(p, Rect::new(tx, syn_y, 900.0, 0.0))
@@ -621,13 +629,11 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     let date_y = syn_y + syn_h.max(34.0) + 20.0;
     if let Some(d) = d {
         let mut info = pretty_date(&d.aired, d.year);
-        let mins = d.dur_ms / 60_000;
-        if mins > 0 {
+        if d.dur_ms >= 60_000 {
             if !info.is_empty() {
                 info.push_str("    \u{b7}    ");
             }
-            let (h, mm) = (mins / 60, mins % 60);
-            info.push_str(&if h > 0 { format!("{h} hr {mm} min") } else { format!("{mm} min") });
+            info.push_str(&crate::ui::fmt::dur_long(d.dur_ms));
         }
         if let Ok(ic) = CString::new(info) {
             p.text(ic.as_ptr(), tx, date_y, theme::size::CAPTION, dim, 0, 0);
@@ -671,24 +677,15 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
 /// small centered clearLogo/title shown at the top once the page is scrolled
 fn draw_compact_title(p: Painter, m: Option<&PmsMovie>) {
     let d = metadata::current();
-    let rk = d.map(|d| d.rk.clone()).or_else(|| m.map(|m| cfield(&m.rk))).unwrap_or_default();
-    let title = d.map(|d| d.title.clone()).or_else(|| m.map(|m| cfield(&m.title))).unwrap_or_default();
+    let rk_owned = if d.is_none() { m.map(|m| cfield(&m.rk)).unwrap_or_default() } else { String::new() };
+    let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
     let cx = SCR_W * 0.5;
-    if !rk.is_empty() {
-        if let Ok(lpath) = CString::new(format!("/library/metadata/{rk}/clearLogo")) {
-            let mut lk = [0u8; 352];
-            crate::posters::poster_key(lk.as_mut_ptr() as *mut c_char, lk.len(), lpath.as_ptr(), 600, 240, 1);
-            let lt = crate::posters::poster_get(lk.as_ptr() as *const c_char);
-            let (mut lw, mut lh) = (0i32, 0i32);
-            crate::posters::poster_wh(lk.as_ptr() as *const c_char, &mut lw, &mut lh);
-            if lt != 0 && lh > 0 {
-                let hh = 54.0f32;
-                let ww = hh * lw as f32 / lh as f32;
-                p.tex(lt, Rect::new(cx - ww * 0.5, 40.0, ww, hh), 0.0, theme::TEXT_PRIMARY);
-                return;
-            }
-        }
+    if let Some((lt, ww, hh)) = crate::posters::logo_tex(rk, f32::MAX, 54.0) {
+        p.tex(lt, Rect::new(cx - ww * 0.5, 40.0, ww, hh), 0.0, theme::TEXT_PRIMARY);
+        return;
     }
+    let title_owned = if d.is_none() { m.map(|m| cfield(&m.title)).unwrap_or_default() } else { String::new() };
+    let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
     if let Ok(t) = CString::new(title) {
         p.text(t.as_ptr(), cx, 54.0, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
     }
@@ -801,7 +798,57 @@ fn draw_episodes(p: Painter) {
     }
 }
 
-/// "Related" — a horizontal row of portrait poster cards from the related hub
+/// The ONE two-pass strip loop for detail's CardRow shelves (Related, Cast): non-focused tiles
+/// first (off-axis culled), the focused tile LAST for its z-order (the in-row focused-last rule —
+/// a lone strip has no cross-row neighbour). `art` supplies each tile's Art; `title` the focused
+/// tile's under-title (Related; None for cast); `extra` any per-tile caption drawn for EVERY tile
+/// (cast names/roles; a no-op for Related). `axis_span` widens the cull band where captions
+/// should survive slightly off-screen.
+#[allow(clippy::too_many_arguments)]
+fn draw_strip<'a>(
+    p: Painter,
+    row: &CardRow,
+    n: usize,
+    focus_col: c_int,
+    row_y: f32,
+    size: (f32, f32),
+    pitch: f32,
+    sty: &RowStyle,
+    axis_span: f32,
+    art: impl Fn(usize) -> Art<'a>,
+    title: impl Fn(usize) -> Option<CString>,
+    extra: impl Fn(Painter, usize, f32, bool),
+) {
+    let sx = row.scroll_x();
+    let pr = p.translate(-sx, 0.0);
+    for i in 0..n {
+        if i as c_int == focus_col {
+            continue; // focused tile drawn last
+        }
+        let x = MARGIN_X + i as f32 * pitch;
+        if !on_axis(x - sx, size.0, axis_span, 0.0) {
+            continue;
+        }
+        let s = row.scale(i);
+        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        card_row::draw_tile(pr, art(i), rect, s, sty, None);
+        extra(pr, i, x, false);
+    }
+    if focus_col >= 0 && (focus_col as usize) < n {
+        let i = focus_col as usize;
+        let x = MARGIN_X + i as f32 * pitch;
+        let s = row.scale(i);
+        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        let tc = title(i); // kept alive across the draw call
+        let tp = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+        card_row::draw_focused(pr, art(i), rect, s, sty, None, tp);
+        extra(pr, i, x, true);
+    }
+}
+
+/// "Related" — a horizontal row of portrait poster cards from the related hub. A real instance of
+/// the home shelf: view().related owns the animated per-card scale springs + scroll spring
+/// (RowStyle::HOME), so it pops + glides + rings + titles exactly like a home shelf.
 fn draw_related(p: Painter) {
     let d = match metadata::current() {
         Some(d) => d,
@@ -813,41 +860,26 @@ fn draw_related(p: Painter) {
     let related_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     p.text(c"Related".as_ptr(), MARGIN_X, related_y, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let focus_col = if view().section == 3 { view().col } else { -1 };
-    let row_y = related_y + REL_LABEL_H;
-    // The Related row is a real instance of the home shelf: view().related owns the animated per-card
-    // scale springs + the animated scroll spring (RowStyle::HOME), so it pops + glides + rings + titles
-    // exactly like a home shelf. A lone row has no cross-row neighbour, so the focused-last pass is just
-    // in-row: non-focused posters first, then the focused one (over its neighbours) last.
-    let sx = view().related.scroll_x();
-    let pr = p.translate(-sx, 0.0);
-    for (i, r) in d.related.iter().enumerate() {
-        if i as c_int == focus_col {
-            continue; // focused poster drawn last
-        }
-        let x = MARGIN_X + i as f32 * (REL_W + REL_GAP);
-        if !on_axis(x - sx, REL_W, SCR_W, 0.0) {
-            continue;
-        }
-        let s = view().related.scale(i);
-        let rect = Rect::new(x, row_y, REL_W, REL_H).scaled(s);
-        card_row::draw_tile(pr, Art::Thumb { key: &r.thumb, res: (250, 375) }, rect, s, &RowStyle::HOME, None);
-    }
-    if focus_col >= 0 {
-        if let Some(r) = d.related.get(focus_col as usize) {
-            let x = MARGIN_X + focus_col as f32 * (REL_W + REL_GAP);
-            let s = view().related.scale(focus_col as usize);
-            let rect = Rect::new(x, row_y, REL_W, REL_H).scaled(s);
-            let tc = CString::new(r.title.clone()).ok(); // kept alive across the draw call
-            let title = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-            card_row::draw_focused(pr, Art::Thumb { key: &r.thumb, res: (250, 375) }, rect, s, &RowStyle::HOME, None, title);
-        }
-    }
+    draw_strip(
+        p,
+        &view().related,
+        d.related.len(),
+        focus_col,
+        related_y + REL_LABEL_H,
+        (REL_W, REL_H),
+        REL_W + REL_GAP,
+        &RowStyle::HOME,
+        SCR_W,
+        |i| Art::Thumb { key: &d.related[i].thumb, res: (250, 375) },
+        |i| CString::new(d.related[i].title.clone()).ok(),
+        |_, _, _, _| {},
+    );
 }
 
 /// "Cast & Crew" — circular headshots with names, on the shared [`CardRow`] (circular
 /// `RowStyle::CAST`): spring focus-magnification + animated scroll + glow ring, exactly like the
-/// poster/Related shelves. The caller draws the per-member name/role labels (a poster row shows a
-/// title only on focus; cast shows every name), and the focused headshot draws LAST for its z-order.
+/// poster/Related shelves. Cast shows every member's name/role (a poster row titles only the
+/// focused tile), so the labels ride the `extra` hook.
 fn draw_cast(p: Painter) {
     let d = match metadata::current() {
         Some(d) => d,
@@ -860,31 +892,20 @@ fn draw_cast(p: Painter) {
     p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let focus_col = if view().section == 4 { view().col } else { -1 };
     let row_y = cast_y + CAST_LABEL_H;
-    let sx = view().cast.scroll_x();
-    let pc = p.translate(-sx, 0.0);
-    let sty = &RowStyle::CAST;
-    for (i, c) in d.cast.iter().enumerate() {
-        if i as c_int == focus_col {
-            continue; // focused headshot drawn last
-        }
-        let x = MARGIN_X + i as f32 * CAST_SLOT;
-        if !on_axis(x - sx, CAST_D, SCR_W + CAST_D, 0.0) {
-            continue;
-        }
-        let s = view().cast.scale(i);
-        let rect = Rect::new(x, row_y, CAST_D, CAST_D).scaled(s);
-        card_row::draw_tile(pc, Art::Thumb { key: &c.thumb, res: (300, 300) }, rect, s, sty, None);
-        cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, false);
-    }
-    if focus_col >= 0 {
-        if let Some(c) = d.cast.get(focus_col as usize) {
-            let x = MARGIN_X + focus_col as f32 * CAST_SLOT;
-            let s = view().cast.scale(focus_col as usize);
-            let rect = Rect::new(x, row_y, CAST_D, CAST_D).scaled(s);
-            card_row::draw_focused(pc, Art::Thumb { key: &c.thumb, res: (300, 300) }, rect, s, sty, None, std::ptr::null());
-            cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, true);
-        }
-    }
+    draw_strip(
+        p,
+        &view().cast,
+        d.cast.len(),
+        focus_col,
+        row_y,
+        (CAST_D, CAST_D),
+        CAST_SLOT,
+        &RowStyle::CAST,
+        SCR_W + CAST_D,
+        |i| Art::Thumb { key: &d.cast[i].thumb, res: (300, 300) },
+        |_| None,
+        |pc, i, x, focused| cast_label(pc, &d.cast[i].tag, &d.cast[i].role, x + CAST_D * 0.5, row_y, focused),
+    );
 }
 
 /// A cast member's name + role, centred under the headshot and elided to the per-member slot (long
@@ -907,14 +928,9 @@ fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: 
 pub(crate) fn last_resume_ns() -> i64 {
     view().last_resume_ns
 }
-/// apply Plex's resume rule (skip <10s and >95%) and stash the position for app.rs.
+/// apply Plex's resume rule (metadata::resume_ns) and stash the position for app.rs.
 fn set_resume(resume_ms: i64, dur_ms: i64) {
-    let ns = if resume_ms > 10_000 && (dur_ms <= 0 || (resume_ms as f64) < 0.95 * dur_ms as f64) {
-        resume_ms * 1_000_000
-    } else {
-        0
-    };
-    view().last_resume_ns = ns;
+    view().last_resume_ns = metadata::resume_ns(resume_ms, dur_ms);
 }
 
 /// OK/SELECT on the detail page: returns true if playback should start (the route
@@ -1041,14 +1057,60 @@ fn pair_h(value: &str) -> f32 {
     34.0 + h.max(30.0) + 22.0
 }
 
-/// a small rounded accessibility badge (CC / SDH / AD)
-fn draw_badge(p: Painter, x: f32, y: f32, label: &str) {
-    let (w, h) = (56.0f32, 34.0f32);
-    p.rrect(Rect::new(x, y, w, h), 7.0, 7.0, [0.86, 0.88, 0.92, 0.20]);
-    if let Ok(t) = CString::new(label) {
-        let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 1, y + h * 0.5);
-        p.text(t.as_ptr(), x + w * 0.5, ty, theme::size::CAPTION, theme::TEXT_HEADING, 1, 1);
+/// The About block's derived strings, rebuilt only when the loaded item changes — the block used
+/// to re-format ~20 strings (info pairs, the audio list, the accessibility rows) every frame it
+/// was on screen.
+struct AboutRows {
+    rk: String,
+    info: Vec<(&'static str, String)>,
+    orig_audio: Option<String>,
+    audio_list: String,
+    access: Vec<(&'static str, &'static str)>,
+}
+static mut ABOUT: Option<AboutRows> = None;
+fn about_rows(d: &metadata::Detail) -> &'static AboutRows {
+    let slot = unsafe { &mut *addr_of_mut!(ABOUT) };
+    if slot.as_ref().map(|c| c.rk != d.rk).unwrap_or(true) {
+        // Information: (label, value) pairs
+        let mut info: Vec<(&'static str, String)> = Vec::new();
+        let released = pretty_date(&d.aired, d.year);
+        if !released.is_empty() {
+            info.push(("Released", released));
+        }
+        let dur = if d.dur_ms > 0 { d.dur_ms } else { d.episodes.first().map(|e| e.dur_ms).unwrap_or(0) };
+        if dur > 0 {
+            info.push(("Run Time", crate::ui::fmt::dur_long(dur)));
+        }
+        info.push(("Rated", if d.rating.is_empty() { "NR".to_string() } else { d.rating.clone() }));
+        if !d.countries.is_empty() {
+            info.push(("Regions of Origin", d.countries.join(", ")));
+        }
+        // Languages: an "Original Audio" pair + a wrapped "Audio" list
+        let orig_audio =
+            d.audio.first().map(|a| if a.lang.is_empty() { "Unknown".to_string() } else { a.lang.clone() });
+        let audio_list = d
+            .audio
+            .iter()
+            .take(8)
+            .map(|a| {
+                let lang = if a.lang.is_empty() { "Unknown".to_string() } else { a.lang.clone() };
+                format!("{} ({})", lang, a.codec.to_uppercase())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Accessibility: the present capability descriptions
+        let cc = !d.subs.is_empty();
+        let sdh = d.subs.iter().any(|s| s.sdh);
+        let ad = d.audio.iter().any(|a| a.ad);
+        let acc_all: [(bool, &'static str, &'static str); 3] = [
+            (cc, "CC", "Closed captions refer to subtitles in available languages with the addition of relevant non-dialogue information."),
+            (sdh, "SDH", "Subtitles for the deaf and hard of hearing (SDH) refer to subtitles in the original language with the addition of relevant non-dialogue information."),
+            (ad, "AD", "Audio descriptions (AD) refer to a narration track describing what is happening on screen, to provide context for those who are blind or have low vision."),
+        ];
+        let access = acc_all.iter().filter(|(pr, _, _)| *pr).map(|(_, l, ds)| (*l, *ds)).collect();
+        *slot = Some(AboutRows { rk: d.rk.clone(), info, orig_audio, audio_list, access });
     }
+    slot.as_ref().unwrap()
 }
 
 fn draw_about(p: Painter) {
@@ -1071,53 +1133,18 @@ fn draw_about(p: Painter) {
     let lx = 760.0f32; // Languages column x
     let ax = 1360.0f32; // Accessibility column x
 
-    // ---- Build each column's rows ONCE. They drive BOTH the measured focus highlight (so it wraps
-    // the content — a fixed-height panel used to let a long audio list spill past the selection) and
-    // the paint below. ----
-    // Information: (label, value) pairs
-    let mut info: Vec<(&str, String)> = Vec::new();
-    let released = pretty_date(&d.aired, d.year);
-    if !released.is_empty() {
-        info.push(("Released", released));
-    }
-    let dur = if d.dur_ms > 0 { d.dur_ms } else { d.episodes.first().map(|e| e.dur_ms).unwrap_or(0) };
-    if dur > 0 {
-        let mins = dur / 60_000;
-        info.push(("Run Time", format!("{} hr {} min", mins / 60, mins % 60)));
-    }
-    info.push(("Rated", if d.rating.is_empty() { "NR".to_string() } else { d.rating.clone() }));
-    if !d.countries.is_empty() {
-        info.push(("Regions of Origin", d.countries.join(", ")));
-    }
-    // Languages: an "Original Audio" pair + a wrapped "Audio" list
-    let orig_audio = d.audio.first().map(|a| if a.lang.is_empty() { "Unknown".to_string() } else { a.lang.clone() });
-    let audio_list = d
-        .audio
-        .iter()
-        .take(8)
-        .map(|a| {
-            let lang = if a.lang.is_empty() { "Unknown".to_string() } else { a.lang.clone() };
-            format!("{} ({})", lang, a.codec.to_uppercase())
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    // Accessibility: the present capability descriptions
-    let cc = !d.subs.is_empty();
-    let sdh = d.subs.iter().any(|s| s.sdh);
-    let ad = d.audio.iter().any(|a| a.ad);
-    let acc_all: [(bool, &str, &str); 3] = [
-        (cc, "CC", "Closed captions refer to subtitles in available languages with the addition of relevant non-dialogue information."),
-        (sdh, "SDH", "Subtitles for the deaf and hard of hearing (SDH) refer to subtitles in the original language with the addition of relevant non-dialogue information."),
-        (ad, "AD", "Audio descriptions (AD) refer to a narration track describing what is happening on screen, to provide context for those who are blind or have low vision."),
-    ];
-    let access: Vec<(&str, &str)> = acc_all.iter().filter(|(pr, _, _)| *pr).map(|(_, l, ds)| (*l, *ds)).collect();
+    // The column rows drive BOTH the measured focus highlight (so it wraps the content — a
+    // fixed-height panel used to let a long audio list spill past the selection) and the paint
+    // below. Cached per item (about_rows); the measures below are wrap-memoised in TextView.
+    let rows = about_rows(d);
+    let (info, orig_audio, audio_list, access) = (&rows.info, &rows.orig_audio, &rows.audio_list, &rows.access);
 
     // ---- measured content extent (px below col_y) of each column, mirroring the paint advances ----
     let info_off = 68.0 + info.iter().map(|(_, v)| pair_h(v)).sum::<f32>();
     let lang_off = if orig_audio.is_none() {
         30.0
     } else {
-        let list_h = TextView::new(&audio_list, theme::size::LABEL, val).leading(32.0).max_lines(6).measure_h(500.0);
+        let list_h = TextView::new(audio_list, theme::size::LABEL, val).leading(32.0).max_lines(6).measure_h(500.0);
         68.0 + orig_audio.as_ref().map(|o| pair_h(o)).unwrap_or(0.0) + 34.0 + list_h
     };
     let access_off = if access.is_empty() {
@@ -1166,19 +1193,19 @@ fn draw_about(p: Painter) {
     // ---- Information ----
     text_at(p, tx, col_y, theme::size::HEADLINE, hd, 1, "Information");
     let mut yy = col_y + 68.0;
-    for (label, value) in &info {
+    for (label, value) in info {
         yy += draw_pair(p, tx, yy, label, value, lbl, val);
     }
 
     // ---- Languages ----
     text_at(p, lx, col_y, theme::size::HEADLINE, hd, 1, "Languages");
     let mut ly = col_y + 68.0;
-    if let Some(orig) = &orig_audio {
+    if let Some(orig) = orig_audio {
         ly += draw_pair(p, lx, ly, "Original Audio", orig, lbl, val);
     }
     if !audio_list.is_empty() {
         text_at(p, lx, ly, theme::size::CAPTION, lbl, 0, "Audio");
-        TextView::new(&audio_list, theme::size::LABEL, val).leading(32.0).max_lines(6).draw(p, Rect::new(lx, ly + 34.0, 500.0, 0.0));
+        TextView::new(audio_list, theme::size::LABEL, val).leading(32.0).max_lines(6).draw(p, Rect::new(lx, ly + 34.0, 500.0, 0.0));
     }
 
     // ---- Accessibility ----
@@ -1187,8 +1214,9 @@ fn draw_about(p: Painter) {
         text_at(p, ax, col_y + 68.0, theme::size::CAPTION, dim, 0, "\u{2014}");
     } else {
         let mut ay = col_y + 64.0;
-        for (label, desc) in &access {
-            draw_badge(p, ax, ay, label);
+        for (label, desc) in access {
+            // the shared chip leaf (filled style) — cy = chip top + half its 34px height
+            crate::ui::widgets::badge(p, ax, ay + 17.0, label, crate::ui::widgets::BadgeStyle::Filled);
             let h = TextView::new(desc, theme::size::CAPTION, val).leading(30.0).max_lines(4).draw(p, Rect::new(ax, ay + 52.0, 500.0, 0.0));
             ay += 52.0 + h + 26.0;
         }

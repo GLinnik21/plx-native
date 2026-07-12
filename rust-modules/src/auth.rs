@@ -77,12 +77,7 @@ struct Ctl {
 static CTL: Mutex<Option<Ctl>> = Mutex::new(None);
 
 /// Append a line to the shared on-device event log (never a token — only ids/counts/status).
-fn log(m: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
-        let _ = writeln!(f, "{m}");
-    }
-}
+use crate::log;
 
 fn with_ctl<R>(f: impl FnOnce(&mut Ctl) -> R) -> R {
     let mut g = CTL.lock().unwrap_or_else(|e| e.into_inner());

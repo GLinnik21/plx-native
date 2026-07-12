@@ -15,6 +15,7 @@ pub mod card_row;
 pub mod chapters_panel;
 pub mod consts;
 pub mod detail;
+pub mod fmt; // shared duration/clock display formatters
 pub mod home;
 pub mod icons;
 pub mod info_panel;
@@ -22,6 +23,7 @@ pub mod label;
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
+pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod profile;
 pub mod table;
 pub mod text_view;
@@ -107,9 +109,6 @@ pub trait View {
     fn update(&mut self, _env: &Env) {}
     fn layout(&mut self, _frame: Rect, _env: &Env) {}
     fn draw(&self, env: &Env, p: Painter);
-    fn measure(&self) -> Size {
-        Size::default()
-    }
 }
 
 /// Folds a cascading alpha (+ optional translate) into every primitive call.
@@ -150,10 +149,6 @@ impl Painter {
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         let c = self.c(col);
         crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
-    }
-    pub fn ptri(self, r: Rect, col: [f32; 4]) {
-        let c = self.c(col);
-        crate::gfx::draw_ptri(r.x + self.dx, r.y + self.dy, r.w, r.h, c.as_ptr());
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
         let t = self.c(tint);
@@ -272,12 +267,5 @@ impl ScrollColumn {
             }
             y += h;
         }
-    }
-    /// [`Self::draw`] then a DEFERRED overlay pass on the scrolled layer — the supported hook for a
-    /// focused-last / cross-row z-order carve-out (home's single focused card would go here if home
-    /// were ever a `Column`; detail's sections don't overlap, so detail just calls [`Self::draw`]).
-    pub fn draw_with_overlay(&self, c: &impl Column, env: &Env, p: Painter, overlay: impl FnOnce(Painter)) {
-        self.draw(c, env, p);
-        overlay(p.translate(0.0, -self.scroll.pos));
     }
 }

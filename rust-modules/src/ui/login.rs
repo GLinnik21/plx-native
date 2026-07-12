@@ -1,9 +1,7 @@
-//! The sign-in screen: a QR code (the `app.plex.tv/auth` deep link primed with our pin) plus the
-//! typed short-code fallback, driven by the [`crate::auth`] flow phase. Scanning the QR on a phone
-//! and tapping Allow authorizes the pin; the flow's background poll then advances us onward.
-//!
-//! The QR modules are drawn with our own SDF rect shader (the pure-Rust `qrcode` crate gives the
-//! matrix; no image decode), cached so we only re-encode when the payload changes.
+//! The sign-in screen: Plex's own server-rendered QR PNG (fetched by the auth flow, decoded +
+//! tinted here) plus the typed short-code fallback, driven by the [`crate::auth`] flow phase.
+//! Scanning the QR on a phone opens plex.tv pre-filled with the pin; the flow's background poll
+//! then advances us onward.
 #![allow(non_upper_case_globals)]
 use crate::auth::{self, Phase};
 use crate::ui::consts::*;
@@ -14,13 +12,6 @@ use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
 use std::ptr::addr_of_mut;
-
-const SDLK_RETURN: c_uint = 13;
-const SDLK_KP_ENTER: c_uint = 88 | (1 << 30);
-const SDLK_SELECT: c_uint = 77 | (1 << 30);
-fn is_ok(sym: c_uint) -> bool {
-    sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SELECT
-}
 
 struct Scene {
     spin_ms: f32,

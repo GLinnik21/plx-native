@@ -4,8 +4,9 @@
 //! action via [`on_ok`]; `app.rs` performs the routing.
 #![allow(non_upper_case_globals)]
 use crate::ui::consts::*;
+use crate::ui::popover::Popover;
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::{theme, Painter, Rect, Spring};
+use crate::ui::{theme, Rect};
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -16,16 +17,18 @@ pub enum Action {
     SignOut,
 }
 
-static mut OPEN: bool = false;
-static mut APPEAR: Spring = Spring::at(0.0); // 0→1 fade+slide on open
+static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut TABLE: TableView = TableView::new(); // main-thread only
 
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
 }
+fn pop() -> &'static mut Popover {
+    unsafe { &mut *addr_of_mut!(POP) }
+}
 
 pub fn is_open() -> bool {
-    unsafe { addr_of!(OPEN).read() }
+    unsafe { (*addr_of!(POP)).is_open() }
 }
 
 pub fn open() {
@@ -38,14 +41,11 @@ pub fn open() {
         .row(Row::new("Change profile").chevron(true))
         .row(Row::new("Sign out"));
     table().set_sections(vec![sec], 0, false);
-    unsafe {
-        addr_of_mut!(APPEAR).write(Spring::at(0.0));
-        addr_of_mut!(OPEN).write(true);
-    }
+    pop().open();
 }
 
 pub fn close() {
-    unsafe { addr_of_mut!(OPEN).write(false) }
+    pop().close();
 }
 
 pub fn move_focus(sym: c_int) {
@@ -81,8 +81,7 @@ pub fn update(dt: f32) {
     if !is_open() {
         return;
     }
-    let sp = unsafe { &mut *addr_of_mut!(APPEAR) };
-    sp.step(1.0, 300.0, dt);
+    pop().update(dt);
     let ph = panel_rect().h;
     table().update(dt, ph - 40.0);
 }
@@ -91,13 +90,9 @@ pub fn draw() {
     if !is_open() {
         return;
     }
-    let appear = unsafe { addr_of!(APPEAR).read() }.pos.clamp(0.0, 1.0);
-    let dim = theme::scrim_black(0.5 * appear);
-    Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
-
+    // scrim + fade, sliding DOWN into place from above the chip (negative rise)
+    let p = pop().painter(0.5, -16.0);
     let r = panel_rect();
-    let rise = (1.0 - appear) * 16.0; // slide DOWN into place from above the chip
-    let p = Painter::root().alpha(appear).translate(0.0, -rise);
     p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
     table().draw(p, r);
 }

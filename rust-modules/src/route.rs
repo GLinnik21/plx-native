@@ -40,11 +40,6 @@ static mut STREAM_VCODEC: String = String::new();
 static mut STREAM_ACODEC: String = String::new();
 // Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
 static mut STREAM_FPS: f64 = 0.0;
-// When true, a selected subtitle is BURNED into the transcode (server-side) — the
-// pre-WebVTT behavior, kept as an escape hatch. When false (default), a selected
-// subtitle rides a soft WebVTT sidecar (player::request_soft_subs + transcode_subtitles_url)
-// and the video transcode carries no subtitle at all.
-pub(crate) const BURN_FALLBACK: bool = true;
 // HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
 // draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
 static mut TITLE: [c_char; 128] = [0; 128];
@@ -78,6 +73,11 @@ pub(crate) fn clear_url() {
 }
 pub(crate) fn transcode_session() -> String {
     unsafe { (*addr_of!(TSESSION)).clone() }
+}
+/// true while this playback is a server transcode (a live transcode session exists). Cheap
+/// in-place check — the pump polls it every tick, so no String clone here.
+pub(crate) fn is_transcoding() -> bool {
+    unsafe { !(&*addr_of!(TSESSION)).is_empty() }
 }
 /// select the subtitle to BURN into any transcode of the current item (0 = none). This
 /// is the transcode path; direct-play uses the client renderer (player::request_subtitle).
@@ -189,25 +189,13 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     // (stopping the old transcode), and this new start.mkv?&offset= (same session)
     // repositions. /decision is just a query and doesn't cut the streaming connection.
     let obase = format!("{base}&offset={}", offset_secs.max(0));
-    let dpath = format!("/video/:/transcode/universal/decision?{obase}");
-    let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
-    let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{obase}", cfg.host, cfg.port);
+    // same session, same output codecs — no payload rebuild here, so the body is unused
+    let (url, _) = register_and_start_url(cfg, &obase);
     set_url(&url);
     Some(url)
 }
 
-fn cfield(b: &[u8]) -> String {
-    let n = b.iter().position(|&x| x == 0).unwrap_or(b.len());
-    String::from_utf8_lossy(&b[..n]).into_owned()
-}
-
-unsafe fn set_c(dst: *mut c_char, cap: usize, s: &str) {
-    let out = std::slice::from_raw_parts_mut(dst as *mut u8, cap);
-    let b = s.as_bytes();
-    let n = b.len().min(cap - 1);
-    out[..n].copy_from_slice(&b[..n]);
-    out[n] = 0;
-}
+use crate::cbuf::{get as cfield, set as set_c}; // shared fixed-C-buffer read/write
 
 /// Capability profile (X-Plex-Client-Profile-Extra, URL-decoded form): direct-play an MKV
 /// whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS, up to 4K — plus an
@@ -219,15 +207,23 @@ unsafe fn set_c(dst: *mut c_char, cap: usize, s: &str) {
 /// support so PMS keeps HDR10 through the transcode (HEVC Main10, BT.2020+PQ in-bitstream) —
 /// the same in-band static HDR10 SEI the direct-play path relies on (ff.rs keeps it).
 fn profile_extra() -> String {
-    crate::pms::urlenc_str(
+    crate::pms::urlenc_str(&format!(
         "add-direct-play-profile(type=videoProfile&container=mkv&videoCodec=h264,hevc\
-         &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa)\
+         &audioCodec={DP_AUDIO_CODECS}&subtitleCodec=srt,subrip,ass,ssa)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
          +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
          &container=matroska&videoCodec=hevc&audioCodec=ac3)",
-    )
+    ))
+}
+
+/// The direct-playable AUDIO codec set — what the buffer-feed pipeline decodes natively. ONE
+/// definition: the predicate below gates every direct-play decision (route + the track menu's
+/// native-switch), and `DP_AUDIO_CODECS` is the same set in the profile string's URL form.
+const DP_AUDIO_CODECS: &str = "aac,ac3,eac3";
+pub(crate) fn is_dp_audio(codec: &str) -> bool {
+    matches!(codec, "aac" | "ac3" | "eac3")
 }
 
 /// The /decision request params for `rk`: asks the Media Decision Engine (hasMDE=1) whether
@@ -272,30 +268,25 @@ fn server_decision(rk: &str, cfg: &Cfg) -> Option<bool> {
     Some(direct)
 }
 
-/// The offset-free transcode params for `rk`, carrying the CURRENT audio + subtitle
-/// selection (CUR_AUDIO_SID / CUR_SUB_SID). Shared by build_stream + retranscode, and
-/// (via TBASE) by transcode_seek — so every transcode of the item stays on the chosen
-/// tracks. The subtitle, when set, is burned in (Plex's default decision for our profile).
-fn transcode_base(rk: &str, cfg: &Cfg) -> String {
+/// The ONE offset-free universal-transcoder param builder for `rk`, carrying the CURRENT audio +
+/// subtitle selection (CUR_AUDIO_SID / CUR_SUB_SID). Shared by build_stream + retranscode, and
+/// (via TBASE) by transcode_seek — so every transcode of the item stays on the chosen tracks.
+/// The subtitle, when set, is burned in (Plex's default decision for our profile). `caps` is the
+/// one block the two flavors differ in.
+fn universal_base(rk: &str, cfg: &Cfg, caps: &str) -> String {
     let profe = profile_extra();
     let session = sess(); // per-playback id (set by build_stream); shared with the timeline
     let audio_p = match cur_audio_sid() {
         0 => String::new(),
         a => format!("&audioStreamID={a}"),
     };
-    // subtitles ride the soft WebVTT sidecar by default — the video transcode carries
-    // none (never baked). Only BURN_FALLBACK re-adds the burn block.
-    let sub_p = if BURN_FALLBACK {
-        match cur_sub_sid() {
-            0 => String::new(),
-            s => format!("&subtitleStreamID={s}&subtitleSize=100&subtitles=burn"),
-        }
-    } else {
-        String::new()
+    let sub_p = match cur_sub_sid() {
+        0 => String::new(),
+        s => format!("&subtitleStreamID={s}&subtitleSize=100&subtitles=burn"),
     };
     format!(
         "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
-         &directPlay=0&directStream=1&videoResolution=3840x2160&maxVideoBitrate=60000\
+         &directPlay=0&directStream=1{caps}\
          {audio_p}{sub_p}\
          &session={session}&X-Plex-Session-Identifier={session}{id}\
          &X-Plex-Client-Profile-Name=Generic&X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
@@ -304,35 +295,73 @@ fn transcode_base(rk: &str, cfg: &Cfg) -> String {
     )
 }
 
+/// RE-ENCODE params: native-resolution ceiling so an undecodable source (AV1/VP9/…) re-encodes
+/// to the profile's HEVC target at up to 4K instead of downscaled H264.
+fn transcode_base(rk: &str, cfg: &Cfg) -> String {
+    universal_base(rk, cfg, "&videoResolution=3840x2160&maxVideoBitrate=60000")
+}
+
 /// Container-only REMUX params: the source codecs ARE direct-playable but the container (mp4/mov)
-/// our demuxer can't stream. directStream=1 (+ directStreamAudio) with the same capability profile
-/// makes Plex COPY the video (h264/hevc) and the selected audio into a progressive MKV — no
-/// re-encode, so 4K/HDR is preserved. Unlike transcode_base it sets NO videoResolution/
-/// maxVideoBitrate cap (which would force a re-encode). Served via the same start.mkv endpoint.
+/// our demuxer can't stream. directStreamAudio=1 with NO videoResolution/maxVideoBitrate cap
+/// (a cap would force a re-encode) makes Plex COPY the video (h264/hevc) and the selected audio
+/// into a progressive MKV — no re-encode, so 4K/HDR is preserved. Same start.mkv endpoint.
 fn remux_base(rk: &str, cfg: &Cfg) -> String {
-    let profe = profile_extra();
-    let session = sess();
-    let audio_p = match cur_audio_sid() {
-        0 => String::new(),
-        a => format!("&audioStreamID={a}"),
+    universal_base(rk, cfg, "&directStreamAudio=1")
+}
+
+/// Register `base` with the universal transcoder (the /decision GET — required before start.mkv
+/// will stream; just a query, it never cuts a live streaming connection) and return the start.mkv
+/// URL + the decision response body. The one decision→start step (build_stream, transcode_seek,
+/// retranscode). Callers building a fresh Load payload MUST feed the body through
+/// [`apply_decision_codecs`] — the payload has to describe what the server will actually send.
+fn register_and_start_url(cfg: &Cfg, base: &str) -> (String, Option<Vec<u8>>) {
+    let dpath = format!("/video/:/transcode/universal/decision?{base}");
+    let body = crate::stream::http_get(&cfg.host, cfg.port, &dpath, Some("Accept: application/json\r\n"));
+    (format!("http://{}:{}/video/:/transcode/universal/start.mkv?{base}", cfg.host, cfg.port), body)
+}
+
+/// Read the transcoder's OUTPUT codecs from a /decision response and store them as the stream
+/// codecs the Load payload is built from. The decision's Part.Stream[].codec is the codec each
+/// lane will actually ARRIVE in (it equals the source codec only when that lane is copied).
+/// Assuming "a container remux copies the audio" broke mp4 items whose audio PMS re-encodes to
+/// the transcode-target's AC3: the payload said AAC, the stream carried AC3, and the
+/// configured-for-AAC pipeline played silence (Hannah Montana).
+fn apply_decision_codecs(body: &[u8]) {
+    let v: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return,
     };
-    let sub_p = if BURN_FALLBACK {
-        match cur_sub_sid() {
-            0 => String::new(),
-            s => format!("&subtitleStreamID={s}&subtitleSize=100&subtitles=burn"),
+    let streams = match v
+        .pointer("/MediaContainer/Metadata/0/Media/0/Part/0/Stream")
+        .and_then(|s| s.as_array())
+    {
+        Some(s) => s,
+        None => return,
+    };
+    // PMS sometimes string-encodes numbers — accept both forms for streamType.
+    let ty_of = |s: &serde_json::Value| {
+        s.get("streamType")
+            .map(|x| x.as_i64().or_else(|| x.as_str().and_then(|t| t.parse().ok())).unwrap_or(0))
+            .unwrap_or(0)
+    };
+    let codec_of = |s: &serde_json::Value| s.get("codec").and_then(|x| x.as_str()).map(|c| c.to_lowercase());
+    let (mut vc, mut ac) = (None, None);
+    for s in streams {
+        match ty_of(s) {
+            1 if vc.is_none() => vc = codec_of(s),
+            2 if ac.is_none() => ac = codec_of(s),
+            _ => {}
         }
-    } else {
-        String::new()
-    };
-    format!(
-        "path=%2Flibrary%2Fmetadata%2F{rk}&mediaIndex=0&partIndex=0&protocol=http\
-         &directPlay=0&directStream=1&directStreamAudio=1\
-         {audio_p}{sub_p}\
-         &session={session}&X-Plex-Session-Identifier={session}{id}\
-         &X-Plex-Client-Profile-Name=Generic&X-Plex-Client-Profile-Extra={profe}&X-Plex-Token={tok}",
-        id = identity_qs(),
-        tok = cfg.token
-    )
+    }
+    unsafe {
+        if let Some(vc) = vc {
+            *addr_of_mut!(STREAM_VCODEC) = vc;
+        }
+        if let Some(ac) = ac {
+            *addr_of_mut!(STREAM_ACODEC) = ac;
+        }
+    }
+    crate::player::log(&format!("decision output: v={} a={}", stream_vcodec(), stream_acodec()));
 }
 
 /// Select the audio + subtitle streams server-side for the current part before a
@@ -346,9 +375,7 @@ fn put_selection(cfg: &Cfg) {
     if part <= 0 {
         return;
     }
-    // subtitleStreamID=0 keeps the video burn-free (the soft WebVTT sidecar carries the
-    // chosen sub instead); only BURN_FALLBACK selects a sub for the server to burn.
-    let (aud, sub) = (cur_audio_sid(), if BURN_FALLBACK { cur_sub_sid() } else { 0 });
+    let (aud, sub) = (cur_audio_sid(), cur_sub_sid());
     let mut p = format!("/library/parts/{part}?allParts=1&subtitleStreamID={sub}");
     if aud > 0 {
         p.push_str(&format!("&audioStreamID={aud}"));
@@ -356,23 +383,6 @@ fn put_selection(cfg: &Cfg) {
     p.push_str(&format!("&X-Plex-Token={}", cfg.token));
     let st = crate::stream::http_put(&cfg.host, cfg.port, &p);
     crate::player::log(&format!("select streams: part={part} audio={aud} sub={sub} -> HTTP {st}"));
-}
-
-/// Build the soft-WebVTT sidecar URL for `sub_sid` at `offset_secs` on the CURRENT
-/// transcode session. Same universal params as start.mkv (TBASE, burn-free) plus
-/// &subtitleStreamID=…&subtitles=auto (NOT burn) + &offset — Plex returns text/vtt
-/// streamed in lock-step with the video. None if not transcoding / no sub selected.
-pub(crate) fn transcode_subtitles_url(sub_sid: i64, offset_secs: i64) -> Option<String> {
-    if transcode_session().is_empty() || sub_sid <= 0 {
-        return None;
-    }
-    let base = unsafe { (*addr_of!(TBASE)).clone() };
-    if base.is_empty() {
-        return None;
-    }
-    let cfg = unsafe { (*addr_of!(CFG)).as_ref()? };
-    let q = format!("{base}&subtitleStreamID={sub_sid}&subtitles=auto&offset={}", offset_secs.max(0));
-    Some(format!("http://{}:{}/video/:/transcode/universal/subtitles?{q}", cfg.host, cfg.port))
 }
 
 /// Fresh opaque session id per playback. Reads the kernel UUID (the TV is Linux); falls
@@ -505,7 +515,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     } else if rk.is_empty() {
         false
     } else {
-        server_decision(rk, cfg).unwrap_or_else(|| matches!(acodec, "aac" | "ac3" | "eac3"))
+        server_decision(rk, cfg).unwrap_or_else(|| is_dp_audio(acodec))
     };
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
@@ -562,10 +572,10 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
     unsafe { *addr_of_mut!(TBASE) = base.clone() };
     put_selection(cfg); // audio/subtitle selection drives the encode/remux + burn
-    // the universal transcoder needs /decision to REGISTER the session before start.mkv streams
-    let dpath = format!("/video/:/transcode/universal/decision?{base}");
-    let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
-    let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{base}", cfg.host, cfg.port);
+    let (url, dbody) = register_and_start_url(cfg, &base);
+    if let Some(b) = dbody {
+        apply_decision_codecs(&b); // the Load payload must match the server's ACTUAL output
+    }
     (url, session)
 }
 
@@ -583,7 +593,7 @@ const PREF_AUDIO_LANG: &str = "eng";
 ///   3. any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling — smart-DP).
 /// None when NO audio track is direct-playable (→ transcode). Fetches the track list once.
 fn pick_dp_audio(rk: &str, default_acodec: &str) -> Option<(i32, String)> {
-    let dp = |c: &str| matches!(c, "aac" | "ac3" | "eac3");
+    let dp = is_dp_audio;
     let tracks = crate::metadata::audio_tracks(rk);
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
@@ -636,13 +646,7 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
     if rating.is_empty() {
         rating = "NR".into();
     }
-    let mins = m.dur_ns / 60_000_000_000;
-    let (hh, mm) = ((mins / 60) as i32, (mins % 60) as i32);
-    let ctx = if hh > 0 {
-        format!("{} \u{b7} {} \u{b7} {}h {}m", m.year, rating, hh, mm)
-    } else {
-        format!("{} \u{b7} {} \u{b7} {}m", m.year, rating, mm)
-    };
+    let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
     unsafe {
         set_c(addr_of_mut!(TITLE) as *mut c_char, 128, &title);
         set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, &ctx);
@@ -714,9 +718,10 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     }
     put_selection(cfg); // audio/subtitle selection drives the encode + burn
     let obase = format!("{base}&offset={}", offset_secs.max(0));
-    let dpath = format!("/video/:/transcode/universal/decision?{obase}");
-    let _ = crate::stream::http_get(&cfg.host, cfg.port, &dpath, None);
-    let url = format!("http://{}:{}/video/:/transcode/universal/start.mkv?{obase}", cfg.host, cfg.port);
+    let (url, dbody) = register_and_start_url(cfg, &obase);
+    if let Some(b) = dbody {
+        apply_decision_codecs(&b); // reload builds a fresh Load payload — match the real output
+    }
     set_url(&url);
     crate::player::log(&format!(
         "retranscode rk={rk} audio={} sub={} offset={offset_secs} -> {url}",
@@ -734,4 +739,30 @@ pub(crate) fn switch_audio(stream_id: i64, offset_secs: i64) -> Option<String> {
     // transcoder encodes the part's SELECTED audio, and only a PUT changes it (a query-param
     // or GET is a no-op).
     retranscode(offset_secs)
+}
+
+// ---- selection commits: playback POLICY for the in-player track menu. The menu only reports
+// what row was picked; whether that means a native stream switch, a server re-transcode, or a
+// burn refresh is decided HERE, next to the codec sets and the transcode state it depends on. ----
+
+/// Commit an audio-track pick: NATIVE switch (feed the chosen stream from the same direct-play
+/// file — no transcode, keeps 4K HEVC) when the item direct-plays AND the target codec is
+/// direct-playable; else a server re-transcode with that stream selected.
+pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
+    if !is_transcoding() && is_dp_audio(codec) {
+        crate::player::request_audio_track(idx, codec);
+    } else {
+        crate::player::request_audio_switch(stream_id);
+    }
+}
+
+/// Commit a subtitle pick (`sub_idx` -1 = Off): gate the client-side renderer (direct-play path)
+/// and select the burn stream for any transcode of the item — refreshing a live transcode so the
+/// server re-burns (or drops) it.
+pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
+    crate::player::request_subtitle(sub_idx);
+    set_subtitle(stream_id);
+    if is_transcoding() {
+        crate::player::request_transcode_refresh();
+    }
 }

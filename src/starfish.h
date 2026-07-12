@@ -17,7 +17,6 @@ int  sf_is_load_completed(void);
 int  sf_play(void);
 int  sf_pause(void);
 int  sf_flush(void);
-void sf_set_playtime(long long t);
 int  sf_set_time_to_decode(long long position_ns); /* Kodi in-place seek: setTimeToDecode (returns 0 on webOS<11) */
 int  sf_set_content_info(long long position_ns);   /* webOS<11 in-place seek: loadSpi_getInfo + setContentInfo(ptsToDecode); 0 = pipeline not reachable */
 int  sf_send_segment(void);                        /* Kodi in-place seek: CustomPipeline::sendSegmentEvent; 0 = pipeline not reachable */
@@ -31,7 +30,6 @@ void acb_bind(const char *mediaId);                        /* setSinkType(MAIN)+
 int  acb_send_video_data(const char *sourceInfoVerbatim);  /* setMediaVideoData; -1 = rejected */
 void acb_start(long x, long y, long w, long h);            /* setDisplayWindow + setState(PLAYING) */
 void acb_unload(void);                                     /* setState(UNLOADED) */
-void acb_destroy(void);                                    /* finalize + destroy */
 
 /* ---- library-thread callbacks the seam forwards to (consumer-defined) ---- */
 void sf_on_event(int type, long long num, const char *str);

@@ -45,11 +45,18 @@ impl Client {
     }
 
     /// Swap the `X-Plex-Token` at runtime (Plex Home profile switch — same server, new per-user
-    /// token). Cheap; the next request picks it up via [`Client::with_token`].
+    /// token). Cheap; the next request picks it up via [`Client::with_token`]. Bumps the token
+    /// generation so token-baked caches (the poster key memo) invalidate.
     pub fn set_token(&self, token: &str) {
         if let Ok(mut g) = self.token.write() {
             *g = token.to_owned();
         }
+        TOKEN_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Monotonic token generation — bumped by [`Client::set_token`]; caches keyed on paths that
+    /// embed the token compare this to know when to flush.
+    pub fn token_gen(&self) -> u32 {
+        TOKEN_GEN.load(std::sync::atomic::Ordering::Relaxed)
     }
     pub fn host(&self) -> &str {
         &self.host
@@ -122,6 +129,7 @@ impl Client {
 
 // ---- shared singleton (built once in plex_run, read everywhere) ----
 static PLEX: OnceLock<Client> = OnceLock::new();
+static TOKEN_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Install the process-wide `Client` (call once at boot). No-op if already set.
 pub fn init(host: &str, port: i32, token: &str) {

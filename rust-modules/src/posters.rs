@@ -55,10 +55,6 @@ impl Store {
 static STORE: Mutex<Store> = Mutex::new(Store::new());
 static CV: Condvar = Condvar::new();
 
-extern "C" {
-    fn glDeleteTextures(n: c_int, textures: *const c_uint);
-}
-
 fn store() -> MutexGuard<'static, Store> {
     STORE.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -71,8 +67,9 @@ unsafe fn cstr(p: *const c_char) -> String {
     }
 }
 
-unsafe fn gl_delete(t: c_uint) {
-    glDeleteTextures(1, &t);
+/// delete a poster texture on the GL/main thread (gfx owns the GL bindings)
+fn gl_delete(t: c_uint) {
+    crate::gfx::delete_tex(t);
 }
 
 fn key_bytes(s: &Pslot) -> &[u8] {
@@ -80,11 +77,19 @@ fn key_bytes(s: &Pslot) -> &[u8] {
     &s.key[..n]
 }
 fn set_key(s: &mut Pslot, key: &str) {
-    let b = key.as_bytes();
-    let n = b.len().min(s.key.len() - 1);
-    s.key = [0; 256];
-    s.key[..n].copy_from_slice(&b[..n]);
+    crate::cbuf::set_bytes(&mut s.key, key);
 }
+
+// (path, w, h, png) → built transcode path, memoised. resolve_tex re-derives the key for every
+// visible art tile every frame (~25-40 tiles × 60fps); the QueryBuilder + token clone behind
+// image_transcode_path was ~15k heap allocs/sec of steady-state waste for keys that never change.
+// MAIN-thread only (all poster_key callers are draw paths). Invalidated when the client token
+// changes (profile switch — the token is baked into the path).
+struct KeyMemo {
+    token_gen: u32,
+    map: std::collections::HashMap<(String, c_int, c_int, bool), String>,
+}
+static mut KEY_MEMO: Option<KeyMemo> = None;
 
 /// Build the transcode request path (also the store key). png=1 -> transparent clearLogo.
 /// The path (and token) come from the typed client's `image_transcode_path` — the one place
@@ -94,13 +99,46 @@ pub(crate) fn poster_key(dst: *mut c_char, cap: usize, src_path: *const c_char, 
         return;
     }
     unsafe {
-        let s = crate::plex::client().image_transcode_path(&cstr(src_path), w as i64, h as i64, png != 0);
+        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo {
+            token_gen: crate::plex::client().token_gen(),
+            map: std::collections::HashMap::new(),
+        });
+        let gen = crate::plex::client().token_gen();
+        if memo.token_gen != gen || memo.map.len() > 1024 {
+            memo.token_gen = gen;
+            memo.map.clear();
+        }
+        let k = (cstr(src_path), w, h, png != 0);
+        let s = memo
+            .map
+            .entry(k)
+            .or_insert_with_key(|k| crate::plex::client().image_transcode_path(&k.0, w as i64, h as i64, png != 0));
         let out = std::slice::from_raw_parts_mut(dst as *mut u8, cap);
         let b = s.as_bytes();
         let n = b.len().min(cap - 1);
         out[..n].copy_from_slice(&b[..n]);
         out[n] = 0;
     }
+}
+
+/// Resolve an item's clearLogo (transparent PNG) to a GL texture, aspect-fit into `max_w`×`max_h`.
+/// `Some((tex, w, h))` once loaded; `None` while pending or when the item has no logo. The ONE
+/// clearLogo resolve (home hero, detail hero, detail compact title all draw through it).
+pub(crate) fn logo_tex(rk: &str, max_w: f32, max_h: f32) -> Option<(c_uint, f32, f32)> {
+    if rk.is_empty() {
+        return None;
+    }
+    let lpath = std::ffi::CString::new(format!("/library/metadata/{rk}/clearLogo")).ok()?;
+    let mut key = [0u8; 352];
+    poster_key(key.as_mut_ptr() as *mut c_char, key.len(), lpath.as_ptr(), 600, 240, 1);
+    let tex = poster_get(key.as_ptr() as *const c_char);
+    let (mut lw, mut lh) = (0i32, 0i32);
+    poster_wh(key.as_ptr() as *const c_char, &mut lw, &mut lh);
+    if tex == 0 || lw <= 0 || lh <= 0 {
+        return None;
+    }
+    let s = (max_h / lh as f32).min(max_w / lw as f32);
+    Some((tex, lw as f32 * s, lh as f32 * s))
 }
 
 /// MAIN thread. READY texture for key, else 0 (claim a slot + enqueue fetch on miss).
@@ -159,10 +197,8 @@ pub(crate) fn poster_get(key: *const c_char) -> c_uint {
     }
     drop(g);
     // free the evicted resources off-lock (poster_get is the GL/main thread)
-    unsafe {
-        if old_tex != 0 {
-            gl_delete(old_tex);
-        }
+    if old_tex != 0 {
+        gl_delete(old_tex);
     }
     if old_px != 0 {
         img::img_free(old_px as *mut c_uchar);
@@ -241,7 +277,7 @@ pub(crate) fn poster_pump(budget: c_int) {
             }
         };
         if stale != 0 {
-            unsafe { gl_delete(stale) };
+            gl_delete(stale);
         }
     }
 }
@@ -336,7 +372,7 @@ pub(crate) fn posters_shutdown() {
     }
     for (tex, px) in to_free {
         if tex != 0 {
-            unsafe { gl_delete(tex) };
+            gl_delete(tex);
         }
         if px != 0 {
             img::img_free(px as *mut c_uchar);

@@ -76,9 +76,6 @@ impl Resp {
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
     }
-    pub fn text(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(&self.body)
-    }
 }
 
 /// Blocking HTTPS request. `headers` are full `"Name: value"` lines. `post_body` = `Some` for POST

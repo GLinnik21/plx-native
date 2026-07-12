@@ -2,33 +2,34 @@
 //! animated `TableView` (Apple-TV "settings" look — a sliding pill selection, section header with
 //! a codec accessory, per-row badges, a leading checkmark on the active track). app.rs routes
 //! D-pad/OK/BACK here while the menu is open; LEFT/RIGHT switch between the Audio and Subtitles
-//! panels. The selection commit (native audio switch / server transcode / soft-subs) is unchanged
+//! panels. The selection commit (native audio switch / server transcode / burn) is unchanged
 //! from the previous procedural version — only the presentation moved onto the table.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::popover::Popover;
 use crate::ui::table::{Badge, Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::{Painter, Rect, Spring};
+use crate::ui::Rect;
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
 
-const SCR_W: f32 = 1920.0;
-const SCR_H: f32 = 1080.0;
-
-static mut OPEN: bool = false;
+static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut TAB: c_int = 0; // 0=Audio, 1=Subtitles
 static mut ACTIVE_AUDIO: c_int = 0; // index into the audio list
 static mut ACTIVE_SUB: c_int = -1; // -1 = Off, else index into the subs list
-static mut APPEAR: Spring = Spring::at(0.0); // 0→1 fade+rise on open
+static mut FOR_RK: String = String::new(); // the item ACTIVE_* belongs to (self-reset on change)
 static mut TABLE: TableView = TableView::new(); // main-thread only
 
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
 }
+fn pop() -> &'static mut Popover {
+    unsafe { &mut *addr_of_mut!(POP) }
+}
 
 pub(crate) fn is_open() -> bool {
-    unsafe { addr_of!(OPEN).read() }
+    unsafe { (*addr_of!(POP)).is_open() }
 }
 /// index into metadata audio list of the chosen audio track
 pub(crate) fn active_audio() -> c_int {
@@ -80,13 +81,26 @@ fn sel_for_tab(tab: c_int) -> c_int {
     }
 }
 
+/// Selections are PER-ITEM: if the loaded item changed since the selections were made, drop
+/// them (default audio, subs Off) so the menu never shows a stale checkmark from the previous
+/// item. Self-synced here on open — no caller has to remember a manual reset. Deliberately does
+/// NOT touch TAB: open_tab() has already chosen the tab when this runs.
+fn sync_item() {
+    let rk = metadata::current().map(|d| d.rk.clone()).unwrap_or_default();
+    if unsafe { (*addr_of!(FOR_RK)).as_str() } != rk {
+        unsafe {
+            *addr_of_mut!(FOR_RK) = rk;
+            addr_of_mut!(ACTIVE_AUDIO).write(0);
+            addr_of_mut!(ACTIVE_SUB).write(-1);
+        }
+    }
+}
+
 pub(crate) fn open() {
+    sync_item();
     let tab = unsafe { addr_of!(TAB).read() };
     rebuild(tab, false);
-    unsafe {
-        addr_of_mut!(APPEAR).write(Spring::at(0.0)); // start the fade+rise
-        addr_of_mut!(OPEN).write(true);
-    }
+    pop().open();
 }
 /// open focused on a specific tab (used by the on-screen audio/subs icons)
 pub(crate) fn open_tab(tab: c_int) {
@@ -94,18 +108,7 @@ pub(crate) fn open_tab(tab: c_int) {
     open();
 }
 pub(crate) fn close() {
-    unsafe { addr_of_mut!(OPEN).write(false) }
-}
-/// reset the active selections to defaults (call when a new item's detail opens, so
-/// the menu doesn't show a stale checkmark from the previous item)
-pub(crate) fn reset() {
-    unsafe {
-        addr_of_mut!(OPEN).write(false);
-        addr_of_mut!(TAB).write(0);
-        addr_of_mut!(ACTIVE_AUDIO).write(0);
-        addr_of_mut!(ACTIVE_SUB).write(-1);
-    }
-    table().set_sections(Vec::new(), 0, false);
+    pop().close();
 }
 
 pub(crate) fn move_focus(sym: c_int) {
@@ -128,60 +131,26 @@ pub(crate) fn move_focus(sym: c_int) {
 pub(crate) fn on_ok() {
     let tab = unsafe { addr_of!(TAB).read() };
     let sel = table().sel;
-    unsafe { addr_of_mut!(OPEN).write(false) }
+    pop().close();
     if tab == 0 {
         let changed = unsafe { addr_of!(ACTIVE_AUDIO).read() } != sel;
         unsafe { addr_of_mut!(ACTIVE_AUDIO).write(sel) }
         if changed {
-            // NATIVE switch when the item direct-plays AND the target track is a direct-playable
-            // codec (aac/ac3/eac3): just feed the other audio stream from the same MKV — no
-            // transcode, stays 4K HEVC. Else fall back to a server transcode (item already
-            // transcoding, or TrueHD/DTS target).
+            // the menu only reports the pick — native-switch vs re-transcode is route's policy
             let codec = metadata::current()
                 .and_then(|d| d.audio.get(sel.max(0) as usize))
                 .map(|s| s.codec.clone())
                 .unwrap_or_default();
-            let native = crate::route::transcode_session().is_empty()
-                && matches!(codec.as_str(), "aac" | "ac3" | "eac3");
-            if native {
-                crate::player::request_audio_track(sel, &codec);
-            } else {
-                crate::player::request_audio_switch(audio_stream_id());
-            }
+            crate::route::commit_audio_selection(sel, &codec, audio_stream_id());
         }
     } else {
         unsafe { addr_of_mut!(ACTIVE_SUB).write(sel - 1) } // row 0 = Off = -1
-        // gate the soft renderer on/off — this drives BOTH the direct-play demuxer path and (via
-        // desired_sub_idx >= 0) whether the transcode WebVTT cues render.
-        crate::player::request_subtitle(active_sub()); // -1 = off, else 0-based sub index
-        if crate::route::BURN_FALLBACK {
-            crate::route::set_subtitle(sub_stream_id());
-            if !crate::route::transcode_session().is_empty() {
-                crate::player::request_transcode_refresh();
-            }
-        } else {
-            crate::route::set_subtitle(0); // keep the video plane burn-free
-            crate::player::request_soft_subs(sub_stream_id()); // 0 = off
-        }
+        crate::route::commit_subtitle_selection(active_sub(), sub_stream_id());
     }
 }
 
 // ---- section building ----
-/// friendly codec name for the panel's header accessory ("Dolby Digital Plus", "DTS", …)
-fn friendly_codec(codec: &str) -> String {
-    match codec.to_lowercase().as_str() {
-        "truehd" => "Dolby TrueHD".to_string(),
-        "eac3" | "ec-3" => "Dolby Digital Plus".to_string(),
-        "ac3" => "Dolby Digital".to_string(),
-        "dts" | "dca" => "DTS".to_string(),
-        "aac" => "AAC".to_string(),
-        "flac" => "FLAC".to_string(),
-        "opus" => "Opus".to_string(),
-        "mp3" => "MP3".to_string(),
-        other if other.is_empty() => String::new(),
-        other => other.to_uppercase(),
-    }
-}
+use crate::metadata::friendly_codec; // the ONE codec→display-name map (shared with the Info card)
 
 /// Image (bitmap) subtitle codecs — PGS/VobSub/DVD/DVB. The demuxer software-decodes these to
 /// RGBA and the player composites them over the video, so they render on the direct-play path;
@@ -305,8 +274,7 @@ pub(crate) fn update(dt: f32) {
     if !is_open() {
         return;
     }
-    let sp = unsafe { &mut *addr_of_mut!(APPEAR) };
-    sp.step(1.0, 300.0, dt);
+    pop().update(dt);
     let ph = panel_rect().h;
     table().update(dt, ph - 40.0); // minus the panel's top/bottom padding
 }
@@ -315,15 +283,10 @@ pub(crate) fn draw() {
     if !is_open() {
         return;
     }
-    let appear = unsafe { addr_of!(APPEAR).read() }.pos.clamp(0.0, 1.0);
-    // modal scrim over the whole screen (dims the video plane showing through). Its own root
-    // Painter — the panel's appear-alpha/rise below must not fold into the full-screen dim.
-    let dim = theme::scrim_black(0.58 * appear);
-    Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
-
+    // modal scrim (dims the video plane showing through) + the appear fade/rise, via the shared
+    // Popover choreography.
+    let p = pop().painter(0.58, 20.0);
     let r = panel_rect();
-    let rise = (1.0 - appear) * 20.0; // slide up into place
-    let p = Painter::root().alpha(appear).translate(0.0, rise);
 
     // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
     // dark card approximates it); only a hint of video shows through

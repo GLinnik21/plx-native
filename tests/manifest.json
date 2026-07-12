@@ -130,7 +130,8 @@
       "covers": [
         "hevc+aac",
         "mp4-container",
-        "sidecar-subs"
+        "sidecar-subs",
+        "decision-output-codecs"
       ],
       "run_secs": 60,
       "operations": [
@@ -139,7 +140,8 @@
         }
       ],
       "expect": {
-        "decision": "directplay",
+        "_note": "mp4 containers deliberately go to the server (b1002de: the reopen-per-seek AVIO cannot stream mp4); PMS converts this one to hevc+ac3, and the Load payload must pick the OUTPUT codecs up from the /decision response (the old directplay expectation predated the container gate).",
+        "decision": "transcode",
         "codec_id": 174,
         "min_video_width": 1900,
         "min_timeline_climb_s": 15,

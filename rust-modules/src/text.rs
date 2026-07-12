@@ -100,6 +100,7 @@ static mut TEXT_OK: c_int = 0;
 #[derive(Clone, Copy)]
 struct TCacheEntry {
     s: [u8; 96],
+    hash: u64, // key hash (string+sz+bold) — a cheap pre-compare before the byte memcmp
     sz: c_int,
     bold: c_int,
     tex: c_uint,
@@ -113,7 +114,19 @@ struct TCacheEntry {
 }
 impl TCacheEntry {
     const ZERO: TCacheEntry =
-        TCacheEntry { s: [0; 96], sz: 0, bold: 0, tex: 0, w: 0, h: 0, ink_t: 0, ink_b: 0, use_: 0 };
+        TCacheEntry { s: [0; 96], hash: 0, sz: 0, bold: 0, tex: 0, w: 0, h: 0, ink_t: 0, ink_b: 0, use_: 0 };
+}
+
+/// the cache key hash: string bytes + size + bold. The per-frame lookup is a linear scan of all
+/// 160 slots (~80-100 text ops/frame on the detail page); comparing one u64 first makes the
+/// non-matching 159 probes a single integer compare instead of a size/bold/byte-key memcmp each.
+fn key_hash(s: &[u8], sz: c_int, bold: c_int) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    sz.hash(&mut h);
+    bold.hash(&mut h);
+    h.finish()
 }
 // Big enough to hold every distinct string visible in one frame WITHOUT eviction. The detail About
 // panel (~30 runs) + Cast row (~14) + episodes/related/hero titles push well past ~48; at that point
@@ -124,12 +137,7 @@ const TCACHE: usize = 160;
 static mut TCACHE_A: [TCacheEntry; TCACHE] = [TCacheEntry::ZERO; TCACHE];
 static mut TCLOCK: c_uint = 0;
 
-fn log(m: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
-        let _ = writeln!(f, "{m}");
-    }
-}
+use crate::log;
 
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     let sz = sz.clamp(8, 79) as usize;
@@ -224,10 +232,11 @@ unsafe fn surface_ink_v(surf: *const SdlSurface) -> (c_int, c_int) {
 
 /// returns (GL texture id (0 on failure), w, h, ink_top, ink_bottom)
 unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -> (c_uint, c_int, c_int, c_int, c_int) {
+    let hash = key_hash(s_bytes, sz, bold);
     {
         let cache = &mut *addr_of_mut!(TCACHE_A);
         for e in cache.iter_mut() {
-            if e.tex != 0 && e.sz == sz && e.bold == bold && entry_key(e) == s_bytes {
+            if e.hash == hash && e.tex != 0 && e.sz == sz && e.bold == bold && entry_key(e) == s_bytes {
                 TCLOCK = TCLOCK.wrapping_add(1);
                 e.use_ = TCLOCK;
                 return (e.tex, e.w, e.h, e.ink_t, e.ink_b);
@@ -273,6 +282,7 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
         glDeleteTextures(1, &cache[slot].tex);
     }
     set_entry_key(&mut cache[slot], s_bytes);
+    cache[slot].hash = hash;
     cache[slot].sz = sz;
     cache[slot].bold = bold;
     cache[slot].tex = tex;

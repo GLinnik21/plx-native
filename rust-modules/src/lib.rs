@@ -4,6 +4,7 @@
 //! posters, text, gfx, system, ui_home.
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
+mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
 mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — replaces mkv.rs (TV ships FFmpeg 3.4)
 mod gfx;
@@ -21,4 +22,12 @@ mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon ass
 mod system;
 mod text;
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
-mod webvtt; // streaming WebVTT parser (soft subtitles during transcode)
+
+/// Append one line to the on-device event log (`/tmp/poc-events.log`) — the primary debugging
+/// surface (`make run` fetches it). The ONE shared sink; modules bring it in as `use crate::log;`.
+pub(crate) fn log(m: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
+        let _ = writeln!(f, "{m}");
+    }
+}

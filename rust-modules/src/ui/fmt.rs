@@ -1,0 +1,36 @@
+//! Tiny shared display formatters — ONE home for the duration/clock strings so the same value
+//! can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min"
+//! drift this replaces).
+
+/// Compact duration for meta lines — "2h 15m" / "45m" (Info card tags, player HUD context).
+pub(crate) fn dur_short(ms: i64) -> String {
+    let mins = (ms / 60_000).max(0);
+    let (h, m) = (mins / 60, mins % 60);
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
+}
+
+/// Spelled-out duration — "2 hr 15 min" / "45 min" (detail hero + About "Run Time").
+pub(crate) fn dur_long(ms: i64) -> String {
+    let mins = (ms / 60_000).max(0);
+    let (h, m) = (mins / 60, mins % 60);
+    if h > 0 {
+        format!("{h} hr {m} min")
+    } else {
+        format!("{m} min")
+    }
+}
+
+/// Playback clock — "1:23:45" past the hour, else "3:45" (scrubber clocks, chapter stamps).
+pub(crate) fn clock(ms: i64) -> String {
+    let s = (ms / 1000).max(0);
+    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{sec:02}")
+    } else {
+        format!("{m}:{sec:02}")
+    }
+}
