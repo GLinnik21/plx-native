@@ -1,10 +1,19 @@
-# plexpoc — native webOS build (cross-compiled from macOS with zig cc)
+# plexpoc — native webOS build (cross-compiled from macOS with the webOS NDK)
 #
-# The TV (LG 49SM9000PLA, webOS 4.5, 32-bit ARM userspace) links against its
-# own libraries at runtime; we link against hand-written stub .so files that
-# carry the TV's real SONAMEs (see stub/*.c).
+# Toolchain: the webosbrew "native-toolchain" buildroot SDK (GCC 12, glibc 2.12,
+# armv7-a soft-float). Install it once with `make setup-env` (or see the
+# setup-environment skill); override the location with WEBOS_SDK=… if you put it
+# elsewhere. The SDK ships a real sysroot with the TV's own SONAME'd libraries
+# (SDL2/GLESv2/wayland/glib/luna-service2 + LG's libAcbAPI/libplayerAPIs/libpf),
+# so we link against the real thing — no more hand-written stubs for those.
+#
+# Only two library families are NOT in the sysroot and still use the link-time
+# stub trick (empty symbol bodies carrying the TV's exact SONAME, resolved to the
+# TV's real libs at runtime): FFmpeg (libav*.so.57/.55) and libcurl.so.5 (the
+# sysroot ships curl .so.4, but the TV wants .so.5). See stub/*.c.
 #
 # make          — build pkg/plexpoc
+# make setup-env— download+extract+relocate the NDK into $(WEBOS_SDK)
 # make deploy   — scp binary + appinfo to the TV (rooted, root@TV)
 # make run      — launch on TV, keep alive $(RUN_SECS)s, fetch event log
 # make test     — build + deploy + run
@@ -17,80 +26,93 @@ SCP       = sshpass -p alpine scp -O -o StrictHostKeyChecking=no -o UserKnownHos
 APPDIR    = /media/developer/apps/usr/palm/applications/com.glin.plexpoc
 RUN_SECS ?= 18
 
-ZIG       = zig cc -target arm-linux-gnueabi.2.24 -mcpu=cortex_a53
-CFLAGS    = -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE  # -Isrc: module cross-headers; -Ivendor/nanosvg: runtime SVG rasterizer (src/svg.c); -D_GNU_SOURCE: strcasestr
-LIBS      = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 -lAcbAPI \
-            -lwayland-client -lplayerAPIs -lavformat -lavcodec -lavutil -lcurl
-STUBFLAGS = -shared -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables
+# --- webOS NDK toolchain -----------------------------------------------------
+WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
+TOOLPREFIX   = $(WEBOS_SDK)/bin/arm-webos-linux-gnueabi-
+CC           = $(TOOLPREFIX)gcc
+AR           = $(TOOLPREFIX)ar
+SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
+# NDK gcc default target is cortex-a9 / armv7-a / soft-float — portable across
+# webOS 3–6 and safe on the A53 (ARMv7 barriers are `dmb`, not the ARMv6 CP15
+# `mcr p15` that SIGILLs on ARMv8). So we do NOT pin -mcpu here.
+CFLAGS       = --sysroot=$(SYSROOT) -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
+# -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
+# the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
 
-STUBS = stub/libSDL2.so stub/libSDL2_ttf.so stub/libGLESv2.so \
-        stub/libwayland-client.so stub/libluna-service2.so stub/libglib-2.0.so \
-        stub/libAcbAPI.so stub/libplayerAPIs.so \
-        stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libcurl.so
+# Real sysroot libraries (SONAMEs already match the TV's DT_NEEDED):
+#   libpf-1.0 carries mediapipeline::CustomPipeline (the webOS<11 seek path).
+LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 -lAcbAPI \
+            -lwayland-client -lplayerAPIs -lpf-1.0
+# Stub-only libraries (not in the sysroot): FFmpeg + curl.so.5.
+LIBS_STUB = -lavformat -lavcodec -lavutil -lcurl
+
+STUBFLAGS = -fPIC -shared -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables
+STUBS = stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libcurl.so
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
-# C++/ACB seam). The former per-module C sources (aq/gfx/img/mkv/pms/posters/stream/
-# system/text/ui_home/playback) were deleted after porting.
+# C++/ACB seam) + svg.c (nanosvg rasterizer).
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
-RUST_TARGET = arm-unknown-linux-gnueabi.2.24
-RUST_LIB    = rust-modules/target/arm-unknown-linux-gnueabi/release/libplexpoc_modules.a
+RUST_TARGET = arm-unknown-linux-gnueabi
+RUST_LIB    = rust-modules/target/$(RUST_TARGET)/release/libplexpoc_modules.a
 
-SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))   # = main.c + starfish.c
+SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))   # = main.c + starfish.c + svg.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plexpoc
 
 # per-file compile; each object depends on ALL headers so a header edit rebuilds all
 src/%.o: src/%.c $(wildcard src/*.h)
-	$(ZIG) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# Rust staticlib (cargo-zigbuild → same armv7 soft-float glibc-2.24 target).
-# CRITICAL codegen flags for this TV (32-bit ARMv8/A53):
-#  - target-cpu=cortex-a53: default arm-*-gnueabi (ARMv6) codegen emits the legacy
-#    CP15 memory barrier (mcr p15,...,c7,c10,5), UNDEFINED on the A53 (ARMv8) →
-#    SIGILL. A53 emits the dedicated `dmb` (like the C build's -mcpu=cortex_a53).
+# Rust staticlib (built-in arm-unknown-linux-gnueabi target = soft-float ABI,
+# matching the NDK's softfp calling convention). A staticlib needs no linker, so
+# this needs only the nightly compiler + rust-src — no external cross-linker.
+# CRITICAL codegen flags for this TV (32-bit ARMv7+ / A53):
+#  - target-cpu=cortex-a9: the default arm-*-gnueabi (ARMv6) codegen emits the
+#    legacy CP15 memory barrier (mcr p15,...,c7,c10,5), UNDEFINED on the A53
+#    (ARMv8) → SIGILL. cortex-a9 (ARMv7-A) emits the dedicated `dmb`, matching
+#    the C side's default and staying portable to older ARMv7 webOS devices.
 #  - target-feature=-neon: NEON isn't needed (VFP still on for floats), and it
 #    dodges crates (simd-adler32, ...) whose NEON path uses unstable intrinsics.
 #  - -Z build-std: rebuilds std itself with these flags (precompiled std shipped
 #    the CP15 barriers), so needs the nightly toolchain + rust-src.
-RUSTFLAGS_TV = -C target-cpu=cortex-a53 -C target-feature=-neon
+RUSTFLAGS_TV = -C target-cpu=cortex-a9 -C target-feature=-neon
 $(RUST_LIB): $(wildcard rust-modules/src/*.rs rust-modules/src/ui/*.rs rust-modules/src/player/*.rs rust-modules/src/plex/*.rs) rust-modules/Cargo.toml
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" RUSTFLAGS="$(RUSTFLAGS_TV)" \
-	  cargo +nightly zigbuild -Z build-std=std,panic_unwind --release --target $(RUST_TARGET)
+	  cargo +nightly build -Z build-std=std,panic_unwind --release --target $(RUST_TARGET)
 
-# link C objects + the Rust staticlib (+ Rust std's deps: dl/pthread/m + the
-# ARM-EHABI unwinder its precompiled std references; -lunwind is zig's, static)
+# link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
+# unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
+# -Lstub first so the curl.so.5 stub wins over the sysroot's curl.so.4.
 pkg/plexpoc: $(OBJS) $(RUST_LIB) $(STUBS)
-	$(ZIG) $(OBJS) $(RUST_LIB) -Lstub $(LIBS) -ldl -lpthread -lm -lunwind -o $@
+	$(CC) $(CFLAGS) $(OBJS) $(RUST_LIB) -Lstub $(LIBS_REAL) $(LIBS_STUB) -ldl -lpthread -lm -o $@
 
-# stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly)
-stub/libSDL2.so: stub/sdl_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libSDL2-2.0.so.0 -o $@ $<
-stub/libSDL2_ttf.so: stub/sdl_ttf_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libSDL2_ttf-2.0.so.0 -o $@ $<
-stub/libGLESv2.so: stub/gl_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libGLESv2.so.2 -o $@ $<
-stub/libwayland-client.so: stub/wl_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libwayland-client.so.0 -o $@ $<
-stub/libluna-service2.so: stub/ls2_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libluna-service2.so.3 -o $@ $<
-stub/libglib-2.0.so: stub/glib_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libglib-2.0.so.0 -o $@ $<
-stub/libAcbAPI.so: stub/acb_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libAcbAPI.so.1 -o $@ $<
-stub/libplayerAPIs.so: stub/starfish_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libplayerAPIs.so.1 -o $@ $<
-# FFmpeg (present on the TV): demux + bitstream filters + HTTP. SONAMEs must match DT_NEEDED.
+# stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly).
+# FFmpeg (demux + bitstream filters) + libcurl (HTTPS/DNS/TLS for plex.tv login).
 stub/libavformat.so: stub/avformat_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavformat.so.57 -o $@ $<
+	$(CC) $(STUBFLAGS) -Wl,-soname,libavformat.so.57 -o $@ $<
 stub/libavcodec.so: stub/avcodec_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavcodec.so.57 -o $@ $<
+	$(CC) $(STUBFLAGS) -Wl,-soname,libavcodec.so.57 -o $@ $<
 stub/libavutil.so: stub/avutil_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libavutil.so.55 -o $@ $<
-# libcurl (present on the TV): HTTPS/DNS/TLS for the plex.tv account+login calls (net.rs).
+	$(CC) $(STUBFLAGS) -Wl,-soname,libavutil.so.55 -o $@ $<
 stub/libcurl.so: stub/curl_stub.c
-	$(ZIG) $(STUBFLAGS) -Wl,-soname,libcurl.so.5 -o $@ $<
+	$(CC) $(STUBFLAGS) -Wl,-soname,libcurl.so.5 -o $@ $<
+
+# --- NDK bootstrap -----------------------------------------------------------
+# Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
+NDK_REL ?= webos-d7ed7ee.6
+NDK_HOST := $(shell uname -m | sed 's/arm64/arm64/;s/x86_64/x86_64/')
+NDK_TARBALL = arm-webos-linux-gnueabi_sdk-buildroot_darwin-$(NDK_HOST).tar.bz2
+NDK_URL = https://github.com/webosbrew/native-toolchain/releases/download/$(NDK_REL)/$(NDK_TARBALL)
+setup-env:
+	@test -x $(CC) && { echo "NDK already present at $(WEBOS_SDK)"; exit 0; } || true
+	mkdir -p $(dir $(WEBOS_SDK))
+	curl -fL -o $(dir $(WEBOS_SDK))/ndk.tar.bz2 "$(NDK_URL)"
+	tar xjf $(dir $(WEBOS_SDK))/ndk.tar.bz2 -C $(dir $(WEBOS_SDK))
+	cd $(WEBOS_SDK) && ./relocate-sdk.sh
+	rm -f $(dir $(WEBOS_SDK))/ndk.tar.bz2
+	@echo "NDK ready: $$($(CC) --version | head -1)"
 
 # tmp+mv so deploy works while the old binary is still executing (ETXTBSY)
 deploy: pkg/plexpoc
@@ -119,7 +141,7 @@ clean:
 
 test: deploy run
 
-# ipk assembly: deb-style ar archive; zig ar emits GNU format (macOS ar is BSD)
+# ipk assembly: deb-style ar archive; the NDK ar emits GNU format (macOS ar is BSD)
 ipk: pkg/plexpoc
 	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.glin.plexpoc
 	cp pkg/plexpoc pkg/appinfo.json pkg/icon.png pkg/largeIcon.png \
@@ -128,8 +150,8 @@ ipk: pkg/plexpoc
 	  tar czf data.tar.gz -C data usr && \
 	  printf '2.0\n' > debian-binary
 	rm -f pkg/com.glin.plexpoc_0.1.0_arm.ipk
-	cd ipkroot && zig ar rc ../pkg/com.glin.plexpoc_0.1.0_arm.ipk \
+	cd ipkroot && $(AR) rc ../pkg/com.glin.plexpoc_0.1.0_arm.ipk \
 	  debian-binary control.tar.gz data.tar.gz
 	shasum -a 256 pkg/com.glin.plexpoc_0.1.0_arm.ipk | tee pkg/ipk.sha256
 
-.PHONY: all deploy run kill test ipk clean
+.PHONY: all setup-env deploy run kill test ipk clean

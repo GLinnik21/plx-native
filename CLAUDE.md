@@ -21,9 +21,14 @@ Target device (per `Makefile`/memory): LG 49SM9000PLA, webOS 4.5, rooted, `root@
 
 ## Build / deploy / run
 
-The `Makefile` is the entire dev loop. Requires `zig` and `sshpass` (both via Homebrew here).
+The `Makefile` is the entire dev loop. Requires the **webOS NDK** (install with `make
+setup-env`), a **Rust nightly toolchain + `rust-src`** (for `-Z build-std`), and `sshpass`
+(Homebrew, for deploy/run). See the **`setup-environment` skill** (`.claude/skills/`) for the
+full one-time setup + troubleshooting.
 
-- `make` — build `pkg/plexpoc` (the ARM binary). Also builds the stub `.so` files if stale.
+- `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
+  (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
+- `make` — build `pkg/plexpoc` (the ARM binary). Also builds the FFmpeg/curl stub `.so` if stale.
 - `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
 - `make run` — close any running instance, wipe `/tmp/poc-events.log`, launch, keep alive
   `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
@@ -32,27 +37,40 @@ The `Makefile` is the entire dev loop. Requires `zig` and `sshpass` (both via Ho
 - `make ipk` — repackage the installable `pkg/com.glin.plexpoc_0.1.0_arm.ipk`.
 - Override the TV IP with `make TV=1.2.3.4 …`; the run duration with `make run RUN_SECS=30`.
 
-**Cross-compile toolchain:** `zig cc -target arm-linux-gnueabi.2.24 -mcpu=cortex_a53`, headers
-from `include/`. `zig ar` is used for the ipk (GNU ar format; macOS BSD `ar` won't work).
+**Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
+`arm-webos-linux-gnueabi-gcc` (GCC 12, **glibc 2.12, armv7-a soft-float**; default `cortex-a9`
+codegen, so we do *not* pin `-mcpu`). It ships a **sysroot** with the TV's own SONAME'd libs,
+which the Makefile links against. Rust is a static lib built with plain `cargo +nightly build -Z
+build-std --target arm-unknown-linux-gnueabi` (a staticlib needs no linker, so no external
+cross-linker — but `-Z build-std` + `-C target-cpu=cortex-a9` is load-bearing: the default
+ARMv6 codegen emits the CP15 barrier that SIGILLs on the A53; see the Makefile comment). Headers
+come from `include/` (the TV's SDL2 2.0.4-fork headers, kept ahead of the sysroot's newer copies
+so we compile against the ABI the TV runs). The ipk uses the NDK's `ar` (GNU format; macOS BSD
+`ar` won't work). The old `zig cc` path is gone.
 
-## The stub `.so` linking trick (crucial and unusual)
+## The stub `.so` linking trick (now just FFmpeg + curl)
 
-The app links against **hand-written stub shared objects in `stub/`** (`libSDL2.so`,
-`libGLESv2.so`, `libplayerAPIs.so`, `libAcbAPI.so`, `libluna-service2.so`, `libglib-2.0.so`,
-`libwayland-client.so`, `libSDL2_ttf.so`). Each stub is a `.c` file of empty symbol bodies,
-compiled `-shared -nostdlib` with `-Wl,-soname,<the TV's real SONAME>` (e.g. the SDL2 stub
-carries `libSDL2-2.0.so.0`). At link time these satisfy the symbols; **at runtime the TV's
-own real libraries (matching those SONAMEs via `DT_NEEDED`) are loaded instead.** The real
-libs exist *only on the TV* — never on the build host. So:
+Almost everything links against the **real sysroot libraries** (SDL2, SDL2_ttf, GLESv2,
+wayland-client, glib-2.0, luna-service2, and even LG's proprietary `libAcbAPI` / `libplayerAPIs`
+/ `libpf-1.0` — all bundled in the NDK), so the Starfish/ACB C++ calls get real link-time symbol
+checking. Only **two families remain hand-written stubs in `stub/`**, because the sysroot can't
+satisfy them: **FFmpeg** (`libavformat/avcodec/avutil` — absent from the sysroot) and **libcurl**
+(sysroot ships `libcurl.so.4`, but the TV wants `libcurl.so.5`).
 
-- Adding a call to a new library function means **adding its symbol to the matching `stub/*.c`**
-  or the link fails. For plain C symbols an empty `void foo(void){}` body suffices (never run
-  on host); only the *name* must match.
-- `stub/starfish_stub.c` carries the **mangled C++ symbols** of LG's `StarfishMediaAPIs` class.
-  `main.c` calls those C++ methods from C via `extern … __asm__("<mangled name>")` declarations
-  (see the `SMP_*` decls near the top of `main.c`).
-- `sysroot/usr/lib/` holds a few *real* TV `.so` files pulled off the device for reference/
-  inspection; it is **not** used by the build (the Makefile links `-Lstub` only).
+Each stub is a `.c` file of empty symbol bodies, compiled `-fPIC -shared -nostdlib` with
+`-Wl,-soname,<the TV's real SONAME>` (e.g. `libavformat.so.57`). At link time it satisfies the
+symbols; **at runtime the TV's own real library (matching that SONAME via `DT_NEEDED`) is loaded
+instead.** So:
+
+- Adding a call to a new **FFmpeg/curl** function means **adding its symbol to the matching
+  `stub/*_stub.c`** or the link fails — only the *name* must match (empty `void foo(void){}`).
+- Adding a dependency on any **other** TV library that the **sysroot also has**: link it real
+  (add `-l<name>` to `LIBS_REAL`), don't write a stub. Only stub a lib the sysroot lacks or ships
+  with a different SONAME than the TV.
+- The C++ `StarfishMediaAPIs` methods are still called from C via `extern … __asm__("<mangled
+  name>")` declarations (in `src/starfish.c`) — now resolved against the real `libplayerAPIs`.
+- The gitignored `sysroot/usr/lib/` (a few real TV `.so` files pulled off the device) is only for
+  reference/inspection; the build uses the **NDK's** sysroot, not that directory.
 
 ## Runtime architecture (big picture)
 
