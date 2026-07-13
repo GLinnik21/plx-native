@@ -207,7 +207,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log("GL ctx failed");
             return 1;
         }
-        SDL_GL_SetSwapInterval(1);
+        // vsync on → the frame rate locks to the panel refresh. `/tmp/poc-novsync` uncaps it so the
+        // FPS counter reports the TRUE GPU render rate (a diagnostic: if fps then jumps well past the
+        // vsynced number, we were panel/refresh-bound, not GPU-bound).
+        SDL_GL_SetSwapInterval(if std::path::Path::new("/tmp/poc-novsync").exists() { 0 } else { 1 });
         {
             let r = glGetString(GL_RENDERER);
             let v = glGetString(GL_VERSION);
@@ -390,6 +393,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut bg_was_playing = false;
         let mut bg_was_paused = false;
         let mut bg_pos = 0i64;
+        // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the
+        // spring-back after key-up) so `ok_armed` marks "a press is in flight, commit it from the
+        // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
+        let mut ok_armed = false;
+        let mut press_tried = false; // dev: /tmp/poc-press fires one simulated grid-card press
         let mut dpad_mode = false;
         let mut ptr_drag = false;
         let mut mot_accum = 0.0f32;
@@ -664,6 +672,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if sym == held_sym {
                             held_sym = 0;
                         }
+                        if is_ok(sym) && ok_armed {
+                            // OK released over a grid card: start the spring-back; the deferred
+                            // activation commits from the per-frame loop once the bounce has shown.
+                            crate::ui::press::release(SDL_GetTicks());
+                        }
                         if matches!(route, Route::Player { .. }) && scrub_dir != 0 && isnav {
                             if scrub_hold {
                                 log(&format!("scrub: keyup commit (held) {}s", scrub() / 1_000_000_000));
@@ -687,6 +700,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if held_sym != 0 && sym == held_sym {
                             held_alive = n; // heartbeat: this held key's hardware repeats are still arriving
                         }
+                        if ok_armed && is_ok(sym) {
+                            crate::ui::press::note_alive(n); // OK held: keep the dropped-key-up net honest
+                        }
                         if matches!(route, Route::Player { .. }) && hud_focus == 0 && scrub_dir != 0 && isnav {
                             scrub_alive = n;
                             scrub_commit_at = 0; // holding → not a tap
@@ -701,6 +717,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     last_input = SDL_GetTicks();
                     hud_dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+                    // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press —
+                    // spring the card back to rest WITHOUT activating (you "slid off" the control).
+                    if ok_armed && !is_ok(sym) {
+                        crate::ui::press::cancel();
+                        ok_armed = false;
+                    }
                     // LG pointer convention, GLOBAL (every screen, incl. login/picker which
                     // dispatch early below): the first D-pad press dismisses the Magic-Remote
                     // cursor and puts input in D-pad mode; pointer motion brings it back.
@@ -716,7 +738,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // behind them, so route the key to the active screen and skip all other handlers.
                     if matches!(route, Route::Login | Route::Profiles) {
                         if matches!(route, Route::Profiles) {
-                            crate::ui::profiles::key(sym, wcode);
+                            if is_ok(sym) && crate::ui::profiles::focus_is_avatar() {
+                                // press the roster avatar; the select commits on the spring-back
+                                // (route-agnostic press handler). Footer / keypad OK act immediately.
+                                crate::ui::press::begin(SDL_GetTicks());
+                                ok_armed = true;
+                            } else {
+                                crate::ui::profiles::key(sym, wcode);
+                            }
                         } else {
                             crate::ui::login::key(sym, wcode);
                         }
@@ -946,9 +975,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             set_hud(last_input + 4500);
                         } else if matches!(route, Route::Detail) {
-                            // OK on the detail page: Play/episode starts playback; a season
-                            // tab just switches season.
-                            if crate::ui::detail::on_ok() {
+                            // OK on a detail CARD (episode / Related / Cast) → tvOS press: dip now,
+                            // commit on the spring-back (the route-agnostic press handler runs on_ok
+                            // then). The Play pill, season tabs and About rows activate immediately.
+                            if crate::ui::detail::focus_is_card() {
+                                crate::ui::press::begin(SDL_GetTicks());
+                                ok_armed = true;
+                            } else if crate::ui::detail::on_ok() {
                                 start_playback(
                                     crate::ui::detail::last_resume_ns(),
                                     true, // Stop/BACK/EOS returns to this detail page
@@ -963,12 +996,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // screen), not the snap target: a DOWN press flips the target to grid
                             // instantly while the hero stays visible ~130ms, so a quick DOWN→OK
                             // must still act on the hero shown, not the grid's card 0.
-                            let hf = if crate::ui::home::snap_pos() < 0.5 {
-                                crate::ui::home::hero_focus()
+                            if crate::ui::home::snap_pos() < 0.5 {
+                                // hero (Play pill / chip / chevron): activate immediately.
+                                let hf = crate::ui::home::hero_focus();
+                                home_activate(hf, last_input + 4500, &mut route, &mut played_from_detail);
                             } else {
-                                c_int::MIN
-                            };
-                            home_activate(hf, last_input + 4500, &mut route, &mut played_from_detail);
+                                // grid card: tvOS press — dip the focused card now, activate on the
+                                // spring-back (committed from the per-frame loop). Nav cancels, so the
+                                // focused cell can't move while the press is armed.
+                                crate::ui::press::begin(SDL_GetTicks());
+                                ok_armed = true;
+                            }
                             if !dpad_mode {
                                 SDL_webOSCursorVisibility(0);
                                 dpad_mode = true;
@@ -1273,6 +1311,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 }
             }
+            // dev: /tmp/poc-press simulates a real OK press on the focused grid card ONCE (an
+            // OK-down with no key-up) — the lost-keyup net then springs it back and commits, so a
+            // headless run exercises the whole dip → bounce → deferred-activate path end to end.
+            if !press_tried && now.wrapping_sub(t0) > 1600 {
+                press_tried = true;
+                if std::path::Path::new("/tmp/poc-press").exists()
+                    && matches!(route, Route::Home)
+                    && g_snap() > 0.5
+                {
+                    crate::ui::press::begin(now);
+                    ok_armed = true;
+                }
+            }
             // dev: /tmp/poc-detail=<ratingKey> opens that catalog item's detail page once
             if !detail_tried && now.wrapping_sub(t0) > 500 {
                 detail_tried = true;
@@ -1548,6 +1599,31 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             };
             prev = now;
 
+            // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
+            // commits (the spring-back bounce has played), run it for whichever CARD view armed the
+            // press. A long-press latches without committing, so take_commit stays false and the
+            // press simply springs back (is_active clears the arm).
+            crate::ui::press::tick(now, dt);
+            if ok_armed {
+                if crate::ui::press::take_commit(now) {
+                    ok_armed = false;
+                    match route {
+                        Route::Home | Route::Account => {
+                            home_activate(c_int::MIN, last_input + 4500, &mut route, &mut played_from_detail);
+                        }
+                        Route::Detail => {
+                            if crate::ui::detail::on_ok() {
+                                start_playback(crate::ui::detail::last_resume_ns(), true, last_input + 4500, &mut route, &mut played_from_detail);
+                            }
+                        }
+                        Route::Profiles => crate::ui::profiles::select_focused(),
+                        _ => {}
+                    }
+                } else if !crate::ui::press::is_active() {
+                    ok_armed = false; // long-press / cancelled — disarm without activating
+                }
+            }
+
             // login flow: install resolved creds on the MAIN thread, then follow the flow phase →
             // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
             if matches!(route, Route::Login | Route::Profiles) {
@@ -1583,7 +1659,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
             } else if matches!(route, Route::Home | Route::Account) {
                 // only when home is actually drawn — stepping its 16×24 cell springs during
-                // Player/Detail frames was pure waste on the A53
+                // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
+                // route-agnostically right after `dt` above)
                 crate::ui::home::home_update(dt);
             }
             if matches!(route, Route::Account) {

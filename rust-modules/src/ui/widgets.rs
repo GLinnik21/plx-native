@@ -22,13 +22,17 @@ pub(crate) enum Art<'a> {
 }
 
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton), draws it at `frame`
-/// scaled about its centre when `focused`, then an optional focus ring `(pad, rad)` at focus=1.0.
-/// Every art tile routes through here — the home grid + detail Related posters (via
-/// [`card_row`](crate::ui::card_row), which draws its own bigger glow ring, so it passes `ring:
-/// None`) and the episode/chapters strips (via [`draw_card`]) — so they all resolve, skeleton, and
-/// ring identically.
-pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, ring: Option<(f32, f32)>) {
+/// scaled about its centre when `focused`, and — when `decorate` — wraps it in the focus treatment
+/// (soft drop-shadow behind + top sheen over, at focus=1.0). Every art tile routes through here — the
+/// home grid + detail Related posters (via [`card_row`](crate::ui::card_row), which passes
+/// `decorate: false` because its `draw_focused` draws its OWN spring-ramped shadow/sheen) and the
+/// episode/chapters strips (via [`draw_card`], `decorate: true`) — so they all resolve identically.
+pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, decorate: bool) {
     let r = if focused { frame.scaled(scale) } else { frame };
+    let decor = focused && decorate;
+    if decor {
+        p.focus_shadow(r, rad, 1.0);
+    }
     match art {
         Art::Poster(m) => {
             let t = m
@@ -54,10 +58,8 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             }
         }
     }
-    if let Some((pad, ring_rad)) = ring {
-        if focused {
-            p.ring(r, pad, ring_rad, 1.0);
-        }
+    if decor {
+        p.focus_sheen(r, rad, 1.0);
     }
 }
 
@@ -68,11 +70,12 @@ pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
 /// (transport CC/Audio buttons, CircleButton vector icons, the Continue-Watching play badge).
 pub(crate) const DISC_ICON_RATIO: f32 = 0.54;
 
-/// A media card shared by the episode picker, the chapters strip, and the detail Related row so they
-/// resolve + animate identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop
-/// about the centre + a tight focus ring when `focused` (the caller owns the `scale` spring).
+/// A media card shared by the episode picker and the chapters strip so they resolve + animate
+/// identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop about the centre +
+/// the focus treatment (soft drop-shadow + top sheen) when `focused` (the caller owns the `scale`
+/// spring).
 pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int), radius: f32, focused: bool, scale: f32) {
-    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, Some((theme::CARD_RING_PAD_STRIP, theme::CARD_RING_RAD)));
+    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, true);
 }
 
 /// read a NUL-terminated C-string field into a Rust String (the shared cbuf reader)

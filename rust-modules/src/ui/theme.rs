@@ -93,15 +93,16 @@ pub const FILL_PRIMARY: [f32; 4] = [0.97, 0.98, 0.99, 1.0];
 pub const INK_ON_PRIMARY: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
 
 // ── Surfaces / backgrounds ───────────────────────────────────────────────────
-/// Flat shelf/app base (both gradient stops). Snapped to exact 8-bit codes (k/255): the old
-/// `0.10` maps to 25.5 — a dead half-code — so `GL_DITHER` (on by default in GLES2) resolved this
-/// large flat fill by alternating codes 25↔26 row-to-row. With only R+G on the half-code and B
-/// (0.115≈29.3) held near-integer, the up-dithered rows read warmer than the cool base → faint
-/// "reddish" horizontal banding. Landing every channel on an integer code leaves nothing to
-/// dither. (25,25,29) keeps the intended cool bias. Keep new dark flat fills on the k/255 grid.
-pub const SURFACE_APP: [f32; 4] = [25.0 / 255.0, 25.0 / 255.0, 29.0 / 255.0, 1.0];
-/// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). Overdrawn by [`SURFACE_APP`].
-pub const CLEAR_RGB: (f32, f32, f32) = (0.03, 0.03, 0.045);
+/// Flat shelf/app base (both gradient stops) — Apple TV's shelf gray **#2C2C2E (44,44,46)**. A
+/// MEDIUM gray, deliberately not near-black: the focused-card drop-shadow only reads against a base
+/// this light (on the old near-black 25,25,29 a black shadow had almost nothing to darken). Snapped
+/// to exact 8-bit codes (44/44/46 are all integers) so `GL_DITHER` — on by default in GLES2 — has no
+/// half-code to alternate on across this large flat fill (a half-code banded the old value visibly).
+pub const SURFACE_APP: [f32; 4] = [44.0 / 255.0, 44.0 / 255.0, 46.0 / 255.0, 1.0];
+/// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). The app's DEFAULT base: the same
+/// `#2C2C2E` shelf gray as [`SURFACE_APP`], so every non-player screen clears to the Apple-TV gray
+/// (the player clears transparent separately). Home overdraws it with `SURFACE_APP` (identical gray).
+pub const CLEAR_RGB: (f32, f32, f32) = (44.0 / 255.0, 44.0 / 255.0, 46.0 / 255.0);
 /// Opaque menu panel / fade mask / badge knockout interior.
 pub const SURFACE_PANEL: [f32; 4] = [0.133, 0.133, 0.141, 1.0];
 /// Near-opaque sheet/card gradient — top stop.
@@ -171,3 +172,18 @@ pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 pub const CARD_RING_PAD_STRIP: f32 = 6.0;
 /// Focus-ring corner radius.
 pub const CARD_RING_RAD: f32 = 14.0;
+
+// ── Focused-card treatment (Home Screen.dc.html): a lifted card = soft drop shadow BEHIND + a top
+// specular sheen OVER, replacing the old glow ring. Applied to every focused tile incl. circles. ──
+/// Top specular sheen over a focused tile face — a soft top-lit gloss that fades to nothing down the
+/// card (the design's `inset 0 1px 0 rgba(255,255,255,.28)` top catch-light). Alpha is the top stop;
+/// the bottom stop is the same rgb at alpha 0. Ramped by the focus pop at the call site.
+pub const CARD_SHEEN: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
+/// Drop-shadow ink under a focused/raised card — pure black (the design's `rgba(0,0,0,…)`), alpha
+/// supplied per call (× focus ramp). Its own token (not `scrim_black`) so it can be tuned alone.
+pub const CARD_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
+/// Focused-card drop-shadow penumbra (px) and downward offset (px) — the CAPS on the tile-scaled
+/// values. Kept subtle: on the `SURFACE_APP` gray shelf a tight, close shadow already reads, so this
+/// is a gentle lift, not the design's oversized `0 30px 70px` pool.
+pub const CARD_SHADOW_BLUR: f32 = 30.0;
+pub const CARD_SHADOW_DY: f32 = 12.0;

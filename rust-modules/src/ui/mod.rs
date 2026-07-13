@@ -24,6 +24,7 @@ pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
+pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub mod profile;
 pub mod table;
 pub mod text_view;
@@ -90,6 +91,13 @@ impl Spring {
     #[inline]
     pub fn step(&mut self, target: f32, k: f32, dt: f32) {
         crate::gfx::spring(&mut self.pos, &mut self.vel, target, k, dt);
+    }
+    /// Step with an UNDERdamped spring (`zeta < 1` → overshoots/rings). The critically-damped
+    /// [`step`](Self::step) can't bounce; this drives the `ui::press` click spring-back. See
+    /// [`gfx::spring_zeta`](crate::gfx::spring_zeta).
+    #[inline]
+    pub fn step_zeta(&mut self, target: f32, k: f32, zeta: f32, dt: f32) {
+        crate::gfx::spring_zeta(&mut self.pos, &mut self.vel, target, k, zeta, dt);
     }
     #[inline]
     pub fn jump(&mut self, v: f32) {
@@ -162,6 +170,39 @@ impl Painter {
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         let c = self.c(col);
         crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
+    }
+    /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
+    /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
+    pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        let c = self.c(col);
+        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, c.as_ptr());
+    }
+    /// The "lifted card" shadow for a FOCUSED tile — the drop-shadow half of the Home Screen focus
+    /// treatment (the sheen is [`focus_sheen`](Self::focus_sheen)). `f` (0..1) ramps it in with the
+    /// focus pop. Call immediately BEFORE the tile art; works for rounded-rect posters and circles
+    /// alike (`radius` = w/2 for a circle). Replaces the old glow [`ring`](Self::ring).
+    pub fn focus_shadow(self, r: Rect, radius: f32, f: f32) {
+        if f <= 0.001 {
+            return;
+        }
+        // Scale the penumbra + offset to the tile so a 64px profile chip and a 375px poster read with
+        // the SAME softness; the theme values are the caps (kept subtle — a gentle lift on the gray
+        // shelf, not a big pool).
+        let blur = (r.h * 0.13).clamp(6.0, theme::CARD_SHADOW_BLUR);
+        let off = (r.h * 0.04).clamp(3.0, theme::CARD_SHADOW_DY);
+        let a = theme::CARD_SHADOW[3] * f.min(1.0);
+        self.shadow(r, radius, blur, off, theme::with_a(theme::CARD_SHADOW, a));
+    }
+    /// The specular sheen OVER a focused tile face — a soft top-lit gloss (Home Screen's top
+    /// catch-light), corner-clipped by the SDF `radius`. `f` ramps it in with the pop. Call AFTER the
+    /// tile art (and before the resume bar / labels, which must stay legible on top).
+    pub fn focus_sheen(self, r: Rect, radius: f32, f: f32) {
+        if f <= 0.001 {
+            return;
+        }
+        let top = theme::with_a(theme::CARD_SHEEN, theme::CARD_SHEEN[3] * f.min(1.0));
+        let bot = theme::with_a(theme::CARD_SHEEN, 0.0);
+        self.rect(r, radius, top, bot, 0.0);
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
         let t = self.c(tint);

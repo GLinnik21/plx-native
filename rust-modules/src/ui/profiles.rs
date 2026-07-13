@@ -169,7 +169,8 @@ pub fn draw() {
         let u = &users[i];
         let cx = start_x + i as f32 * slot + sty.w * 0.5 - scroll;
         let base = Rect::new(cx - sty.w * 0.5, ROW_Y, sty.w, sty.h);
-        let sc = s.row.scale(i);
+        // fold the ui::press click dip into the focused avatar's pop (1.0 when idle)
+        let sc = s.row.scale(i) * crate::ui::press::scale();
         card_row::draw_focused(p, Art::Thumb { key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, std::ptr::null(), std::ptr::null());
         draw_name(p, u, cx, true);
     }
@@ -382,6 +383,23 @@ pub fn pick(idx: usize) {
     let s = scene();
     s.fc = idx as c_int;
     select(s, idx);
+}
+
+/// The roster avatar holds focus (not the PIN pad or the Sign-out footer, and a roster exists) — the
+/// only profiles focus that takes the tvOS press. OK on the footer / keypad activates immediately.
+pub fn focus_is_avatar() -> bool {
+    let s = scene();
+    !s.pad.open && !s.footer && !auth::users().is_empty()
+}
+
+/// Commit the focused roster avatar — the deferred OK activation (app.rs runs this on the press
+/// spring-back). Mirrors OK-on-avatar in [`key`].
+pub fn select_focused() {
+    let s = scene();
+    let n = auth::users().len();
+    if n > 0 {
+        select(s, (s.fc.max(0) as usize).min(n - 1));
+    }
 }
 
 /// Commit a roster tile (OK or pointer click): protected → PIN pad, else switch.

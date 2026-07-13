@@ -460,7 +460,9 @@ impl View for Grid {
             if r >= nh {
                 return;
             }
-            let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1));
+            // The focused card is the only one that can be pressed; fold the ui::press dip/bounce
+            // factor into its scale (1.0 when idle, so a no-op unless a click is in flight).
+            let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1)) * crate::ui::press::scale();
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
             let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
@@ -712,6 +714,12 @@ fn draw_chip(p: Painter) {
         ));
     }
     let (_, thumb_c, initial_c) = chip.as_ref().unwrap();
+    // chip is a real focus stop (UP from the hero action row) — the same lifted-card focus treatment
+    // as the shelf tiles: soft drop-shadow behind the avatar, top sheen over it.
+    let focused = hero_focus() == -1 && snap_pos() < 0.5;
+    if focused {
+        p.focus_shadow(r, d * 0.5, 1.0);
+    }
     let mut drew = false;
     if !thumb_c.as_bytes().is_empty() {
         let t = resolve_tex(thumb_c.as_ptr(), 128, 128, 0);
@@ -730,10 +738,8 @@ fn draw_chip(p: Painter) {
             p.text(initial_c.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
         }
     }
-    // chip is a real focus stop now (UP from the hero action row): ring it when focused, so OK
-    // reads as "open the account menu" instead of UP opening the menu unannounced.
-    if hero_focus() == -1 && snap_pos() < 0.5 {
-        p.ring(r, theme::CARD_RING_PAD_STRIP, d * 0.5, 1.0);
+    if focused {
+        p.focus_sheen(r, d * 0.5, 1.0);
     }
 }
 

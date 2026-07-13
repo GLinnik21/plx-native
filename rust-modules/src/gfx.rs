@@ -19,6 +19,12 @@ const AA_BLEED: f32 = 1.0;
 const VS_SRC: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_rect;\nuniform vec2 u_screen;\nvarying vec2 v_uv;\nvoid main(){\n  v_uv = a_pos;\n  vec2 px = u_rect.xy + a_pos * u_rect.zw;\n  vec2 ndc = px / u_screen * 2.0 - 1.0;\n  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}\n";
 const FS_SRC: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec2 u_size;\nuniform float u_pad;\nuniform float u_radius;\nuniform vec4 u_colTop;\nuniform vec4 u_colBot;\nuniform float u_focus;\nuniform float u_radR;\nfloat sdBox(vec2 p, vec2 b, float r){\n  vec2 q = abs(p) - b + vec2(r);\n  return length(max(q,0.0)) + min(max(q.x,q.y),0.0) - r;\n}\nvoid main(){\n  if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {\n    gl_FragColor = mix(u_colTop, u_colBot, v_uv.y);\n    return;\n  }\n  vec2 p = (v_uv - 0.5) * u_size;\n  vec2 hsz = u_size * 0.5 - vec2(u_pad);\n  float rad = (p.x > 0.0) ? u_radR : u_radius;\n  float d = sdBox(p, hsz, rad);\n  vec4 fill = mix(u_colTop, u_colBot, v_uv.y);\n  float aFill = 1.0 - smoothstep(-1.0, 1.0, d);\n  vec3 rgb = fill.rgb * aFill;\n  float a = aFill * fill.a;\n  if (u_focus > 0.001) {\n    float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;\n    float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);\n    rgb += vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow;\n    a = max(a, max(ring, glow));\n  }\n  gl_FragColor = vec4(rgb, a);\n}\n";
 const FS_AMBIENT: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec4 u_atl, u_atr, u_abr, u_abl;\nvoid main(){\n  vec3 top = mix(u_atl.rgb, u_atr.rgb, v_uv.x);\n  vec3 bot = mix(u_abl.rgb, u_abr.rgb, v_uv.x);\n  gl_FragColor = vec4(mix(top, bot, v_uv.y), 1.0);\n}\n";
+// Soft drop-shadow: an analytic SDF penumbra (one smoothstep, no gaussian/FBO). The quad is the
+// card box inflated by `u_blur` on every side; `hsz` shrinks the solid core back to the card size so
+// the blur band falls off OUTWARD over `u_blur` px. Its own program (like the #77 text-fade split) so
+// the hot fill shader FS_SRC pays nothing. Used for the lifted-card focus shadow (ui::press replaced
+// the old glow ring with soft-shadow + sheen). Circle = radius w/2.
+const FS_SHADOW: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec2 u_size;\nuniform float u_radius;\nuniform float u_blur;\nuniform vec4 u_col;\nfloat sdBox(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+vec2(r); return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  vec2 p = (v_uv - 0.5) * u_size;\n  vec2 hsz = max(u_size*0.5 - vec2(u_blur), vec2(0.0));\n  float d = sdBox(p, hsz, min(u_radius, min(hsz.x, hsz.y)));\n  float a = (1.0 - smoothstep(-u_blur, u_blur, d)) * u_col.a;\n  gl_FragColor = vec4(u_col.rgb, a);\n}\n";
 const VS_IMG: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nvarying vec2 v_tuv;\nvoid main(){ v_tuv=a_pos; vec2 px=u_trect.xy+a_pos*u_trect.zw;\n  vec2 ndc=px/u_tscreen*2.0-1.0; gl_Position=vec4(ndc.x,-ndc.y,0.0,1.0); }\n";
 const FS_IMG: &CStr = c"precision mediump float;\nvarying vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tint;\nuniform vec2 u_isize;\nuniform float u_iradius;\nfloat sdBox(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+vec2(r);\n  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  vec4 c = texture2D(u_tex, v_tuv);\n  if (u_iradius < 0.5) {\n    gl_FragColor = vec4(c.rgb*u_tint.rgb, c.a*u_tint.a);\n    return;\n  }\n  vec2 p = (v_tuv-0.5)*u_isize;\n  float d = sdBox(p, u_isize*0.5, u_iradius);\n  float m = 1.0 - smoothstep(-1.0, 1.0, d);\n  gl_FragColor = vec4(c.rgb*u_tint.rgb, c.a*u_tint.a*m);\n}\n";
 
@@ -149,6 +155,14 @@ static mut AL_TR: c_int = 0;
 static mut AL_BR: c_int = 0;
 static mut AL_BL: c_int = 0;
 
+static mut SPROG: c_uint = 0;
+static mut SL_RECT: c_int = 0;
+static mut SL_SCREEN: c_int = 0;
+static mut SL_SIZE: c_int = 0;
+static mut SL_RADIUS: c_int = 0;
+static mut SL_BLUR: c_int = 0;
+static mut SL_COL: c_int = 0;
+
 static mut IPROG: c_uint = 0;
 static mut IL_RECT: c_int = 0;
 static mut IL_SCREEN: c_int = 0;
@@ -224,6 +238,25 @@ pub(crate) fn init_gl() {
         AL_TR = glGetUniformLocation(APROG, c"u_atr".as_ptr());
         AL_BR = glGetUniformLocation(APROG, c"u_abr".as_ptr());
         AL_BL = glGetUniformLocation(APROG, c"u_abl".as_ptr());
+
+        // Soft-shadow program (own program so the hot FS_SRC pays nothing; mirrors init_image).
+        SPROG = glCreateProgram();
+        glAttachShader(SPROG, gfx_compile(GL_VERTEX_SHADER, VS_SRC.as_ptr()));
+        glAttachShader(SPROG, gfx_compile(GL_FRAGMENT_SHADER, FS_SHADOW.as_ptr()));
+        glBindAttribLocation(SPROG, 0, c"a_pos".as_ptr());
+        glLinkProgram(SPROG);
+        glGetProgramiv(SPROG, GL_LINK_STATUS, &mut ok);
+        if ok == 0 {
+            log("shadow prog link failed");
+            SPROG = 0; // draw_shadow no-ops → cards simply lose the drop-shadow, nothing else breaks
+        } else {
+            SL_RECT = glGetUniformLocation(SPROG, c"u_rect".as_ptr());
+            SL_SCREEN = glGetUniformLocation(SPROG, c"u_screen".as_ptr());
+            SL_SIZE = glGetUniformLocation(SPROG, c"u_size".as_ptr());
+            SL_RADIUS = glGetUniformLocation(SPROG, c"u_radius".as_ptr());
+            SL_BLUR = glGetUniformLocation(SPROG, c"u_blur".as_ptr());
+            SL_COL = glGetUniformLocation(SPROG, c"u_col".as_ptr());
+        }
         glUseProgram(PROG);
 
         glEnable(GL_BLEND);
@@ -279,6 +312,30 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
     }
 }
 
+/// Soft drop-shadow of the box `(x,y,w,h)` with corner `radius` (w/2 = circle), penumbra `blur` px.
+/// The quad is inflated by `blur` on every side; the shader falls the alpha off outward over that
+/// band (see `FS_SHADOW`). `(x,y)` is the shadow's box origin — the caller bakes any downward offset
+/// into `y`. No-ops if the program failed to link. Own GL program, so it doesn't disturb the base
+/// shader's uniforms (restores `PROG` after).
+pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, col: *const f32) {
+    unsafe {
+        if SPROG == 0 {
+            return;
+        }
+        let b = blur.max(0.5);
+        let (qx, qy, qw, qh) = (x - b, y - b, w + 2.0 * b, h + 2.0 * b);
+        glUseProgram(SPROG);
+        glUniform2f(SL_SCREEN, SCR_W, SCR_H);
+        glUniform4f(SL_RECT, qx, qy, qw, qh);
+        glUniform2f(SL_SIZE, qw, qh);
+        glUniform1f(SL_RADIUS, radius);
+        glUniform1f(SL_BLUR, b);
+        glUniform4fv(SL_COL, 1, col);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glUseProgram(PROG);
+    }
+}
+
 /// Critically-damped spring step — the **exact analytic** solution of `x'' + 2ω·x' + ω²·x = 0`
 /// (ω = √k, offset `x = pos − target`) integrated over `dt`.
 ///
@@ -299,6 +356,31 @@ pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32)
         let b = *vel + w * x;
         *pos = target + (x + b * dt) * e;
         *vel = (*vel - w * b * dt) * e;
+    }
+}
+
+/// **Under**damped spring step — the closed-form solution of `x'' + 2ζω·x' + ω²·x = 0` (ω = √k) for a
+/// damping ratio `zeta < 1`, so unlike [`spring`] (ζ = 1, critical, never overshoots) it **rings**:
+/// it swings past the target and settles back. That overshoot is the tvOS "click" pop — the press
+/// spring-back in `ui::press` uses it (ζ ≈ 0.55) so a released card bounces a hair past its focus
+/// scale before resting. Like [`spring`] it is the exact analytic form, so it is unconditionally
+/// stable at any `dt` (the envelope `e^(−ζω·dt)` only ever decays). The focus-pop / scroll springs
+/// stay on [`spring`] — they must NOT ring.
+///
+/// `x(t) = e^(−ζω·t)·(A·cos(ω_d·t) + B·sin(ω_d·t))`, ω_d = ω·√(1−ζ²), A = x₀, B = (v₀ + ζω·x₀)/ω_d.
+pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zeta: f32, dt: f32) {
+    unsafe {
+        let w = k.sqrt();
+        let z = zeta.clamp(0.0, 0.999); // guard the ω_d = 0 singularity at critical/over-damping
+        let wd = w * (1.0 - z * z).sqrt(); // damped natural frequency
+        let x0 = *pos - target; // offset from target
+        let v0 = *vel;
+        let e = (-z * w * dt).exp();
+        let (s, c) = (wd * dt).sin_cos();
+        let a = x0;
+        let b = (v0 + z * w * x0) / wd;
+        *pos = target + e * (a * c + b * s);
+        *vel = e * ((b * wd - z * w * a) * c - (a * wd + z * w * b) * s);
     }
 }
 
