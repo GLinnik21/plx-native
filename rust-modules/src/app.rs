@@ -83,10 +83,10 @@ fn install_panic_logger() {
         let line = format!("*** RUST PANIC [{thread}] at {loc}: {msg}");
         log(&line);
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-crash.log") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/plxnative-crash.log") {
             let _ = writeln!(f, "{line}");
         }
-        default(info); // preserve default behaviour (stderr -> poc-stderr.log)
+        default(info); // preserve default behaviour (stderr -> plxnative-stderr.log)
     }));
 }
 
@@ -197,7 +197,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         SDL_GL_SetAttribute(A_BLUE, 8);
         SDL_GL_SetAttribute(A_ALPHA, 8);
         SDL_GL_SetAttribute(A_BUFFER_SIZE, 32);
-        let win = SDL_CreateWindow(c"plexpoc".as_ptr(), 0, 0, SCR_W, SCR_H, SDL_WINDOW_FLAGS);
+        let win = SDL_CreateWindow(c"plxnative".as_ptr(), 0, 0, SCR_W, SCR_H, SDL_WINDOW_FLAGS);
         if win.is_null() {
             log("CreateWindow failed");
             return 1;
@@ -207,10 +207,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log("GL ctx failed");
             return 1;
         }
-        // vsync on → the frame rate locks to the panel refresh. `/tmp/poc-novsync` uncaps it so the
+        // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so the
         // FPS counter reports the TRUE GPU render rate (a diagnostic: if fps then jumps well past the
         // vsynced number, we were panel/refresh-bound, not GPU-bound).
-        SDL_GL_SetSwapInterval(if std::path::Path::new("/tmp/poc-novsync").exists() { 0 } else { 1 });
+        SDL_GL_SetSwapInterval(if std::path::Path::new("/tmp/plxnative-novsync").exists() { 0 } else { 1 });
         {
             let r = glGetString(GL_RENDERER);
             let v = glGetString(GL_VERSION);
@@ -228,10 +228,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
         // NO token is compiled into this binary. PMS access comes from the signed-in session,
         // or — for automated runs only (the regression harness, headless captures) — from the
-        // /tmp/poc-token dev trigger. The value is NEVER logged (only that one is in effect).
-        let dev_token = match std::fs::read_to_string("/tmp/poc-token") {
+        // /tmp/plxnative-token dev trigger. The value is NEVER logged (only that one is in effect).
+        let dev_token = match std::fs::read_to_string("/tmp/plxnative-token") {
             Ok(s) if !s.trim().is_empty() => {
-                log("token: using /tmp/poc-token (test identity)");
+                log("token: using /tmp/plxnative-token (test identity)");
                 s.trim().to_owned()
             }
             _ => String::new(),
@@ -259,21 +259,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // so the boot who's-watching picker is skipped. Pure diagnostics (the logs, the profiler,
         // the anim overlay) don't count as automation.
         let automated_boot = || {
-            const DIAG: [&str; 5] = ["poc-events.log", "poc-stderr.log", "poc-crash.log", "poc-profile", "poc-anim"];
+            const DIAG: [&str; 5] = ["plxnative-events.log", "plxnative-stderr.log", "plxnative-crash.log", "plxnative-profile", "plxnative-anim"];
             std::fs::read_dir("/tmp")
                 .ok()
                 .map(|rd| {
                     rd.filter_map(|e| e.ok()).any(|e| {
                         let n = e.file_name().to_string_lossy().into_owned();
-                        n.starts_with("poc-") && !DIAG.contains(&n.as_str())
+                        n.starts_with("plxnative-") && !DIAG.contains(&n.as_str())
                     })
                 })
                 .unwrap_or(false)
         };
 
         // Boot gate. Order matters:
-        //  1. /tmp/poc-login forces the QR login screen (to exercise the flow on demand).
-        //  2. /tmp/poc-token (the harness / headless runs) beats the stored session — automation
+        //  1. /tmp/plxnative-login forces the QR login screen (to exercise the flow on demand).
+        //  2. /tmp/plxnative-token (the harness / headless runs) beats the stored session — automation
         //     must run as the injected test identity no matter who is signed in on the TV.
         //  3. A stored session (offline-capable LAN server) → Home, through the who's-watching
         //     picker first when the account has a multi-user Plex Home roster (interactive boots).
@@ -283,14 +283,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             Login,
             Profiles,
         }
-        // dev: /tmp/poc-pickuser=<index> — force the boot picker even on an automated boot and
+        // dev: /tmp/plxnative-pickuser=<index> — force the boot picker even on an automated boot and
         // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
         let mut pick_user: Option<usize> =
-            std::fs::read_to_string("/tmp/poc-pickuser").ok().and_then(|s| s.trim().parse().ok());
+            std::fs::read_to_string("/tmp/plxnative-pickuser").ok().and_then(|s| s.trim().parse().ok());
         let session = crate::plex::session::load();
-        let boot_to = if std::path::Path::new("/tmp/poc-login").exists() {
+        let boot_to = if std::path::Path::new("/tmp/plxnative-login").exists() {
             crate::auth::start_login();
-            log("boot: /tmp/poc-login — starting QR login");
+            log("boot: /tmp/plxnative-login — starting QR login");
             BootTo::Login
         } else if !dev_token.is_empty() {
             install_pms(&host_s, pms_port, &dev_token);
@@ -317,11 +317,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             BootTo::Login
         };
         crate::player::acb_init();
-        crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/poc-ffprobe ABI probe
-        // dev: /tmp/poc-logintest validates the plex.tv account path end-to-end on the device — a
+        crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/plxnative-ffprobe ABI probe
+        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
         // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
         // public pin id + code length + that authToken is still null (never a token/secret).
-        if std::path::Path::new("/tmp/poc-logintest").exists() {
+        if std::path::Path::new("/tmp/plxnative-logintest").exists() {
             std::thread::spawn(|| {
                 let sess = crate::plex::session::load();
                 let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
@@ -336,19 +336,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
             });
         }
-        // dev: the animation-diagnostic overlay is OFF by default; /tmp/poc-anim enables it (its
-        // trace goes to /tmp/poc-anim.log, a separate stream from the main event log)
-        if std::path::Path::new("/tmp/poc-anim").exists() {
+        // dev: the animation-diagnostic overlay is OFF by default; /tmp/plxnative-anim enables it (its
+        // trace goes to /tmp/plxnative-anim.log, a separate stream from the main event log)
+        if std::path::Path::new("/tmp/plxnative-anim").exists() {
             crate::ui::anim::set_enabled(true);
         }
-        // dev: /tmp/poc-profile turns on the per-phase draw profiler (ui::profile) — logs mean
+        // dev: /tmp/plxnative-profile turns on the per-phase draw profiler (ui::profile) — logs mean
         // ms/frame per draw phase to the event log (GPU-synced, so absolute FPS drops while it's on).
-        if std::path::Path::new("/tmp/poc-profile").exists() {
+        if std::path::Path::new("/tmp/plxnative-profile").exists() {
             crate::ui::profile::set_enabled(true);
         }
-        // dev: /tmp/poc-detailosc (read once at boot, like the other triggers) makes the detail scroll
+        // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
         // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
-        let detail_osc = std::path::Path::new("/tmp/poc-detailosc").exists();
+        let detail_osc = std::path::Path::new("/tmp/plxnative-detailosc").exists();
 
         let mut last_input = SDL_GetTicks();
         let t0 = last_input;
@@ -397,7 +397,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // spring-back after key-up) so `ok_armed` marks "a press is in flight, commit it from the
         // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
         let mut ok_armed = false;
-        let mut press_tried = false; // dev: /tmp/poc-press fires one simulated grid-card press
+        let mut press_tried = false; // dev: /tmp/plxnative-press fires one simulated grid-card press
         let mut dpad_mode = false;
         let mut ptr_drag = false;
         let mut mot_accum = 0.0f32;
@@ -431,8 +431,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             BootTo::Login => Route::Login,
             BootTo::Profiles => Route::Profiles,
         };
-        // dev: /tmp/poc-acct auto-opens the profile menu (headless capture of the popover).
-        if std::path::Path::new("/tmp/poc-acct").exists() && matches!(route, Route::Home) {
+        // dev: /tmp/plxnative-acct auto-opens the profile menu (headless capture of the popover).
+        if std::path::Path::new("/tmp/plxnative-acct").exists() && matches!(route, Route::Home) {
             crate::ui::account_menu::open();
             route = Route::Account;
         }
@@ -442,7 +442,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // Detail/Player exclusive so it can't be encoded there.
         let mut played_from_detail = false;
 
-        /// The ONE start-playback ritual (detail OK, home episode OK, and the poc-autoplay/
+        /// The ONE start-playback ritual (detail OK, home episode OK, and the plxnative-autoplay/
         /// -detailplay/-play dev triggers all share it): arm the resume point BEFORE the first
         /// Load (direct-play av_seek / transcode &offset restart), start the engine, record the
         /// Stop/BACK/EOS return target, and show the HUD. A missed step here used to silently
@@ -1277,16 +1277,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
 
             let now = SDL_GetTicks();
-            // dev: /tmp/poc-autoplay auto-presses OK once
+            // dev: /tmp/plxnative-autoplay auto-presses OK once
             if !auto_tried && !matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 2000 {
                 auto_tried = true;
-                if std::path::Path::new("/tmp/poc-autoplay").exists() {
-                    if std::path::Path::new("/tmp/poc-h265").exists() {
+                if std::path::Path::new("/tmp/plxnative-autoplay").exists() {
+                    if std::path::Path::new("/tmp/plxnative-h265").exists() {
                         // Phase 0 HEVC probe: leave the URL empty so start_bufferfeed feeds
                         // the local /tmp/sample.h265 through the H265 Load payload.
                         crate::route::clear_url();
                     } else {
-                        let pidx = std::fs::read_to_string("/tmp/poc-playidx").ok()
+                        let pidx = std::fs::read_to_string("/tmp/plxnative-playidx").ok()
                             .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
                         let pm = crate::ui::home::movie_at(pidx / COLS, pidx % COLS);
                         crate::route::play_movie(pm);
@@ -1300,23 +1300,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             if !grid_tried && now.wrapping_sub(t0) > 400 {
                 grid_tried = true;
-                if std::path::Path::new("/tmp/poc-grid").exists() {
+                if std::path::Path::new("/tmp/plxnative-grid").exists() {
                     set_snap(1.0);
                     set_fr(0);
                 }
-                // dev: /tmp/poc-heroidx=<n> jumps the rotating hero to pool index n (flip capture)
-                if let Ok(s) = std::fs::read_to_string("/tmp/poc-heroidx") {
+                // dev: /tmp/plxnative-heroidx=<n> jumps the rotating hero to pool index n (flip capture)
+                if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-heroidx") {
                     if let Ok(n) = s.trim().parse::<c_int>() {
                         crate::ui::home::set_hero_idx(n);
                     }
                 }
             }
-            // dev: /tmp/poc-press simulates a real OK press on the focused grid card ONCE (an
+            // dev: /tmp/plxnative-press simulates a real OK press on the focused grid card ONCE (an
             // OK-down with no key-up) — the lost-keyup net then springs it back and commits, so a
             // headless run exercises the whole dip → bounce → deferred-activate path end to end.
             if !press_tried && now.wrapping_sub(t0) > 1600 {
                 press_tried = true;
-                if std::path::Path::new("/tmp/poc-press").exists()
+                if std::path::Path::new("/tmp/plxnative-press").exists()
                     && matches!(route, Route::Home)
                     && g_snap() > 0.5
                 {
@@ -1324,10 +1324,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     ok_armed = true;
                 }
             }
-            // dev: /tmp/poc-detail=<ratingKey> opens that catalog item's detail page once
+            // dev: /tmp/plxnative-detail=<ratingKey> opens that catalog item's detail page once
             if !detail_tried && now.wrapping_sub(t0) > 500 {
                 detail_tried = true;
-                if let Ok(rk) = std::fs::read_to_string("/tmp/poc-detail") {
+                if let Ok(rk) = std::fs::read_to_string("/tmp/plxnative-detail") {
                     let rk = rk.trim();
                     if !rk.is_empty() {
                         // in-catalog rk keeps the catalog backdrop; an off-catalog rk still opens the
@@ -1339,20 +1339,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::detail::open_rk(rk);
                         }
                         route = Route::Detail;
-                        // dev: /tmp/poc-detailsec=N jumps N sections down (headless episode/row capture)
-                        if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailsec") {
+                        // dev: /tmp/plxnative-detailsec=N jumps N sections down (headless episode/row capture)
+                        if let Ok(n) = std::fs::read_to_string("/tmp/plxnative-detailsec") {
                             for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
                                 crate::ui::detail::move_focus(SDLK_DOWN as c_int);
                             }
                         }
-                        // dev: /tmp/poc-detailcol=N then moves the focus N to the right
-                        if let Ok(n) = std::fs::read_to_string("/tmp/poc-detailcol") {
+                        // dev: /tmp/plxnative-detailcol=N then moves the focus N to the right
+                        if let Ok(n) = std::fs::read_to_string("/tmp/plxnative-detailcol") {
                             for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
                                 crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
                             }
                         }
-                        // dev: /tmp/poc-detailplay activates the focused control (headless play test)
-                        if std::path::Path::new("/tmp/poc-detailplay").exists()
+                        // dev: /tmp/plxnative-detailplay activates the focused control (headless play test)
+                        if std::path::Path::new("/tmp/plxnative-detailplay").exists()
                             && crate::ui::detail::on_ok()
                         {
                             let fd = matches!(route, Route::Detail);
@@ -1367,14 +1367,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 }
             }
-            // dev: /tmp/poc-play=<ratingKey> plays ANY library item (regression harness).
-            // Unlike poc-detail it does NOT depend on the item being in the home catalog:
+            // dev: /tmp/plxnative-play=<ratingKey> plays ANY library item (regression harness).
+            // Unlike plxnative-detail it does NOT depend on the item being in the home catalog:
             // it fetches the item's metadata fresh and drives the same field-based play
             // path the detail Play button uses (route::play_episode is generic — movie or
             // episode), so tests can target arbitrary rks deterministically.
             if !play_tried && !matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 500 {
                 play_tried = true;
-                if let Ok(rk) = std::fs::read_to_string("/tmp/poc-play") {
+                if let Ok(rk) = std::fs::read_to_string("/tmp/plxnative-play") {
                     let rk = rk.trim();
                     if !rk.is_empty() {
                         crate::metadata::load_detail(rk); // fetch ANY rk (movie/show/episode)
@@ -1394,7 +1394,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         });
                         if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
                             if !part.is_empty() {
-                                log(&format!("poc-play: rk={rk} start"));
+                                log(&format!("plxnative-play: rk={rk} start"));
                                 crate::route::play_episode(rk, &part, &vc, &ac, &title, "");
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
@@ -1408,36 +1408,36 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // first Load opens at the viewOffset — no play-from-start flash, no post-frames seek.
             if !seek_tried && matches!(route, Route::Player { .. }) && dur() > 0 && now.wrapping_sub(t0) > 12000 {
                 seek_tried = true;
-                if std::path::Path::new("/tmp/poc-autoseek").exists() {
+                if std::path::Path::new("/tmp/plxnative-autoseek").exists() {
                     request_seek(140 * 1_000_000_000);
                 }
             }
-            // dev: /tmp/poc-autopause pauses once (headless paused-HUD capture)
+            // dev: /tmp/plxnative-autopause pauses once (headless paused-HUD capture)
             if !pause_tried && matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 6000 {
                 pause_tried = true;
-                if std::path::Path::new("/tmp/poc-autopause").exists() {
+                if std::path::Path::new("/tmp/plxnative-autopause").exists() {
                     set_paused(true);
                     set_hud(now + 60000);
                 }
             }
-            // dev: /tmp/poc-menu=<tab> opens the in-player track menu once (headless capture)
+            // dev: /tmp/plxnative-menu=<tab> opens the in-player track menu once (headless capture)
             if !menu_tried && matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 6000 {
                 menu_tried = true;
-                if let Ok(t) = std::fs::read_to_string("/tmp/poc-menu") {
+                if let Ok(t) = std::fs::read_to_string("/tmp/plxnative-menu") {
                     crate::ui::track_menu::open_tab(t.trim().parse::<c_int>().unwrap_or(0));
                     route = Route::Player { overlay: Overlay::Menu };
                     set_hud(now + 60000);
                 }
-                // dev: /tmp/poc-info opens the Info card once (headless capture)
-                if std::path::Path::new("/tmp/poc-info").exists() {
+                // dev: /tmp/plxnative-info opens the Info card once (headless capture)
+                if std::path::Path::new("/tmp/plxnative-info").exists() {
                     crate::ui::info_panel::open();
                     route = Route::Player { overlay: Overlay::Info };
                     hud_focus = 2;
                     hud_tab = 0;
                     set_hud(now + 60000);
                 }
-                // dev: /tmp/poc-chapters opens the Chapters strip once (headless capture)
-                if std::path::Path::new("/tmp/poc-chapters").exists() {
+                // dev: /tmp/plxnative-chapters opens the Chapters strip once (headless capture)
+                if std::path::Path::new("/tmp/plxnative-chapters").exists() {
                     crate::ui::chapters_panel::open();
                     route = Route::Player { overlay: Overlay::Chapters };
                     hud_focus = 2;
@@ -1445,11 +1445,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     set_hud(now + 60000);
                 }
             }
-            // dev: /tmp/poc-menupick="<tab>,<row>" opens the menu, selects that row, and
+            // dev: /tmp/plxnative-menupick="<tab>,<row>" opens the menu, selects that row, and
             // confirms it (headless track switch: e.g. "0,4" = audio tab, row 4).
             if !menupick_tried && matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 7000 {
                 menupick_tried = true;
-                if let Ok(s) = std::fs::read_to_string("/tmp/poc-menupick") {
+                if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-menupick") {
                     let mut it = s.trim().split(',');
                     let tab = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
                     let row = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
@@ -1667,7 +1667,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 crate::ui::account_menu::update(dt);
             }
             if matches!(route, Route::Detail) {
-                // dev: poc-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
+                // dev: plxnative-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
                 // transition (the settled ends already hold 60).
                 if detail_osc {
                     let sym = if (now / 450) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };

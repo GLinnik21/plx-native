@@ -108,7 +108,7 @@ pub(crate) fn hero_item() -> *mut PmsMovie {
     crate::pms::hero_pool_ptr(i as usize)
 }
 
-/// dev/test hook: jump the hero to a specific pool index (the `poc-heroidx` trigger) so a flipped
+/// dev/test hook: jump the hero to a specific pool index (the `plxnative-heroidx` trigger) so a flipped
 /// state can be captured headlessly. Clamped on read via [`hero_index`]/[`hero_item`].
 pub(crate) fn set_hero_idx(i: c_int) {
     unsafe { addr_of_mut!(hero_idx).write(i.max(0)) };

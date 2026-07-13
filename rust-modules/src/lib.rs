@@ -1,4 +1,4 @@
-//! plexpoc-modules — C modules ported to Rust, linked into the C app (hybrid
+//! plxnative-modules — C modules ported to Rust, linked into the C app (hybrid
 //! migration). Each module exposes the same C ABI its src/*.h declares, so the
 //! remaining C code calls it unchanged. Ported: img, stream, aq, mkv, pms,
 //! posters, text, gfx, system, ui_home.
@@ -23,11 +23,11 @@ mod system;
 mod text;
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
 
-/// Append one line to the on-device event log (`/tmp/poc-events.log`) — the primary debugging
+/// Append one line to the on-device event log (`/tmp/plxnative-events.log`) — the primary debugging
 /// surface (`make run` fetches it). The ONE shared sink; modules bring it in as `use crate::log;`.
 pub(crate) fn log(m: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-events.log") {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/plxnative-events.log") {
         let _ = writeln!(f, "{m}");
     }
 }

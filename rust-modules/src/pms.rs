@@ -52,7 +52,7 @@ pub(crate) fn movie_ptr(i: usize) -> *mut PmsMovie {
 pub(crate) fn nmovies() -> usize {
     unsafe { std::ptr::addr_of!(pms_nmovies).read() as usize }
 }
-/// catalog index whose ratingKey == `rk` (for the /tmp/poc-detail probe), or -1
+/// catalog index whose ratingKey == `rk` (for the /tmp/plxnative-detail probe), or -1
 pub(crate) fn index_of_rk(rk: &str) -> c_int {
     for i in 0..nmovies() {
         let m = unsafe { &*movie_ptr(i) };

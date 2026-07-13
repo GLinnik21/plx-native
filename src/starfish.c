@@ -165,7 +165,7 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
 /* ---- ACB verbs (the 3-arg taskId ABI is hidden) ---- */
 long acb_create(const char *appId, int playerType) {
     g_acb = AcbAPI_create();
-    if (g_acb) AcbAPI_initialize(g_acb, playerType, appId ? appId : "com.glin.plexpoc", acb_cb);
+    if (g_acb) AcbAPI_initialize(g_acb, playerType, appId ? appId : "com.beb.plxnative", acb_cb);
     return g_acb;
 }
 void acb_bind(const char *mediaId) {

@@ -547,7 +547,7 @@ aq_set_eof(q);
 
 ## 7. Phased, on-device-verifiable plan
 
-Each phase deploys with `make test` and inspects `/tmp/poc-events.log` (fetched automatically).
+Each phase deploys with `make test` and inspects `/tmp/plxnative-events.log` (fetched automatically).
 Use a known **HEVC 3840×1920** title and a known **H264+AC3** title.
 
 - **Phase A — ABI verification (no behavior change).** Add the §1 structs/externs/consts to `ff.rs`
@@ -558,7 +558,7 @@ Use a known **HEVC 3840×1920** title and a known **H264+AC3** title.
   `codec_id=28`; `av_bsf_get_by_name` returns non-NULL for both mp4toannexb filters. If `codec_id`
   or offsets differ, fix the structs before proceeding. *No `mkv.rs` change yet.*
 - **Phase B — video read-loop → Annex-B feed → decode.** Wire the §2 flow behind a
-  `/tmp/poc-demux=ff` trigger (fall back to `mkv.rs` otherwise) so the two paths are bisectable.
+  `/tmp/plxnative-demux=ff` trigger (fall back to `mkv.rs` otherwise) so the two paths are bisectable.
   Video only (route audio to `aq` off / feed `es=1` only). **Check:** video plane shows the movie
   (`tools/capture-screen.sh out.png DISPLAY`); log shows `feed v#… reply=O`; `RECEIVE_GOOD_VIDEO`
   behavior matches the mkv path. Verify HEVC decodes (the 3840×1920 title) and H264 decodes.
@@ -568,9 +568,9 @@ Use a known **HEVC 3840×1920** title and a known **H264+AC3** title.
 - **Phase D — seek.** Add `SHARED.seek_to_ns`, the pump direct-play switch (§3.2), the demux
   `av_seek_frame`, and the AVIO `seek_cb`. Delete `cues_thread`/`cue_byte_for`/`hs2`/cue state.
   **Check:** LEFT/RIGHT scrub-seek on the **HEVC** title lands cleanly with **no corruption/green
-  blocks** (the bug this fixes) — capture the frame after a seek; `/tmp/poc-autoseek` for headless.
+  blocks** (the bug this fixes) — capture the frame after a seek; `/tmp/plxnative-autoseek` for headless.
   Verify direct-play *and* transcode seek, and audio-switch/retranscode still work.
-- **Phase E — remove `mkv.rs`.** Delete the file + the `poc-demux` bisect trigger; make `ff` the
+- **Phase E — remove `mkv.rs`.** Delete the file + the `plxnative-demux` bisect trigger; make `ff` the
   only path. **Check:** full interactive pass — shelf → OK → play → pause → seek → BACK — on H264,
   HEVC, and a transcode title; clean teardown (no leak/crash in the log; app-switch reload intact).
 

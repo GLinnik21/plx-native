@@ -1,6 +1,6 @@
 # rust-modules — the Rust half of the hybrid app
 
-This crate is a `staticlib` linked into the C binary (`pkg/plexpoc`). It's the
+This crate is a `staticlib` linked into the C binary (`pkg/plxnative`). It's the
 result of a gradual, module-by-module C→Rust migration on the `rust-migration`
 branch. Each ported module exposes the **same C ABI** its `src/*.h` declares, so
 the remaining C code calls it unchanged; the corresponding `src/*.c` is excluded

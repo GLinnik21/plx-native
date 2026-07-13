@@ -1,8 +1,8 @@
 # ui/ — the shared UI system (read before touching any screen)
 
-This is a **real product built for production quality — not a POC.** "It's a POC" / "not worth it
-for a POC" is never a reason to skip a proper component, leave a bespoke `draw_*` in place, or
-half-finish a primitive. If a shared piece is missing (a real text-flow view, a chip, a list),
+This is a **real product built for production quality.** "Not worth it for a throwaway" is never a
+reason to skip a proper component, leave a bespoke `draw_*` in place, or half-finish a primitive.
+If a shared piece is missing (a real text-flow view, a chip, a list),
 **build it** — a reusable primitive that pays off across screens is exactly the work worth doing.
 
 This directory is a **design system**, not a pile of per-screen draw code. Home, detail, and the
@@ -54,7 +54,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 | `card_row.rs` | `CardRow` — the animated poster-shelf component shared by the home grid and detail Related (`RowStyle::HOME` = the single source of shelf motion+geometry; owns per-cell scale springs + scroll spring + `draw_tile`/`draw_focused`). Callers keep their own x/scroll/z-order loop (home's cross-row focused-last stays in `Grid`). |
 | `table.rs` | `TableView`/`Section`/`Row`/`Badge` — the animated list (settings/track-menu look). |
 | `icons.rs` | `Icon` enum + antialiased SVG rasterizer; color is the `tint` you pass. |
-| `profile.rs` | draw profiler (diagnostic). `profile::phase("name", \|\| draw_x())` brackets a phase with `glFinish` to log its real per-frame GPU cost; on via `/tmp/poc-profile`, zero-overhead off. Use it to find fill/overdraw before guessing. FPS is also logged once/sec (grep `FPS=`). |
+| `profile.rs` | draw profiler (diagnostic). `profile::phase("name", \|\| draw_x())` brackets a phase with `glFinish` to log its real per-frame GPU cost; on via `/tmp/plxnative-profile`, zero-overhead off. Use it to find fill/overdraw before guessing. FPS is also logged once/sec (grep `FPS=`). |
 | `home.rs` / `detail.rs` / `player_hud.rs` / `info_panel.rs` / `track_menu.rs` / `chapters_panel.rs` | **screens** — compose the above; hold their own springs + input. Should contain almost no color literals. |
 
 ## Gotchas that bite

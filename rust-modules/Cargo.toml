@@ -1,12 +1,12 @@
 [package]
-name = "plexpoc-modules"
+name = "plxnative-modules"
 version = "0.1.0"
 edition = "2021"
 
 # Static library linked into the C app (hybrid migration): each ported module
 # exposes the same C ABI its src/*.h declares, so the C code calls it unchanged.
 [lib]
-name = "plexpoc_modules"
+name = "plxnative_modules"
 crate-type = ["staticlib"]
 
 [dependencies]

@@ -18,14 +18,14 @@ use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
-/// Bisect flag: /tmp/poc-demux=ff routes the demux thread through this libavformat
+/// Bisect flag: /tmp/plxnative-demux=ff routes the demux thread through this libavformat
 /// demuxer instead of mkv.rs, so both paths coexist during bring-up (Phases B–E).
 static USE_FF: AtomicBool = AtomicBool::new(true);
 pub(crate) fn use_ff() -> bool {
     USE_FF.load(Ordering::Relaxed)
 }
 
-/// Feed audio (es=2) to the pipeline. Cleared by the /tmp/poc-noaudio dev trigger to
+/// Feed audio (es=2) to the pipeline. Cleared by the /tmp/plxnative-noaudio dev trigger to
 /// A/B whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
 static FEED_AUDIO: AtomicBool = AtomicBool::new(true);
 pub(crate) fn set_feed_audio(on: bool) {
@@ -435,18 +435,18 @@ pub(crate) fn boot() {
         ));
     }
     // The libavformat demuxer is the DEFAULT (robust index-based seeking; fixes the HEVC
-    // seek corruption of the hand-rolled path). Set /tmp/poc-demux=mkv to fall back to the
+    // seek corruption of the hand-rolled path). Set /tmp/plxnative-demux=mkv to fall back to the
     // legacy mkv.rs demuxer for comparison.
-    let fallback_mkv = std::fs::read_to_string("/tmp/poc-demux").map(|s| s.trim() == "mkv").unwrap_or(false);
+    let fallback_mkv = std::fs::read_to_string("/tmp/plxnative-demux").map(|s| s.trim() == "mkv").unwrap_or(false);
     USE_FF.store(!fallback_mkv, Ordering::Relaxed);
     crate::player::log(if fallback_mkv {
-        "ff: demuxer = mkv.rs (fallback via poc-demux=mkv)"
+        "ff: demuxer = mkv.rs (fallback via plxnative-demux=mkv)"
     } else {
         "ff: demuxer = libavformat"
     });
-    // Phase A dev trigger: /tmp/poc-ffprobe holds a media URL to open + dump streams,
+    // Phase A dev trigger: /tmp/plxnative-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
-    if let Ok(u) = std::fs::read_to_string("/tmp/poc-ffprobe") {
+    if let Ok(u) = std::fs::read_to_string("/tmp/plxnative-ffprobe") {
         let u = u.trim();
         if !u.is_empty() {
             probe(u);

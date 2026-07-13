@@ -269,7 +269,7 @@ let spec = crate::plex::TranscodeSpec {
 put_selection(cfg);                          // R5, now select_streams
 let c = crate::plex::client();
 c.transcode_decision(&spec);
-(c.transcode_start_url(&spec).to_url(), format!("plexpoc-{rk}"))
+(c.transcode_start_url(&spec).to_url(), format!("plxnative-{rk}"))
 ```
 `transcode_decision(&TranscodeSpec)` (get_void) + `transcode_start_url(&TranscodeSpec) -> StreamUrl`.
 
@@ -321,7 +321,7 @@ Current: builds `transcode_base(&rk,cfg)` → sets TBASE/TSESSION → `put_selec
 decision GET → `start.mkv` URL. Replacement mirrors **R4** (same `TranscodeSpec` with the current
 `offset_secs`), plus:
 ```rust
-unsafe { *addr_of_mut!(TSESSION) = format!("plexpoc-{rk}"); }
+unsafe { *addr_of_mut!(TSESSION) = format!("plxnative-{rk}"); }
 put_selection(cfg);      // R5
 // then transcode_decision + transcode_start_url as in R4; drop the TBASE write
 ```
@@ -450,13 +450,13 @@ migration): `section_items_paged`, `metadata_many`, `all_leaves`, `continue_watc
 
 1. **Timeline GET → POST** (T1 + engine final). `Client::timeline` uses `Client::post` (spec-correct,
    D-8a). The current code uses GET and works. Verify PMS accepts the POST (watch
-   `/tmp/poc-events.log` for the resume point + watched-state update). If it regresses, the design
+   `/tmp/plxnative-events.log` for the resume point + watched-state update). If it regresses, the design
    notes the one-line fallback: swap `post` → `get_void` inside `timeline()`; signature unchanged.
 
 2. **Transcode `X-Plex-Client-Identifier`.** Today `route::transcode_base` sends
-   `X-Plex-Client-Identifier={session}` (= `plexpoc-{rk}`) on decision/start (route.rs:173).
-   `Client::transcode_query` sends `X-Plex-Client-Identifier=self.client_id` (`com.glin.plexpoc`)
-   while `session`/`X-Plex-Session-Identifier` stay `plexpoc-{rk}`. Confirm the transcode still
+   `X-Plex-Client-Identifier={session}` (= `plxnative-{rk}`) on decision/start (route.rs:173).
+   `Client::transcode_query` sends `X-Plex-Client-Identifier=self.client_id` (`com.beb.plxnative`)
+   while `session`/`X-Plex-Session-Identifier` stay `plxnative-{rk}`. Confirm the transcode still
    registers and streams after R3/R4/R6 (this is the value the design deliberately changed; if PMS
    ties the session to the client-id, revert `transcode_query` to use `session` there).
 

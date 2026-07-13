@@ -6,7 +6,7 @@ use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 
 /// Plex's resume rule, in ONE place (home Continue-Watching, the detail Play button, and the
-/// poc-play harness all apply it): resume only past 10s and before 95% watched, else start
+/// plxnative-play harness all apply it): resume only past 10s and before 95% watched, else start
 /// from the beginning. Both args are MILLISECONDS; the returned position is NANOSECONDS
 /// (what `player::resume_at` takes).
 pub(crate) fn resume_ns(resume_ms: i64, dur_ms: i64) -> i64 {

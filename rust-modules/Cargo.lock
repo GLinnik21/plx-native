@@ -129,7 +129,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "plexpoc-modules"
+name = "plxnative-modules"
 version = "0.1.0"
 dependencies = [
  "image",

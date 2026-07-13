@@ -92,13 +92,13 @@ app.rs-shared focus state or the fragile snap edge-trigger. It is the correct th
 ## (B) Frozen C-ABI / call-site signatures (MUST NOT CHANGE)
 
 These are `pub(crate)` Rust (not `extern "C"`, except `plex_run`), but their **names/arities/return
-types are frozen** — app.rs, route.rs, and the `poc-*` dev-triggers call them verbatim. Any struct
+types are frozen** — app.rs, route.rs, and the `plxnative-*` dev-triggers call them verbatim. Any struct
 migration must keep them as thin wrappers.
 
 **home.rs** (callers via the app.rs `g_*`/`set_*` bridge at app.rs:116-124, and `home_*` drivers):
 - `fn row() -> c_int` · `fn col() -> c_int` · `fn snap_target() -> f32`
 - `fn set_row(v: c_int)` · `fn set_snap_target(v: f32)`  (no `set_col` — fc is written only via nav)
-- `fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie`  (app.rs:643/645 routing, app.rs:896 poc-playidx)
+- `fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie`  (app.rs:643/645 routing, app.rs:896 plxnative-playidx)
 - `fn home_init()` · `fn home_update(dt: f32)` · `fn home_draw()`
 - `fn home_move_focus(sym: c_uint)` · `fn home_pointer_focus(mx: f32, my: f32)` · `fn home_wheel(dy: c_int)`
 
@@ -155,7 +155,7 @@ migration must keep them as thin wrappers.
     `metadata::clear()` → selected=-1.
 16. **Background suspend keeps the session** (`suspend_bufferfeed` + bg_was_playing/bg_was_paused/
     bg_pos), 0x106 restores via `resume_at` + `start_bufferfeed` (guards a double-start UAF).
-17. **All ~12 `poc-*` headless dev-triggers** (app.rs:886-1053) poke route state directly — every
+17. **All ~12 `plxnative-*` headless dev-triggers** (app.rs:886-1053) poke route state directly — every
     set-site migrates atomically with the enum or headless capture/regression silently breaks.
 18. **No per-frame perf regression** on weak ARM: `Painter`/`Env` are `Copy`; no per-cell boxed
     Views, no per-frame `Vec` on the hot path; detail `update()` steps exactly 3 springs; scrolling
@@ -205,8 +205,8 @@ free fn with a thin forwarder of IDENTICAL signature: `pub(crate) fn open(idx:c_
 (#15), the three-spring phase (#14), and `on_ok` side effects (`route::play_movie`/`play_episode`/
 `set_now_playing`; last_resume_ns default 0).
 - **Files:** rust-modules/src/ui/detail.rs
-- **Checkpoint:** `make` green; on TV run `capture-screen.sh` + the `poc-detail`/`poc-detailsec`/
-  `poc-detailcol`/`poc-detailplay` triggers (app.rs:923-948) — focus/scroll/play unchanged, the
+- **Checkpoint:** `make` green; on TV run `capture-screen.sh` + the `plxnative-detail`/`plxnative-detailsec`/
+  `plxnative-detailcol`/`plxnative-detailplay` triggers (app.rs:923-948) — focus/scroll/play unchanged, the
   wrapper signatures still drive them. Then grep `SELECTED|SECTION|COL|SCROLL|CARD_SCALE|EP_HSCROLL|
   LAST_RESUME_NS` to **zero** to prove no stale reader survived.
 - **Invariants:** #5, #14, #15, #18, #19 (section_y still the Y source; springs unchanged; reset
@@ -287,7 +287,7 @@ set_fr/set_snap` (app.rs:116-124) compile unchanged. No new C-ABI.
 **7a.1 — Introduce `enum Route`/`Overlay` as a shadow, kept in sync (no reads flipped).**
 Add the two enums + `let mut route = Route::Home;` alongside the 5 bools (app.rs:329-333). At EVERY
 existing set-site of `playing/detail_open/menu_open/info_open/chapters_open` — key handlers,
-lifecycle (0x103/0x106, :360-401), and the ~12 `poc-*` dev-triggers (:886-1053) — ALSO write the
+lifecycle (0x103/0x106, :360-401), and the ~12 `plxnative-*` dev-triggers (:886-1053) — ALSO write the
 matching `route` (`playing=true`→`Player{None}`; `detail_open=true`→`Detail`; `menu_open=true`→
 `Player{Menu}`; back-to-home→`Home`; etc.). Reads still use the bools. This enumerates every set-site
 before the flip and proves the mapping compiles.
@@ -306,13 +306,13 @@ successes → `Route::Player{overlay:Overlay::None}`; Stop/BACK → `Route::Home
 `suspend_bufferfeed` + bg_was_playing/bg_was_paused/bg_pos (#16); 0x106 restores
 `route=Player{None}` via `resume_at`+`start_bufferfeed` — the separate `bg_was_playing` flag carries
 suspended-ness, do NOT encode it in Route. `home_update(dt)` STAYS unconditional (#6). Migrate ALL
-~12 `poc-*` set-sites in lockstep (#17). Preserve the snap edge-trigger (#8), LG key decode (#2),
+~12 `plxnative-*` set-sites in lockstep (#17). Preserve the snap edge-trigger (#8), LG key decode (#2),
 `plex_run` C-ABI. Keep `g_fr/g_fc/g_snap/set_fr/set_snap` + home `fr/fc` + detail `section/col` as
 SEPARATE focus owners (no unification yet).
 - **Files:** rust-modules/src/app.rs
 - **Checkpoint:** `make` green; on-TV capture through the full route graph home→detail→play→
-  menu/info/chapters→back; run `poc-detail*`/`poc-menu`/`poc-info`/`poc-chapters`/`poc-play`/
-  `poc-autoplay`/`poc-autoseek`/`poc-autopause`/`poc-grid` — each reaches the same route + capture;
+  menu/info/chapters→back; run `plxnative-detail*`/`plxnative-menu`/`plxnative-info`/`plxnative-chapters`/`plxnative-play`/
+  `plxnative-autoplay`/`plxnative-autoseek`/`plxnative-autopause`/`plxnative-grid` — each reaches the same route + capture;
   verify background→foreground resume single-`Load`s (bg_was_playing path, no double-start UAF).
 - **Invariants:** #2, #6, #7, #8, #16, #17, #18.
 
@@ -323,9 +323,9 @@ make home `fr/fc/snapTarget` + `DetailView.section/col` views onto it. HARD cons
 signatures (`home::row/col/snap_target/set_row/set_snap_target`, `detail::move_focus/focus`) and the
 snap edge-trigger (#8, split target/spring ownership at threshold 0.5) survive byte-for-byte; respect
 the `g_fc`-has-no-setter asymmetry (fc written only via move_focus/pointer_focus/wheel);
-`poc-grid` (which pokes `set_fr/set_snap` directly) still resolves through the shims.
+`plxnative-grid` (which pokes `set_fr/set_snap` directly) still resolves through the shims.
 - **Files:** rust-modules/src/app.rs, rust-modules/src/ui/home.rs, rust-modules/src/ui/detail.rs, (new focus module)
-- **Checkpoint:** `make` green + capture + rerun ALL `poc-*` flows AND manually exercise the
+- **Checkpoint:** `make` green + capture + rerun ALL `plxnative-*` flows AND manually exercise the
   hero↔grid snap boundary. **On ANY regression of the snap edge-trigger or a headless trigger,
   ABORT 7b and revert to the 7a state.**
 - **Invariants:** #2, #8, #17.
@@ -345,7 +345,7 @@ and is the correct thing to sacrifice.
 
 - **6.2 is one atomic ~15-site static→field rewrite with NO host test.** A missed `addr_of!` site
   leaves a stale reader diverging silently. → grep the 7 static names to zero after the step;
-  eyeball via capture + the `poc-detail*` triggers.
+  eyeball via capture + the `plxnative-detail*` triggers.
 - **Lazy `view()` init (detail) ≠ home's eager `scene()`.** Any path drawing detail before
   `open`/`open_rk` must degrade to the default `DetailView` (selected=-1). app.rs always opens before
   routing to Detail (app.rs:491/674) — verify.
@@ -355,7 +355,7 @@ and is the correct thing to sacrifice.
   capture-compare.
 - **Route lifecycle** (#16): `playing=false` on background while keeping the session — mapping to
   Route must NOT lose bg_was_playing/suspend-restore. → keep bg_was_playing SEPARATE, not in Route.
-- **~12 `poc-*` dev-triggers** (#17): a missed set-site silently breaks headless capture, not the
+- **~12 `plxnative-*` dev-triggers** (#17): a missed set-site silently breaks headless capture, not the
   build. → migrate them in the SAME commit as the bool deletion; rerun the full trigger matrix at 7a.
 - **Backdrop carve-outs** (#4): folding self-managed alphas into `p.alpha()` visibly breaks the hero
   fade. → keep both immediate-mode even inside their View structs.
@@ -368,7 +368,7 @@ and is the correct thing to sacrifice.
 
 The old §E stopped at 7a and the 6.3 valve refused to promote detail's below-hero blocks, citing
 "reflow/perf **with no test**." That blocker went stale once the draw profiler (`ui::profile`,
-glFinish-bracketed per-phase GPU ms, `/tmp/poc-profile`) + the once/sec `FPS=` log landed — reflow and
+glFinish-bracketed per-phase GPU ms, `/tmp/plxnative-profile`) + the once/sec `FPS=` log landed — reflow and
 fill-rate are now directly measurable on-device. So the migration was extended to unify the two
 screens' *shared* machinery (both are: backdrop → top hero that fades as content scrolls up → hand-rolled
 off-screen culling, since `Painter` has no clip/scissor):

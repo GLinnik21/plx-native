@@ -1,4 +1,4 @@
-# plexpoc — native webOS build (cross-compiled from macOS with the webOS NDK)
+# plxnative — native webOS build (cross-compiled from macOS with the webOS NDK)
 #
 # Toolchain: the webosbrew "native-toolchain" buildroot SDK (GCC 12, glibc 2.12,
 # armv7-a soft-float). Install it once with `make setup-env` (or see the
@@ -12,18 +12,18 @@
 # TV's real libs at runtime): FFmpeg (libav*.so.57/.55) and libcurl.so.5 (the
 # sysroot ships curl .so.4, but the TV wants .so.5). See stub/*.c.
 #
-# make          — build pkg/plexpoc
+# make          — build pkg/plxnative
 # make setup-env— download+extract+relocate the NDK into $(WEBOS_SDK)
 # make deploy   — scp binary + appinfo to the TV (rooted, root@TV)
 # make run      — launch on TV, keep alive $(RUN_SECS)s, fetch event log
 # make test     — build + deploy + run
 # make kill     — close the app on the TV
-# make ipk      — repackage pkg/com.glin.plexpoc_0.1.0_arm.ipk
+# make ipk      — repackage pkg/com.beb.plxnative_0.1.0_arm.ipk
 
 TV       ?= 192.168.0.114
 SSH       = sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$(TV)
 SCP       = sshpass -p alpine scp -O -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-APPDIR    = /media/developer/apps/usr/palm/applications/com.glin.plexpoc
+APPDIR    = /media/developer/apps/usr/palm/applications/com.beb.plxnative
 RUN_SECS ?= 18
 
 # --- webOS NDK toolchain -----------------------------------------------------
@@ -54,12 +54,12 @@ STUBS = stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libcurl.so
 # C++/ACB seam) + svg.c (nanosvg rasterizer).
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
 RUST_TARGET = arm-unknown-linux-gnueabi
-RUST_LIB    = rust-modules/target/$(RUST_TARGET)/release/libplexpoc_modules.a
+RUST_LIB    = rust-modules/target/$(RUST_TARGET)/release/libplxnative_modules.a
 
 SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))   # = main.c + starfish.c + svg.c
 OBJS = $(SRCS:.c=.o)
 
-all: pkg/plexpoc
+all: pkg/plxnative
 
 # per-file compile; each object depends on ALL headers so a header edit rebuilds all
 src/%.o: src/%.c $(wildcard src/*.h)
@@ -85,7 +85,7 @@ $(RUST_LIB): $(wildcard rust-modules/src/*.rs rust-modules/src/ui/*.rs rust-modu
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
 # -Lstub first so the curl.so.5 stub wins over the sysroot's curl.so.4.
-pkg/plexpoc: $(OBJS) $(RUST_LIB) $(STUBS)
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(STUBS)
 	$(CC) $(CFLAGS) $(OBJS) $(RUST_LIB) -Lstub $(LIBS_REAL) $(LIBS_STUB) -ldl -lpthread -lm -o $@
 
 # stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly).
@@ -115,43 +115,43 @@ setup-env:
 	@echo "NDK ready: $$($(CC) --version | head -1)"
 
 # tmp+mv so deploy works while the old binary is still executing (ETXTBSY)
-deploy: pkg/plexpoc
-	$(SCP) pkg/plexpoc root@$(TV):$(APPDIR)/plexpoc.new
+deploy: pkg/plxnative
+	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
 	$(SSH) 'test -f $(APPDIR)/appfont.ttf' || $(SCP) pkg/appfont.ttf root@$(TV):$(APPDIR)/appfont.ttf
 	$(SSH) 'test -f $(APPDIR)/appfont-bold.ttf' || $(SCP) pkg/appfont-bold.ttf root@$(TV):$(APPDIR)/appfont-bold.ttf
-	$(SSH) 'mv $(APPDIR)/plexpoc.new $(APPDIR)/plexpoc && chmod +x $(APPDIR)/plexpoc'
+	$(SSH) 'mv $(APPDIR)/plxnative.new $(APPDIR)/plxnative && chmod +x $(APPDIR)/plxnative'
 
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
 # take; SAM keeps stale "running" state after a hard kill, so close via SAM
 # first or the next launch is a silent no-op relaunch.
 run:
-	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.glin.plexpoc\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
-	  fuser -k $(APPDIR)/plexpoc 2>/dev/null; rm -f /tmp/poc-events.log; \
-	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"com.glin.plexpoc\"}" >/dev/null 2>&1 & LP=$$!; \
+	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
+	  fuser -k $(APPDIR)/plxnative 2>/dev/null; rm -f /tmp/plxnative-events.log; \
+	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & LP=$$!; \
 	  sleep $(RUN_SECS); kill $$LP 2>/dev/null; sleep 1; \
-	  cat /tmp/poc-events.log'
+	  cat /tmp/plxnative-events.log'
 
 kill:
-	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.glin.plexpoc\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
-	  fuser -k $(APPDIR)/plexpoc 2>/dev/null; echo closed'
+	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
+	  fuser -k $(APPDIR)/plxnative 2>/dev/null; echo closed'
 
 clean:
-	rm -f src/*.o pkg/plexpoc
+	rm -f src/*.o pkg/plxnative
 
 test: deploy run
 
 # ipk assembly: deb-style ar archive; the NDK ar emits GNU format (macOS ar is BSD)
-ipk: pkg/plexpoc
-	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.glin.plexpoc
-	cp pkg/plexpoc pkg/appinfo.json pkg/icon.png pkg/largeIcon.png \
-	  ipkroot/data/usr/palm/applications/com.glin.plexpoc/
+ipk: pkg/plxnative
+	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative
+	cp pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png \
+	  ipkroot/data/usr/palm/applications/com.beb.plxnative/
 	cd ipkroot && tar czf control.tar.gz -C ctl control && \
 	  tar czf data.tar.gz -C data usr && \
 	  printf '2.0\n' > debian-binary
-	rm -f pkg/com.glin.plexpoc_0.1.0_arm.ipk
-	cd ipkroot && $(AR) rc ../pkg/com.glin.plexpoc_0.1.0_arm.ipk \
+	rm -f pkg/com.beb.plxnative_0.1.0_arm.ipk
+	cd ipkroot && $(AR) rc ../pkg/com.beb.plxnative_0.1.0_arm.ipk \
 	  debian-binary control.tar.gz data.tar.gz
-	shasum -a 256 pkg/com.glin.plexpoc_0.1.0_arm.ipk | tee pkg/ipk.sha256
+	shasum -a 256 pkg/com.beb.plxnative_0.1.0_arm.ipk | tee pkg/ipk.sha256
 
 .PHONY: all setup-env deploy run kill test ipk clean

@@ -22,7 +22,7 @@ GET /video/:/transcode/universal/subtitles?<same universal-transcode params as s
 
 The body is a WebVTT document, **streamed progressively in sync with the active video
 transcode session** (bytes flow only while the video transcode is being consumed). Because it
-carries the *same* `session=plexpoc-{rk}` id and the *same* `offset=` as the concurrent
+carries the *same* `session=plxnative-{rk}` id and the *same* `offset=` as the concurrent
 `start.mkv`, its cue timeline is identical to the fed video timeline (§4). `subtitles=auto`
 (not `burn`) tells PMS to emit sidecar text, not to bake pixels.
 
@@ -271,7 +271,7 @@ if eng.subs_th.is_some() && eng.subs_active_sid > 0 {
 
 Order matters and already holds: `disp_base` is stored **before** we close `hs3`, so by the
 time the subs thread re-opens and parses its first post-seek cue, `push_vtt_cue` reads the new
-`disp_base` (§4). Because an audio switch keeps the same `session=plexpoc-{rk}` id and the same
+`disp_base` (§4). Because an audio switch keeps the same `session=plxnative-{rk}` id and the same
 selected subtitle, the subs thread simply re-opens on the new-offset URL of the *same* session
 — satisfying requirement (4) "the WebVTT thread must restart too on the same new session".
 
@@ -526,8 +526,8 @@ known-good burn path:
 - A compile const `const BURN_FALLBACK: bool = false;` gating branch (a) above (and, if you
   keep the code, the pump `refresh` arm + `transcode_base` sub block). Flip to `true` to
   restore burn.
-- Or, matching this repo's dev-trigger convention (boot-time `/tmp/poc-*` files), read
-  `/tmp/poc-burn-subs` once at start and store it in an `AtomicBool` the `on_ok` branch checks —
+- Or, matching this repo's dev-trigger convention (boot-time `/tmp/plxnative-*` files), read
+  `/tmp/plxnative-burn-subs` once at start and store it in an `AtomicBool` the `on_ok` branch checks —
   so burn-vs-soft is togglable on-device without a rebuild during bring-up.
 
 Either way the soft path is the default; burn is the escape hatch, not the norm.
@@ -554,7 +554,7 @@ transcode** — "a 2nd conn cuts the stream": a concurrent second connection rac
 primary MKV transcode stream. The subtitles sidecar is a *different* kind of second connection —
 same `session=` id, an endpoint Plex designed to stream **alongside** the video — so it should
 be tolerated where an independent second full stream was not. **Validate this on-device before
-relying on it:** select a sub mid-transcode and confirm (a) `/tmp/poc-events.log` shows
+relying on it:** select a sub mid-transcode and confirm (a) `/tmp/plxnative-events.log` shows
 `subs:` cues flowing *and* the video `feed v#…` cadence continuing uninterrupted, and (b) the
 video doesn't stall/rebuffer when the subs connection opens. If it does cut the video stream on
 this server build, fall back to burn (§6) — the design keeps that one flag away.

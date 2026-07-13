@@ -31,11 +31,11 @@ pub fn current_gen() -> u32 {
 }
 
 /// Session file — on the dev partition but OUTSIDE the app install dir: appinstalld replaces
-/// `applications/com.glin.plexpoc/` wholesale on every ipk (re)install, which silently signed the
+/// `applications/com.beb.plxnative/` wholesale on every ipk (re)install, which silently signed the
 /// user out when the file lived there. `/media/developer/` itself survives reinstalls.
-const AUTH_PATH: &str = "/media/developer/com.glin.plexpoc-auth.json";
+const AUTH_PATH: &str = "/media/developer/com.beb.plxnative-auth.json";
 /// Pre-relocation path (inside the app dir) — read once as a migration fallback.
-const AUTH_PATH_OLD: &str = "/media/developer/apps/usr/palm/applications/com.glin.plexpoc/auth.json";
+const AUTH_PATH_OLD: &str = "/media/developer/apps/usr/palm/applications/com.beb.plxnative/auth.json";
 
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
