@@ -146,10 +146,18 @@ impl Painter {
     /// a focus ring/glow with no fill (colors zero, focus drives it). The quad is
     /// inflated by `pad` on every side so the SDF box lands on the card edge and the
     /// glow band has room outside it (matches ui_home.c's draw_rect(cx-PAD, .., w+2*PAD, ..)).
+    /// CIRCULAR tiles get at least 40px of quad: their radial glow was hard-cut by the tight 6px
+    /// strip pad into a visible translucent SQUARE (the home profile chip / picker avatars). The
+    /// cut is invisible on rounded-RECT tiles (it runs parallel to the glow contours), and those
+    /// keep the caller's tight quad — the episode/chapter strips draw the focused card in-loop,
+    /// where a wider quad glowed over the left neighbour but was overdrawn by the right one (an
+    /// asymmetric halo). The SDF box tracks the pad via u_pad, so the ring line never moves.
     pub fn ring(self, r: Rect, pad: f32, rad: f32, focus: f32) {
         let z = [0.0f32; 4];
-        crate::gfx::draw_rect(r.x + self.dx - pad, r.y + self.dy - pad, r.w + 2.0 * pad, r.h + 2.0 * pad,
-            pad, rad, z.as_ptr(), z.as_ptr(), focus);
+        let circular = rad * 2.0 >= r.w.min(r.h) - 1.0;
+        let qp = if circular { pad.max(40.0) } else { pad };
+        crate::gfx::draw_rect(r.x + self.dx - qp, r.y + self.dy - qp, r.w + 2.0 * qp, r.h + 2.0 * qp,
+            qp, rad, z.as_ptr(), z.as_ptr(), focus);
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         let c = self.c(col);
@@ -168,6 +176,14 @@ impl Painter {
     pub fn text(self, s: *const c_char, x: f32, y: f32, sz: c_int, col: [f32; 4], align: c_int, bold: c_int) -> f32 {
         let c = self.c(col);
         crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
+    }
+    /// [`text`](Self::text) with a horizontal fade-out: glyph alpha runs 1→0 between
+    /// `fade_from`..`fade_to` px from the string's left edge (see `text::draw_text_fade`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_fade(self, s: *const c_char, x: f32, y: f32, sz: c_int, col: [f32; 4], bold: c_int,
+        fade_from: f32, fade_to: f32) -> f32 {
+        let c = self.c(col);
+        crate::text::draw_text_fade(s, x + self.dx, y + self.dy, sz, c.as_ptr(), 0, bold, fade_from, fade_to)
     }
     /// Hard-clip subsequent draws to `r` (in this painter's space — the cascade translate is folded
     /// in). `Painter` otherwise has no clip/scissor; a scrolling list uses this so a partial row is

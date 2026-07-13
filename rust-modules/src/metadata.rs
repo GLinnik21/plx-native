@@ -395,6 +395,9 @@ fn fetch_related(rk: &str) -> Vec<Related> {
 /// related hub. Blocks on several HTTP round-trips (like route::play_movie's
 /// /decision handshake); called synchronously when opening the detail page.
 pub(crate) fn load_detail(rk: &str) {
+    // a fresh detail load supersedes any in-flight season fetch (same show re-opened: a stale
+    // landing would overwrite the fresh first-season episode list)
+    supersede_season();
     let rk = rk.to_string();
     let _ = catch_unwind(move || {
         let mut d = match fetch_detail(&rk) {
@@ -425,14 +428,74 @@ pub(crate) fn load_detail(rk: &str) {
     });
 }
 
-/// Switch the loaded show to season `idx`, fetching its episodes (used by the season tabs).
+// ---- season switching ----------------------------------------------------------------------
+// The tab UI's season switch is ASYNC: `load_season` flips `cur_season` optimistically (the tab
+// highlight moves at once), fetches the episodes on a worker thread, and `pump_season` (called by
+// the detail page once a frame) applies the landed list on the main thread. The blocking
+// `/children` GET used to run on the main loop, freezing the UI for every rapid season hop.
+// Generations guard against out-of-order landings; results for a different item are discarded.
+static SEASON_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static SEASON_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+struct SeasonResult {
+    gen: u32,
+    rk: String, // the show the fetch was for
+    idx: usize,
+    eps: Vec<Episode>,
+}
+static SEASON_RESULT: std::sync::Mutex<Option<SeasonResult>> = std::sync::Mutex::new(None);
+
+/// Invalidate any in-flight/pending season fetch and mark the mailbox settled: bump the generation
+/// (so a late async landing is discarded), catch SEASON_DONE up to it (season_loading() → false),
+/// and clear the slot. Returns the fresh generation. The ONE place the three season atomics move
+/// together — used by the blocking `load_season_now` and by `load_detail` (a new item supersedes
+/// the old show's pending fetch).
+fn supersede_season() -> u32 {
+    use std::sync::atomic::Ordering;
+    let gen = SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    SEASON_DONE.store(gen, Ordering::SeqCst);
+    *SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    gen
+}
+
+/// Switch the loaded show to season `idx` (the season tabs): `cur_season` flips immediately, the
+/// episodes arrive via [`pump_season`]. Main-thread only (touches CURRENT).
 pub(crate) fn load_season(idx: usize) {
+    use std::sync::atomic::Ordering;
+    let (rk, season_rk) = match current().and_then(|d| d.seasons.get(idx).map(|s| (d.rk.clone(), s.rk.clone()))) {
+        Some(t) => t,
+        None => return,
+    };
+    unsafe {
+        if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
+            d.cur_season = idx;
+        }
+    }
+    let gen = SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands (empty) —
+        // otherwise season_loading() would report an in-flight fetch forever
+        let eps = catch_unwind(|| fetch_episodes(&season_rk)).unwrap_or_default();
+        let mut slot = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner());
+        // MONOTONE mailbox: an older fetch that lands late must never clobber a newer result the
+        // pump hasn't consumed yet — that lost the newest season forever (and with it the
+        // SEASON_DONE catch-up, wedging the loading spinner on).
+        if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
+            *slot = Some(SeasonResult { gen, rk, idx, eps });
+        }
+    });
+}
+
+/// [`load_season`] but BLOCKING — for the page-open paths (`open_rk_season`, and any caller that
+/// plays `episodes[0]` right after) where the episode list must be right before the next line
+/// runs. Invalidates any in-flight async fetch so a stale landing can't overwrite this one.
+pub(crate) fn load_season_now(idx: usize) {
     let _ = catch_unwind(move || {
         let season_rk = match current().and_then(|d| d.seasons.get(idx)) {
             Some(s) => s.rk.clone(),
             None => return,
         };
         let eps = fetch_episodes(&season_rk);
+        supersede_season(); // drop any async fetch in flight; this synchronous list wins
         unsafe {
             if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
                 d.episodes = eps;
@@ -440,4 +503,34 @@ pub(crate) fn load_season(idx: usize) {
             }
         }
     });
+}
+
+/// True while a season fetch is in flight — drives the episode row's loading dim + spinner.
+pub(crate) fn season_loading() -> bool {
+    use std::sync::atomic::Ordering;
+    let gen = SEASON_GEN.load(Ordering::SeqCst);
+    gen != 0 && gen != SEASON_DONE.load(Ordering::SeqCst)
+}
+
+/// Main-thread pump: apply a landed season fetch to CURRENT, discarding stale generations (a newer
+/// request is in flight) and results for a different item. Returns true when the episode list just
+/// changed — the detail page resets its episode focus/scroll on it.
+pub(crate) fn pump_season() -> bool {
+    use std::sync::atomic::Ordering;
+    let res = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let Some(r) = res else { return false };
+    if r.gen != SEASON_GEN.load(Ordering::SeqCst) {
+        return false; // superseded — the newer fetch will land after this
+    }
+    SEASON_DONE.store(r.gen, Ordering::SeqCst);
+    unsafe {
+        if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
+            if d.rk == r.rk {
+                d.episodes = r.eps;
+                d.cur_season = r.idx;
+                return true;
+            }
+        }
+    }
+    false
 }

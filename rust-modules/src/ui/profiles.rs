@@ -23,24 +23,29 @@ const FOOTER_Y: f32 = 780.0; // "Sign out" pill, below the roster/name/error ban
 const PAD_KEY: f32 = 108.0;
 const PAD_KGAP: f32 = 20.0;
 const PAD_GRID_H: f32 = 4.0 * PAD_KEY + 3.0 * PAD_KGAP;
-const PAD_TITLE_DOTS: f32 = 72.0; // title draw-y → dots row
-const PAD_DOTS_GRID: f32 = 80.0; // dots row → keypad top
+const PAD_TITLE_GRID: f32 = 152.0; // title draw-y → keypad top (the unit's overall pacing)
+const PAD_DOT: f32 = 18.0; // entry-dot diameter
+const PIN_ERR_S: f32 = 1.4; // wrong-PIN red-flash duration (s)
 
 /// (title_y, dots_y, grid_y) with the whole unit — title ink top through keypad bottom —
-/// vertically centered on the screen.
+/// vertically centered on the screen, and the dot row centered in the air between the title's
+/// ink bottom and the keypad top (it used to hug the title).
 fn pad_geom() -> (f32, f32, f32) {
-    let (ct, _) = crate::text::text_cap_band(theme::size::TITLE, 1);
-    let span = PAD_TITLE_DOTS + PAD_DOTS_GRID + PAD_GRID_H - ct;
+    let (ct, cb) = crate::text::text_cap_band(theme::size::TITLE, 1);
+    let span = PAD_TITLE_GRID + PAD_GRID_H - ct;
     let title_y = (SCR_H - span) * 0.5 - ct;
-    (title_y, title_y + PAD_TITLE_DOTS, title_y + PAD_TITLE_DOTS + PAD_DOTS_GRID)
+    let grid_y = title_y + PAD_TITLE_GRID;
+    let dots_y = (title_y + cb + grid_y) * 0.5 - PAD_DOT * 0.5;
+    (title_y, dots_y, grid_y)
 }
 
-// keypad: 4 rows × 3 cols. b'D' = delete; None = an empty (unfocusable) cell.
+// keypad: 4 rows × 3 cols. b'D' = delete (bottom-RIGHT, where every phone dial pad puts it);
+// None = an empty (unfocusable) cell.
 const KEYS: [[Option<u8>; 3]; 4] = [
     [Some(b'1'), Some(b'2'), Some(b'3')],
     [Some(b'4'), Some(b'5'), Some(b'6')],
     [Some(b'7'), Some(b'8'), Some(b'9')],
-    [Some(b'D'), Some(b'0'), None],
+    [None, Some(b'0'), Some(b'D')],
 ];
 
 /// The PIN keypad overlay state (open for a protected profile).
@@ -50,10 +55,12 @@ struct Pad {
     entry: String,
     fr: c_int,
     fc: c_int,
+    submitting: bool, // a full PIN is being verified (switch thread in flight) — pad stays up
+    error_ms: f32,    // wrong-PIN flash countdown: dots pulse DANGER, entry restarts
 }
 impl Pad {
     const fn new() -> Self {
-        Pad { open: false, target: 0, entry: String::new(), fr: 0, fc: 0 }
+        Pad { open: false, target: 0, entry: String::new(), fr: 0, fc: 0, submitting: false, error_ms: 0.0 }
     }
 }
 
@@ -88,6 +95,26 @@ pub fn enter() {
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
+    if s.pad.open {
+        if s.pad.error_ms > 0.0 {
+            s.pad.error_ms = (s.pad.error_ms - dt).max(0.0);
+        }
+        // a submitted PIN resolves off-thread: success routes the app away (Phase::Ready);
+        // dropping back to Profiles means the switch failed. Only a PIN-blaming failure flashes
+        // the dots red and stays up (closing the whole pad on a typo made the user re-pick the
+        // profile every time); any other failure ("no access to this server", offline) closes the
+        // pad so the picker's error banner can say WHY — a red flash there reads as a typo the
+        // user would retry forever.
+        if s.pad.submitting && auth::phase() == Phase::Profiles {
+            if auth::pin_denied() {
+                s.pad.submitting = false;
+                s.pad.entry.clear();
+                s.pad.error_ms = PIN_ERR_S;
+            } else {
+                s.pad = Pad::new();
+            }
+        }
+    }
     let n = auth::users().len();
     if s.fc as usize >= n.max(1) {
         s.fc = 0;
@@ -206,16 +233,29 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
     if let Ok(t) = CString::new(format!("Enter {name}'s PIN")) {
         p.text(t.as_ptr(), SCR_W as f32 * 0.5, title_y, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
     }
-    // 4 entry dots
-    let dot = 18.0f32;
-    let dgap = 34.0f32;
-    let dw = PIN_LEN as f32 * dot + (PIN_LEN as f32 - 1.0) * dgap;
-    let mut dx = SCR_W as f32 * 0.5 - dw * 0.5;
-    for i in 0..PIN_LEN {
-        let filled = i < s.pad.entry.len();
-        let col = theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 });
-        p.rect(Rect::new(dx, dots_y, dot, dot), dot * 0.5, col, col, 0.0);
-        dx += dot + dgap;
+    // 4 entry dots — replaced by a spinner while the PIN verifies; a rejected PIN pulses the
+    // (all-filled) dots DANGER red for PIN_ERR_S, then the entry restarts on the same pad
+    if s.pad.submitting {
+        Spinner::new(SCR_W as f32 * 0.5, dots_y + PAD_DOT * 0.5, 22.0)
+            .phase(s.spin_ms as u32)
+            .tint(theme::TEXT_PRIMARY)
+            .draw(env, p);
+    } else {
+        let flash = s.pad.error_ms > 0.0;
+        let blink = ((s.pad.error_ms * 5.0) as i32 % 2) == 0; // ~2.5Hz pulse
+        let dgap = 34.0f32;
+        let dw = PIN_LEN as f32 * PAD_DOT + (PIN_LEN as f32 - 1.0) * dgap;
+        let mut dx = SCR_W as f32 * 0.5 - dw * 0.5;
+        for i in 0..PIN_LEN {
+            let filled = i < s.pad.entry.len();
+            let col = if flash {
+                theme::with_a(theme::DANGER, if blink { 1.0 } else { 0.35 })
+            } else {
+                theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 })
+            };
+            p.rect(Rect::new(dx, dots_y, PAD_DOT, PAD_DOT), PAD_DOT * 0.5, col, col, 0.0);
+            dx += PAD_DOT + dgap;
+        }
     }
     // keypad grid
     for (r, row) in KEYS.iter().enumerate() {
@@ -336,10 +376,18 @@ pub fn click(mx: f32, my: f32) {
     }
 }
 
+/// Dev/test hook (`poc-pickuser`): commit roster tile `idx` exactly like OK — a protected tile
+/// opens the PIN pad (headless pad capture), an unprotected one switches.
+pub fn pick(idx: usize) {
+    let s = scene();
+    s.fc = idx as c_int;
+    select(s, idx);
+}
+
 /// Commit a roster tile (OK or pointer click): protected → PIN pad, else switch.
 fn select(s: &mut Scene, idx: usize) {
     if auth::users().get(idx).map(|u| u.protected).unwrap_or(false) {
-        s.pad = Pad { open: true, target: idx, entry: String::new(), fr: 0, fc: 0 };
+        s.pad = Pad { open: true, target: idx, ..Pad::new() };
     } else {
         auth::select_profile(idx);
     }
@@ -382,6 +430,9 @@ fn pad_key(s: &mut Scene, sym: c_uint, wcode: c_uint) {
     if is_back(sym, wcode) {
         s.pad = Pad::new();
         return;
+    }
+    if s.pad.submitting {
+        return; // verification in flight — only BACK acts
     }
     if let Some(d) = digit_of(sym, wcode) {
         press(s, d); // remote number buttons type straight into the PIN
@@ -434,6 +485,10 @@ fn nearest_col(fr: c_int, fc: c_int) -> c_int {
 }
 
 fn press(s: &mut Scene, k: u8) {
+    if s.pad.submitting {
+        return;
+    }
+    s.pad.error_ms = 0.0; // typing again cancels the wrong-PIN flash
     if k == b'D' {
         s.pad.entry.pop();
         return;
@@ -444,6 +499,9 @@ fn press(s: &mut Scene, k: u8) {
     if s.pad.entry.len() == PIN_LEN {
         let (idx, pin) = (s.pad.target, s.pad.entry.clone());
         auth::submit_pin(idx, &pin);
-        s.pad = Pad::new(); // the flow shows a spinner; a wrong PIN returns to the picker
+        // the pad STAYS UP: the dot row turns into a spinner, and a rejected PIN flashes the
+        // dots red for another try (update() watches the flow phase) — it used to close and
+        // dump the user back on the picker for every typo
+        s.pad.submitting = true;
     }
 }

@@ -88,6 +88,10 @@ struct Ctl {
     qr_png: Vec<u8>, // Plex's server-rendered QR PNG bytes (decoded + shown by the login screen)
     users: Vec<UserTile>,
     error: String,
+    // the last switch failure blames the submitted PIN (the 401/keypad case) — the PIN pad flashes
+    // its dots red for this one and shows the picker's error banner for everything else ("no
+    // access to this server", offline), which a red wrong-PIN flash would misrepresent.
+    pin_denied: bool,
     session: Session,
     apply_pending: bool,
 }
@@ -117,6 +121,11 @@ pub fn qr_png() -> Vec<u8> {
 }
 pub fn error() -> String {
     with_ctl(|c| c.error.clone())
+}
+/// Did the last profile-switch failure blame the submitted PIN? Drives the PIN pad's red-flash
+/// (vs closing so the picker's error banner can show a non-PIN failure).
+pub fn pin_denied() -> bool {
+    with_ctl(|c| c.pin_denied)
 }
 pub fn users() -> Vec<UserTile> {
     with_ctl(|c| c.users.clone())
@@ -386,7 +395,10 @@ fn switch_thread(index: usize, pin: Option<String>) {
             c.apply_pending = true;
         });
     }
-    with_ctl(|c| c.phase = Phase::Switching);
+    with_ctl(|c| {
+        c.phase = Phase::Switching;
+        c.pin_denied = false;
+    });
     std::thread::spawn(move || {
         let ac = AccountClient::new(&cid, Some(&account_token));
         let u = match ac.switch_user(&tile.uuid, pin.as_deref()) {
@@ -401,6 +413,7 @@ fn switch_thread(index: usize, pin: Option<String>) {
                     } else {
                         "Couldn't switch profile — check the connection.".into()
                     };
+                    c.pin_denied = pin.is_some();
                     c.phase = Phase::Profiles;
                 });
             }

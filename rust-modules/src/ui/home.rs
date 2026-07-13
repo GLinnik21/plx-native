@@ -36,6 +36,10 @@ static mut hero_btns: [Rect; HERO_NBTN] = [Rect::new(0.0, 0.0, 0.0, 0.0); HERO_N
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0; // idle seconds between automatic hero flips
 const HERO_NBTN: usize = 3;
+/// The sliding text column's bottom-anchor line: the tallest stack (96px logo + kicker + 3-line
+/// synopsis) tops out at ~438 — the old top-down flow's start. The action row and page dots hang
+/// at fixed offsets below it, so the chrome never jumps between hero items.
+const HERO_TEXT_BOTTOM: f32 = 692.0;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 // top-left profile chip (avatar) rect, recorded each draw for pointer hit-testing (opens the
 // account menu). See draw_chip / profile_chip_click.
@@ -254,15 +258,16 @@ impl Hero {
 }
 /// One hero item's sliding content column: title band (clearLogo or text) → small meta/kicker →
 /// synopsis. For an EPISODE the show is the star: the show's clearLogo/title in the title band and
-/// a "S1 E4 · Episode title" kicker — the episode's own name never headlines. Returns the y where
-/// the (non-sliding) action row starts. Every gap is a `theme::space` rung and every step advances
-/// by the *measured* height of the element just drawn.
-fn hero_content(hero: &PmsMovie, p: Painter) -> f32 {
+/// a "S1 E4 · Episode title" kicker — the episode's own name never headlines. The column is
+/// **bottom-anchored** on `HERO_TEXT_BOTTOM`: heights are measured first and the stack grows UP,
+/// so the synopsis' last line — and with it the pinned action row + page dots below — sits at the
+/// same y for every item (top-down flow made the chrome jump on every flip). Every gap is a
+/// `theme::space` rung and every step advances by the *measured* height of the element just drawn.
+fn hero_content(hero: &PmsMovie, p: Painter) {
     let tx = MARGIN_X;
     let col_w = 660.0f32; // hero text column
     let w_a = theme::TEXT_PRIMARY; // cascade applies hero_a
     let d_a = theme::TEXT_SECONDARY;
-    let mut y = 440.0f32;
 
     let is_ep = hero.kind == 3;
     let logo_rk = if is_ep && hero.show_rk[0] != 0 {
@@ -272,15 +277,10 @@ fn hero_content(hero: &PmsMovie, p: Painter) -> f32 {
     } else {
         String::new()
     };
-    if let Some((lt, ww, hh)) = crate::posters::logo_tex(&logo_rk, col_w, 96.0) {
-        p.tex(lt, Rect::new(tx, y, ww, hh), 0.0, w_a);
-        y += hh;
-    } else {
-        let title = if is_ep && hero.show_title[0] != 0 { cfield(&hero.show_title) } else { cfield(&hero.title) };
-        let tv = TextView::new(&title, theme::size::HERO, w_a).bold().max_lines(1);
-        tv.draw(p, Rect::new(tx, y, col_w, 0.0));
-        y += tv.measure_h(col_w);
-    }
+    let logo = crate::posters::logo_tex(&logo_rk, col_w, 96.0);
+    let title = if is_ep && hero.show_title[0] != 0 { cfield(&hero.show_title) } else { cfield(&hero.title) };
+    let title_tv = TextView::new(&title, theme::size::HERO, w_a).bold().max_lines(1);
+    let title_h = logo.map(|(_, _, hh)| hh).unwrap_or_else(|| title_tv.measure_h(col_w));
 
     // meta/kicker line — episodes: "S1 E4 · Episode title"; else "Movie/Show · YEAR · RATING"
     let meta = if is_ep {
@@ -303,23 +303,30 @@ fn hero_content(hero: &PmsMovie, p: Painter) -> f32 {
         format!("{} \u{b7} {} \u{b7} {}", noun, hero.year, if rating.is_empty() { "NR" } else { &rating })
     };
     let meta_tv = TextView::new(&meta, theme::size::BODY, d_a).max_lines(1);
-    y += theme::space::MD;
-    meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
-    y += meta_tv.measure_h(col_w);
+    let meta_h = meta_tv.measure_h(col_w);
 
     // synopsis — the hero's fine-print "info" line (size::MICRO per explicit design direction:
-    // ~11px ink), pixel-wrapped to the hero column, 2 lines max. The kicker/meta line above stays
-    // at BODY — it's the label the eye needs to catch.
+    // ~11px ink), pixel-wrapped to the hero column. 3 lines is the ceiling: a 4th would push the
+    // pinned action row's clearance into the peeking shelf. The kicker/meta line above stays at
+    // BODY — it's the label the eye needs to catch.
     let summary = cfield(&hero.summary);
-    if !summary.is_empty() {
-        // 3 lines is the ceiling here: a 4th would push the page dots into the peeking shelf
-        // (flow starts at 440; PEEK_Y is 828)
-        let syn = TextView::new(&summary, theme::size::MICRO, d_a).leading(27.0).max_lines(3);
-        y += theme::space::SM;
-        syn.draw(p, Rect::new(tx, y, col_w, 0.0));
-        y += syn.measure_h(col_w);
+    let syn = (!summary.is_empty())
+        .then(|| TextView::new(&summary, theme::size::MICRO, d_a).leading(29.0).max_lines(3));
+    let syn_h = syn.as_ref().map(|tv| theme::space::SM + tv.measure_h(col_w)).unwrap_or(0.0);
+
+    // stack the measured blocks up from the anchor, then draw top-down
+    let mut y = HERO_TEXT_BOTTOM - (title_h + theme::space::MD + meta_h + syn_h);
+    if let Some((lt, ww, hh)) = logo {
+        p.tex(lt, Rect::new(tx, y, ww, hh), 0.0, w_a);
+    } else {
+        title_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
     }
-    y
+    y += title_h + theme::space::MD;
+    meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
+    y += meta_h;
+    if let Some(tv) = syn {
+        tv.draw(p, Rect::new(tx, y + theme::space::SM, col_w, 0.0));
+    }
 }
 
 impl View for Hero {
@@ -330,24 +337,23 @@ impl View for Hero {
         let tx = MARGIN_X;
 
         // per-item content, sliding during a flip (same phase/direction as the backdrop art)
-        let mut y = if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
+        if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
             if let Some(ph) = unsafe { hero_item_at(prev).as_ref() } {
                 hero_content(ph, p.translate(dx_out, 0.0));
             }
-            hero_content(hero, p.translate(dx_in, 0.0))
+            hero_content(hero, p.translate(dx_in, 0.0));
         } else {
-            hero_content(hero, p)
-        };
+            hero_content(hero, p);
+        }
 
-        // action row — chrome, does NOT slide. Pill + info + chevron are a real focus row
-        // (hero_fc), so LEFT/RIGHT walk buttons instead of paging; the chevron is the pager.
-        // The pill says "Continue" when the hero item has a resume point, else "Play", and
-        // launches playback directly (the info circle is the road to the detail page).
-        // MD, not LG: the synopsis' leading box already carries ~7px of descender slack, and the
-        // bigger rung read as the button drifting away from its text (it also squeezed the page
-        // dots down onto the peeking shelf).
-        y += theme::space::MD;
-        let pill_y = y;
+        // action row — chrome, does NOT slide, and sits at a FIXED y (the text column above is
+        // bottom-anchored, so the button-to-text air is one MD for every item). Pill + info +
+        // chevron are a real focus row (hero_fc), so LEFT/RIGHT walk buttons instead of paging;
+        // the chevron is the pager. The pill says "Continue" when the hero item has a resume
+        // point, else "Play", and launches playback directly (the info circle is the road to the
+        // detail page). MD, not LG: the synopsis' leading box already carries ~7px of descender
+        // slack, and the bigger rung read as the button drifting away from its text.
+        let pill_y = HERO_TEXT_BOTTOM + theme::space::MD;
         let hf = hero_focus();
         let (cd, cgap) = (60.0f32, 20.0f32); // control diameter + inter-control gap
         let plabel = if hero.resume_ms > 0 { c"Continue" } else { c"Play" };
@@ -370,8 +376,7 @@ impl View for Hero {
         // shelf and read as stuck to the poster row.
         let pool_n = crate::pms::hero_pool_len();
         if pool_n > 1 {
-            y = pill_y + cd + theme::space::SM;
-            PageDots::new(pool_n).active(hero_index()).at(tx, y).draw(env, p);
+            PageDots::new(pool_n).active(hero_index()).at(tx, pill_y + cd + theme::space::SM).draw(env, p);
         }
     }
 }
@@ -398,7 +403,7 @@ impl View for Grid {
         // move the page when the focused row's block — title band above, card + focused label
         // below — would clip the viewport; a fully visible row never re-seats the page.
         let top = env.fr as f32 * ROW_PITCH;
-        let lo = top + GRID_TOP_Y + CARD_H + 96.0 - (SCR_H - 24.0); // card + title/caption metadata visible
+        let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - 24.0); // card + title/caption metadata visible
         let hi = top + GRID_TOP_Y - 66.0 - 96.0; // hub title band clear below the chip row
         self.scroll_y.step(card_row::reveal(self.scroll_y.pos, lo, hi, max_y), K_SCROLL, env.dt);
     }
@@ -440,7 +445,7 @@ impl View for Grid {
                     continue;
                 }
                 let s = self.shelves[r].scale(c);
-                let rect = Rect::new(x, row_y + 12.0, CARD_W, CARD_H).scaled(s);
+                let rect = Rect::new(x, row_y + CARD_DY, CARD_W, CARD_H).scaled(s);
                 let resume = resume_frac(mm);
                 card_row::draw_tile(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume);
                 if cw_row {
@@ -457,7 +462,7 @@ impl View for Grid {
             }
             let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1));
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
-            let rect = Rect::new(x, self.shelves[r].base_y + 12.0, CARD_W, CARD_H).scaled(s);
+            let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
             let title = m.map(|mm| mm.title.as_ptr() as *const c_char).unwrap_or(std::ptr::null());
             let caption = m.and_then(focused_caption); // keep the CString alive through the draw
@@ -536,7 +541,7 @@ impl Grid {
     /// flies away" the pointer rules ban; horizontal scroll-into-view within a row is kept.
     fn hit_at(&self, mx: f32, my: f32) -> Option<(usize, usize)> {
         for r in 0..crate::pms::hub_count() {
-            let row_y = self.shelves[r].base_y;
+            let row_y = self.shelves[r].base_y + CARD_DY;
             if my < row_y || my > row_y + CARD_H {
                 continue;
             }
@@ -742,10 +747,10 @@ pub(crate) fn home_move_focus(sym: c_uint) {
 }
 
 /// Hero-view horizontal key: LEFT/RIGHT walk the action-row focus (pill → info → chevron); RIGHT
-/// on the chevron pages the billboard — so holding RIGHT at the row's end keeps paging (the
-/// debounced `hero_flip` throttles it), the D-pad counterpart of holding a click on the chevron.
-/// app.rs calls this only while the snap is in hero view; non-arrow keys are no-ops. The chip
-/// (focus -1) has no horizontal neighbours.
+/// on the chevron pages the billboard forward and LEFT on the pill (the row's left end) pages it
+/// BACK — so holding either edge key keeps paging (the debounced `hero_flip` throttles it), the
+/// D-pad counterpart of holding a click on the chevron. app.rs calls this only while the snap is
+/// in hero view; non-arrow keys are no-ops. The chip (focus -1) has no horizontal neighbours.
 pub(crate) fn home_hero_key(sym: c_uint) {
     let f = hero_focus();
     match sym {
@@ -757,6 +762,7 @@ pub(crate) fn home_hero_key(sym: c_uint) {
             }
         }
         SDLK_LEFT if f > 0 => set_hero_focus(f - 1),
+        SDLK_LEFT if f == 0 => hero_flip(-1),
         _ => {}
     }
 }

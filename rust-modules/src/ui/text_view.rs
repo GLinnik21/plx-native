@@ -55,11 +55,12 @@ pub struct TextView<'a> {
     align: HAlign,
     max_lines: usize,                       // 0 = unlimited
     trailing: Option<(&'a str, [f32; 4])>,  // inline run after the last line when truncated (e.g. "MORE")
+    fade_last: f32, // px reserved at the wrap width's right edge; >0 fades a truncated last line out before it
 }
 
 impl<'a> TextView<'a> {
     pub fn new(text: &'a str, sz: c_int, col: [f32; 4]) -> Self {
-        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None }
+        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None, fade_last: 0.0 }
     }
     pub fn bold(mut self) -> Self {
         self.bold = 1;
@@ -84,6 +85,14 @@ impl<'a> TextView<'a> {
     /// positioned by the measured pixel width of the last line, so it hugs the text on left-aligned blocks.
     pub fn trailing(mut self, run: &'a str, col: [f32; 4]) -> Self {
         self.trailing = Some((run, col));
+        self
+    }
+    /// Reserve `px` at the wrap width's right edge for an OUT-OF-FLOW affordance sitting on the last
+    /// line (the About card's right-pinned MORE): when the text was truncated by `max_lines` AND the
+    /// last line reaches into that zone, the line paints with a shader fade to transparency ending at
+    /// `width − px` instead of colliding. A no-op on non-truncated text. Left-aligned blocks only.
+    pub fn fade_last(mut self, px: f32) -> Self {
+        self.fade_last = px;
         self
     }
 
@@ -177,6 +186,11 @@ impl<'a> TextView<'a> {
             .and_then(|(r, _)| CString::new(r).ok())
             .map(|c| crate::text::text_width(c.as_ptr(), self.sz, 1) + 16.0)
             .unwrap_or(0.0);
+        // fade_last: the last line dissolves to nothing across this band (px) ending at the wrap
+        // width minus the reserved affordance gap. Loop-invariant, so hoisted out.
+        const FADE_BAND: f32 = 150.0;
+        let fade_to = frame.w - self.fade_last;
+        let fade_from = fade_to - FADE_BAND;
         for (i, ln) in lines.iter().enumerate() {
             let is_last = i + 1 == n;
             let text: Cow<str> = if is_last && reserve > 0.0 && self.measure(ln) + reserve > frame.w {
@@ -185,6 +199,17 @@ impl<'a> TextView<'a> {
                 Cow::Borrowed(ln.as_str())
             };
             let row = Rect::new(frame.x, frame.y + i as f32 * lh, frame.w, 0.0);
+            // a truncated last line with a fade_last reservation dissolves into the affordance zone
+            // instead of colliding with it (only when it actually reaches that far)
+            if is_last && wrapped.truncated && self.fade_last > 0.0 && self.measure(&text) > fade_from {
+                let (ct, _) = crate::text::text_cap_band(self.sz, self.bold);
+                if let Ok(cs) = CString::new(text.as_ref()) {
+                    // cap band at row.y, like Label's VAlign::CapTop
+                    p.text_fade(cs.as_ptr(), row.x, row.y - ct, self.sz, self.col, self.bold,
+                        fade_from, fade_to);
+                }
+                continue;
+            }
             if let Ok(cs) = CString::new(text.as_ref()) {
                 let mut lab = Label::new(cs.as_ptr(), self.sz, self.col).h(self.align).v(VAlign::CapTop);
                 if self.bold == 1 {

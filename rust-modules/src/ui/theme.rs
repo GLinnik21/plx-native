@@ -50,11 +50,12 @@ pub mod size {
     /// labels. Nothing that must be *read* renders smaller.
     pub const CAPTION: c_int = 24;
     /// Fine print — deliberately below the couch floor (explicit design direction, 2026-07-12,
-    /// re-tuned on-device from 16): the small info/synopsis text under the home hero's title
-    /// block. De-emphasis is the point — atmosphere copy beside an outsized title, not content
+    /// re-tuned on-device 16 → 20 → 22: "bigger, but smaller than the meta line"): the small
+    /// info/synopsis text under the home/detail hero's title block, and the episode row's air
+    /// date. De-emphasis is the point — atmosphere copy beside an outsized title, not content
     /// someone must read; labels the eye needs to catch (the SxEy kicker, meta lines) stay on
     /// the regular rungs.
-    pub const MICRO: c_int = 20;
+    pub const MICRO: c_int = 22;
 }
 
 /// The **spacing scale** — the vertical/horizontal *gap* axis of the design system, the sibling of
@@ -147,6 +148,9 @@ pub const RAIL_BUFFERED: [f32; 4] = [1.0, 1.0, 1.0, 0.28];
 pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 /// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent).
 pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
+/// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
+/// warm neutrals so it reads as a state, not an alarm.
+pub const DANGER: [f32; 4] = [0.92, 0.32, 0.29, 1.0];
 /// Section divider hairline.
 pub const HAIRLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.10];
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).

@@ -10,7 +10,11 @@ pub const CARD_H: f32 = 375.0;
 pub const GAP: f32 = 30.0;
 pub const MARGIN_X: f32 = 90.0;
 pub const ROW_TITLE_H: f32 = 30.0;
-pub const ROW_PITCH: f32 = CARD_H + ROW_TITLE_H + 130.0; // 535: room for the shelf title above + the focused card's title AND caption below (clears the next shelf's title)
+pub const ROW_PITCH: f32 = CARD_H + ROW_TITLE_H + 144.0; // 549: room for the shelf title above + the focused card's title AND caption below (clears the next shelf's title)
+/// Card top below the shelf's `row_y` origin (the hub title draws at `row_y − 34`): the air between
+/// a section title and its posters, held on magnification too because `title_lift` raises the title
+/// by the same amount the popped card's top rises.
+pub const CARD_DY: f32 = 26.0;
 pub const CONTENT_Y: f32 = 200.0;
 pub const GLOW_PAD: f32 = 48.0;
 pub const SCR_W: f32 = 1920.0;

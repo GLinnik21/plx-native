@@ -162,14 +162,17 @@ pub(crate) fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, 
 /// The heading lift for a focused-magnified tile — the ONE rule home hub titles and the detail
 /// strip headings ("Related", "Cast & Crew") share: the heading rises with the popped tile so the
 /// card + ring never cover it, but only when that tile is actually near the row's left edge
-/// (under the heading), with a proximity ramp so the transition stays continuous. `scroll` is the
-/// row's EFFECTIVE scroll at draw time (home scales its scroll by `env.sp`).
+/// (under the heading), with a proximity ramp so the transition stays continuous. The first TWO
+/// slots get the FULL lift — a heading (plus the focus ring's spill) reaches past slot 1, and a
+/// partial lift there let the ring climb into the title's descender line; the ramp tapers from
+/// slot 2 out. `scroll` is the row's EFFECTIVE scroll at draw time (home scales its scroll by
+/// `env.sp`).
 pub(crate) fn title_lift(row: &CardRow, focused: Option<usize>, sty: &RowStyle, scroll: f32) -> f32 {
     let Some(c) = focused else {
         return 0.0;
     };
     let x = sty.margin_x + c as f32 * (sty.w + sty.gap) - scroll;
-    let near = ((sty.margin_x + sty.w * 1.5 - x) / sty.w).clamp(0.0, 1.0);
+    let near = ((sty.margin_x + sty.w * 2.5 + sty.gap - x) / sty.w).clamp(0.0, 1.0);
     sty.h * (row.scale(c) - 1.0) * 0.5 * near
 }
 

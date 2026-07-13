@@ -18,6 +18,11 @@ const DROIDSANS: &CStr = c"/usr/share/fonts/DroidSans.ttf";
 
 const VS_TEXT: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nvarying vec2 v_tuv;\nvoid main(){ v_tuv=a_pos; vec2 px=u_trect.xy+a_pos*u_trect.zw;\n  vec2 ndc=px/u_tscreen*2.0-1.0; gl_Position=vec4(ndc.x,-ndc.y,0.0,1.0); }\n";
 const FS_TEXT: &CStr = c"precision mediump float;\nvarying vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tcol;\nvoid main(){ float a=texture2D(u_tex,v_tuv).a; gl_FragColor=vec4(u_tcol.rgb, u_tcol.a*a); }\n";
+// The FADE variant is a SEPARATE program bound only by draw_text_fade (one caller — the About
+// card's MORE): u_tfade = (from, to) in string-texture uv.x fades the glyph alpha 1→0 across that
+// band. Kept off the shared FS_TEXT so every ordinary glyph doesn't pay the per-fragment smoothstep
+// on this fill-rate-bound panel.
+const FS_TEXT_FADE: &CStr = c"precision mediump float;\nvarying vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tcol;\nuniform vec2 u_tfade;\nvoid main(){ float a=texture2D(u_tex,v_tuv).a;\n  a *= 1.0 - smoothstep(u_tfade.x, u_tfade.y, v_tuv.x);\n  gl_FragColor=vec4(u_tcol.rgb, u_tcol.a*a); }\n";
 
 // GL enums
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
@@ -93,6 +98,13 @@ static mut TL_RECT: c_int = 0;
 static mut TL_SCREEN: c_int = 0;
 static mut TL_COL: c_int = 0;
 static mut TL_TEX: c_int = 0;
+// the fade program (draw_text_fade only) + its own uniform locations
+static mut TPROGF: c_uint = 0;
+static mut TLF_RECT: c_int = 0;
+static mut TLF_SCREEN: c_int = 0;
+static mut TLF_COL: c_int = 0;
+static mut TLF_TEX: c_int = 0;
+static mut TLF_FADE: c_int = 0;
 static mut FONTS: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
 static mut FONTS_B: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
 static mut TEXT_OK: c_int = 0;
@@ -179,6 +191,25 @@ pub(crate) fn init_text() {
         TL_SCREEN = glGetUniformLocation(TPROG, c"u_tscreen".as_ptr());
         TL_COL = glGetUniformLocation(TPROG, c"u_tcol".as_ptr());
         TL_TEX = glGetUniformLocation(TPROG, c"u_tex".as_ptr());
+        // the fade program shares VS_TEXT; a link failure leaves TPROGF=0 and draw_text_fade
+        // falls back to the plain path (the fade is a nicety, not load-bearing)
+        TPROGF = glCreateProgram();
+        glAttachShader(TPROGF, crate::gfx::gfx_compile(GL_VERTEX_SHADER, VS_TEXT.as_ptr()));
+        glAttachShader(TPROGF, crate::gfx::gfx_compile(GL_FRAGMENT_SHADER, FS_TEXT_FADE.as_ptr()));
+        glBindAttribLocation(TPROGF, 0, c"a_pos".as_ptr());
+        glLinkProgram(TPROGF);
+        let mut okf: c_int = 0;
+        glGetProgramiv(TPROGF, GL_LINK_STATUS, &mut okf);
+        if okf == 0 {
+            log("text fade prog link failed");
+            TPROGF = 0;
+        } else {
+            TLF_RECT = glGetUniformLocation(TPROGF, c"u_trect".as_ptr());
+            TLF_SCREEN = glGetUniformLocation(TPROGF, c"u_tscreen".as_ptr());
+            TLF_COL = glGetUniformLocation(TPROGF, c"u_tcol".as_ptr());
+            TLF_TEX = glGetUniformLocation(TPROGF, c"u_tex".as_ptr());
+            TLF_FADE = glGetUniformLocation(TPROGF, c"u_tfade".as_ptr());
+        }
         if !font_at(28, 0).is_null() {
             TEXT_OK = 1;
         }
@@ -426,6 +457,53 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform1i(TL_TEX, 0);
         glUniform4f(TL_RECT, dx, y, w as f32, h as f32);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        crate::gfx::gfx_use_base(); // restore rect program for subsequent draw_rect
+        w as f32
+    }
+}
+
+/// [`draw_text`] with a horizontal fade-out (its OWN GL program, so plain text pays no per-fragment
+/// fade cost): glyph alpha runs 1→0 between `fade_from`..`fade_to` px from the string's LEFT edge
+/// (regardless of `align`). Used for a truncated line that must dissolve before an overlapping
+/// affordance (the About card's MORE label). Falls back to plain [`draw_text`] if the fade program
+/// failed to link.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_text_fade(
+    s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int,
+    fade_from: f32, fade_to: f32,
+) -> f32 {
+    unsafe {
+        if TPROGF == 0 {
+            return draw_text(s, x, y, sz, col, align, bold);
+        }
+        if TEXT_OK == 0 || s.is_null() {
+            return 0.0;
+        }
+        let cs = CStr::from_ptr(s);
+        let s_bytes = cs.to_bytes();
+        if s_bytes.is_empty() {
+            return 0.0;
+        }
+        let (tex, w, h, _it, _ib) = text_tex(s_bytes, s, sz, bold);
+        if tex == 0 {
+            return 0.0;
+        }
+        let dx = match align {
+            1 => x - w as f32 * 0.5,
+            2 => x - w as f32,
+            _ => x,
+        };
+        glUseProgram(TPROGF);
+        glUniform2f(TLF_SCREEN, SCR_W, SCR_H);
+        glUniform4fv(TLF_COL, 1, col);
+        // px → string-texture uv (the varying spans the one-quad string)
+        let wf = w as f32;
+        glUniform2f(TLF_FADE, fade_from / wf, fade_to / wf);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform1i(TLF_TEX, 0);
+        glUniform4f(TLF_RECT, dx, y, w as f32, h as f32);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         crate::gfx::gfx_use_base(); // restore rect program for subsequent draw_rect
         w as f32

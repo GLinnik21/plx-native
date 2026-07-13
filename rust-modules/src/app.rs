@@ -1577,7 +1577,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 {
                     let idx = pick_user.take().unwrap();
                     log(&format!("pickuser: auto-selecting roster index {idx}"));
-                    crate::auth::select_profile(idx);
+                    // through the screen's own select, so a protected tile opens the PIN pad
+                    // (headless pad capture) exactly like OK on the remote
+                    crate::ui::profiles::pick(idx);
                 }
             } else if matches!(route, Route::Home | Route::Account) {
                 // only when home is actually drawn — stepping its 16×24 cell springs during
