@@ -538,6 +538,8 @@ fn env_of(dt: f32) -> Env {
 
 pub(crate) fn draw() {
     let p = Painter::root();
+    // clear to the app's base gray (the backdrop art/ambient draw over it; below-hero rows reveal it)
+    crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let env = env_of(0.0);
     let m = selected();
     let scroll = view().column.scroll.pos;
@@ -668,6 +670,13 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
             theme::scrim(0.95 * hero_vis),
             0.0,
         );
+    }
+    // the shelf gray fades in as the page scrolls off the hero, so the below-hero rows sit on the
+    // app's base gray (their Related/Cast card shadows read) regardless of the item's backdrop art or
+    // UltraBlur wash. Fully transparent in the hero view, so no wasted fill there.
+    if sf > 0.001 {
+        let g = theme::with_a(theme::SURFACE_APP, sf);
+        p.rect(Rect::FULL, 0.0, g, g, 0.0);
     }
 }
 
@@ -868,7 +877,8 @@ fn draw_episodes(p: Painter) {
     let sec = view().section;
     let col = view().col;
     let focus_col = if sec == 2 { col } else { -1 };
-    let scale = view().card_scale.pos;
+    // fold the ui::press click dip into the focused episode's pop (1.0 when idle)
+    let scale = view().card_scale.pos * crate::ui::press::scale();
     // keep the focused card on-screen (spring-scrolled so it glides to the 2nd slot instead of
     // snapping — matches the chapters strip; fixes the "scatter" on LEFT/RIGHT)
     let sx = view().ep_hscroll.pos;
@@ -962,7 +972,8 @@ fn draw_strip<'a>(
     if focus_col >= 0 && (focus_col as usize) < n {
         let i = focus_col as usize;
         let x = MARGIN_X + i as f32 * pitch;
-        let s = row.scale(i);
+        // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
+        let s = row.scale(i) * crate::ui::press::scale();
         let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
         let tc = title(i); // kept alive across the draw call
         let tp = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
@@ -1064,6 +1075,13 @@ fn set_resume(resume_ms: i64, dur_ms: i64) {
 
 /// OK/SELECT on the detail page: returns true if playback should start (the route
 /// URL/HUD have already been set). Section 0 = hero Play, 1 = season tab, 2 = episode.
+/// Is the focused element a CARD (episode / Related / Cast tile) rather than the Play pill, a season
+/// tab, or an About row? Card focus gets the tvOS press — the OK dips it and the activation commits on
+/// release (app.rs); the non-card controls activate immediately.
+pub(crate) fn focus_is_card() -> bool {
+    matches!(view().section, 2 | 3 | 4)
+}
+
 pub(crate) fn on_ok() -> bool {
     view().last_resume_ns = 0; // default: no resume (set below for plays)
     let sec = view().section;

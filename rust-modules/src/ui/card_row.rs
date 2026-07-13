@@ -30,7 +30,6 @@ pub(crate) struct RowStyle {
     pub margin_x: f32,
     pub radius: f32,
     pub focus_scale: f32,
-    pub ring_pad: f32,
     pub k_scale: f32,
     pub k_scroll: f32,
     /// Circular tiles (cast headshots, who's-watching avatars) vs rounded-rect posters. A circle is
@@ -38,15 +37,16 @@ pub(crate) struct RowStyle {
     pub circular: bool,
 }
 impl RowStyle {
-    /// The home shelf's portrait-poster row: 1.055 focus pop, the big glow ring, animated scroll.
+    /// The home shelf's portrait-poster row: 1.09 focus pop (matches `Home Screen.dc.html`), the big
+    /// glow ring, animated scroll. The `ui::press` click dips a focused card from here back toward
+    /// `scale(1.0)`, so the pop needs to be large enough for that press-in to read.
     pub(crate) const HOME: RowStyle = RowStyle {
         w: CARD_W,
         h: CARD_H,
         gap: GAP,
         margin_x: MARGIN_X,
         radius: theme::CARD_RING_RAD,
-        focus_scale: 1.055,
-        ring_pad: GLOW_PAD,
+        focus_scale: 1.09,
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: false,
@@ -60,7 +60,6 @@ impl RowStyle {
         margin_x: MARGIN_X,
         radius: 95.0, // = w/2 (circle); draw_* recomputes per-rect anyway when `circular`
         focus_scale: 1.06,
-        ring_pad: 14.0, // matches the detail cast headshot ring (hugs the popped circle)
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
@@ -74,7 +73,6 @@ impl RowStyle {
         margin_x: MARGIN_X,
         radius: 110.0,
         focus_scale: 1.08,
-        ring_pad: theme::CARD_RING_PAD_STRIP,
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
@@ -179,7 +177,7 @@ pub(crate) fn title_lift(row: &CardRow, focused: Option<usize>, sty: &RowStyle, 
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
 /// already-scaled rect; `s` scales the corner radius. (The home grid's non-focused cell, verbatim.)
 pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle, resume: Option<f32>) {
-    card(p, rect, art, sty.tile_radius(rect, s), false, 1.0, None);
+    card(p, rect, art, sty.tile_radius(rect, s), false, 1.0, false);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac);
     }
@@ -200,8 +198,12 @@ pub(crate) fn draw_focused(
     caption: *const c_char,
 ) {
     let rad = sty.tile_radius(rect, s);
-    card(p, rect, art, rad, false, 1.0, None);
-    p.ring(rect, sty.ring_pad, rad, (s - 1.0) / sty.ring_denom());
+    // Home Screen focus treatment: a soft drop-shadow BEHIND + a top sheen OVER, ramped in with the
+    // pop, replacing the old glow ring. `f` = the same 0→1 pop scalar the ring used.
+    let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
+    p.focus_shadow(rect, rad, f);
+    card(p, rect, art, rad, false, 1.0, false);
+    p.focus_sheen(rect, rad, f);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac);
     }
