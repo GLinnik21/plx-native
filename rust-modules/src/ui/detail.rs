@@ -40,6 +40,11 @@ struct DetailView {
     related: CardRow,   // the Related row = the SAME animated shelf component the home grid uses
     cast: CardRow,      // Cast & Crew row — the same component, circular RowStyle::CAST
     last_resume_ns: i64, // resume position (ns) on_ok just started (0 = from start); app.rs seeks here
+    // per-section focus memory (episodes/related/cast): leaving a row and coming back restores the
+    // item you were on — paired with the frozen h-scrolls, a row "stays where it was" instead of
+    // snapping to its start whenever focus moves elsewhere. Indexed by section id.
+    saved_col: [c_int; 6],
+    spin_ms: f32, // spinner phase for the episode row's season-loading state
 }
 impl DetailView {
     fn new() -> Self {
@@ -56,6 +61,8 @@ impl DetailView {
             related: CardRow::new(),
             cast: CardRow::new(),
             last_resume_ns: 0,
+            saved_col: [0; 6],
+            spin_ms: 0.0,
         }
     }
 }
@@ -91,14 +98,15 @@ const SEASON_SETTLE: f32 = 0.2; // hold a season tab this long (s) before its ep
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
-// Under-still metadata: kicker → title → date → summary. The summary is LAST so it can be any length;
-// offsets are from the meta top (EP_H + EP_META_TOP below the still) and the block height is derived
-// from the tallest episode summary (see `ep_meta_h`) so the dynamic below-hero flow reflows to fit.
+// Under-still metadata: kicker → title → summary → date. The (fine-print) air date sits at the
+// BOTTOM of the block, under the summary; offsets are from the meta top (EP_H + EP_META_TOP below
+// the still) and the block height is derived from the tallest episode summary (see `ep_meta_h`)
+// so the dynamic below-hero flow reflows to fit.
 const EP_META_TOP: f32 = 30.0; // still bottom → kicker
-const EP_TITLE_DY: f32 = 34.0; // kicker → title
+const EP_TITLE_DY: f32 = 42.0; // kicker → title
 const EP_TITLE_LEAD: f32 = 30.0; // title line pitch (title wraps to at most 2 lines)
-const EP_TITLE_DATE_GAP: f32 = 12.0; // title last-line BASELINE → date cap top (cap-band derived)
-const EP_DATE_SUMMARY_GAP: f32 = 12.0; // date baseline → summary cap top
+const EP_TITLE_SUMMARY_GAP: f32 = 18.0; // title last-line BASELINE → summary cap top (cap-band derived)
+const EP_SUMMARY_DATE_GAP: f32 = 16.0; // summary last-line baseline → date cap top
 const EP_SUMMARY_LEAD: f32 = 30.0;
 const EP_SUMMARY_MAXLINES: usize = 8; // bounds the pathological case; ordinary episode blurbs fit fully
 const EP_META_BOT_PAD: f32 = 24.0;
@@ -188,26 +196,25 @@ fn block_h(section: c_int) -> f32 {
         _ => 0.0,
     }
 }
-/// The under-still meta layout for ONE episode, measured from the meta top (`ty`): the date hugs the
-/// ACTUAL title height (1 or 2 lines) and the summary hugs the date — nothing is reserved, so a
-/// 1-line title doesn't leave a 2-line gap. Returns `(date_y, summary_y, total_h)`, all px below ty.
-/// measure_h is wrap-cached, so this is cheap after the first frame.
-fn ep_meta_layout(title: &str, aired: &str, summary: &str) -> (f32, f32, f32) {
+/// The under-still meta layout for ONE episode, measured from the meta top (`ty`): the summary hugs
+/// the ACTUAL title height (1 or 2 lines) and the (fine-print, MICRO) air date hangs at the block's
+/// BOTTOM under the summary — nothing is reserved, so a 1-line title doesn't leave a 2-line gap.
+/// Returns `(date_y, summary_y, total_h)`, all px below ty. Cap-band-derived pacing: each gap is
+/// measured last-line-INK (baseline) → next block's cap top, not leading-box to raw texture — the
+/// leading slack used to make the gaps read visibly unequal. (`date_y` stays a raw Painter::text
+/// draw-y; the cap offsets translate ink-space gaps into it.) measure_h is wrap-cached, so this is
+/// cheap after the first frame.
+fn ep_meta_layout(title: &str, has_date: bool, summary: &str) -> (f32, f32, f32) {
     let title_h = TextView::new(title, theme::size::LABEL, theme::TEXT_PRIMARY)
         .bold()
         .leading(EP_TITLE_LEAD)
         .max_lines(2)
         .measure_h(EP_W);
-    // Cap-band-derived pacing: the date hangs EP_TITLE_DATE_GAP under the title's last-line INK
-    // (baseline), not under its leading box — the leading slack + raw-texture anchoring used to
-    // make the title→date air read visibly wider than kicker→title. (`date_y` stays a raw
-    // Painter::text draw-y; the cap offsets translate ink-space gaps into it.)
     let (lt, lb) = crate::text::text_cap_band(theme::size::LABEL, 1); // title cap-top/baseline offsets
-    let (ct, cb) = crate::text::text_cap_band(theme::size::CAPTION, 0); // date offsets
     let title_base = EP_TITLE_DY + (title_h - EP_TITLE_LEAD) + (lb - lt); // last-line baseline below ty
-    let has_date = !pretty_date(aired, 0).is_empty();
-    let date_y = title_base + EP_TITLE_DATE_GAP - ct;
-    let summary_y = if has_date { date_y + cb + EP_DATE_SUMMARY_GAP } else { title_base + EP_TITLE_DATE_GAP };
+    // summary: a TextView anchors its cap band at the draw-y, so the ink gap needs no correction
+    let summary_y = title_base + EP_TITLE_SUMMARY_GAP;
+    let (st, sb) = crate::text::text_cap_band(theme::size::CAPTION, 0); // summary line offsets
     let summary_h = if summary.is_empty() {
         0.0
     } else {
@@ -216,7 +223,12 @@ fn ep_meta_layout(title: &str, aired: &str, summary: &str) -> (f32, f32, f32) {
             .max_lines(EP_SUMMARY_MAXLINES)
             .measure_h(EP_W)
     };
-    (date_y, summary_y, summary_y + summary_h)
+    // last ink baseline above the date: the summary's last line, or the title's when there is none
+    let base = if summary.is_empty() { title_base } else { summary_y + (summary_h - EP_SUMMARY_LEAD) + (sb - st) };
+    let (mt, mb) = crate::text::text_cap_band(theme::size::MICRO, 0); // date offsets
+    let date_y = base + EP_SUMMARY_DATE_GAP - mt; // raw Painter::text draw-y for the MICRO date line
+    let total = if has_date { date_y + mb } else { base };
+    (date_y, summary_y, total)
 }
 /// dynamic under-still metadata height for the episode row: the TALLEST episode's flowed meta (title
 /// 1–2 lines + date + full summary). Content-derived, so the below-hero flow reflows to fit.
@@ -227,7 +239,9 @@ fn ep_meta_h() -> f32 {
         Some(d) => d,
         None => return EP_META_TOP + EP_TITLE_DY + EP_META_BOT_PAD,
     };
-    // fingerprint the episode set (item + season + count); recompute only when it changes
+    // fingerprint the episode set (item + season + count + first leaf); recompute only when it
+    // changes. The first episode's rk matters now that season loads are async: cur_season flips
+    // before the episodes swap, and two seasons can share a length.
     static mut CACHE: (u64, f32) = (0, 0.0);
     let fp = {
         use std::hash::{Hash, Hasher};
@@ -235,6 +249,7 @@ fn ep_meta_h() -> f32 {
         d.rk.hash(&mut h);
         d.cur_season.hash(&mut h);
         d.episodes.len().hash(&mut h);
+        d.episodes.first().map(|e| e.rk.as_str()).unwrap_or("").hash(&mut h);
         h.finish().max(1) // 0 is the "empty" sentinel
     };
     unsafe {
@@ -244,7 +259,8 @@ fn ep_meta_h() -> f32 {
     }
     let mut maxh = 0.0f32;
     for ep in &d.episodes {
-        let (_, _, total) = ep_meta_layout(&ep.title, &ep.aired, &ep.summary);
+        let has_date = !pretty_date(&ep.aired, 0).is_empty();
+        let (_, _, total) = ep_meta_layout(&ep.title, has_date, &ep.summary);
         maxh = maxh.max(total);
     }
     let h = EP_META_TOP + maxh + EP_META_BOT_PAD;
@@ -284,13 +300,22 @@ pub(crate) fn is_show() -> bool {
 
 /// Open the detail page for catalog row `idx`: load its full detail (blocking) and
 /// reset focus/scroll.
-pub(crate) fn open(idx: c_int) {
-    let v = view();
-    v.selected = idx;
+/// Reset focus + all scroll springs to the top of a freshly-opened page — shared by open/open_rk
+/// so the two entry points can't drift (the retained-scroll fields must ALL be zeroed on a new item).
+fn reset_view_state(v: &mut DetailView) {
     v.section = 0;
     v.col = 0;
     v.pending_season = -1;
+    v.saved_col = [0; 6];
     v.column.scroll.jump(0.0);
+    v.ep_hscroll.jump(0.0);
+    v.tab_hscroll.jump(0.0);
+}
+
+pub(crate) fn open(idx: c_int) {
+    let v = view();
+    v.selected = idx;
+    reset_view_state(v);
     if idx >= 0 && (idx as usize) < crate::pms::nmovies() {
         if let Some(m) = unsafe { crate::pms::movie_ptr(idx as usize).as_ref() } {
             let rk = cfield(&m.rk);
@@ -364,13 +389,20 @@ pub(crate) fn move_focus(sym: c_int) {
         let np = if sym == SDLK_UP { pos.saturating_sub(1) } else { (pos + 1).min(avail.len().saturating_sub(1)) };
         let ns = avail[np];
         if ns != sec {
+            // remember where this row was left — only the horizontally-scrolling strips
+            // (episodes/related/cast) are ever restored; hero/tabs/About slots stay unused
+            if matches!(sec, 2 | 3 | 4) {
+                v.saved_col[sec as usize] = col;
+            }
             v.section = ns;
             v.card_scale.jump(1.0); // pop the card in the newly-entered row
-            // land on the active season when entering the tabs; else the first item
-            let start = if ns == 1 {
-                metadata::current().map(|d| d.cur_season as c_int).unwrap_or(0)
-            } else {
-                0
+            // land on the active season when entering the tabs; restore the remembered item for
+            // the episode/related/cast rows (their h-scroll held, so the row truly stays put);
+            // else the first item
+            let start = match ns {
+                1 => metadata::current().map(|d| d.cur_season as c_int).unwrap_or(0),
+                2 | 3 | 4 => v.saved_col[ns as usize].clamp(0, (n_items(ns) - 1).max(0)),
+                _ => 0,
             };
             v.col = start;
         }
@@ -401,12 +433,13 @@ fn tab_focus_geom() -> (f32, f32) {
     (x, 0.0)
 }
 /// season-tab-row horizontal scroll target: minimal scroll-into-view (the CardRow rule) — move
-/// only when the focused tab's pill (± one tab-gap of context) would clip the viewport; 0 (glide
-/// back to the start) when the tab row isn't the focused section.
+/// only when the focused tab's pill (± one tab-gap of context) would clip the viewport; a
+/// non-focused row HOLDS its scroll (gliding back to the start read as the row "jumping away"
+/// whenever focus left it).
 fn tab_hscroll_target() -> f32 {
     let v = view();
     if v.section != 1 {
-        return 0.0;
+        return v.tab_hscroll.pos;
     }
     let (x, w) = tab_focus_geom();
     let lo = x + w + 18.0 + TAB_ADVANCE - (SCR_W - MARGIN_X); // pill right edge (+context) on screen
@@ -414,12 +447,13 @@ fn tab_hscroll_target() -> f32 {
     card_row::reveal(v.tab_hscroll.pos, lo, hi, f32::MAX) // no content-max: hi already bounds it
 }
 
-/// episode-row horizontal scroll target: minimal scroll-into-view via the shared CardRow rule
-/// (0 when the episode row isn't the focused section, so it glides back to the start)
+/// episode-row horizontal scroll target: minimal scroll-into-view via the shared CardRow rule;
+/// a non-focused row HOLDS its scroll (it snaps to the start only on a season change — see the
+/// `pump_season` reset in update()).
 fn ep_hscroll_target() -> f32 {
     let v = view();
     if v.section != 2 {
-        return 0.0;
+        return v.ep_hscroll.pos;
     }
     let n = n_items(2).max(0) as usize;
     card_row::scroll_into_view(v.ep_hscroll.pos, v.col.max(0) as usize, n, EP_W, EP_GAP, SCR_W - 2.0 * MARGIN_X)
@@ -428,7 +462,7 @@ fn ep_hscroll_target() -> f32 {
 /// The ONE hero-synopsis TextView (rung / leading / line cap live here once) — shared by the
 /// flow measure (hero_layout) and the paint (draw_hero) so they cannot diverge.
 fn hero_synopsis(summary: &str) -> TextView<'_> {
-    TextView::new(summary, theme::size::MICRO, theme::TEXT_SECONDARY).leading(27.0).max_lines(4)
+    TextView::new(summary, theme::size::MICRO, theme::TEXT_SECONDARY).leading(29.0).max_lines(4)
 }
 
 /// The hero text column's y-chain — title bottom (566) → meta (+36) → synopsis (+46, MEASURED) →
@@ -449,6 +483,18 @@ fn hero_layout(m: Option<&PmsMovie>) -> (f32, f32, f32, f32) {
 }
 
 pub(crate) fn update(dt: f32) {
+    // apply a landed async season fetch: the episode row starts over on the new list (focus +
+    // scroll to episode 0 — the remembered position belonged to the previous season)
+    if metadata::pump_season() {
+        let v = view();
+        v.ep_hscroll.jump(0.0);
+        v.saved_col[2] = 0;
+        if v.section == 2 {
+            v.col = 0;
+            v.card_scale.jump(1.0);
+        }
+    }
+    view().spin_ms += dt * 1000.0;
     // the flow top rides the measured hero: buttons bottom + one standardized gap (hero_layout)
     view().column.top = hero_layout(selected()).3 + CD + BTN_CONTENT_GAP;
     // targets read view() internally — compute them before borrowing v for the springs
@@ -550,12 +596,24 @@ impl Column for DetailView {
         let (s, n) = sections();
         s[..n].iter().position(|&x| x == self.section).map(|p| p - 1)
     }
-    fn draw_child(&self, i: usize, _env: &Env, p: Painter) {
+    fn draw_child(&self, i: usize, env: &Env, p: Painter) {
         use crate::ui::profile::phase;
         let (s, _) = sections();
         match s[i + 1] {
             1 => phase("dt.tabs", || draw_tabs(p)),
-            2 => phase("dt.eps", || draw_episodes(p)),
+            // while a season fetch is in flight the row shows the PREVIOUS season's episodes,
+            // dimmed, with a spinner — the switch is async so rapid tab hops never freeze the UI
+            2 => phase("dt.eps", || {
+                if metadata::season_loading() {
+                    draw_episodes(p.alpha(0.35));
+                    crate::ui::widgets::Spinner::new(SCR_W * 0.5, EP_H * 0.5, 26.0)
+                        .phase(self.spin_ms as u32)
+                        .tint(theme::TEXT_PRIMARY)
+                        .draw(env, p);
+                } else {
+                    draw_episodes(p);
+                }
+            }),
             3 => phase("dt.related", || draw_related(p)),
             4 => phase("dt.cast", || draw_cast(p)),
             5 => phase("dt.about", || draw_about(p)),
@@ -834,12 +892,14 @@ fn draw_episodes(p: Painter) {
             pe.rrect(bar, 2.5, 2.5, theme::RAIL_BUFFERED);
             pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), 2.5, 2.5, theme::RAIL_FILL);
         }
-        // under-card metadata: kicker → title → date → full summary. The date + summary flow off the
-        // ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title doesn't leave a
-        // gap before the date. The block height tracks the tallest episode via ep_meta_h.
+        // under-card metadata: kicker → title → full summary → air date. The summary flows off the
+        // ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title doesn't leave
+        // a gap — and the fine-print date (MICRO) closes the block at the bottom. The block height
+        // tracks the tallest episode via ep_meta_h.
         let ty = ep_y + EP_H + EP_META_TOP;
         let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-        let (date_y, summary_y, _) = ep_meta_layout(&ep.title, &ep.aired, &ep.summary);
+        let date = pretty_date(&ep.aired, 0); // formatted once — feeds both the layout and the draw
+        let (date_y, summary_y, _) = ep_meta_layout(&ep.title, !date.is_empty(), &ep.summary);
         if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
             pe.text(ec.as_ptr(), x, ty, theme::size::CAPTION, dimc, 0, 1);
         }
@@ -849,17 +909,16 @@ fn draw_episodes(p: Painter) {
             .leading(EP_TITLE_LEAD)
             .max_lines(2)
             .draw(pe, Rect::new(x, ty + EP_TITLE_DY, EP_W, 0.0));
-        let date = pretty_date(&ep.aired, 0);
-        if !date.is_empty() {
-            if let Ok(dc) = CString::new(date) {
-                pe.text(dc.as_ptr(), x, ty + date_y, theme::size::CAPTION, dimc, 0, 0);
-            }
-        }
         if !ep.summary.is_empty() {
             TextView::new(&ep.summary, theme::size::CAPTION, dimc)
                 .leading(EP_SUMMARY_LEAD)
                 .max_lines(EP_SUMMARY_MAXLINES)
                 .draw(pe, Rect::new(x, ty + summary_y, EP_W, 0.0));
+        }
+        if !date.is_empty() {
+            if let Ok(dc) = CString::new(date) {
+                pe.text(dc.as_ptr(), x, ty + date_y, theme::size::MICRO, dimc, 0, 0);
+            }
         }
     }
 }
@@ -1054,7 +1113,12 @@ pub(crate) fn on_ok() -> bool {
             }
         }
         1 => {
-            metadata::load_season(col.max(0) as usize);
+            // only a season that isn't already selected loads — OK on the highlighted tab used to
+            // fire a redundant refetch whose pump-apply then reset the retained episode position
+            let cur = metadata::current().map(|d| d.cur_season as c_int).unwrap_or(-1);
+            if col != cur {
+                metadata::load_season(col.max(0) as usize);
+            }
             view().pending_season = -1; // explicit selection → cancel the debounced load
             false
         }
@@ -1086,10 +1150,7 @@ pub(crate) fn open_rk(rk: &str) {
     let idx = crate::pms::index_of_rk(rk);
     let v = view();
     v.selected = idx;
-    v.section = 0;
-    v.col = 0;
-    v.pending_season = -1;
-    v.column.scroll.jump(0.0);
+    reset_view_state(v);
     metadata::load_detail(rk);
 }
 
@@ -1099,12 +1160,20 @@ pub(crate) fn open_rk_season(show_rk: &str, season_num: c_int) {
     open_rk(show_rk);
     if let Some(d) = metadata::current() {
         if let Some(pos) = d.seasons.iter().position(|s| s.index as c_int == season_num) {
-            metadata::load_season(pos);
+            // BLOCKING on purpose: home_activate's season arm plays episodes[0] right after this
+            // returns — the async tab-switch path would still hold the previous season's list
+            metadata::load_season_now(pos);
         }
     }
 }
 
 fn play_episode_at(i: c_int) -> bool {
+    // a season fetch is in flight: d.episodes is still the PREVIOUS season's list (drawn dimmed
+    // under a spinner) while cur_season/the tab highlight already show the new one — launching
+    // from it would play the wrong season's episode. Ignore the press; the row lands in a beat.
+    if metadata::season_loading() {
+        return false;
+    }
     let d = match metadata::current() {
         Some(d) => d,
         None => return false,
@@ -1282,24 +1351,31 @@ fn draw_about(p: Painter) {
         p.rrect(hl, 18.0, 18.0, theme::OVERLAY_FOCUS_SOFT);
     }
 
-    // ---- card: title, genres, summary; MORE parked in the bottom-right corner ----
+    // ---- card: title, genres, summary — every run hard-bounded to the card's inner width (a
+    // long title or genre list used to paint past the card frame) ----
     let ix = tx + pad;
-    text_at(p, ix, cy + pad, theme::size::HEADLINE, hd, 1, &d.title);
+    text_at(p, ix, cy + pad, theme::size::HEADLINE, hd, 1,
+        &crate::text::elide(&d.title, syn_w0, theme::size::HEADLINE, 1, false));
     if !d.genres.is_empty() {
-        text_at(p, ix, cy + pad + 44.0, theme::size::CAPTION, dim, 0, &d.genres.join(", "));
+        text_at(p, ix, cy + pad + 44.0, theme::size::CAPTION, dim, 0,
+            &crate::text::elide(&d.genres.join(", "), syn_w0, theme::size::CAPTION, 0, false));
     }
     let sy = cy + pad + 100.0;
     let syn_w = cw - 2.0 * pad;
+    let mw = crate::text::text_width(c"MORE".as_ptr(), theme::size::CAPTION, 1);
     // CAPTION (not BODY): in the dense About card the body-size synopsis read oversized next to the
-    // compact columns — match it to the Accessibility descriptions below (same CAPTION rung).
-    let syn = TextView::new(&d.summary, theme::size::CAPTION, val).leading(30.0).max_lines(5);
-    syn.draw(p, Rect::new(ix, sy, syn_w, 0.0));
-    // "MORE" affordance in the card's bottom-right corner (out of flow) when the blurb is cut off — an
-    // inline trailing run used to spill past the card edge.
+    // compact columns — match it to the Accessibility descriptions below (same CAPTION rung). When
+    // the blurb is cut off, the last line dissolves (fade_last) into the MORE zone instead of
+    // colliding with the label.
+    let syn =
+        TextView::new(&d.summary, theme::size::CAPTION, val).leading(30.0).max_lines(5).fade_last(mw + 36.0);
+    let syn_hh = syn.draw(p, Rect::new(ix, sy, syn_w, 0.0));
+    // "MORE" — quiet grey, pinned to the card's right padding edge ON the last synopsis line's cap
+    // band (it used to sit bright in the bottom padding, visually detached from the text block).
     if syn.truncates(syn_w) {
-        let mw = crate::text::text_width(c"MORE".as_ptr(), theme::size::CAPTION, 1);
-        let my = crate::text::text_vcenter_y(theme::size::CAPTION, 1, cy + ch - pad - 2.0);
-        p.text(c"MORE".as_ptr(), tx + cw - pad - mw, my, theme::size::CAPTION, hd, 0, 1);
+        let (mt, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
+        p.text(c"MORE".as_ptr(), tx + cw - pad, sy + syn_hh - 30.0 - mt, theme::size::CAPTION,
+            theme::TEXT_TERTIARY, 2, 1);
     }
 
     // ---- Information ----
