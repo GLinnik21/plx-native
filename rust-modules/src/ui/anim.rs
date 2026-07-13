@@ -1,5 +1,5 @@
 //! Animation diagnostic — probe the critically-damped springs that drive the UI and, when enabled
-//! (via /tmp/poc-anim, or the ANIM overlay toggle), (a) log each spring's settle metrics (frames,
+//! (via /tmp/plxnative-anim, or the ANIM overlay toggle), (a) log each spring's settle metrics (frames,
 //! ms, overshoot %) and (b) draw a live overlay with the approach curve. Instrument a spring by
 //! calling `anim::probe(name, pos, vel, target, dt)` right after `Spring::step`. Zero cost when off.
 #![allow(dead_code)]
@@ -103,10 +103,10 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
 }
 
 // Separate stream from the main event log — the per-settle (and, if extended, per-frame) trace can
-// get large, and it should never drown the primary /tmp/poc-events.log debugging surface.
+// get large, and it should never drown the primary /tmp/plxnative-events.log debugging surface.
 fn log(m: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/poc-anim.log") {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/plxnative-anim.log") {
         let _ = writeln!(f, "{m}");
     }
 }

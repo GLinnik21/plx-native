@@ -5,12 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A **real, native Plex client for LG webOS 4.5 TVs** — built toward production quality, not a
-throwaway. (The `plexpoc` name and `com.glin.plexpoc` app id are historical; this is not a
-"proof of concept" and **"it's a POC" is never a reason to cut a corner** — build proper,
-reusable, well-factored components and finish them. See `rust-modules/src/ui/CLAUDE.md` for how
-the UI is expected to be built.) It's cross-compiled from macOS and sideloaded onto a rooted
-32-bit ARM TV, renders an Apple-TV-style gallery/shelf UI with SDL2 + OpenGL ES 2, and plays
-video from a Plex Media Server (PMS) entirely in-app.
+throwaway. **Build proper, reusable, well-factored components and finish them** — a shortcut is
+never justified by "it's only a demo." See `rust-modules/src/ui/CLAUDE.md` for how the UI is
+expected to be built. It's cross-compiled from macOS and sideloaded onto a rooted 32-bit ARM TV,
+renders an Apple-TV-style gallery/shelf UI with SDL2 + OpenGL ES 2, and plays video from a Plex
+Media Server (PMS) entirely in-app.
 
 **Almost everything is Rust** in `rust-modules/src/` (UI, event loop, input, player orchestration,
 the streaming/demux pipeline, and the Plex data layer), compiled to a static lib and linked in
@@ -20,7 +19,7 @@ the Rust `plex_run()` — and `src/starfish.c`, the **StarfishMediaAPIs C++/ACB 
 is the third C file, the nanosvg rasterizer).
 
 Target device (per `Makefile`/memory): LG 49SM9000PLA, webOS 4.5, rooted, `root@192.168.0.114`
-(ssh password `alpine`, already committed in the Makefile). App id `com.glin.plexpoc`.
+(ssh password `alpine`, already committed in the Makefile). App id `com.beb.plxnative`.
 
 ## Build / deploy / run
 
@@ -31,13 +30,13 @@ full one-time setup + troubleshooting.
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
-- `make` — build `pkg/plexpoc` (the ARM binary). Also builds the FFmpeg/curl stub `.so` if stale.
+- `make` — build `pkg/plxnative` (the ARM binary). Also builds the FFmpeg/curl stub `.so` if stale.
 - `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
-- `make run` — close any running instance, wipe `/tmp/poc-events.log`, launch, keep alive
+- `make run` — close any running instance, wipe `/tmp/plxnative-events.log`, launch, keep alive
   `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
-- `make ipk` — repackage the installable `pkg/com.glin.plexpoc_0.1.0_arm.ipk`.
+- `make ipk` — repackage the installable `pkg/com.beb.plxnative_0.1.0_arm.ipk`.
 - Override the TV IP with `make TV=1.2.3.4 …`; the run duration with `make run RUN_SECS=30`.
 
 **Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
@@ -101,7 +100,7 @@ with backpressure (aq.rs)` → the pump `Feed()`s each AU to the Starfish pipeli
 emits H264 Annex-B video AUs (SPS/PPS prepended at each IDR) and raw AC3/EAC3/AAC audio frames.
 Two libraries the old note said we *didn't* use are now linked and used: **libcurl** (`net.rs`) does
 the plex.tv account/login TLS+DNS that the raw-socket `stream.rs` can't, and the TV's **FFmpeg**
-(`ff.rs`, libavformat) is an **opt-in alternate demuxer** (bisect via `/tmp/poc-demux=ff`) being
+(`ff.rs`, libavformat) is an **opt-in alternate demuxer** (bisect via `/tmp/plxnative-demux=ff`) being
 readied to replace `mkv.rs` — not yet the default. See `docs/ffmpeg-demuxer-plan.md`.
 
 **Threads (spawned by `player/engine.rs`; the pump is `player/pump.rs`, shared state is
@@ -142,7 +141,7 @@ readied to replace `mkv.rs` — not yet the default. See `docs/ffmpeg-demuxer-pl
   backpressure. These three are Rust ports of the deleted C `stream.h`/`mkv.h`/`aq.h`.)
 - `stub/*.c` + `stub/*.so` — link-time symbol stubs carrying the TV's real SONAMEs — now just
   FFmpeg + curl (see above).
-- `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plexpoc` binary, icons,
+- `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
 - `tools/capture-screen.sh` — pull the TV screen (incl. video plane) to a local image.
@@ -182,7 +181,7 @@ readied to replace `mkv.rs` — not yet the default. See `docs/ffmpeg-demuxer-pl
 - **MKV seeking** re-opens the HTTP stream at a byte offset from the Cue index and resyncs to the
   next Cluster (clusters start on a keyframe). The fed PTS timeline is rebased on the first
   post-seek keyframe so the pipeline never sees a jump (`g_pts_shift`, `g_rebase_pending`).
-- **Deploy uses a tmp+mv dance** (`plexpoc.new` → `mv`) so scp succeeds while the old binary is
+- **Deploy uses a tmp+mv dance** (`plxnative.new` → `mv`) so scp succeeds while the old binary is
   still executing (avoids `ETXTBSY`).
 - **SAM keeps stale "running" state after a hard kill**, so a launch is a silent no-op relaunch
   unless you close-first — `make run`/`kill` do the `closeByAppId` first (and `luna-send -i` must
@@ -194,8 +193,8 @@ readied to replace `mkv.rs` — not yet the default. See `docs/ffmpeg-demuxer-pl
   with a single `Load`. In-app Home/Settings are *overlays* and do **not** fire these — only a real OS
   app-switch does. Preserve the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics:** the C tracer (`main.c`) logs the faulting PC + `/proc/self/maps` line, then
-  **re-raises to `SIG_DFL`** so the OS/crashd still captures a real backtrace. Two logs: `poc-events.log`
-  is truncated each launch; **`/tmp/poc-crash.log` is append-only and survives the relaunch** — read it
+  **re-raises to `SIG_DFL`** so the OS/crashd still captures a real backtrace. Two logs: `plxnative-events.log`
+  is truncated each launch; **`/tmp/plxnative-crash.log` is append-only and survives the relaunch** — read it
   after a crash+restart. Note pmlog's wall clock is ~3h skewed on this TV, so correlate by **monotonic
   `SDL_GetTicks`** timestamps (and the SAM `exit_status`), not pmlog time.
 - Video track is always full-panel `1920x1080`; the UI is authored at a fixed `1920x1080`
@@ -205,22 +204,22 @@ readied to replace `mkv.rs` — not yet the default. See `docs/ffmpeg-demuxer-pl
 
 There is no host-side test suite — the code only runs on the TV. Verify by observing behavior:
 
-- **Event log:** the app writes `/tmp/poc-events.log` on the TV (LS2/ACB/Starfish replies, feed
+- **Event log:** the app writes `/tmp/plxnative-events.log` on the TV (LS2/ACB/Starfish replies, feed
   stats, seek/bind steps, key raw bytes, crash tracer). `make run` fetches it automatically; it's
-  the primary debugging surface. stderr goes to `/tmp/poc-stderr.log`.
+  the primary debugging surface. stderr goes to `/tmp/plxnative-stderr.log`.
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
-- **Dev trigger files (read once at boot, on the TV):** `/tmp/poc-url` (override the streamed part
+- **Dev trigger files (read once at boot, on the TV):** `/tmp/plxnative-url` (override the streamed part
   URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
-  `/tmp/poc-autoplay` (auto-press OK for headless capture), `/tmp/poc-autoseek` (one auto-seek),
-  and `/tmp/poc-mode` / `/tmp/poc-variant` / `/tmp/poc-ptype` (playback-path bisect knobs).
-  **Any `/tmp/poc-*` trigger (except the logs/`poc-profile`/`poc-anim`) marks the boot as
-  automated and suppresses the boot who's-watching picker**, and `/tmp/poc-token` beats the
+  `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (one auto-seek),
+  and `/tmp/plxnative-mode` / `/tmp/plxnative-variant` / `/tmp/plxnative-ptype` (playback-path bisect knobs).
+  **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`) marks the boot as
+  automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
   stored session entirely — so headless runs always land on a deterministic Home.
-  `/tmp/poc-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.
+  `/tmp/plxnative-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.
 - **The binary carries NO credentials** (no compiled PMS token, no demo URL). PMS access comes
-  from the signed-in session (QR login) or, for automated runs only, `/tmp/poc-token` — which
+  from the signed-in session (QR login) or, for automated runs only, `/tmp/plxnative-token` — which
   `tests/run.py` always injects (it reads the owner token from the gitignored
   `src/config.local.h` on the HOST; that macro is never compiled in). An interactive boot with
   no session lands on the QR sign-in screen.

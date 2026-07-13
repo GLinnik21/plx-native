@@ -1,6 +1,6 @@
 //! Draw-time profiler — a diagnostic mode for the UI library.
 //!
-//! Enabled at boot by the `/tmp/poc-profile` dev-trigger. When on, [`phase`] brackets a named draw
+//! Enabled at boot by the `/tmp/plxnative-profile` dev-trigger. When on, [`phase`] brackets a named draw
 //! phase with `glFinish` so the wall-clock it records is that phase's **actual GPU cost**: GLES draw
 //! calls are queued and run async, so timing the CPU issue alone misses fill-rate — the `glFinish`
 //! before/after forces the pipeline to drain, attributing the work to the phase. That serialization

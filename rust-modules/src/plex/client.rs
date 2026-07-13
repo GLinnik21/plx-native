@@ -26,7 +26,7 @@ pub struct Client {
     // server, different per-user token). Read in exactly one place (`with_token`).
     pub(super) token: RwLock<String>,
     pub(super) client_id: String, // X-Plex-Client-Identifier — stable device id
-    pub(super) product: String,   // "plexpoc"
+    pub(super) product: String,   // "plxnative"
     pub(super) version: String,   // "1"
     pub(super) platform: String,  // "Generic"
 }
@@ -37,8 +37,8 @@ impl Client {
             host: host.to_owned(),
             port,
             token: RwLock::new(token.to_owned()),
-            client_id: "com.glin.plexpoc".into(),
-            product: "plexpoc".into(),
+            client_id: "com.beb.plxnative".into(),
+            product: "plxnative".into(),
             version: "1".into(),
             platform: "Generic".into(),
         }
@@ -219,7 +219,7 @@ impl StreamUrl {
     pub fn to_url(&self) -> String {
         format!("http://{}:{}{}", self.host, self.port, self.path)
     }
-    /// Parse an EXTERNAL full URL (the /tmp/poc-url override) back into parts —
+    /// Parse an EXTERNAL full URL (the /tmp/plxnative-url override) back into parts —
     /// replaces `player::engine::parse_stream_url` (same behavior: default port 32400).
     pub fn parse(url: &str) -> StreamUrl {
         let s = url.strip_prefix("http://").unwrap_or(url);

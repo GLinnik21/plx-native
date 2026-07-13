@@ -2,7 +2,7 @@
 
 Headless regression tests for the native webOS Plex player. There is no host-side runtime
 (the code only runs on the TV), so every test drives the **real app on the real TV** via the
-`/tmp/poc-*` dev triggers and asserts on the on-device event log (`/tmp/poc-events.log`).
+`/tmp/plxnative-*` dev triggers and asserts on the on-device event log (`/tmp/plxnative-events.log`).
 
 - `manifest.json` — the test matrix: real PMS items (rk), the triggers each case needs, and
   the expected log signals.
@@ -26,10 +26,10 @@ your real account stays clean. It works without storing any new secret:
 - `run.py` uses the owner token (from `config.local.h`) to look up that user's **per-server
   access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
   `userID`). The managed user must already have the libraries shared with it (Guest here does).
-- That token is used for the `/:/progress` resume seed **and** written to `/tmp/poc-token` on the
-  TV. The app reads `/tmp/poc-token` at boot and overrides its compiled-in owner token with it
+- That token is used for the `/:/progress` resume seed **and** written to `/tmp/plxnative-token` on the
+  TV. The app reads `/tmp/plxnative-token` at boot and overrides its compiled-in owner token with it
   (see `plex_run`), so the **app itself** plays and scrobbles as the managed user — not just the
-  seed. The token value is never printed (redacted to `<Guest …>`), and `poc-token` is cleared
+  seed. The token value is never printed (redacted to `<Guest …>`), and `plxnative-token` is cleared
   between cases like every other trigger.
 - Pass **`--owner`** to run as the `config.local.h` owner token instead (history *will* be
   affected). If the manifest has no `test_user`, the runner falls back to owner with a warning.
@@ -73,7 +73,7 @@ Add `--verbose` to print evidence for passing assertions too.
 
 A separate mode that guards **UI framerate**, not playback correctness. The app logs a once/sec
 `FPS=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]` heartbeat; each *scene* in
-the manifest's `fps_scenes` sets its `poc-*` triggers (profiler **off**), runs, and asserts the
+the manifest's `fps_scenes` sets its `plxnative-*` triggers (profiler **off**), runs, and asserts the
 steady framerate for that screen stays above a floor. This is the automated form of the by-hand FPS
 hunting that found the hero / cast+about / info-panel regressions.
 
@@ -107,19 +107,19 @@ hunting that found the hero / cast+about / info-panel regressions.
 1. `make kill` — close the app (luna-send `closeByAppId` + `fuser -k`) **first**.
 2. If the case sets `viewOffset_ms`: `PUT /:/progress` to seed the resume point — done
    **after** the close so the app's `timeline_thread` can't re-scrobble over it.
-3. Clear every `/tmp/poc-*` trigger, then write only the ones this case needs.
-4. `make run TV=<tv> RUN_SECS=<n>` — relaunch, wait, and cat `/tmp/poc-events.log` back.
+3. Clear every `/tmp/plxnative-*` trigger, then write only the ones this case needs.
+4. `make run TV=<tv> RUN_SECS=<n>` — relaunch, wait, and cat `/tmp/plxnative-events.log` back.
 5. Filter the `smp_cb type=43 num=0 str=` flood and evaluate the assertions.
 
-## The `/tmp/poc-play=<rk>` trigger (added for this harness)
+## The `/tmp/plxnative-play=<rk>` trigger (added for this harness)
 
-Tests use `/tmp/poc-play=<ratingKey>` instead of the fragile `/tmp/poc-detail`. `poc-detail`
+Tests use `/tmp/plxnative-play=<ratingKey>` instead of the fragile `/tmp/plxnative-detail`. `plxnative-detail`
 only *plays* if the rk is in the home catalog (Continue Watching / hubs); off-catalog it loads
-data-only and never plays. `poc-play` fetches the item's metadata fresh (`metadata::load_detail`,
+data-only and never plays. `plxnative-play` fetches the item's metadata fresh (`metadata::load_detail`,
 works for **any** rk) and drives the same field-based play path the detail Play button uses
 (`route::play_episode` — generic over movie/episode — + `player::resume_at` + `start_bufferfeed`),
 bypassing the catalog lookup entirely. It honors the server `viewOffset` for resume and logs
-`poc-play: rk=<rk> start` so the harness can confirm the trigger fired.
+`plxnative-play: rk=<rk> start` so the harness can confirm the trigger fired.
 
 ## Coverage — the 8 real matrix items + operations
 
@@ -181,7 +181,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 
 The **default libavformat demuxer (`ff.rs`) now demuxes embedded text subtitles** (SRT/subrip,
 ASS/SSA, mov_text) and emits `sub cue [..] "text"` lines, so the subtitle case runs on the
-default path — no `poc-demux=mkv` forcing. It pushes cues for **all** text tracks (tagged by
+default path — no `plxnative-demux=mkv` forcing. It pushes cues for **all** text tracks (tagged by
 index) and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
 instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are now client-rendered too:
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each
@@ -231,8 +231,8 @@ Append an entry to `manifest.json` → `cases`:
 }
 ```
 
-`run.py` derives the triggers from `operations` (`play`→`poc-play`, `seek`→`poc-autoseek`,
-`audio_switch`/`subtitle`→`poc-menupick`, `subtitle demux:mkv`→`poc-demux=mkv`) and picks the
+`run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`,
+`audio_switch`/`subtitle`→`plxnative-menupick`, `subtitle demux:mkv`→`plxnative-demux=mkv`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
 index *r−1*.
@@ -241,7 +241,7 @@ index *r−1*.
 
 The library survey found these have no exercising item; the harness can't test them with real
 media (see `library_gaps` in `manifest.json`). A small set of **synthetic** `ffmpeg` clips
-(10–30 s), served from the host (`python3 -m http.server`) and fed via the `/tmp/poc-url` boot
+(10–30 s), served from the host (`python3 -m http.server`) and fed via the `/tmp/plxnative-url` boot
 trigger, would close them deterministically — recommended as an optional supplement, kept clearly
 labeled "synthetic" and secondary to the 8 authoritative real items:
 

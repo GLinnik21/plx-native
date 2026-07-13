@@ -28,7 +28,7 @@ environment" means getting three things in place so `make` works:
    toolchain and the `rust-src` component.
 3. **Host CLI tools** — `curl`, `tar`, and `sshpass` (deploy/run over ssh).
 
-The end state you're verifying: `make` produces `pkg/plexpoc`, and it runs on the
+The end state you're verifying: `make` produces `pkg/plxnative`, and it runs on the
 TV with no missing-symbol or illegal-instruction errors.
 
 ## Fast path
@@ -50,7 +50,7 @@ brew install sshpass      # deploy/run only; skip if you won't touch the TV
 Now build:
 
 ```bash
-make                  # -> pkg/plexpoc
+make                  # -> pkg/plxnative
 ```
 
 That's the whole setup. The sections below explain what each piece is, how to
@@ -127,13 +127,13 @@ them.
 #   -> arm-webos-linux-gnueabi
 
 # 2. Full build
-make            # -> pkg/plexpoc, no errors
+make            # -> pkg/plxnative, no errors
 
 # 3. Inspect the binary (readelf is in the NDK bin/ dir)
 RE="$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-linux-gnueabi-readelf"
-"$RE" -A pkg/plexpoc | grep Tag_CPU_arch       # -> v7  (NOT v6 — v6 SIGILLs)
-"$RE" --version-info pkg/plexpoc | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1   # -> GLIBC_2.12
-"$RE" -d pkg/plexpoc | grep NEEDED             # SONAMEs should match the TV's libs
+"$RE" -A pkg/plxnative | grep Tag_CPU_arch       # -> v7  (NOT v6 — v6 SIGILLs)
+"$RE" --version-info pkg/plxnative | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1   # -> GLIBC_2.12
+"$RE" -d pkg/plxnative | grep NEEDED             # SONAMEs should match the TV's libs
 ```
 
 The decisive check is on the TV itself: `make test` (deploy + run) and read the
@@ -149,7 +149,7 @@ create=1`, and rising FPS with no `SIGILL` / `undefined symbol`. See the main
 | Paths inside the SDK point at `/Users/runner/...` | You skipped/failed `relocate-sdk.sh`. Re-run it from the SDK root. |
 | `cannot find -lSDL2 / -lplayerAPIs / -lpf-1.0` | Wrong/incomplete sysroot (partial download, or `WEBOS_SDK` points somewhere stale). Re-extract; verify `find $SYSROOT -name 'libplayerAPIs.so*'`. |
 | `error: "-Z build-std" ... rust-src` or `cargo +nightly` fails | Missing nightly or rust-src: `rustup toolchain install nightly && rustup component add rust-src --toolchain nightly`. |
-| Binary is `Tag_CPU_arch: v6`, or SIGILLs on the TV at first atomic | `RUSTFLAGS_TV` got dropped, or std wasn't rebuilt. Ensure `-C target-cpu=cortex-a9` and `-Z build-std` are intact; `rm` the stale `libplexpoc_modules.a` and rebuild. |
+| Binary is `Tag_CPU_arch: v6`, or SIGILLs on the TV at first atomic | `RUSTFLAGS_TV` got dropped, or std wasn't rebuilt. Ensure `-C target-cpu=cortex-a9` and `-Z build-std` are intact; `rm` the stale `libplxnative_modules.a` and rebuild. |
 | `relocation R_ARM_MOVW_ABS_NC ... recompile with -fPIC` when building a stub | A stub needs PIC. Stubs already use `-fPIC` in `STUBFLAGS`; if you added a bespoke stub rule, add `-fPIC`. |
 | Deploy/run steps fail with `sshpass: command not found` | `brew install sshpass`. The TV must be on and reachable (`make TV=<ip> ...`). |
 

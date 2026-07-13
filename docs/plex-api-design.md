@@ -83,8 +83,8 @@ pub struct Client {
     host: String,      // "192.168.0.3"  (numeric; passed straight to http_get/http_open)
     port: i32,         // 32400
     token: String,     // X-Plex-Token value
-    client_id: String, // X-Plex-Client-Identifier — stable device id ("com.glin.plexpoc")
-    product: String,   // "plexpoc"
+    client_id: String, // X-Plex-Client-Identifier — stable device id ("com.beb.plxnative")
+    product: String,   // "plxnative"
     version: String,   // "1"
     platform: String,  // "Generic"
 }
@@ -93,8 +93,8 @@ impl Client {
     pub fn new(host: &str, port: i32, token: &str) -> Client {
         Client {
             host: host.to_owned(), port, token: token.to_owned(),
-            client_id: "com.glin.plexpoc".into(),
-            product: "plexpoc".into(), version: "1".into(), platform: "Generic".into(),
+            client_id: "com.beb.plxnative".into(),
+            product: "plxnative".into(), version: "1".into(), platform: "Generic".into(),
         }
     }
     pub fn host(&self) -> &str { &self.host }
@@ -194,7 +194,7 @@ pub struct StreamUrl { pub host: String, pub port: i32, pub path: String } // pa
 impl StreamUrl {
     /// "http://host:port/path" for route::URL storage, SHARED.next_url, and logs.
     pub fn to_url(&self) -> String { format!("http://{}:{}{}", self.host, self.port, self.path) }
-    /// Parse an EXTERNAL full URL (demo_url, /tmp/poc-url override) back into parts —
+    /// Parse an EXTERNAL full URL (demo_url, /tmp/plxnative-url override) back into parts —
     /// replaces player::engine::parse_stream_url (same behavior: default port 32400).
     pub fn parse(url: &str) -> StreamUrl {
         let s = url.strip_prefix("http://").unwrap_or(url);
@@ -237,7 +237,7 @@ impl StreamUrl {
    the current known-working GET, swap `post`→`get_void`; the method signature is unchanged.)
 9. **Numeric host, no DNS**: `Client::host` and every `StreamUrl::host` are the numeric dotted-quad
    from boot config. `StreamUrl::parse` preserves whatever host the external URL carried (already
-   numeric in demo_url / poc-url).
+   numeric in demo_url / plxnative-url).
 10. **Image transcode is the one method that returns a path `String`** — because `posters.rs` uses
     that exact path as its LRU cache **key** and then http_get's it itself (fetch + decode belong
     to the poster worker, not the Client). Encoding is still centralized in `enc`; the caller still
@@ -321,7 +321,7 @@ pub fn image_transcode_path(&self, src_path: &str, w: i64, h: i64, png: bool) ->
 The transcode `session` token, `X-Plex-Client-Identifier`, `X-Plex-Product/Version/Platform`, and
 `X-Plex-Client-Profile-Extra` are assembled **inside** `transcode_decision`/`transcode_start_url`
 from `self` + `spec` (currently hand-built in `route::transcode_base`). `session` is derived as
-`format!("plexpoc-{}", spec.rating_key)`.
+`format!("plxnative-{}", spec.rating_key)`.
 
 ### timeline.rs — `impl Client`
 ```rust
@@ -534,7 +534,7 @@ Notes:
 | `route::build_stream` direct-play | `http://host:port{part}?X-Plex-Token=` | `client().direct_play_url(part_key)` |
 | `route::stop_transcode` | `…/universal/stop?session=…` | `client().transcode_stop(&session)` |
 | `route::put_selection` | `PUT /library/parts/{id}?…` | `client().select_streams(&sel)` |
-| `player::engine::parse_stream_url` / `route` re-parse | manual URL split | `StreamUrl::parse` (for demo_url/poc-url); typed paths return `StreamUrl` directly |
+| `player::engine::parse_stream_url` / `route` re-parse | manual URL split | `StreamUrl::parse` (for demo_url/plxnative-url); typed paths return `StreamUrl` directly |
 | `player::threads::timeline_thread` + `engine` final report | `GET /:/timeline?…` | `client().timeline(&report)` (POST) |
 | `app::plex_run` config | `route::set_config` + `posters_init` + `pms_fetch(host,port,token)` | `plex::init(host,port,token)` once; others read `plex::client()` |
 
@@ -568,6 +568,6 @@ No host test harness exists (the app only runs on the TV). Validate as usual:
   JSON captured in `docs/pms-api.md`. A quick host-side `cargo test` with the sample JSON blobs
   from `pms-api.md` (§2/§3/§4) asserts each model parses and the fields the app reads are
   populated — pure `serde_json` unit tests, no socket, so they run on the build host.
-- End-to-end: `make test` and read `/tmp/poc-events.log` — the home shelves, detail page,
+- End-to-end: `make test` and read `/tmp/plxnative-events.log` — the home shelves, detail page,
   direct-play, transcode, seek, audio/subtitle switch, and the `/:/timeline` reports must behave
   exactly as before (the design is a refactor of path-building, not of playback semantics).

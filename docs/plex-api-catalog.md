@@ -262,7 +262,7 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   - **D-6a:** `maxVideoBitrate=20000` — the spec's bitrate knobs are `videoBitrate` and
     `peakBitrate`; `maxVideoBitrate` is a legacy Plex param (still honored by PMS) not in the
     spec. Consider `videoBitrate=20000`.
-  - **D-6b:** `session=plexpoc-{rk}` — the spec's session query param is **`transcodeSessionId`**.
+  - **D-6b:** `session=plxnative-{rk}` — the spec's session query param is **`transcodeSessionId`**.
     `session` is the legacy param PMS actually honors; the spec name is `transcodeSessionId`
     (plus the `X-Plex-Session-Identifier` header).
   - **D-6c:** The app passes `X-Plex-Client-Identifier`, `X-Plex-Session-Identifier`,

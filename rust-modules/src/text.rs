@@ -12,8 +12,8 @@ use std::ptr::addr_of_mut;
 const SCR_W: f32 = 1920.0;
 const SCR_H: f32 = 1080.0;
 
-const APP_FONT: &CStr = c"/media/developer/apps/usr/palm/applications/com.glin.plexpoc/appfont.ttf";
-const APP_FONT_BOLD: &CStr = c"/media/developer/apps/usr/palm/applications/com.glin.plexpoc/appfont-bold.ttf";
+const APP_FONT: &CStr = c"/media/developer/apps/usr/palm/applications/com.beb.plxnative/appfont.ttf";
+const APP_FONT_BOLD: &CStr = c"/media/developer/apps/usr/palm/applications/com.beb.plxnative/appfont-bold.ttf";
 const DROIDSANS: &CStr = c"/usr/share/fonts/DroidSans.ttf";
 
 const VS_TEXT: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nvarying vec2 v_tuv;\nvoid main(){ v_tuv=a_pos; vec2 px=u_trect.xy+a_pos*u_trect.zw;\n  vec2 ndc=px/u_tscreen*2.0-1.0; gl_Position=vec4(ndc.x,-ndc.y,0.0,1.0); }\n";

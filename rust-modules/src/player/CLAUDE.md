@@ -39,6 +39,6 @@ touching the bind/feed control calls.
 
 ## Verifying playback changes
 
-There's no host runtime — deploy and read `/tmp/poc-events.log` (feed stats, bind steps, seek/rebase,
+There's no host runtime — deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps, seek/rebase,
 `RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root `CLAUDE.md`
 testing section (run as GUEST by default; never run two harness jobs at once).

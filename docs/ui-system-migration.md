@@ -326,7 +326,7 @@ Option<Home>` (`home.rs:398`). Finish the contract:
   `update/draw/move_focus` onto methods. Make the existing pub fns `open/open_rk/
   open_rk_season/close/update/draw/move_focus/on_ok/last_resume_ns/selected_ptr` **thin
   wrappers** forwarding to methods — so `app.rs` routing, `route.rs`, and the dev-triggers
-  (`poc-detail*`, `app.rs:886-1053`) compile **unchanged**. *Checkpoint:* `make`.
+  (`plxnative-detail*`, `app.rs:886-1053`) compile **unchanged**. *Checkpoint:* `make`.
 - **6b** section rows (episodes/related/cast) become child sub-views composed by
   `DetailView::draw` under the translated `ps = p.translate(0,-scroll)` painter. Unify the two
   horizontal-scroll models: adopt the sprung `ep_hscroll` glide for Related/Cast too (kill the

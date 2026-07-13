@@ -6,7 +6,7 @@
 # stub .so files are generated from stub/*.c by the Makefile
 stub/*.so
 # cross-compiled binary + packaging output
-pkg/plexpoc
+pkg/plxnative
 pkg/*.ipk
 pkg/ipk.sha256
 

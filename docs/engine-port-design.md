@@ -456,7 +456,7 @@ static mut ENGINE: Option<Engine> = None;         // main-thread-only slot
 }
 ```
 
-`acb_init` (reads `/tmp/poc-ptype`, `getenv("APPID")`, `acb_create`, sets `ACB_OK`/`PTYPE`), `start_bufferfeed` (resolve URL from `route::url()` → `/tmp/poc-url` → sample → `route::demo_url()`; `aq_init`; spawn D via `SendMut(aq_ptr)`; spawn C unless `route::transcode_session()` is non-empty; spawn L with `payload.as_ptr() as usize`; `stage=Loading`; `TX.started=true`), and `stop_bufferfeed(keep_cues)` reproduce the C teardown **order exactly**:
+`acb_init` (reads `/tmp/plxnative-ptype`, `getenv("APPID")`, `acb_create`, sets `ACB_OK`/`PTYPE`), `start_bufferfeed` (resolve URL from `route::url()` → `/tmp/plxnative-url` → sample → `route::demo_url()`; `aq_init`; spawn D via `SendMut(aq_ptr)`; spawn C unless `route::transcode_session()` is non-empty; spawn L with `payload.as_ptr() as usize`; `stage=Loading`; `TX.started=true`), and `stop_bufferfeed(keep_cues)` reproduce the C teardown **order exactly**:
 
 ```
 cues_abort=true

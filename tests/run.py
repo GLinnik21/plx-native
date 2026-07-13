@@ -6,9 +6,9 @@ For each case in manifest.json this driver:
   1. closes the running app on the TV (luna-send closeByAppId + fuser -k, via `make kill`);
   2. (if the case sets a viewOffset) seeds the item's resume point server-side via
      PUT /:/progress -- AFTER the close, so a live timeline_thread can't re-scrobble over it;
-  3. clears every /tmp/poc-* trigger on the TV, then writes only the ones this case needs;
+  3. clears every /tmp/plxnative-* trigger on the TV, then writes only the ones this case needs;
   4. runs `make run TV=<tv> RUN_SECS=<n>`, which relaunches the app, waits, and cats
-     /tmp/poc-events.log back;
+     /tmp/plxnative-events.log back;
   5. filters the `smp_cb type=43 num=0 str=` flood and evaluates the per-op assertions;
   6. records PASS/FAIL with the failing evidence line.
 
@@ -46,12 +46,12 @@ CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 
 # every dev trigger we ever set -- cleared before each run so a stale one can't bleed in
 ALL_TRIGGERS = [
-    "poc-detail", "poc-detailplay", "poc-detailsec", "poc-detailcol",
-    "poc-autoseek", "poc-menupick", "poc-menu", "poc-noaudio", "poc-demux",
-    "poc-grid", "poc-autoplay", "poc-h265", "poc-playidx", "poc-url",
-    "poc-play", "poc-ffprobe", "poc-token",
-    # UI/FPS scenes (poc-profile MUST be cleared — a stale one glFinish-tanks FPS and false-fails)
-    "poc-detailosc", "poc-info", "poc-chapters", "poc-profile",
+    "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
+    "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio", "plxnative-demux",
+    "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
+    "plxnative-play", "plxnative-ffprobe", "plxnative-token",
+    # UI/FPS scenes (plxnative-profile MUST be cleared — a stale one glFinish-tanks FPS and false-fails)
+    "plxnative-detailosc", "plxnative-info", "plxnative-chapters", "plxnative-profile",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
@@ -75,7 +75,7 @@ def read_token():
     return m.group(1)
 
 
-CID = "plexpoc-test-harness"  # stable X-Plex-Client-Identifier for the plex.tv calls below
+CID = "plxnative-test-harness"  # stable X-Plex-Client-Identifier for the plex.tv calls below
 
 
 def _pms_machine_id(host, port, admin_token):
@@ -155,30 +155,30 @@ def pms_put_progress(host, port, rk, time_ms, token):
 # ---------------------------------------------------------------------------
 def triggers_for_case(case):
     """
-    Map a case's operations -> the /tmp/poc-* files to write on the TV.
+    Map a case's operations -> the /tmp/plxnative-* files to write on the TV.
     Returns a list of (filename, content-or-None) pairs; None => `touch` (empty marker).
     """
-    files = [("poc-play", case["rk"])]  # the robust play trigger (fetches any rk)
+    files = [("plxnative-play", case["rk"])]  # the robust play trigger (fetches any rk)
     for op in case["operations"]:
         kind = op["op"]
         if kind == "seek":
-            files.append(("poc-autoseek", None))          # touch -> one seek to 140s
+            files.append(("plxnative-autoseek", None))          # touch -> one seek to 140s
         elif kind == "audio_switch":
-            files.append(("poc-menupick", f'{op["tab"]},{op["row"]}'))
+            files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
-            files.append(("poc-menupick", f'{op["tab"]},{op["row"]}'))
+            files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
             if op.get("demux") == "mkv":
                 # Optional: force the legacy mkv.rs demuxer (H264-only) to regression-test that
                 # path specifically. The DEFAULT libavformat demuxer (ff.rs) now emits `sub cue
                 # [..]` lines too, so subtitle cases no longer need this — omit `demux` to run on
                 # the default and cover HEVC/mp4 as well.
-                files.append(("poc-demux", "mkv"))
+                files.append(("plxnative-demux", "mkv"))
         # "play" and "resume" need no extra trigger (resume rides the seeded viewOffset).
     return files
 
 
 def apply_triggers(tv, files):
-    """Clear every poc-* trigger, then create the ones this case needs, in one ssh round-trip."""
+    """Clear every plxnative-* trigger, then create the ones this case needs, in one ssh round-trip."""
     parts = ["rm -f " + " ".join(f"/tmp/{t}" for t in ALL_TRIGGERS)]
     for name, content in files:
         if content is None:
@@ -484,12 +484,12 @@ def run_case(case, cfg, token, verbose):
     print(f"    triggers: {shown}")
 
     # 3b. inject the effective PMS token so the APP itself plays (and scrobbles) as this user.
-    # Written in its own ssh round-trip so the token value never reaches stdout; poc-token was
+    # Written in its own ssh round-trip so the token value never reaches stdout; plxnative-token was
     # just cleared by apply_triggers (it's in ALL_TRIGGERS). Always required: the binary carries
-    # no baked token — /tmp/poc-token is the only way an automated run gets PMS access.
+    # no baked token — /tmp/plxnative-token is the only way an automated run gets PMS access.
     if cfg.get("inject_token"):
-        ssh(tv, f"printf '%s' '{token}' > /tmp/poc-token")
-        print(f"    poc-token: <{cfg['user_label']}, redacted>")
+        ssh(tv, f"printf '%s' '{token}' > /tmp/plxnative-token")
+        print(f"    plxnative-token: <{cfg['user_label']}, redacted>")
 
     # 4. run + fetch log
     print(f"    make run RUN_SECS={run_secs} ...")
@@ -537,7 +537,7 @@ def do_build(tv):
 # ---------------------------------------------------------------------------
 # FPS regression suite (UI perf gate — separate from the playback cases above).
 # The app logs a once/sec `FPS=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]`
-# heartbeat. Each scene sets its poc-* triggers, runs the app profiler-OFF, then asserts the steady
+# heartbeat. Each scene sets its plxnative-* triggers, runs the app profiler-OFF, then asserts the steady
 # framerate for that screen stays above a floor. This is the automated form of the by-hand FPS
 # hunting that found the hero / cast+about / info-panel regressions.
 # ---------------------------------------------------------------------------
@@ -587,11 +587,11 @@ def run_fps_scene(scene, cfg, token):
             files.append((tname, str(scene["rk"])))
         else:
             files.append((tname, str(tval)))
-    apply_triggers(tv, files)  # clears every poc-* (incl. poc-profile) then writes this scene's
+    apply_triggers(tv, files)  # clears every plxnative-* (incl. plxnative-profile) then writes this scene's
     # player-tier scenes actually decode video, so inject the test-user token (its own ssh round-trip,
     # so the value never reaches stdout) exactly like the playback cases do.
     if is_player and cfg.get("inject_token"):
-        ssh(tv, f"printf '%s' '{token}' > /tmp/poc-token")
+        ssh(tv, f"printf '%s' '{token}' > /tmp/plxnative-token")
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown or '(none)'}   run {run_secs}s, skip first {warmup} sample(s)")
 

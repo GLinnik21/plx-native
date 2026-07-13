@@ -1,10 +1,10 @@
 /* Copy this file to config.local.h and fill in your Plex Media Server host.
  * config.local.h is gitignored. Only PMS_HOST/PMS_PORT are compiled into the app —
  * the binary carries NO credentials: PMS access comes from the in-app QR sign-in,
- * or from the /tmp/poc-token dev trigger for automated runs.
+ * or from the /tmp/plxnative-token dev trigger for automated runs.
  *
  * PMS_TOKEN is read by tests/run.py on the BUILD HOST only (it injects the token
- * onto the TV at test time via /tmp/poc-token); it is never compiled into the app.
+ * onto the TV at test time via /tmp/plxnative-token); it is never compiled into the app.
  * Find a token in Plex → any item → Get Info → View XML. */
 #define PMS_HOST  "YOUR_PMS_HOST"
 #define PMS_PORT  32400

@@ -377,7 +377,7 @@ pub fn click(mx: f32, my: f32) {
     }
 }
 
-/// Dev/test hook (`poc-pickuser`): commit roster tile `idx` exactly like OK — a protected tile
+/// Dev/test hook (`plxnative-pickuser`): commit roster tile `idx` exactly like OK — a protected tile
 /// opens the PIN pad (headless pad capture), an unprotected one switches.
 pub fn pick(idx: usize) {
     let s = scene();

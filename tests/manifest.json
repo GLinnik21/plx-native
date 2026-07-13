@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/poc-* triggers (see README) and asserts on /tmp/poc-events.log. rks are real PMS items (192.168.0.3:32400). The runner (run.py) reads the X-Plex-Token from src/config.local.h at runtime \u2014 it is NEVER stored here. Cases are derived from the library survey; see library_gaps for combos no real item can cover.",
+  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/plxnative-* triggers (see README) and asserts on /tmp/plxnative-events.log. rks are real PMS items (192.168.0.3:32400). The runner (run.py) reads the X-Plex-Token from src/config.local.h at runtime \u2014 it is NEVER stored here. Cases are derived from the library survey; see library_gaps for combos no real item can cover.",
   "pms": {
     "host": "192.168.0.3",
     "port": 32400
@@ -11,13 +11,13 @@
     "title": "Guest"
   },
   "tv": "192.168.0.114",
-  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its poc-* triggers, runs profiler-OFF, parses the FPS= heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest steady FPS >= floor. rk fields are library-specific like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'.",
+  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the FPS= heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest steady FPS >= floor. rk fields are library-specific like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'.",
   "fps_scenes": [
     { "name": "home-hero", "tier": "ui", "route": "home", "floor": 50, "run_secs": 18, "warmup_s": 5, "triggers": {} },
-    { "name": "home-grid", "tier": "ui", "route": "home", "floor": 50, "run_secs": 18, "warmup_s": 5, "triggers": { "poc-grid": true } },
-    { "name": "detail-transition", "tier": "ui", "route": "detail", "floor": 45, "run_secs": 22, "warmup_s": 6, "rk": "2012", "triggers": { "poc-detail": "$rk", "poc-detailosc": true } },
-    { "name": "info-panel", "tier": "player", "route": "player", "overlay": "info", "floor": 45, "run_secs": 26, "warmup_s": 9, "rk": "1926", "triggers": { "poc-play": "$rk", "poc-info": true } },
-    { "name": "track-menu", "tier": "player", "route": "player", "overlay": "menu", "floor": 45, "run_secs": 26, "warmup_s": 9, "rk": "1926", "triggers": { "poc-play": "$rk", "poc-menu": "0" } }
+    { "name": "home-grid", "tier": "ui", "route": "home", "floor": 50, "run_secs": 18, "warmup_s": 5, "triggers": { "plxnative-grid": true } },
+    { "name": "detail-transition", "tier": "ui", "route": "detail", "floor": 45, "run_secs": 22, "warmup_s": 6, "rk": "2012", "triggers": { "plxnative-detail": "$rk", "plxnative-detailosc": true } },
+    { "name": "info-panel", "tier": "player", "route": "player", "overlay": "info", "floor": 45, "run_secs": 26, "warmup_s": 9, "rk": "1926", "triggers": { "plxnative-play": "$rk", "plxnative-info": true } },
+    { "name": "track-menu", "tier": "player", "route": "player", "overlay": "menu", "floor": 45, "run_secs": 26, "warmup_s": 9, "rk": "1926", "triggers": { "plxnative-play": "$rk", "plxnative-menu": "0" } }
   ],
   "cases": [
     {
@@ -480,7 +480,7 @@
     }
   ],
   "library_gaps": {
-    "_comment": "Combos the survey found NO real library item can exercise. Not covered by any case above; would need synthetic ffmpeg clips fed via /tmp/poc-url (see README).",
+    "_comment": "Combos the survey found NO real library item can exercise. Not covered by any case above; would need synthetic ffmpeg clips fed via /tmp/plxnative-url (see README).",
     "video": [
       "vp9",
       "mpeg2",

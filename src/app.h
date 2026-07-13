@@ -4,7 +4,7 @@
 
 /* (1) config.local.h (gitignored, dev-only) overrides the host placeholder. NO token macro:
  *     the binary carries no credentials — PMS access comes from the signed-in session, or from
- *     the /tmp/poc-token dev trigger for automated runs (the token in config.local.h is read by
+ *     the /tmp/plxnative-token dev trigger for automated runs (the token in config.local.h is read by
  *     tests/run.py on the HOST, never compiled in). */
 #if defined(__has_include)
 #  if __has_include("config.local.h")
