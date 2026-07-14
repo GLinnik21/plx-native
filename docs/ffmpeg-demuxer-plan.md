@@ -1,6 +1,6 @@
 # libavformat demuxer plan — replacing `mkv.rs`
 
-**Status:** engineering spec, ready to implement. **Mandate:** quality + stability, not a POC.
+**Status:** engineering spec, ready to implement. **Mandate:** quality + stability, not a throwaway prototype.
 **Target:** LG webOS 4.5, 32-bit ARM, FFmpeg **3.3** ABI (SONAMEs `libavformat.so.57` /
 `libavcodec.so.57` / `libavutil.so.55` = versions 57.71.100 / 57.89.100 / 55.58.100). The boot
 smoke test in `ff.rs::smoke()` already logs `avformat=57.71.100`, proving the stub-`.so` link

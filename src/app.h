@@ -1,5 +1,5 @@
-#ifndef PLEXPOC_APP_H
-#define PLEXPOC_APP_H
+#ifndef PLXNATIVE_APP_H
+#define PLXNATIVE_APP_H
 #include <stdio.h>                 /* FILE */
 
 /* (1) config.local.h (gitignored, dev-only) overrides the host placeholder. NO token macro:
@@ -27,4 +27,4 @@
  *     FILE *elogf = NULL; in main.c and read by nearly every UI/glue module. */
 extern FILE *elogf;
 
-#endif /* PLEXPOC_APP_H */
+#endif /* PLXNATIVE_APP_H */

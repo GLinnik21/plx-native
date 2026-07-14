@@ -109,7 +109,7 @@ GET /video/:/transcode/universal/decision
   &session={SESS}
   &X-Plex-Session-Identifier={SESS}
   &X-Plex-Client-Identifier={DEVICE_ID}
-  &X-Plex-Product=Plex%20POC&X-Plex-Version=0.1.0
+  &X-Plex-Product=PlxNative&X-Plex-Version=0.1.0
   &X-Plex-Platform=webOS&X-Plex-Platform-Version=4.5
   &X-Plex-Client-Profile-Name=Generic
   &X-Plex-Client-Profile-Extra={§1b blob}
@@ -190,7 +190,7 @@ rides every timeline; and `audioStreamID`/`subtitleStreamID` on the timeline.
 | `X-Plex-Client-Identifier` | stable device id (persist once; e.g. `com.beb.plxnative` or persisted UUID) | groups the device; NEVER vary per item — fixes `route.rs:184` |
 | `X-Plex-Session-Identifier` | fresh opaque id per Play | becomes `Session/@id`; MUST equal the transcode `session` param byte-for-byte |
 | `X-Plex-Token` | token | already handled |
-| `X-Plex-Product` | `Plex POC` | today `plxnative` |
+| `X-Plex-Product` | `PlxNative` | today `plxnative` |
 | `X-Plex-Version` | `0.1.0` | today `1` |
 | `X-Plex-Platform` | `webOS` | today `Generic` |
 | `X-Plex-Platform-Version` | `4.5` | not sent today |
