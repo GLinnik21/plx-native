@@ -38,16 +38,22 @@ const FS_AMBIENT: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nunifor
 // the hot fill shader FS_SRC pays nothing. Used for the lifted-card focus shadow (ui::press replaced
 // the old glow ring with soft-shadow + sheen). Circle = radius w/2.
 const FS_SHADOW: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec2 u_size;\nuniform float u_radius;\nuniform float u_blur;\nuniform float u_off;\nuniform vec4 u_col;\nfloat sdBox(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+vec2(r); return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  vec2 p = (v_uv - 0.5) * u_size;\n  vec2 hsz = max(u_size*0.5 - vec2(u_blur), vec2(0.0));\n  vec2 pp = abs(p - vec2(0.0, -u_off));\n  if (all(lessThan(pp, hsz - vec2(u_radius + 1.0)))) discard;\n  float d = sdBox(p, hsz, min(u_radius, min(hsz.x, hsz.y)));\n  float a = (1.0 - smoothstep(-u_blur, u_blur, d)) * u_col.a;\n  gl_FragColor = vec4(u_col.rgb, a);\n}\n";
-const VS_IMG: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nvarying vec2 v_tuv;\nvoid main(){ v_tuv=a_pos; vec2 px=u_trect.xy+a_pos*u_trect.zw;\n  vec2 ndc=px/u_tscreen*2.0-1.0; gl_Position=vec4(ndc.x,-ndc.y,0.0,1.0); }\n";
+// VS hoists the two per-fragment affine terms to interpolated varyings (correct — both are affine in
+// a_pos): `v_cuv` = the texture UV remapped to the inner card sub-rect (u_uvscale = quad/card size,
+// 1.0 when pad==0 ⇒ v_cuv == a_pos for the flat path), `v_p` = card-local pixel coords for the SDF.
+const VS_IMG: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nuniform vec2 u_uvscale;\nvarying vec2 v_cuv;\nvarying vec2 v_p;\nvoid main(){\n  v_cuv = (a_pos - 0.5) * u_uvscale + 0.5;\n  v_p = (a_pos - 0.5) * u_trect.zw;\n  vec2 px = u_trect.xy + a_pos * u_trect.zw;\n  vec2 ndc = px / u_tscreen * 2.0 - 1.0;\n  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}\n";
 // The tile texture shader is the whole CARD COMPOSITE — texture + the 1px focus edge-sheen
-// (`u_rimw`/`u_rimcol`) + a soft SYMMETRIC drop-shadow (`u_pad`/`u_shblur`/`u_shcol`) — all in ONE
-// pass, because the poster fragment already runs. The quad is INFLATED by `u_pad` (= shadow blur+1)
-// so the penumbra ring has room; the texture is remapped to the inner card sub-rect. The shadow reuses
-// the card's own SDF distance `d` (one `sdBox`, no divide) — cheap enough for every card at 60fps.
-// NOTE: coverage `m` is folded into rgb (`rgb = tex*m`), so this is NOT bit-identical to a plain
-// rounded texture at `u_pad==0` — a rounded texture's ~1px AA edge is very slightly darker under
-// straight-alpha blend. Full-screen art (radius 0) takes the flat fast-path and is untouched.
-const FS_IMG: &CStr = c"precision mediump float;\nvarying vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tint;\nuniform vec2 u_isize;\nuniform float u_iradius;\nuniform float u_rimw;\nuniform vec4 u_rimcol;\nuniform float u_pad;\nuniform float u_shblur;\nuniform vec4 u_shcol;\nfloat sdBox(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+vec2(r);\n  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  if (u_iradius < 0.5) {\n    vec4 c0 = texture2D(u_tex, v_tuv);\n    gl_FragColor = vec4(c0.rgb*u_tint.rgb, c0.a*u_tint.a);\n    return;\n  }\n  vec2 p = (v_tuv-0.5)*u_isize;\n  vec2 ch = u_isize*0.5 - vec2(u_pad);\n  float d = sdBox(p, ch, u_iradius);\n  float m = 1.0 - smoothstep(-1.0, 1.0, d);\n  vec4 c = texture2D(u_tex, p/(2.0*ch) + 0.5);\n  vec3 tex = c.rgb*u_tint.rgb;\n  float rim = smoothstep(-u_rimw-0.75, -u_rimw+0.75, d) * (1.0 - smoothstep(-0.5, 0.5, d)) * u_rimcol.a;\n  tex = mix(tex, u_rimcol.rgb, rim);\n  float sh = (1.0 - smoothstep(-u_shblur, u_shblur, d)) * u_shcol.a * (1.0 - m);\n  float a = c.a*u_tint.a*m + sh;\n  gl_FragColor = vec4(tex * m, a);\n}\n";
+// (`u_rimw`/`u_rimcol`) + a soft SYMMETRIC drop-shadow (`u_ch`/`u_shinv`/`u_shcol`) — all in ONE pass.
+// Perf (Mali-T820, per the perf review): (1) an INTERIOR EARLY-OUT — ~85% of a card's fragments are
+// strictly inside the rounded rect (`d < -2`) where rim/AA/shadow are all zero, so they skip the 4
+// smoothsteps; on this per-thread tiler the branch genuinely saves the ALU. (2) UV remap + card-local
+// `p` are interpolated varyings, not per-fragment math. (3) the uniform-only terms (card half-size
+// `u_ch`, shadow `u_shinv = 0.5/blur`) are folded on the CPU (Midgard has no uniform pre-shader).
+// (4) the 1px rim is a single-op triangle. The shadow `sh = smoothstep(clamp(0.5 - d/(2·blur)))` is
+// algebraically identical to `1 - smoothstep(-blur, blur, d)`. `rgb = tex*m` premultiplies coverage
+// (so a rounded texture's ~1px AA edge is very slightly darker under straight-alpha blend — accepted).
+// Full-screen art (radius 0) takes the flat fast-path.
+const FS_IMG: &CStr = c"precision mediump float;\nvarying vec2 v_cuv;\nvarying vec2 v_p;\nuniform sampler2D u_tex;\nuniform vec4 u_tint;\nuniform float u_iradius;\nuniform float u_rimw;\nuniform vec4 u_rimcol;\nuniform vec2 u_ch;\nuniform float u_shinv;\nuniform vec4 u_shcol;\nfloat sdBox(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+vec2(r);\n  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  vec4 c = texture2D(u_tex, v_cuv);\n  vec3 tex = c.rgb*u_tint.rgb;\n  float ta = c.a*u_tint.a;\n  if (u_iradius < 0.5) { gl_FragColor = vec4(tex, ta); return; }\n  float d = sdBox(v_p, u_ch, u_iradius);\n  if (d < -2.0) { gl_FragColor = vec4(tex, ta); return; }\n  float m = 1.0 - smoothstep(-1.0, 1.0, d);\n  float rim = max(0.0, 1.0 - abs(d + u_rimw)) * u_rimcol.a;\n  tex = mix(tex, u_rimcol.rgb, rim);\n  float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);\n  sh = sh*sh*(3.0 - 2.0*sh) * u_shcol.a * (1.0 - m);\n  gl_FragColor = vec4(tex*m, ta*m + sh);\n}\n";
 
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
@@ -59,6 +65,7 @@ const GL_FLOAT: c_uint = 0x1406;
 const GL_FALSE: u8 = 0;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
 const GL_BLEND: c_uint = 0x0BE2;
+const GL_DITHER: c_uint = 0x0BD0;
 const GL_SRC_ALPHA: c_uint = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
@@ -191,13 +198,13 @@ static mut IPROG: c_uint = 0;
 static mut IL_RECT: c_int = 0;
 static mut IL_SCREEN: c_int = 0;
 static mut IL_TINT: c_int = 0;
-static mut IL_SIZE: c_int = 0;
+static mut IL_UVSCALE: c_int = 0;
 static mut IL_RADIUS: c_int = 0;
 static mut IL_TEX: c_int = 0;
 static mut IL_RIMW: c_int = 0;
 static mut IL_RIMCOL: c_int = 0;
-static mut IL_PAD: c_int = 0;
-static mut IL_SHBLUR: c_int = 0;
+static mut IL_CH: c_int = 0;
+static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
 
 pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
@@ -294,6 +301,10 @@ pub(crate) fn init_gl() {
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // GL_DITHER is ON by default in GLES2; it dithers low-alpha gradients (the card shadow
+        // penumbra) into a regular ordered-dither dot pattern visible along tile edges. The panel is
+        // 888 and SURFACE_APP is snapped to exact 8-bit codes, so dithering buys nothing here — off.
+        glDisable(GL_DITHER);
     }
 }
 
@@ -518,13 +529,13 @@ pub(crate) fn init_image() {
         IL_RECT = glGetUniformLocation(IPROG, c"u_trect".as_ptr());
         IL_SCREEN = glGetUniformLocation(IPROG, c"u_tscreen".as_ptr());
         IL_TINT = glGetUniformLocation(IPROG, c"u_tint".as_ptr());
-        IL_SIZE = glGetUniformLocation(IPROG, c"u_isize".as_ptr());
+        IL_UVSCALE = glGetUniformLocation(IPROG, c"u_uvscale".as_ptr());
         IL_RADIUS = glGetUniformLocation(IPROG, c"u_iradius".as_ptr());
         IL_TEX = glGetUniformLocation(IPROG, c"u_tex".as_ptr());
         IL_RIMW = glGetUniformLocation(IPROG, c"u_rimw".as_ptr());
         IL_RIMCOL = glGetUniformLocation(IPROG, c"u_rimcol".as_ptr());
-        IL_PAD = glGetUniformLocation(IPROG, c"u_pad".as_ptr());
-        IL_SHBLUR = glGetUniformLocation(IPROG, c"u_shblur".as_ptr());
+        IL_CH = glGetUniformLocation(IPROG, c"u_ch".as_ptr());
+        IL_SHINV = glGetUniformLocation(IPROG, c"u_shinv".as_ptr());
         IL_SHCOL = glGetUniformLocation(IPROG, c"u_shcol".as_ptr());
         glUseProgram(PROG);
     }
@@ -568,15 +579,20 @@ fn draw_tex_impl(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint:
     }
     unsafe {
         let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
+        // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
+        // quad→card UV scale (1.0 when pad==0), and the shadow's 0.5/blur normaliser.
+        let uvsx = if w > 0.0 { qw / w } else { 1.0 };
+        let uvsy = if h > 0.0 { qh / h } else { 1.0 };
+        let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
         glUseProgram(IPROG);
         glUniform2f(IL_SCREEN, SCR_W, SCR_H);
         glUniform4fv(IL_TINT, 1, tint);
-        glUniform2f(IL_SIZE, qw, qh);
+        glUniform2f(IL_UVSCALE, uvsx, uvsy);
         glUniform1f(IL_RADIUS, radius);
         glUniform1f(IL_RIMW, rimw);
         glUniform4fv(IL_RIMCOL, 1, rimcol);
-        glUniform1f(IL_PAD, pad);
-        glUniform1f(IL_SHBLUR, shblur);
+        glUniform2f(IL_CH, w * 0.5, h * 0.5);
+        glUniform1f(IL_SHINV, shinv);
         glUniform4fv(IL_SHCOL, 1, shcol);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
