@@ -124,7 +124,7 @@ pub(crate) fn set_stream_acodec(codec: &str) {
 /// every playback request so the server names + groups this client and shows a proper Player.
 pub(crate) fn identity_qs() -> String {
     format!(
-        "&X-Plex-Client-Identifier={DEVICE_ID}&X-Plex-Product=Plex%20POC&X-Plex-Version=0.1.0\
+        "&X-Plex-Client-Identifier={DEVICE_ID}&X-Plex-Product=PlxNative&X-Plex-Version=0.1.0\
          &X-Plex-Platform=webOS&X-Plex-Platform-Version=4.5&X-Plex-Device=webOS\
          &X-Plex-Device-Name=Living%20Room%20TV&X-Plex-Model=49SM9000PLA&X-Plex-Provides=player"
     )
