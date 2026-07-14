@@ -208,10 +208,10 @@ impl Backdrop {
 impl View for Backdrop {
     fn draw(&self, env: &Env, p: Painter) {
         let sp = env.sp;
-        // flat dark-gray base — the shelves sit on this (so card focus shadows read),
-        // NOT the hero's ambient wash. Only the hero itself carries a backdrop.
-        let g = theme::SURFACE_APP;
-        p.rect(env.screen, 0.0, g, g, 0.0);
+        // The flat dark-gray base (the shelves sit on this so card shadows read) is ALREADY laid down
+        // by `home_draw`'s frame_clear(CLEAR_RGB) — and CLEAR_RGB == SURFACE_APP (#2C2C2E). Painting a
+        // full-screen SURFACE_APP rect here was a redundant ~2M-fragment pass over that identical
+        // color, so it's dropped; the hero art below blends against the clear (same base).
         // hero backdrop: art if present, else the ambient wash as a fallback — both confined to
         // the hero view, fading out as the grid rises so the shelf area stays flat gray. During a
         // flip the outgoing and incoming items' art slide side-by-side (same phase as the text).
