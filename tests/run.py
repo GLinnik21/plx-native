@@ -44,7 +44,8 @@ REPO_ROOT = os.path.dirname(TESTS_DIR)
 MANIFEST = os.path.join(TESTS_DIR, "manifest.json")
 CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 
-# every dev trigger we ever set -- cleared before each run so a stale one can't bleed in
+# reference list of the dev triggers the app reads (apply_triggers now GLOB-clears /tmp/plxnative-*,
+# so this no longer has to be exhaustive — it's kept for humans / grep)
 ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio", "plxnative-demux",
@@ -52,6 +53,8 @@ ALL_TRIGGERS = [
     "plxnative-play", "plxnative-ffprobe", "plxnative-token",
     # UI/FPS scenes (plxnative-profile MUST be cleared — a stale one glFinish-tanks FPS and false-fails)
     "plxnative-detailosc", "plxnative-info", "plxnative-chapters", "plxnative-profile",
+    # boot-flow triggers (heroidx pins the hero + bypasses the who's-watching picker; pickuser forces it)
+    "plxnative-heroidx", "plxnative-pickuser",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
@@ -178,8 +181,13 @@ def triggers_for_case(case):
 
 
 def apply_triggers(tv, files):
-    """Clear every plxnative-* trigger, then create the ones this case needs, in one ssh round-trip."""
-    parts = ["rm -f " + " ".join(f"/tmp/{t}" for t in ALL_TRIGGERS)]
+    """Clear every /tmp/plxnative-* trigger (sparing the *.log files), then create the ones this case
+    needs, in one ssh round-trip. GLOB-based, not an enumerated list, so a newly-added app trigger can
+    never bleed between scenes — a stale plxnative-novsync would uncap vsync and false-PASS an FPS
+    scene, a stale plxnative-press/-login would derail a home scene. ALL_TRIGGERS above is now just a
+    human reference of the known triggers."""
+    # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
+    parts = ['for f in /tmp/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done']
     for name, content in files:
         if content is None:
             parts.append(f"touch /tmp/{name}")

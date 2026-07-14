@@ -6,9 +6,20 @@
 //! workers only fetch (Rust http_get) + decode (Rust img) off the lock.
 use crate::{img, stream};
 use std::os::raw::{c_char, c_int, c_uchar, c_uint};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+// Per-frame GL-upload counters for the frame-drop detector (app.rs): each poster_pump upload is a
+// synchronous glTexImage2D on the main thread — the prime suspect for scroll judder. `take_upload_stats`
+// reads-and-resets (call once per frame).
+static UP_CT: AtomicU32 = AtomicU32::new(0);
+static UP_PX: AtomicU64 = AtomicU64::new(0);
+/// (uploads, total pixels) since the last call; resets both. Main-thread, once per frame.
+pub(crate) fn take_upload_stats() -> (u32, u64) {
+    (UP_CT.swap(0, Ordering::Relaxed), UP_PX.swap(0, Ordering::Relaxed))
+}
 
 const PT_CAP: usize = 64;
 const P_EMPTY: c_int = 0;
@@ -261,8 +272,10 @@ pub(crate) fn poster_pump(budget: c_int) {
             s.state = P_UPLOADING;
             (idx, px, w, h, gen)
         };
-        // GL upload off the lock
+        // GL upload off the lock (synchronous glTexImage2D — counted for the frame-drop detector)
         let t = img::img_upload_rgba(px as *const c_uchar, w, h);
+        UP_CT.fetch_add(1, Ordering::Relaxed);
+        UP_PX.fetch_add((w.max(0) as u64) * (h.max(0) as u64), Ordering::Relaxed);
         img::img_free(px as *mut c_uchar);
 
         let stale = {

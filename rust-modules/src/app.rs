@@ -48,6 +48,8 @@ extern "C" {
     fn SDL_GL_CreateContext(win: *mut c_void) -> *mut c_void;
     fn SDL_GL_SetSwapInterval(interval: c_int) -> c_int;
     fn SDL_GetTicks() -> u32;
+    fn SDL_GetPerformanceCounter() -> u64;
+    fn SDL_GetPerformanceFrequency() -> u64;
     fn SDL_PollEvent(event: *mut c_void) -> c_int;
     fn SDL_GL_SwapWindow(win: *mut c_void);
     fn SDL_Quit();
@@ -349,6 +351,26 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
         // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
         let detail_osc = std::path::Path::new("/tmp/plxnative-detailosc").exists();
+        // dev: /tmp/plxnative-homeosc — perpetually sweep the home grid focus DOWN to the bottom then
+        // UP to the top (~3s each way, one row per 350ms), so a headless run reproduces the top↔bottom
+        // vertical-scroll judder for the frame-drop detector / retui profiler.
+        let home_osc = std::path::Path::new("/tmp/plxnative-homeosc").exists();
+        let mut home_osc_last = 0u32;
+
+        // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
+        // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
+        // and any frame whose total exceeds a threshold (ms; file content overrides the 22ms default) is
+        // logged with its phase breakdown + GL texture-upload count — so a scroll judder shows *what* stalled
+        // (high `pump`+`up` ⇒ synchronous poster uploads; high `swap` with low pump/draw ⇒ GPU fill).
+        let framedrop_on = std::path::Path::new("/tmp/plxnative-framedrop").exists();
+        let framedrop_thresh: f64 = std::fs::read_to_string("/tmp/plxnative-framedrop")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .filter(|v: &f64| *v > 0.0)
+            .unwrap_or(22.0);
+        let perf_freq = SDL_GetPerformanceFrequency() as f64;
+        let perf_ms = |c: u64| c as f64 * 1000.0 / perf_freq;
+        let mut fd_worst = 0.0f64; // worst frame-total this second, for a once/sec peak line
 
         let mut last_input = SDL_GetTicks();
         let t0 = last_input;
@@ -1658,6 +1680,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::profiles::pick(idx);
                 }
             } else if matches!(route, Route::Home | Route::Account) {
+                // dev: sweep the grid focus top↔bottom to reproduce the vertical-scroll judder headlessly
+                if home_osc && now.wrapping_sub(home_osc_last) > 350 {
+                    home_osc_last = now;
+                    let sym = if (now / 3000) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
+                    crate::ui::home::home_move_focus(sym as c_uint);
+                }
                 // only when home is actually drawn — stepping its 16×24 cell springs during
                 // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
                 // route-agnostically right after `dt` above)
@@ -1684,7 +1712,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
                 crate::ui::chapters_panel::update(dt);
             }
+            let fd_pc0 = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             crate::posters::poster_pump(3);
+            let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 
             glViewport(0, 0, SCR_W, SCR_H);
             if matches!(route, Route::Player { .. }) {
@@ -1738,18 +1768,44 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let fps_col = [0.4f32, 1.0, 0.55, 1.0];
             crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
             crate::ui::anim::draw_overlay(); // home/detail animations (episode scale-pop, scroll)
+            let fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             SDL_GL_SwapWindow(win);
+            let fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             crate::ui::profile::frame_end();
+            let rn = match route {
+                Route::Login => "login",
+                Route::Profiles => "profiles",
+                Route::Account => "account",
+                Route::Detail => "detail",
+                _ => "home",
+            };
+            // frame-drop detector: attribute slow frames to pump(uploads)/draw/swap(GPU). Drains the
+            // per-frame upload counters every frame (so the count is per-frame, not cumulative).
+            if framedrop_on {
+                let pump = perf_ms(fd_pc_pump.wrapping_sub(fd_pc0));
+                let draw = perf_ms(fd_pc_draw.wrapping_sub(fd_pc_pump));
+                let swap = perf_ms(fd_pc_swap.wrapping_sub(fd_pc_draw));
+                let total = pump + draw + swap;
+                let (up, px) = crate::posters::take_upload_stats();
+                let (cards, cards_off) = crate::gfx::take_card_stats();
+                if total > fd_worst {
+                    fd_worst = total;
+                }
+                if total > framedrop_thresh {
+                    log(&format!(
+                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} snap={:.2}",
+                        crate::ui::home::snap_pos()
+                    ));
+                }
+            }
             if fps_tick(&mut frames_ct, &mut fps_t, &mut fps_shown, now) {
                 // once/sec render heartbeat — greppable without reading the on-screen counter
-                let rn = match route {
-                    Route::Login => "login",
-                    Route::Profiles => "profiles",
-                    Route::Account => "account",
-                    Route::Detail => "detail",
-                    _ => "home",
-                };
-                log(&format!("FPS={fps_shown} route={rn}"));
+                if framedrop_on {
+                    log(&format!("FPS={fps_shown} route={rn} worstframe={fd_worst:.1}ms"));
+                    fd_worst = 0.0;
+                } else {
+                    log(&format!("FPS={fps_shown} route={rn}"));
+                }
             }
         }
 
