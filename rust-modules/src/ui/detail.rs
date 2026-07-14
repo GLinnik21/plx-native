@@ -30,6 +30,10 @@ struct DetailView {
     // section flow (child_top == the old section_y), and the off-screen band cull (via on_axis).
     column: ScrollColumn,
     card_scale: Spring, // focused card-row item pop (springs on selection change)
+    // per-episode focus-pop springs — like a CardRow's per-cell scale springs, so a deselected episode
+    // still animates its pop (and thus its lifted shadow) all the way back down instead of snapping.
+    // Fixed cap; episodes past it (very long seasons) simply don't animate the pop.
+    ep_scale: [Spring; EP_ANIM_MAX],
     ep_hscroll: Spring, // episode row horizontal scroll — glides instead of snapping
     tab_hscroll: Spring, // season-tab row horizontal scroll (many-season shows overflow the width)
     // season-tab load is DEBOUNCED: focusing a tab records the target here + resets the settle timer;
@@ -54,6 +58,7 @@ impl DetailView {
             col: 0,
             column: ScrollColumn::new(CONTENT_TOP, TOP_MARGIN), // top re-derived per frame (update)
             card_scale: Spring::at(1.0),
+            ep_scale: [Spring::at(1.0); EP_ANIM_MAX],
             ep_hscroll: Spring::at(0.0),
             tab_hscroll: Spring::at(0.0),
             pending_season: -1,
@@ -95,6 +100,7 @@ const TAB_ROW_H: f32 = CD; // tab pills stand as tall as the hero buttons (one c
 const TAB_ADVANCE: f32 = 52.0; // per-tab horizontal advance past the label width
 const SEASON_SETTLE: f32 = 0.2; // hold a season tab this long (s) before its episodes are fetched
 // Episodes: landscape stills + under-card metadata
+const EP_ANIM_MAX: usize = 40; // per-episode pop-spring count (episodes past this don't animate the pop)
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
@@ -506,6 +512,15 @@ pub(crate) fn update(dt: f32) {
     crate::ui::anim::probe("detail.scroll", v.column.scroll.pos, v.column.scroll.vel, sct, dt);
     v.card_scale.step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
     crate::ui::anim::probe("detail.card", v.card_scale.pos, v.card_scale.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
+    // per-episode pop springs: focused cell → CARD_FOCUS_SCALE, all others ease back to 1.0 (so a
+    // just-deselected episode animates its pop + lifted shadow out instead of snapping). Step every
+    // spring each frame (cheap), same discipline as CardRow.
+    let ecol = if v.section == 2 { v.col.max(0) as usize } else { usize::MAX };
+    let en = n_items(2).max(0) as usize;
+    for (i, sp) in v.ep_scale.iter_mut().enumerate() {
+        let t = if i == ecol && i < en { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 };
+        sp.step(t, 300.0, dt);
+    }
     v.ep_hscroll.step(hst, 240.0, dt);
     crate::ui::anim::probe("detail.epscroll", v.ep_hscroll.pos, v.ep_hscroll.vel, hst, dt);
     v.tab_hscroll.step(tst, 240.0, dt);
@@ -877,8 +892,8 @@ fn draw_episodes(p: Painter) {
     let sec = view().section;
     let col = view().col;
     let focus_col = if sec == 2 { col } else { -1 };
-    // fold the ui::press click dip into the focused episode's pop (1.0 when idle)
-    let scale = view().card_scale.pos * crate::ui::press::scale();
+    // the ui::press click dip folds into the focused episode's per-cell pop below
+    let press = crate::ui::press::scale();
     // keep the focused card on-screen (spring-scrolled so it glides to the 2nd slot instead of
     // snapping — matches the chapters strip; fixes the "scatter" on LEFT/RIGHT)
     let sx = view().ep_hscroll.pos;
@@ -891,12 +906,25 @@ fn draw_episodes(p: Painter) {
             continue; // off-screen
         }
         let focused = i as c_int == focus_col;
+        // per-cell pop: the focused episode springs up (press dip folded in); a just-deselected one
+        // springs back down, so its scale + lifted shadow animate out instead of snapping. Episodes
+        // past the spring cap snap to the focus scale (no per-cell animation) rather than losing the
+        // focus cue entirely.
+        let base = view()
+            .ep_scale
+            .get(i)
+            .map(|s| s.pos)
+            .unwrap_or(if focused { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 });
+        let sc = if focused { base * press } else { base };
+        // the focused cell is always "popped" so a press dip (sc < 1) still scales it (the dip would
+        // otherwise be clamped away); a deselecting cell stays popped until its spring settles back.
+        let popped = focused || sc > 1.001;
         let card = Rect::new(x, ep_y, EP_W, EP_H);
         // episode still + focus ring + scale-pop (shared with the chapters strip)
-        crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, focused, scale);
-        // resume bar (tracks the scaled card when focused)
+        crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, popped, sc);
+        // resume bar (tracks the scaled card while it's popped)
         if ep.resume_ms > 0 && ep.dur_ms > 0 {
-            let cr = if focused { card.scaled(scale) } else { card };
+            let cr = if popped { card.scaled(sc) } else { card };
             let frac = (ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0);
             let bar = Rect::new(cr.x + 12.0, cr.y + cr.h - 16.0, cr.w - 24.0, 5.0);
             pe.rrect(bar, 2.5, 2.5, theme::RAIL_BUFFERED);

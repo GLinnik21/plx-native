@@ -133,6 +133,20 @@ pub struct Painter {
     dy: f32,
     a: f32,
 }
+/// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
+/// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
+/// folded card shadow ([`Painter::tex_carded`]) and the standalone one ([`Painter::focus_shadow`],
+/// the profile chip). Every tile carries a shadow; it *grows* with the pop rather than appearing.
+fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
+    let f = f.clamp(0.0, 1.0);
+    let blur_l = (h * 0.13).clamp(6.0, theme::CARD_SHADOW_BLUR);
+    let off_l = (h * 0.04).clamp(3.0, theme::CARD_SHADOW_DY);
+    let blur_r = (h * 0.05).clamp(3.0, theme::CARD_SHADOW_REST_BLUR);
+    let off_r = (h * 0.015).clamp(1.5, theme::CARD_SHADOW_REST_DY);
+    let lerp = |a: f32, b: f32| a + (b - a) * f;
+    (lerp(blur_r, blur_l), lerp(off_r, off_l), lerp(theme::CARD_SHADOW_REST_A, theme::CARD_SHADOW[3]))
+}
+
 impl Painter {
     pub const fn root() -> Self {
         Self { dx: 0.0, dy: 0.0, a: 1.0 }
@@ -175,38 +189,56 @@ impl Painter {
     /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
         let c = self.c(col);
-        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, c.as_ptr());
+        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, c.as_ptr());
     }
-    /// The "lifted card" shadow for a FOCUSED tile — the drop-shadow half of the Home Screen focus
-    /// treatment (the sheen is [`focus_sheen`](Self::focus_sheen)). `f` (0..1) ramps it in with the
-    /// focus pop. Call immediately BEFORE the tile art; works for rounded-rect posters and circles
-    /// alike (`radius` = w/2 for a circle). Replaces the old glow [`ring`](Self::ring).
+    /// Standalone soft drop-shadow under a tile (its own [`FS_SHADOW`](crate::gfx) pass) — used by the
+    /// profile chip, whose avatar isn't a folded card composite. Every tile carries a shadow that GROWS
+    /// with the pop `f` (0 = resting/close to the shelf, 1 = lifted). Card tiles fold this into their
+    /// texture pass via [`tex_carded`](Self::tex_carded) instead; this remains for the non-folded chip.
     pub fn focus_shadow(self, r: Rect, radius: f32, f: f32) {
-        if f <= 0.001 {
-            return;
-        }
-        // Scale the penumbra + offset to the tile so a 64px profile chip and a 375px poster read with
-        // the SAME softness; the theme values are the caps (kept subtle — a gentle lift on the gray
-        // shelf, not a big pool).
-        let blur = (r.h * 0.13).clamp(6.0, theme::CARD_SHADOW_BLUR);
-        let off = (r.h * 0.04).clamp(3.0, theme::CARD_SHADOW_DY);
-        let a = theme::CARD_SHADOW[3] * f.min(1.0);
+        let (blur, off, a) = card_shadow_params(r.h, f);
         self.shadow(r, radius, blur, off, theme::with_a(theme::CARD_SHADOW, a));
     }
-    /// The specular sheen OVER a focused tile face — a soft top-lit gloss (Home Screen's top
-    /// catch-light), corner-clipped by the SDF `radius`. `f` ramps it in with the pop. Call AFTER the
-    /// tile art (and before the resume bar / labels, which must stay legible on top).
-    pub fn focus_sheen(self, r: Rect, radius: f32, f: f32) {
-        if f <= 0.001 {
-            return;
-        }
-        let top = theme::with_a(theme::CARD_SHEEN, theme::CARD_SHEEN[3] * f.min(1.0));
-        let bot = theme::with_a(theme::CARD_SHEEN, 0.0);
-        self.rect(r, radius, top, bot, 0.0);
+    /// The tile-fill colour of the focus edge-sheen (the 1px inset perimeter rim), folded into the
+    /// caller's alpha cascade — shared by the sheened fill primitives below.
+    #[inline]
+    fn sheen_rim(self) -> [f32; 4] {
+        theme::with_a(theme::CARD_SHEEN, theme::CARD_SHEEN[3] * self.a)
+    }
+    /// A rounded-rect FILL that also carries the 1px perimeter edge-sheen in the SAME pass (the
+    /// no-texture counterpart of [`tex_stroked`](Self::tex_stroked)) — for skeleton / chip-disc tiles.
+    pub fn rect_sheened(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4]) {
+        let (t, b) = (self.c(top), self.c(bot));
+        let rim = self.sheen_rim();
+        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
+    }
+    /// Flat rounded-rect fill + the 1px perimeter edge-sheen in one pass (the flat-colour placeholder tile).
+    pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {
+        let c = self.c(col);
+        let rim = self.sheen_rim();
+        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, c.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
         let t = self.c(tint);
         crate::gfx::draw_tex(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
+    }
+    /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
+    /// pass — rim only, no shadow. Used for the profile chip avatar.
+    pub fn tex_stroked(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
+        let t = self.c(tint);
+        crate::gfx::draw_tex_stroked(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), theme::CARD_SHEEN_W, self.sheen_rim().as_ptr());
+    }
+    /// The full CARD composite in ONE pass — texture + 1px edge-sheen + the soft drop-shadow that
+    /// grows with the pop `f` (folded via [`gfx::draw_tex_carded`](crate::gfx::draw_tex_carded)). `r` is
+    /// the (already-scaled) card rect; the quad is inflated by the penumbra internally. This is how
+    /// every art tile gets its resting-and-rising shadow without a separate soft-shadow pass.
+    pub fn tex_carded(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4], f: f32) {
+        let t = self.c(tint);
+        let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
+        let shcol = theme::with_a(theme::CARD_SHADOW, sa * self.a);
+        let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
+        crate::gfx::draw_tex_carded(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(),
+            theme::CARD_SHEEN_W, self.sheen_rim().as_ptr(), pad, blur, shcol.as_ptr());
     }
     /// bilinear 4-corner gradient (opaque; the cascade alpha is intentionally not applied)
     pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {

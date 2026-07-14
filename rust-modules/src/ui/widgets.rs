@@ -21,18 +21,14 @@ pub(crate) enum Art<'a> {
     Thumb { key: &'a str, res: (c_int, c_int) },
 }
 
-/// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton), draws it at `frame`
-/// scaled about its centre when `focused`, and — when `decorate` — wraps it in the focus treatment
-/// (soft drop-shadow behind + top sheen over, at focus=1.0). Every art tile routes through here — the
-/// home grid + detail Related posters (via [`card_row`](crate::ui::card_row), which passes
-/// `decorate: false` because its `draw_focused` draws its OWN spring-ramped shadow/sheen) and the
-/// episode/chapters strips (via [`draw_card`], `decorate: true`) — so they all resolve identically.
-pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, decorate: bool) {
+/// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
+/// scaled about its centre when `focused`. A textured tile routes through the CARD COMPOSITE
+/// ([`Painter::tex_carded`]): texture + 1px edge-sheen + the soft drop-shadow that GROWS with the pop
+/// factor `f` (0 = resting/close to the shelf, 1 = fully lifted), all in ONE pass. The caller supplies
+/// `f` (the shelves compute it from their per-cell spring; the episode/chapters strips from `scale`).
+/// A not-yet-loaded skeleton falls back to a rimmed fill (no shadow until the art arrives).
+pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
     let r = if focused { frame.scaled(scale) } else { frame };
-    let decor = focused && decorate;
-    if decor {
-        p.focus_shadow(r, rad, 1.0);
-    }
     match art {
         Art::Poster(m) => {
             let t = m
@@ -40,9 +36,9 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 .map(|m| resolve_tex(m.thumb.as_ptr() as *const c_char, 250, 375, 0))
                 .unwrap_or(0);
             if t != 0 {
-                p.tex(t, r, rad, theme::TINT_WHITE);
+                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
-                p.rect(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT, 0.0);
+                p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
             }
         }
         Art::Thumb { key, res } => {
@@ -52,14 +48,11 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 std::ffi::CString::new(key).ok().map(|tp| resolve_tex(tp.as_ptr(), res.0, res.1, 0)).unwrap_or(0)
             };
             if t != 0 {
-                p.tex(t, r, rad, theme::TINT_WHITE);
+                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
-                p.rrect(r, rad, rad, theme::CARD_PLACEHOLDER);
+                p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
             }
         }
-    }
-    if decor {
-        p.focus_sheen(r, rad, 1.0);
     }
 }
 
@@ -75,7 +68,9 @@ pub(crate) const DISC_ICON_RATIO: f32 = 0.54;
 /// the focus treatment (soft drop-shadow + top sheen) when `focused` (the caller owns the `scale`
 /// spring).
 pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int), radius: f32, focused: bool, scale: f32) {
-    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, true);
+    // pop factor from the caller's scale spring (0 at rest → 1 at full focus scale) drives the folded shadow
+    let f = if focused { ((scale - 1.0) / (CARD_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
+    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
 }
 
 /// read a NUL-terminated C-string field into a Rust String (the shared cbuf reader)

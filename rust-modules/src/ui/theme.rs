@@ -173,17 +173,28 @@ pub const CARD_RING_PAD_STRIP: f32 = 6.0;
 /// Focus-ring corner radius.
 pub const CARD_RING_RAD: f32 = 14.0;
 
-// ── Focused-card treatment (Home Screen.dc.html): a lifted card = soft drop shadow BEHIND + a top
-// specular sheen OVER, replacing the old glow ring. Applied to every focused tile incl. circles. ──
-/// Top specular sheen over a focused tile face — a soft top-lit gloss that fades to nothing down the
-/// card (the design's `inset 0 1px 0 rgba(255,255,255,.28)` top catch-light). Alpha is the top stop;
-/// the bottom stop is the same rgb at alpha 0. Ramped by the focus pop at the call site.
-pub const CARD_SHEEN: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
-/// Drop-shadow ink under a focused/raised card — pure black (the design's `rgba(0,0,0,…)`), alpha
-/// supplied per call (× focus ramp). Its own token (not `scrim_black`) so it can be tuned alone.
-pub const CARD_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
-/// Focused-card drop-shadow penumbra (px) and downward offset (px) — the CAPS on the tile-scaled
-/// values. Kept subtle: on the `SURFACE_APP` gray shelf a tight, close shadow already reads, so this
-/// is a gentle lift, not the design's oversized `0 30px 70px` pool.
+// ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus
+// pop + a 1px perimeter edge-sheen, both FOLDED into the tile's own draw pass (FS_IMG for textured
+// tiles, FS_SRC for skeleton/chip fills), replacing the old glow ring. Applies to circles too. ──
+// The edge-sheen is a single thin rounded-rect stroke flush around the whole perimeter (following the
+// corner radius), CONSTANT strength on every tile — NOT a gloss/wash over the card face.
+/// The 1px perimeter edge-highlight on a tile (white, faintly translucent).
+pub const CARD_SHEEN: [f32; 4] = [1.0, 1.0, 1.0, 0.22];
+/// Stroke width (px) of the perimeter edge-highlight.
+pub const CARD_SHEEN_W: f32 = 1.0;
+/// Drop-shadow ink under a raised card — pure black (the design's `rgba(0,0,0,…)`), alpha supplied per
+/// call (× the resting→lifted focus ramp). Only the alpha/rgb matter for the folded card shadow (the
+/// rgb is used by the chip's standalone shadow); its own token (not `scrim_black`) so it can be tuned alone.
+pub const CARD_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.40];
+/// Focused (LIFTED) card drop-shadow penumbra (px) and downward offset (px) — the CAPS on the
+/// tile-scaled values. Kept subtle: on the `SURFACE_APP` gray shelf a tight, close shadow already
+/// reads, so this is a gentle lift, not the design's oversized `0 30px 70px` pool.
 pub const CARD_SHADOW_BLUR: f32 = 30.0;
 pub const CARD_SHADOW_DY: f32 = 12.0;
+/// RESTING (unfocused) drop-shadow caps — every tile carries a small, tight shadow so it sits CLOSE
+/// to the shelf; on focus the blur/offset/alpha lerp UP to the lifted values above, so the tile reads
+/// as rising off the background. Caps on the tile-scaled resting values.
+pub const CARD_SHADOW_REST_BLUR: f32 = 11.0;
+pub const CARD_SHADOW_REST_DY: f32 = 4.0;
+/// Resting shadow ink alpha (unfocused); lerps up to [`CARD_SHADOW`]'s alpha on focus.
+pub const CARD_SHADOW_REST_A: f32 = 0.34;

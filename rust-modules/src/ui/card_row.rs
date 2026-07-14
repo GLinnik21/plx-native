@@ -177,7 +177,12 @@ pub(crate) fn title_lift(row: &CardRow, focused: Option<usize>, sty: &RowStyle, 
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
 /// already-scaled rect; `s` scales the corner radius. (The home grid's non-focused cell, verbatim.)
 pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle, resume: Option<f32>) {
-    card(p, rect, art, sty.tile_radius(rect, s), false, 1.0, false);
+    let rad = sty.tile_radius(rect, s);
+    // every tile carries a resting shadow + 1px perimeter stroke, both FOLDED into card()'s single
+    // composite pass; a near-neighbour mid-pop (s slightly >1) lifts smoothly toward the focused
+    // shadow via `f`.
+    let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
+    card(p, rect, art, rad, false, 1.0, f);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac);
     }
@@ -198,16 +203,14 @@ pub(crate) fn draw_focused(
     caption: *const c_char,
 ) {
     let rad = sty.tile_radius(rect, s);
-    // Home Screen focus treatment: a soft drop-shadow BEHIND + a top sheen OVER, ramped in with the
-    // pop, replacing the old glow ring. `f` = the same 0→1 pop scalar the ring used.
+    // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
+    // single composite pass and ramped in with the pop `f` (the same 0→1 pop scalar the ring used).
     let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
-    p.focus_shadow(rect, rad, f);
-    card(p, rect, art, rad, false, 1.0, false);
-    p.focus_sheen(rect, rad, f);
+    card(p, rect, art, rad, false, 1.0, f);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac);
     }
-    let mut ty = rect.y + rect.h + 12.0;
+    let mut ty = rect.y + rect.h + 28.0; // breathing room under the poster before the title/caption
     if !title.is_null() {
         under_label(p, rect, sty, title, ty, theme::size::LABEL, 1, theme::TEXT_PRIMARY);
         ty += 34.0;

@@ -717,19 +717,18 @@ fn draw_chip(p: Painter) {
     // chip is a real focus stop (UP from the hero action row) — the same lifted-card focus treatment
     // as the shelf tiles: soft drop-shadow behind the avatar, top sheen over it.
     let focused = hero_focus() == -1 && snap_pos() < 0.5;
-    if focused {
-        p.focus_shadow(r, d * 0.5, 1.0);
-    }
+    // resting shadow + perimeter stroke always; lift the shadow when focused (same as the shelf tiles)
+    p.focus_shadow(r, d * 0.5, if focused { 1.0 } else { 0.0 });
     let mut drew = false;
     if !thumb_c.as_bytes().is_empty() {
         let t = resolve_tex(thumb_c.as_ptr(), 128, 128, 0);
         if t != 0 {
-            p.tex(t, r, d * 0.5, theme::TINT_WHITE);
+            p.tex_stroked(t, r, d * 0.5, theme::TINT_WHITE);
             drew = true;
         }
     }
     if !drew {
-        p.rect(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL, 0.0);
+        p.rect_sheened(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL);
         if initial_c.as_bytes().is_empty() {
             // signed out (no session) — a generic person glyph; the menu behind it offers Sign in
             crate::ui::icons::draw(p, crate::ui::icons::Icon::User, r.inset(14.0), theme::TEXT_SECONDARY);
@@ -737,9 +736,6 @@ fn draw_chip(p: Painter) {
             let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, y + d * 0.5);
             p.text(initial_c.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
         }
-    }
-    if focused {
-        p.focus_sheen(r, d * 0.5, 1.0);
     }
 }
 
