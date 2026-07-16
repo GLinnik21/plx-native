@@ -24,6 +24,18 @@ pub(crate) fn dur_long(ms: i64) -> String {
     }
 }
 
+/// Time-remaining for a Continue-Watching item — "8 min left" / "1 hr 2 min left" (rounded up to
+/// the next whole minute, floored at 1). `remaining_ms` is duration − viewOffset.
+pub(crate) fn time_left(remaining_ms: i64) -> String {
+    let mins = ((remaining_ms + 59_999) / 60_000).max(1);
+    let (h, m) = (mins / 60, mins % 60);
+    if h > 0 {
+        format!("{h} hr {m} min left")
+    } else {
+        format!("{m} min left")
+    }
+}
+
 /// Playback clock — "1:23:45" past the hour, else "3:45" (scrubber clocks, chapter stamps).
 pub(crate) fn clock(ms: i64) -> String {
     let s = (ms / 1000).max(0);

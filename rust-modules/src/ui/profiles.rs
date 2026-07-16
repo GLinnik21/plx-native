@@ -171,7 +171,7 @@ pub fn draw() {
         let base = Rect::new(cx - sty.w * 0.5, ROW_Y, sty.w, sty.h);
         // fold the ui::press click dip into the focused avatar's pop (1.0 when idle)
         let sc = s.row.scale(i) * crate::ui::press::scale();
-        card_row::draw_focused(p, Art::Thumb { key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, std::ptr::null(), std::ptr::null());
+        card_row::draw_focused(p, Art::Thumb { key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, std::ptr::null(), std::ptr::null(), false);
         draw_name(p, u, cx, true);
     }
 
