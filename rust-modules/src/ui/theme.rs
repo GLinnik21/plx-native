@@ -147,8 +147,11 @@ pub const RAIL_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
 pub const RAIL_BUFFERED: [f32; 4] = [1.0, 1.0, 1.0, 0.28];
 /// Played/filled portion of a rail.
 pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
-/// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent).
+/// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent). `#fab82e`.
 pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
+/// Unfilled track behind the Continue-Watching resume bar — the full-bleed card-bottom rail. A
+/// hair lighter than the player scrubber's so the amber reads against a bright poster.
+pub const RESUME_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.22];
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = [0.92, 0.32, 0.29, 1.0];

@@ -433,7 +433,6 @@ impl View for Grid {
                     p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, theme::size::HEADLINE, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
                 }
             }
-            let cw_row = crate::pms::hub_is_continue(r); // Continue Watching: tiles play directly
             for c in 0..crate::pms::hub_len(r) {
                 if r == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
                     continue; // focused card drawn last (grid z-order)
@@ -448,9 +447,6 @@ impl View for Grid {
                 let rect = Rect::new(x, row_y + CARD_DY, CARD_W, CARD_H).scaled(s);
                 let resume = resume_frac(mm);
                 card_row::draw_tile(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume);
-                if cw_row {
-                    card_row::play_hint(p, rect, cw_hint_label(mm), resume.is_some());
-                }
             }
         }
         // PASS 2 — the single focused card + ring + metadata (title / "S1 • E8" / year), drawn
@@ -466,16 +462,13 @@ impl View for Grid {
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
             let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
             let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
+            let cw = crate::pms::hub_is_continue(r); // Continue Watching: amber ▶ + "show · X min left"
             let title = m.map(|mm| mm.title.as_ptr() as *const c_char).unwrap_or(std::ptr::null());
-            let caption = m.and_then(focused_caption); // keep the CString alive through the draw
+            // keep the CString alive through the draw
+            let caption = m.and_then(|mm| if cw { cw_caption(mm) } else { focused_caption(mm) });
             let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
             let resume = m.and_then(resume_frac);
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr);
-            if crate::pms::hub_is_continue(r) {
-                if let Some(mm) = m {
-                    card_row::play_hint(p, rect, cw_hint_label(mm), resume.is_some());
-                }
-            }
+            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr, cw);
         }
     }
 }
@@ -497,14 +490,30 @@ fn focused_caption(m: &PmsMovie) -> Option<CString> {
     CString::new(s).ok()
 }
 
-/// Continue-Watching badge caption: a next-up episode (no resume point yet) says "Next episode"
-/// next to the play glyph; an in-progress item gets the glyph alone (the resume bar tells the rest).
-fn cw_hint_label(m: &PmsMovie) -> *const c_char {
-    if m.kind == 3 && m.resume_ms == 0 {
-        c"Next episode".as_ptr()
+/// The focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
+/// "<show> · 8 min left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
+/// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
+fn cw_caption(m: &PmsMovie) -> Option<CString> {
+    let n = m.show_title.iter().position(|&b| b == 0).unwrap_or(m.show_title.len());
+    let show = std::str::from_utf8(&m.show_title[..n]).unwrap_or("");
+    let s = if m.resume_ms > 0 && m.dur_ns > 0 {
+        let left = crate::ui::fmt::time_left(m.dur_ns / 1_000_000 - m.resume_ms);
+        if m.kind == 3 && !show.is_empty() {
+            format!("{show} \u{00b7} {left}")
+        } else {
+            left // a resumed movie: time-remaining alone
+        }
+    } else if m.kind == 3 {
+        // next-up episode: no resume point, so no bar and no time — just the "New episode" cue
+        if show.is_empty() {
+            "New episode".to_string()
+        } else {
+            format!("{show} \u{00b7} New episode")
+        }
     } else {
-        std::ptr::null()
-    }
+        return None;
+    };
+    CString::new(s).ok()
 }
 impl Grid {
     fn new() -> Self {

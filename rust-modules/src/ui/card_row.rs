@@ -184,7 +184,7 @@ pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle
     let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
     card(p, rect, art, rad, false, 1.0, f);
     if let Some(frac) = resume {
-        resume_bar(p, rect, frac);
+        resume_bar(p, rect, frac, rad);
     }
 }
 
@@ -201,6 +201,7 @@ pub(crate) fn draw_focused(
     resume: Option<f32>,
     title: *const c_char,
     caption: *const c_char,
+    play_glyph: bool,
 ) {
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
@@ -208,11 +209,21 @@ pub(crate) fn draw_focused(
     let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
     card(p, rect, art, rad, false, 1.0, f);
     if let Some(frac) = resume {
-        resume_bar(p, rect, frac);
+        resume_bar(p, rect, frac, rad);
     }
-    let mut ty = rect.y + rect.h + 28.0; // breathing room under the poster before the title/caption
+    // The label block anchors to the UNSCALED card bottom (rect is scaled about its center, so
+    // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
+    // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
+    // the label into the next shelf's title.
+    let mut ty = rect.y + rect.h * 0.5 + (rect.h / s) * 0.5 + 30.0;
     if !title.is_null() {
-        under_label(p, rect, sty, title, ty, theme::size::LABEL, 1, theme::TEXT_PRIMARY);
+        // Continue-Watching's focused primary line leads with an amber play glyph (the tile has no
+        // play disc); every other shelf keeps the plain centred title.
+        if play_glyph {
+            play_label(p, rect, sty, title, ty);
+        } else {
+            under_label(p, rect, sty, title, ty, theme::size::LABEL, 1, theme::TEXT_PRIMARY);
+        }
         ty += 34.0;
     }
     if !caption.is_null() {
@@ -242,39 +253,50 @@ fn under_label(
     }
 }
 
-/// Bottom-right "plays on OK" affordance for Continue-Watching tiles: a small scrim disc with a
-/// play glyph, plus an optional caption pill to its left (`label`, e.g. "Next episode"; pass null
-/// for the glyph alone). `above_bar` lifts the badge clear of the resume bar when one is drawn.
-/// A leaf like [`resume_bar`] — callers stamp it after `draw_tile`/`draw_focused` on the tiles of
-/// a directly-playable shelf.
-pub(crate) fn play_hint(p: Painter, r: Rect, label: *const c_char, above_bar: bool) {
-    let d = 36.0f32;
-    let m = 10.0f32;
-    let bx = r.x + r.w - d - m;
-    let by = r.y + r.h - d - if above_bar { m + 11.0 } else { m };
-    p.rect(Rect::new(bx, by, d, d), d * 0.5, theme::scrim_black(0.62), theme::scrim_black(0.62), 0.0);
-    let s = (d * crate::ui::widgets::DISC_ICON_RATIO).round();
+/// The focused Continue-Watching card's primary line: an amber play triangle followed by the
+/// episode/movie name, the [icon + gap + name] group centred under the tile (Home Screen.dc — the
+/// play affordance lives here, not as a disc on the poster). Left-aligns the name after the glyph
+/// and keeps the whole group inside the screen edges.
+fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32) {
+    let (sz, bold) = (theme::size::LABEL, 1);
+    let isz = (sz as f32 * 0.72).round();
+    let gap = 10.0f32;
+    let budget = rect.w + 2.0 * sty.gap - (isz + gap);
+    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+    let short = crate::text::elide(&s, budget, sz, bold, false);
+    let Ok(tc) = std::ffi::CString::new(short) else { return };
+    let tw = crate::text::text_width(tc.as_ptr(), sz, bold);
+    let gw = isz + gap + tw;
+    let cx = rect.cx().clamp(gw * 0.5 + 16.0, SCR_W - gw * 0.5 - 16.0);
+    let gl = cx - gw * 0.5;
+    let (ct, cb) = crate::text::text_cap_band(sz, bold);
+    let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
     crate::ui::icons::draw(
         p,
         crate::ui::icons::Icon::Play,
-        Rect::new(bx + (d - s) * 0.5 + 1.0, by + (d - s) * 0.5, s, s),
-        theme::TEXT_PRIMARY,
+        Rect::new(gl, icy - isz * 0.5, isz, isz),
+        theme::RESUME_FILL,
     );
-    if !label.is_null() {
-        let lw = crate::text::text_width(label, theme::size::CAPTION, 0);
-        let ph = 28.0f32;
-        let pill = Rect::new(bx - 8.0 - lw - 20.0, by + (d - ph) * 0.5, lw + 20.0, ph);
-        p.rrect(pill, ph * 0.5, ph * 0.5, theme::scrim_black(0.62));
-        let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, pill.y + ph * 0.5);
-        p.text(label, pill.x + 10.0, ty, theme::size::CAPTION, theme::TEXT_PRIMARY, 0, 0);
-    }
+    p.text(tc.as_ptr(), gl + isz + gap, y, sz, theme::TEXT_PRIMARY, 0, bold);
 }
 
-/// resume bar along a card bottom (Continue Watching); `frac` is the played fraction 0..1.
-fn resume_bar(p: Painter, r: Rect, frac: f32) {
-    let bh = 5.0f32;
-    let (bx, bw) = (r.x + 8.0, r.w - 16.0);
-    let by = r.y + r.h - bh - 8.0;
-    p.rrect(Rect::new(bx, by, bw, bh), bh * 0.5, bh * 0.5, theme::RAIL_BUFFERED);
-    p.rrect(Rect::new(bx, by, bw * frac, bh), bh * 0.5, bh * 0.5, theme::RESUME_FILL);
+/// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). The mock draws
+/// two square-ended edge-to-edge strips clipped by the card's rounded rect (CSS overflow:hidden),
+/// so the strip ends FOLLOW the bottom-corner arcs — the amber fill visibly wraps the corner.
+/// Reproduced with the GL scissor: clip to the bottom band, then fill the card-shaped rounded rect
+/// in the bar colors. `frac` is the played fraction 0..1; `rad` is the card's corner radius.
+fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
+    // 5px at rest (rides the focus pop): the band's bottom ~1.5px are the card edge's own SDF AA
+    // ramp, so a 4px band reads ~2.5px — 5px leaves the mock's ~4px of solid color.
+    let bh = (r.h * 5.0 / 375.0).max(4.0);
+    let band = Rect::new(r.x, r.y + r.h - bh, r.w, bh);
+    p.clip(band);
+    p.rect(r, rad, theme::RESUME_TRACK, theme::RESUME_TRACK, 0.0);
+    if frac * r.w >= 1.0 {
+        // the fill: same card-shaped fill, scissored to the played fraction (a subset of the band,
+        // so the second clip simply replaces the first) — square progress edge, corner-arc left end
+        p.clip(Rect::new(band.x, band.y, band.w * frac, bh));
+        p.rect(r, rad, theme::RESUME_FILL, theme::RESUME_FILL, 0.0);
+    }
+    p.clip_clear();
 }
