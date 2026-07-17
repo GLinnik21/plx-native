@@ -26,47 +26,23 @@ pub(crate) fn take_card_stats() -> (u32, u32) {
 /// so the falloff has geometry to fade into. 1px exactly covers the band's outer half.
 const AA_BLEED: f32 = 1.0;
 
-const VS_SRC: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_rect;\nuniform vec2 u_screen;\nvarying vec2 v_uv;\nvoid main(){\n  v_uv = a_pos;\n  vec2 px = u_rect.xy + a_pos * u_rect.zw;\n  vec2 ndc = px / u_screen * 2.0 - 1.0;\n  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}\n";
-// Also carries the focus edge-sheen (`u_rimw`/`u_rimcol`, additive like the focus ring) so a rounded
-// FILL can draw the 1px perimeter stroke in its own pass — same fold as FS_IMG, for the skeleton/chip
-// tiles that have no texture. Disabled by `u_rimcol.a == 0` (the default from draw_rect/draw_rrect).
-//
-// PRECISION (all three SDF shaders — FS_SRC/FS_SHADOW/FS_IMG): the varying + every op that carries
-// pixel COORDINATES must be `highp`. Midgard interpolates mediump varyings in fp16, whose error
-// grows with quad size — on card-sized quads it wobbles the SDF distance by ~0.1-0.5px along a
-// straight edge, dashing the 1px AA/rim rows into a "ribbed" edge (deterministic, worst on the
-// resume bar's full-card quad; verified on-device by pixel-diffing captures). Texture coordinates
-// on wide 1:1 quads need it too: fp16 `v_cuv` is ~1 texel off at the right of a 1920px backdrop
-// (GL_LINEAR then blurs/skips texel columns), so it is highp as well — same in text.rs's `v_tuv`.
-// The color path stays mediump, and the stored `d` may drop back to mediump (fp16 is exact near 0;
-// the cancellation happens inside the highp sdBox).
-const FS_SRC: &CStr = c"precision mediump float;\nvarying highp vec2 v_uv;\nuniform highp vec2 u_size;\nuniform highp float u_pad;\nuniform highp float u_radius;\nuniform vec4 u_colTop;\nuniform vec4 u_colBot;\nuniform float u_focus;\nuniform highp float u_radR;\nuniform float u_rimw;\nuniform vec4 u_rimcol;\nhighp float sdBox(highp vec2 p, highp vec2 b, highp float r){\n  highp vec2 q = abs(p) - b + vec2(r);\n  return length(max(q,0.0)) + min(max(q.x,q.y),0.0) - r;\n}\nvoid main(){\n  float vy = v_uv.y;\n  if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {\n    gl_FragColor = mix(u_colTop, u_colBot, vy);\n    return;\n  }\n  highp vec2 p = (v_uv - 0.5) * u_size;\n  highp vec2 hsz = u_size * 0.5 - vec2(u_pad);\n  highp float rad = (p.x > 0.0) ? u_radR : u_radius;\n  float d = sdBox(p, hsz, rad);\n  vec4 fill = mix(u_colTop, u_colBot, vy);\n  float aFill = 1.0 - smoothstep(-1.0, 1.0, d);\n  vec3 rgb = fill.rgb * aFill;\n  float a = aFill * fill.a;\n  float rim = smoothstep(-u_rimw - 0.75, -u_rimw + 0.75, d) * (1.0 - smoothstep(-0.5, 0.5, d)) * u_rimcol.a;\n  rgb += u_rimcol.rgb * rim;\n  a = max(a, rim);\n  if (u_focus > 0.001) {\n    float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;\n    float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);\n    rgb += vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow;\n    a = max(a, max(ring, glow));\n  }\n  gl_FragColor = vec4(rgb, a);\n}\n";
-const FS_AMBIENT: &CStr = c"precision mediump float;\nvarying vec2 v_uv;\nuniform vec4 u_atl, u_atr, u_abr, u_abl;\nvoid main(){\n  vec3 top = mix(u_atl.rgb, u_atr.rgb, v_uv.x);\n  vec3 bot = mix(u_abl.rgb, u_abr.rgb, v_uv.x);\n  gl_FragColor = vec4(mix(top, bot, v_uv.y), 1.0);\n}\n";
-// Soft drop-shadow: an analytic SDF penumbra (one smoothstep, no gaussian/FBO). The quad is the
-// card box inflated by `u_blur` on every side; `hsz` shrinks the solid core back to the card size so
-// the blur band falls off OUTWARD over `u_blur` px. Its own program (like the #77 text-fade split) so
-// the hot fill shader FS_SRC pays nothing. Used for the lifted-card focus shadow (ui::press replaced
-// the old glow ring with soft-shadow + sheen). Circle = radius w/2.
-const FS_SHADOW: &CStr = c"precision mediump float;\nvarying highp vec2 v_uv;\nuniform highp vec2 u_size;\nuniform highp float u_radius;\nuniform highp float u_blur;\nuniform highp float u_off;\nuniform vec4 u_col;\nhighp float sdBox(highp vec2 p, highp vec2 b, highp float r){ highp vec2 q=abs(p)-b+vec2(r); return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  highp vec2 p = (v_uv - 0.5) * u_size;\n  highp vec2 hsz = max(u_size*0.5 - vec2(u_blur), vec2(0.0));\n  highp vec2 pp = abs(p - vec2(0.0, -u_off));\n  if (all(lessThan(pp, hsz - vec2(u_radius + 1.0)))) discard;\n  float d = sdBox(p, hsz, min(u_radius, min(hsz.x, hsz.y)));\n  float a = (1.0 - smoothstep(-u_blur, u_blur, d)) * u_col.a;\n  gl_FragColor = vec4(u_col.rgb, a);\n}\n";
-// VS hoists the two per-fragment affine terms to interpolated varyings (correct — both are affine in
-// a_pos): `v_cuv` = the texture UV remapped to the inner card sub-rect (u_uvscale = quad/card size,
-// 1.0 when pad==0 ⇒ v_cuv == a_pos for the flat path), `v_p` = card-local pixel coords for the SDF.
-const VS_IMG: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nuniform vec2 u_uvscale;\nvarying vec2 v_cuv;\nvarying vec2 v_p;\nvoid main(){\n  v_cuv = (a_pos - 0.5) * u_uvscale + 0.5;\n  v_p = (a_pos - 0.5) * u_trect.zw;\n  vec2 px = u_trect.xy + a_pos * u_trect.zw;\n  vec2 ndc = px / u_tscreen * 2.0 - 1.0;\n  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}\n";
-// The tile texture shader is the whole CARD COMPOSITE — texture + the 1px focus edge-sheen
-// (`u_rimw`/`u_rimcol`) + a soft SYMMETRIC drop-shadow (`u_ch`/`u_shinv`/`u_shcol`) — all in ONE pass.
-// Perf (Mali-T820, per the perf review): (1) an INTERIOR EARLY-OUT — ~85% of a card's fragments are
-// strictly inside the rounded rect (`d < -2`) where rim/AA/shadow are all zero, so they skip the 4
-// smoothsteps; on this per-thread tiler the branch genuinely saves the ALU. (2) UV remap + card-local
-// `p` are interpolated varyings, not per-fragment math. (3) the uniform-only terms (card half-size
-// `u_ch`, shadow `u_shinv = 0.5/blur`) are folded on the CPU (Midgard has no uniform pre-shader).
-// (4) the 1px rim is a single-op triangle — and its width must stay ≤1px: the triangle hits exactly
-// 0 at d=-2, which is what makes the d<-2 early-out seamless (a wider rim would be hard-cut there).
-// The shadow `sh = smoothstep(clamp(0.5 - d/(2·blur)))` is
-// algebraically identical to `1 - smoothstep(-blur, blur, d)`. `rgb = tex*m` premultiplies coverage
-// (so a rounded texture's ~1px AA edge is very slightly darker under straight-alpha blend — accepted).
-// Full-screen art (radius 0) takes the flat fast-path.
-const FS_IMG: &CStr = c"precision mediump float;\nvarying highp vec2 v_cuv;\nvarying highp vec2 v_p;\nuniform sampler2D u_tex;\nuniform vec4 u_tint;\nuniform highp float u_iradius;\nuniform float u_rimw;\nuniform vec4 u_rimcol;\nuniform highp vec2 u_ch;\nuniform float u_shinv;\nuniform vec4 u_shcol;\nhighp float sdBox(highp vec2 p, highp vec2 b, highp float r){ highp vec2 q=abs(p)-b+vec2(r);\n  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\nvoid main(){\n  vec4 c = texture2D(u_tex, v_cuv);\n  vec3 tex = c.rgb*u_tint.rgb;\n  float ta = c.a*u_tint.a;\n  if (u_iradius < 0.5) { gl_FragColor = vec4(tex, ta); return; }\n  float d = sdBox(v_p, u_ch, u_iradius);\n  if (d < -2.0) { gl_FragColor = vec4(tex, ta); return; }\n  float m = 1.0 - smoothstep(-1.0, 1.0, d);\n  float rim = max(0.0, 1.0 - abs(d + u_rimw)) * u_rimcol.a;\n  tex = mix(tex, u_rimcol.rgb, rim);\n  float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);\n  sh = sh*sh*(3.0 - 2.0*sh) * u_shcol.a * (1.0 - m);\n  gl_FragColor = vec4(tex*m, ta*m + sh);\n}\n";
+// Shader sources live in `shaders/*.vert`/`*.frag`, embedded at compile time (`include_str!`) so
+// the binary stays self-contained — nothing is loaded at runtime. Each file carries its own docs;
+// the family-wide highp/mediump rule is the PRECISION note in `shaders/fs_src.frag`.
+macro_rules! glsl {
+    ($file:literal) => {
+        // SAFETY: GLSL sources contain no interior NUL; concat! appends the terminator.
+        unsafe { ::std::ffi::CStr::from_bytes_with_nul_unchecked(concat!(include_str!($file), "\0").as_bytes()) }
+    };
+}
+pub(crate) use glsl;
 
+const VS_SRC: &CStr = glsl!("shaders/vs_src.vert");
+const FS_SRC: &CStr = glsl!("shaders/fs_src.frag");
+const FS_AMBIENT: &CStr = glsl!("shaders/fs_ambient.frag");
+const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
+const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
+const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
