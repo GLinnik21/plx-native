@@ -17,12 +17,15 @@ const APP_FONT_BOLD: &CStr = c"/media/developer/apps/usr/palm/applications/com.b
 const DROIDSANS: &CStr = c"/usr/share/fonts/DroidSans.ttf";
 
 const VS_TEXT: &CStr = c"attribute vec2 a_pos;\nuniform vec4 u_trect;\nuniform vec2 u_tscreen;\nvarying vec2 v_tuv;\nvoid main(){ v_tuv=a_pos; vec2 px=u_trect.xy+a_pos*u_trect.zw;\n  vec2 ndc=px/u_tscreen*2.0-1.0; gl_Position=vec4(ndc.x,-ndc.y,0.0,1.0); }\n";
-const FS_TEXT: &CStr = c"precision mediump float;\nvarying vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tcol;\nvoid main(){ float a=texture2D(u_tex,v_tuv).a; gl_FragColor=vec4(u_tcol.rgb, u_tcol.a*a); }\n";
+// `v_tuv` must be `highp`: string textures are sampled 1:1 with GL_LINEAR, and long lines reach
+// 660-1300px wide — Midgard's fp16 varying interpolation is off by up to ~0.5 texel at that width,
+// unevenly blurring 1px glyph stems along the line (same root cause as the gfx.rs SDF ribbing).
+const FS_TEXT: &CStr = c"precision mediump float;\nvarying highp vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tcol;\nvoid main(){ float a=texture2D(u_tex,v_tuv).a; gl_FragColor=vec4(u_tcol.rgb, u_tcol.a*a); }\n";
 // The FADE variant is a SEPARATE program bound only by draw_text_fade (one caller — the About
 // card's MORE): u_tfade = (from, to) in string-texture uv.x fades the glyph alpha 1→0 across that
 // band. Kept off the shared FS_TEXT so every ordinary glyph doesn't pay the per-fragment smoothstep
 // on this fill-rate-bound panel.
-const FS_TEXT_FADE: &CStr = c"precision mediump float;\nvarying vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tcol;\nuniform vec2 u_tfade;\nvoid main(){ float a=texture2D(u_tex,v_tuv).a;\n  a *= 1.0 - smoothstep(u_tfade.x, u_tfade.y, v_tuv.x);\n  gl_FragColor=vec4(u_tcol.rgb, u_tcol.a*a); }\n";
+const FS_TEXT_FADE: &CStr = c"precision mediump float;\nvarying highp vec2 v_tuv;\nuniform sampler2D u_tex;\nuniform vec4 u_tcol;\nuniform vec2 u_tfade;\nvoid main(){ float a=texture2D(u_tex,v_tuv).a;\n  a *= 1.0 - smoothstep(u_tfade.x, u_tfade.y, v_tuv.x);\n  gl_FragColor=vec4(u_tcol.rgb, u_tcol.a*a); }\n";
 
 // GL enums
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
