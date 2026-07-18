@@ -87,37 +87,17 @@ textures (cached by string+size). Critically-damped springs animate focus scale 
 Fonts are `appfont.ttf` / `appfont-bold.ttf` deployed next to the binary. (Wayland surface setup +
 input decoding live in `system.rs` / `app.rs`, not the C shim — see the gotchas below.)
 
-**Video playback** uses LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
-`BUFFERSTREAM` **buffer-feed** mode, with the decoded sink bound to the hardware video plane
-via **`libAcbAPI` (ACB = App Common Binding)**. The pipeline runs *in our process* so ACB can
-bind the app-owned sink — the earlier URI/out-of-process path (`com.webos.media/load`,
-`start_playback()`) could not, and is kept only as dead-ish reference. `docs/buffer-feed-plan.md`
-records why the pivot happened (it predates the working MKV path — treat it as history, not spec).
-
-**Media pipeline (in-app, all Rust — the `player/` engine + `stream.rs`/`ff.rs`/`aq.rs`):**
-`PMS HTTP GET (raw TCP socket, stream.rs)` → `demux` → `access-unit queue with backpressure
-(aq.rs)` → the pump `Feed()`s each AU to the Starfish pipeline. The demuxer emits Annex-B video
-AUs (param sets prepended at each keyframe) and raw AC3/EAC3/AAC audio frames. **The default
-demuxer is the TV's FFmpeg** (`ff.rs`, libavformat, via a custom AVIO over `stream.rs`); the
-hand-rolled Matroska demuxer (`mkv.rs`) is the **live fallback**, selected with the
-`/tmp/plxnative-demux=mkv` dev trigger, until it's retired (see `docs/ffmpeg-demuxer-plan.md`).
-Also linked and used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the
-raw-socket `stream.rs` can't.
-
-**Threads (spawned by `player/engine.rs`; the pump is `player/pump.rs`, shared state is
-`player/shared.rs` — the old C `g_*` volatiles):**
-- **Main loop** — input, springs, draw, and the pump (drives ACB bind → Play → feed, and handles
-  seeks). All ACB/Starfish control calls happen here.
-- **Demux thread** (`threads::stream_thread`) — opens the part URL, runs the demuxer (`ff.rs` by
-  default, `mkv.rs` fallback), pushes AUs to the queue. Loops for seeks: the pump sets the seek
-  target and closes the socket to interrupt the blocking read; the thread re-opens and resumes
-  (mkv fallback: byte `Range:` + resync to the next Cluster).
-- **Cue-preflight thread** (`threads::cues_thread`) — a second HTTP connection parses just the MKV
-  header to find the Cues element, fetches it by Range, and builds a time→byte index for accurate
-  seeks (falls back to a CBR byte estimate until ready).
-- **Media/load thread** (`threads::load_thread`) — constructs the Starfish object and calls `Load()`
-  (via the `starfish.c` seam), which owns its own GMainContext/loop; callbacks arrive on the
-  library's thread.
+**Video playback (summary — `rust-modules/src/player/CLAUDE.md` is the deep-dive: pipeline,
+threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Read it before
+touching playback):** LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
+`BUFFERSTREAM` **buffer-feed** mode, the decoded sink bound to the hardware video plane via
+**`libAcbAPI` (ACB)** — in-process is what lets ACB bind the app-owned sink. The media pipeline
+is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`/libavformat is the default**;
+`mkv.rs` is the live fallback via `/tmp/plxnative-demux=mkv`) → AU queue with backpressure
+(`aq.rs`) → the pump `Feed()`s the Starfish pipeline. Three worker threads (demux, cue-preflight,
+media/load) sit beside the main loop, which owns all ACB/Starfish control calls. Also linked and
+used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw-socket
+`stream.rs` can't.
 
 ## Key files
 
@@ -126,9 +106,10 @@ raw-socket `stream.rs` can't.
   the Rust `plex_run()`. `src/starfish.c` — the StarfishMediaAPIs C++/ACB seam. `src/svg.c` —
   nanosvg rasterizer. These three are the *entire* C side.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
-  `player/` (buffer-feed engine + worker threads), `ff.rs` (the default libavformat demuxer),
-  `stream.rs`/`mkv.rs`/`aq.rs` (HTTP socket → fallback MKV demux → AU pipeline, ports of the old
-  C headers), `net.rs` (libcurl/TLS), and the Plex data layer.
+  `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
+  playback deep-dive; read it before touching playback**), `ff.rs` (the default libavformat
+  demuxer), `stream.rs`/`mkv.rs`/`aq.rs` (HTTP socket → fallback MKV demux → AU pipeline, ports
+  of the old C headers), `net.rs` (libcurl/TLS), and the Plex data layer.
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
@@ -159,30 +140,15 @@ raw-socket `stream.rs` can't.
   Magic-Remote buttons are matched by these `wcode`s (e.g. PAUSE=72, PLAY=450, BACK=461/482, stop=413,
   D-pad L/R alt 412/417; the wcodes live in `ui/consts.rs`). Preserve this raw-offset reading if you
   touch input.
-- **C-from-C++ Starfish calls** go through `extern … __asm__("<mangled>")`. The object is an
-  over-sized static buffer (`g_smp[65536]`) constructed in place by calling the ctor symbol —
-  **never** hand it to C++ `new`/`delete` (real object size is unknown). Methods returning a
-  `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO) for short replies
-  like `"Ok"`/`"BufferFull"`.
-- **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(g_smp, NULL)`), and in
-  buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
-  collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.
-- **ACB bind order matters** (mirrors Kodi/ss4s): `setSinkType(MAIN)` → `setMediaId` →
-  `setState(LOADED)` → *wait for decoded frames* → `setMediaVideoData(<sourceInfo envelope
-  VERBATIM>)` → `setDisplayWindow` → `setState(PLAYING)`. The payload passed to
-  `setMediaVideoData` is the **whole `sourceInfo` envelope** captured verbatim from the pipeline's
-  callback (`sourceInfoRaw`), not a reconstructed one. Audio is owned by the pipeline — **never**
-  feed audio to ACB (causes SOUND_ERROR_019). `AcbAPI_setMediaVideoData`/`setState`/
-  `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
-  (2-arg calls corrupt memory / segfault).
+- **Starfish/ACB ABI + bind-order rules** (the C++-from-C mangled-symbol seam, `Load` with
+  `uid=NULL`, the exact ACB bind sequence, sourceInfo-verbatim, never feed audio to ACB, the
+  3-arg taskId ABI) — moved to **`rust-modules/src/player/CLAUDE.md`**; read it before touching
+  playback or `src/starfish.c`.
 - **Wayland transparency** (`system.rs`)**:** the UI surface is forced to a 32-bit RGBA config and
   made non-opaque by driving the wayland proxy directly (`wl_proxy_marshal(surface, 4, NULL)` =
   set_opaque_region NULL), re-asserted each frame while playing, so the video plane shows through.
   The TV's SDL is 2.0.4 (no transparency hint). (`sys_grab_wayland` also over-allocates the
   `SDL_SysWMinfo` buffer — the fork writes a larger struct than the headers declare.)
-- **MKV seeking** re-opens the HTTP stream at a byte offset from the Cue index and resyncs to the
-  next Cluster (clusters start on a keyframe). The fed PTS timeline is rebased on the first
-  post-seek keyframe so the pipeline never sees a jump (`g_pts_shift`, `g_rebase_pending`).
 - **Deploy uses a tmp+mv dance** (`plxnative.new` → `mv`) so scp succeeds while the old binary is
   still executing (avoids `ETXTBSY`). The TV drops to standby after a few idle minutes, so a deploy
   can die mid-scp — when scripting around `make deploy`, md5-compare local vs on-TV binary after
