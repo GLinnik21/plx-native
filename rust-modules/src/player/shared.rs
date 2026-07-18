@@ -8,12 +8,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, 
 use std::sync::Mutex;
 use crate::stream::HttpStream;
 
-#[derive(Clone, Copy)]
-pub(crate) struct CueEnt {
-    pub t_ns: i64,
-    pub byte: i64,
-} // was struct cue_ent
-
 /// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
 /// index it belongs to; the demuxer pushes cues for ALL text tracks and the render filters by
 /// the selected `desired_sub_idx`, so switching tracks is instant (no re-demux of the buffered
@@ -61,7 +55,11 @@ pub(crate) struct Shared {
     pub disp_base: AtomicI64,
 
     // main/pump (M) -> demux (D)
-    pub seek_byte: AtomicI64,                 // g_seek_byte (-1 = none)
+    // reopen trigger (-1 = none): any >=0 value tells the demux outer loop to reopen —
+    // on next_url if set (transcode seek/switch), else the same part URL (direct-play
+    // in-place seek; the actual target rides in seek_to_ns). Was the byte offset for
+    // the retired byte-Range seek; ff seeks by time, so only the trigger role remains.
+    pub seek_byte: AtomicI64,
     pub seek_to_ns: AtomicI64,                // direct-play demux seek target ns (-1=none); pump -> ff demux
     // the in-place seek's target content-ns, for the feed's rebase guard (drop stale drifted
     // keyframes). Distinct from seek_to_ns (which the demuxer consumes on reopen). -1 = none.
@@ -71,8 +69,9 @@ pub(crate) struct Shared {
     // wobble through the reopen/rebase. -1 display = not loading.
     pub seeking: AtomicBool,
     pub seek_display_ns: AtomicI64,
-    // a transcode SEEK re-points the demux at a NEW start.mkv?&offset= URL (a live
-    // transcode has no byte-Cues); byte-Range seeks leave this None. Taken on re-open.
+    // the URL for the demux outer loop's next re-open: a transcode seek/switch points it
+    // at a NEW start.mkv?&offset= URL; an in-place direct-play seek re-points it at the
+    // SAME part URL (the time target rides in seek_to_ns). Taken on re-open.
     pub next_url: Mutex<Option<String>>,
     // pending audio-track switch: the Plex audioStreamID to switch to (-1 = none). The
     // pump forces a fresh transcode with that source audio at the current position.
@@ -83,10 +82,6 @@ pub(crate) struct Shared {
     // PERSISTS across seeks/reloads (reset only on a new item, not in reset_session).
     pub pending_audio_idx: AtomicI32,
     pub desired_audio_idx: AtomicI32,
-    // the next re-open is a fresh full stream (a switch from direct-play whose track
-    // numbering differs from the transcode output) — re-parse Tracks (mkv_run) not
-    // mkv_seek_run. A plain transcode seek leaves this false (same target = same tracks).
-    pub reparse_next: AtomicBool,
     // pending "re-transcode at the current position with the current audio + subtitle" —
     // set when a subtitle is (de)selected while transcoding, so Plex re-burns (or drops) it.
     pub pending_retranscode: AtomicBool,
@@ -106,16 +101,10 @@ pub(crate) struct Shared {
     // has been presented). app.rs polls player::ended() to tear the player down at the credits.
     pub ended: AtomicBool,
 
-    // cue preflight (C) <-> main (M)
-    pub cues: Mutex<Vec<CueEnt>>,             // g_cues (+ g_ncues = .len())
-    pub cues_ready: AtomicBool,               // g_cues_ready
-    pub cues_abort: AtomicBool,               // g_cues_abort
-
-    // close-to-interrupt handles: raw ptrs to the Engine-owned HttpStream boxes, so
-    // the pump/teardown can close(fd) to unblock a blocked recv. The boxes outlive
-    // the worker threads (Engine drops after join), so the ptrs stay valid.
+    // close-to-interrupt handle: raw ptr to the Engine-owned HttpStream box, so
+    // the pump/teardown can close(fd) to unblock a blocked recv. The box outlives
+    // the worker threads (Engine drops after join), so the ptr stays valid.
     pub hs_ptr: AtomicPtr<HttpStream>,
-    pub hs2_ptr: AtomicPtr<HttpStream>,
 }
 
 impl Shared {
@@ -138,7 +127,6 @@ impl Shared {
             pending_audio_sid: AtomicI64::new(-1),
             pending_audio_idx: AtomicI32::new(-1),
             desired_audio_idx: AtomicI32::new(-1),
-            reparse_next: AtomicBool::new(false),
             pending_retranscode: AtomicBool::new(false),
             report_stop: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
@@ -147,15 +135,10 @@ impl Shared {
             file_size: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             ended: AtomicBool::new(false),
-            cues: Mutex::new(Vec::new()),
-            cues_ready: AtomicBool::new(false),
-            cues_abort: AtomicBool::new(false),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),
-            hs2_ptr: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
-    /// reset per-file state on stop (mirrors the tail of stop_bufferfeed); does NOT
-    /// touch the cue table (that has its own keep_cues rule).
+    /// reset per-file state on stop (mirrors the tail of stop_bufferfeed).
     pub fn reset_session(&self) {
         self.playpos_ns.store(0, Ordering::Relaxed);
         self.pres_fed.store(0, Ordering::Relaxed);
@@ -175,7 +158,6 @@ impl Shared {
         self.pending_audio_idx.store(-1, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
-        self.reparse_next.store(false, Ordering::Relaxed);
         self.pending_retranscode.store(false, Ordering::Relaxed);
         self.report_stop.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
@@ -188,7 +170,6 @@ impl Shared {
         self.duration_ns.store(0, Ordering::Relaxed);
         self.ended.store(false, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
-        self.hs2_ptr.store(std::ptr::null_mut(), Ordering::Release);
     }
 }
 

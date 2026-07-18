@@ -631,7 +631,7 @@ fn scene() -> &'static mut Home {
 }
 
 /// Run an entry-point body panic-guarded so a stray panic degrades to a skipped
-/// frame instead of unwinding into C (matches img/mkv/pms). Main-thread-only.
+/// frame instead of unwinding into C (matches img/pms). Main-thread-only.
 #[inline]
 fn guard(f: impl FnOnce()) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
