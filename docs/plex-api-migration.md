@@ -31,9 +31,14 @@
 >   pre-login boots). `timeline_path` is gone from `threads.rs`; both timeline sites collapse
 >   onto `route::report_timeline` → `Client::timeline` (POST, the spec verb — D-8a resolved:
 >   the old code already POSTed).
-> - **Preserved as-is (quirk, do not "fix" silently):** `retranscode` still sets
->   `TSESSION = "plxnative-{rk}"` while the transcoder QUERY keeps riding `sess()` — stop/
->   is_transcoding key off TSESSION, the server correlation stays on sess().
+> - **Preserved as-is (quirk, verified harmless against the live PMS log 2026-07-19):**
+>   `retranscode` still sets `TSESSION = "plxnative-{rk}"` while the transcoder QUERY keeps
+>   riding `sess()` — stop/is_transcoding key off TSESSION, the server correlation stays on
+>   sess(). The server log shows the **stopped-timeline POST is what actually frees the
+>   encoder** (PMS kills the transcoder job on it, ~200ms before our explicit
+>   `/universal/stop` arrives), so the explicit stop 404s on EVERY teardown — with the
+>   correct uuid or the synthetic id alike. It only matters if playback dies before any
+>   timeline fired; no encoder leak either way.
 >
 > The R1–R6 / T1 / M / P / D sections below are the ORIGINAL plan, kept as history; line
 > numbers reference the pre-migration tree.
