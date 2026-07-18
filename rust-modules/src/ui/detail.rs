@@ -415,28 +415,39 @@ pub(crate) fn move_focus(sym: c_int) {
     }
 }
 
-/// content-space geometry (label x, label width) of the focused season tab — sums the widths of
-/// the tabs before it, mirroring draw_tabs' `x` advance so the scroll target and the draw can't
-/// drift.
+/// ONE source of truth for the season-tab strip's layout: per tab, its index, content-space
+/// label x, label width, and the label CString — the draw pass and the focus/scroll geometry
+/// both walk this, so their x-advance can't drift. A label that can't be a CString (interior
+/// NUL — never in practice) is skipped entirely (not drawn, no advance).
+fn tabs_layout(d: &crate::metadata::Detail) -> Vec<(usize, f32, f32, CString)> {
+    let mut x = MARGIN_X;
+    let mut out = Vec::with_capacity(d.seasons.len());
+    for (i, s) in d.seasons.iter().enumerate() {
+        let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
+        if let Ok(lc) = CString::new(label) {
+            let w = crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1);
+            out.push((i, x, w, lc));
+            x += w + TAB_ADVANCE;
+        }
+    }
+    out
+}
+
+/// content-space geometry (label x, label width) of the focused season tab.
 fn tab_focus_geom() -> (f32, f32) {
     let d = match metadata::current() {
         Some(d) => d,
         None => return (MARGIN_X, 0.0),
     };
     let col = view().col.max(0) as usize;
-    let mut x = MARGIN_X;
-    for (i, s) in d.seasons.iter().enumerate() {
-        let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
-        let w = CString::new(label)
-            .ok()
-            .map(|lc| crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1))
-            .unwrap_or(0.0);
+    let mut x_end = MARGIN_X;
+    for (i, x, w, _lc) in tabs_layout(d) {
         if i == col {
             return (x, w);
         }
-        x += w + TAB_ADVANCE;
+        x_end = x + w + TAB_ADVANCE;
     }
-    (x, 0.0)
+    (x_end, 0.0)
 }
 /// season-tab-row horizontal scroll target: minimal scroll-into-view (the CardRow rule) — move
 /// only when the focused tab's pill (± one tab-gap of context) would clip the viewport; a
@@ -856,27 +867,19 @@ fn draw_tabs(p: Painter) {
     let pt = p.translate(-sx, 0.0);
     // segmented control: the *selected* season carries a subtle pill (bright ACCENT while the tab row
     // is focused); non-selected seasons are plain dim text. (TabPill handles the state → look.)
-    let e = Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 };
-    let mut x = MARGIN_X;
-    for (i, s) in d.seasons.iter().enumerate() {
-        let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
-        let lc = match CString::new(label) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+    let e = Env::inert();
+    for (i, x, w, lc) in tabs_layout(d) {
         let selected = i == d.cur_season;
         let focused = sec == 1 && col == i as c_int;
         // pill sized to the (bold) label — text sits at x, pill padded ±18, tabs advance by label
-        // width + TAB_ADVANCE. The pill fills the block height (TAB_ROW_H == the hero-button CD),
-        // so tabs and buttons read as one control family.
-        let w = crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1);
+        // width + TAB_ADVANCE (see tabs_layout). The pill fills the block height (TAB_ROW_H == the
+        // hero-button CD), so tabs and buttons read as one control family.
         if on_axis(x - 18.0 - sx, w + 36.0, SCR_W, 0.0) {
             crate::ui::widgets::TabPill::new(lc.as_ptr(), theme::size::BODY, Rect::new(x - 18.0, tab_y, w + 36.0, TAB_ROW_H))
                 .segment(selected)
                 .focused(focused)
                 .draw(&e, pt);
         }
-        x += w + TAB_ADVANCE;
     }
 }
 

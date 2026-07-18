@@ -3,7 +3,6 @@
 //! and the profile's token are written here, so every later boot connects straight to the LAN
 //! server over plain HTTP with no internet needed. Lives in the writable app dir (device-only;
 //! never in the repo). The token fields are secrets — this file's contents are never logged.
-#![allow(dead_code)]
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 

@@ -102,7 +102,7 @@ stub/libcurl.so: stub/curl_stub.c
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
 NDK_REL ?= webos-d7ed7ee.6
-NDK_HOST := $(shell uname -m | sed 's/arm64/arm64/;s/x86_64/x86_64/')
+NDK_HOST := $(shell uname -m)
 NDK_TARBALL = arm-webos-linux-gnueabi_sdk-buildroot_darwin-$(NDK_HOST).tar.bz2
 NDK_URL = https://github.com/webosbrew/native-toolchain/releases/download/$(NDK_REL)/$(NDK_TARBALL)
 setup-env:

@@ -1,7 +1,7 @@
-//! plxnative-modules — C modules ported to Rust, linked into the C app (hybrid
-//! migration). Each module exposes the same C ABI its src/*.h declares, so the
-//! remaining C code calls it unchanged. Ported: img, stream, aq, mkv, pms,
-//! posters, text, gfx, system, ui_home.
+//! plxnative-modules — the Rust app core, built as a staticlib and linked into the C
+//! boot shim. The crate's C surface is tiny: C calls `plex_run` (app.rs) and forwards
+//! the two starfish callbacks (`sf_on_event`/`acb_on_event`, player/mod.rs); everything
+//! else is Rust-internal (the per-module `repr(C)` shapes are migration legacy, not ABI).
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
 mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
@@ -13,7 +13,7 @@ mod metadata; // item detail data layer (detail page): full metadata + seasons/e
 mod mkv;
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 mod player; // buffer-feed video engine (was playback.c) — step 5
-mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (unused; call sites migrate later)
+mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)
 mod pms;
 mod posters;
 mod route; // play_movie route selection (direct-play vs transcode) — step 3

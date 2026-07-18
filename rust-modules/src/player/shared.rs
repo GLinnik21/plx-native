@@ -110,7 +110,6 @@ pub(crate) struct Shared {
     pub cues: Mutex<Vec<CueEnt>>,             // g_cues (+ g_ncues = .len())
     pub cues_ready: AtomicBool,               // g_cues_ready
     pub cues_abort: AtomicBool,               // g_cues_abort
-    pub segment_pos: AtomicI64,               // g_segment_pos
 
     // close-to-interrupt handles: raw ptrs to the Engine-owned HttpStream boxes, so
     // the pump/teardown can close(fd) to unblock a blocked recv. The boxes outlive
@@ -151,7 +150,6 @@ impl Shared {
             cues: Mutex::new(Vec::new()),
             cues_ready: AtomicBool::new(false),
             cues_abort: AtomicBool::new(false),
-            segment_pos: AtomicI64::new(0),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),
             hs2_ptr: AtomicPtr::new(std::ptr::null_mut()),
         }
@@ -229,8 +227,7 @@ impl Transport {
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Stage {
-    Idle = 0,
-    Loading,
+    Loading = 0,
     Playing,
     Bound,
     Streaming,

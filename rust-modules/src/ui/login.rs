@@ -61,7 +61,7 @@ pub fn draw() {
     let p = Painter::root();
     p.rect(Rect::FULL, 0.0, theme::SURFACE_APP, theme::SURFACE_APP, 0.0);
     let s = scene();
-    let env = Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 };
+    let env = Env::inert();
 
     match auth::phase() {
         Phase::Waiting => draw_waiting(p, &env, s),

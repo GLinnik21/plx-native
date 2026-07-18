@@ -168,12 +168,10 @@ pub const BADGE_FILL: [f32; 4] = [0.86, 0.88, 0.92, 0.20];
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
 pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-// ── Focus-ring geometry (the ring *color* is shader-baked in gfx.rs; only geometry is tunable) ──
-// The hero-grid card's wide glow uses `consts::GLOW_PAD` (shared with off-screen culling, so it has
-// one home there); the tile/strip cards (shelf / related / episode / chapters) use these:
-/// Strip/tile card focus-ring inflation (tight ring around a shelf/related/episode tile).
-pub const CARD_RING_PAD_STRIP: f32 = 6.0;
-/// Focus-ring corner radius.
+// ── Card-glow geometry (the glow *color* is shader-baked in gfx.rs's FS_SRC/FS_IMG; only geometry
+// is tunable). The hero-grid card's wide glow pad is `consts::GLOW_PAD` (shared with off-screen
+// culling, so it has one home there).
+/// Card corner radius (tiles/shelves — `CardRow`'s rounded rect + its baked focus glow follow it).
 pub const CARD_RING_RAD: f32 = 14.0;
 
 // ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus

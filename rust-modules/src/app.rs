@@ -412,6 +412,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // silence incident); short enough that a single tap still feels immediate.
         const TAP_COMMIT_MS: u32 = 450;
         const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+        // HUD auto-hide: how long the HUD lingers after the input that raised it.
+        const HUD_LINGER_MS: u32 = 4500; // plain transport/nav input
+        const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter nav) — longer read time
+        const HUD_HEADLESS_MS: u32 = 60_000; // autoplay/headless runs pin the HUD up for capture
         let mut bg_was_playing = false;
         let mut bg_was_paused = false;
         let mut bg_pos = 0i64;
@@ -678,7 +682,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             let started = crate::player::start_bufferfeed();
                             if started {
                                 route = Route::Player { overlay: Overlay::None };
-                                set_hud(SDL_GetTicks() + 4500);
+                                set_hud(SDL_GetTicks() + HUD_LINGER_MS);
                                 set_resume_pend(bg_was_paused);
                             }
                         }
@@ -808,11 +812,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             held_sym = sym;
                             held_since = last_input;
                             last_rep = last_input;
-                            set_hud(last_input + 8000);
+                            set_hud(last_input + HUD_MENU_MS);
                         } else if is_ok(sym) {
                             crate::ui::track_menu::on_ok();
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         } else if is_back(sym, wcode) {
                             crate::ui::track_menu::close();
                             route = Route::Player { overlay: Overlay::None };
@@ -826,13 +830,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::info_panel::close();
                             route = Route::Player { overlay: Overlay::None };
                             hud_focus = 2;
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         } else if sym == SDLK_UP || sym == SDLK_DOWN {
                             crate::ui::info_panel::move_focus(sym as c_int);
                             held_sym = sym; // holding repeats via the client-side timer
                             held_since = last_input;
                             last_rep = last_input;
-                            set_hud(last_input + 8000);
+                            set_hud(last_input + HUD_MENU_MS);
                         } else if is_ok(sym) {
                             match crate::ui::info_panel::on_ok() {
                                 crate::ui::info_panel::InfoAction::FromBeginning => {
@@ -857,11 +861,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if matches!(route, Route::Player { .. }) {
                                 route = Route::Player { overlay: Overlay::None };
                             }
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         } else if is_back(sym, wcode) {
                             crate::ui::info_panel::close();
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         }
                         continue;
                     }
@@ -879,7 +883,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 held_since = last_input;
                                 last_rep = last_input;
                             }
-                            set_hud(last_input + 8000);
+                            set_hud(last_input + HUD_MENU_MS);
                         } else if is_ok(sym) {
                             let ns = crate::ui::chapters_panel::on_ok();
                             if ns >= 0 {
@@ -890,17 +894,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         } else if sym == SDLK_DOWN {
                             // drop focus back onto the tabs below the strip
                             crate::ui::chapters_panel::close();
                             route = Route::Player { overlay: Overlay::None };
                             hud_focus = 2;
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         } else if is_back(sym, wcode) {
                             crate::ui::chapters_panel::close();
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         }
                         continue;
                     }
@@ -939,7 +943,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if hide {
                             hud_dismissed = true; // stays hidden even while paused, until the next key
                         } else {
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         }
                         continue;
                     }
@@ -995,7 +999,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     crate::player::resume();
                                 }
                             }
-                            set_hud(last_input + 4500);
+                            set_hud(last_input + HUD_LINGER_MS);
                         } else if matches!(route, Route::Detail) {
                             // OK on a detail CARD (episode / Related / Cast) → tvOS press: dip now,
                             // commit on the spring-back (the route-agnostic press handler runs on_ok
@@ -1007,7 +1011,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 start_playback(
                                     crate::ui::detail::last_resume_ns(),
                                     true, // Stop/BACK/EOS returns to this detail page
-                                    last_input + 4500,
+                                    last_input + HUD_LINGER_MS,
                                     &mut route,
                                     &mut played_from_detail,
                                 );
@@ -1021,7 +1025,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if crate::ui::home::snap_pos() < 0.5 {
                                 // hero (Play pill / chip / chevron): activate immediately.
                                 let hf = crate::ui::home::hero_focus();
-                                home_activate(hf, last_input + 4500, &mut route, &mut played_from_detail);
+                                home_activate(hf, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
                             } else {
                                 // grid card: tvOS press — dip the focused card now, activate on the
                                 // spring-back (committed from the per-frame loop). Nav cancels, so the
@@ -1041,7 +1045,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             set_paused(true);
                             crate::player::pause();
                         }
-                        set_hud(last_input + 4500);
+                        set_hud(last_input + HUD_LINGER_MS);
                     } else if wcode == 450 || sym == 19 || wcode == 19 || sym == 402 || wcode == 402 {
                         // PLAY
                         if !matches!(route, Route::Player { .. }) {
@@ -1062,7 +1066,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             set_paused(false);
                             crate::player::resume();
                         }
-                        set_hud(last_input + 4500);
+                        set_hud(last_input + HUD_LINGER_MS);
                     } else if matches!(route, Route::Player { .. }) && (sym == 413 || wcode == 413) {
                         // Stop
                         exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
@@ -1079,7 +1083,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         let fwd = sym == SDLK_RIGHT || sym == 417 || wcode == 417;
                         let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
-                        set_hud(last_input + 4500);
+                        set_hud(last_input + HUD_LINGER_MS);
                         if !vis {
                             hud_focus = 0; // first LEFT/RIGHT reveals the HUD on the scrubber
                         }
@@ -1150,7 +1154,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     prev_my = my;
                     if matches!(route, Route::Player { .. }) {
                         hud_dismissed = false;
-                        set_hud(last_input + 4500);
+                        set_hud(last_input + HUD_LINGER_MS);
                         if ptr_drag && dur() > 0 {
                             let frac = crate::ui::player_hud::scrub_frac_x(mx) as f64;
                             set_scrub((frac * dur() as f64) as i64);
@@ -1210,7 +1214,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::player::resume();
                             }
                         }
-                        set_hud(last_input + 4500);
+                        set_hud(last_input + HUD_LINGER_MS);
                     } else if matches!(route, Route::Home) {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -1223,14 +1227,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             let b = crate::ui::home::hero_button_at(cx, cy);
                             if b >= 0 {
                                 crate::ui::home::set_hero_focus(b);
-                                home_activate(b, last_input + 4500, &mut route, &mut played_from_detail);
+                                home_activate(b, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
                                 if b == 2 {
                                     ptr_hold_pager = last_input;
                                 }
                             }
                         } else if crate::ui::home::home_card_click(cx, cy) {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
-                            home_activate(c_int::MIN, last_input + 4500, &mut route, &mut played_from_detail);
+                            home_activate(c_int::MIN, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
                         }
                     } else if matches!(route, Route::Account) {
                         let cx = rd_i32(&ev, 20) as f32;
@@ -1271,7 +1275,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if scrub() >= 0 {
                             commit_seek(scrub(), &mut bg_pos);
                         }
-                        set_hud(last_input + 4500);
+                        set_hud(last_input + HUD_LINGER_MS);
                     }
                 } else if et == SDL_MOUSEWHEEL {
                     last_input = SDL_GetTicks();
@@ -1317,7 +1321,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                     }
                     let fd = matches!(route, Route::Detail);
-                    start_playback(0, fd, now + 60000, &mut route, &mut played_from_detail);
+                    start_playback(0, fd, now + HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
                 }
             }
             if !grid_tried && now.wrapping_sub(t0) > 400 {
@@ -1381,7 +1385,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             start_playback(
                                 crate::ui::detail::last_resume_ns(),
                                 fd,
-                                now + 60000,
+                                now + HUD_HEADLESS_MS,
                                 &mut route,
                                 &mut played_from_detail,
                             );
@@ -1420,7 +1424,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::route::play_episode(rk, &part, &vc, &ac, &title, "");
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
-                                start_playback(resume, fd, now + 60000, &mut route, &mut played_from_detail);
+                                start_playback(resume, fd, now + HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
                             }
                         }
                     }
@@ -1439,7 +1443,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 pause_tried = true;
                 if std::path::Path::new("/tmp/plxnative-autopause").exists() {
                     set_paused(true);
-                    set_hud(now + 60000);
+                    set_hud(now + HUD_HEADLESS_MS);
                 }
             }
             // dev: /tmp/plxnative-menu=<tab> opens the in-player track menu once (headless capture)
@@ -1448,7 +1452,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if let Ok(t) = std::fs::read_to_string("/tmp/plxnative-menu") {
                     crate::ui::track_menu::open_tab(t.trim().parse::<c_int>().unwrap_or(0));
                     route = Route::Player { overlay: Overlay::Menu };
-                    set_hud(now + 60000);
+                    set_hud(now + HUD_HEADLESS_MS);
                 }
                 // dev: /tmp/plxnative-info opens the Info card once (headless capture)
                 if std::path::Path::new("/tmp/plxnative-info").exists() {
@@ -1456,7 +1460,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     route = Route::Player { overlay: Overlay::Info };
                     hud_focus = 2;
                     hud_tab = 0;
-                    set_hud(now + 60000);
+                    set_hud(now + HUD_HEADLESS_MS);
                 }
                 // dev: /tmp/plxnative-chapters opens the Chapters strip once (headless capture)
                 if std::path::Path::new("/tmp/plxnative-chapters").exists() {
@@ -1464,7 +1468,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     route = Route::Player { overlay: Overlay::Chapters };
                     hud_focus = 2;
                     hud_tab = 1;
-                    set_hud(now + 60000);
+                    set_hud(now + HUD_HEADLESS_MS);
                 }
             }
             // dev: /tmp/plxnative-menupick="<tab>,<row>" opens the menu, selects that row, and
@@ -1534,22 +1538,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
                     Route::Player { overlay: Overlay::Menu } => {
                         crate::ui::track_menu::move_focus(held_sym as c_int);
-                        set_hud(now + 8000);
+                        set_hud(now + HUD_MENU_MS);
                     }
                     Route::Player { overlay: Overlay::Info } => {
                         crate::ui::info_panel::move_focus(held_sym as c_int);
-                        set_hud(now + 8000);
+                        set_hud(now + HUD_MENU_MS);
                     }
                     Route::Player { overlay: Overlay::Chapters } => {
                         crate::ui::chapters_panel::move_focus(held_sym as c_int);
-                        set_hud(now + 8000);
+                        set_hud(now + HUD_MENU_MS);
                     }
                     _ => {}
                 }
             }
             // keep the HUD alive while the track menu / Info card / Chapters strip is open
             if matches!(route, Route::Player { overlay } if overlay != Overlay::None) {
-                set_hud(now + 4500);
+                set_hud(now + HUD_LINGER_MS);
             }
             // scrub: continuous accelerating advance while a key is held (scrub_hold set by 0x101).
             if scrub_dir != 0 && scrub_hold && scrub() >= 0 && !ptr_drag {
@@ -1568,7 +1572,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     s = cap;
                 }
                 set_scrub(s);
-                set_hud(now + 4500);
+                set_hud(now + HUD_LINGER_MS);
                 scrub_t = now;
                 // lost-keyup safety: commit if the 0x101 repeats stop without a keyup
                 if now.wrapping_sub(scrub_alive) > SCRUB_LOST_MS {
@@ -1631,11 +1635,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     ok_armed = false;
                     match route {
                         Route::Home | Route::Account => {
-                            home_activate(c_int::MIN, last_input + 4500, &mut route, &mut played_from_detail);
+                            home_activate(c_int::MIN, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
                         }
                         Route::Detail => {
                             if crate::ui::detail::on_ok() {
-                                start_playback(crate::ui::detail::last_resume_ns(), true, last_input + 4500, &mut route, &mut played_from_detail);
+                                start_playback(crate::ui::detail::last_resume_ns(), true, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
                             }
                         }
                         Route::Profiles => crate::ui::profiles::select_focused(),

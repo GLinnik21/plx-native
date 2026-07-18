@@ -131,10 +131,6 @@ impl Client {
 static PLEX: OnceLock<Client> = OnceLock::new();
 static TOKEN_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Install the process-wide `Client` (call once at boot). No-op if already set.
-pub fn init(host: &str, port: i32, token: &str) {
-    let _ = PLEX.set(Client::new(host, port, token));
-}
 /// Install for a (re)login / profile switch. First call sets the singleton; a later call keeps the
 /// same server (host/port are fixed once set) and just swaps the token — so the login flow can set
 /// the server token, then a Plex Home profile pick swaps in that user's token. Thread-safe.
@@ -146,13 +142,9 @@ pub fn install(host: &str, port: i32, token: &str) {
         Some(c) => c.set_token(token),
     }
 }
-/// Whether the process-wide client has been installed yet (guards PMS reads before login).
-pub fn is_installed() -> bool {
-    PLEX.get().is_some()
-}
-/// The process-wide `Client`. Panics if `init` was never called.
+/// The process-wide `Client`. Panics if `install` was never called.
 pub fn client() -> &'static Client {
-    PLEX.get().expect("plex::init not called")
+    PLEX.get().expect("plex::install not called")
 }
 
 // ---- enc + QueryBuilder — the percent-encoding choke point ----
@@ -215,10 +207,6 @@ pub struct StreamUrl {
 }
 
 impl StreamUrl {
-    /// "http://host:port/path" for URL storage + logs.
-    pub fn to_url(&self) -> String {
-        format!("http://{}:{}{}", self.host, self.port, self.path)
-    }
     /// Parse an EXTERNAL full URL (the /tmp/plxnative-url override) back into parts —
     /// replaces `player::engine::parse_stream_url` (same behavior: default port 32400).
     pub fn parse(url: &str) -> StreamUrl {

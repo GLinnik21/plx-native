@@ -18,8 +18,9 @@ use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
-/// Bisect flag: /tmp/plxnative-demux=ff routes the demux thread through this libavformat
-/// demuxer instead of mkv.rs, so both paths coexist during bring-up (Phases B–E).
+/// Demuxer selector: this libavformat demuxer is the DEFAULT demux path; the
+/// /tmp/plxnative-demux=mkv dev trigger falls back to the hand-rolled mkv.rs while
+/// both paths coexist (mkv.rs is retired in Phase E).
 static USE_FF: AtomicBool = AtomicBool::new(true);
 pub(crate) fn use_ff() -> bool {
     USE_FF.load(Ordering::Relaxed)

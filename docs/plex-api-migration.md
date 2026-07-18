@@ -3,7 +3,7 @@
 > **Status (2026-07 — read layer landed).** The **read data layer is migrated** onto the typed
 > client and is live: `pms.rs` (P1–P3: `sections`/`section_items`/`home_hubs`), `metadata.rs`
 > (M1–M5: `metadata`/`children`/`related` + `audio_tracks`), `posters.rs` (D1:
-> `image_transcode_path`), and boot `plex::init` (app.rs). The `plex::Metadata`/`Stream` DTOs
+> `image_transcode_path`), and boot `plex::install` (app.rs). The `plex::Metadata`/`Stream` DTOs
 > gained `grandparent_rating_key`, `parent_rating_key`, `frame_rate` (lenient — PMS sends both
 > `29.976` and `"29.976"`), `language_code`, and a `first_part()` helper; **every numeric field
 > is now lenient (`de_i64`/`de_f64`)** so a single string-encoded int can't fail a whole
@@ -48,15 +48,11 @@ Line numbers are as of the current tree. All paths below are relative to `rust-m
 
 ### Prerequisite wiring (not one of the 5 files, but required first)
 
-`plex::init(host, port, token)` is **never called today** — `plex::client()` will panic until it
-is. Add it in the boot path in `app.rs` (~line 184, alongside `route::set_config` /
-`posters_init`), before the first `pms_fetch_*`. After that:
+**DONE** — `plex::install(host, port, token)` is called in the boot/login paths (`app.rs`,
+`auth.rs`) before the first PMS read. Remaining follow-ons when the playback layer migrates:
 
 - `route::CFG` keeps only `demo_url` (host/port/token move to the client; `route::config()` callers
   read `plex::client()` instead).
-- `posters::Store` drops its `host`/`port`/`token` fields.
-- `pms_fetch_*` / `posters_init` / `metadata` fns drop their `host,port,token` params (read the
-  singleton). The C-ABI `*const c_char` boot args are consumed once by `plex::init`.
 
 ---
 

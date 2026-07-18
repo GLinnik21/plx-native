@@ -117,6 +117,15 @@ pub struct Env {
     pub hero_a: f32, // clamp(1 - sp/0.55)
 }
 
+impl Env {
+    /// The throwaway Env for leaf widgets that draw purely from their own fields and ignore it.
+    /// Deliberately NOT `Default`: a screen that should compute a real per-frame Env must not be
+    /// able to silently grab a zeroed one — reach for this only where the callee ignores its Env.
+    pub const fn inert() -> Self {
+        Self { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 }
+    }
+}
+
 /// The retained-tree contract. Defaults let leaves implement only `draw`.
 pub trait View {
     fn update(&mut self, _env: &Env) {}
@@ -164,22 +173,6 @@ impl Painter {
     pub fn rect(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], focus: f32) {
         let (t, b) = (self.c(top), self.c(bot));
         crate::gfx::draw_rect(r.x + self.dx, r.y + self.dy, r.w, r.h, 0.0, rad, t.as_ptr(), b.as_ptr(), focus);
-    }
-    /// a focus ring/glow with no fill (colors zero, focus drives it). The quad is
-    /// inflated by `pad` on every side so the SDF box lands on the card edge and the
-    /// glow band has room outside it (matches ui_home.c's draw_rect(cx-PAD, .., w+2*PAD, ..)).
-    /// CIRCULAR tiles get at least 40px of quad: their radial glow was hard-cut by the tight 6px
-    /// strip pad into a visible translucent SQUARE (the home profile chip / picker avatars). The
-    /// cut is invisible on rounded-RECT tiles (it runs parallel to the glow contours), and those
-    /// keep the caller's tight quad — the episode/chapter strips draw the focused card in-loop,
-    /// where a wider quad glowed over the left neighbour but was overdrawn by the right one (an
-    /// asymmetric halo). The SDF box tracks the pad via u_pad, so the ring line never moves.
-    pub fn ring(self, r: Rect, pad: f32, rad: f32, focus: f32) {
-        let z = [0.0f32; 4];
-        let circular = rad * 2.0 >= r.w.min(r.h) - 1.0;
-        let qp = if circular { pad.max(40.0) } else { pad };
-        crate::gfx::draw_rect(r.x + self.dx - qp, r.y + self.dy - qp, r.w + 2.0 * qp, r.h + 2.0 * qp,
-            qp, rad, z.as_ptr(), z.as_ptr(), focus);
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         let c = self.c(col);
