@@ -2,10 +2,23 @@
 
 This is the in-process **buffer-feed** playback engine (was `src/playback.c`): it pulls the part
 stream, demuxes it to access units, and `Feed()`s them to LG's StarfishMediaAPIs while `libAcbAPI`
-binds the decoded sink to the hardware video plane. The **ACB bind order, the `sourceInfo`-verbatim
-rule, the audio-owned-by-pipeline rule, and the 3-arg taskId ABI** all live in the C seam
-(`src/starfish.c`) and are documented in the **root `CLAUDE.md` gotchas** — read those before
-touching the bind/feed control calls.
+binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross into C at the seam
+`src/starfish.c` (outside this dir — edits there almost always pair with edits here); the **ABI and
+bind-order gotchas for that seam live in THIS file**, below. The root `CLAUDE.md` carries only the
+one-paragraph playback summary.
+
+## Pipeline
+
+In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process
+path (`com.webos.media/load`, `start_playback()`) could not provide — that path is kept only as
+dead-ish reference, and `docs/buffer-feed-plan.md` records the pivot (it predates the working MKV
+path — treat it as history, not spec). The stream side: `PMS HTTP GET (raw TCP socket, stream.rs)`
+→ demux → access-unit queue with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to
+the Starfish pipeline. The demuxer emits Annex-B video AUs (param sets prepended at each keyframe)
+and raw AC3/EAC3/AAC audio frames; **`ff.rs` (the TV's own libavformat, over a custom AVIO on
+`stream.rs`) is the default**, and the hand-rolled Matroska demuxer `mkv.rs` is the **live
+fallback** via the `/tmp/plxnative-demux=mkv` dev trigger until it's retired (see
+`docs/ffmpeg-demuxer-plan.md`).
 
 ## Threading model (this is the whole ballgame)
 
@@ -13,16 +26,32 @@ touching the bind/feed control calls.
   on the main thread; `engine` spawns the workers below.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
-- `threads.rs` — the three workers: **`stream_thread`** (demux: open the part URL, run the MKV
-  demuxer, push AUs to the queue; loops on seek by re-opening at a byte `Range:` and resyncing to the
-  next Cluster), **`cues_thread`** (cue-preflight: parse the MKV header, fetch the Cues by Range, build
-  a time→byte index; CBR estimate until ready), **`load_thread`** (construct Starfish + `Load()`, which
-  owns its own GMainContext).
+- `threads.rs` — the three workers: **`stream_thread`** (demux: open the part URL, run the demuxer —
+  `ff.rs` by default, `mkv.rs` fallback — and push AUs to the queue; loops on seek by re-opening at a
+  byte `Range:` and resyncing to the next Cluster), **`cues_thread`** (cue-preflight: parse the MKV
+  header, fetch the Cues by Range, build a time→byte index; CBR estimate until ready),
+  **`load_thread`** (construct Starfish + `Load()`, which owns its own GMainContext).
 - `shared.rs` — the **only** cross-thread state (each field replaces a C `volatile` global — `g_*`).
   New cross-thread state goes here, behind the same discipline; don't smuggle it through a raw static.
 
 ## Gotchas that bite (all verified in code)
 
+- **C-from-C++ Starfish calls** go through `extern … __asm__("<mangled>")`. The object is an
+  over-sized static buffer (`g_smp[65536]`) constructed in place by calling the ctor symbol —
+  **never** hand it to C++ `new`/`delete` (real object size is unknown). Methods returning a
+  `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO) for short replies
+  like `"Ok"`/`"BufferFull"`.
+- **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(g_smp, NULL)`), and in
+  buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
+  collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.
+- **ACB bind order matters** (mirrors Kodi/ss4s): `setSinkType(MAIN)` → `setMediaId` →
+  `setState(LOADED)` → *wait for decoded frames* → `setMediaVideoData(<sourceInfo envelope
+  VERBATIM>)` → `setDisplayWindow` → `setState(PLAYING)`. The payload passed to
+  `setMediaVideoData` is the **whole `sourceInfo` envelope** captured verbatim from the pipeline's
+  callback (`sourceInfoRaw`), not a reconstructed one. Audio is owned by the pipeline — **never**
+  feed audio to ACB (causes SOUND_ERROR_019). `AcbAPI_setMediaVideoData`/`setState`/
+  `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
+  (2-arg calls corrupt memory / segfault).
 - **The Load payload's codecs must come from the `/decision` OUTPUT, not the source file.** A
   transcode changes the codec/rate; building the Starfish Load config from the *source* metadata gives
   the decoder the wrong description → **silent audio / glitches**. Read the output codecs from the
@@ -33,9 +62,11 @@ touching the bind/feed control calls.
   us (canvas authored at 1920×1080); don't expect the pipeline to burn or overlay them. See
   `[[tv-subtitle-engine]]` and the `plex/` soft-subs note.
 - **Seeks rebase the fed PTS timeline** on the first post-seek keyframe (`pts_shift`/`rebase_pending`
-  in `shared.rs`) so Starfish never sees a jump. Clusters start on a keyframe; the resync lands there.
-- **Never feed audio to ACB** (SOUND_ERROR_019) — the pipeline owns audio; ACB binds video only. (Root
-  gotchas, restated because it's easy to forget when adding a feed path.)
+  in `shared.rs`) so Starfish never sees a jump. The seek byte offset comes from the Cue index
+  (`cues_thread`); clusters start on a keyframe, and the resync lands there.
+- **App-switch lifecycle** (handled in `app.rs`; details in the root `CLAUDE.md` gotchas): OS
+  background suspends the buffer-feed preserving the session, foreground reloads and resumes with a
+  single `Load`. Preserve the suspend/reload pairing if you touch playback.
 
 ## Verifying playback changes
 
