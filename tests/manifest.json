@@ -11,13 +11,71 @@
     "title": "Guest"
   },
   "tv": "192.168.0.114",
-  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the FPS= heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest steady FPS >= floor. rk fields are library-specific like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
+  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the FPS= heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest steady FPS >= floor. rk fields are library-specific like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger \u2014 that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
   "fps_scenes": [
-    { "name": "home-hero", "tier": "ui", "route": "home", "floor": 50, "run_secs": 18, "warmup_s": 5, "triggers": { "plxnative-heroidx": 0 } },
-    { "name": "home-grid", "tier": "ui", "route": "home", "floor": 50, "run_secs": 18, "warmup_s": 5, "triggers": { "plxnative-grid": true } },
-    { "name": "detail-transition", "tier": "ui", "route": "detail", "floor": 45, "run_secs": 22, "warmup_s": 6, "rk": "2012", "triggers": { "plxnative-detail": "$rk", "plxnative-detailosc": true } },
-    { "name": "info-panel", "tier": "player", "route": "player", "overlay": "info", "floor": 45, "run_secs": 26, "warmup_s": 9, "rk": "1926", "triggers": { "plxnative-play": "$rk", "plxnative-info": true } },
-    { "name": "track-menu", "tier": "player", "route": "player", "overlay": "menu", "floor": 45, "run_secs": 26, "warmup_s": 9, "rk": "1926", "triggers": { "plxnative-play": "$rk", "plxnative-menu": "0" } }
+    {
+      "name": "home-hero",
+      "tier": "ui",
+      "route": "home",
+      "floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-heroidx": 0
+      }
+    },
+    {
+      "name": "home-grid",
+      "tier": "ui",
+      "route": "home",
+      "floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true
+      }
+    },
+    {
+      "name": "detail-transition",
+      "tier": "ui",
+      "route": "detail",
+      "floor": 45,
+      "run_secs": 22,
+      "warmup_s": 6,
+      "rk": "2012",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailosc": true
+      }
+    },
+    {
+      "name": "info-panel",
+      "tier": "player",
+      "route": "player",
+      "overlay": "info",
+      "floor": 45,
+      "run_secs": 26,
+      "warmup_s": 9,
+      "rk": "1926",
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-info": true
+      }
+    },
+    {
+      "name": "track-menu",
+      "tier": "player",
+      "route": "player",
+      "overlay": "menu",
+      "floor": 45,
+      "run_secs": 26,
+      "warmup_s": 9,
+      "rk": "1926",
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-menu": "0"
+      }
+    }
   ],
   "cases": [
     {
@@ -250,6 +308,71 @@
         "decision": "directplay",
         "codec_id": 28,
         "min_video_width": 1900,
+        "min_timeline_climb_s": 10,
+        "no_playing_error": true,
+        "require_video_bound": true
+      }
+    },
+    {
+      "name": "substance_seek_rapid",
+      "rk": "4",
+      "kind": "movie",
+      "title": "The Substance (rapid tap-burst seek, fwd+back)",
+      "covers": [
+        "seek-rapid",
+        "seek-coalesce",
+        "h264"
+      ],
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "seek",
+          "mode": "rapid",
+          "script": "120,+10,+10,+10,-30,+10",
+          "final_s": 130,
+          "_note": "6 requests at 300ms: 120,130,140,150,120,130 - forward burst + a back jump; the pump coalesces mid-resolve requests"
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "codec_id": 28,
+        "min_video_width": 1900,
+        "min_timeline_climb_s": 10,
+        "no_playing_error": true,
+        "require_video_bound": true
+      }
+    },
+    {
+      "name": "morning_show_seek_rapid",
+      "rk": "1804",
+      "kind": "episode",
+      "title": "The Morning Show (rapid back-tap burst, 4K HEVC HDR10)",
+      "covers": [
+        "seek-rapid",
+        "seek-coalesce",
+        "hevc-4k",
+        "audio-post-seek"
+      ],
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "seek",
+          "mode": "rapid",
+          "script": "200,-10,-10,-10,-10",
+          "final_s": 160,
+          "_note": "rapid 10s-back taps - the historical stale-audio-silence repro shape (AUDIO_STALE_AHEAD guard)"
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "codec_id": 174,
+        "min_video_width": 3000,
         "min_timeline_climb_s": 10,
         "no_playing_error": true,
         "require_video_bound": true

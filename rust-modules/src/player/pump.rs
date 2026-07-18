@@ -53,14 +53,23 @@ pub(crate) fn pump(now: u32) {
     // process it once this seek anchors. If it hasn't anchored within SEEK_STUCK_MS the reopen was
     // lost — first RETRY the reopen cheaply (re-interrupt the demuxer + re-arm), and only fall back
     // to a full (slow) reload if the retries also fail.
-    const SEEK_STUCK_MS: u32 = 500;
+    // SEEK_STUCK_MS must comfortably exceed a real reopen+av_seek+first-keyframe on 4K HEVC over
+    // PMS (~700ms): the retry closes the demux socket, so a premature watchdog KILLS an open that
+    // was about to succeed and restarts it — at 500ms a rapid tap-burst self-DoS'd into the
+    // reload fallback every time (caught by the seek_rapid harness cases).
+    const SEEK_STUCK_MS: u32 = 1200;
     if eng.flushed && eng.rebase_pending && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS {
-        let tgt = SHARED.seek_target_ns.load(Relaxed).max(0);
+        // Adopt the NEWEST coalesced target if later taps landed while this seek was resolving
+        // (TX.seek_to_ns holds the latest request): retrying/reloading at the original armed
+        // target would land where the user already tapped away from, then seek AGAIN.
+        let pending = TX.seek_to_ns.swap(-1, Relaxed);
+        let tgt = if pending >= 0 { pending } else { SHARED.seek_target_ns.load(Relaxed) }.max(0);
         if eng.seek_retries < 2 {
             eng.seek_retries += 1;
             *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
             SHARED.seek_byte.store(0, Release);
             SHARED.seek_to_ns.store(tgt, Release);
+            SHARED.seek_target_ns.store(tgt, Relaxed); // rebase guard keys on the retried target
             let p = SHARED.hs_ptr.load(Acquire);
             if !p.is_null() {
                 crate::stream::http_close(p); // re-interrupt: the first close raced the reopen

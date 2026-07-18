@@ -164,7 +164,11 @@ def triggers_for_case(case):
     files = [("plxnative-play", case["rk"])]  # the robust play trigger (fetches any rk)
     for op in case["operations"]:
         kind = op["op"]
-        if kind == "seek":
+        if kind == "seek" and op.get("mode") == "rapid":
+            # seek SCRIPT: comma-separated steps fired one per ~300ms — absolute seconds or
+            # tap-relative +N/-N (vs the last requested target). Exercises seek coalescing.
+            files.append(("plxnative-autoseek", op["script"]))
+        elif kind == "seek":
             files.append(("plxnative-autoseek", None))          # touch -> one seek to 140s
         elif kind == "audio_switch":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
@@ -334,6 +338,34 @@ def op_seek_inplace(lines, target_s):
     return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
 
 
+def op_seek_rapid(lines, final_s, min_seeks=2):
+    """Rapid tap-burst seek: several request_seek()s land while earlier ones are still
+    resolving, so the pump COALESCES (holds the newest target until the in-flight seek
+    anchors). Assert the burst actually exercised >= min_seeks pump seeks, everything
+    stayed in-place (no stuck-watchdog reload escalation), playback re-anchored near the
+    final target and kept ADVANCING, and the audio lane resumed (the historical
+    rapid-back-tap bug was 10+ s of post-burst silence)."""
+    idxs = [i for i, ln in enumerate(lines) if "seek(in-place)" in ln]
+    if len(idxs) < min_seeks:
+        return False, f"only {len(idxs)} `seek(in-place)` seek(s) fired, need >={min_seeks} (burst did not exercise coalescing)"
+    if find(lines, "reload_at: fresh Load"):
+        return False, "burst escalated to a reload (`reload_at: fresh Load` — stuck-watchdog gave up on in-place)"
+    tail = lines[idxs[-1]:]
+    ts = timeline_secs(tail)
+    if len(ts) < 2:
+        return False, f"only {len(ts)} timeline report(s) after the last seek; playback did not demonstrably resume"
+    lo = min(t for t, _ in ts)
+    hi = max(t for t, _ in ts)
+    if hi < final_s - 8:
+        return False, f"post-burst timeline peaked at {hi}s, expected ~{final_s}s (seek landed wrong / stalled)"
+    if hi - lo < 8:
+        return False, f"post-burst timeline {lo}s..{hi}s climbed only {hi - lo}s (need >=8s of real playback)"
+    if not any("feed a#" in ln for ln in tail):
+        return False, "no `feed a#` after the last seek — audio lane never resumed (silent playback)"
+    seg = sum(1 for ln in lines if "in-place seek:" in ln and "sendSegment=1" in ln)
+    return True, f"{len(idxs)} in-place seeks (sendSegment ok on {seg}); post-burst timeline {lo}s..{hi}s; audio alive"
+
+
 def op_seek_transcode(lines, target_s):
     # transcode seeks now RELOAD the pipeline (reload_transcode: fresh Load = correct GStreamer
     # segment, no stale-segment artifacts). Older builds flushed+refed (`seek(transcode)`) or fell
@@ -441,7 +473,9 @@ def evaluate(case, lines):
     # per-operation assertions
     for op in case["operations"]:
         k = op["op"]
-        if k == "seek" and op.get("mode") == "inplace":
+        if k == "seek" and op.get("mode") == "rapid":
+            results.append(("seek_rapid", *op_seek_rapid(lines, op["final_s"], op.get("min_seeks", 2))))
+        elif k == "seek" and op.get("mode") == "inplace":
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
         elif k == "seek":
             results.append(("seek_transcode", *op_seek_transcode(lines, op.get("target_s", 140))))

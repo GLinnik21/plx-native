@@ -141,6 +141,8 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | Case | rk | Asserts |
 |------|----|---------|
 | `substance_seek_inplace` | 4 | in-place seek to 140s (`seek(in-place)` + `sendSegment=1`, **no** `reload_at`), timeline reaches ~140s |
+| `substance_seek_rapid` | 4 | rapid tap-burst seek (6 requests @300ms, fwd+back — exercises coalescing): ≥2 in-place seeks, **no** `reload_at`, post-burst timeline reaches ~130s **and keeps climbing**, audio lane resumes (`feed a#` after the last seek) |
+| `morning_show_seek_rapid` | 1804 | rapid 10s-**back**-tap burst on 4K HEVC HDR10 (the historical stale-audio-silence shape): same assertions, final ~160s |
 | `toy_story4_seek_transcode` | 1945 | transcode seek (`seek(transcode)` **or** `reload_at: fresh Load at 140s`), timeline reaches ~140s |
 | `substance_resume_directplay` | 4 | viewOffset 600s honored — first `timeline` near 600s, not 0 |
 | `toy_story4_resume_transcode` | 1945 | `resume(transcode): restart at offset 600s`, first timeline near 600s |
@@ -226,7 +228,9 @@ Append an entry to `manifest.json` → `cases`:
 }
 ```
 
-`run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`,
+`run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`
+— for `"mode":"rapid"` the op's `script` becomes the trigger content: optional `gap=<ms>` +
+comma-separated steps, absolute `120` or tap-relative `+10`/`-10`, fired one per gap;
 `audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle

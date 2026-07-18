@@ -611,6 +611,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut auto_tried = false;
         let mut grid_tried = false;
         let mut seek_tried = false;
+        // /tmp/plxnative-autoseek seek script (see the parse site): pending steps, the tick of
+        // the last fired step, the gap between steps, and the last REQUESTED target (the base
+        // for "+10"/"-10" tap-relative steps, like taps on the HUD's frozen scrub playhead).
+        let mut seek_script: Vec<String> = Vec::new();
+        let mut seek_script_at = 0u32;
+        let mut seek_gap_ms = 300u32;
+        let mut seek_script_last = 0i64;
         let mut detail_tried = false;
         let mut play_tried = false;
         let mut menu_tried = false;
@@ -1429,11 +1436,46 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             // resume is armed BEFORE start_bufferfeed (crate::player::arm_seek) so the very
             // first Load opens at the viewOffset — no play-from-start flash, no post-frames seek.
+            // dev: /tmp/plxnative-autoseek — headless seek driver. An EMPTY file fires one seek
+            // to 140s (the classic trigger). Otherwise the file is a seek SCRIPT: an optional
+            // first token `gap=<ms>` (default 300 — a rapid-tap cadence), then comma-separated
+            // steps fired one per gap: absolute seconds ("120") or tap-relative "+10"/"-10"
+            // (relative to the previously REQUESTED target, like a user rapid-tapping LEFT/RIGHT
+            // while the prior seek is still resolving — exercises the pump's seek coalescing).
             if !seek_tried && matches!(route, Route::Player { .. }) && dur() > 0 && now.wrapping_sub(t0) > 12000 {
                 seek_tried = true;
-                if std::path::Path::new("/tmp/plxnative-autoseek").exists() {
-                    request_seek(140 * 1_000_000_000);
+                if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-autoseek") {
+                    let mut steps: Vec<String> =
+                        s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                    if let Some(g) = steps.first().and_then(|f| f.strip_prefix("gap=")) {
+                        seek_gap_ms = g.parse().unwrap_or(300).max(50);
+                        steps.remove(0);
+                    }
+                    if steps.is_empty() {
+                        steps.push("140".to_string());
+                    }
+                    seek_script_last = crate::player::playpos_ns();
+                    seek_script_at = now.wrapping_sub(seek_gap_ms); // fire the first step now
+                    seek_script = steps;
                 }
+            }
+            if !seek_script.is_empty()
+                && matches!(route, Route::Player { .. })
+                && now.wrapping_sub(seek_script_at) >= seek_gap_ms
+            {
+                let step = seek_script.remove(0);
+                seek_script_at = now;
+                let t = if let Some(r) = step.strip_prefix('+') {
+                    seek_script_last + r.parse::<i64>().unwrap_or(0) * 1_000_000_000
+                } else if let Some(r) = step.strip_prefix('-') {
+                    seek_script_last - r.parse::<i64>().unwrap_or(0) * 1_000_000_000
+                } else {
+                    step.parse::<i64>().unwrap_or(140) * 1_000_000_000
+                }
+                .max(0);
+                seek_script_last = t;
+                log(&format!("autoseek: step → {}s ({} left)", t / 1_000_000_000, seek_script.len()));
+                request_seek(t);
             }
             // dev: /tmp/plxnative-autopause pauses once (headless paused-HUD capture)
             if !pause_tried && matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 6000 {
