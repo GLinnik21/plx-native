@@ -650,6 +650,9 @@ def run_fps_suite(scenes, cfg, token, include_player):
     for name, ok, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] fps:{name}   {detail}")
     print(f"\n{len(results) - nfail} passed, {nfail} failed of {len(results)}")
+    # leave the TV clean — the LAST scene's triggers (e.g. plxnative-play/-menu) would otherwise
+    # persist and derail the next manual/interactive boot (apply_triggers only clears at scene START)
+    apply_triggers(cfg["tv"], [])
     return 0 if nfail == 0 else 1
 
 
@@ -765,6 +768,7 @@ def main():
             detail = "  <- " + ", ".join(fails)
         print(f"  [{mark}] {name}{detail}")
     print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}")
+    apply_triggers(cfg["tv"], [])  # leave the TV clean (see the same call in run_fps_suite)
     return 0 if real_fail == 0 else 1
 
 

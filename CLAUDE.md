@@ -184,7 +184,15 @@ raw-socket `stream.rs` can't.
   next Cluster (clusters start on a keyframe). The fed PTS timeline is rebased on the first
   post-seek keyframe so the pipeline never sees a jump (`g_pts_shift`, `g_rebase_pending`).
 - **Deploy uses a tmp+mv dance** (`plxnative.new` → `mv`) so scp succeeds while the old binary is
-  still executing (avoids `ETXTBSY`).
+  still executing (avoids `ETXTBSY`). The TV drops to standby after a few idle minutes, so a deploy
+  can die mid-scp — when scripting around `make deploy`, md5-compare local vs on-TV binary after
+  (and wake the TV with WoL first).
+- **Text/icon crispness contract:** all 1:1-texel content (glyph strings, icon masks) snaps its
+  composited origin to whole pixels via `gfx::snap` (a fractional origin + GL_LINEAR smears strokes),
+  and fonts open with FreeType **light** hinting (`text.rs::font_at` — the default NORMAL hinting
+  lets Arial's bytecode round horizontal bars up a pixel, inverting stem/bar weights). Never snap
+  scaled content (posters). Full rationale: the "Rasterization contract" note above `theme.rs`'s
+  size ladder; after a font swap re-verify with `tools/font-hint-audit.py` (host-side, freetype-py).
 - **SAM keeps stale "running" state after a hard kill**, so a launch is a silent no-op relaunch
   unless you close-first — `make run`/`kill` do the `closeByAppId` first (and `luna-send -i` must
   stay subscribed for the launch to take).
@@ -212,6 +220,12 @@ There is no host-side test suite — the code only runs on the TV. Verify by obs
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
+- **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (floors per scene in
+  `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec `FPS=`
+  heartbeat. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
+  N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
+  heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
+  scroll judder headlessly.
 - **Dev trigger files (read once at boot, on the TV):** `/tmp/plxnative-url` (override the streamed part
   URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (one auto-seek),
