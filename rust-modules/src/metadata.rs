@@ -1,7 +1,7 @@
 //! Item detail data layer for the detail page: full metadata (genres, cast, crew,
 //! audio/subtitle streams), the TV season/episode hierarchy, and the related hub —
-//! fetched on demand into a single CURRENT item. Idiomatic Rust (String/Vec); only
-//! the browse catalog (pms.rs) still uses fixed C buffers from the C port.
+//! fetched on demand into a single CURRENT item. Idiomatic Rust (String/Vec), like the
+//! browse catalog (pms.rs) — the fixed C buffers from the C port are gone.
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 

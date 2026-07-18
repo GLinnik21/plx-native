@@ -198,7 +198,7 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     Some(url)
 }
 
-use crate::cbuf::{get as cfield, set as set_c}; // shared fixed-C-buffer read/write
+use crate::cbuf::set as set_c; // shared fixed-C-buffer write (the HUD TITLE/CTXLINE buffers)
 
 /// Capability profile (X-Plex-Client-Profile-Extra, URL-decoded form): direct-play an MKV
 /// whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS, up to 4K — plus an
@@ -626,26 +626,17 @@ fn part_id_of(part_key: &str) -> i64 {
 }
 
 /// Set the stream URL + HUD strings from a selected movie (direct-play or transcode).
-pub(crate) fn play_movie(m: *mut PmsMovie) {
-    let m = match unsafe { m.as_ref() } {
-        Some(m) => m,
-        None => return,
-    };
-    if m.part[0] == 0 {
+pub(crate) fn play_movie(m: &PmsMovie) {
+    if m.part.is_empty() {
         return;
     }
     // HUD title + context line ("YEAR · RATING · Hh Mm")
-    let title = cfield(&m.title);
-    let mut rating = cfield(&m.rating);
-    if rating.is_empty() {
-        rating = "NR".into();
-    }
+    let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
     let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
     unsafe {
-        set_c(addr_of_mut!(TITLE) as *mut c_char, 128, &title);
+        set_c(addr_of_mut!(TITLE) as *mut c_char, 128, &m.title);
         set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, &ctx);
     }
-    let rk = cfield(&m.rk);
     // fresh item: default audio + no burned subtitle until the user picks one
     unsafe {
         addr_of_mut!(CUR_AUDIO_SID).write(0);
@@ -653,13 +644,12 @@ pub(crate) fn play_movie(m: *mut PmsMovie) {
     }
     crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
     crate::player::reset_subtitle(); // subs Off on a new item (selection persists across seeks/reloads)
-    let part = cfield(&m.part);
-    let (url, session) = build_stream(&rk, &part, &cfield(&m.vcodec), &cfield(&m.acodec));
+    let (url, session) = build_stream(&m.rk, &m.part, &m.vcodec, &m.acodec);
     unsafe {
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
-        *addr_of_mut!(CUR_RK) = rk;
-        addr_of_mut!(CUR_PART_ID).write(part_id_of(&part));
+        *addr_of_mut!(CUR_RK) = m.rk.clone();
+        addr_of_mut!(CUR_PART_ID).write(part_id_of(&m.part));
     }
 }
 

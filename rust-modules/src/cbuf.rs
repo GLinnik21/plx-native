@@ -1,17 +1,12 @@
-//! `cbuf` — fixed NUL-terminated C-string buffer helpers, shared by the C-ABI data structs
-//! (pms catalog rows, route HUD buffers, poster keys) and the text glyph-cache keys. ONE
-//! read + write pair so the truncate-and-NUL rules can't drift between hand-rolled copies.
+//! `cbuf` — fixed NUL-terminated C-string buffer helpers (route HUD buffers, poster keys,
+//! the text glyph-cache keys). ONE read + write pair so the truncate-and-NUL rules can't
+//! drift between hand-rolled copies.
 use std::os::raw::c_char;
 
 /// borrow the NUL-terminated prefix of a fixed byte-array field (no copy, no UTF-8 check).
 pub(crate) fn as_bytes(b: &[u8]) -> &[u8] {
     let n = b.iter().position(|&x| x == 0).unwrap_or(b.len());
     &b[..n]
-}
-
-/// read a NUL-terminated C-string field into a Rust String (lossy UTF-8).
-pub(crate) fn get(b: &[u8]) -> String {
-    String::from_utf8_lossy(as_bytes(b)).into_owned()
 }
 
 /// write raw bytes into the fixed byte-array field, zero-filled then truncated (always

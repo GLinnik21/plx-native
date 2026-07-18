@@ -153,12 +153,10 @@ pub(crate) fn draw() {
     let sy = cyt + (ch - sh) * 0.5;
     let mut drawn = false;
     if !thumb_path.is_empty() {
-        if let Ok(ap) = CString::new(thumb_path) {
-            let t = resolve_tex(ap.as_ptr(), 480, 270, 0);
-            if t != 0 {
-                p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
-                drawn = true;
-            }
+        let t = resolve_tex(&thumb_path, 480, 270, 0);
+        if t != 0 {
+            p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
+            drawn = true;
         }
     }
     if !drawn {

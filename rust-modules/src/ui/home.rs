@@ -10,10 +10,10 @@ use crate::ui::icons::Icon;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton, PageDots};
+use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, PageDots};
 use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_uint};
+use std::os::raw::{c_int, c_uint};
 use std::ptr::{addr_of, addr_of_mut};
 
 // ---- focus state: private main-thread module state. Home internals read/write these
@@ -88,24 +88,24 @@ fn g_fc() -> c_int {
 const MAX_HUBS: usize = 16; // Continue Watching, On Deck, Recently Added, collections…
 const MAX_ITEMS: usize = 24; // cards per shelf
 
-/// the item at (hub row, column) in the home hub grid, or null
-pub(crate) fn movie_at(r: c_int, c: c_int) -> *mut PmsMovie {
+/// the item at (hub row, column) in the home hub grid, or None
+pub(crate) fn movie_at(r: c_int, c: c_int) -> Option<&'static PmsMovie> {
     if r < 0 || c < 0 {
-        return std::ptr::null_mut();
+        return None;
     }
-    crate::pms::hub_item_ptr(r as usize, c as usize)
+    crate::pms::hub_item(r as usize, c as usize)
 }
 
 /// The currently-shown rotating-hero item (curated pool: Continue Watching then Recently Added),
 /// falling back to the first catalog item when the pool is empty. Backdrop, Hero and the home OK
 /// handler all read the hero through this so they never disagree on which item is featured.
-pub(crate) fn hero_item() -> *mut PmsMovie {
+pub(crate) fn hero_item() -> Option<&'static PmsMovie> {
     let n = crate::pms::hero_pool_len();
     if n == 0 {
         return movie_at(0, 0);
     }
     let i = unsafe { addr_of!(hero_idx).read() }.clamp(0, n as c_int - 1);
-    crate::pms::hero_pool_ptr(i as usize)
+    crate::pms::hero_pool_item(i as usize)
 }
 
 /// dev/test hook: jump the hero to a specific pool index (the `plxnative-heroidx` trigger) so a flipped
@@ -161,13 +161,13 @@ fn hero_slide_state() -> Option<(c_int, f32, f32)> {
     }
 }
 
-/// The pooled hero item at index `i`, or null (negative, or out of a shrunken pool — hero_pool_ptr
-/// bounds-checks the upper end).
-fn hero_item_at(i: c_int) -> *mut PmsMovie {
+/// The pooled hero item at index `i`, or None (negative, or out of a shrunken pool —
+/// hero_pool_item bounds-checks the upper end).
+fn hero_item_at(i: c_int) -> Option<&'static PmsMovie> {
     if i < 0 {
-        return std::ptr::null_mut();
+        return None;
     }
-    crate::pms::hero_pool_ptr(i as usize)
+    crate::pms::hero_pool_item(i as usize)
 }
 
 /// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info, 2 = chevron.
@@ -233,17 +233,14 @@ impl View for Backdrop {
 
 /// One hero item's backdrop layer at horizontal slide offset `dx`: the 1280×720 art (with the
 /// grid-rise parallax/fade) or the ambient wash while the art hasn't resolved.
-fn backdrop_art(p: Painter, item: *mut PmsMovie, sp: f32, dx: f32) {
-    let Some(h) = (unsafe { item.as_ref() }) else {
+fn backdrop_art(p: Painter, item: Option<&PmsMovie>, sp: f32, dx: f32) {
+    let Some(h) = item else {
         return;
     };
-    let mut bt = 0u32;
-    if h.art[0] != 0 {
-        bt = crate::ui::widgets::resolve_tex(h.art.as_ptr() as *const c_char, 1280, 720, 0);
-    }
+    let bt = crate::ui::widgets::resolve_tex(&h.art, 1280, 720, 0);
     if bt != 0 {
         p.tex(bt, Rect::new(dx, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, 1.0 - sp]);
-    } else if h.has_blur != 0 {
+    } else if h.has_blur {
         p.ambient(Rect::new(dx, 0.0, SCR_W, SCR_H), 0.55 * (1.0 - sp), h.blur);
     }
 }
@@ -270,21 +267,15 @@ fn hero_content(hero: &PmsMovie, p: Painter) {
     let d_a = theme::TEXT_SECONDARY;
 
     let is_ep = hero.kind == 3;
-    let logo_rk = if is_ep && hero.show_rk[0] != 0 {
-        cfield(&hero.show_rk)
-    } else if hero.rk[0] != 0 {
-        cfield(&hero.rk)
-    } else {
-        String::new()
-    };
-    let logo = crate::posters::logo_tex(&logo_rk, col_w, 96.0);
-    let title = if is_ep && hero.show_title[0] != 0 { cfield(&hero.show_title) } else { cfield(&hero.title) };
-    let title_tv = TextView::new(&title, theme::size::HERO, w_a).bold().max_lines(1);
+    let logo_rk: &str = if is_ep && !hero.show_rk.is_empty() { &hero.show_rk } else { &hero.rk };
+    let logo = crate::posters::logo_tex(logo_rk, col_w, 96.0);
+    let title: &str = if is_ep && !hero.show_title.is_empty() { &hero.show_title } else { &hero.title };
+    let title_tv = TextView::new(title, theme::size::HERO, w_a).bold().max_lines(1);
     let title_h = logo.map(|(_, _, hh)| hh).unwrap_or_else(|| title_tv.measure_h(col_w));
 
     // meta/kicker line — episodes: "S1 E4 · Episode title"; else "Movie/Show · YEAR · RATING"
     let meta = if is_ep {
-        let ep_title = cfield(&hero.title);
+        let ep_title = &hero.title;
         let mut s = String::new();
         if hero.season_index > 0 {
             s.push_str(&format!("S{} ", hero.season_index));
@@ -295,12 +286,12 @@ fn hero_content(hero: &PmsMovie, p: Painter) {
         if !s.is_empty() && !ep_title.is_empty() {
             s.push_str(" \u{b7} ");
         }
-        s.push_str(&ep_title);
+        s.push_str(ep_title);
         s
     } else {
-        let rating = cfield(&hero.rating);
+        let rating = &hero.rating;
         let noun = if hero.kind == 1 { "Show" } else { "Movie" };
-        format!("{} \u{b7} {} \u{b7} {}", noun, hero.year, if rating.is_empty() { "NR" } else { &rating })
+        format!("{} \u{b7} {} \u{b7} {}", noun, hero.year, if rating.is_empty() { "NR" } else { rating })
     };
     let meta_tv = TextView::new(&meta, theme::size::BODY, d_a).max_lines(1);
     let meta_h = meta_tv.measure_h(col_w);
@@ -309,9 +300,9 @@ fn hero_content(hero: &PmsMovie, p: Painter) {
     // ~11px ink), pixel-wrapped to the hero column. 3 lines is the ceiling: a 4th would push the
     // pinned action row's clearance into the peeking shelf. The kicker/meta line above stays at
     // BODY — it's the label the eye needs to catch.
-    let summary = cfield(&hero.summary);
+    let summary = &hero.summary;
     let syn = (!summary.is_empty())
-        .then(|| TextView::new(&summary, theme::size::MICRO, d_a).leading(29.0).max_lines(3));
+        .then(|| TextView::new(summary, theme::size::MICRO, d_a).leading(29.0).max_lines(3));
     let syn_h = syn.as_ref().map(|tv| theme::space::SM + tv.measure_h(col_w)).unwrap_or(0.0);
 
     // stack the measured blocks up from the anchor, then draw top-down
@@ -331,14 +322,14 @@ fn hero_content(hero: &PmsMovie, p: Painter) {
 
 impl View for Hero {
     fn draw(&self, env: &Env, p: Painter) {
-        let Some(hero) = (unsafe { hero_item().as_ref() }) else {
+        let Some(hero) = hero_item() else {
             return;
         };
         let tx = MARGIN_X;
 
         // per-item content, sliding during a flip (same phase/direction as the backdrop art)
         if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
-            if let Some(ph) = unsafe { hero_item_at(prev).as_ref() } {
+            if let Some(ph) = hero_item_at(prev) {
                 hero_content(ph, p.translate(dx_out, 0.0));
             }
             hero_content(hero, p.translate(dx_in, 0.0));
@@ -437,7 +428,7 @@ impl View for Grid {
                 if r == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
                     continue; // focused card drawn last (grid z-order)
                 }
-                let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
+                let m = movie_at(r as c_int, c as c_int);
                 let Some(mm) = m else { continue };
                 let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
                 if !on_axis(x, CARD_W, SCR_W, GLOW_PAD) {
@@ -461,10 +452,11 @@ impl View for Grid {
             let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1)) * crate::ui::press::scale();
             let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
             let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
-            let m = unsafe { movie_at(r as c_int, c as c_int).as_ref() };
+            let m = movie_at(r as c_int, c as c_int);
             let cw = crate::pms::hub_is_continue(r); // Continue Watching: amber ▶ + "show · X min left"
-            let title = m.map(|mm| mm.title.as_ptr() as *const c_char).unwrap_or(std::ptr::null());
-            // keep the CString alive through the draw
+            // keep the CStrings alive through the draw
+            let title_c = m.and_then(|mm| CString::new(mm.title.as_str()).ok());
+            let title = title_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
             let caption = m.and_then(|mm| if cw { cw_caption(mm) } else { focused_caption(mm) });
             let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
             let resume = m.and_then(resume_frac);
@@ -494,7 +486,7 @@ fn focused_caption(m: &PmsMovie) -> Option<CString> {
 /// "<show> · 8 min left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
 /// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
 fn cw_caption(m: &PmsMovie) -> Option<CString> {
-    let show = std::str::from_utf8(crate::cbuf::as_bytes(&m.show_title)).unwrap_or("");
+    let show = m.show_title.as_str();
     let s = if m.resume_ms > 0 && m.dur_ns > 0 {
         let left = crate::ui::fmt::time_left(m.dur_ns / 1_000_000 - m.resume_ms);
         if m.kind == 3 && !show.is_empty() {
@@ -700,7 +692,7 @@ pub(crate) fn home_draw() {
 /// The session lookup (mutex + 5-String UserRef clone) is snapshotted per profile GENERATION —
 /// re-cloning it every frame for a chip that changes only on a profile switch was waste.
 fn draw_chip(p: Painter) {
-    static mut CHIP: Option<(u32, CString, CString)> = None; // (gen, thumb path, initial)
+    static mut CHIP: Option<(u32, String, CString)> = None; // (gen, thumb path, initial)
     let d = 64.0f32;
     let (x, y) = (MARGIN_X, 44.0f32);
     let r = Rect::new(x, y, d, d);
@@ -715,21 +707,17 @@ fn draw_chip(p: Painter) {
             .and_then(|u| u.title.chars().next())
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default();
-        *chip = Some((
-            gen,
-            CString::new(thumb).unwrap_or_default(),
-            CString::new(initial).unwrap_or_default(),
-        ));
+        *chip = Some((gen, thumb, CString::new(initial).unwrap_or_default()));
     }
-    let (_, thumb_c, initial_c) = chip.as_ref().unwrap();
+    let (_, thumb_s, initial_c) = chip.as_ref().unwrap();
     // chip is a real focus stop (UP from the hero action row) — the same lifted-card focus treatment
     // as the shelf tiles: soft drop-shadow behind the avatar, top sheen over it.
     let focused = hero_focus() == -1 && snap_pos() < 0.5;
     // resting shadow + perimeter stroke always; lift the shadow when focused (same as the shelf tiles)
     p.focus_shadow(r, d * 0.5, if focused { 1.0 } else { 0.0 });
     let mut drew = false;
-    if !thumb_c.as_bytes().is_empty() {
-        let t = resolve_tex(thumb_c.as_ptr(), 128, 128, 0);
+    if !thumb_s.is_empty() {
+        let t = resolve_tex(thumb_s, 128, 128, 0);
         if t != 0 {
             p.tex_stroked(t, r, d * 0.5, theme::TINT_WHITE);
             drew = true;
