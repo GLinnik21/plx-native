@@ -21,7 +21,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 
 2. **Never write a raw text size — every text size in the UI is a `theme::size` token.** The named
    rungs are `size::HERO` 72 / `size::TITLE` 40 / `size::HEADLINE` 32 / `size::BODY` 28 /
-   `size::LABEL` 26 / `size::CAPTION` 24 / `size::MICRO` 16 — the *size* axis of the design system.
+   `size::LABEL` 26 / `size::CAPTION` 24 / `size::MICRO` 22 — the *size* axis of the design system.
    `CAPTION` (24) is the **couch legibility floor for anything that must be read**; `MICRO` exists
    solely for one-line de-emphasized kickers beside outsized titles (the hero meta line), never for
    content. Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide` instead of a bare

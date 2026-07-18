@@ -34,6 +34,11 @@ pub const TEXT_TERTIARY: [f32; 4] = [0.58, 0.60, 0.64, 1.0];
 /// literals): the player-HUD now-playing **display title** (larger than [`size::TITLE`]) and the
 /// client-rendered **subtitle** caption — both media chrome with their own legibility contract, and
 /// both already well above the floor. The boot splash (`anim.rs`) is likewise its own one-off.
+///
+/// **Rasterization contract:** the render path keeps every rung's stroke weights design-true
+/// (light hinting in `text.rs::font_at`, pixel-snapped 1:1 quads via `gfx::snap`), so rung values
+/// are chosen for hierarchy and legibility ONLY — no rung needs to dodge px sizes that hint badly.
+/// After swapping fonts or touching hinting, re-verify with `tools/font-hint-audit.py`.
 pub mod size {
     use std::os::raw::c_int;
     /// Full-bleed hero title — the home + detail hero headline.
