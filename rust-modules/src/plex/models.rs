@@ -27,6 +27,20 @@ pub struct MediaContainer {
     pub total_size: i64,
     #[serde(default, deserialize_with = "de_i64")]
     pub offset: i64,
+    /// GET /identity — the server's stable id (the PlayQueue `server://{id}/…` uri needs it).
+    #[serde(rename = "machineIdentifier", default)]
+    pub machine_identifier: String,
+    /// POST /playQueues response ids (0 = absent) — the timeline's playQueueID/playQueueItemID.
+    #[serde(rename = "playQueueID", default, deserialize_with = "de_i64")]
+    pub play_queue_id: i64,
+    #[serde(rename = "playQueueSelectedItemID", default, deserialize_with = "de_i64")]
+    pub play_queue_selected_item_id: i64,
+    /// /transcode/universal/decision verdict codes — Option (not defaulted 0) so the route
+    /// log distinguishes "absent" from a real code, matching the old find_num scan.
+    #[serde(rename = "generalDecisionCode", default, deserialize_with = "de_opt_i64")]
+    pub general_decision_code: Option<i64>,
+    #[serde(rename = "mdeDecisionCode", default, deserialize_with = "de_opt_i64")]
+    pub mde_decision_code: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -144,6 +158,10 @@ pub struct MediaPart {
     pub id: i64,
     #[serde(default)]
     pub key: String, // /library/parts/{id}/{changestamp}/file.mkv
+    /// /decision only: the MDE verdict for this part — "directplay" | "transcode" | "copy"
+    /// (Media/container carry no decision; the part is the authoritative one).
+    #[serde(default)]
+    pub decision: String,
     #[serde(rename = "Stream", default)]
     pub stream: Vec<Stream>,
 }
@@ -284,6 +302,22 @@ fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
         Some(IntFloatStrBool::S(s)) => s.trim().parse().unwrap_or(0),
         Some(IntFloatStrBool::B(b)) => b as i64,
         None => 0,
+    })
+}
+
+/// Lenient Option<i64>: like `de_i64` but preserves "field absent/null" as None (the decision
+/// verdict codes are logged as `Some(code)`/`None`, mirroring the old find_num scan).
+fn de_opt_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum IntStr {
+        I(i64),
+        S(String),
+    }
+    Ok(match Option::<IntStr>::deserialize(d)? {
+        Some(IntStr::I(n)) => Some(n),
+        Some(IntStr::S(s)) => s.trim().parse().ok(),
+        None => None,
     })
 }
 

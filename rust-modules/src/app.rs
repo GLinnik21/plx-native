@@ -240,12 +240,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         };
         let host_s = std::ffi::CStr::from_ptr(pms_host).to_string_lossy().into_owned();
 
-        // Install the PMS read-layer client (singleton) + playback config, then fetch the catalog.
-        // Used by the boot gate and again when a login resolves; host/port fix on first install, a
-        // later call just swaps the token (profile switch). route::CFG keeps the playback copy.
+        // Install the PMS client (singleton — the read layer AND the playback path), then fetch
+        // the catalog. Used by the boot gate and again when a login resolves; host/port fix on
+        // first install, a later call just swaps the token (profile switch).
         let install_pms = |host: &str, port: c_int, token: &str| {
             crate::plex::install(host, port, token);
-            crate::route::set_config(host, port, token);
             let nmov = crate::pms::pms_fetch_hubs();
             log(&format!("pms: nmovies={nmov}"));
         };

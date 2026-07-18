@@ -25,11 +25,23 @@ pub struct Client {
     // installed once we've logged in, and swapped when the user switches Plex Home profile (same
     // server, different per-user token). Read in exactly one place (`with_token`).
     pub(super) token: RwLock<String>,
-    pub(super) client_id: String, // X-Plex-Client-Identifier — stable device id
-    pub(super) product: String,   // "plxnative"
-    pub(super) version: String,   // "1"
-    pub(super) platform: String,  // "Generic"
+    // The §3b playback identity (X-Plex-* params on every playback request), so the server names
+    // + groups this client as ONE device and shows a proper Player in /status/sessions. NB this is
+    // a DIFFERENT identity from the plex.tv login device id (session::Session.client_id, a
+    // per-install UUID): PMS playback keys on this fixed one. Values moved verbatim from
+    // route::DEVICE_ID/identity_qs.
+    pub(super) client_id: String, // X-Plex-Client-Identifier — stable device id (NEVER per-item)
+    pub(super) product: String,   // "PlxNative"
+    pub(super) version: String,   // "0.1.0"
+    pub(super) platform: String,  // "webOS"
 }
+
+/// The fixed device facts of the playback identity (the LG 49SM9000PLA this app ships on).
+const PLATFORM_VERSION: &str = "4.5";
+const DEVICE: &str = "webOS";
+const DEVICE_NAME: &str = "Living Room TV";
+const MODEL: &str = "49SM9000PLA";
+const PROVIDES: &str = "player";
 
 impl Client {
     pub fn new(host: &str, port: i32, token: &str) -> Client {
@@ -37,11 +49,26 @@ impl Client {
             host: host.to_owned(),
             port,
             token: RwLock::new(token.to_owned()),
-            client_id: "com.beb.plxnative".into(),
-            product: "plxnative".into(),
-            version: "1".into(),
-            platform: "Generic".into(),
+            // one binary is one device to the server — never vary this per item/session
+            client_id: "9b7d2f1a-4c63-4e18-a5d0-7f3b8c2e6a94".into(),
+            product: "PlxNative".into(),
+            version: "0.1.0".into(),
+            platform: "webOS".into(),
         }
+    }
+
+    /// Append the full playback identity to a query — every playback-protocol request
+    /// (decision/start/stop/playQueues/timeline/direct-play GET) carries it.
+    pub(super) fn playback_identity(&self, q: QueryBuilder) -> QueryBuilder {
+        q.str("X-Plex-Client-Identifier", &self.client_id)
+            .str("X-Plex-Product", &self.product)
+            .str("X-Plex-Version", &self.version)
+            .str("X-Plex-Platform", &self.platform)
+            .str("X-Plex-Platform-Version", PLATFORM_VERSION)
+            .str("X-Plex-Device", DEVICE)
+            .str("X-Plex-Device-Name", DEVICE_NAME)
+            .str("X-Plex-Model", MODEL)
+            .str("X-Plex-Provides", PROVIDES)
     }
 
     /// Swap the `X-Plex-Token` at runtime (Plex Home profile switch — same server, new per-user
@@ -89,34 +116,16 @@ impl Client {
         crate::stream::http_put(&self.host, self.port, &self.with_token(path_no_token))
     }
 
-    /// POST (no body) — /:/timeline (spec verb). Reuses `crate::stream::http_open` with the
-    /// "POST" method over the same raw socket http_put uses; returns the HTTP status.
-    pub(super) fn post(&self, path_no_token: &str) -> i32 {
+    /// POST whose body is discarded — /:/timeline (spec verb; params ride the query string).
+    pub(super) fn post_void(&self, path_no_token: &str) {
+        let _ = crate::stream::http_post(&self.host, self.port, &self.with_token(path_no_token), None);
+    }
+
+    /// POST → parse the `{ "MediaContainer": … }` envelope — /playQueues (the returned ids).
+    pub(super) fn post_json(&self, path_no_token: &str) -> Option<MediaContainer> {
         let path = self.with_token(path_no_token);
-        let host_c = match std::ffi::CString::new(self.host.as_str()) {
-            Ok(c) => c,
-            Err(_) => return -1,
-        };
-        let path_c = match std::ffi::CString::new(path) {
-            Ok(c) => c,
-            Err(_) => return -1,
-        };
-        let mut hs = crate::stream::http_stream_boxed();
-        let opened = crate::stream::http_open(
-            &mut *hs,
-            host_c.as_ptr(),
-            self.port,
-            path_c.as_ptr(),
-            std::ptr::null(),
-            "POST",
-        );
-        let status = crate::stream::hs_status(&*hs);
-        if opened == 0 {
-            let mut chunk = vec![0u8; 4096];
-            while crate::stream::http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as i32) > 0 {}
-        }
-        crate::stream::http_close(&mut *hs);
-        status
+        let body = crate::stream::http_post(&self.host, self.port, &path, Some(ACCEPT_JSON))?;
+        serde_json::from_slice::<Envelope>(&body).ok().map(|e| e.media_container)
     }
 
     /// THE token choke point. Appends `X-Plex-Token=…` with the right separator.
@@ -145,6 +154,11 @@ pub fn install(host: &str, port: i32, token: &str) {
 /// The process-wide `Client`. Panics if `install` was never called.
 pub fn client() -> &'static Client {
     PLEX.get().expect("plex::install not called")
+}
+/// Non-panicking accessor for paths that can legitimately run before login (playback teardown,
+/// the /tmp/plxnative-url + sample demo boots) — the old `route::CFG == None` guard semantics.
+pub fn client_opt() -> Option<&'static Client> {
+    PLEX.get()
 }
 
 // ---- enc + QueryBuilder — the percent-encoding choke point ----
@@ -182,6 +196,13 @@ impl QueryBuilder {
             self
         }
     }
+    pub(super) fn opt_str(self, k: &str, v: &str) -> Self {
+        if !v.is_empty() {
+            self.str(k, v)
+        } else {
+            self
+        }
+    }
     pub(super) fn build(self) -> String {
         if self.parts.is_empty() {
             self.path
@@ -207,6 +228,12 @@ pub struct StreamUrl {
 }
 
 impl StreamUrl {
+    /// The full `http://host:port/path?…` form — what `route` stores as the playback URL
+    /// (the engine later splits it back with [`StreamUrl::parse`]).
+    pub fn to_url(&self) -> String {
+        format!("http://{}:{}{}", self.host, self.port, self.path)
+    }
+
     /// Parse an EXTERNAL full URL (the /tmp/plxnative-url override) back into parts —
     /// replaces `player::engine::parse_stream_url` (same behavior: default port 32400).
     pub fn parse(url: &str) -> StreamUrl {
