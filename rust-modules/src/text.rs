@@ -24,6 +24,7 @@ const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
 const GL_TEXTURE0: c_uint = 0x84C0;
 const TTF_STYLE_BOLD: c_int = 0x01;
+const TTF_HINTING_LIGHT: c_int = 1;
 
 enum TtfFont {}
 
@@ -52,6 +53,7 @@ extern "C" {
     fn TTF_OpenFont(file: *const c_char, ptsize: c_int) -> *mut TtfFont;
     fn TTF_RenderUTF8_Blended(font: *mut TtfFont, text: *const c_char, fg: SdlColor) -> *mut SdlSurface;
     fn TTF_SetFontStyle(font: *mut TtfFont, style: c_int);
+    fn TTF_SetFontHinting(font: *mut TtfFont, hinting: c_int);
     fn SDL_FreeSurface(surf: *mut SdlSurface);
     // GLES2
     fn glGetUniformLocation(program: c_uint, name: *const c_char) -> c_int;
@@ -138,6 +140,13 @@ unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
             if !arr[sz].is_null() && bold != 0 {
                 TTF_SetFontStyle(arr[sz], TTF_STYLE_BOLD);
             }
+        }
+        if !arr[sz].is_null() {
+            // Light hinting y-snaps strokes to the NEAREST pixel. Arial's own bytecode (default
+            // NORMAL hinting) rounds horizontal bars UP — at bold 26 that draws 4px bars over
+            // 3px stems, inverting the design's stem>bar weight — so every size token had to
+            // dodge "unlucky" px values. Light keeps the whole theme::size scale design-true.
+            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
         }
     }
     arr[sz]
@@ -408,7 +417,8 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform1i(TL_TEX, 0);
-        glUniform4f(TL_RECT, dx, y, w as f32, h as f32);
+        // glyphs are 1:1 texel:pixel — snap the origin (see gfx::snap for the contract)
+        glUniform4f(TL_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         crate::gfx::gfx_use_base(); // restore rect program for subsequent draw_rect
         w as f32
@@ -455,7 +465,7 @@ pub(crate) fn draw_text_fade(
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform1i(TLF_TEX, 0);
-        glUniform4f(TLF_RECT, dx, y, w as f32, h as f32);
+        glUniform4f(TLF_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         crate::gfx::gfx_use_base(); // restore rect program for subsequent draw_rect
         w as f32

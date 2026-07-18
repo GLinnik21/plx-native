@@ -104,6 +104,14 @@ pub(crate) fn draw(p: Painter, id: Icon, r: Rect, tint: [f32; 4]) {
     }
     let tex = tex_for(id, px);
     if tex != 0 {
+        // 1:1 mask — snap the COMPOSITED origin (fold the painter translate, snap, unfold),
+        // same contract as text; see gfx::snap.
+        let r = Rect::new(
+            crate::gfx::snap(r.x + p.dx) - p.dx,
+            crate::gfx::snap(r.y + p.dy) - p.dy,
+            r.w,
+            r.h,
+        );
         p.tex(tex, r, 0.0, tint);
     }
 }

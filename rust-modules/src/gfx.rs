@@ -530,6 +530,17 @@ pub(crate) fn init_image() {
     }
 }
 
+/// Snap a composited quad origin to a whole pixel — the contract for ALL 1:1-texel content
+/// (glyph strings in `text.rs`, icon masks in `ui/icons.rs`): such textures are rasterized at
+/// their exact draw size and sampled with GL_LINEAR, so a fractional origin bilinear-smears
+/// every texel across two pixels (washed glyph stems, fuzzy icon edges). Snap the FINAL
+/// composited position (after any Painter translate fold), and never apply this to scaled
+/// content — posters and animating quads legitimately move sub-pixel.
+#[inline]
+pub(crate) fn snap(v: f32) -> f32 {
+    v.round()
+}
+
 /// Upload a straight-alpha RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses
 /// `prev` if non-zero (re-specs it), else allocates a new id. Returns the texture id. Used for
 /// image-subtitle (PGS/VobSub) overlays and the text glyph-cache textures. Main-thread only.
