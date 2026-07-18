@@ -511,8 +511,9 @@ Notes:
   required, so a trimmed response never fails to deserialize (the current string-scrape tolerates
   missing keys; this keeps that tolerance).
 - **`kind`** is used for the `type` field throughout (`type` is a Rust keyword). One rename convention.
-- Models are **read-only DTOs**: the app's own view structs (`pms::PmsMovie` fixed C buffers,
-  `metadata::Detail`) are populated *from* these — the `plex` layer does not own UI state.
+- Models are **read-only DTOs**: the app's own view structs (`pms::PmsMovie`,
+  `metadata::Detail` — owned Strings) are populated *from* these — the `plex` layer does
+  not own UI state.
 
 ---
 

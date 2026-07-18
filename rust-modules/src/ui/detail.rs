@@ -11,7 +11,7 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{cfield, resolve_tex, Art, Button, CircleButton, ControlStyle};
+use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, ControlStyle};
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -132,10 +132,10 @@ const CAST_UNDER_H: f32 = 92.0; // headshot → name/role → block bottom (name
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
     let idx = view().selected;
-    if idx < 0 || idx as usize >= crate::pms::nmovies() {
+    if idx < 0 {
         return None;
     }
-    unsafe { crate::pms::movie_ptr(idx as usize).as_ref() }
+    crate::pms::movie(idx as usize)
 }
 
 /// the focused hero button (0=Play), or -1 when the hero section isn't focused
@@ -291,14 +291,6 @@ fn scroll_target() -> f32 {
         _ => 0.0,
     }
 }
-/// the selected catalog row pointer (for the app to play a movie), or null
-pub(crate) fn selected_ptr() -> *mut PmsMovie {
-    let idx = view().selected;
-    if idx < 0 || idx as usize >= crate::pms::nmovies() {
-        return std::ptr::null_mut();
-    }
-    crate::pms::movie_ptr(idx as usize)
-}
 /// is the loaded item a TV show?
 pub(crate) fn is_show() -> bool {
     metadata::current().map(|d| d.is_show).unwrap_or(false)
@@ -322,11 +314,10 @@ pub(crate) fn open(idx: c_int) {
     let v = view();
     v.selected = idx;
     reset_view_state(v);
-    if idx >= 0 && (idx as usize) < crate::pms::nmovies() {
-        if let Some(m) = unsafe { crate::pms::movie_ptr(idx as usize).as_ref() } {
-            let rk = cfield(&m.rk);
-            if !rk.is_empty() {
-                metadata::load_detail(&rk);
+    if idx >= 0 {
+        if let Some(m) = crate::pms::movie(idx as usize) {
+            if !m.rk.is_empty() {
+                metadata::load_detail(&m.rk);
             }
         }
     }
@@ -490,7 +481,7 @@ fn hero_synopsis(summary: &str) -> TextView<'_> {
 /// Returns (meta_y, syn_y, date_y, btn_y).
 fn hero_layout(m: Option<&PmsMovie>) -> (f32, f32, f32, f32) {
     let d = metadata::current();
-    let owned = if d.is_none() { m.map(|m| cfield(&m.summary)).unwrap_or_default() } else { String::new() };
+    let owned = if d.is_none() { m.map(|m| m.summary.clone()).unwrap_or_default() } else { String::new() };
     let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&owned);
     let syn_h = if summary.is_empty() { 0.0 } else { hero_synopsis(summary).measure_h(900.0) };
     let meta_y = 566.0 + 36.0;
@@ -663,11 +654,10 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
     // (the hero's fill-rate cost; mirrors home's Backdrop which draws art OR ambient, never both).
     let art_a = 1.0 - sf;
     let art_tex = if art_a > 0.01 {
-        m.filter(|m| m.art[0] != 0)
-            .map(|m| cfield(&m.art))
+        m.filter(|m| !m.art.is_empty())
+            .map(|m| m.art.clone())
             .or_else(|| metadata::current().map(|d| d.art.clone()).filter(|s| !s.is_empty()))
-            .and_then(|art| CString::new(art).ok())
-            .map(|ap| resolve_tex(ap.as_ptr(), 1920, 1080, 0))
+            .map(|art| resolve_tex(&art, 1920, 1080, 0))
             .unwrap_or(0)
     } else {
         0
@@ -677,7 +667,7 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
     // Because black-over-at-alpha is a linear multiply, dimming each source layer by `d` is
     // pixel-identical to the old separate full-screen dim overlay, one fewer full-screen pass.
     if let Some(m) = m {
-        if m.has_blur != 0 && (art_tex == 0 || art_a < 0.99) {
+        if m.has_blur && (art_tex == 0 || art_a < 0.99) {
             p.ambient(Rect::FULL, 0.55 * d, m.blur);
         }
     }
@@ -715,9 +705,9 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 
     // ---- title: clearLogo (transparent PNG) if loaded, else bold text. Borrow from the loaded
     // Detail (the common case) — cloning rk/title/summary every frame was pure churn; the catalog
-    // fallback (`m`, pre-load frames only) still allocates via cfield. ----
+    // fallback (`m`, pre-load frames only) clones from the catalog row. ----
     let title_bottom = 566.0f32;
-    let rk_owned = if d.is_none() { m.map(|m| cfield(&m.rk)).unwrap_or_default() } else { String::new() };
+    let rk_owned = if d.is_none() { m.map(|m| m.rk.clone()).unwrap_or_default() } else { String::new() };
     let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
     let mut drew_logo = false;
     if let Some((lt, ww, hh)) = crate::posters::logo_tex(rk, 680.0, 120.0) {
@@ -725,7 +715,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         drew_logo = true;
     }
     if !drew_logo {
-        let title_owned = if d.is_none() { m.map(|m| cfield(&m.title)).unwrap_or_default() } else { String::new() };
+        let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
         let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
         if let Ok(t) = CString::new(title) {
             p.text(t.as_ptr(), tx, title_bottom - 68.0, theme::size::HERO, w_a, 0, 1);
@@ -751,7 +741,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 
     // ---- synopsis: the shared fine-print TextView (hero_synopsis — one size app-wide, matches
     // the home hero); its measured height is already folded into date_y/btn_y by hero_layout ----
-    let summary_owned = if d.is_none() { m.map(|m| cfield(&m.summary)).unwrap_or_default() } else { String::new() };
+    let summary_owned = if d.is_none() { m.map(|m| m.summary.clone()).unwrap_or_default() } else { String::new() };
     let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&summary_owned);
     if !summary.is_empty() {
         hero_synopsis(summary).draw(p, Rect::new(tx, syn_y, 900.0, 0.0));
@@ -835,14 +825,14 @@ fn compact_title_vis(scroll: f32) -> f32 {
 /// small centered clearLogo/title shown at the top once the page is scrolled
 fn draw_compact_title(p: Painter, m: Option<&PmsMovie>) {
     let d = metadata::current();
-    let rk_owned = if d.is_none() { m.map(|m| cfield(&m.rk)).unwrap_or_default() } else { String::new() };
+    let rk_owned = if d.is_none() { m.map(|m| m.rk.clone()).unwrap_or_default() } else { String::new() };
     let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
     let cx = SCR_W * 0.5;
     if let Some((lt, ww, hh)) = crate::posters::logo_tex(rk, f32::MAX, 54.0) {
         p.tex(lt, Rect::new(cx - ww * 0.5, 40.0, ww, hh), 0.0, theme::TEXT_PRIMARY);
         return;
     }
-    let title_owned = if d.is_none() { m.map(|m| cfield(&m.title)).unwrap_or_default() } else { String::new() };
+    let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
     let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
     if let Ok(t) = CString::new(title) {
         p.text(t.as_ptr(), cx, 54.0, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
@@ -1144,8 +1134,7 @@ pub(crate) fn on_ok() -> bool {
             if is_show() {
                 play_episode_at(0)
             } else {
-                let m = selected_ptr();
-                if !m.is_null() {
+                if let Some(m) = selected() {
                     crate::route::play_movie(m);
                 } else if let Some(d) = metadata::current() {
                     // a hub refetch can orphan the page's catalog row (the item left the hubs) —

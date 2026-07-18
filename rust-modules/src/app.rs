@@ -514,18 +514,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// Direct-play a LEAF catalog item (movie or episode) — the hero-pill / Continue-Watching
         /// "play now" ritual: route cfg + streams metadata + the shared start ritual.
         unsafe fn play_item_now(
-            m: *mut crate::pms::PmsMovie,
+            mm: &crate::pms::PmsMovie,
             hud_until: u32,
             route: &mut Route,
             played_from_detail: &mut bool,
         ) {
-            let Some(mm) = m.as_ref() else { return };
-            let rk = crate::ui::widgets::cfield(&mm.rk);
-            if rk.is_empty() {
+            if mm.rk.is_empty() {
                 return;
             }
-            crate::route::play_movie(m);
-            crate::metadata::load_detail(&rk); // streams for the in-player audio/subtitle lists
+            crate::route::play_movie(mm);
+            crate::metadata::load_detail(&mm.rk); // streams for the in-player audio/subtitle lists
             start_playback(
                 crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000),
                 false,
@@ -561,8 +559,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             } else {
                 crate::ui::home::movie_at(crate::ui::home::row(), crate::ui::home::col())
             };
-            let Some(mm) = m.as_ref() else { return };
-            let rk = crate::ui::widgets::cfield(&mm.rk);
+            let Some(mm) = m else { return };
+            let rk = mm.rk.clone();
             if rk.is_empty() {
                 return;
             }
@@ -571,13 +569,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     && (crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize) || mm.kind == 3));
             if want_play {
                 match mm.kind {
-                    0 | 3 => play_item_now(m, hud_until, route, played_from_detail),
+                    0 | 3 => play_item_now(mm, hud_until, route, played_from_detail),
                     _ => {
                         // show / season: open its page (blocking) and fire its Play — but only
                         // once the load actually landed on the expected item (a failed fetch
                         // leaves the PREVIOUS detail in place; blindly firing on_ok would play
                         // whatever page was open before).
-                        let expect = if mm.kind == 2 { crate::ui::widgets::cfield(&mm.show_rk) } else { rk.clone() };
+                        let expect = if mm.kind == 2 { mm.show_rk.clone() } else { rk.clone() };
                         if mm.kind == 2 {
                             crate::ui::detail::open_rk_season(&expect, mm.season_index);
                         } else {
@@ -593,15 +591,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
             } else if mm.kind == 2 {
                 // season: open the SHOW page with that season selected
-                crate::ui::detail::open_rk_season(&crate::ui::widgets::cfield(&mm.show_rk), mm.season_index);
+                crate::ui::detail::open_rk_season(&mm.show_rk, mm.season_index);
                 *route = Route::Detail;
             } else if mm.kind == 3 {
                 // an episode's page is its show's page — landed on the EPISODE'S season, so the
                 // item the hero/tile advertised is actually in view (mirrors the season arm)
                 if mm.season_index > 0 {
-                    crate::ui::detail::open_rk_season(&crate::ui::widgets::cfield(&mm.show_rk), mm.season_index);
+                    crate::ui::detail::open_rk_season(&mm.show_rk, mm.season_index);
                 } else {
-                    crate::ui::detail::open_rk(&crate::ui::widgets::cfield(&mm.show_rk));
+                    crate::ui::detail::open_rk(&mm.show_rk);
                 }
                 *route = Route::Detail;
             } else {
@@ -1314,10 +1312,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else {
                         let pidx = std::fs::read_to_string("/tmp/plxnative-playidx").ok()
                             .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
-                        let pm = crate::ui::home::movie_at(pidx / COLS, pidx % COLS);
-                        crate::route::play_movie(pm);
-                        if let Some(pmm) = pm.as_ref() {
-                            crate::metadata::load_detail(&crate::ui::widgets::cfield(&pmm.rk));
+                        if let Some(pmm) = crate::ui::home::movie_at(pidx / COLS, pidx % COLS) {
+                            crate::route::play_movie(pmm);
+                            crate::metadata::load_detail(&pmm.rk);
                         }
                     }
                     let fd = matches!(route, Route::Detail);

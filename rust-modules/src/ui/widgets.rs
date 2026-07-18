@@ -7,10 +7,17 @@ use crate::ui::theme;
 use crate::ui::{Env, Painter, Rect, View};
 use std::os::raw::{c_char, c_int};
 
-/// build the transcode key on the stack and resolve it to a GL texture (0 until loaded)
-pub(crate) fn resolve_tex(path: *const c_char, w: c_int, h: c_int, png: c_int) -> u32 {
+/// build the transcode key on the stack and resolve it to a GL texture (0 until loaded).
+/// Per-frame hot path (every visible tile) — the NUL-terminated copy poster_key wants is
+/// made on the stack, no heap alloc.
+pub(crate) fn resolve_tex(path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
+    if path.is_empty() {
+        return 0;
+    }
+    let mut p = [0u8; 256];
+    crate::cbuf::set_bytes(&mut p, path);
     let mut key = [0u8; 352];
-    crate::posters::poster_key(key.as_mut_ptr() as *mut c_char, key.len(), path, w, h, png);
+    crate::posters::poster_key(key.as_mut_ptr() as *mut c_char, key.len(), p.as_ptr() as *const c_char, w, h, png);
     crate::posters::poster_get(key.as_ptr() as *const c_char)
 }
 
@@ -31,10 +38,7 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
     let r = if focused { frame.scaled(scale) } else { frame };
     match art {
         Art::Poster(m) => {
-            let t = m
-                .filter(|m| m.thumb[0] != 0)
-                .map(|m| resolve_tex(m.thumb.as_ptr() as *const c_char, 250, 375, 0))
-                .unwrap_or(0);
+            let t = m.map(|m| resolve_tex(&m.thumb, 250, 375, 0)).unwrap_or(0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
@@ -42,11 +46,7 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             }
         }
         Art::Thumb { key, res } => {
-            let t = if key.is_empty() {
-                0
-            } else {
-                std::ffi::CString::new(key).ok().map(|tp| resolve_tex(tp.as_ptr(), res.0, res.1, 0)).unwrap_or(0)
-            };
+            let t = resolve_tex(key, res.0, res.1, 0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
@@ -72,9 +72,6 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
     let f = if focused { ((scale - 1.0) / (CARD_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
     card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
 }
-
-/// read a NUL-terminated C-string field into a Rust String (the shared cbuf reader)
-pub(crate) use crate::cbuf::get as cfield;
 
 // ---- CircleButton: circular disc + centered glyph, same ControlStyle family as Button /
 // TransportButton (focused = ACCENT, idle = solid dark disc). The hero + detail +/i/> circles. ----
