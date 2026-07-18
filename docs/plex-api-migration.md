@@ -1,27 +1,42 @@
 # Plex API migration map — raw calls → typed `crate::plex` client
 
-> **Status (2026-07 — read layer landed).** The **read data layer is migrated** onto the typed
-> client and is live: `pms.rs` (P1–P3: `sections`/`section_items`/`home_hubs`), `metadata.rs`
-> (M1–M5: `metadata`/`children`/`related` + `audio_tracks`), `posters.rs` (D1:
-> `image_transcode_path`), and boot `plex::install` (app.rs). The `plex::Metadata`/`Stream` DTOs
-> gained `grandparent_rating_key`, `parent_rating_key`, `frame_rate` (lenient — PMS sends both
-> `29.976` and `"29.976"`), `language_code`, and a `first_part()` helper; **every numeric field
-> is now lenient (`de_i64`/`de_f64`)** so a single string-encoded int can't fail a whole
-> container. The dead full-library-browse path (`pms_fetch_movies`/`fetch_section`) was deleted
-> (its `sections`/`section_items` methods remain for a future Library screen).
+> **Status (2026-07-18 — EXECUTED, both layers).** The **read layer** landed first (P1–P3 /
+> M1–M5 / D1 below, `plex::install` at boot, all-lenient `de_i64`/`de_f64` DTOs). The
+> **playback layer is now migrated too** — rebuilt FROM the live `route.rs` (not this doc's
+> original R-list, which had gone stale). The executed shape, where it differs from the plan
+> below:
 >
-> The **playback layer is intentionally NOT migrated** (R1–R6, T1, the `engine.rs` timeline +
-> `StreamUrl::parse` sibling sites below). Since this doc was written, `route.rs` grew a real
-> Media-Decision-Engine handshake (`hasMDE=1`), a 4K-HEVC capability profile, PlayQueue creation,
-> per-playback session correlation (`X-Plex-Session-Identifier`), and identity params — none of
-> which the typed `transcoder.rs`/`timeline.rs`/`direct_play_url` model. Migrating the playback
-> calls onto today's typed layer would **regress** transcode quality + session tracking, and those
-> are server-side behaviors that need on-device verification. Bring the typed transcode/timeline
-> surface up to `route.rs` parity first, then migrate R1–R6/T1 with a TV to verify. `route::CFG`
-> (host/port/token + `demo_url`) stays as the playback layer's config source until then.
+> - **Typed ops** live in `plex/transcoder.rs` (`mde_decision`, `transcode_decision`,
+>   `transcode_start_url`, `transcode_stop`, the capability profile + `is_dp_audio`),
+>   `plex/timeline.rs` (`timeline`, `machine_identity`, `create_play_queue`),
+>   `plex/library.rs` (`select_streams`, `direct_play_url`), with request params in
+>   `plex/params.rs` (`TranscodeSpec` — rk/session/remux-flavor/audio/sub/offset —,
+>   `StreamSelection`, `TimelineReport`, `TimelineState`).
+> - **Both `/decision` flavors return the parsed body** (not the planned `get_void`):
+>   `route::server_decision` reads `Part.decision` + the verdict codes off `mde_decision`,
+>   and `route::apply_decision_codecs` reads the OUTPUT codecs (`Part.Stream[].codec`) off
+>   `transcode_decision` — the Load payload must describe what the server actually sends.
+> - **Two endpoints the plan never listed** (added to route.rs after it was written) migrated
+>   with it: `GET /identity` (`machine_identity`) and `POST /playQueues` (`create_play_queue`,
+>   via a new `Client::post_json`; `post_void` carries the timeline).
+> - **The playback identity moved into `Client`** (`playback_identity` + the field values that
+>   were `route::DEVICE_ID`/`identity_qs`) — the old dead "com.beb.plxnative/Generic" field
+>   values are gone; PMS playback keys on the fixed device UUID as before.
+> - **`TBASE` died differently than planned**: instead of a stored offset-free query string,
+>   `route` keeps a `CUR_REMUX` flavor flag and rebuilds the identical `TranscodeSpec` from
+>   (CUR_RK, SESS, CUR_*_SID, flavor) on every seek/retranscode. `offset_secs < 0` = fresh
+>   start (no `&offset=`), `>= 0` = encode restart — matching the old obase append.
+> - **`route::CFG`/`set_config`/`config()` are deleted entirely** (nothing keeps a playback
+>   copy of host/port/token; `plex::client_opt()` preserves the old None-guard semantics for
+>   pre-login boots). `timeline_path` is gone from `threads.rs`; both timeline sites collapse
+>   onto `route::report_timeline` → `Client::timeline` (POST, the spec verb — D-8a resolved:
+>   the old code already POSTed).
+> - **Preserved as-is (quirk, do not "fix" silently):** `retranscode` still sets
+>   `TSESSION = "plxnative-{rk}"` while the transcoder QUERY keeps riding `sess()` — stop/
+>   is_transcoding key off TSESSION, the server correlation stays on sess().
 >
-> The R1–R6 / M / P / D sections below are the ORIGINAL plan; treat the read sections as
-> implemented (modulo the parity notes above) and the playback sections as the deferred backlog.
+> The R1–R6 / T1 / M / P / D sections below are the ORIGINAL plan, kept as history; line
+> numbers reference the pre-migration tree.
 
 Call-site-by-call-site plan to move every hand-built Plex path/query in the app onto the typed
 `Client` in `rust-modules/src/plex/` (surface: `docs/plex-api-design.md`). Scope: `pms.rs`,

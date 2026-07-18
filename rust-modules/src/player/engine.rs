@@ -309,9 +309,10 @@ pub(crate) fn start_bufferfeed() -> bool {
     SHARED.report_stop.store(false, Ordering::Relaxed);
     let report_th = if stream {
         let rk = crate::route::cur_rk();
-        match (rk.is_empty(), crate::route::config()) {
-            (false, Some((h, p, t))) => Some(std::thread::spawn(move || threads::timeline_thread(h, p, t, rk))),
-            _ => None,
+        if rk.is_empty() {
+            None
+        } else {
+            Some(std::thread::spawn(move || threads::timeline_thread(rk)))
         }
     } else {
         None
@@ -368,7 +369,7 @@ pub(crate) fn arm_seek(target_ns: i64) {
 /// A TRANSCODE item's stream is 0-based and NOT seekable (no byte-index, Content-Length=-1), so
 /// av_seek fails — instead restart the encode at `&offset=secs` (transcode_seek) and display
 /// content time via disp_base. Call BEFORE start_bufferfeed, AFTER route::play_movie has run the
-/// decision (so transcode_session/TBASE are set). Used for viewOffset resume.
+/// decision (so the transcode session + flavor are set). Used for viewOffset resume.
 pub(crate) fn resume_at(resume_ns: i64) {
     if resume_ns <= 0 {
         return;
@@ -463,8 +464,7 @@ fn teardown(for_reload: bool) {
         let rk = crate::route::cur_rk();
         let dur = SHARED.duration_ns.load(Ordering::Relaxed);
         if !rk.is_empty() && dur > 0 {
-            crate::route::config()
-                .map(|(h, p, t)| (h, p, t, rk, SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000, dur / 1_000_000))
+            Some((rk, SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000, dur / 1_000_000))
         } else {
             None
         }
@@ -493,9 +493,8 @@ fn teardown(for_reload: bool) {
         let _ = t.join();
     }
     // final position report (state=stopped) so the server commits the resume point
-    if let Some((h, p, t, rk, pos, dur)) = final_report {
-        let path = threads::timeline_path(&rk, "stopped", pos, dur, &t);
-        let _ = crate::stream::http_post(&h, p, &path, None);
+    if let Some((rk, pos, dur)) = final_report {
+        crate::route::report_timeline(&rk, crate::plex::TimelineState::Stopped, pos, dur);
         log(&format!("timeline stopped t={}s/{}s", pos / 1000, dur / 1000));
     }
     // 3. unload + destruct the pipeline, release the plane. (Kodi waits for UNLOADCOMPLETED before

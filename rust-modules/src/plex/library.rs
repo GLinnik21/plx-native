@@ -1,7 +1,8 @@
 //! Library operations (impl Client): sections, section items, metadata, children/leaves,
-//! and related.
-use super::client::{Client, QueryBuilder};
+//! related — plus the two part-level playback ops (stream selection, direct-play target).
+use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
+use super::params::StreamSelection;
 
 impl Client {
     /// GET /library/sections (D-3: spec-canonical is /library/sections/all; keep the
@@ -63,5 +64,27 @@ impl Client {
     /// GET /:/unscrobble — mark unwatched (clears viewCount + viewOffset).
     pub fn unscrobble(&self, rating_key: &str) {
         self.get_void(&format!("/:/unscrobble?key={rating_key}&identifier=com.plexapp.plugins.library"));
+    }
+
+    /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
+    /// transcoder encodes the SELECTED audio and burns the SELECTED subtitle; a query-param
+    /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
+    /// always sent — 0 keeps subs OFF (suppresses a default-selected burn); `audioStreamID`
+    /// only when the user switched. Returns the HTTP status (route logs it).
+    pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
+        let q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id))
+            .int("allParts", 1)
+            .int("subtitleStreamID", sel.subtitle_stream_id)
+            .opt_int("audioStreamID", sel.audio_stream_id);
+        self.put(&q.build())
+    }
+
+    /// The direct-play stream target: the raw part `key` GET, carrying the per-playback
+    /// session id + identity so PMS keys the /status/sessions entry by session (not a
+    /// token= fallback), keeping the timeline correlation consistent.
+    pub fn direct_play_url(&self, part_key: &str, session: &str) -> StreamUrl {
+        let q = QueryBuilder::new(part_key).str("X-Plex-Session-Identifier", session);
+        let path = self.playback_identity(q).build();
+        StreamUrl { host: self.host.clone(), port: self.port, path: self.with_token(&path) }
     }
 }
