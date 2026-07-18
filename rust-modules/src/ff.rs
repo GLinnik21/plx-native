@@ -3,11 +3,10 @@
 //! 57.89.100 / 55.58.100); we link stub `.so`s carrying those SONAMEs and the device
 //! loads the real libraries at runtime — the same stub trick as SDL/GLES/Starfish.
 //!
-//! This module is the media demuxer that replaces the hand-rolled mkv.rs: robust
-//! MKV/MP4/TS demux, HTTP input, and index-based seeking (av_seek_frame). See
-//! docs/ffmpeg-demuxer-plan.md. Phase A here is the ABI verification probe: the
-//! struct layouts below are the FFmpeg n3.3 ABI and MUST be confirmed on-device
-//! (log codec_id/width/height for a known title) before the demuxer is built on them.
+//! This module is THE media demuxer: robust MKV/MP4/TS demux, HTTP input, and
+//! index-based seeking (av_seek_frame). Design record: docs/ffmpeg-demuxer-plan.md.
+//! The struct layouts below are the FFmpeg n3.3 ABI, confirmed on-device by the
+//! Phase A probe (/tmp/plxnative-ffprobe logs codec_id/width/height for a known title).
 #![allow(dead_code)]
 use crate::aq::AuQueue;
 use crate::player::threads::SendPtr;
@@ -17,14 +16,6 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
-
-/// Demuxer selector: this libavformat demuxer is the DEFAULT demux path; the
-/// /tmp/plxnative-demux=mkv dev trigger falls back to the hand-rolled mkv.rs while
-/// both paths coexist (mkv.rs is retired in Phase E).
-static USE_FF: AtomicBool = AtomicBool::new(true);
-pub(crate) fn use_ff() -> bool {
-    USE_FF.load(Ordering::Relaxed)
-}
 
 /// Feed audio (es=2) to the pipeline. Cleared by the /tmp/plxnative-noaudio dev trigger to
 /// A/B whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
@@ -435,16 +426,6 @@ pub(crate) fn boot() {
             ver(avutil_version())
         ));
     }
-    // The libavformat demuxer is the DEFAULT (robust index-based seeking; fixes the HEVC
-    // seek corruption of the hand-rolled path). Set /tmp/plxnative-demux=mkv to fall back to the
-    // legacy mkv.rs demuxer for comparison.
-    let fallback_mkv = std::fs::read_to_string("/tmp/plxnative-demux").map(|s| s.trim() == "mkv").unwrap_or(false);
-    USE_FF.store(!fallback_mkv, Ordering::Relaxed);
-    crate::player::log(if fallback_mkv {
-        "ff: demuxer = mkv.rs (fallback via plxnative-demux=mkv)"
-    } else {
-        "ff: demuxer = libavformat"
-    });
     // Phase A dev trigger: /tmp/plxnative-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
     if let Ok(u) = std::fs::read_to_string("/tmp/plxnative-ffprobe") {
@@ -611,13 +592,13 @@ unsafe fn free_avio(avio: *mut AVIOContext) {
     av_freep(&mut p as *mut *mut AVIOContext as *mut c_void); // frees + NULLs the context
 }
 
-/// The libavformat demuxer thread body — replaces mkv.rs's stream_thread when use_ff().
+/// The libavformat demuxer thread body (spawned by engine::start_bufferfeed).
 /// Opens the URL through a custom AVIO over stream.rs, reads packets, converts video to
 /// Annex-B via the mp4toannexb BSF (VPS/SPS/PPS prepended at every keyframe), feeds video
 /// (es=1) + raw audio (es=2) to the AuQueue, and seeks via av_seek_frame.
 /// Parse an avcC (H264) / hvcC (HEVC) extradata record into a ready-to-prepend Annex-B
 /// parameter-set blob (VPS/SPS/PPS with 4-byte start codes) + the NAL length-prefix size.
-/// Mirrors mkv.rs's mkv_parse_avcc/mkv_parse_hvcc — the format the Starfish decoder wants.
+/// (Ported from the retired mkv.rs demuxer) — the format the Starfish decoder wants.
 unsafe fn parse_extradata(ed: *const u8, len: usize, is_hevc: bool) -> (Vec<u8>, usize) {
     let mut blob = Vec::new();
     if ed.is_null() || len < 7 {
@@ -1197,7 +1178,6 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
                 host_c = CString::new(su.host).unwrap_or_default();
                 path_c = CString::new(su.path).unwrap_or_default();
                 port = su.port;
-                let _ = SHARED.reparse_next.swap(false, Ordering::Acquire);
                 // direct play reopens the SAME url (byte-range); a transcode gets a new &offset url
                 crate::player::log("ff: seek → reopen stream url");
                 continue 'outer;

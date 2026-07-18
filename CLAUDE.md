@@ -92,10 +92,10 @@ threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Rea
 touching playback):** LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
 `BUFFERSTREAM` **buffer-feed** mode, the decoded sink bound to the hardware video plane via
 **`libAcbAPI` (ACB)** — in-process is what lets ACB bind the app-owned sink. The media pipeline
-is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`/libavformat is the default**;
-`mkv.rs` is the live fallback via `/tmp/plxnative-demux=mkv`) → AU queue with backpressure
-(`aq.rs`) → the pump `Feed()`s the Starfish pipeline. Three worker threads (demux, cue-preflight,
-media/load) sit beside the main loop, which owns all ACB/Starfish control calls. Also linked and
+is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`, the TV's own libavformat
+over a custom AVIO**) → AU queues with backpressure (`aq.rs`) → the pump `Feed()`s the Starfish
+pipeline. Two worker threads (demux, media/load) sit beside the main loop, which owns all
+ACB/Starfish control calls. Also linked and
 used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw-socket
 `stream.rs` can't.
 
@@ -107,9 +107,9 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   nanosvg rasterizer. These three are the *entire* C side.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
-  playback deep-dive; read it before touching playback**), `ff.rs` (the default libavformat
-  demuxer), `stream.rs`/`mkv.rs`/`aq.rs` (HTTP socket → fallback MKV demux → AU pipeline, ports
-  of the old C headers), `net.rs` (libcurl/TLS), and the Plex data layer.
+  playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the TV's own
+  libavformat), `stream.rs`/`aq.rs` (HTTP socket → AU pipeline), `net.rs` (libcurl/TLS), and the
+  Plex data layer.
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
@@ -118,10 +118,9 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
   `docs/ui-system-migration.md`.
   (`rust-modules/src/stream.rs` — blocking HTTP/1.1 GET over a raw TCP socket: numeric IP,
-  Content-Length/close delimited, **no chunked decoding**, no DNS. `mkv.rs` — streaming Matroska
-  demuxer → H264 Annex-B AUs + raw audio, parsing SeekHead/Cues for the seek index; H264
-  `V_MPEG4/ISO/AVC`, unlaced blocks. `aq.rs` — one-producer/one-consumer AU FIFO with byte-cap
-  backpressure. These three are Rust ports of the deleted C `stream.h`/`mkv.h`/`aq.h`.)
+  Content-Length/close delimited, **no chunked decoding**, no DNS. `aq.rs` — one-producer/
+  one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
+  the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
 - `stub/*.c` + `stub/*.so` — link-time symbol stubs carrying the TV's real SONAMEs — now just
   FFmpeg + curl (see above).
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
@@ -195,8 +194,7 @@ There is no host-side test suite — the code only runs on the TV. Verify by obs
 - **Dev trigger files (read once at boot, on the TV):** `/tmp/plxnative-url` (override the streamed part
   URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (one auto-seek),
-  `/tmp/plxnative-demux=mkv` (fall back to the mkv.rs demuxer), and `/tmp/plxnative-ptype` (ACB
-  playerType bisect knob).
+  and `/tmp/plxnative-ptype` (ACB playerType bisect knob).
   **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`) marks the boot as
   automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
   stored session entirely — so headless runs always land on a deterministic Home.

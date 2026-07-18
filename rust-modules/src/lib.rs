@@ -6,11 +6,10 @@ mod app; // plex_run — the Rust app core / event loop (the entry inverted from
 mod aq;
 mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
-mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — replaces mkv.rs (TV ships FFmpeg 3.4)
+mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — the TV's own FFmpeg 3.3 via the stub-.so link
 mod gfx;
 mod img;
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
-mod mkv;
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 mod player; // buffer-feed video engine (was playback.c) — step 5
 mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)

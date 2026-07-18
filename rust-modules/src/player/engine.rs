@@ -1,8 +1,8 @@
 //! player::engine — the main-thread-confined session object (Engine) + lifecycle
 //! (acb_init / start_bufferfeed / stop_bufferfeed) + the feed loops. No worker
 //! thread ever names an Engine field: race-free by confinement (like the C
-//! main-thread-only flags). The Engine owns the two HttpStream boxes + the AuQueue
-//! box; it hands raw ptrs to the workers and outlives them (drops after join).
+//! main-thread-only flags). The Engine owns the HttpStream box + the AuQueue
+//! boxes; it hands raw ptrs to the workers and outlives them (drops after join).
 use super::shared::Stage;
 use super::{ffi, log, threads, ACB_OK, PTYPE, SHARED, TX};
 use crate::aq::{AuNode, AuQueue};
@@ -40,7 +40,7 @@ pub(crate) struct SampleBuf {
 }
 
 pub(crate) enum Source {
-    Stream, // host/port/path are consumed by the demux+cue threads at spawn
+    Stream, // host/port/path are consumed by the demux thread at spawn
     Sample(Box<SampleBuf>),
 }
 
@@ -78,26 +78,22 @@ pub(crate) struct Engine {
     // gap is what makes video "fast-forward" to catch the audio clock on resume). feed_stream
     // fires Play once max_fed_pts reaches PRIME_NS.
     pub prime_play: bool,
-    // Two-lane feed (Kodi m_messageQueueVideo/Audio): the ff demuxer routes es=1 video to aq_video
+    // Two-lane feed (Kodi m_messageQueueVideo/Audio): the demuxer routes es=1 video to aq_video
     // and es=2 audio to aq_audio; each lane is fed independently so a video BufferFull can't stall
-    // the audio lane (the audioSync master clock). Both are allocated for a stream; the legacy mkv
-    // path feeds its mixed es stream into aq_video and leaves aq_audio empty. (None only pre-start
-    // and on the local-sample source.)
+    // the audio lane (the audioSync master clock). Both are allocated for a stream. (None only
+    // pre-start and on the local-sample source.)
     pub aq_video: Option<Box<AuQueue>>, // g_aq (M owns; ptr handed to D)
     pub aq_audio: Option<Box<AuQueue>>, // audio lane
-    // hs/hs2/payload are RAII: held alive for the workers (which hold raw ptrs into
+    // hs/payload are RAII: held alive for the workers (which hold raw ptrs into
     // them) and freed only after join — never read back through the field.
     #[allow(dead_code)]
     pub hs: Box<HttpStream>, // demux socket (M owns; D uses via raw ptr)
-    #[allow(dead_code)]
-    pub hs2: Box<HttpStream>, // cue-preflight socket
     pub pending_video: Option<AuBox>, // bf_pending, VIDEO lane (held across BufferFull)
     pub pending_audio: Option<AuBox>, // bf_pending, AUDIO lane
     #[allow(dead_code)]
     pub payload: std::ffi::CString, // bf_payload (kept alive for the session)
     pub source: Source,
     pub stream_th: Option<std::thread::JoinHandle<()>>,
-    pub cues_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
     pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
 }
@@ -190,7 +186,7 @@ fn fps_rational(fps: f64) -> Option<(i64, i64)> {
 
 pub(crate) fn start_bufferfeed() -> bool {
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
-    // Engine, detaching its worker threads and freeing the hs/hs2/aq boxes those
+    // Engine, detaching its worker threads and freeing the hs/aq boxes those
     // threads still hold raw ptrs into -> use-after-free. If already running, no-op.
     // (Reachable via a PLAY key landing in the WILL->DID foreground window.)
     if unsafe { (*std::ptr::addr_of!(ENGINE)).is_some() } {
@@ -273,46 +269,32 @@ pub(crate) fn start_bufferfeed() -> bool {
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();
-    let mut hs2 = crate::stream::http_stream_boxed();
     let mut aqv_box: Option<Box<AuQueue>> = None;
     let mut aqa_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
-    let mut cues_th = None;
     let source;
 
     if stream {
         let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
         let (host, port, path) = (su.host, su.port, su.path);
         log(&format!("stream: host={host} port={port} path={}", &path[..path.len().min(80)]));
-        // Two-lane feed: the ff demuxer routes es=1 video to aq_video and es=2 audio to aq_audio,
-        // each with its own cap + feeder. Both are always allocated; the legacy single-queue mkv
-        // path just leaves aq_audio empty (it feeds its mixed es stream into aq_video).
+        // Two-lane feed: the demuxer routes es=1 video to aq_video and es=2 audio to
+        // aq_audio, each with its own cap + feeder.
         let mut qv = crate::aq::aq_new(AQ_VIDEO_BYTES);
         let mut qa = crate::aq::aq_new(AQ_AUDIO_BYTES);
         let aqv_raw = &mut *qv as *mut AuQueue;
         let aqa_raw = &mut *qa as *mut AuQueue;
         let hs_raw = &mut *hs as *mut HttpStream;
-        let hs2_raw = &mut *hs2 as *mut HttpStream;
         SHARED.hs_ptr.store(hs_raw, Ordering::Release);
-        SHARED.hs2_ptr.store(hs2_raw, Ordering::Release);
         SHARED.seek_byte.store(-1, Ordering::Relaxed);
         {
-            let (h, p) = (host.clone(), path.clone());
             let aqp = threads::SendPtr(aqv_raw);
             let aqap = threads::SendPtr(aqa_raw);
             let hsp = threads::SendPtr(hs_raw);
-            stream_th = Some(std::thread::spawn(move || threads::stream_thread(h, port, p, aqp, aqap, hsp)));
-        }
-        // skip the cue preflight for a transcode (no byte-cues; a 2nd conn cuts the stream)
-        if !SHARED.cues_ready.load(Ordering::Relaxed) && !crate::route::is_transcoding() {
-            SHARED.cues_abort.store(false, Ordering::Relaxed);
-            let (h, p) = (host.clone(), path.clone());
-            let hs2p = threads::SendPtr(hs2_raw);
-            cues_th = Some(std::thread::spawn(move || threads::cues_thread(h, port, p, hs2p)));
+            stream_th = Some(std::thread::spawn(move || crate::ff::demux(host, port, path, aqp, aqap, hsp)));
         }
         aqv_box = Some(qv);
         aqa_box = Some(qa);
-        let _ = (host, port, path); // consumed above; keep the bindings' last use explicit
         source = Source::Stream;
     } else {
         source = Source::Sample(sample.unwrap());
@@ -355,13 +337,11 @@ pub(crate) fn start_bufferfeed() -> bool {
         aq_video: aqv_box,
         aq_audio: aqa_box,
         hs,
-        hs2,
         pending_video: None,
         pending_audio: None,
         payload: payload_c,
         source,
         stream_th,
-        cues_th,
         load_th,
         report_th,
     };
@@ -418,7 +398,7 @@ pub(crate) fn reload_at(target_ns: i64) {
         return;
     }
     log(&format!("reload_at: fresh Load at {}s", target_ns / 1_000_000_000));
-    teardown(true, true); // keep cues; reload mode: preserve the session (no url-clear / stop-scrobble)
+    teardown(true); // reload mode: preserve the session (no url-clear / stop-scrobble)
     arm_seek(target_ns);
     start_bufferfeed();
 }
@@ -445,7 +425,7 @@ pub(crate) fn reload_transcode(offset_ns: i64) {
         return;
     }
     log(&format!("reload_transcode: fresh Load at offset {}s", offset_ns / 1_000_000_000));
-    teardown(true, true); // keep cues/session; reload mode
+    teardown(true); // keep the session; reload mode
     SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
     SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
     start_bufferfeed();
@@ -453,22 +433,22 @@ pub(crate) fn reload_transcode(offset_ns: i64) {
 
 /// Stop playback: unblock+join threads, unload+destruct the pipeline, release the
 /// video plane, reset all state so a fresh start_bufferfeed() can restart.
-pub(crate) fn stop_bufferfeed(keep_cues: bool) {
-    teardown(keep_cues, false);
+pub(crate) fn stop_bufferfeed() {
+    teardown(false);
 }
 
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
-/// backgrounded) but PRESERVE the playback session — keep the URL + transcode session + cues, and
+/// backgrounded) but PRESERVE the playback session — keep the URL + transcode session, and
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
 /// (resume_at + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
 pub(crate) fn suspend_bufferfeed() {
-    teardown(true, true);
+    teardown(true);
 }
 
 /// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
 /// stop: preserve the playback session so start_bufferfeed can restart the SAME item — skip
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
-fn teardown(keep_cues: bool, for_reload: bool) {
+fn teardown(for_reload: bool) {
     let mut eng = match unsafe { (*std::ptr::addr_of_mut!(ENGINE)).take() } {
         Some(e) => e,
         None => return,
@@ -490,8 +470,7 @@ fn teardown(keep_cues: bool, for_reload: bool) {
         }
     };
 
-    // 1. stop the cue preflight FIRST + unblock every thread (abort queue, close sockets)
-    SHARED.cues_abort.store(true, Ordering::Release);
+    // 1. unblock every thread (abort queues, close the demux socket)
     SHARED.report_stop.store(true, Ordering::Release); // stop the /:/timeline reporter
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
@@ -502,15 +481,8 @@ fn teardown(keep_cues: bool, for_reload: bool) {
         if !p.is_null() {
             crate::stream::http_close(p);
         }
-        let p2 = SHARED.hs2_ptr.load(Ordering::Acquire);
-        if !p2.is_null() {
-            crate::stream::http_close(p2);
-        }
     }
-    // 2. JOIN before touching the cue Vec (cue_cb writes it on the preflight thread)
-    if let Some(t) = eng.cues_th.take() {
-        let _ = t.join();
-    }
+    // 2. JOIN every worker before freeing anything they hold raw ptrs into
     if let Some(t) = eng.stream_th.take() {
         let _ = t.join();
     }
@@ -553,35 +525,8 @@ fn teardown(keep_cues: bool, for_reload: bool) {
         crate::route::stop_transcode();
         crate::route::clear_url();
     }
-    // 6. keep the cue index across an app-switch (same file) only if FULLY loaded
-    if !keep_cues || !SHARED.cues_ready.load(Ordering::Relaxed) {
-        SHARED.cues.lock().unwrap().clear();
-        SHARED.cues_ready.store(false, Ordering::Relaxed);
-    }
     log("stop_bufferfeed: torn down");
-    // Engine (hs/hs2/aq boxes, payload) drops here — after all joins
-}
-
-/// nearest cue at or before t (absolute byte), or None if the index isn't ready.
-pub(crate) fn cue_byte_for(t: i64) -> Option<i64> {
-    if !SHARED.cues_ready.load(Ordering::Relaxed) {
-        return None;
-    }
-    let v = SHARED.cues.lock().unwrap();
-    if v.is_empty() {
-        return None;
-    }
-    let (mut lo, mut hi, mut best) = (0i64, v.len() as i64 - 1, -1i64);
-    while lo <= hi {
-        let mid = (lo + hi) / 2;
-        if v[mid as usize].t_ns <= t {
-            best = mid;
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    Some(v[if best < 0 { 0 } else { best as usize }].byte)
+    // Engine (hs/aq boxes, payload) drops here — after all joins
 }
 
 /// free every queued AU + the held pending one, BOTH lanes (seek + teardown).
@@ -647,8 +592,7 @@ const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 // presented position). Set on a seek; the first presented frame overwrites it with a real pts.
 pub(crate) const PRES_NONE: i64 = i64::MIN;
 
-/// VIDEO lane feeder (two-lane ff path: aq_video is video-only; legacy mkv path: aq_video holds
-/// the mixed es stream). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
+/// VIDEO lane feeder (aq_video is video-only). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
 /// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
 pub(crate) fn feed_stream(eng: &mut Engine) {

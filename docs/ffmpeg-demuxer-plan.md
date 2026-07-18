@@ -1,6 +1,14 @@
 # libavformat demuxer plan — replacing `mkv.rs`
 
-**Status:** engineering spec, ready to implement. **Mandate:** quality + stability, not a throwaway prototype.
+**Status: EXECUTED (all phases A–E landed; 2026-07-18).** `ff.rs` is the only demuxer;
+`mkv.rs`, the `cues_thread`/Cue-index apparatus, the second HTTP connection (`hs2`), and the
+`/tmp/plxnative-demux=mkv` bisect trigger are all deleted. Two knowing deviations from the spec
+below: the direct-play seek evolved past §3.2 into a Kodi-style **in-place** seek (flush + reopen
++ `av_seek_frame`, then `setTimeToDecode`+`sendSegmentEvent` on the first post-seek keyframe —
+see `pump.rs`/`feed_stream`), and the feed is **two-lane** (separate video/audio `AuQueue`s, not
+the single queue assumed here). This file is kept as the design record/ABI reference.
+
+**Mandate:** quality + stability, not a throwaway prototype.
 **Target:** LG webOS 4.5, 32-bit ARM, FFmpeg **3.3** ABI (SONAMEs `libavformat.so.57` /
 `libavcodec.so.57` / `libavutil.so.55` = versions 57.71.100 / 57.89.100 / 55.58.100). The boot
 smoke test in `ff.rs::smoke()` already logs `avformat=57.71.100`, proving the stub-`.so` link

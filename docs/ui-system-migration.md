@@ -1,5 +1,13 @@
 # Shared UI System — Migration Plan
 
+> **Status (2026-07-18): EXECUTED — both halves are done and merged to main.** The token/
+> component sweep landed as planned; the **view-tree half below is stale planning-tense** (it
+> predates the executed work and e.g. describes a 5-field `DetailView` that is now ~17 fields).
+> The accurate executed record for the view-tree migration — including the later Step 8
+> (shared scroll/cull/hero infra, stopped after 8.5) — is `docs/ui-viewtree-plan.md` §G. Only
+> the explicitly optional 7b (unified FocusPath) remains unbuilt, by design. This file is kept
+> for the design rationale (token values, carve-outs, player-as-reference stance).
+
 Extract a shared UI system from the **player screen** (the one screen with a coherent
 design language: `widgets.rs` / `table.rs` / `label.rs` / `icons.rs` / `mod.rs`) and
 migrate the two drifted client screens (`home.rs`, `detail.rs`) onto it — first onto

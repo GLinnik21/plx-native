@@ -140,7 +140,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 
 | Case | rk | Asserts |
 |------|----|---------|
-| `substance_seek_inplace` | 4 | in-place seek to 140s (`seek(ff in-place)` + `sendSegment=1`, **no** `reload_at`), timeline reaches ~140s |
+| `substance_seek_inplace` | 4 | in-place seek to 140s (`seek(in-place)` + `sendSegment=1`, **no** `reload_at`), timeline reaches ~140s |
 | `toy_story4_seek_transcode` | 1945 | transcode seek (`seek(transcode)` **or** `reload_at: fresh Load at 140s`), timeline reaches ~140s |
 | `substance_resume_directplay` | 4 | viewOffset 600s honored — first `timeline` near 600s, not 0 |
 | `toy_story4_resume_transcode` | 1945 | `resume(transcode): restart at offset 600s`, first timeline near 600s |
@@ -158,7 +158,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 - **video plane bound:** `setMediaVideoData sent`
 - **not stuck:** ≥2 `timeline playing t=<S>s/` reports whose `<S>` climbs; and **no**
   `smp_cb type=18` / **no** `Playing error`.
-- **seek:** `seek(ff in-place)` / `in-place seek: ... sendSegment=1` / `seek(transcode)` /
+- **seek:** `seek(in-place)` / `in-place seek: ... sendSegment=1` / `seek(transcode)` /
   `reload_at: fresh Load at 140s`.
 - **audio switch:** `audio switch (native)` / `re-transcode:` + `reload_transcode:`.
 - **subtitles (text):** `sub cue [<a>..<b>ms] "<text>"`.
@@ -177,11 +177,10 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 - **Unicode arrows** in some log lines (`setMediaVideoData sent → …`, `→ reload`) are matched
   on their stable ASCII prefix.
 
-## Subtitle soft-render (now on the default demuxer)
+## Subtitle soft-render
 
-The **default libavformat demuxer (`ff.rs`) now demuxes embedded text subtitles** (SRT/subrip,
-ASS/SSA, mov_text) and emits `sub cue [..] "text"` lines, so the subtitle case runs on the
-default path — no `plxnative-demux=mkv` forcing. It pushes cues for **all** text tracks (tagged by
+The **demuxer (`ff.rs`) demuxes embedded text subtitles** (SRT/subrip,
+ASS/SSA, mov_text) and emits `sub cue [..] "text"` lines. It pushes cues for **all** text tracks (tagged by
 index) and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
 instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are now client-rendered too:
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each
@@ -195,10 +194,6 @@ tracks `[RU-forced, RU, EN, EN-SDH]`, so it picks **row 3 = the English track** 
 opening monologue and cues appear within the run window. (For a transcode item, soft subs ride a
 WebVTT sidecar, which per project memory delivers 0 bytes on this pipeline — direct-play is the
 only reliable sub path.)
-
-To regression-test the legacy `mkv.rs` demuxer specifically, a case may still set `"demux":
-"mkv"` on its `subtitle` op (H264-only). It's optional now that the default path covers subtitles
-on HEVC/mp4 too.
 
 ## Adding a case
 
@@ -217,7 +212,7 @@ Append an entry to `manifest.json` → `cases`:
     { "op": "play" },
     { "op": "seek", "mode": "inplace", "target_s": 140 }
     // or: {"op":"audio_switch","tab":0,"row":1,"mode":"native"|"transcode"}
-    // or: {"op":"subtitle","tab":1,"row":1,"demux":"mkv"}
+    // or: {"op":"subtitle","tab":1,"row":1}
     // or: {"op":"resume","mode":"directplay"|"transcode","offset_s":600}
   ],
   "expect": {
@@ -232,7 +227,7 @@ Append an entry to `manifest.json` → `cases`:
 ```
 
 `run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`,
-`audio_switch`/`subtitle`→`plxnative-menupick`, `subtitle demux:mkv`→`plxnative-demux=mkv`) and picks the
+`audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
 index *r−1*.

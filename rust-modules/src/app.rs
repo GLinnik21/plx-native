@@ -506,7 +506,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// re-introduces the stale-CW bug.
         fn exit_player(route: &mut Route, played_from_detail: bool, refresh_hubs_at: &mut u32) {
             close_player_overlays();
-            crate::player::stop_bufferfeed(false);
+            crate::player::stop_bufferfeed();
             *route = if played_from_detail { Route::Detail } else { Route::Home };
             *refresh_hubs_at = unsafe { SDL_GetTicks() }.wrapping_add(800).max(1);
         }
@@ -848,7 +848,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     // stop playback and open the show (episode) or movie detail page
                                     if !rk.is_empty() {
                                         close_player_overlays();
-                                        crate::player::stop_bufferfeed(false);
+                                        crate::player::stop_bufferfeed();
                                         crate::ui::detail::open_rk(&rk);
                                         route = Route::Detail;
                                     }
@@ -1811,7 +1811,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         }
 
         if is_started() {
-            crate::player::stop_bufferfeed(false);
+            crate::player::stop_bufferfeed();
         }
         crate::posters::posters_shutdown();
         SDL_Quit();

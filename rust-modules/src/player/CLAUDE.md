@@ -11,14 +11,13 @@ one-paragraph playback summary.
 
 In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process
 path (`com.webos.media/load`, `start_playback()`) could not provide — that path is kept only as
-dead-ish reference, and `docs/buffer-feed-plan.md` records the pivot (it predates the working MKV
-path — treat it as history, not spec). The stream side: `PMS HTTP GET (raw TCP socket, stream.rs)`
-→ demux → access-unit queue with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to
-the Starfish pipeline. The demuxer emits Annex-B video AUs (param sets prepended at each keyframe)
-and raw AC3/EAC3/AAC audio frames; **`ff.rs` (the TV's own libavformat, over a custom AVIO on
-`stream.rs`) is the default**, and the hand-rolled Matroska demuxer `mkv.rs` is the **live
-fallback** via the `/tmp/plxnative-demux=mkv` dev trigger until it's retired (see
-`docs/ffmpeg-demuxer-plan.md`).
+dead-ish reference, and `docs/buffer-feed-plan.md` records the pivot (treat it as history, not
+spec). The stream side: `PMS HTTP GET (raw TCP socket, stream.rs)` → demux → per-lane access-unit
+queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
+The demuxer is **`ff.rs` — the TV's own libavformat, over a custom AVIO on `stream.rs`** (design
+record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs` fallback is retired/deleted). It
+emits Annex-B video AUs (param sets prepended at each keyframe) and raw AC3/EAC3/AAC audio frames,
+and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
 
@@ -26,11 +25,11 @@ fallback** via the `/tmp/plxnative-demux=mkv` dev trigger until it's retired (se
   on the main thread; `engine` spawns the workers below.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
-- `threads.rs` — the three workers: **`stream_thread`** (demux: open the part URL, run the demuxer —
-  `ff.rs` by default, `mkv.rs` fallback — and push AUs to the queue; loops on seek by re-opening at a
-  byte `Range:` and resyncing to the next Cluster), **`cues_thread`** (cue-preflight: parse the MKV
-  header, fetch the Cues by Range, build a time→byte index; CBR estimate until ready),
-  **`load_thread`** (construct Starfish + `Load()`, which owns its own GMainContext).
+- `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
+  which owns its own GMainContext) and **`timeline_thread`** (the ~10 s `/:/timeline` progress
+  reporter). The **demux thread body is `ff::demux`** (spawned by `engine::start_bufferfeed`): open
+  the part URL, read+convert packets, push AUs to the two lanes; its outer loop re-opens on
+  `next_url`/`seek_byte` and `av_seek`s on `seek_to_ns`.
 - `shared.rs` — the **only** cross-thread state (each field replaces a C `volatile` global — `g_*`).
   New cross-thread state goes here, behind the same discipline; don't smuggle it through a raw static.
 
@@ -61,9 +60,11 @@ fallback** via the `/tmp/plxnative-demux=mkv` dev trigger until it's retired (se
   unreachable in buffer-feed. Both text (SRT/ASS) and image (PGS/VobSub) subs are decoded and drawn by
   us (canvas authored at 1920×1080); don't expect the pipeline to burn or overlay them. See
   `[[tv-subtitle-engine]]` and the `plex/` soft-subs note.
-- **Seeks rebase the fed PTS timeline** on the first post-seek keyframe (`pts_shift`/`rebase_pending`
-  in `shared.rs`) so Starfish never sees a jump. The seek byte offset comes from the Cue index
-  (`cues_thread`); clusters start on a keyframe, and the resync lands there.
+- **Seeks are in-place** (Kodi-style): flush + reopen the demuxer + `av_seek_frame` to the target,
+  then on the first post-seek keyframe `feed_stream` re-anchors the GStreamer segment
+  (`setTimeToDecode` + `sendSegmentEvent`) — no reload/decoder re-init. A transcode seek instead
+  restarts the encode at `&offset` with a full fresh `Load`. The rebase machinery
+  (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
 - **App-switch lifecycle** (handled in `app.rs`; details in the root `CLAUDE.md` gotchas): OS
   background suspends the buffer-feed preserving the session, foreground reloads and resumes with a
   single `Load`. Preserve the suspend/reload pairing if you touch playback.

@@ -48,7 +48,7 @@ CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 # so this no longer has to be exhaustive — it's kept for humans / grep)
 ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
-    "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio", "plxnative-demux",
+    "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-ffprobe", "plxnative-token",
     # UI/FPS scenes (plxnative-profile MUST be cleared — a stale one glFinish-tanks FPS and false-fails)
@@ -170,12 +170,6 @@ def triggers_for_case(case):
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
-            if op.get("demux") == "mkv":
-                # Optional: force the legacy mkv.rs demuxer (H264-only) to regression-test that
-                # path specifically. The DEFAULT libavformat demuxer (ff.rs) now emits `sub cue
-                # [..]` lines too, so subtitle cases no longer need this — omit `demux` to run on
-                # the default and cover HEVC/mp4 as well.
-                files.append(("plxnative-demux", "mkv"))
         # "play" and "resume" need no extra trigger (resume rides the seeded viewOffset).
     return files
 
@@ -325,9 +319,9 @@ def _reached_target(lines, target_s):
 
 
 def op_seek_inplace(lines, target_s):
-    started = find(lines, "seek(ff in-place)")
+    started = find(lines, "seek(in-place)")
     if started is None:
-        return False, "no `seek(ff in-place)` line (in-place seek did not fire)"
+        return False, "no `seek(in-place)` line (in-place seek did not fire)"
     seg_ok = any("sendSegment=1" in ln for ln in lines if "in-place seek:" in ln)
     if not seg_ok:
         ln = find(lines, "in-place seek:")
@@ -430,12 +424,6 @@ def op_resume_transcode(lines, offset_s):
 # ---------------------------------------------------------------------------
 # Case execution
 # ---------------------------------------------------------------------------
-def uses_mkv_demux(case):
-    """True if a case forces the legacy mkv.rs demuxer (subtitle cases) — it's the only demuxer
-    that emits `sub cue` lines, but it doesn't log the libavformat `ff: codec_id` line."""
-    return any(op.get("demux") == "mkv" for op in case.get("operations", []))
-
-
 def evaluate(case, lines):
     """Run every assertion for a case. Returns (passed, [(label, ok, evidence)])."""
     exp = case["expect"]
@@ -443,10 +431,7 @@ def evaluate(case, lines):
 
     # base assertions (every case)
     results.append(("decision", *a_decision(lines, exp["decision"])))
-    # The legacy mkv.rs demuxer (subtitle cases) doesn't emit `ff: v=#0 codec_id=`; skip the
-    # ffmpeg-codec check there — video_bound + timeline_climb still prove the frame decoded.
-    if not uses_mkv_demux(case):
-        results.append(("codec", *a_codec(lines, exp["codec_id"], exp["min_video_width"])))
+    results.append(("codec", *a_codec(lines, exp["codec_id"], exp["min_video_width"])))
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
