@@ -3,8 +3,6 @@
 #![allow(dead_code)]
 use std::os::raw::c_uint;
 
-pub const ROWS: usize = 5;
-pub const COLS: usize = 10;
 pub const CARD_W: f32 = 250.0;
 pub const CARD_H: f32 = 375.0;
 pub const GAP: f32 = 30.0;

@@ -11,7 +11,6 @@
 //!
 //! Tokens (`Pin.auth_token`, `Resource.access_token`, `SwitchedUser.auth_token`) are secrets: they
 //! are never logged here and never printed by callers.
-#![allow(dead_code)]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 

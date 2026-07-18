@@ -494,8 +494,7 @@ fn focused_caption(m: &PmsMovie) -> Option<CString> {
 /// "<show> · 8 min left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
 /// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
 fn cw_caption(m: &PmsMovie) -> Option<CString> {
-    let n = m.show_title.iter().position(|&b| b == 0).unwrap_or(m.show_title.len());
-    let show = std::str::from_utf8(&m.show_title[..n]).unwrap_or("");
+    let show = std::str::from_utf8(crate::cbuf::as_bytes(&m.show_title)).unwrap_or("");
     let s = if m.resume_ms > 0 && m.dur_ns > 0 {
         let left = crate::ui::fmt::time_left(m.dur_ns / 1_000_000 - m.resume_ms);
         if m.kind == 3 && !show.is_empty() {

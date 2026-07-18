@@ -1,5 +1,12 @@
 # Soft WebVTT subtitles during transcode (never burn)
 
+> **SUPERSEDED — kept as history only (do not implement).** The premise below was refuted
+> on-device: the WebVTT sidecar delivers **0 bytes** on our progressive-MKV pipeline and
+> `/library/streams/{id}.vtt` is 501, so **burn is the only transcode option** and the real
+> subtitle path is client rendering on direct-play — see `rust-modules/src/plex/CLAUDE.md`
+> ("Subtitles: assume client rendering") and the player subtitle renderer. The
+> "landed, tested parser (`webvtt.rs`)" referenced below was deleted in 77c5af6.
+
 **Goal.** When the user selects a subtitle track *while the item is transcoding*, render it
 **client-side as soft text** — the same GLES text overlay direct-play already uses — instead
 of asking Plex to **burn** it into the H264 video plane. We do this by opening a **second HTTP

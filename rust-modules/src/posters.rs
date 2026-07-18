@@ -84,8 +84,7 @@ fn gl_delete(t: c_uint) {
 }
 
 fn key_bytes(s: &Pslot) -> &[u8] {
-    let n = s.key.iter().position(|&b| b == 0).unwrap_or(s.key.len());
-    &s.key[..n]
+    crate::cbuf::as_bytes(&s.key)
 }
 fn set_key(s: &mut Pslot, key: &str) {
     crate::cbuf::set_bytes(&mut s.key, key);
@@ -352,7 +351,7 @@ fn poster_worker() {
 }
 
 /// Spawn the poster workers. Host/port/token are read from the typed client singleton
-/// (`crate::plex::init` must run first), so no config is threaded in here.
+/// (`crate::plex::install` must run first), so no config is threaded in here.
 pub(crate) fn posters_init() {
     {
         let mut g = store();

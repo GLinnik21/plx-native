@@ -557,7 +557,6 @@ fn teardown(keep_cues: bool, for_reload: bool) {
     if !keep_cues || !SHARED.cues_ready.load(Ordering::Relaxed) {
         SHARED.cues.lock().unwrap().clear();
         SHARED.cues_ready.store(false, Ordering::Relaxed);
-        SHARED.segment_pos.store(0, Ordering::Relaxed);
     }
     log("stop_bufferfeed: torn down");
     // Engine (hs/hs2/aq boxes, payload) drops here — after all joins

@@ -213,6 +213,22 @@ pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
     }
 }
 
+/// Shared program bring-up for every shader pair: create → attach VS/FS → bind `a_pos`
+/// (attrib 0, the shared unit quad) → link. `None` = link failure; each caller keeps its
+/// own failure policy (hard-exit, degrade to 0, or early-return).
+pub(crate) fn link_program(vs: *const c_char, fs: *const c_char) -> Option<c_uint> {
+    unsafe {
+        let p = glCreateProgram();
+        glAttachShader(p, gfx_compile(GL_VERTEX_SHADER, vs));
+        glAttachShader(p, gfx_compile(GL_FRAGMENT_SHADER, fs));
+        glBindAttribLocation(p, 0, c"a_pos".as_ptr());
+        glLinkProgram(p);
+        let mut ok: c_int = 0;
+        glGetProgramiv(p, GL_LINK_STATUS, &mut ok);
+        (ok != 0).then_some(p)
+    }
+}
+
 pub(crate) fn gfx_use_base() {
     unsafe { glUseProgram(PROG) };
 }
@@ -221,17 +237,10 @@ static QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
 pub(crate) fn init_gl() {
     unsafe {
-        PROG = glCreateProgram();
-        glAttachShader(PROG, gfx_compile(GL_VERTEX_SHADER, VS_SRC.as_ptr()));
-        glAttachShader(PROG, gfx_compile(GL_FRAGMENT_SHADER, FS_SRC.as_ptr()));
-        glBindAttribLocation(PROG, 0, c"a_pos".as_ptr());
-        glLinkProgram(PROG);
-        let mut ok: c_int = 0;
-        glGetProgramiv(PROG, GL_LINK_STATUS, &mut ok);
-        if ok == 0 {
+        PROG = link_program(VS_SRC.as_ptr(), FS_SRC.as_ptr()).unwrap_or_else(|| {
             eprintln!("link failed");
             std::process::exit(1);
-        }
+        });
         glUseProgram(PROG);
         LOC_RECT = glGetUniformLocation(PROG, c"u_rect".as_ptr());
         LOC_SCREEN = glGetUniformLocation(PROG, c"u_screen".as_ptr());
@@ -253,29 +262,25 @@ pub(crate) fn init_gl() {
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, std::ptr::null());
 
-        APROG = glCreateProgram();
-        glAttachShader(APROG, gfx_compile(GL_VERTEX_SHADER, VS_SRC.as_ptr()));
-        glAttachShader(APROG, gfx_compile(GL_FRAGMENT_SHADER, FS_AMBIENT.as_ptr()));
-        glBindAttribLocation(APROG, 0, c"a_pos".as_ptr());
-        glLinkProgram(APROG);
-        AL_RECT = glGetUniformLocation(APROG, c"u_rect".as_ptr());
-        AL_SCREEN = glGetUniformLocation(APROG, c"u_screen".as_ptr());
-        AL_TL = glGetUniformLocation(APROG, c"u_atl".as_ptr());
-        AL_TR = glGetUniformLocation(APROG, c"u_atr".as_ptr());
-        AL_BR = glGetUniformLocation(APROG, c"u_abr".as_ptr());
-        AL_BL = glGetUniformLocation(APROG, c"u_abl".as_ptr());
+        APROG = link_program(VS_SRC.as_ptr(), FS_AMBIENT.as_ptr()).unwrap_or_else(|| {
+            log("ambient prog link failed");
+            0 // draw_ambient then binds program 0 and draws nothing — the corner wash is a nicety
+        });
+        if APROG != 0 {
+            AL_RECT = glGetUniformLocation(APROG, c"u_rect".as_ptr());
+            AL_SCREEN = glGetUniformLocation(APROG, c"u_screen".as_ptr());
+            AL_TL = glGetUniformLocation(APROG, c"u_atl".as_ptr());
+            AL_TR = glGetUniformLocation(APROG, c"u_atr".as_ptr());
+            AL_BR = glGetUniformLocation(APROG, c"u_abr".as_ptr());
+            AL_BL = glGetUniformLocation(APROG, c"u_abl".as_ptr());
+        }
 
         // Soft-shadow program (own program so the hot FS_SRC pays nothing; mirrors init_image).
-        SPROG = glCreateProgram();
-        glAttachShader(SPROG, gfx_compile(GL_VERTEX_SHADER, VS_SRC.as_ptr()));
-        glAttachShader(SPROG, gfx_compile(GL_FRAGMENT_SHADER, FS_SHADOW.as_ptr()));
-        glBindAttribLocation(SPROG, 0, c"a_pos".as_ptr());
-        glLinkProgram(SPROG);
-        glGetProgramiv(SPROG, GL_LINK_STATUS, &mut ok);
-        if ok == 0 {
+        SPROG = link_program(VS_SRC.as_ptr(), FS_SHADOW.as_ptr()).unwrap_or_else(|| {
             log("shadow prog link failed");
-            SPROG = 0; // draw_shadow no-ops → cards simply lose the drop-shadow, nothing else breaks
-        } else {
+            0 // draw_shadow no-ops → cards simply lose the drop-shadow, nothing else breaks
+        });
+        if SPROG != 0 {
             SL_RECT = glGetUniformLocation(SPROG, c"u_rect".as_ptr());
             SL_SCREEN = glGetUniformLocation(SPROG, c"u_screen".as_ptr());
             SL_SIZE = glGetUniformLocation(SPROG, c"u_size".as_ptr());
@@ -503,17 +508,13 @@ pub(crate) fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *const 
 // ---- image program: RGBA textures (posters/logos/backdrop) with rounded corners ----
 pub(crate) fn init_image() {
     unsafe {
-        IPROG = glCreateProgram();
-        glAttachShader(IPROG, gfx_compile(GL_VERTEX_SHADER, VS_IMG.as_ptr()));
-        glAttachShader(IPROG, gfx_compile(GL_FRAGMENT_SHADER, FS_IMG.as_ptr()));
-        glBindAttribLocation(IPROG, 0, c"a_pos".as_ptr());
-        glLinkProgram(IPROG);
-        let mut ok: c_int = 0;
-        glGetProgramiv(IPROG, GL_LINK_STATUS, &mut ok);
-        if ok == 0 {
-            log("image prog link failed");
-            return;
-        }
+        IPROG = match link_program(VS_IMG.as_ptr(), FS_IMG.as_ptr()) {
+            Some(p) => p,
+            None => {
+                log("image prog link failed");
+                return;
+            }
+        };
         IL_RECT = glGetUniformLocation(IPROG, c"u_trect".as_ptr());
         IL_SCREEN = glGetUniformLocation(IPROG, c"u_tscreen".as_ptr());
         IL_TINT = glGetUniformLocation(IPROG, c"u_tint".as_ptr());
@@ -531,7 +532,7 @@ pub(crate) fn init_image() {
 
 /// Upload a straight-alpha RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses
 /// `prev` if non-zero (re-specs it), else allocates a new id. Returns the texture id. Used for
-/// image-subtitle (PGS/VobSub) overlays, which change only every few seconds. Main-thread only.
+/// image-subtitle (PGS/VobSub) overlays and the text glyph-cache textures. Main-thread only.
 pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -> c_uint {
     unsafe {
         let mut tex = prev;

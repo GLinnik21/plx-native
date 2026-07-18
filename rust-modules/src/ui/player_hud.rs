@@ -13,9 +13,9 @@ use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::sync::atomic::Ordering::Relaxed;
 
-/// A throwaway Env for HUD widgets — they draw purely from their own fields and ignore it.
+/// The HUD widgets draw purely from their own fields and ignore their Env.
 fn hud_env() -> Env {
-    Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 }
+    Env::inert()
 }
 
 // The now-playing title under the playbar is a HUD *display* title — deliberately larger than

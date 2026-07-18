@@ -10,8 +10,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub(crate) type MkvByteReader = Option<extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int>;
 pub(crate) type MkvCueCb = Option<extern "C" fn(*mut c_void, i64, i64)>;
 
-// Layout MUST match `mkv_ctx` in src/mkv.h. Fields pub(crate) so the Rust player
-// engine (the old playback.c consumer) can configure the ctx + read its outputs.
+// The demux context (was C's `mkv_ctx`; no C consumer remains — Rust-only now). Fields
+// pub(crate) so the player engine can configure the ctx + read its outputs.
 #[repr(C)]
 pub struct MkvCtx {
     pub(crate) read: MkvByteReader,
@@ -38,18 +38,13 @@ pub struct MkvCtx {
     pub(crate) scratch: *mut u8,
     pub(crate) scratch_cap: c_int,
     pub(crate) naus: c_long,
-    pub(crate) nkey: c_long,
-    pub(crate) naus_a: c_long,
-    pub(crate) debug: c_int,
-    pub(crate) laced_seen: c_int,
     // subtitle tracks (text only), recorded in document order for client-side rendering.
     // The active track is chosen by index via crate::player::desired_sub_idx().
     pub(crate) strack_nums: [i64; 16],
     pub(crate) strack_ass: [u8; 16], // 1 = ASS/SSA (strip fields+codes), 0 = SRT/plain UTF-8
     pub(crate) nsub: c_int,
     // HEVC (V_MPEGH/ISO/HEVC) demux alongside H264: is_hevc gates the video branch, and the
-    // coded dimensions (from the Video element) feed the Starfish Load payload. Appended at the
-    // end so existing field offsets are unchanged.
+    // coded dimensions (from the Video element) feed the Starfish Load payload.
     pub(crate) is_hevc: c_int,
     pub(crate) vwidth: c_int,
     pub(crate) vheight: c_int,
@@ -496,7 +491,6 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
                 continue;
             }
             let apts = base + i as i64 * (*c).audio_frame_ns;
-            (*c).naus_a += 1;
             if !(*c).q.is_null() {
                 aq_push(
                     (*c).q,
@@ -515,8 +509,7 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
         return;
     }
     if (flags >> 1) & 0x03 != 0 {
-        (*c).laced_seen += 1; // skip laced video (rare)
-        return;
+        return; // skip laced video (rare)
     }
 
     let fd = &blk[p as usize..];
@@ -583,9 +576,6 @@ unsafe fn mkv_handle_block(c: *mut MkvCtx, blk: &[u8], cluster_ts: i64, bdur: i6
     }
     let pts = (cluster_ts + rel) * (*c).tscale;
     (*c).naus += 1;
-    if key != 0 {
-        (*c).nkey += 1;
-    }
     if !(*c).q.is_null() {
         aq_push((*c).q, (*c).scratch, out as c_int, pts, key, 1); // es=1 video
     }

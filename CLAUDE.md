@@ -94,22 +94,24 @@ bind the app-owned sink — the earlier URI/out-of-process path (`com.webos.medi
 `start_playback()`) could not, and is kept only as dead-ish reference. `docs/buffer-feed-plan.md`
 records why the pivot happened (it predates the working MKV path — treat it as history, not spec).
 
-**Media pipeline (in-app, all Rust — the `player/` engine + `stream.rs`/`mkv.rs`/`aq.rs`):**
-`PMS HTTP GET (raw TCP socket, stream.rs)` → `Matroska/MKV demux (mkv.rs)` → `access-unit queue
-with backpressure (aq.rs)` → the pump `Feed()`s each AU to the Starfish pipeline. The demuxer
-emits H264 Annex-B video AUs (SPS/PPS prepended at each IDR) and raw AC3/EAC3/AAC audio frames.
-Two libraries the old note said we *didn't* use are now linked and used: **libcurl** (`net.rs`) does
-the plex.tv account/login TLS+DNS that the raw-socket `stream.rs` can't, and the TV's **FFmpeg**
-(`ff.rs`, libavformat) is an **opt-in alternate demuxer** (bisect via `/tmp/plxnative-demux=ff`) being
-readied to replace `mkv.rs` — not yet the default. See `docs/ffmpeg-demuxer-plan.md`.
+**Media pipeline (in-app, all Rust — the `player/` engine + `stream.rs`/`ff.rs`/`aq.rs`):**
+`PMS HTTP GET (raw TCP socket, stream.rs)` → `demux` → `access-unit queue with backpressure
+(aq.rs)` → the pump `Feed()`s each AU to the Starfish pipeline. The demuxer emits Annex-B video
+AUs (param sets prepended at each keyframe) and raw AC3/EAC3/AAC audio frames. **The default
+demuxer is the TV's FFmpeg** (`ff.rs`, libavformat, via a custom AVIO over `stream.rs`); the
+hand-rolled Matroska demuxer (`mkv.rs`) is the **live fallback**, selected with the
+`/tmp/plxnative-demux=mkv` dev trigger, until it's retired (see `docs/ffmpeg-demuxer-plan.md`).
+Also linked and used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the
+raw-socket `stream.rs` can't.
 
 **Threads (spawned by `player/engine.rs`; the pump is `player/pump.rs`, shared state is
 `player/shared.rs` — the old C `g_*` volatiles):**
 - **Main loop** — input, springs, draw, and the pump (drives ACB bind → Play → feed, and handles
   seeks). All ACB/Starfish control calls happen here.
-- **Demux thread** (`threads::stream_thread`) — opens the part URL, runs the MKV demuxer, pushes
-  AUs to the queue. Loops for seeks: the pump sets the seek byte and closes the socket to interrupt
-  the blocking read; the thread re-opens with a byte `Range:` and resyncs to the next Cluster.
+- **Demux thread** (`threads::stream_thread`) — opens the part URL, runs the demuxer (`ff.rs` by
+  default, `mkv.rs` fallback), pushes AUs to the queue. Loops for seeks: the pump sets the seek
+  target and closes the socket to interrupt the blocking read; the thread re-opens and resumes
+  (mkv fallback: byte `Range:` + resync to the next Cluster).
 - **Cue-preflight thread** (`threads::cues_thread`) — a second HTTP connection parses just the MKV
   header to find the Cues element, fetches it by Range, and builds a time→byte index for accurate
   seeks (falls back to a CBR byte estimate until ready).
@@ -124,9 +126,9 @@ readied to replace `mkv.rs` — not yet the default. See `docs/ffmpeg-demuxer-pl
   the Rust `plex_run()`. `src/starfish.c` — the StarfishMediaAPIs C++/ACB seam. `src/svg.c` —
   nanosvg rasterizer. These three are the *entire* C side.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
-  `player/` (buffer-feed engine + worker threads), `stream.rs`/`mkv.rs`/`aq.rs` (HTTP→demux→AU
-  pipeline, ports of the old C headers), `ff.rs` (opt-in FFmpeg demuxer), `net.rs` (libcurl/TLS),
-  and the Plex data layer.
+  `player/` (buffer-feed engine + worker threads), `ff.rs` (the default libavformat demuxer),
+  `stream.rs`/`mkv.rs`/`aq.rs` (HTTP socket → fallback MKV demux → AU pipeline, ports of the old
+  C headers), `net.rs` (libcurl/TLS), and the Plex data layer.
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
@@ -213,7 +215,8 @@ There is no host-side test suite — the code only runs on the TV. Verify by obs
 - **Dev trigger files (read once at boot, on the TV):** `/tmp/plxnative-url` (override the streamed part
   URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (one auto-seek),
-  and `/tmp/plxnative-mode` / `/tmp/plxnative-variant` / `/tmp/plxnative-ptype` (playback-path bisect knobs).
+  `/tmp/plxnative-demux=mkv` (fall back to the mkv.rs demuxer), and `/tmp/plxnative-ptype` (ACB
+  playerType bisect knob).
   **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`) marks the boot as
   automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
   stored session entirely — so headless runs always land on a deterministic Home.

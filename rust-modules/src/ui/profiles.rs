@@ -457,9 +457,9 @@ fn pad_key(s: &mut Scene, sym: c_uint, wcode: c_uint) {
         return;
     }
     if sym == SDLK_LEFT {
-        s.pad.fc = step_focus(s.pad.fr, s.pad.fc, -1, true);
+        s.pad.fc = step_focus(s.pad.fr, s.pad.fc, -1);
     } else if sym == SDLK_RIGHT {
-        s.pad.fc = step_focus(s.pad.fr, s.pad.fc, 1, true);
+        s.pad.fc = step_focus(s.pad.fr, s.pad.fc, 1);
     } else if sym == SDLK_UP {
         s.pad.fr = (s.pad.fr - 1).max(0);
         s.pad.fc = nearest_col(s.pad.fr, s.pad.fc);
@@ -474,7 +474,7 @@ fn pad_key(s: &mut Scene, sym: c_uint, wcode: c_uint) {
 }
 
 /// Move the keypad column, skipping empty cells; clamps at the row edges.
-fn step_focus(fr: c_int, fc: c_int, dir: c_int, _skip: bool) -> c_int {
+fn step_focus(fr: c_int, fc: c_int, dir: c_int) -> c_int {
     let row = &KEYS[fr as usize];
     let mut c = fc + dir;
     while c >= 0 && (c as usize) < row.len() {

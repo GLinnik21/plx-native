@@ -2,9 +2,9 @@
  * video-plane binding, behind flat C verbs. Hides the 11 mangled __asm__ symbols,
  * the sret std::string in Feed, the 64KB in-place object, and the 3-arg ACB
  * taskId ABI. Library-thread callbacks are forwarded to sf_on_event/acb_on_event,
- * which the consumer defines (C today; Rust once the engine is ported). This is
- * the one piece that stays C in the Rust-first app — porting the mangled-C++ FFI
- * to Rust is worse-than-C. */
+ * which the Rust player engine defines (player/mod.rs). This is the one piece that
+ * stays C in the Rust-first app — porting the mangled-C++ FFI to Rust is
+ * worse-than-C. */
 #ifndef PLXNATIVE_STARFISH_H
 #define PLXNATIVE_STARFISH_H
 

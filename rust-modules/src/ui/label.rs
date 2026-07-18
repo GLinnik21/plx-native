@@ -9,8 +9,8 @@
 //! same way. Alignment is therefore string-independent — the thing hand-rolled `y - sz*0.58` guesses
 //! kept getting subtly wrong.
 //!
-//! The same rule holds for the other things we paint outside a frame — focus rings/glows
-//! (`Painter::ring`), the focus scale-pop (`Rect::scaled`), gradient scrims. They decorate; they are
+//! The same rule holds for the other things we paint outside a frame — the shader-baked focus
+//! glow, the focus scale-pop (`Rect::scaled`), gradient scrims. They decorate; they are
 //! never measured. Layout only ever sees frames and cap bands.
 use crate::ui::{Painter, Rect};
 use std::os::raw::{c_char, c_int};

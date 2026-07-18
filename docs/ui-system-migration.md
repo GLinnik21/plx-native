@@ -7,7 +7,7 @@ migrate the two drifted client screens (`home.rs`, `detail.rs`) onto it — firs
 `update → layout → draw`).
 
 **Correctness signal:** there is no host runtime. The *only* build/regression check is
-`make` (zig cc ARM cross-build). Every numbered step below must leave `make` green, and
+`make` (webOS-NDK ARM cross-build). Every numbered step below must leave `make` green, and
 must not change the C-ABI entry-point *signatures* that `app.rs` / `route.rs` / the
 dev-trigger headless harness call (`home_init/update/draw/move_focus/pointer_focus/wheel`;
 detail `open/open_rk/open_rk_season/close/update/draw/move_focus/on_ok`) until the final

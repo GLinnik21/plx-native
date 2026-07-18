@@ -62,9 +62,10 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 - **`Label`/`Button` hold a non-owning `*const c_char`.** Keep the `CString` alive for the whole
   draw frame (bind it to a `let` in the same scope) or you'll draw freed memory. (`TextView` is the
   exception — it borrows a `&str` and builds its own `CString`s internally, so it's memory-safe.)
-- **The focus ring/glow is shader-baked** (`gfx.rs` `FS_SRC`): `Painter::ring` exposes only a
-  `focus: f32` scalar and the ring *geometry* (`theme::CARD_RING_PAD_*`, `CARD_RING_RAD`). Its color
-  cannot be tokenized — don't try, and don't re-add it as a literal.
+- **The focus ring/glow is shader-baked** (`gfx.rs` `FS_SRC`/`FS_IMG`, folded into the card
+  composite pass): callers drive it only through a `focus: f32` scalar and the geometry consts
+  (`theme::CARD_RING_RAD`, `consts::GLOW_PAD`). Its color cannot be tokenized — don't try, and
+  don't re-add it as a literal.
 - **`detail.rs` below-hero layout is a computed flow, not magic constants.** The below-hero sections
   are the children of a shared `ScrollColumn` (`impl Column for DetailView`): the container's
   `child_top(i)` stacks the *present* blocks' `block_h()` heights (via `Column::height`) from

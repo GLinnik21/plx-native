@@ -346,7 +346,7 @@ impl TableView {
             }
             // detail sub-line, elided (long Cyrillic descriptors would run off the edge)
             if !row.detail.is_empty() {
-                let sub = if focused { [0.0f32, 0.0, 0.0, 0.6] } else { dimc };
+                let sub = if focused { theme::scrim_black(0.6) } else { dimc };
                 let detail = crate::text::elide(&row.detail, text_right - label_x, theme::size::CAPTION, 0, false);
                 if let Ok(cd) = CString::new(detail) {
                     p.text(cd.as_ptr(), label_x, detail_y, theme::size::CAPTION, sub, 0, 0);

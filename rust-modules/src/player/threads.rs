@@ -58,8 +58,8 @@ extern "C" fn cue_cb(ud: *mut c_void, time_ticks: i64, byte: i64) {
 /// for seeks — the pump sets seek_byte + closes the socket to interrupt the read; we
 /// re-open with a byte Range and resync to the next cluster.
 pub(crate) fn stream_thread(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
-    // Bisect: /tmp/plxnative-demux=ff routes the demux through the libavformat demuxer (ff.rs);
-    // otherwise the hand-rolled MKV path below runs (default). Two-lane feed: `aq` is the video
+    // The libavformat demuxer (ff.rs) is the DEFAULT demux path; /tmp/plxnative-demux=mkv
+    // falls back to the hand-rolled MKV path below. Two-lane feed: `aq` is the video
     // lane, `aqa` the audio lane. The legacy mkv path is single-queue → it feeds its mixed es
     // stream into `aq` and leaves `aqa` empty.
     if crate::ff::use_ff() {
@@ -176,7 +176,6 @@ pub(crate) fn cues_thread(host: String, port: c_int, path: String, hs2: SendPtr<
     let segpos = cmkv.segment_pos;
     let cuespos = cmkv.cues_pos;
     let tscale = cmkv.tscale;
-    SHARED.segment_pos.store(segpos, Ordering::Relaxed);
     if cmkv.duration_ns > 0 {
         SHARED.duration_ns.store(cmkv.duration_ns, Ordering::Relaxed);
     }

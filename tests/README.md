@@ -36,8 +36,8 @@ your real account stays clean. It works without storing any new secret:
 
 ## Prerequisites
 
-- The same toolchain the main dev loop needs: `zig`, `sshpass`, and (for `--build`) the Rust
-  nightly + `cargo-zigbuild` (see the repo `Makefile` / `CLAUDE.md`).
+- The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`,
+  and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `CLAUDE.md`).
 - The TV powered on and reachable (`root@192.168.0.114`, default from the manifest).
 - The PMS reachable at `http://192.168.0.3:32400` (host/port in the manifest `pms` block).
 - `src/config.local.h` present with `PMS_TOKEN`.
@@ -169,8 +169,8 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 
 - **Close-before-progress.** A live `timeline_thread` re-scrobbles every ~10 s and would
   overwrite a seeded `viewOffset`; the runner does `make kill` before every `PUT /:/progress`.
-- **`make` runs from the repo root** (via `make -C <root>`), so the cargo `cd` in `--build`
-  can't drift cwd.
+- **`make` runs from the repo root** (via `make -C <root>`), and `--build` shells out to it
+  (the Makefile owns the cargo invocation), so cwd/toolchain flags can't drift.
 - **Type=43 flood** is filtered on every log read.
 - **RUN_SECS** per case clears the trigger arm time + reporter cadence (not-stuck ≥ ~25 s,
   seek ≥ ~45 s); the manifest uses 60–90 s.

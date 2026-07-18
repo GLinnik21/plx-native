@@ -12,8 +12,10 @@ everything direct-plays, (6) a phased, on-device-verifiable implementation plan,
 
 Everything below is reconciled against the live Rust code. The **live playback path** is
 `route.rs` (hand-built query strings) + `player/*` (Starfish/ACB) + `stream.rs` (raw-socket
-HTTP) + `mkv.rs` (demuxer). The typed `plex/*` layer is dead scaffold today (`plex::init` is
-never called) — this plan migrates onto it where noted but does not block on it.
+HTTP) + `ff.rs`/`mkv.rs` (demuxer). The typed `plex/*` layer is now the live READ layer
+(`plex::install` at boot/login; hubs/metadata/posters/scrobble go through `client()`) — only
+the playback/decision path still bypasses it; this plan migrates that where noted but does
+not block on it.
 
 ---
 
@@ -162,7 +164,8 @@ the incompatible stream is handled.
   the `start.mkv?{base}` builder for `transcode`.
 - The migration target is `plex/transcoder.rs::transcode_decision` (returns a typed
   `ServerDecision`) — parse `Part.decision`/`Stream.decision` there and have `route.rs` call it.
-  Until `plex::init` is wired, parse inline in `route.rs`.
+  Until the playback path migrates onto the (already-installed) typed client, parse inline in
+  `route.rs`.
 
 ---
 
@@ -481,7 +484,8 @@ buffer-feed HDR path is undocumented. Prove it before building the demuxer aroun
   per §2b — replace the `:240` heuristic); `transcode_base` profile string (§1a SDR blob, still
   no `hevc` demux yet so keep `videoCodec=h264` in the *direct-play* declaration until Phase 3,
   or advertise hevc but let Phase 0's verdict decide). Optionally route through
-  `plex/transcoder.rs::transcode_decision` (requires wiring `plex::init` at `app.rs:194-199`).
+  `plex/transcoder.rs::transcode_decision` (the typed client is already installed at boot via
+`plex::install`; only the route.rs call-site migration remains).
 - **Check:** `plxnative-events.log` logs the parsed decision (`Part.decision`, per-stream `decision`,
   `transcodeReasons`) for both an H264/AC3 title (→ directplay, raw part streams) and a
   known-transcode title (→ start.mkv). Behavior identical to today but now server-adjudicated.
@@ -556,7 +560,8 @@ buffer-feed HDR path is undocumented. Prove it before building the demuxer aroun
 7. **Audio-only-mismatch forcing whole-part transcode** — if a file's audio/subs fall outside the
    profile, the video won't direct-play even if decodable. `directStreamAudio=1` mitigates; the
    §1a audio set (aac/ac3/eac3) covers the common cases; DTS still transcodes.
-8. **Typed `plex/*` layer is dead** (`plex::init` never called). Wiring it is optional for every
+8. **Typed `plex/*` playback ops are still unwired** (the READ layer is live via `plex::install`,
+   but `route.rs` keeps its inline parsing). Migrating playback onto it is optional for every
    phase; if it churns too much, keep inline route.rs parsing and migrate later.
 9. **`stream.rs` is IP-only, no DNS, no chunked-request, PUT hardcodes NULL extra** — session
    headers as query params sidestep this; if we move to real headers, extend the wrappers first.

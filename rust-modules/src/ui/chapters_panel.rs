@@ -131,8 +131,8 @@ pub(crate) fn draw() {
     let dimc = theme::TEXT_SECONDARY;
     for (i, ch) in d.chapters.iter().enumerate() {
         let x = MARGIN_X + i as f32 * (CH_W + CH_GAP);
-        if x - scroll > SCR_W || x - scroll + CH_W < 0.0 {
-            continue; // culled off-screen
+        if !crate::ui::on_axis(x - scroll, CH_W, SCR_W, 0.0) {
+            continue; // culled off-screen (the shared cull primitive)
         }
         let focused = i as c_int == sel;
         let card = Rect::new(x, CH_TOP, CH_W, CH_H);

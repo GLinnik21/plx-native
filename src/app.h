@@ -17,13 +17,8 @@
 #ifndef PMS_PORT
 #  define PMS_PORT  32400
 #endif
-#define RESUME_REWIND_NS (5LL * 1000000000LL)
 
-/* (2) fixed panel geometry — gfx uniform, text, HUD, gallery all author at 1080p */
-#define SCR_W 1920
-#define SCR_H 1080
-
-/* (3) the one process-wide global: the event/diagnostic log, DEFINED once as
+/* (2) the one process-wide global: the event/diagnostic log, DEFINED once as
  *     FILE *elogf = NULL; in main.c and read by nearly every UI/glue module. */
 extern FILE *elogf;
 

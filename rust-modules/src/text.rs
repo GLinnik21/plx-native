@@ -1,6 +1,6 @@
 //! SDL2_ttf text rendering (was src/text.c): font cache + glyph-texture LRU +
 //! draw_text. Main-thread only (all GL), so the caches are plain statics (no
-//! locking). Uses gfx's gfx_compile/gfx_use_base (crate path). Mostly GL/TTF FFI —
+//! locking). Uses gfx's link_program/gfx_use_base (crate path). Mostly GL/TTF FFI —
 //! the retui text backend.
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -20,19 +20,7 @@ const VS_TEXT: &CStr = crate::gfx::glsl!("shaders/vs_text.vert");
 const FS_TEXT: &CStr = crate::gfx::glsl!("shaders/fs_text.frag");
 const FS_TEXT_FADE: &CStr = crate::gfx::glsl!("shaders/fs_text_fade.frag");
 // GL enums
-const GL_VERTEX_SHADER: c_uint = 0x8B31;
-const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
-const GL_LINK_STATUS: c_uint = 0x8B82;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
-const GL_RGBA: c_uint = 0x1908;
-const GL_UNSIGNED_BYTE: c_uint = 0x1401;
-const GL_UNPACK_ALIGNMENT: c_uint = 0x0CF5;
-const GL_TEXTURE_MIN_FILTER: c_uint = 0x2801;
-const GL_TEXTURE_MAG_FILTER: c_uint = 0x2800;
-const GL_TEXTURE_WRAP_S: c_uint = 0x2802;
-const GL_TEXTURE_WRAP_T: c_uint = 0x2803;
-const GL_LINEAR: c_int = 0x2601;
-const GL_CLAMP_TO_EDGE: c_int = 0x812F;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
 const GL_TEXTURE0: c_uint = 0x84C0;
 const TTF_STYLE_BOLD: c_int = 0x01;
@@ -66,18 +54,8 @@ extern "C" {
     fn TTF_SetFontStyle(font: *mut TtfFont, style: c_int);
     fn SDL_FreeSurface(surf: *mut SdlSurface);
     // GLES2
-    fn glCreateProgram() -> c_uint;
-    fn glAttachShader(program: c_uint, shader: c_uint);
-    fn glBindAttribLocation(program: c_uint, index: c_uint, name: *const c_char);
-    fn glLinkProgram(program: c_uint);
-    fn glGetProgramiv(program: c_uint, pname: c_uint, params: *mut c_int);
     fn glGetUniformLocation(program: c_uint, name: *const c_char) -> c_int;
-    fn glGenTextures(n: c_int, textures: *mut c_uint);
     fn glBindTexture(target: c_uint, texture: c_uint);
-    fn glPixelStorei(pname: c_uint, param: c_int);
-    fn glTexImage2D(target: c_uint, level: c_int, ifmt: c_int, w: c_int, h: c_int, border: c_int,
-                    format: c_uint, ty: c_uint, pixels: *const c_void);
-    fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
     fn glDeleteTextures(n: c_int, textures: *const c_uint);
     fn glUseProgram(program: c_uint);
     fn glUniform2f(loc: c_int, x: f32, y: f32);
@@ -171,34 +149,24 @@ pub(crate) fn init_text() {
             log("TTF_Init failed");
             return;
         }
-        TPROG = glCreateProgram();
-        glAttachShader(TPROG, crate::gfx::gfx_compile(GL_VERTEX_SHADER, VS_TEXT.as_ptr()));
-        glAttachShader(TPROG, crate::gfx::gfx_compile(GL_FRAGMENT_SHADER, FS_TEXT.as_ptr()));
-        glBindAttribLocation(TPROG, 0, c"a_pos".as_ptr());
-        glLinkProgram(TPROG);
-        let mut ok: c_int = 0;
-        glGetProgramiv(TPROG, GL_LINK_STATUS, &mut ok);
-        if ok == 0 {
-            log("text prog link failed");
-            return;
-        }
+        TPROG = match crate::gfx::link_program(VS_TEXT.as_ptr(), FS_TEXT.as_ptr()) {
+            Some(p) => p,
+            None => {
+                log("text prog link failed");
+                return;
+            }
+        };
         TL_RECT = glGetUniformLocation(TPROG, c"u_trect".as_ptr());
         TL_SCREEN = glGetUniformLocation(TPROG, c"u_tscreen".as_ptr());
         TL_COL = glGetUniformLocation(TPROG, c"u_tcol".as_ptr());
         TL_TEX = glGetUniformLocation(TPROG, c"u_tex".as_ptr());
         // the fade program shares VS_TEXT; a link failure leaves TPROGF=0 and draw_text_fade
         // falls back to the plain path (the fade is a nicety, not load-bearing)
-        TPROGF = glCreateProgram();
-        glAttachShader(TPROGF, crate::gfx::gfx_compile(GL_VERTEX_SHADER, VS_TEXT.as_ptr()));
-        glAttachShader(TPROGF, crate::gfx::gfx_compile(GL_FRAGMENT_SHADER, FS_TEXT_FADE.as_ptr()));
-        glBindAttribLocation(TPROGF, 0, c"a_pos".as_ptr());
-        glLinkProgram(TPROGF);
-        let mut okf: c_int = 0;
-        glGetProgramiv(TPROGF, GL_LINK_STATUS, &mut okf);
-        if okf == 0 {
+        TPROGF = crate::gfx::link_program(VS_TEXT.as_ptr(), FS_TEXT_FADE.as_ptr()).unwrap_or_else(|| {
             log("text fade prog link failed");
-            TPROGF = 0;
-        } else {
+            0
+        });
+        if TPROGF != 0 {
             TLF_RECT = glGetUniformLocation(TPROGF, c"u_trect".as_ptr());
             TLF_SCREEN = glGetUniformLocation(TPROGF, c"u_tscreen".as_ptr());
             TLF_COL = glGetUniformLocation(TPROGF, c"u_tcol".as_ptr());
@@ -214,13 +182,10 @@ pub(crate) fn init_text() {
 }
 
 fn entry_key(e: &TCacheEntry) -> &[u8] {
-    let n = e.s.iter().position(|&b| b == 0).unwrap_or(e.s.len());
-    &e.s[..n]
+    crate::cbuf::as_bytes(&e.s)
 }
 fn set_entry_key(e: &mut TCacheEntry, s: &[u8]) {
-    e.s = [0; 96];
-    let n = s.len().min(e.s.len() - 1);
-    e.s[..n].copy_from_slice(&s[..n]);
+    crate::cbuf::set_bytes_raw(&mut e.s, s);
 }
 
 /// scan a freshly-rendered TTF surface for its vertical ink bounds — the first and last rows that
@@ -280,15 +245,7 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
     }
     let (sw, sh, pixels) = ((*surf).w, (*surf).h, (*surf).pixels);
     let (ink_t, ink_b) = surface_ink_v(surf);
-    let mut tex: c_uint = 0;
-    glGenTextures(1, &mut tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as c_int, sw, sh, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    let tex = crate::gfx::upload_rgba(0, sw, sh, pixels as *const u8);
     SDL_FreeSurface(surf);
 
     let cache = &mut *addr_of_mut!(TCACHE_A);

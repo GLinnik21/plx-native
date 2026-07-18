@@ -173,7 +173,7 @@ pub(crate) fn draw() {
     let focus = unsafe { addr_of!(FOCUS).read() };
     let total_bh = acts.len() as f32 * bh + (acts.len().saturating_sub(1)) as f32 * 16.0;
     let mut by = cyt + (ch - total_bh) * 0.5;
-    let env = crate::ui::Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 };
+    let env = crate::ui::Env::inert();
     for (i, label) in acts.iter().enumerate() {
         let icon = if *label == "From Beginning" { Icon::Play } else { Icon::Info };
         if let Ok(cs) = CString::new(*label) {

@@ -6,8 +6,11 @@
 //! (`crate::stream::http_get`/`http_put`/`http_open`) are centralised in `client.rs`, so no
 //! op file can bypass them. Response bodies deserialize into `serde` DTOs (`models.rs`).
 //!
-//! Currently unused (`#![allow(dead_code)]`) — the existing `pms`/`route`/`metadata`/
-//! `posters`/`player` call sites migrate onto this surface later.
+//! The READ layer is live: `plex::install` is called at boot/login (`app.rs`, `auth.rs`) and
+//! `pms`/`metadata`/`posters`/`detail` all go through `client()`. Only the playback/decision
+//! path (`route.rs`, `transcoder.rs`) still bypasses it — that migration is deferred (see
+//! `docs/plex-api-migration.md`). The module-wide allow covers the deliberately-scaffolded
+//! ops kept for that migration.
 #![allow(dead_code)]
 
 mod client;
@@ -25,8 +28,8 @@ mod transcoder;
 pub(crate) mod account;
 pub(crate) mod session;
 
-// The re-exports are the public surface future call sites import; unused until they migrate.
+// The re-exports are the public surface the call sites import.
 #[allow(unused_imports)]
-pub use client::{client, init, install, is_installed, Client, StreamUrl};
+pub use client::{client, install, Client, StreamUrl};
 #[allow(unused_imports)]
 pub use models::*;

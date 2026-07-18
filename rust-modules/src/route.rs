@@ -120,6 +120,14 @@ pub(crate) fn stream_fps() -> f64 {
 pub(crate) fn set_stream_acodec(codec: &str) {
     unsafe { *addr_of_mut!(STREAM_ACODEC) = codec.to_owned() }
 }
+/// Record the streamed item's video+audio codec pair in one write (the Load-payload source of
+/// truth) — outside `apply_decision_codecs`, the two fields are only ever set together.
+pub(crate) fn set_stream_codecs(vc: &str, ac: &str) {
+    unsafe {
+        *addr_of_mut!(STREAM_VCODEC) = vc.to_owned();
+        *addr_of_mut!(STREAM_ACODEC) = ac.to_owned();
+    }
+}
 /// The §3b identity query params (stable device id + product/platform/model/…), appended to
 /// every playback request so the server names + groups this client and shows a proper Player.
 pub(crate) fn identity_qs() -> String {
@@ -520,11 +528,8 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
         // source fps for the Load esInfo — only from the currently-loaded Detail if it IS this item
         // (the play_movie home path builds the stream before load_detail runs → no match → omit).
         let fps = crate::metadata::current().filter(|d| d.rk == rk).map(|d| d.video_fps).unwrap_or(0.0);
-        unsafe {
-            *addr_of_mut!(STREAM_VCODEC) = vcodec.to_string();
-            *addr_of_mut!(STREAM_ACODEC) = achosen;
-            *addr_of_mut!(STREAM_FPS) = fps;
-        }
+        set_stream_codecs(vcodec, &achosen);
+        unsafe { *addr_of_mut!(STREAM_FPS) = fps };
         if aidx >= 0 {
             crate::player::set_audio_track(aidx); // feed the direct-playable non-default track
         }
@@ -546,10 +551,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // (HEVC target keeps 4K + HDR10; see profile_extra + the server's "HEVC encoding = Always").
     let base = if video_dp {
         let achosen = audio_sel.as_ref().map(|(_, c)| c.clone()).unwrap_or_else(|| acodec.to_string());
-        unsafe {
-            *addr_of_mut!(STREAM_VCODEC) = vcodec.to_string();
-            *addr_of_mut!(STREAM_ACODEC) = achosen;
-        }
+        set_stream_codecs(vcodec, &achosen);
         // if a non-default audio track was chosen, feed/select it (mirrors the direct-play path)
         if let Some((aidx, _)) = audio_sel {
             if aidx >= 0 {
@@ -558,10 +560,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
         }
         remux_base(rk, cfg)
     } else {
-        unsafe {
-            *addr_of_mut!(STREAM_VCODEC) = "hevc".to_string();
-            *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
-        }
+        set_stream_codecs("hevc", "ac3");
         transcode_base(rk, cfg)
     };
     // keep the offset-free base so a later seek can restart at start.mkv?...&offset=T
@@ -706,11 +705,10 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     unsafe {
         *addr_of_mut!(TBASE) = base.clone();
         *addr_of_mut!(TSESSION) = session;
-        // the transcode output is HEVC + AC3 — record it so a pipeline RELOAD (audio switch)
-        // builds the H265 Load payload matching the re-encoded stream.
-        *addr_of_mut!(STREAM_VCODEC) = "hevc".to_string();
-        *addr_of_mut!(STREAM_ACODEC) = "ac3".to_string();
     }
+    // the transcode output is HEVC + AC3 — record it so a pipeline RELOAD (audio switch)
+    // builds the H265 Load payload matching the re-encoded stream.
+    set_stream_codecs("hevc", "ac3");
     put_selection(cfg); // audio/subtitle selection drives the encode + burn
     let obase = format!("{base}&offset={}", offset_secs.max(0));
     let (url, dbody) = register_and_start_url(cfg, &obase);

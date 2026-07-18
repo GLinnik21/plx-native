@@ -56,8 +56,7 @@ pub(crate) fn nmovies() -> usize {
 pub(crate) fn index_of_rk(rk: &str) -> c_int {
     for i in 0..nmovies() {
         let m = unsafe { &*movie_ptr(i) };
-        let n = m.rk.iter().position(|&x| x == 0).unwrap_or(m.rk.len());
-        if std::str::from_utf8(&m.rk[..n]).ok() == Some(rk) {
+        if std::str::from_utf8(crate::cbuf::as_bytes(&m.rk)).ok() == Some(rk) {
             return i as c_int;
         }
     }

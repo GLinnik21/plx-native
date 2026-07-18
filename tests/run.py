@@ -314,6 +314,16 @@ def a_timeline_climb(lines, min_climb):
 
 
 # ---- per-op assertions ----
+def _reached_target(lines, target_s):
+    """Shared seek-op tail: the max reported timeline second, or an error string if it
+    never climbed to ~target (the -6s tolerance covers keyframe snap + report cadence)."""
+    ts = timeline_secs(lines)
+    reached = max((t for t, _ in ts), default=-1)
+    if reached < target_s - 6:
+        return reached, f"timeline reached only {reached}s, expected >= ~{target_s}s after seek"
+    return reached, None
+
+
 def op_seek_inplace(lines, target_s):
     started = find(lines, "seek(ff in-place)")
     if started is None:
@@ -324,10 +334,9 @@ def op_seek_inplace(lines, target_s):
         return False, f"in-place seek lacked sendSegment=1 :: {ln.strip() if ln else 'no in-place seek: line'}"
     if find(lines, "reload_at: fresh Load"):
         return False, "in-place seek fell back to a reload (`reload_at: fresh Load` present)"
-    ts = timeline_secs(lines)
-    reached = max((t for t, _ in ts), default=-1)
-    if reached < target_s - 6:
-        return False, f"timeline reached only {reached}s, expected >= ~{target_s}s after seek"
+    reached, err = _reached_target(lines, target_s)
+    if err:
+        return False, err
     return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
 
 
@@ -339,10 +348,9 @@ def op_seek_transcode(lines, target_s):
         or find(lines, "reload_at: fresh Load at %ds" % target_s)
     if hit is None:
         return False, "no transcode-seek signal (reload_transcode / seek(transcode) / reload_at) present"
-    ts = timeline_secs(lines)
-    reached = max((t for t, _ in ts), default=-1)
-    if reached < target_s - 6:
-        return False, f"timeline reached only {reached}s, expected >= ~{target_s}s after seek"
+    reached, err = _reached_target(lines, target_s)
+    if err:
+        return False, err
     return True, f"transcode/reload seek OK; reached {reached}s :: {hit.strip()}"
 
 
@@ -524,19 +532,12 @@ def run_case(case, cfg, token, verbose):
 # Build
 # ---------------------------------------------------------------------------
 def do_build(tv):
-    print("=== BUILD: cargo zigbuild -> make -> make deploy ===")
-    rust_dir = os.path.join(REPO_ROOT, "rust-modules")
-    env = dict(os.environ)
-    env["PATH"] = os.path.expanduser("~/.cargo/bin") + os.pathsep + env.get("PATH", "")
-    env["RUSTFLAGS"] = "-C target-cpu=cortex-a53 -C target-feature=-neon"
-    cargo = subprocess.run(
-        ["cargo", "+nightly", "zigbuild", "-Z", "build-std=std,panic_unwind",
-         "--release", "--target", "arm-unknown-linux-gnueabi.2.24"],
-        cwd=rust_dir, env=env, timeout=1200)
-    if cargo.returncode != 0:
-        sys.exit("cargo build failed")
-    if make(["all"], timeout=600, capture=False).returncode != 0:
-        sys.exit("make (link) failed")
+    # The Makefile owns the whole build (it drives cargo +nightly with the load-bearing
+    # cortex-a9 flags itself) — shelling out to it keeps run.py from drifting a second
+    # copy of the toolchain invocation (the old hand-rolled zigbuild here did exactly that).
+    print("=== BUILD: make -> make deploy ===")
+    if make(["all"], timeout=1200, capture=False).returncode != 0:
+        sys.exit("make failed")
     if make(["deploy", f"TV={tv}"], timeout=180, capture=False).returncode != 0:
         sys.exit("make deploy failed")
     print("=== BUILD OK ===")

@@ -13,7 +13,7 @@ pub(crate) fn pump(now: u32) {
         None => return,
     };
     // wait for the media-thread ctor
-    if eng.stage == Stage::Idle || unsafe { ffi::sf_ready() } == 0 {
+    if unsafe { ffi::sf_ready() } == 0 {
         return;
     }
     let stream = matches!(eng.source, Source::Stream);
