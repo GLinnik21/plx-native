@@ -1518,9 +1518,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     let tab = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
                     let row = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
                     crate::ui::track_menu::open_tab(tab);
-                    for _ in 0..row {
-                        crate::ui::track_menu::move_focus(SDLK_DOWN as c_int);
-                    }
+                    // ABSOLUTE row (the initial focus is the active track now, not row 0)
+                    crate::ui::track_menu::focus_row(row);
                     crate::ui::track_menu::on_ok();
                 }
             }

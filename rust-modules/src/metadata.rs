@@ -41,8 +41,10 @@ pub(crate) struct Cast {
     pub(crate) thumb: String, // headshot (often an external metadata-static.plex.tv URL)
 }
 
+#[derive(Clone)]
 pub(crate) struct Stream {
     pub(crate) id: i64, // Plex stream id (for &audioStreamID / &subtitleStreamID)
+    pub(crate) index: i64, // PMS stream index (container order) — the ordinal mapping sorts by it
     pub(crate) lang: String,      // display name ("English")
     pub(crate) lang_code: String, // ISO code ("eng") — the route's language preference matches this
     pub(crate) codec: String,
@@ -53,6 +55,9 @@ pub(crate) struct Stream {
     pub(crate) ad: bool,
     pub(crate) forced: bool,
     pub(crate) default: bool, // the file's default track (drives the "Original:" audio label)
+    /// external/sidecar stream (downloaded .srt etc. — NOT inside the container). The client
+    /// renderer can't reach it on direct-play; only a server transcode can burn it.
+    pub(crate) external: bool,
 }
 
 pub(crate) struct Episode {
@@ -257,15 +262,14 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
     Some(d)
 }
 
-/// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer)
-fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
-    let streams = match it.first_part() {
-        Some(p) => &p.stream,
-        None => return,
-    };
+/// Convert a part's Stream[] into (audio, subs, video_fps) — the ONE plex::Stream → Stream
+/// mapping (the detail parse and the playing-tracks store both use it).
+fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>, f64) {
+    let (mut audio, mut subs, mut fps) = (Vec::new(), Vec::new(), 0.0);
     for s in streams {
         let st = Stream {
             id: s.id,
+            index: s.index,
             lang: s.language.clone(),
             lang_code: s.language_code.to_lowercase(),
             codec: s.codec.clone(),
@@ -276,41 +280,112 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
             forced: s.forced != 0,
             default: s.is_default != 0,
             title: s.title.clone(),
+            // embedded container streams carry no delivery key; sidecars do
+            external: s.stream_type == 3 && !s.key.is_empty(),
         };
         match s.stream_type {
-            1 => d.video_fps = s.frame_rate, // e.g. 23.976 — for the Load esInfo
-            2 => d.audio.push(st),
-            3 => d.subs.push(st),
+            1 => fps = s.frame_rate, // e.g. 23.976 — for the Load esInfo
+            2 => audio.push(st),
+            3 => subs.push(st),
             _ => {}
+        }
+    }
+    (audio, subs, fps)
+}
+
+/// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer)
+fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
+    if let Some(p) = it.first_part() {
+        let (audio, subs, fps) = convert_streams(&p.stream);
+        d.audio = audio;
+        d.subs = subs;
+        if fps > 0.0 {
+            d.video_fps = fps;
         }
     }
 }
 
-/// The audio tracks of `rk` in FILE order as (codec, languageCode) lowercase pairs, e.g.
-/// [("ac3","rus"),("eac3","eng")]. Empty on any fetch/parse failure. Used by the route decision
-/// to pick a direct-playable track — preferring a language (English) over the file's default —
-/// and to fall back to a direct-playable sibling when the default codec isn't (TrueHD default).
-pub(crate) fn audio_tracks(rk: &str) -> Vec<(String, String)> {
-    // the detail page usually already holds this item's streams — reuse them instead of
-    // re-downloading the full metadata on every Play press (a whole GET on the play path)
-    if let Some(d) = current() {
-        if d.rk == rk && !d.audio.is_empty() {
-            return d.audio.iter().map(|s| (s.codec.to_lowercase(), s.lang_code.clone())).collect();
-        }
+// ---- the PLAYING-item track store — the in-player source of truth ---------------------------
+// Unlike `current()` (the detail page's item — it stays on the SHOW during an episode play, and
+// can be a different item entirely when playing straight from Home), this always holds the
+// played leaf's OWN streams. The track menu and the route's audio pick read it; feeding a menu
+// built from episode 1's streams to a playback of episode 5 was a real track-identity bug.
+
+pub(crate) struct PlayingTracks {
+    pub(crate) rk: String,
+    pub(crate) audio: Vec<Stream>,
+    pub(crate) subs: Vec<Stream>,
+    pub(crate) video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
+}
+static mut PLAYING: Option<PlayingTracks> = None;
+
+/// the playing item's track lists (None until a catalog item starts playing). Main-thread only.
+pub(crate) fn playing() -> Option<&'static PlayingTracks> {
+    unsafe { (*addr_of!(PLAYING)).as_ref() }
+}
+
+/// Load the playing-item track store for `rk` at play time (route::build_stream). Reuses the
+/// loaded detail's streams when it IS this item (no extra GET on the play path — the same
+/// optimization the old `audio_tracks` fetch had); otherwise one metadata fetch. An empty `rk`
+/// (local-sample / URL-override play) clears the store.
+pub(crate) fn load_playing(rk: &str) {
+    if rk.is_empty() {
+        unsafe { *addr_of_mut!(PLAYING) = None };
+        return;
     }
-    let it = match crate::plex::client().metadata(rk) {
-        Some(i) => i,
-        None => return Vec::new(),
+    let pt = match current().filter(|d| d.rk == rk && !d.audio.is_empty()) {
+        Some(d) => PlayingTracks {
+            rk: rk.to_string(),
+            audio: d.audio.clone(),
+            subs: d.subs.clone(),
+            video_fps: d.video_fps,
+        },
+        None => {
+            let (audio, subs, video_fps) = crate::plex::client_opt()
+                .and_then(|c| c.metadata(rk))
+                .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
+                .unwrap_or_default();
+            PlayingTracks { rk: rk.to_string(), audio, subs, video_fps }
+        }
     };
-    let streams = match it.first_part() {
-        Some(p) => &p.stream,
-        None => return Vec::new(),
+    crate::player::log(&format!(
+        "playing tracks: rk={} audio={} subs={}",
+        pt.rk,
+        pt.audio.len(),
+        pt.subs.len()
+    ));
+    unsafe { *addr_of_mut!(PLAYING) = Some(pt) };
+}
+
+// ---- list-position → demuxer-ordinal conversion --------------------------------------------
+// The demuxer selects "the Nth stream of its type" in CONTAINER order; the menu/metadata lists
+// are in PMS document order. These convert a list position to that container ordinal by sorting
+// on PMS `Stream.index` (stable tie-break on list position, so an index-less response degrades
+// to document order — the previous behavior).
+
+/// Container-audio ordinal of `audio[i]` — what `player::set_audio_track`/`request_audio_track`
+/// (→ ff's nth_audio_stream) consume.
+pub(crate) fn audio_ordinal(audio: &[Stream], i: usize) -> i32 {
+    if i >= audio.len() {
+        return i as i32;
+    }
+    let me = (audio[i].index, i);
+    audio.iter().enumerate().filter(|(j, s)| (s.index, *j) < me).count() as i32
+}
+
+/// Container ordinal of `subs[i]` among the EMBEDDED subtitle streams (all ff.rs enumerates —
+/// sidecars are not in the container), or -1 when `subs[i]` is itself external (nothing to
+/// client-render on direct-play; only a server transcode can burn it).
+pub(crate) fn sub_render_ordinal(subs: &[Stream], i: usize) -> i32 {
+    let s0 = match subs.get(i) {
+        Some(s) if !s.external => s,
+        _ => return -1,
     };
-    streams
-        .iter()
-        .filter(|s| s.stream_type == 2)
-        .map(|s| (s.codec.to_lowercase(), s.language_code.to_lowercase()))
-        .collect()
+    let me = (s0.index, i);
+    subs.iter()
+        .enumerate()
+        .filter(|(j, s)| !s.external && (s.index, *j) < me)
+        .count() as i32
 }
 
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a

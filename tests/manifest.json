@@ -475,11 +475,12 @@
       "name": "morning_show_audio_native",
       "rk": "1804",
       "kind": "episode",
-      "title": "The Morning Show (native audio switch)",
+      "title": "The Morning Show (native audio switch; eng auto-picked at start -> switch to rus row 0)",
       "covers": [
         "audio-switch-native",
         "hevc-stays-174",
-        "eac3->eac3"
+        "eac3->eac3",
+        "auto-pick-eng-start"
       ],
       "run_secs": 60,
       "operations": [
@@ -489,7 +490,7 @@
         {
           "op": "audio_switch",
           "tab": 0,
-          "row": 1,
+          "row": 0,
           "mode": "native"
         }
       ],
