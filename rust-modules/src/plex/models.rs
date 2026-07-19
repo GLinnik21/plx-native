@@ -41,8 +41,13 @@ pub struct MediaContainer {
     pub general_decision_code: Option<i64>,
     #[serde(rename = "mdeDecisionCode", default, deserialize_with = "de_opt_i64")]
     pub mde_decision_code: Option<i64>,
+    /// `?includeMeta=1` on a section listing — the server-driven Sort/Filter menus.
+    #[serde(rename = "Meta", default)]
+    pub meta: Option<Meta>,
 }
 
+/// Doubles as the generic `Directory[]` row: a library section ({key,type,title}), a secondary
+/// directory entry, or a filter value ({key = tag id, title}).
 #[derive(Deserialize, Default)]
 pub struct LibrarySection {
     #[serde(default)]
@@ -51,6 +56,39 @@ pub struct LibrarySection {
     pub kind: String, // movie | show | artist
     #[serde(default)]
     pub title: String,
+    /// firstCharacter rows: the letter's item count (PMS string-encodes it).
+    #[serde(default, deserialize_with = "de_i64")]
+    pub size: i64,
+}
+
+/// `MediaContainer.Meta` — present with `includeMeta=1` on `/library/sections/{k}/all`.
+#[derive(Deserialize, Default)]
+pub struct Meta {
+    #[serde(rename = "Type", default)]
+    pub types: Vec<MetaType>,
+}
+
+/// One browsable type of the section (movie / show / season / episode / folder) with its
+/// server-defined sort menu. The `active:true` entry matches the current `type=` of the
+/// listing. (The wire also carries a `Filter[]` menu — docs/pms-api.md §2b — modelled again
+/// when the v1.5 facet menu consumes it; DTOs here keep only consumed fields.)
+#[derive(Deserialize, Default)]
+pub struct MetaType {
+    #[serde(default, deserialize_with = "de_i64")]
+    pub active: i64, // bool on the wire; de_i64 folds true/false/"1"
+    #[serde(rename = "Sort", default)]
+    pub sort: Vec<SortOption>,
+}
+
+/// One sort menu entry: `sort={key}:asc|desc` on the listing.
+#[derive(Deserialize, Default)]
+pub struct SortOption {
+    #[serde(default)]
+    pub key: String, // "titleSort"
+    #[serde(rename = "defaultDirection", default)]
+    pub default_direction: String, // "asc" | "desc"
+    #[serde(default)]
+    pub title: String, // display: "Title"
 }
 
 #[derive(Deserialize, Default)]

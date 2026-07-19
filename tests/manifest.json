@@ -49,6 +49,30 @@
       }
     },
     {
+      "name": "library-scroll",
+      "tier": "ui",
+      "route": "library",
+      "floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-libosc": true
+      }
+    },
+    {
+      "name": "library-switch",
+      "tier": "ui",
+      "route": "library",
+      "floor": 45,
+      "run_secs": 22,
+      "warmup_s": 6,
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-libswitch": true
+      }
+    },
+    {
       "name": "info-panel",
       "tier": "player",
       "route": "player",

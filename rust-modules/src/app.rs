@@ -32,7 +32,10 @@ const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
 const SDL_MOUSEBUTTONUP: u32 = 0x402;
 const SDL_MOUSEWHEEL: u32 = 0x403;
 // keysyms + the OK/BACK predicates live in ui::consts (the single keycode home)
-use crate::ui::consts::{is_back, is_ok, SDLK_DOWN, SDLK_LEFT, SDLK_RETURN, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{
+    is_back, is_ok, SDLK_DOWN, SDLK_LEFT, SDLK_PAGEDOWN, SDLK_PAGEUP, SDLK_RETURN, SDLK_RIGHT, SDLK_UP,
+    WCODE_CH_DOWN, WCODE_CH_UP,
+};
 const SCR_W: c_int = 1920;
 const SCR_H: c_int = 1080;
 const COLS: c_int = 10;
@@ -245,8 +248,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // first install, a later call just swaps the token (profile switch).
         let install_pms = |host: &str, port: c_int, token: &str| {
             crate::plex::install(host, port, token);
+            // a (re)install is a login / profile switch: the browse store must never carry the
+            // previous user's cached grid, watched-state angles, or section tabs forward
+            crate::browse::reset();
             let nmov = crate::pms::pms_fetch_hubs();
-            log(&format!("pms: nmovies={nmov}"));
+            // section discovery (one small GET) so Home's library tab pills carry real titles
+            let nsec = crate::browse::ensure_sections();
+            log(&format!("pms: nmovies={nmov} nsections={nsec}"));
         };
 
         // UI infra + poster workers always come up — the login/profiles screens use them too.
@@ -355,6 +363,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // vertical-scroll judder for the frame-drop detector / retui profiler.
         let home_osc = std::path::Path::new("/tmp/plxnative-homeosc").exists();
         let mut home_osc_last = 0u32;
+        // dev: /tmp/plxnative-libosc — the Library twin of homeosc: sweep the browse grid focus
+        // down↔up perpetually for the library_scroll FPS scene.
+        let lib_osc = std::path::Path::new("/tmp/plxnative-libosc").exists();
+        let mut lib_osc_last = 0u32;
+        // dev: /tmp/plxnative-libswitch — exercise EVERY Library switch on a timer (tab switch,
+        // sort menu open/move/close, unwatched on/off, filter open/close) for the library_switch
+        // FPS scene, so the re-query + popover paths are perf-gated, not just the scroll.
+        let lib_switch = std::path::Path::new("/tmp/plxnative-libswitch").exists();
+        let mut lib_switch_last = 0u32;
+        let mut lib_switch_step = 0u32;
 
         // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
         // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
@@ -446,6 +464,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             Profiles, // "who's watching" Plex Home picker
             Home,
             Account,  // Home + the top-left profile menu popover (change profile / sign out)
+            Library,  // the browse grid (ui/library.rs); its sort/filter menus are internal state
             Detail,
             Player { overlay: Overlay },
         }
@@ -466,6 +485,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // suspended session) — it's navigation history, not the current node, and Route makes
         // Detail/Player exclusive so it can't be encoded there.
         let mut played_from_detail = false;
+        // Same shape for the Library: BACK from a detail page opened off the browse grid returns
+        // to the Library (its focus/scroll persist in the browse store), else Home.
+        let mut opened_from_library = false;
+
+        /// Open the focused Library card's detail page — the ONE library-card activation
+        /// (OK-press commit AND pointer click). Library cards are movies/shows, so activation is
+        /// always the detail page (playback then starts from there).
+        fn open_library_card(route: &mut Route, opened_from_library: &mut bool) {
+            let Some(mm) = crate::ui::library::focused_item() else { return };
+            if mm.rk.is_empty() {
+                return;
+            }
+            let rk = mm.rk.clone();
+            crate::ui::detail::open_rk(&rk);
+            *opened_from_library = true;
+            *route = Route::Detail;
+        }
 
         /// The ONE start-playback ritual (detail OK, home episode OK, and the plxnative-autoplay/
         /// -detailplay/-play dev triggers all share it): arm the resume point BEFORE the first
@@ -542,11 +578,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             hud_until: u32,
             route: &mut Route,
             played_from_detail: &mut bool,
+            opened_from_library: &mut bool,
         ) {
+            // every Home-originated activation clears the library return-trail HERE (it was
+            // hand-reset at each call site before — a set-a-flag-in-N-places smell)
+            *opened_from_library = false;
             let hero_view = hf != c_int::MIN;
             if hf == -1 {
                 crate::ui::account_menu::open();
                 *route = Route::Account;
+                return;
+            }
+            if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
+                // a library tab pill in the top band: enter that section's grid
+                crate::ui::library::enter(pill.saturating_sub(1));
+                *route = Route::Library;
                 return;
             }
             if hf == 2 {
@@ -856,6 +902,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                         close_player_overlays();
                                         crate::player::stop_bufferfeed();
                                         crate::ui::detail::open_rk(&rk);
+                                        opened_from_library = false; // jump-to-detail leaves the library trail
                                         route = Route::Detail;
                                     }
                                 }
@@ -954,6 +1001,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if !matches!(route, Route::Player { .. }) && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN) {
                         if matches!(route, Route::Detail) {
                             crate::ui::detail::move_focus(sym as c_int);
+                        } else if matches!(route, Route::Library) {
+                            crate::ui::library::move_focus(sym);
                         } else if g_snap() < 0.5 {
                             if sym == SDLK_DOWN {
                                 if crate::ui::home::hero_focus() < 0 {
@@ -1004,6 +1053,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                             set_hud(last_input + HUD_LINGER_MS);
+                        } else if matches!(route, Route::Library) {
+                            // OK on a browse-grid card → the same tvOS press as home's grid;
+                            // tabs / toolbar / menus commit immediately inside the screen.
+                            if crate::ui::library::focus_is_card() {
+                                crate::ui::press::begin(SDL_GetTicks());
+                                ok_armed = true;
+                            } else if matches!(crate::ui::library::on_ok(), crate::ui::library::Action::GoHome) {
+                                route = Route::Home;
+                            }
                         } else if matches!(route, Route::Detail) {
                             // OK on a detail CARD (episode / Related / Cast) → tvOS press: dip now,
                             // commit on the spring-back (the route-agnostic press handler runs on_ok
@@ -1027,9 +1085,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // instantly while the hero stays visible ~130ms, so a quick DOWN→OK
                             // must still act on the hero shown, not the grid's card 0.
                             if crate::ui::home::snap_pos() < 0.5 {
-                                // hero (Play pill / chip / chevron): activate immediately.
+                                // hero (Play pill / chip / pills / chevron): activate immediately.
                                 let hf = crate::ui::home::hero_focus();
-                                home_activate(hf, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
+                                home_activate(hf, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
                             } else {
                                 // grid card: tvOS press — dip the focused card now, activate on the
                                 // spring-back (committed from the per-frame loop). Nav cancels, so the
@@ -1131,14 +1189,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             scrub_dir = if fwd { 1 } else { -1 };
                         }
+                    } else if matches!(route, Route::Library)
+                        && (sym == SDLK_PAGEUP || sym == SDLK_PAGEDOWN || wcode == WCODE_CH_UP || wcode == WCODE_CH_DOWN)
+                    {
+                        // CH▲/CH▼ page the browse grid a screenful of rows per press
+                        let up = sym == SDLK_PAGEUP || wcode == WCODE_CH_UP;
+                        crate::ui::library::page(if up { -1 } else { 1 });
                     } else if is_back(sym, wcode) {
                         // webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
-                        // Back stack: player -> detail (if opened from there) -> grid -> hero -> exit.
+                        // Back stack: player -> detail (if opened from there) -> library (if opened
+                        // from there) -> grid -> hero -> exit. Inside the Library, BACK first walks
+                        // menu -> tab bar (library::back), THEN leaves to Home.
                         if matches!(route, Route::Player { .. }) {
                             exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
                         } else if matches!(route, Route::Detail) {
                             crate::ui::detail::close();
-                            route = Route::Home;
+                            route = if opened_from_library { Route::Library } else { Route::Home };
+                            opened_from_library = false;
+                        } else if matches!(route, Route::Library) {
+                            if !crate::ui::library::back() {
+                                route = Route::Home;
+                            }
                         } else if g_snap() > 0.5 {
                             set_snap(0.0);
                         } else {
@@ -1175,11 +1246,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::profiles::pointer_focus(mx, my);
                     } else if matches!(route, Route::Account) {
                         crate::ui::account_menu::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Library) {
+                        crate::ui::library::pointer_focus(mx, my);
                     } else if matches!(route, Route::Home) {
                         // hover moves focus on the route that owns the screen — and ONLY there
                         // (Detail/Login hover used to silently mutate home's focus behind them)
                         if crate::ui::home::snap_pos() < 0.5 {
                             crate::ui::home::hero_pointer_focus(mx, my);
+                            // the centered library pills are hoverable in hero view too
+                            if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
+                                if i > 0 {
+                                    crate::ui::home::set_hero_focus(crate::ui::home::hero_focus_for_pill(i));
+                                }
+                            }
                         } else {
                             crate::ui::home::home_pointer_focus(mx, my);
                         }
@@ -1225,20 +1304,36 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if crate::ui::home::profile_chip_click(cx, cy) {
                             crate::ui::account_menu::open(); // top-left avatar → profile menu
                             route = Route::Account;
+                        } else if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
+                            // the centered library pills work from BOTH hero and grid views
+                            if i > 0 {
+                                crate::ui::library::enter(i - 1);
+                                route = Route::Library;
+                            }
                         } else if crate::ui::home::snap_pos() < 0.5 {
                             // hero visible: clicks act on the action row via the ONE activation;
                             // holding the click on the chevron keeps paging (see the per-frame pump)
                             let b = crate::ui::home::hero_button_at(cx, cy);
                             if b >= 0 {
                                 crate::ui::home::set_hero_focus(b);
-                                home_activate(b, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
+                                home_activate(b, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
                                 if b == 2 {
                                     ptr_hold_pager = last_input;
                                 }
                             }
                         } else if crate::ui::home::home_card_click(cx, cy) {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
-                            home_activate(c_int::MIN, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
+                            home_activate(c_int::MIN, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
+                        }
+                    } else if matches!(route, Route::Library) {
+                        let cx = rd_i32(&ev, 20) as f32;
+                        let cy = rd_i32(&ev, 24) as f32;
+                        match crate::ui::library::click(cx, cy) {
+                            crate::ui::library::Action::GoHome => route = Route::Home,
+                            crate::ui::library::Action::Card => {
+                                open_library_card(&mut route, &mut opened_from_library);
+                            }
+                            crate::ui::library::Action::None => {}
                         }
                     } else if matches!(route, Route::Account) {
                         let cx = rd_i32(&ev, 20) as f32;
@@ -1301,6 +1396,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         } else if matches!(route, Route::Detail) {
                             crate::ui::detail::move_focus(if dy < 0 { SDLK_DOWN } else { SDLK_UP } as c_int);
+                        } else if matches!(route, Route::Library) {
+                            crate::ui::library::wheel(dy);
                         }
                     }
                 }
@@ -1333,6 +1430,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     set_snap(1.0);
                     set_fr(0);
                 }
+                // dev: /tmp/plxnative-library[=N] boots straight into the Library browse grid on
+                // section N (empty file = 0) — the deterministic entry for the library FPS scenes.
+                if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-library") {
+                    let sec = s.trim().parse::<usize>().unwrap_or(0);
+                    crate::ui::library::enter(sec);
+                    route = Route::Library;
+                }
                 // dev: /tmp/plxnative-heroidx=<n> jumps the rotating hero to pool index n (flip capture)
                 if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-heroidx") {
                     if let Ok(n) = s.trim().parse::<c_int>() {
@@ -1346,8 +1450,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if !press_tried && now.wrapping_sub(t0) > 1600 {
                 press_tried = true;
                 if std::path::Path::new("/tmp/plxnative-press").exists()
-                    && matches!(route, Route::Home)
-                    && g_snap() > 0.5
+                    && ((matches!(route, Route::Home) && crate::ui::home::focus_is_card())
+                        || (matches!(route, Route::Library) && crate::ui::library::focus_is_card()))
                 {
                     crate::ui::press::begin(now);
                     ok_armed = true;
@@ -1572,6 +1676,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 match route {
                     Route::Home if g_snap() > 0.5 => crate::ui::home::home_move_focus(held_sym),
                     Route::Home => crate::ui::home::home_hero_key(held_sym), // hero view: hold LEFT/RIGHT pages the billboard
+                    Route::Library => crate::ui::library::move_focus(held_sym),
                     Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
                     Route::Player { overlay: Overlay::Menu } => {
                         crate::ui::track_menu::move_focus(held_sym as c_int);
@@ -1672,8 +1777,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     ok_armed = false;
                     match route {
                         Route::Home | Route::Account => {
-                            home_activate(c_int::MIN, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
+                            home_activate(c_int::MIN, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
                         }
+                        Route::Library => open_library_card(&mut route, &mut opened_from_library),
                         Route::Detail => {
                             if crate::ui::detail::on_ok() {
                                 start_playback(crate::ui::detail::last_resume_ns(), true, last_input + HUD_LINGER_MS, &mut route, &mut played_from_detail);
@@ -1731,6 +1837,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
                 // route-agnostically right after `dt` above)
                 crate::ui::home::home_update(dt);
+            } else if matches!(route, Route::Library) {
+                // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene)
+                if lib_osc && now.wrapping_sub(lib_osc_last) > 350 {
+                    lib_osc_last = now;
+                    let sym = if (now / 3000) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
+                    crate::ui::library::move_focus(sym);
+                }
+                // dev: libswitch cycles EVERY switch (tabs, sort menu, unwatched, filter) on a
+                // timer so the re-query + popover paths are FPS-gated too
+                if lib_switch && now.wrapping_sub(lib_switch_last) > 1400 {
+                    lib_switch_last = now;
+                    crate::ui::library::switch_step(lib_switch_step);
+                    lib_switch_step = lib_switch_step.wrapping_add(1);
+                }
+                crate::ui::library::update(dt);
             }
             if matches!(route, Route::Account) {
                 crate::ui::account_menu::update(dt);
@@ -1800,6 +1921,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 crate::ui::profiles::draw();
             } else if matches!(route, Route::Detail) {
                 crate::ui::detail::draw();
+            } else if matches!(route, Route::Library) {
+                crate::ui::library::draw();
             } else {
                 crate::ui::home::home_draw();
             }
@@ -1817,6 +1940,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Login => "login",
                 Route::Profiles => "profiles",
                 Route::Account => "account",
+                Route::Library => "library",
                 Route::Detail => "detail",
                 _ => "home",
             };

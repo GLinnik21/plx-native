@@ -37,18 +37,25 @@ pub struct Row {
     pub detail: String, // optional sub-line ("" = none)
     pub badges: Vec<Badge>,
     pub checked: bool,  // shows the leading checkmark (the ACTIVE item)
-    pub chevron: bool,  // trailing "›" drill-in affordance
+    /// THE trailing accessory icon slot (an SVG asset, never a font glyph): the drill-in
+    /// chevron (via the [`Row::chevron`] sugar) or e.g. the sort menu's direction chevron.
+    pub ticon: Option<crate::ui::icons::Icon>,
     pub dim: bool,      // render dimmer (unavailable / de-emphasised)
 }
 impl Row {
     pub fn new(label: impl Into<String>) -> Self {
         Self { label: label.into(), detail: String::new(), badges: Vec::new(),
-               checked: false, chevron: false, dim: false }
+               checked: false, ticon: None, dim: false }
     }
     pub fn checked(mut self, v: bool) -> Self { self.checked = v; self }
     pub fn detail(mut self, d: impl Into<String>) -> Self { self.detail = d.into(); self }
     pub fn badge(mut self, b: Badge) -> Self { self.badges.push(b); self }
-    pub fn chevron(mut self, v: bool) -> Self { self.chevron = v; self }
+    /// sugar: the "›" drill-in affordance is just the Chevron icon in the trailing slot
+    pub fn chevron(mut self, v: bool) -> Self {
+        if v { self.ticon = Some(crate::ui::icons::Icon::Chevron); }
+        self
+    }
+    pub fn ticon(mut self, i: crate::ui::icons::Icon) -> Self { self.ticon = Some(i); self }
     pub fn dim(mut self, v: bool) -> Self { self.dim = v; self }
     fn height(&self) -> f32 { if self.detail.is_empty() { ROW_H } else { ROW_H_TALL } }
 }
@@ -296,12 +303,12 @@ impl TableView {
                 let cr = Rect::new(content_x + (CHECK_W - cs) * 0.5, cyc - cs * 0.5, cs, cs);
                 crate::ui::icons::draw(p, crate::ui::icons::Icon::Check, cr, base);
             }
-            // trailing chevron (SVG)
+            // trailing accessory (SVG)
             let mut trailing = 0.0f32;
-            if row.chevron {
+            if let Some(ti) = row.ticon {
                 let cs = 26.0f32;
                 let cr = Rect::new(text_right - cs, cyc - cs * 0.5, cs, cs);
-                crate::ui::icons::draw(p, crate::ui::icons::Icon::Chevron, cr, base);
+                crate::ui::icons::draw(p, ti, cr, base);
                 trailing = cs + 14.0;
             }
             // reserve the inline-badge run so the label elides before it
@@ -312,8 +319,10 @@ impl TableView {
             // tall row, with an explicit gap between the title baseline and the detail cap-top
             // (layout ≠ paint — the old fixed offsets left the two lines cramped after centring).
             let two_line = !row.detail.is_empty();
+            // two-line rows follow the table's size class too (compact = BODY regular titles)
+            let (tsz, tbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
             let (title_y, detail_y, bcy) = if two_line {
-                let (t_top, t_base) = crate::text::text_cap_band(theme::size::HEADLINE, 1);
+                let (t_top, t_base) = crate::text::text_cap_band(tsz, tbold);
                 let (d_top, d_base) = crate::text::text_cap_band(theme::size::CAPTION, 0);
                 let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
                 let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
@@ -329,7 +338,7 @@ impl TableView {
             let mut bx = label_x;
             if let Ok(cs) = CString::new(lbl) {
                 bx += if two_line {
-                    p.text(cs.as_ptr(), label_x, title_y, theme::size::HEADLINE, base, 0, 1)
+                    p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold)
                 } else {
                     let mut lab = Label::new(cs.as_ptr(), lsz, base);
                     if lbold == 1 {
