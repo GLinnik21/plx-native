@@ -133,6 +133,15 @@ pub(crate) fn draw() {
     let thumb_path = np.map(|n| n.thumb.clone()).filter(|s| !s.is_empty())
         .or_else(|| d.map(|x| if !x.art.is_empty() { x.art.clone() } else { x.thumb.clone() }))
         .unwrap_or_default();
+    // capability badges come from the PLAYING item's own tracks — `current()` is the show
+    // (episode-1 streams) during a show-page episode play, or another item entirely
+    let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match metadata::playing() {
+        Some(t) => (&t.audio, &t.subs),
+        None => (
+            d.map(|x| x.audio.as_slice()).unwrap_or(&[]),
+            d.map(|x| x.subs.as_slice()).unwrap_or(&[]),
+        ),
+    };
 
     // card — tall enough that the still gets equal padding on every side (see `pad`/`sh` below)
     let cx = 80.0f32;
@@ -196,8 +205,10 @@ pub(crate) fn draw() {
     let has_tags = year > 0
         || dur_ms > 0
         || !rating.is_empty()
-        || d.map(|x| !x.genres.is_empty() || !x.subs.is_empty() || x.audio.iter().any(|s| s.ad)).unwrap_or(false)
-        || d.and_then(|x| x.audio.first()).and_then(|s| audio_badge(&s.codec)).is_some();
+        || d.map(|x| !x.genres.is_empty()).unwrap_or(false)
+        || !subs.is_empty()
+        || audio.iter().any(|s| s.ad)
+        || audio.first().and_then(|s| audio_badge(&s.codec)).is_some();
 
     // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
     let title_h = 42.0f32; // title advance (font 40)
@@ -253,19 +264,17 @@ pub(crate) fn draw() {
         if !rating.is_empty() {
             mx += meta_badge(p, mx, my, &rating) + 12.0;
         }
-        if let Some(x) = d {
-            if let Some(tag) = x.audio.first().and_then(|s| audio_badge(&s.codec)) {
-                mx += meta_badge(p, mx, my, &tag) + 12.0;
-            }
-            if !x.subs.is_empty() {
-                mx += meta_badge(p, mx, my, "CC") + 12.0;
-            }
-            if x.subs.iter().any(|s| s.sdh) {
-                mx += meta_badge(p, mx, my, "SDH") + 12.0;
-            }
-            if x.audio.iter().any(|s| s.ad) {
-                mx += meta_badge(p, mx, my, "AD") + 12.0;
-            }
+        if let Some(tag) = audio.first().and_then(|s| audio_badge(&s.codec)) {
+            mx += meta_badge(p, mx, my, &tag) + 12.0;
+        }
+        if !subs.is_empty() {
+            mx += meta_badge(p, mx, my, "CC") + 12.0;
+        }
+        if subs.iter().any(|s| s.sdh) {
+            mx += meta_badge(p, mx, my, "SDH") + 12.0;
+        }
+        if audio.iter().any(|s| s.ad) {
+            mx += meta_badge(p, mx, my, "AD") + 12.0;
         }
         let _ = mx;
     }

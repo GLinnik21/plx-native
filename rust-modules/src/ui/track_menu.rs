@@ -16,9 +16,8 @@ use std::ptr::{addr_of, addr_of_mut};
 
 static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut TAB: c_int = 0; // 0=Audio, 1=Subtitles
-static mut ACTIVE_AUDIO: c_int = 0; // index into the audio list
-static mut ACTIVE_SUB: c_int = -1; // -1 = Off, else index into the subs list
-static mut FOR_RK: String = String::new(); // the item ACTIVE_* belongs to (self-reset on change)
+static mut ACTIVE_AUDIO: c_int = 0; // index into the playing item's audio list
+static mut ACTIVE_SUB: c_int = -1; // -1 = Off, else index into the playing item's subs list
 static mut TABLE: TableView = TableView::new(); // main-thread only
 
 fn table() -> &'static mut TableView {
@@ -28,21 +27,28 @@ fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
 }
 
+/// The PLAYING item's track lists — the menu's ONLY data source. `metadata::current()` is the
+/// detail page's item, which is the SHOW during an episode play (its lists are episode 1's) and
+/// can be a different item entirely when playing straight from Home.
+fn tracks() -> Option<&'static metadata::PlayingTracks> {
+    metadata::playing()
+}
+
 pub(crate) fn is_open() -> bool {
     unsafe { (*addr_of!(POP)).is_open() }
 }
-/// index into metadata audio list of the chosen audio track
+/// index into the playing item's audio list of the chosen audio track
 pub(crate) fn active_audio() -> c_int {
     unsafe { addr_of!(ACTIVE_AUDIO).read() }
 }
-/// -1 = subtitles off, else index into the metadata subs list
+/// -1 = subtitles off, else index into the playing item's subs list
 pub(crate) fn active_sub() -> c_int {
     unsafe { addr_of!(ACTIVE_SUB).read() }
 }
 /// Plex stream id of the chosen audio track (for &audioStreamID), or 0
 pub(crate) fn audio_stream_id() -> i64 {
     let i = active_audio();
-    metadata::current().and_then(|d| d.audio.get(i.max(0) as usize)).map(|s| s.id).unwrap_or(0)
+    tracks().and_then(|t| t.audio.get(i.max(0) as usize)).map(|s| s.id).unwrap_or(0)
 }
 /// Plex stream id of the chosen subtitle track (for &subtitleStreamID), or 0 if Off
 pub(crate) fn sub_stream_id() -> i64 {
@@ -50,21 +56,33 @@ pub(crate) fn sub_stream_id() -> i64 {
     if i < 0 {
         return 0;
     }
-    metadata::current().and_then(|d| d.subs.get(i as usize)).map(|s| s.id).unwrap_or(0)
+    tracks().and_then(|t| t.subs.get(i as usize)).map(|s| s.id).unwrap_or(0)
 }
 
 fn n_audio() -> c_int {
-    metadata::current().map(|d| d.audio.len()).unwrap_or(0) as c_int
+    tracks().map(|t| t.audio.len()).unwrap_or(0) as c_int
 }
-fn n_sub() -> c_int {
-    metadata::current().map(|d| d.subs.len()).unwrap_or(0) as c_int
+/// Subtitle rows currently offered, as indices into the playing subs list. External/sidecar
+/// subs are NOT in the container, so the client renderer can't show them on direct-play —
+/// they're listed only while transcoding (the server can burn them).
+fn visible_subs() -> Vec<usize> {
+    tracks()
+        .map(|t| {
+            t.subs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !s.external || crate::route::is_transcoding())
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 /// selectable rows in a tab — Subtitles has a leading "Off" row
 fn n_rows(tab: c_int) -> c_int {
     if tab == 0 {
         n_audio()
     } else {
-        n_sub() + 1
+        visible_subs().len() as c_int + 1
     }
 }
 /// the table row that should be focused when entering `tab` (its active selection)
@@ -73,26 +91,43 @@ fn sel_for_tab(tab: c_int) -> c_int {
         active_audio().max(0)
     } else {
         let a = active_sub();
-        if a < 0 {
-            0
-        } else {
-            a + 1
-        } // +1 for the leading Off row
+        // the row of the active subs-list index within the VISIBLE rows (+1 for Off)
+        visible_subs()
+            .iter()
+            .position(|&i| a >= 0 && i == a as usize)
+            .map(|p| p as c_int + 1)
+            .unwrap_or(0)
     }
 }
 
-/// Selections are PER-ITEM: if the loaded item changed since the selections were made, drop
-/// them (default audio, subs Off) so the menu never shows a stale checkmark from the previous
-/// item. Self-synced here on open — no caller has to remember a manual reset. Deliberately does
-/// NOT touch TAB: open_tab() has already chosen the tab when this runs.
+/// Derive the checked tracks from the PLAYBACK state on every open — the route owns the truth
+/// (CUR_AUDIO_SID/CUR_SUB_SID, set by the start-of-play pick and every commit), so the menu can
+/// never show a stale or desynced checkmark: the auto-picked English/smart-DP track is checked
+/// on first open, a replayed item resets with the playback, and a prior pick round-trips by id.
+/// When no id is recorded (codec-default play), the file's flagged default is checked.
+/// Deliberately does NOT touch TAB: open_tab() has already chosen the tab when this runs.
 fn sync_item() {
-    let rk = metadata::current().map(|d| d.rk.clone()).unwrap_or_default();
-    if unsafe { (*addr_of!(FOR_RK)).as_str() } != rk {
-        unsafe {
-            *addr_of_mut!(FOR_RK) = rk;
-            addr_of_mut!(ACTIVE_AUDIO).write(0);
-            addr_of_mut!(ACTIVE_SUB).write(-1);
+    let (audio, sub) = match tracks() {
+        Some(t) => {
+            let asid = crate::route::cur_audio_sid();
+            let audio = (asid > 0)
+                .then(|| t.audio.iter().position(|s| s.id == asid))
+                .flatten()
+                .or_else(|| t.audio.iter().position(|s| s.default))
+                .unwrap_or(0) as c_int;
+            let ssid = crate::route::cur_sub_sid();
+            let sub = (ssid > 0)
+                .then(|| t.subs.iter().position(|s| s.id == ssid))
+                .flatten()
+                .map(|i| i as c_int)
+                .unwrap_or(-1);
+            (audio, sub)
         }
+        None => (0, -1),
+    };
+    unsafe {
+        addr_of_mut!(ACTIVE_AUDIO).write(audio);
+        addr_of_mut!(ACTIVE_SUB).write(sub);
     }
 }
 
@@ -109,6 +144,23 @@ pub(crate) fn open_tab(tab: c_int) {
 }
 pub(crate) fn close() {
     pop().close();
+}
+
+/// Focus an ABSOLUTE table row — the /tmp/plxnative-menupick trigger's contract ("row N").
+/// The interactive path always moves relatively; this exists because the initial focus is the
+/// ACTIVE row (derived from playback state), so a relative walk from it would land elsewhere.
+pub(crate) fn focus_row(row: c_int) {
+    let t = table();
+    for _ in 0..64 {
+        if t.sel == row {
+            break;
+        }
+        let before = t.sel;
+        t.move_sel(if t.sel < row { 1 } else { -1 });
+        if t.sel == before {
+            break; // clamped at an end — row out of range
+        }
+    }
 }
 
 pub(crate) fn move_focus(sym: c_int) {
@@ -136,16 +188,31 @@ pub(crate) fn on_ok() {
         let changed = unsafe { addr_of!(ACTIVE_AUDIO).read() } != sel;
         unsafe { addr_of_mut!(ACTIVE_AUDIO).write(sel) }
         if changed {
-            // the menu only reports the pick — native-switch vs re-transcode is route's policy
-            let codec = metadata::current()
-                .and_then(|d| d.audio.get(sel.max(0) as usize))
-                .map(|s| s.codec.clone())
-                .unwrap_or_default();
-            crate::route::commit_audio_selection(sel, &codec, audio_stream_id());
+            // the menu only reports the pick — native-switch vs re-transcode is route's policy.
+            // The demuxer-facing index is the CONTAINER ordinal (audio_ordinal), not the row.
+            if let Some(s) = tracks().and_then(|t| t.audio.get(sel.max(0) as usize)) {
+                let ord = tracks()
+                    .map(|t| metadata::audio_ordinal(&t.audio, sel.max(0) as usize))
+                    .unwrap_or(sel);
+                crate::route::commit_audio_selection(ord, &s.codec, s.id);
+            }
         }
     } else {
-        unsafe { addr_of_mut!(ACTIVE_SUB).write(sel - 1) } // row 0 = Off = -1
-        crate::route::commit_subtitle_selection(active_sub(), sub_stream_id());
+        // row 0 = Off = -1; else map the visible row back to its subs-list index
+        let vis = visible_subs();
+        let new_sub: c_int = if sel <= 0 {
+            -1
+        } else {
+            vis.get((sel - 1) as usize).map(|&i| i as c_int).unwrap_or(-1)
+        };
+        unsafe { addr_of_mut!(ACTIVE_SUB).write(new_sub) }
+        // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
+        // enumerates); an external pick (transcode-only row) renders nothing — it's burned
+        let ridx = tracks()
+            .filter(|_| new_sub >= 0)
+            .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
+            .unwrap_or(-1);
+        crate::route::commit_subtitle_selection(ridx, sub_stream_id());
     }
 }
 
@@ -164,8 +231,8 @@ pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
 
 fn build_audio() -> Section {
     let mut sec = Section::new("Audio");
-    let d = match metadata::current() {
-        Some(d) => d,
+    let d = match tracks() {
+        Some(t) => t,
         None => return sec,
     };
     for (i, s) in d.audio.iter().enumerate() {
@@ -226,8 +293,12 @@ fn channel_short(layout: &str) -> String {
 fn build_subs() -> Section {
     let mut sec = Section::new("Subtitles");
     sec = sec.row(Row::new("Off").checked(active_sub() < 0));
-    if let Some(d) = metadata::current() {
-        for (i, s) in d.subs.iter().enumerate() {
+    if let Some(t) = tracks() {
+        for i in visible_subs() {
+            let s = match t.subs.get(i) {
+                Some(s) => s,
+                None => continue,
+            };
             let lang = if s.lang.is_empty() { "Unknown" } else { s.lang.as_str() };
             let mut row = Row::new(lang.to_string()).checked(i as c_int == active_sub());
             if !s.title.is_empty() && !s.title.eq_ignore_ascii_case(lang) {

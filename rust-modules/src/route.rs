@@ -339,6 +339,9 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     if !rk.is_empty() {
         ensure_playqueue(rk, &session);
     }
+    // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
+    // loaded detail can be a different item (show page / straight-from-Home play)
+    crate::metadata::load_playing(rk);
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. Falls back to the local codec test if the server returns no usable
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.
@@ -356,7 +359,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // So a direct-playable codec in a non-MKV container is NOT direct-played; it goes to Plex for a
     // container-only REMUX to progressive MKV (copy the codecs, no re-encode — keeps 4K/HDR).
     let streamable = part_is_mkv(part);
-    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(rk, acodec) };
+    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(acodec) };
     let directplay = if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265.
         // Anything else (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's
@@ -374,16 +377,23 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     };
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
-        // them (h264/hevc + the chosen audio track's codec). If the chosen track isn't the
-        // default (aidx >= 0), tell the demuxer to feed that stream.
-        let (aidx, achosen) = audio_sel.unwrap_or((-1, acodec.to_string()));
-        // source fps for the Load esInfo — only from the currently-loaded Detail if it IS this item
-        // (the play_movie home path builds the stream before load_detail runs → no match → omit).
-        let fps = crate::metadata::current().filter(|d| d.rk == rk).map(|d| d.video_fps).unwrap_or(0.0);
+        // them (h264/hevc + the chosen audio track's codec). If a specific track was picked
+        // (aidx >= 0), tell the demuxer to feed that stream — by CONTAINER ordinal, not the
+        // list position (audio_ordinal sorts on PMS Stream.index).
+        let (aidx, achosen, asid) = audio_sel.unwrap_or((-1, acodec.to_string(), 0));
+        // source fps for the Load esInfo — from the playing item's own store (present for the
+        // straight-from-Home path too, which never ran load_detail)
+        let fps = crate::metadata::playing().map(|p| p.video_fps).unwrap_or(0.0);
         set_stream_codecs(vcodec, &achosen);
         unsafe { *addr_of_mut!(STREAM_FPS) = fps };
+        // record the picked track's stream id so the timeline reports what actually plays
+        // (0 = default/unknown → the param is omitted, the server shows the part default)
+        unsafe { addr_of_mut!(CUR_AUDIO_SID).write(asid) };
         if aidx >= 0 {
-            crate::player::set_audio_track(aidx); // feed the direct-playable non-default track
+            let ord = crate::metadata::playing()
+                .map(|p| crate::metadata::audio_ordinal(&p.audio, aidx as usize))
+                .unwrap_or(aidx);
+            crate::player::set_audio_track(ord); // feed the direct-playable non-default track
         }
         // direct-play: no transcode session (transcode_session() stays empty). Carry the
         // session id + identity on the file GET so PMS keys the /status/sessions entry by
@@ -396,16 +406,18 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // payload then uses the SOURCE codecs. Otherwise it's a real RE-ENCODE to the hevc+ac3 target
     // (HEVC target keeps 4K + HDR10; see profile_extra + the server's "HEVC encoding = Always").
     if video_dp {
-        let achosen = audio_sel.as_ref().map(|(_, c)| c.clone()).unwrap_or_else(|| acodec.to_string());
+        let achosen = audio_sel.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_else(|| acodec.to_string());
         set_stream_codecs(vcodec, &achosen);
-        // if a non-default audio track was chosen, feed/select it (mirrors the direct-play path)
-        if let Some((aidx, _)) = audio_sel {
-            if aidx >= 0 {
-                crate::player::set_audio_track(aidx);
-            }
-        }
     } else {
         set_stream_codecs("hevc", "ac3");
+    }
+    // Carry the picked SOURCE track into the server-side selection (put_selection +
+    // &audioStreamID on the transcode query): the remux copies — and the re-encode encodes —
+    // the CHOSEN track instead of the part default. The demuxer is NOT pointed at a source
+    // ordinal here (the old set_audio_track(aidx) indexed the SERVER's output, whose stream
+    // layout is the transcoder's, not the source's) — the payload-codec match finds the lane.
+    if let Some((_, _, asid)) = &audio_sel {
+        unsafe { addr_of_mut!(CUR_AUDIO_SID).write(*asid) };
     }
     // keep the flavor so a later seek rebuilds the same query for start.mkv?...&offset=T
     unsafe { addr_of_mut!(CUR_REMUX).write(video_dp) };
@@ -422,31 +434,40 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
 /// track when the item has one, rather than following the file's default flag.
 const PREF_AUDIO_LANG: &str = "eng";
 
-/// Pick the audio track to DIRECT-PLAY for `rk`, returning (audio_idx, codec): idx -1 = the
-/// codec-default track (demuxer default via audio_stream_matching), else the 0-based audio-stream
-/// index (desired_audio_idx / nth_audio_stream). Order of preference:
+/// Pick the audio track to DIRECT-PLAY from the playing item's track store
+/// (metadata::playing(), loaded by build_stream), returning (list_idx, codec, stream_id):
+/// list_idx -1 = codec-default (demuxer matches by payload codec — only when the track list is
+/// unavailable), else the index into `playing().audio`, with that track's Plex stream id so the
+/// timeline can report the truth. Order of preference:
 ///   1. a direct-playable track in PREF_AUDIO_LANG (English), so English shows don't open in a
 ///      foreign default dub — the Load payload uses THAT track's codec so there is no mismatch;
-///   2. the file's default track, if its codec is direct-playable;
+///   2. the file's flagged default track, if its codec is direct-playable — by EXPLICIT index
+///      (matching by codec alone fed the first same-codec stream, not the flagged default, when
+///      another track of that codec preceded it);
 ///   3. any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling — smart-DP).
-/// None when NO audio track is direct-playable (→ transcode). Fetches the track list once.
-fn pick_dp_audio(rk: &str, default_acodec: &str) -> Option<(i32, String)> {
+/// None when NO audio track is direct-playable (→ transcode).
+fn pick_dp_audio(default_acodec: &str) -> Option<(i32, String, i64)> {
     let dp = crate::plex::is_dp_audio;
-    let tracks = crate::metadata::audio_tracks(rk);
+    let tracks = crate::metadata::playing().map(|p| p.audio.as_slice()).unwrap_or(&[]);
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
-        return if dp(default_acodec) { Some((-1, default_acodec.to_string())) } else { None };
+        return if dp(default_acodec) { Some((-1, default_acodec.to_string(), 0)) } else { None };
     }
+    let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
     // 1. preferred-language, direct-playable
-    if let Some(i) = tracks.iter().position(|(c, l)| dp(c) && l == PREF_AUDIO_LANG) {
-        return Some((i as i32, tracks[i].0.clone()));
+    if let Some(i) = tracks.iter().position(|s| dp(&s.codec.to_lowercase()) && s.lang_code == PREF_AUDIO_LANG) {
+        return Some(pick(i));
     }
-    // 2. the file/Plex default track (its codec = default_acodec), if direct-playable
-    if dp(default_acodec) {
-        return Some((-1, default_acodec.to_string()));
+    // 2. the file's flagged default track, if direct-playable (explicit index)
+    if let Some(i) = tracks.iter().position(|s| s.default && dp(&s.codec.to_lowercase())) {
+        return Some(pick(i));
+    }
+    if dp(default_acodec) && !tracks.iter().any(|s| s.default) {
+        // Media[0].audioCodec is DP but no stream carries the default flag — codec-match
+        return Some((-1, default_acodec.to_string(), 0));
     }
     // 3. any direct-playable track (smart direct-play over a non-DP default)
-    tracks.iter().position(|(c, _)| dp(c)).map(|i| (i as i32, tracks[i].0.clone()))
+    tracks.iter().position(|s| dp(&s.codec.to_lowercase())).map(pick)
 }
 
 /// True when the part's container is MKV/Matroska — the only container our buffer-feed demuxer
@@ -577,9 +598,17 @@ pub(crate) fn switch_audio(stream_id: i64, offset_secs: i64) -> Option<String> {
 
 /// Commit an audio-track pick: NATIVE switch (feed the chosen stream from the same direct-play
 /// file — no transcode, keeps 4K HEVC) when the item direct-plays AND the target codec is
-/// direct-playable; else a server re-transcode with that stream selected.
+/// direct-playable; else a server re-transcode with that stream selected. `idx` is the
+/// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal).
 pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
     if !is_transcoding() && crate::plex::is_dp_audio(codec) {
+        // record the pick: the timeline then reports the stream that actually plays, and a
+        // later transcode event (subtitle burn refresh / transcode seek) keeps this track
+        unsafe { addr_of_mut!(CUR_AUDIO_SID).write(stream_id) };
+        // persist the USER's pick server-side (official-client behavior): /status/sessions'
+        // selected-stream display keys on the part selection, not the timeline report. Only
+        // user picks persist — the start-of-play auto-pick (eng preference) reports only.
+        put_selection();
         crate::player::request_audio_track(idx, codec);
     } else {
         crate::player::request_audio_switch(stream_id);
@@ -593,7 +622,11 @@ pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
     crate::player::request_subtitle(sub_idx);
     set_subtitle(stream_id);
     if is_transcoding() {
-        crate::player::request_transcode_refresh();
+        crate::player::request_transcode_refresh(); // retranscode PUTs the selection itself
+    } else {
+        // persist the pick server-side (and subs Off PUTs subtitleStreamID=0, clearing a
+        // stale server-side selection that would otherwise burn on the next transcode)
+        put_selection();
     }
 }
 

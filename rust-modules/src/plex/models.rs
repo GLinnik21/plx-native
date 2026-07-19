@@ -174,6 +174,16 @@ pub struct Stream {
     pub id: i64,
     #[serde(rename = "streamType", default, deserialize_with = "de_i64")]
     pub stream_type: i64, // 1 video, 2 audio, 3 subtitle
+    /// PMS's stream index within the part — container (ffmpeg) order. The track mapping sorts
+    /// by this instead of trusting Stream[] document order (PMS may reorder), so the demuxer's
+    /// nth-of-type selection can't drift from the row the user picked.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub index: i64,
+    /// Delivery path — present ONLY on external/sidecar streams (a downloaded .srt has
+    /// key=/library/streams/{id}; embedded container streams carry no key). The client
+    /// renderer uses this to exclude sidecars from the embedded-subtitle mapping.
+    #[serde(default)]
+    pub key: String,
     #[serde(default)]
     pub codec: String,
     #[serde(default)]
