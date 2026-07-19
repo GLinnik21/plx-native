@@ -10,7 +10,7 @@ use crate::ui::icons::Icon;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, PageDots};
+use crate::ui::widgets::{Art, Button, CircleButton, PageDots};
 use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
@@ -171,11 +171,34 @@ fn hero_item_at(i: c_int) -> Option<&'static PmsMovie> {
 }
 
 /// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info, 2 = chevron.
+/// Below -1 sit the CENTERED library tab pills (the top band, left→right: chip, then pill i as
+/// `-(i+1)`): -2 = the first section (Movies), -3 = the second (TV Shows), …
 pub(crate) fn hero_focus() -> c_int {
     unsafe { addr_of!(hero_fc).read() }
 }
 pub(crate) fn set_hero_focus(v: c_int) {
-    unsafe { addr_of_mut!(hero_fc).write(v.clamp(-1, HERO_NBTN as c_int - 1)) }
+    // cap at what the tab row can draw — focus must never land on a truncated pill
+    let nsec = crate::browse::section_count().min(crate::ui::widgets::MAX_TABS - 1);
+    let lo = -1 - nsec as c_int;
+    unsafe { addr_of_mut!(hero_fc).write(v.clamp(lo, HERO_NBTN as c_int - 1)) }
+}
+
+/// Decode a top-band focus value to its tab-pill index (0 = Home, 1.. = sections), or None
+/// when the focus isn't on a pill — the ONE home of the `-(i+1)` packing's sign math (inverse:
+/// [`hero_focus_for_pill`]); it was previously inlined at four sites.
+pub(crate) fn hero_pill_index(f: c_int) -> Option<usize> {
+    (f <= -2).then(|| (-f - 1) as usize)
+}
+/// Encode: the hero-focus value that puts the top band on tab pill `i`.
+pub(crate) fn hero_focus_for_pill(i: usize) -> c_int {
+    -(i as c_int) - 1
+}
+
+/// The focused thing is a pressable grid card — the same cross-screen predicate `detail` and
+/// `library` expose, so app.rs asks one uniform per-route question (Home's grid always holds
+/// cards, so "the grid is showing" is the whole answer).
+pub(crate) fn focus_is_card() -> bool {
+    snap_pos() > 0.5
 }
 
 /// Hero pointer hit-test against the action-row rects recorded at draw: returns the button index
@@ -191,11 +214,7 @@ pub(crate) fn hero_pointer_focus(mx: f32, my: f32) {
     }
 }
 
-/// played fraction (0..1) for a Continue-Watching card's resume bar, or None if not in progress.
-/// The bar itself is drawn by `card_row::draw_tile`/`draw_focused`; this just supplies the frac.
-fn resume_frac(m: &PmsMovie) -> Option<f32> {
-    (m.resume_ms > 0 && m.dur_ns > 0).then(|| (m.resume_ms as f32 * 1_000_000.0 / m.dur_ns as f32).clamp(0.0, 1.0))
-}
+// (the resume-bar fraction rule lives on PmsMovie::resume_frac — shared with the Library grid)
 
 // ---- Backdrop: ambient wash + backdrop art (parallax/fade) + scrim. Uses
 // explicit per-element alphas (NOT the cascade) since each fades on its own curve.
@@ -224,9 +243,17 @@ impl View for Backdrop {
             }
         }
         if env.hero_a > 0.01 {
+            // The hero TEXT SCRIM CONTRACT (design review, two lenses HIGH): the meta/synopsis
+            // column must sit on protected ground regardless of art luminance — the old single
+            // ramp only reached real strength BELOW the text band, so bright posters (Toy
+            // Story 2's white/yellow) washed the copy out. Two stacked stops carry ~0.35–0.5
+            // alpha through the text band (y≈550–700) while keeping the same shelf-line depth.
             let sa = 0.30 + 0.64 * env.hero_a;
-            p.rect(Rect::new(0.0, SCR_H * 0.46, SCR_W, SCR_H * 0.54), 0.0,
-                theme::scrim(0.0), theme::scrim(sa), 0.0);
+            let mid = sa * 0.55;
+            p.rect(Rect::new(0.0, SCR_H * 0.34, SCR_W, SCR_H * 0.31), 0.0,
+                theme::scrim(0.0), theme::scrim(mid), 0.0);
+            p.rect(Rect::new(0.0, SCR_H * 0.65, SCR_W, SCR_H * 0.35), 0.0,
+                theme::scrim(mid), theme::scrim(sa), 0.0);
         }
     }
 }
@@ -436,7 +463,7 @@ impl View for Grid {
                 }
                 let s = self.shelves[r].scale(c);
                 let rect = Rect::new(x, row_y + CARD_DY, CARD_W, CARD_H).scaled(s);
-                let resume = resume_frac(mm);
+                let resume = mm.resume_frac();
                 card_row::draw_tile(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume);
             }
         }
@@ -459,7 +486,7 @@ impl View for Grid {
             let title = title_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
             let caption = m.and_then(|mm| if cw { cw_caption(mm) } else { focused_caption(mm) });
             let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-            let resume = m.and_then(resume_frac);
+            let resume = m.and_then(PmsMovie::resume_frac);
             card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr, cw);
         }
     }
@@ -684,55 +711,23 @@ pub(crate) fn home_draw() {
         h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
         h.draw(&env, Painter::root());
         draw_chip(Painter::root());
+        // the centered library tab pills (shared with the Library screen): Home is the selected
+        // tab here; a pill holds focus when the hero top band is on it.
+        let pf = hero_pill_index(hero_focus()).map(|i| i as c_int).unwrap_or(-1);
+        crate::ui::widgets::draw_tab_row(Painter::root(), 0, pf);
     });
 }
 
-/// The top-left profile chip — the signed-in avatar (or an initial fallback). Records its rect for
+/// The top-left profile chip — the shared [`widgets::profile_chip`] visual. Records its rect for
 /// pointer hit-testing; a click or UP-in-hero opens the account menu (change profile / sign out).
-/// The session lookup (mutex + 5-String UserRef clone) is snapshotted per profile GENERATION —
-/// re-cloning it every frame for a chip that changes only on a profile switch was waste.
 fn draw_chip(p: Painter) {
-    static mut CHIP: Option<(u32, String, CString)> = None; // (gen, thumb path, initial)
     let d = 64.0f32;
-    let (x, y) = (MARGIN_X, 44.0f32);
-    let r = Rect::new(x, y, d, d);
+    let r = Rect::new(MARGIN_X, 44.0, d, d);
     unsafe { addr_of_mut!(profile_chip).write(r) };
-    let gen = crate::plex::session::current_gen();
-    let chip = unsafe { &mut *addr_of_mut!(CHIP) };
-    if chip.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
-        let cur = crate::plex::session::current();
-        let thumb = cur.as_ref().map(|u| u.thumb.clone()).unwrap_or_default();
-        let initial = cur
-            .as_ref()
-            .and_then(|u| u.title.chars().next())
-            .map(|c| c.to_uppercase().to_string())
-            .unwrap_or_default();
-        *chip = Some((gen, thumb, CString::new(initial).unwrap_or_default()));
-    }
-    let (_, thumb_s, initial_c) = chip.as_ref().unwrap();
-    // chip is a real focus stop (UP from the hero action row) — the same lifted-card focus treatment
-    // as the shelf tiles: soft drop-shadow behind the avatar, top sheen over it.
+    // chip is a real focus stop (UP from the hero action row) — the same lifted-card focus
+    // treatment as the shelf tiles.
     let focused = hero_focus() == -1 && snap_pos() < 0.5;
-    // resting shadow + perimeter stroke always; lift the shadow when focused (same as the shelf tiles)
-    p.focus_shadow(r, d * 0.5, if focused { 1.0 } else { 0.0 });
-    let mut drew = false;
-    if !thumb_s.is_empty() {
-        let t = resolve_tex(thumb_s, 128, 128, 0);
-        if t != 0 {
-            p.tex_stroked(t, r, d * 0.5, theme::TINT_WHITE);
-            drew = true;
-        }
-    }
-    if !drew {
-        p.rect_sheened(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL);
-        if initial_c.as_bytes().is_empty() {
-            // signed out (no session) — a generic person glyph; the menu behind it offers Sign in
-            crate::ui::icons::draw(p, crate::ui::icons::Icon::User, r.inset(14.0), theme::TEXT_SECONDARY);
-        } else {
-            let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, y + d * 0.5);
-            p.text(initial_c.as_ptr(), x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
-        }
-    }
+    crate::ui::widgets::profile_chip(p, r, focused);
 }
 
 /// Pointer hit-test on the profile chip (returns true so the caller opens the account menu).
@@ -759,6 +754,10 @@ pub(crate) fn home_hero_key(sym: c_uint) {
                 hero_flip(1);
             }
         }
+        // top band (chip + library pills): RIGHT walks chip → Movies → TV Shows (more negative =
+        // further right per the -(i+1) encoding); LEFT walks back to the chip.
+        SDLK_RIGHT if f < 0 => set_hero_focus(f - 1), // set_hero_focus clamps at the last pill
+        SDLK_LEFT if f < -1 => set_hero_focus(f + 1),
         SDLK_LEFT if f > 0 => set_hero_focus(f - 1),
         SDLK_LEFT if f == 0 => hero_flip(-1),
         _ => {}

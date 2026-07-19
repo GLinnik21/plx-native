@@ -44,6 +44,23 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             } else {
                 p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
             }
+            // The ONE progress language on every poster, drawn in this shared composite so Home
+            // shelves + the Library grid + Related all inherit it: amber corner ANGLE = fully
+            // unwatched; the amber resume BAR (card_row::resume_bar) = in progress. Never both —
+            // an in-progress item isn't unwatched (`resume_ms == 0` gate).
+            if let Some(m) = m {
+                if m.unwatched && m.resume_ms == 0 {
+                    // quantize to 4px so the focus-pop animation reuses ~6 cached mask
+                    // textures instead of rasterizing+uploading one per rounded pixel
+                    let d = ((r.w * 0.176) / 4.0).round() * 4.0; // ≈44px on a 250-wide card
+                    crate::ui::icons::draw(
+                        p,
+                        crate::ui::icons::Icon::UnwatchedAngle,
+                        Rect::new(r.x + r.w - d, r.y, d, d),
+                        theme::RESUME_FILL,
+                    );
+                }
+            }
         }
         Art::Thumb { key, res } => {
             let t = resolve_tex(key, res.0, res.1, 0);
@@ -71,6 +88,50 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
     // pop factor from the caller's scale spring (0 at rest → 1 at full focus scale) drives the folded shadow
     let f = if focused { ((scale - 1.0) / (CARD_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
     card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
+}
+
+/// The top-left profile chip's VISUAL (avatar texture, or an initial / person-glyph fallback,
+/// with the shared tile shadow + sheen). Shared by Home and the Library screen — each screen owns
+/// its rect + focus rule and calls this. The session lookup (mutex + UserRef clone) is
+/// snapshotted per profile GENERATION, not per frame.
+pub(crate) fn profile_chip(p: Painter, r: Rect, focused: bool) {
+    use std::ffi::CString;
+    use std::ptr::addr_of_mut;
+    static mut CHIP: Option<(u32, String, CString)> = None; // (gen, thumb path, initial)
+    let d = r.w;
+    let gen = crate::plex::session::current_gen();
+    let chip = unsafe { &mut *addr_of_mut!(CHIP) };
+    if chip.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
+        let cur = crate::plex::session::current();
+        let thumb = cur.as_ref().map(|u| u.thumb.clone()).unwrap_or_default();
+        let initial = cur
+            .as_ref()
+            .and_then(|u| u.title.chars().next())
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        *chip = Some((gen, thumb, CString::new(initial).unwrap_or_default()));
+    }
+    let (_, thumb_s, initial_c) = chip.as_ref().unwrap();
+    // resting shadow + perimeter stroke always; lift the shadow when focused (same as shelf tiles)
+    p.focus_shadow(r, d * 0.5, if focused { 1.0 } else { 0.0 });
+    let mut drew = false;
+    if !thumb_s.is_empty() {
+        let t = resolve_tex(thumb_s, 128, 128, 0);
+        if t != 0 {
+            p.tex_stroked(t, r, d * 0.5, theme::TINT_WHITE);
+            drew = true;
+        }
+    }
+    if !drew {
+        p.rect_sheened(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL);
+        if initial_c.as_bytes().is_empty() {
+            // signed out (no session) — a generic person glyph; the menu behind it offers Sign in
+            crate::ui::icons::draw(p, crate::ui::icons::Icon::User, r.inset(14.0), theme::TEXT_SECONDARY);
+        } else {
+            let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, r.y + d * 0.5);
+            p.text(initial_c.as_ptr(), r.x + d * 0.5, ty, theme::size::HEADLINE, theme::TEXT_PRIMARY, 1, 1);
+        }
+    }
 }
 
 // ---- CircleButton: circular disc + centered glyph, same ControlStyle family as Button /
@@ -294,6 +355,8 @@ impl View for TabPill {
         let r = self.frame;
         // (fill, ink, bold): a highlighted (focused) tab is a bright ACCENT pill; a selected-but-
         // unfocused segment is a subtle pill; a plain segment is dim text with no pill at all.
+        // Legibility over art is the CONTAINER's job (the tab-bar track in `draw_tab_row`), not
+        // the segment's — the detail season tabs use this element bare on a controlled ground.
         let (fill, ink, bold) = match self.style {
             TabStyle::Button if self.focused => (Some(crate::ui::ACCENT), crate::ui::ACCENT_INK, true),
             TabStyle::Button => (Some(theme::CONTROL_IDLE_FILL), theme::CONTROL_IDLE_INK, true),
@@ -310,6 +373,92 @@ impl View for TabPill {
             lab = lab.bold();
         }
         lab.draw(p, r);
+    }
+}
+
+// ---- The shared top tab row: profile chip leads at the margin, the pills (Home | <library
+// sections>) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
+// Library screen so they read as one global tab bar; the pill rects live here so both
+// screens' pointer paths share [`tab_pill_at`]. ----
+/// Home + up to 4 sections. Focus walking and the rects clamp to this — a pill that can't be
+/// drawn must never be focusable.
+pub(crate) const MAX_TABS: usize = 5;
+/// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
+pub(crate) const TOP_BAR_Y: f32 = 44.0;
+/// SAME element, SAME geometry as the detail season tabs (user directive): one control height
+/// (the 60px circle-button CD family) and the season tabs' ±18 label padding — the two rows
+/// must be indistinguishable as a control.
+const TAB_PILL_H: f32 = 60.0;
+const TAB_PILL_PAD: f32 = 18.0;
+static mut PILL_RECTS: [Rect; MAX_TABS] = [Rect::new(0.0, 0.0, 0.0, 0.0); MAX_TABS];
+static mut N_PILLS: usize = 0;
+// label + width cache keyed on browse::sections_gen(): rebuilding the CStrings and
+// re-measuring every frame — on Home's hot path too — was a review-confirmed waste
+static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
+
+/// The tab pill under the pointer (0 = Home, 1.. = sections), or None.
+pub(crate) fn tab_pill_at(mx: f32, my: f32) -> Option<usize> {
+    let n = unsafe { std::ptr::addr_of!(N_PILLS).read() };
+    let rects = unsafe { std::ptr::addr_of!(PILL_RECTS).read() };
+    rects[..n].iter().position(|r| r.contains(mx, my))
+}
+
+/// Draw the centered pill row. `selected` = the tab whose screen is showing (0 = Home);
+/// `focused` = the pill holding remote focus, or -1. Records the rects for [`tab_pill_at`].
+pub(crate) fn draw_tab_row(p: Painter, selected: std::os::raw::c_int, focused: std::os::raw::c_int) {
+    use std::ffi::CString;
+    use std::ptr::addr_of_mut;
+    let gen = crate::browse::sections_gen();
+    let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
+    if cache.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
+        let nsec = crate::browse::section_count().min(MAX_TABS - 1);
+        let mut labels: Vec<CString> = Vec::with_capacity(1 + nsec);
+        labels.push(CString::new("Home").unwrap_or_default());
+        for i in 0..nsec {
+            labels.push(CString::new(crate::browse::section_title(i)).unwrap_or_default());
+        }
+        // measure bold (the widest state) so pill widths don't change with focus; pill =
+        // label + the season tabs' ±18 padding
+        let widths: Vec<f32> = labels
+            .iter()
+            .map(|l| crate::text::text_width(l.as_ptr(), theme::size::BODY, 1) + 2.0 * TAB_PILL_PAD)
+            .collect();
+        *cache = Some((gen, labels, widths));
+    }
+    let (_, labels, widths) = cache.as_ref().unwrap();
+    let n = labels.len();
+    // inter-pill air ≈ the season tabs' rhythm (their TAB_ADVANCE 52 minus the 2×18 pad the
+    // pills here already carry — pill edge to pill edge reads the same)
+    let gap = 16.0f32;
+    let total_w: f32 = widths.iter().sum::<f32>() + gap * (n as f32 - 1.0);
+    let x0 = (crate::ui::consts::SCR_W - total_w) * 0.5;
+    // ONE translucent dark capsule contains the whole row — the tvOS tab-bar track. It (not the
+    // segments) owns legibility over bright hero art: inside it the segments keep their clean
+    // season-tab looks (plain = bare dim text). Sheened for the 1px glass rim.
+    // UNIFORM 8px inset on every side: the pill (r=30) and the track (r=38) stay CONCENTRIC
+    // (outer radius = inner radius + gap), so an end pill's corner gap reads even all the way
+    // around — 16px ends against 8px verticals looked lopsided on the selected Home pill.
+    const TRACK_PAD: f32 = 8.0;
+    let track = Rect::new(
+        x0 - TRACK_PAD,
+        TOP_BAR_Y - TRACK_PAD,
+        total_w + 2.0 * TRACK_PAD,
+        TAB_PILL_H + 2.0 * TRACK_PAD,
+    );
+    // dark-material weight: light enough to keep a hint of the art, dark enough that the
+    // TEXT_TERTIARY plain segments hold contrast even over pure-white art (Toy Story 2)
+    p.rect_sheened(track, track.h * 0.5, theme::scrim_black(0.72), theme::scrim_black(0.82));
+    let mut x = x0;
+    let env = Env::inert();
+    unsafe { N_PILLS = n };
+    for i in 0..n {
+        let r = Rect::new(x, TOP_BAR_Y, widths[i], TAB_PILL_H);
+        unsafe { (*std::ptr::addr_of_mut!(PILL_RECTS))[i] = r };
+        TabPill::new(labels[i].as_ptr(), theme::size::BODY, r)
+            .segment(i as c_int == selected)
+            .focused(i as c_int == focused)
+            .draw(&env, p);
+        x += widths[i] + gap;
     }
 }
 

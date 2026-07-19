@@ -26,6 +26,24 @@ pub struct TranscodeSpec<'a> {
     pub offset_secs: i64,
 }
 
+/// One paged section-listing query (the Library browse grid). Built per fetch by the browse
+/// store; consumed by `library.rs::section_items_query`. Filters are `(param, value)` pairs
+/// appended verbatim (`("genre","150")`, `("unwatched","1")`, shows: `("unwatchedLeaves","1")`)
+/// — tag-id values come from `section_directory` value lists. Paging: Start AND Size are
+/// always sent together — PMS silently ignores a lone `X-Plex-Container-Size` query param
+/// (verified live on PMS 1.43.2, 2026-07-19).
+pub struct SectionQuery<'a> {
+    pub section_key: i64,
+    /// `sort=key[:desc]` value, e.g. "titleSort" / "addedAt:desc"; empty = server default.
+    pub sort: &'a str,
+    pub filters: &'a [(String, String)],
+    pub start: i64,
+    pub size: i64,
+    /// `includeMeta=1` — the response's `Meta.Type[]` carries the section's full server-driven
+    /// Sort/Filter menus; request it on the first page of a section, skip on later pages.
+    pub include_meta: bool,
+}
+
 /// Server-side stream selection for a part (`PUT /library/parts/{id}`) — the transcoder
 /// encodes the part's SELECTED audio and burns its SELECTED subtitle; only a PUT changes
 /// them (query params on the stream URL do not).

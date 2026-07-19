@@ -20,6 +20,7 @@ pub mod home;
 pub mod icons;
 pub mod info_panel;
 pub mod label;
+pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;

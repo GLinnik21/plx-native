@@ -2,7 +2,7 @@
 //! related — plus the two part-level playback ops (stream selection, direct-play target).
 use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
-use super::params::StreamSelection;
+use super::params::{SectionQuery, StreamSelection};
 
 impl Client {
     /// GET /library/sections (D-3: spec-canonical is /library/sections/all; keep the
@@ -23,6 +23,33 @@ impl Client {
             .int("X-Plex-Container-Size", size)
             .build();
         self.get_json(&path)
+    }
+
+    /// Sorted/filtered/paged section listing — the Library browse grid's one fetch.
+    /// `GET /library/sections/{k}/all?includeMeta=1&sort=…&genre=…&X-Plex-Container-Start&Size`
+    /// → `.metadata[]` + `total_size` (+ `.meta` when `include_meta`).
+    pub fn section_items_query(&self, q: &SectionQuery) -> Option<MediaContainer> {
+        let mut b = QueryBuilder::new(format!("/library/sections/{}/all", q.section_key));
+        if q.include_meta {
+            b = b.int("includeMeta", 1);
+        }
+        b = b.opt_str("sort", q.sort);
+        for (k, v) in q.filters {
+            b = b.str(k, v);
+        }
+        let path = b
+            .int("X-Plex-Container-Start", q.start)
+            .int("X-Plex-Container-Size", q.size)
+            .build();
+        self.get_json(&path)
+    }
+
+    /// GET /library/sections/{key}/{directory} — a secondary directory: the filter value
+    /// lists (`genre`/`year`/`decade`/`collection`/…, rows carry the tag id in `key` + a
+    /// ready-made `fastKey` listing URL) and the `firstCharacter` per-letter index.
+    /// → `.directory[]`.
+    pub fn section_directory(&self, section_key: i64, directory: &str) -> Option<MediaContainer> {
+        self.get_json(&format!("/library/sections/{section_key}/{directory}"))
     }
 
     /// GET /library/metadata/{rating_key} → the single item (`.metadata[0]`), or None.

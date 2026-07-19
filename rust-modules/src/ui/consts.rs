@@ -33,6 +33,12 @@ pub const SDLK_RETURN: c_uint = 13;
 pub const SDLK_KP_ENTER: c_uint = 88 | (1 << 30);
 pub const SDLK_SELECT: c_uint = 77 | (1 << 30);
 pub const SDLK_ESCAPE: c_uint = 27;
+pub const SDLK_PAGEUP: c_uint = 75 | (1 << 30);
+pub const SDLK_PAGEDOWN: c_uint = 78 | (1 << 30);
+/// Magic-Remote CH▲/CH▼ rocker — webOS keyCodes 33/34 (page the Library grid). Matched
+/// alongside the SDLK_PAGE* syms; verify the raw wcodes in the event log on a new remote.
+pub const WCODE_CH_UP: c_uint = 33;
+pub const WCODE_CH_DOWN: c_uint = 34;
 
 /// OK/confirm press — RETURN, keypad ENTER, or the remote's SELECT. The ONE OK predicate
 /// (app.rs + the login/profiles screens all route through it).

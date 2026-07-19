@@ -30,6 +30,20 @@ pub struct PmsMovie {
     pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
     pub(crate) show_title: String, // episode only: grandparentTitle (the hero headlines the SHOW)
     pub(crate) ep_index: c_int,    // episode only: episode number within the season
+    /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves) — drives
+    /// the amber corner angle on cards. The angle and the resume bar are mutually exclusive by
+    /// the draw rule (angle only when `resume_ms == 0`): in-progress ≠ unwatched.
+    pub(crate) unwatched: bool,
+}
+
+impl PmsMovie {
+    /// Played fraction for the amber resume bar, or None when not in progress — THE one
+    /// resume-bar rule, shared by the home shelves and the Library grid (it was copy-pasted
+    /// into both screens before).
+    pub(crate) fn resume_frac(&self) -> Option<f32> {
+        (self.resume_ms > 0 && self.dur_ns > 0)
+            .then(|| (self.resume_ms as f32 * 1_000_000.0 / self.dur_ns as f32).clamp(0.0, 1.0))
+    }
 }
 
 // The catalog (private; the UI reads it through movie()/hub_item()/hero_pool_item()).
@@ -74,7 +88,8 @@ pub(crate) fn urlenc_str(src: &str) -> String {
 }
 
 /// Parse one Plex `Metadata` item (from a section listing OR a hub) into a catalog row.
-fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
+/// pub(crate): the Library browse store (`browse.rs`) maps its paged listings with it too.
+pub(crate) fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
     let mut m = PmsMovie::default();
     m.kind = match it.kind.as_str() {
         "show" => 1,
@@ -97,6 +112,12 @@ fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
         }
         _ => {}
     }
+    // shows/seasons count leaves (a show with any watched episode is no longer "unwatched");
+    // movies/episodes key on viewCount absence (docs/pms-api.md §2)
+    m.unwatched = match m.kind {
+        1 | 2 => it.viewed_leaf_count == 0 && it.leaf_count > 0,
+        _ => it.view_count == 0,
+    };
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);
@@ -132,10 +153,9 @@ fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
     m
 }
 
-// The full-library browse path (fetch every section's items via the typed
-// `client().sections()` + `.section_items()`) was removed as dead code — the home is
-// hub-driven (`pms_fetch_hubs`). Those two client methods remain available for a future
-// A-Z "Library" screen; re-add a ~30-line consumer here when one is built.
+// The full-library browse path lives in `crate::browse` (the Library screen's per-section
+// PAGED catalog — sparse store + off-thread page fetches via `section_items_query`). This
+// module stays hub-only; `browse` reuses `parse_item` above for its listings.
 
 // ---- home hubs: each hub is a titled slice of the catalog ----
 struct HubRow {

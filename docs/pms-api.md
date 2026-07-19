@@ -87,6 +87,49 @@ All optional numeric fields must be treated as absent-able in the C parser (defa
 
 ---
 
+## 2b. Library browse — sort / filter / letter index (verified live 2026-07-19, PMS 1.43.2)
+
+The Library screen's surface. Everything here was probed against the live server; the OpenAPI
+spec's "Media Queries" section documents the full query language.
+
+- **Browse views menu:** `GET /library/sections/{key}` → `viewGroup:"secondary"` + `Directory[]`
+  of relative keys (`all`, `unwatched`, `recentlyAdded`, `genre`, `year`, `decade`, `collection`,
+  `firstCharacter`, `folder`, …). All are canned queries over `/all` — the client synthesizes
+  them with params instead.
+- **Server-driven menus:** `GET /library/sections/{key}/all?includeMeta=1` → `MediaContainer.Meta.Type[]`
+  with `Sort[]` (`{key, descKey, defaultDirection, title, firstCharacterKey?}` — movies: 9 entries)
+  and `Filter[]` (`{filter, filterType, key=value-list URL, title}` — movies: 27). With header
+  `X-Plex-Container-Size: 0` it's a menus+totalSize-only probe. Standalone `/filters` and `/sorts`
+  endpoints exist too. **The client hardcodes no menu contents** (`browse.rs` consumes these).
+- **Sorting:** `sort=key:asc|desc` (comma-chain for multi-level, `nullsLast` supported);
+  `sort=random` works. Composes with filters + paging.
+- **Filter values:** `GET /library/sections/{key}/genre` (also `/year`, `/decade`, `/contentRating`,
+  `/collection`, …) → `Directory[]` `{key: tag id, title, fastKey}` where **`fastKey` is the
+  ready-made listing URL** (`/library/sections/1/all?genre=150`). Apply as `/all?genre={id}`.
+- **Media-query operators** (URL-encode the key side): string `=` contains / `==` equals /
+  `<=` begins-with; int+date `>>=` gt/after, `<<=` lt/before; bool `=1/=0`; relative dates
+  `addedAt>>=-3w`; OR via comma; parens via `push=1`/`pop=1`/`or=1`. Episode scoping
+  `type=4&show.id={rk}` works; scoped exact `show.title==` does NOT (use `show.id`).
+- **Unwatched:** movies `unwatched=1`; **shows use `unwatchedLeaves=1`** (`unwatched=1` on
+  type=2 has odd semantics — returned 1 of 10 live); episodes `unwatched=1` normal.
+- **Show granularity:** `?type=2|3|4` on `/all` lists shows/seasons/episodes flat (no
+  children-walking). Type ids: movie=1, show=2, season=3, episode=4.
+- **Letter index:** `GET /library/sections/{key}/firstCharacter` → per-letter `Directory[]` with
+  `size` counts in titleSort order (articles stripped); `/firstCharacter/{L}` returns the items.
+  **`?firstCharacter=X` on `/all` is silently IGNORED** — jump = prefix-summed
+  `X-Plex-Container-Start` offset into the titleSort listing. (Spec's plural `/firstCharacters`
+  404s.) `titleSort<=`/`>=` behave as a lexicographic range, not begins/ends-with.
+- **Collections — two id spaces:** `/library/sections/{key}/collections` → `Metadata[]` with
+  **ratingKey** (browse via `/library/collections/{rk}/children`); the `/collection` filter dir
+  returns **tag ids** for `/all?collection={tag}`. Don't mix. `includeCollections=1` inlines
+  collections into `/all`.
+- **Paging gotcha:** a query-param `X-Plex-Container-Size` WITHOUT `Start` is silently ignored —
+  always send both (the client does), or use the headers. Header `Size: 0` = count-only probe.
+  `totalSize` is only present on paged responses.
+- **Payload slimming:** `excludeElements=Media` etc. per the spec (not used yet).
+
+---
+
 ## 3. Hubs (home shelves)
 
 ```

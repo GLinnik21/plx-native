@@ -14,7 +14,15 @@ pub enum Icon {
     Cc,
     Audio,
     Check,
-    Chevron,
+    Chevron, // points RIGHT; the directional variants below are separate masks (the
+    // rasterizer draws untransformed, so direction is per-asset, not a rotation)
+    ChevronDown,
+    ChevronUp,
+    /// Hollow circle — the Unwatched toolbar chip's off state.
+    Ring,
+    /// The amber unwatched corner mark (top-right of a poster): a right triangle whose outer
+    /// corner is pre-rounded to sit flush inside the card's 14px corner radius. Filled mask.
+    UnwatchedAngle,
     Play,
     Pause,
     Info,
@@ -28,6 +36,10 @@ fn src(id: Icon) -> &'static str {
         Icon::Audio => include_str!("../../../assets/icons/audio.svg"),
         Icon::Check => include_str!("../../../assets/icons/check.svg"),
         Icon::Chevron => include_str!("../../../assets/icons/chevron.svg"),
+        Icon::ChevronDown => include_str!("../../../assets/icons/chevron-down.svg"),
+        Icon::ChevronUp => include_str!("../../../assets/icons/chevron-up.svg"),
+        Icon::Ring => include_str!("../../../assets/icons/ring.svg"),
+        Icon::UnwatchedAngle => include_str!("../../../assets/icons/angle.svg"),
         Icon::Play => include_str!("../../../assets/icons/play.svg"),
         Icon::Pause => include_str!("../../../assets/icons/pause.svg"),
         Icon::Info => include_str!("../../../assets/icons/info.svg"),

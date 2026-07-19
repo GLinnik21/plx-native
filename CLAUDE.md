@@ -195,8 +195,10 @@ There is no host-side test suite — the code only runs on the TV. Verify by obs
   URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (empty =
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or
-  tap-relative `+10`/`-10` — rapid-burst seek testing), and `/tmp/plxnative-ptype` (ACB playerType
-  bisect knob).
+  tap-relative `+10`/`-10` — rapid-burst seek testing), `/tmp/plxnative-ptype` (ACB playerType
+  bisect knob), and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
+  browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
+  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre).
   **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`) marks the boot as
   automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
   stored session entirely — so headless runs always land on a deterministic Home.

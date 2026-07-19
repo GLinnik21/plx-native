@@ -6,6 +6,7 @@ mod app; // plex_run — the Rust app core / event loop (the entry inverted from
 mod aq;
 mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
+mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — the TV's own FFmpeg 3.3 via the stub-.so link
 mod gfx;
 mod img;
