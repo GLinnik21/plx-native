@@ -186,8 +186,13 @@ pub(crate) fn set_hero_focus(v: c_int) {
 /// Decode a top-band focus value to its tab-pill index (0 = Home, 1.. = sections), or None
 /// when the focus isn't on a pill — the ONE home of the `-(i+1)` packing's sign math (inverse:
 /// [`hero_focus_for_pill`]); it was previously inlined at four sites.
+///
+/// `c_int::MIN` is app.rs's "focus is a grid card, not the hero band" sentinel and is NOT a
+/// pill: it satisfies the `<= -2` sign test but negates to itself (overflow), so an ungated
+/// decode used to send EVERY grid-card OK into the last library section. Rejecting it here —
+/// in the one place that owns the packing — keeps every caller safe by construction.
 pub(crate) fn hero_pill_index(f: c_int) -> Option<usize> {
-    (f <= -2).then(|| (-f - 1) as usize)
+    (f <= -2 && f != c_int::MIN).then(|| (-f - 1) as usize)
 }
 /// Encode: the hero-focus value that puts the top band on tab pill `i`.
 pub(crate) fn hero_focus_for_pill(i: usize) -> c_int {
