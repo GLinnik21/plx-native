@@ -14,6 +14,7 @@
 #   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | player=<rk> | login | account
 #   --guest           run as the managed test user rather than the owner (default: owner)
 #   --stream[=PORT]   also start tools/stream-screen.py for a live browser view (default 8909)
+#                     STREAM_RES=480x270 makes mpeg encode ~4x cheaper (see the skill)
 #   --no-token        boot with no injected token (exercises the QR sign-in flow)
 #   --keep            do not clear existing triggers first (rarely what you want)
 #
@@ -91,17 +92,27 @@ push_token() {
 # ------------------------------------------------------------- launch --------
 relaunch() {
   # SAM keeps stale "running" state after a hard kill, so a launch without a close-first
-  # is a silent no-op relaunch; and luna-send must STAY SUBSCRIBED (-i) for it to take.
-  tv "(luna-send -i luna://com.webos.applicationManager/closeByAppId '{\"id\":\"$APPID\"}' >/dev/null 2>&1 & P=\$!; sleep 2; kill \$P 2>/dev/null); \
-      fuser -k $APPDIR/plxnative 2>/dev/null; rm -f /tmp/plxnative-events.log; \
-      (luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$APPID\"}' >/dev/null 2>&1 & sleep 6; kill \$! 2>/dev/null) &" 2>/dev/null
-  sleep 9
+  # is a silent no-op relaunch — `make kill` is the proven close path.
+  make -C "$REPO" kill >/dev/null 2>&1
+  sleep 2
+  # luna-send must STAY SUBSCRIBED (-i) for the launch to take, which means the SSH
+  # session has to stay OPEN while it does: backgrounding it and letting ssh return
+  # kills the subscriber and the launch silently no-ops (the app keeps running as it
+  # was, so everything downstream looks fine while testing the OLD instance).
+  tv "rm -f /tmp/plxnative-events.log; \
+      luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$APPID\"}' >/dev/null 2>&1 & \
+      LP=\$!; sleep 8; kill \$LP 2>/dev/null" >/dev/null 2>&1
 }
 
+PREV_PID=""
 assert_running() {
   local pid; pid=$(tvq 'pidof plxnative')
-  [ -n "$pid" ] && { ok "app running (pid $pid)"; return 0; }
-  bad "app is not running after launch"; return 1
+  if [ -z "$pid" ]; then bad "app is not running after launch"; return 1; fi
+  if [ -n "$PREV_PID" ] && [ "$pid" = "$PREV_PID" ]; then
+    bad "app pid unchanged ($pid) — the relaunch did NOT take; you would be testing the old instance"
+    return 1
+  fi
+  ok "app running (pid $pid)"; return 0
 }
 
 assert_route() {
@@ -172,6 +183,7 @@ cmd_up() {
     info "no token by request — expect the QR sign-in screen"
   fi
 
+  PREV_PID=$(tvq 'pidof plxnative')
   relaunch
   assert_running || { info "check: tools/crash-report.sh"; exit 1; }
   assert_route "$want_route" || true
@@ -179,8 +191,10 @@ cmd_up() {
   if [ -n "$stream" ]; then
     pkill -f "stream-screen.py --port $stream" 2>/dev/null
     sleep 1
-    (cd "$REPO" && nohup python3 -u tools/stream-screen.py --port "$stream" --res 960x540 \
-        > "$REPO/.tv-stream.log" 2>&1 & echo $! > "$STREAM_PID_FILE")
+    # fully detach: without </dev/null the child keeps the caller's stdout pipe open and
+    # an interactive shell appears to hang long after this script has finished
+    (cd "$REPO" && nohup python3 -u tools/stream-screen.py --port "$stream" --res "${STREAM_RES:-960x540}" \
+        > "$REPO/.tv-stream.log" 2>&1 </dev/null & echo $! > "$STREAM_PID_FILE") ; disown 2>/dev/null || true
     sleep 8
     local ver; ver=$(curl -s -m 3 "http://127.0.0.1:$stream/version" 2>/dev/null)
     if [ -n "$ver" ]; then ok "live view: http://127.0.0.1:$stream/  ($ver)"

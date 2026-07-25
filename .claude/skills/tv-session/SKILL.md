@@ -76,8 +76,21 @@ for a multi-user account) → otherwise QR sign-in. Nothing is compiled into the
 
 | Source | Sees | Rate |
 |---|---|---|
-| In-app stream (`--stream`, port 8910 → browser) | **UI plane only** | ~30fps |
+| In-app stream (`--stream`, port 8910 → browser) | **UI plane only** | see below |
 | `tools/tv-session.sh shot` / `capture-screen.sh` (luna service) | UI **+ the hardware video plane** | ~2–3fps |
+
+**Stream resolution is a speed lever, not cosmetics.** MPEG1 has no intra prediction, so
+encode cost tracks screen *detail* as much as size. Measured on the same home screen (a
+full-bleed photo backdrop plus poster shelves):
+
+| Size | Encode | Result |
+|---|---|---|
+| `960x540` | 53–114 ms/frame | ~9–19fps — looks stuck while it is in fact live |
+| `480x270` | ~13 ms/frame | ~24–30fps, soft but easily readable |
+
+A flat screen (the who's-watching picker) costs ~22 ms even at 960x540 — so judge by what
+is on screen, not by the number alone. `STREAM_RES=480x270 tools/tv-session.sh up --stream`
+for smooth; the default 960x540 for sharp stills.
 
 **This is the trap that produces wrong conclusions:** GL cannot see the hardware video
 overlay, so verifying *playback* with the in-app stream shows a plausible black rectangle
@@ -104,8 +117,11 @@ the TV is signed in as whatever the automation chose.
 - **Standby wipes `/tmp`.** Triggers, the token, the FIFO and any helper script you left
   there are gone after a sleep. Re-run `up`.
 - **SAM keeps stale "running" state**, so a launch without a close-first is a silent no-op
-  relaunch, and `luna-send` must stay subscribed (`-i`) for the launch to take. The driver
-  does both.
+  relaunch, and `luna-send` must stay subscribed (`-i`) for the launch to take — which
+  means the SSH session has to stay OPEN while it does. Backgrounding the launch and
+  letting ssh return kills the subscriber: the old instance keeps running, so every check
+  downstream passes while you are testing yesterday's build. The driver holds the session
+  and then asserts the **pid changed**.
 - **Do not run the harness and a live session at once.** `tests/run.py` glob-clears
   triggers and kills the app per case; a concurrent session produces bogus failures that
   look like real regressions. Run `tv-session.sh down` (or just stop the streamer) first.
