@@ -154,7 +154,11 @@ cmd_up() {
   local files=() want_route=""
   case "$screen" in
     home)      want_route=home ;;
-    profiles)  files+=("plxnative-pickuser=0"); want_route=profiles ;;
+    # The picker is what an ORDINARY boot shows: it needs the stored session and NO
+    # automation. An injected token suppresses it (token beats session), and
+    # plxnative-pickuser forces it only to auto-pick a tile and move straight on — so
+    # neither reaches it. Hence: no token, no triggers.
+    profiles)  no_token=1; want_route=profiles ;;
     login)     files+=("plxnative-login="); want_route=login ;;
     account)   files+=("plxnative-acct="); want_route=account ;;
     library)   files+=("plxnative-library="); want_route=library ;;
@@ -166,13 +170,21 @@ cmd_up() {
   # capture trigger is DIAG-exempt: arming the live view must not suppress the picker
   [ -n "$stream" ] && files+=("plxnative-capture=8910")
 
-  local parts=()
-  for f in "${files[@]}"; do
-    local name="${f%%=*}" val="${f#*=}"
-    if [ "$f" = "$name=" ] || [ -z "$val" ]; then parts+=("touch /tmp/$name")
-    else parts+=("printf '%s' '$val' > /tmp/$name"); fi
-  done
-  [ ${#parts[@]} -gt 0 ] && { tv "$(IFS=';'; echo "${parts[*]}")" 2>/dev/null; ok "armed: ${files[*]}"; }
+  # NB bash 3.2 (macOS system bash) + `set -u`: "${arr[@]}" on an EMPTY array is an
+  # unbound-variable error, so every expansion here is length-guarded. Screens that need
+  # no triggers at all (home, profiles) hit exactly that case.
+  if [ ${#files[@]} -gt 0 ]; then
+    local parts=()
+    for f in "${files[@]}"; do
+      local name="${f%%=*}" val="${f#*=}"
+      if [ "$f" = "$name=" ] || [ -z "$val" ]; then parts+=("touch /tmp/$name")
+      else parts+=("printf '%s' '$val' > /tmp/$name"); fi
+    done
+    tv "$(IFS=';'; echo "${parts[*]}")" 2>/dev/null
+    ok "armed: ${files[*]}"
+  else
+    info "no boot triggers needed for this screen"
+  fi
 
   if [ "$no_token" = 0 ]; then
     if [ "$guest" = 1 ]; then
@@ -180,7 +192,9 @@ cmd_up() {
     fi
     push_token || info "continuing without a token — expect the QR sign-in screen"
   else
-    info "no token by request — expect the QR sign-in screen"
+    # with a stored session this lands on the who's-watching picker; only a device with
+    # no session at all falls through to QR
+    info "no token by request — boots as a real user would (picker, or QR if no session)"
   fi
 
   PREV_PID=$(tvq 'pidof plxnative')
