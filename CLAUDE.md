@@ -177,7 +177,11 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Testing / verification (on-device, no host runtime)
 
-There is no host-side test suite — the code only runs on the TV. Verify by observing behavior:
+There is no host-side test suite — the code only runs on the TV. Verify by observing behavior.
+**Wake the TV first** (`wake-tv` skill) — asleep, every assertion fails as "no line found", which
+reads exactly like a total regression. The **`tv-session` skill** is the bring-up/observe/drive
+loop; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new FFI into the TV's own
+libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for the perf gates).
 
 - **Event log:** the app writes `/tmp/plxnative-events.log` on the TV (LS2/ACB/Starfish replies, feed
   stats, seek/bind steps, key raw bytes, crash tracer). `make run` fetches it automatically; it's
@@ -191,7 +195,14 @@ There is no host-side test suite — the code only runs on the TV. Verify by obs
   N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
   heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly.
-- **Dev trigger files (read once at boot, on the TV):** `/tmp/plxnative-url` (override the streamed part
+- **Dev trigger files (read once at boot, on the TV).** There are ~40; this lists the ones worth
+  knowing by name. **The catalog is the source, not this list** — get the real one with
+  `grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sort -u`. Two behaviours bite:
+  `make run` clears ONLY the event log (unlike `tests/run.py`, which glob-clears triggers), so a
+  by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also
+  suppresses the who's-watching picker, silently changing which screen you boot to. The
+  **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
+  screen-to-trigger recipes. Named highlights: `/tmp/plxnative-url` (override the streamed part
   URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (empty =
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or

@@ -28,3 +28,5 @@ rust-modules/target/
 rust-poc/
 .abi-cache/
 .tv-mac
+.tv-stream.pid
+.tv-stream.log
