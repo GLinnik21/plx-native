@@ -7,21 +7,45 @@
 #   wake-tv.sh standby    ask webOS to power off to standby (clean, resumable by WoL).
 #   wake-tv.sh status     one reachability probe, prints UP/DOWN.  Exit 0 = up.
 #
-# Env overrides: TV_HOST (192.168.0.114)  TV_MAC (20:17:42:c1:59:51)
-#                TV_USER (root)  WAKE_TIMEOUT (180 s)
+# Config resolution (nothing about your network is baked into this file):
+#   TV_HOST — $TV_HOST, else $TV, else the Makefile's TV default.
+#   TV_MAC  — $TV_MAC, else the gitignored .tv-mac cache, else looked up from the ARP
+#             table while the TV is reachable and cached there for next time.
+#   TV_USER (root)  WAKE_TIMEOUT (180 s)
 #
 # Notes from live use (see SKILL.md Gotchas):
 #  - The TV auto-drops to standby after a few idle minutes; every automation session
 #    starts here. Wake typically takes 15-60 s, occasionally ~2-3 min — hence the
 #    generous default timeout and the WoL resend every ~20 s while polling.
 #  - macOS has no `wakeonlan` out of the box; python3 broadcasts the magic packet.
-#  - SSH auth is KEY-based (dropbear; the Makefile's "alpine" password is a decoy).
+#  - SSH auth: the installed key is tried first; the Makefile's sshpass fallback covers
+#    a machine without one. Key auth simply wins when both are available.
 set -euo pipefail
 
-TV_HOST="${TV_HOST:-192.168.0.114}"
-TV_MAC="${TV_MAC:-20:17:42:c1:59:51}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+MAC_CACHE="$REPO/.tv-mac"
+
+# Host: explicit env wins, else the Makefile is the single source of truth.
+TV_HOST="${TV_HOST:-${TV:-}}"
+[ -n "$TV_HOST" ] || TV_HOST="$(make -C "$REPO" -pn 2>/dev/null | sed -n 's/^TV *= *//p' | head -1)"
+[ -n "$TV_HOST" ] || { echo "ERROR: no TV host (set TV_HOST, or TV= in the Makefile)." >&2; exit 2; }
+
 TV_USER="${TV_USER:-root}"
 WAKE_TIMEOUT="${WAKE_TIMEOUT:-180}"
+
+# MAC (needed only for the magic packet): env -> cache -> ARP while the TV is up.
+TV_MAC="${TV_MAC:-}"
+[ -n "$TV_MAC" ] && [ -f "$MAC_CACHE" ] || true
+[ -n "$TV_MAC" ] || TV_MAC="$(cat "$MAC_CACHE" 2>/dev/null || true)"
+learn_mac() {
+  # normalize the ARP form (a:b:c:1:2:3) to zero-padded octets
+  local m
+  m="$(arp -n "$TV_HOST" 2>/dev/null | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1)" || true
+  [ -n "$m" ] || return 1
+  m="$(python3 -c "import sys;print(':'.join(f'{int(x,16):02x}' for x in sys.argv[1].split(':')))" "$m")"
+  printf '%s' "$m" > "$MAC_CACHE"
+  TV_MAC="$m"
+}
 
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
           -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes)
@@ -45,7 +69,10 @@ PY
 
 case "${1:-wake}" in
   status)
-    if up; then echo "TV ${TV_HOST}: UP"; else echo "TV ${TV_HOST}: DOWN"; exit 1; fi
+    if up; then
+      [ -n "$TV_MAC" ] || learn_mac || true
+      echo "TV ${TV_HOST}: UP"
+    else echo "TV ${TV_HOST}: DOWN"; exit 1; fi
     ;;
   standby)
     # Clean standby via the webOS power service. On THIS webOS 4.5 build the method is
@@ -63,7 +90,16 @@ case "${1:-wake}" in
     echo "ERROR: TV still answers after turnOff." >&2; exit 1
     ;;
   wake)
-    if up; then echo "TV ${TV_HOST}: already up."; exit 0; fi
+    if up; then
+      [ -n "$TV_MAC" ] || learn_mac || true   # cache it now, while we still can
+      echo "TV ${TV_HOST}: already up."; exit 0
+    fi
+    if [ -z "$TV_MAC" ]; then
+      echo "ERROR: no MAC for the magic packet, and the TV is unreachable so it cannot be" >&2
+      echo "       learned from ARP. Set TV_MAC=<aa:bb:cc:dd:ee:ff> once (it is then cached" >&2
+      echo "       in .tv-mac), or wake the TV by hand and re-run to cache it." >&2
+      exit 2
+    fi
     echo "Waking ${TV_HOST} (MAC ${TV_MAC})..."
     t0=$(date +%s)
     send_wol
