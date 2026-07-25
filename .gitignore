@@ -26,3 +26,5 @@ rust-modules/target/
 
 # dead prototype dir (code lives in rust-modules/ now)
 rust-poc/
+.abi-cache/
+.tv-mac

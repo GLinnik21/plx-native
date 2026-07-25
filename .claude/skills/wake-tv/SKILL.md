@@ -1,7 +1,7 @@
 ---
 name: wake-tv
 description: >
-  Wake the LG webOS dev TV (192.168.0.114) from standby via Wake-on-LAN and wait for
+  Wake the LG webOS dev TV from standby via Wake-on-LAN and wait for
   SSH — run this whenever the TV is unreachable, asleep, timing out, or "connection
   refused / operation timed out" before a deploy, test run, capture, or stream session.
   Also: put the TV into standby, or check whether it is up.
@@ -30,12 +30,15 @@ long-cold TV (observed once in earlier sessions) — the driver resends the magi
 every ~20 s and polls SSH every 3 s, default timeout 180 s (`WAKE_TIMEOUT=300` to
 extend). Exit 0 = SSH answers; exit 1 = gave up.
 
-Env overrides: `TV_HOST` (192.168.0.114), `TV_MAC` (20:17:42:c1:59:51),
-`TV_USER` (root), `WAKE_TIMEOUT` (180).
+Config resolves at runtime — no network details are stored in the skill. The host
+comes from `$TV_HOST`/`$TV`, else the `Makefile`'s `TV` value (the single source of
+truth). The MAC needed for the magic packet comes from `$TV_MAC`, else the gitignored
+`.tv-mac` cache, else it is read from the ARP table while the TV is reachable and
+cached for next time — so the first `wake-tv.sh status` against a live TV is enough to
+arm future wakes. `TV_USER` (root) and `WAKE_TIMEOUT` (180) are the other overrides.
 
-No prerequisites beyond macOS built-ins (`python3` broadcasts the WoL packet —
-there is no `wakeonlan` binary on a stock Mac) and the SSH key already installed
-on the TV.
+No prerequisites beyond macOS built-ins (`python3` broadcasts the WoL packet — there is
+no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
 
 ## Gotchas — what standby BREAKS (why you run this first)
 
@@ -48,8 +51,10 @@ on the TV.
   TV (`netstat -tlnp | grep <port>` → kill that pid), then reconnect.
 - **Standby closes the app**, so the capture stream port (:8910), the remote FIFO,
   and any luna-send `-i` launch subscription are gone — relaunch the app after waking.
-- **SSH auth is key-based only.** The `alpine` password in the Makefile is a decoy —
-  the TV's dropbear accepts the Mac's installed key; password logins fail.
+- **SSH auth: key first, `sshpass` fallback.** This machine authenticates with an
+  installed key, which is why the driver uses `BatchMode=yes`. The `Makefile`'s
+  `sshpass` path is the fallback for a machine without the key — both work; the key
+  simply wins when present.
 - **This webOS 4.5 build's power method is `power/powerOff`** —
   `power/turnOff` (newer webOS docs) returns `Unknown method`.
 - **`luna-send` silently no-ops without a controlling TTY** — on-TV calls are wrapped
@@ -64,5 +69,6 @@ on the TV.
 | Symptom | Fix |
 |---|---|
 | `TV did not answer within 180s` | TV may be hard-off at the mains or on a different network segment. Check it's plugged in; retry once (`WAKE_TIMEOUT=300`). |
-| `Permission denied (publickey,password)` | You're on a machine whose key isn't on the TV. Add your pubkey to `/home/root/.ssh/authorized_keys` from a trusted machine. |
+| `Permission denied (publickey,password)` | You're on a machine whose key isn't on the TV. Add your pubkey to `/home/root/.ssh/authorized_keys` from a trusted machine (or rely on the Makefile's `sshpass` fallback). |
+| `no MAC for the magic packet` | First run against a sleeping TV with no cache. Wake it by hand once and run `wake-tv.sh status` to learn+cache the MAC, or set `TV_MAC=` explicitly once. |
 | Wake works but `make deploy` still fails | The deploy raced the wake-up services; retry the deploy, then md5-compare (see Gotchas). |
