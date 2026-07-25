@@ -46,7 +46,10 @@ static void write_trace(FILE *f, int sig, void *addr, unsigned long pc, unsigned
             if (sscanf(line, "%lx-%lx", &lo, &hi) != 2) continue;
             if ((pc >= lo && pc < hi) || (lr >= lo && lr < hi))
                 fprintf(f, "at: %s", line);
-            if (strstr(line, "plxnative"))      /* our load base, for addr2line */
+            /* our load base, for addr2line. Match the executable ONLY: the app dir is
+             * itself named ...com.beb.plxnative/, so a bare substring test also matches
+             * libraries deployed beside the binary (libturbojpeg.so.0). */
+            if (strstr(line, "/plxnative\n") || strstr(line, "/plxnative "))
                 fprintf(f, "bin: %s", line);
         }
         fclose(m);

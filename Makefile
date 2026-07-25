@@ -36,6 +36,13 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 # webOS 3–6 and safe on the A53 (ARMv7 barriers are `dmb`, not the ARMv6 CP15
 # `mcr p15` that SIGILLs on ARMv8). So we do NOT pin -mcpu here.
 CFLAGS       = --sysroot=$(SYSROOT) -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
+# DEBUG=1 keeps DWARF in the binary so a crash PC symbolizes to file:line instead of just
+# a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
+# binary — deploy it only while chasing a crash.
+ifeq ($(DEBUG),1)
+CFLAGS      += -g
+RUSTFLAGS_DBG = -C debuginfo=2
+endif
 # -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
 # the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
 
@@ -77,7 +84,7 @@ src/%.o: src/%.c $(wildcard src/*.h)
 #    dodges crates (simd-adler32, ...) whose NEON path uses unstable intrinsics.
 #  - -Z build-std: rebuilds std itself with these flags (precompiled std shipped
 #    the CP15 barriers), so needs the nightly toolchain + rust-src.
-RUSTFLAGS_TV = -C target-cpu=cortex-a9 -C target-feature=-neon
+RUSTFLAGS_TV = -C target-cpu=cortex-a9 -C target-feature=-neon $(RUSTFLAGS_DBG)
 $(RUST_LIB): $(wildcard rust-modules/src/*.rs rust-modules/src/ui/*.rs rust-modules/src/player/*.rs rust-modules/src/plex/*.rs) rust-modules/Cargo.toml
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" RUSTFLAGS="$(RUSTFLAGS_TV)" \
 	  cargo +nightly build -Z build-std=std,panic_unwind --release --target $(RUST_TARGET)
