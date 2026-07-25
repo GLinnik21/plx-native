@@ -39,6 +39,11 @@ pub const SDLK_PAGEDOWN: c_uint = 78 | (1 << 30);
 /// alongside the SDLK_PAGE* syms; verify the raw wcodes in the event log on a new remote.
 pub const WCODE_CH_UP: c_uint = 33;
 pub const WCODE_CH_DOWN: c_uint = 34;
+/// Magic-Remote transport keys. The ONE home for these wcodes: the real key handler
+/// (app.rs) and the remote-injection token map both match against these names.
+pub const WCODE_PAUSE: c_uint = 72;
+pub const WCODE_STOP: c_uint = 413;
+pub const WCODE_PLAY: c_uint = 450;
 
 /// OK/confirm press — RETURN, keypad ENTER, or the remote's SELECT. The ONE OK predicate
 /// (app.rs + the login/profiles screens all route through it).

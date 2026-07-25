@@ -44,10 +44,10 @@ CFLAGS       = --sysroot=$(SYSROOT) -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_
 LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 -lAcbAPI \
             -lwayland-client -lplayerAPIs -lpf-1.0
 # Stub-only libraries (not in the sysroot): FFmpeg + curl.so.5.
-LIBS_STUB = -lavformat -lavcodec -lavutil -lcurl
+LIBS_STUB = -lavformat -lavcodec -lavutil -lswscale -lcurl
 
 STUBFLAGS = -fPIC -shared -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables
-STUBS = stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libcurl.so
+STUBS = stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libswscale.so stub/libcurl.so
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
@@ -96,6 +96,8 @@ stub/libavcodec.so: stub/avcodec_stub.c
 	$(CC) $(STUBFLAGS) -Wl,-soname,libavcodec.so.57 -o $@ $<
 stub/libavutil.so: stub/avutil_stub.c
 	$(CC) $(STUBFLAGS) -Wl,-soname,libavutil.so.55 -o $@ $<
+stub/libswscale.so: stub/swscale_stub.c
+	$(CC) $(STUBFLAGS) -Wl,-soname,libswscale.so.4 -o $@ $<
 stub/libcurl.so: stub/curl_stub.c
 	$(CC) $(STUBFLAGS) -Wl,-soname,libcurl.so.5 -o $@ $<
 
@@ -115,11 +117,20 @@ setup-env:
 	@echo "NDK ready: $$($(CC) --version | head -1)"
 
 # tmp+mv so deploy works while the old binary is still executing (ETXTBSY)
+# The NDK sysroot's NEON libjpeg-turbo rides along for the dev capture stream's JPEG
+# mode (capture.rs dlopen's it next to the binary). BEST-EFFORT on purpose: the app
+# runs fine without it, so a sysroot that ships a different patch version must never
+# break `make deploy` — the wildcard just finds nothing and the copy is skipped.
+TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
+
 deploy: pkg/plxnative
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
 	$(SSH) 'test -f $(APPDIR)/appfont.ttf' || $(SCP) pkg/appfont.ttf root@$(TV):$(APPDIR)/appfont.ttf
 	$(SSH) 'test -f $(APPDIR)/appfont-bold.ttf' || $(SCP) pkg/appfont-bold.ttf root@$(TV):$(APPDIR)/appfont-bold.ttf
+	@if [ -n "$(TURBOJPEG_SO)" ]; then \
+	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) root@$(TV):$(APPDIR)/libturbojpeg.so.0; \
+	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
 	$(SSH) 'mv $(APPDIR)/plxnative.new $(APPDIR)/plxnative && chmod +x $(APPDIR)/plxnative'
 
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
