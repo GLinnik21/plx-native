@@ -76,6 +76,7 @@ static FD_MPEG: AtomicI32 = AtomicI32::new(-1); // current mpeg/ts client (-1 = 
 static LISTEN_FD: AtomicI32 = AtomicI32::new(-1);
 static JPEG_960: AtomicBool = AtomicBool::new(false); // the jpeg client's requested size
 static MPEG_RATE: AtomicU32 = AtomicU32::new(2_500_000); // bps, from the PXR2 hello
+static MPEG_960: AtomicBool = AtomicBool::new(true);     // mpeg client's requested size
 static MPEG_OFF: AtomicBool = AtomicBool::new(false); // latched on venc bring-up failure
 static SEQ: AtomicU32 = AtomicU32::new(0);
 static LAST_MS: AtomicU32 = AtomicU32::new(0);
@@ -151,7 +152,7 @@ pub(crate) fn tick(now: u32) {
     // One shared GL downscale chain serves both slots, so the output size is the max
     // any CONNECTED slot needs — derived per frame, never a latched hello (a departed
     // client must not keep pinning the size). The mpeg encoder is fixed at 960x540.
-    let want_960 = FD_MPEG.load(Ordering::Relaxed) >= 0
+    let want_960 = (FD_MPEG.load(Ordering::Relaxed) >= 0 && MPEG_960.load(Ordering::Relaxed))
         || (FD_JPEG.load(Ordering::Relaxed) >= 0 && JPEG_960.load(Ordering::Relaxed));
     match crate::gfx::cap_cycle(want_960, &mut buf) {
         Some((w, h, flip)) => {
@@ -256,6 +257,7 @@ fn caplisten(port: u16) {
                     if kind == 1 {
                         let bps = if ext[1] == 0 { 2_500_000 } else { ext[1] as u32 * 100_000 };
                         MPEG_RATE.store(bps, Ordering::Relaxed);
+                        MPEG_960.store(w == 0 || w >= 720, Ordering::Relaxed);
                     }
                 } // short trailing read: fall back to a jpeg client (kind 0)
             }
@@ -271,7 +273,8 @@ fn caplisten(port: u16) {
                 let mtv = libc::timeval { tv_sec: 5, tv_usec: 0 };
                 libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDTIMEO,
                                  &mtv as *const _ as *const c_void, std::mem::size_of::<libc::timeval>() as u32);
-                log(&format!("capture: mpeg client connected (fd={fd}, 960x540 @{}bps)",
+                log(&format!("capture: mpeg client connected (fd={fd}, {} @{}bps)",
+                             if MPEG_960.load(Ordering::Relaxed) { "960x540" } else { "480x270" },
                              MPEG_RATE.load(Ordering::Relaxed)));
                 let old = FD_MPEG.swap(fd, Ordering::AcqRel);
                 if old >= 0 {
@@ -512,17 +515,20 @@ fn capenc() {
                     }
                 }
 
-                // ---------------- mpeg slot (raw TS, 960x540 only) ----------------
-                // frames of any other geometry (a transitional 480 capture, or a
-                // bottom-up 2-pass frame) are skipped, never fed to the encoder.
-                if my_mfd >= 0 && f.w == 960 && f.h == 540 && !f.flip {
-                    // resume after an idle gap (player route): rebuild the session so a
-                    // sequence header + I-frame lead the resumed stream.
-                    if venc.is_some() && f.ticks.wrapping_sub(last_mpeg_ticks) > 1500 {
+                // ---------------- mpeg slot (raw TS) ----------------
+                // Encodes whatever geometry the shared chain produced. Encode cost scales
+                // with macroblock count and MPEG1 has no intra prediction, so a detailed
+                // screen costs ~4x more at 960x540 than at 480x270 — the client picks via
+                // the hello, and a geometry change rebuilds the session.
+                if my_mfd >= 0 {
+                    // resume after an idle gap (player route), or a resolution change:
+                    // rebuild so a sequence header + I-frame lead the new stream.
+                    let geom_changed = venc.as_ref().map_or(false, |v| v.w != f.w || v.h != f.h);
+                    if venc.is_some() && (geom_changed || f.ticks.wrapping_sub(last_mpeg_ticks) > 1500) {
                         venc = None;
                     }
                     if venc.is_none() {
-                        venc = crate::ff::Venc::open(960, 540, MPEG_RATE.load(Ordering::Relaxed) as i64);
+                        venc = crate::ff::Venc::open(f.w, f.h, MPEG_RATE.load(Ordering::Relaxed) as i64);
                         if venc.is_none() {
                             // bring-up failed (encoder/muxer missing): latch off so we
                             // don't retry per frame; refuse future mpeg hellos too.
@@ -530,7 +536,7 @@ fn capenc() {
                             disconnect_slot(&mut my_mfd, &FD_MPEG, "mpeg");
                         }
                     }
-                    match venc.as_mut().map(|v| v.encode(&f.rgba, my_mfd)) {
+                    match venc.as_mut().map(|v| v.encode(&f.rgba, my_mfd, f.flip)) {
                         Some(true) => last_mpeg_ticks = f.ticks,
                         Some(false) => {
                             venc = None;

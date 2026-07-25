@@ -434,8 +434,8 @@ pub(crate) struct Venc {
     sink: Box<VencSink>,
     st_tb: AVRational,
     pts: i64,
-    w: c_int,
-    h: c_int,
+    pub(crate) w: c_int,
+    pub(crate) h: c_int,
     // RGBA -> YUV420P directly runs swscale's GENERAL scaler — scalar C on this ARM
     // build, measured ~80ms/frame at 960x540. RGBA -> NV12 has a NEON unscaled
     // converter (rgbx_to_nv12_neon), so we go RGBA -NEON-> NV12 (Y lands straight in
@@ -454,6 +454,11 @@ unsafe impl Send for Venc {}
 impl Venc {
     /// Bring up encoder + muxer for one client session. Any failure logs and
     /// returns None (capture latches the mpeg path off for that client).
+    /// `w`/`h` follow whatever the shared GL capture chain is producing (960x540 or
+    /// 480x270) — the encoder is NOT pinned to one size. Cost scales with macroblock
+    /// count and MPEG1 has no intra prediction, so a detailed screen at 960x540 can cost
+    /// 50-110ms/frame on this CPU where 480x270 stays near 15-25ms; the caller rebuilds
+    /// the session when the geometry changes.
     pub(crate) fn open(w: c_int, h: c_int, bitrate_bps: i64) -> Option<Box<Venc>> {
         ensure_registered(); // the file's ONE registration guard (av_register_all + network_init)
         unsafe {
@@ -603,7 +608,9 @@ impl Venc {
     /// Encode one top-down RGBA frame and push the muxed TS to `fd`.
     /// Returns false when the socket died (caller drops the client) — encoder
     /// errors also return false and the caller reinits on the next frame.
-    pub(crate) fn encode(&mut self, rgba: &[u8], fd: c_int) -> bool {
+    /// `flip` = the capture buffer is bottom-up (the 2-pass 480x270 chain); sws_scale
+    /// takes a NEGATIVE input stride for that, so there is no CPU flip pass.
+    pub(crate) fn encode(&mut self, rgba: &[u8], fd: c_int, flip: bool) -> bool {
         unsafe {
             debug_assert!(rgba.len() >= (self.w * self.h * 4) as usize);
             self.sink.fd = fd;
@@ -615,8 +622,14 @@ impl Venc {
             if av_frame_make_writable(self.frame) < 0 {
                 return false;
             }
-            let src: [*const u8; 4] = [rgba.as_ptr(), std::ptr::null(), std::ptr::null(), std::ptr::null()];
-            let src_stride: [c_int; 4] = [self.w * 4, 0, 0, 0];
+            let row = self.w * 4;
+            let (src0, stride0) = if flip {
+                (rgba.as_ptr().add(((self.h - 1) * row) as usize), -row)
+            } else {
+                (rgba.as_ptr(), row)
+            };
+            let src: [*const u8; 4] = [src0, std::ptr::null(), std::ptr::null(), std::ptr::null()];
+            let src_stride: [c_int; 4] = [stride0, 0, 0, 0];
             // NV12 out: Y straight into the frame's Y plane, interleaved UV into scratch
             let fdata = (self.frame as *mut u8).add(OFF_FRAME_DATA) as *mut *mut u8;
             let fls = (self.frame as *mut u8).add(OFF_FRAME_LINESIZE) as *mut c_int;

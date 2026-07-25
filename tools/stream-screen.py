@@ -438,7 +438,7 @@ def app_reader(hub: FrameHub, stats: dict, port: int, res, svc_cmd=None):
     return True
 
 
-def app_reader_mpeg(tshub: TsHub, hub: FrameHub, stats: dict, port: int, kbps: int, svc_cmd=None):
+def app_reader_mpeg(tshub: TsHub, hub: FrameHub, stats: dict, port: int, kbps: int, res=None, svc_cmd=None):
     """One connection to the app's capture port in MPEG1/TS mode (PXR2 hello kind=1).
     Raw TS bytes fan out to the WebSocket clients via TsHub. Returns 'legacy' when
     the app predates PXR2 (it answers with PXFR jpeg frames — caller falls back),
@@ -458,7 +458,11 @@ def app_reader_mpeg(tshub: TsHub, hub: FrameHub, stats: dict, port: int, kbps: i
     try:
         sock.settimeout(5)
         rate = max(1, min(255, kbps // 100))
-        sock.sendall(b"PXR2" + (960).to_bytes(2, "little") + (540).to_bytes(2, "little")
+        # Resolution is a real lever here, not cosmetics: MPEG1 encode cost scales with
+        # macroblock count and this SoC needs ~22ms/frame at 480x270 but 50-110ms at
+        # 960x540 on a detailed screen (photo backdrop) — i.e. 30fps vs ~10fps.
+        w, h = res if res else (960, 540)
+        sock.sendall(b"PXR2" + int(w).to_bytes(2, "little") + int(h).to_bytes(2, "little")
                      + bytes([1, rate, 0, 0]))
         first = sock_read_exact(sock, 4)
         if first == b"PXFR":
@@ -561,7 +565,7 @@ def source_supervisor(hub: FrameHub, stats: dict, args, w, h, min_interval_ms, r
                   f"{'mpeg1/ts' if use_mpeg else 'jpeg'})")
             # auto mode arms the playback fallback (service view while the UI stream idles)
             if use_mpeg:
-                r = app_reader_mpeg(tshub, hub, stats, args.app_port, args.kbps,
+                r = app_reader_mpeg(tshub, hub, stats, args.app_port, args.kbps, res,
                                     svc_cmd=svc_cmd if mode == "auto" else None)
                 if r == "legacy":
                     legacy_app = True
@@ -628,7 +632,7 @@ def pull_reporter():
 
 def valid_token(tok: str) -> bool:
     return tok in VALID_KEYS or bool(CLICK_RE.match(tok))
-PAGE_VER = "v14"
+PAGE_VER = "v15"
 REMOTE_FIFO = "/tmp/plxnative-remote"
 _WRITER_LOOP = f'''
 while IFS= read -r line; do
@@ -1030,9 +1034,10 @@ def main():
                     help="capture-service plane (service source only; the app source is "
                          "always UI-only). VIDEO forces --source service.")
     ap.add_argument("--res", default=None,
-                    help="capture WxH. Service default 960x540. App JPEG mode supports "
-                         "480x270 and 960x540 (requests are quantized to the nearer one); "
-                         "app mpeg mode is always 960x540.")
+                    help="capture WxH — 480x270 or 960x540 (quantized to the nearer). "
+                         "This is a SPEED lever for mpeg mode: 480x270 encodes in ~22ms "
+                         "(~30fps) where a detailed screen at 960x540 costs 50-110ms "
+                         "(~10-19fps) on this SoC. Default 960x540.")
     ap.add_argument("--source", default="auto", choices=["auto", "app", "service"],
                     help="frame source: 'app' = the in-app stream (fast, UI plane only; "
                          "needs /tmp/plxnative-capture on the TV), 'service' = the luna "
