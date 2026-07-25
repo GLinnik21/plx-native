@@ -15,3 +15,11 @@ int av_seek_frame(void *s, int stream_index, long long timestamp, int flags) { (
 int avformat_seek_file(void *s, int stream_index, long long min_ts, long long ts, long long max_ts, int flags) { (void)s; (void)stream_index; (void)min_ts; (void)ts; (void)max_ts; (void)flags; return 0; }
 int av_find_best_stream(void *ic, int type, int wanted, int related, void **decoder_ret, int flags) { (void)ic; (void)type; (void)wanted; (void)related; (void)decoder_ret; (void)flags; return 0; }
 void *avformat_alloc_context(void) { return 0; }
+
+/* Dev capture stream: MPEG-TS muxing over custom AVIO (write side). */
+int avformat_alloc_output_context2(void **ctx, void *oformat, const char *format_name, const char *filename) { (void)ctx; (void)oformat; (void)format_name; (void)filename; return 0; }
+void *avformat_new_stream(void *s, const void *c) { (void)s; (void)c; return 0; }
+int avformat_write_header(void *s, void **options) { (void)s; (void)options; return 0; }
+int av_write_frame(void *s, void *pkt) { (void)s; (void)pkt; return 0; }
+void avio_flush(void *s) { (void)s; }
+void avformat_free_context(void *s) { (void)s; }

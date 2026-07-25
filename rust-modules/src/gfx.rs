@@ -98,6 +98,15 @@ extern "C" {
     fn glTexImage2D(target: c_uint, level: c_int, ifmt: c_int, w: c_int, h: c_int, border: c_int,
                     format: c_uint, ty: c_uint, pixels: *const c_void);
     fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
+    // UI self-capture (the "cap_*" section at the bottom of this file)
+    fn glGenFramebuffers(n: c_int, ids: *mut c_uint);
+    fn glBindFramebuffer(target: c_uint, framebuffer: c_uint);
+    fn glFramebufferTexture2D(target: c_uint, attachment: c_uint, textarget: c_uint, texture: c_uint, level: c_int);
+    fn glCheckFramebufferStatus(target: c_uint) -> c_uint;
+    fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, format: c_uint, ty: c_uint, pixels: *mut c_void);
+    fn glCopyTexSubImage2D(target: c_uint, level: c_int, xoff: c_int, yoff: c_int, x: c_int, y: c_int, w: c_int, h: c_int);
+    fn glGetError() -> c_uint;
+    fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
 }
 
 const GL_RGBA: c_uint = 0x1908;
@@ -632,3 +641,214 @@ pub(crate) fn draw_tex_carded(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radiu
 }
 
 use crate::log;
+
+// ============================== UI self-capture ==============================
+// GL side of the dev capture stream (crate::capture): grab our own back buffer,
+// GPU-downscale it, and read the small result back — the fast path the external
+// ~200ms/frame capture service can't offer. UI plane ONLY: glReadPixels cannot
+// see the hardware video overlay plane (that's composited by the TV, outside our
+// context). Design per the verified plan (2026-07-22 workflow):
+//
+// - TWO chains (parity ping-pong): the chain written this capture is never the
+//   chain in flight from the last one — kills Mali's CopyTex-into-referenced-
+//   texture ghosting AND lets us read a chain rendered >=1 capture-cycle (>=33ms)
+//   ago, so the read degenerates to a driver memcpy instead of the 155ms
+//   window-surface pipeline drain we measured.
+// - Downscale is exact-2x per pass (2x bilinear == 2x2 box): 1920x1080 -> mid
+//   960x540 -> out 480x270. A single 4x pass would sample only 2x2 of each 4x4
+//   block -> text shimmer. Both output sizes are always allocated; the requested
+//   size only selects which FBO is the pass target (no realloc on switch, no
+//   size races — dims are latched per chain at write time).
+// - All six textures are NPOT: CLAMP_TO_EDGE + LINEAR are REQUIRED at creation
+//   (core ES2 samples an NPOT texture as opaque black under the REPEAT +
+//   NEAREST_MIPMAP_LINEAR defaults — no GL error, just black), and mipmaps are
+//   illegal. GL_RGBA unsized everywhere (GL_RGBA8 is not a valid ES2 token).
+// - RGBA-texture FBO renderability is implementation-defined in core ES2, so
+//   completeness is checked; on failure capture latches off (logged) rather than
+//   crashing. Midgard exposes OES_rgb8_rgba8 in practice.
+// - Y orientation: every full-quad IPROG pass flips row order once (vs_img does
+//   gl_Position.y = -ndc.y with v_cuv = a_pos), glReadPixels is bottom-up memory
+//   order (NOT a flip). CopyTexSubImage leaves cap_tex bottom-up; 1 pass (960 out)
+//   -> top-down (correct); 2 passes (480 out) -> bottom-up again. The per-frame
+//   `flip` flag tells the encoder to walk rows in reverse. No CPU flip cost — the
+//   RGBA->RGB strip touches every row anyway.
+// Main-thread only (like all gfx state).
+
+const GL_FRAMEBUFFER: c_uint = 0x8D40;
+const GL_COLOR_ATTACHMENT0: c_uint = 0x8CE0;
+const GL_FRAMEBUFFER_COMPLETE: c_uint = 0x8CD5;
+const GL_PACK_ALIGNMENT: c_uint = 0x0D05;
+const GL_NO_ERROR: c_uint = 0;
+
+const CAP_W: c_int = 1920;
+const CAP_H: c_int = 1080;
+const CAP_MID_W: c_int = 960;
+const CAP_MID_H: c_int = 540;
+const CAP_OUT_W: c_int = 480;
+const CAP_OUT_H: c_int = 270;
+const CAP_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit
+
+struct CapChain {
+    grab: c_uint,     // 1920x1080 back-buffer copy target
+    mid: c_uint,      // 960x540 downscale target
+    mid_fbo: c_uint,
+    out: c_uint,      // 480x270 downscale target
+    out_fbo: c_uint,
+    pending: bool,    // a frame was rendered into this chain, not yet read back
+    pw: c_int,        // dims of the pending frame — LATCHED at write time (never
+    ph: c_int,        //   re-derived from the live request; kills the switch race)
+    read_fbo: c_uint, // which fbo holds the pending frame (mid_fbo or out_fbo)
+    flip: bool,       // pending frame is bottom-up (even pass count) — encoder reverses rows
+}
+
+struct CapState {
+    chains: [CapChain; 2],
+    parity: usize,
+    first_copy_checked: bool,
+}
+static mut CAPST: Option<CapState> = None;
+static mut CAP_LATCHED_OFF: bool = false;
+
+// glReadPixels time split out of the whole-cycle time (capture.rs owns that one and
+// folds both into its periodic stats line). The read is the only synchronous GL call
+// in the cycle — everything else is submission cost that lands at the swap.
+pub(crate) static CAP_READ_US: AtomicU32 = AtomicU32::new(0);
+pub(crate) static CAP_READ_N: AtomicU32 = AtomicU32::new(0);
+
+/// A capture-ready NPOT texture: storage only (pixels NULL), refreshed via CopyTexSubImage.
+/// `upload_rgba` already sets the CLAMP_TO_EDGE + LINEAR quartet these NPOT targets REQUIRE
+/// (see the section comment) — same contract, one implementation.
+fn cap_tex(w: c_int, h: c_int) -> c_uint {
+    upload_rgba(0, w, h, std::ptr::null())
+}
+
+/// Texture + FBO pair; None (and latch-off by the caller) if incomplete.
+fn cap_target(w: c_int, h: c_int) -> Option<(c_uint, c_uint)> {
+    unsafe {
+        let t = cap_tex(w, h);
+        let mut f: c_uint = 0;
+        glGenFramebuffers(1, &mut f);
+        glBindFramebuffer(GL_FRAMEBUFFER, f);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
+        let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if st != GL_FRAMEBUFFER_COMPLETE {
+            log(&format!("capture: FBO {w}x{h} incomplete (status=0x{st:x}) — capture off"));
+            return None;
+        }
+        Some((t, f))
+    }
+}
+
+fn cap_lazy_init() -> bool {
+    unsafe {
+        if CAPST.is_some() {
+            return true;
+        }
+        let mk_chain = || -> Option<CapChain> {
+            let grab = cap_tex(CAP_W, CAP_H);
+            let (mid, mid_fbo) = cap_target(CAP_MID_W, CAP_MID_H)?;
+            let (out, out_fbo) = cap_target(CAP_OUT_W, CAP_OUT_H)?;
+            Some(CapChain { grab, mid, mid_fbo, out, out_fbo, pending: false, pw: 0, ph: 0, read_fbo: 0, flip: false })
+        };
+        match (mk_chain(), mk_chain()) {
+            (Some(a), Some(b)) => {
+                CAPST = Some(CapState { chains: [a, b], parity: 0, first_copy_checked: false });
+                true
+            }
+            _ => {
+                CAP_LATCHED_OFF = true; // cap_target already logged the status
+                false
+            }
+        }
+    }
+}
+
+/// One capture cycle, called by `capture::tick` on the GL (main) thread between the last UI
+/// draw and the swap. Writes the current back buffer (grab + downscale) into this cycle's
+/// chain, and — if the *other* chain has a frame pending from the previous cycle — reads it
+/// into `buf` (resized exactly). Returns `Some((w, h, flip))` when `buf` was filled.
+/// `want_960` selects the 960x540 output (single pass) over the default 480x270 (two passes).
+/// Returns `None` and does nothing after a completeness/copy failure (latched off).
+pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_int, bool)> {
+    unsafe {
+        if CAP_LATCHED_OFF || !cap_lazy_init() {
+            return None;
+        }
+        let st = CAPST.as_mut().unwrap();
+        let w = st.parity;
+        let r = 1 - w;
+
+        // A. grab the finished UI frame (framebuffer 0 is bound; nothing drawn after this,
+        //    so the pass-flush this forces is work the swap would submit anyway).
+        glBindTexture(GL_TEXTURE_2D, st.chains[w].grab);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, CAP_W, CAP_H);
+        if !st.first_copy_checked {
+            st.first_copy_checked = true;
+            let e = glGetError();
+            if e != GL_NO_ERROR {
+                // e.g. INVALID_OPERATION if the window config lost its alpha bits — the copy
+                // silently no-ops (black stream), so latch off loudly instead.
+                log(&format!("capture: CopyTexSubImage error=0x{e:x} — capture off"));
+                CAP_LATCHED_OFF = true;
+                return None;
+            }
+        }
+
+        // B. downscale pass(es). Blend OFF (fresh target, raw copy); glClear before each pass
+        //    spares Midgard the tile preserve-load of the stale FBO contents (a full-screen
+        //    quad does NOT relieve that obligation). Scissor is off here (clip pairs in-frame).
+        glDisable(GL_BLEND);
+        let c = &st.chains[w];
+        glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
+        glViewport(0, 0, CAP_MID_W, CAP_MID_H);
+        glClear(GL_COLOR_BUFFER_BIT);
+        // full-authored-screen rect: IPROG maps (0,0,1920,1080) to the whole viewport
+        draw_tex(c.grab, 0.0, 0.0, SCR_W, SCR_H, 0.0, CAP_TINT.as_ptr());
+        if !want_960 {
+            glBindFramebuffer(GL_FRAMEBUFFER, c.out_fbo);
+            glViewport(0, 0, CAP_OUT_W, CAP_OUT_H);
+            glClear(GL_COLOR_BUFFER_BIT);
+            draw_tex(c.mid, 0.0, 0.0, SCR_W, SCR_H, 0.0, CAP_TINT.as_ptr());
+        }
+        let ch = &mut st.chains[w];
+        ch.pending = true;
+        if want_960 {
+            ch.pw = CAP_MID_W;
+            ch.ph = CAP_MID_H;
+            ch.read_fbo = ch.mid_fbo;
+            ch.flip = false; // 1 pass: cap (bottom-up) + 1 flip = top-down
+        } else {
+            ch.pw = CAP_OUT_W;
+            ch.ph = CAP_OUT_H;
+            ch.read_fbo = ch.out_fbo;
+            ch.flip = true; // 2 passes: flips cancel = bottom-up; encoder reverses rows
+        }
+
+        // C. read the OTHER chain's frame, rendered >=1 cycle ago (complete — no drain).
+        let mut got = None;
+        let rc = &mut st.chains[r];
+        if rc.pending {
+            rc.pending = false;
+            glBindFramebuffer(GL_FRAMEBUFFER, rc.read_fbo);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1); // RGBA rows are 4-aligned anyway; belt+braces
+            let n = (rc.pw * rc.ph * 4) as usize;
+            buf.resize(n, 0); // resize, NOT with_capacity: glReadPixels needs len, not capacity
+            let t0 = std::time::Instant::now();
+            glReadPixels(0, 0, rc.pw, rc.ph, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void);
+            CAP_READ_US.fetch_add(t0.elapsed().as_micros() as u32, Ordering::Relaxed);
+            CAP_READ_N.fetch_add(1, Ordering::Relaxed);
+            got = Some((rc.pw, rc.ph, rc.flip));
+        }
+
+        // D. restore the world exactly: framebuffer 0 (or every next frame renders into the
+        //    FBO = frozen screen), full viewport, blend back on (func untouched). draw_tex
+        //    self-restored PROG; texture unit 0 stays active; vertex state untouched.
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, CAP_W, CAP_H);
+        glEnable(GL_BLEND);
+
+        st.parity = r;
+        got
+    }
+}

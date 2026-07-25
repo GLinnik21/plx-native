@@ -21,3 +21,12 @@ int avcodec_open2(void *ctx, const void *codec, void **opts) { (void)ctx; (void)
 int avcodec_decode_subtitle2(void *ctx, void *sub, int *got, void *pkt) { (void)ctx; (void)sub; (void)got; (void)pkt; return 0; }
 void avsubtitle_free(void *sub) { (void)sub; }
 void avcodec_free_context(void **ctx) { (void)ctx; }
+
+/* Dev-only probe (capture stream): does the TV's libavcodec build keep encoders? */
+void *avcodec_find_encoder_by_name(const char *name) { (void)name; return 0; }
+
+/* Dev capture stream: MPEG1 encode (send/receive API, works for mpeg1video in 57.89). */
+int avcodec_send_frame(void *ctx, const void *frame) { (void)ctx; (void)frame; return 0; }
+int avcodec_receive_packet(void *ctx, void *pkt) { (void)ctx; (void)pkt; return 0; }
+int avcodec_parameters_from_context(void *par, const void *ctx) { (void)par; (void)ctx; return 0; }
+void av_packet_rescale_ts(void *pkt, int tb_src_num_den[2], int tb_dst_num_den[2]) { (void)pkt; (void)tb_src_num_den; (void)tb_dst_num_den; }

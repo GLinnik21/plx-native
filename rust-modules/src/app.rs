@@ -33,8 +33,8 @@ const SDL_MOUSEBUTTONUP: u32 = 0x402;
 const SDL_MOUSEWHEEL: u32 = 0x403;
 // keysyms + the OK/BACK predicates live in ui::consts (the single keycode home)
 use crate::ui::consts::{
-    is_back, is_ok, SDLK_DOWN, SDLK_LEFT, SDLK_PAGEDOWN, SDLK_PAGEUP, SDLK_RETURN, SDLK_RIGHT, SDLK_UP,
-    WCODE_CH_DOWN, WCODE_CH_UP,
+    is_back, is_ok, SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_PAGEDOWN, SDLK_PAGEUP, SDLK_RETURN,
+    SDLK_RIGHT, SDLK_UP, WCODE_CH_DOWN, WCODE_CH_UP, WCODE_PAUSE, WCODE_PLAY, WCODE_STOP,
 };
 const SCR_W: c_int = 1920;
 const SCR_H: c_int = 1080;
@@ -54,6 +54,7 @@ extern "C" {
     fn SDL_GetPerformanceCounter() -> u64;
     fn SDL_GetPerformanceFrequency() -> u64;
     fn SDL_PollEvent(event: *mut c_void) -> c_int;
+    fn SDL_PushEvent(event: *const c_void) -> c_int;
     fn SDL_GL_SwapWindow(win: *mut c_void);
     fn SDL_Quit();
     fn SDL_webOSCursorVisibility(visible: c_int) -> c_int;
@@ -102,6 +103,72 @@ fn rd_u32(ev: &[u8], off: usize) -> u32 {
 #[inline]
 fn rd_i32(ev: &[u8], off: usize) -> i32 {
     i32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
+}
+
+/// Map a remote-control token (from the `crate::remote` FIFO) to the `(sym, wcode)` a
+/// real Magic-Remote press would carry — the pair the ONE key handler already matches
+/// (see `ui::consts`). Returns None for an unknown token. Kept deliberately small: the
+/// core nav set + OK/BACK + the transport keys that testing needs.
+fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
+    Some(match tok {
+        "up" => (SDLK_UP, 0),
+        "down" => (SDLK_DOWN, 0),
+        "left" => (SDLK_LEFT, 0),
+        "right" => (SDLK_RIGHT, 0),
+        "ok" | "enter" | "select" => (SDLK_RETURN, 0), // is_ok()
+        "back" | "esc" => (SDLK_ESCAPE, 0),            // is_back()
+        "pageup" | "chup" => (SDLK_PAGEUP, WCODE_CH_UP),
+        "pagedown" | "chdown" => (SDLK_PAGEDOWN, WCODE_CH_DOWN),
+        "play" => (0, WCODE_PLAY),
+        "pause" => (0, WCODE_PAUSE),
+        "stop" => (0, WCODE_STOP),
+        _ => return None,
+    })
+}
+
+/// Synthesize a Magic-Remote pointer click at authored 1920x1080 coords (the browser
+/// remote's click-on-the-stream): two motion events, then button down+up. The first
+/// motion is a >=120px jitter so the accumulated pointer distance defeats the
+/// dpad_mode pointer gate (`mot_accum < 120` swallows small motions after D-pad use);
+/// the second lands on the target. The LG SDL fork's mouse events carry x@20 / y@24
+/// (i32) — the only fields the handlers read.
+///
+/// Click only, deliberately: forwarding hover moved app focus on every pass of the
+/// mouse over the streamed picture (parking it on a top-band tab pill, so the next
+/// ENTER opened the library). The host page draws its own local crosshair instead.
+fn remote_synth_ptr(x: i32, y: i32) {
+    let mut ev = [0u8; 128];
+    let mut push = |et: u32, px: i32, py: i32| {
+        ev[0..4].copy_from_slice(&et.to_ne_bytes());
+        ev[20..24].copy_from_slice(&px.to_ne_bytes());
+        ev[24..28].copy_from_slice(&py.to_ne_bytes());
+        unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
+    };
+    let jx = if x >= 200 { x - 200 } else { x + 200 };
+    push(SDL_MOUSEMOTION, jx, y);
+    push(SDL_MOUSEMOTION, x, y);
+    push(SDL_MOUSEBUTTONDOWN, x, y);
+    push(SDL_MOUSEBUTTONUP, x, y);
+}
+
+/// Synthesize a full remote-key press (key-down then key-up) and push both onto SDL's
+/// own event queue, so the existing poll loop consumes them as if they came off the
+/// wayland input path. The LG SDL fork's `SDL_KeyboardEvent` carries state@16 /
+/// wcode@20 / sym@24 (native-endian; the TV is LE), and the handler reads press vs
+/// release from `state & 0xff` — so the down carries state=1, the up state=0. Both
+/// are required: a grid-card OK arms on down and *commits on release*.
+fn remote_synth_key(sym: c_uint, wcode: c_uint) {
+    let mut ev = [0u8; 128];
+    ev[16..20].copy_from_slice(&1u32.to_ne_bytes()); // state = pressed
+    ev[20..24].copy_from_slice(&wcode.to_ne_bytes());
+    ev[24..28].copy_from_slice(&sym.to_ne_bytes());
+    unsafe {
+        ev[0..4].copy_from_slice(&SDL_KEYDOWN.to_ne_bytes());
+        SDL_PushEvent(ev.as_ptr() as *const c_void);
+        ev[0..4].copy_from_slice(&SDL_KEYUP.to_ne_bytes());
+        ev[16..20].copy_from_slice(&0u32.to_ne_bytes()); // state = released
+        SDL_PushEvent(ev.as_ptr() as *const c_void);
+    }
 }
 
 // ui focus state lives in ui::home; reach it through its accessors
@@ -259,6 +326,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
         // UI infra + poster workers always come up — the login/profiles screens use them too.
         crate::posters::posters_init();
+        crate::capture::init(); // dev live UI capture stream (no-op without /tmp/plxnative-capture)
         crate::ui::home::home_init();
         crate::ui::login::init();
         crate::ui::profiles::init();
@@ -268,7 +336,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // so the boot who's-watching picker is skipped. Pure diagnostics (the logs, the profiler,
         // the anim overlay) don't count as automation.
         let automated_boot = || {
-            const DIAG: [&str; 5] = ["plxnative-events.log", "plxnative-stderr.log", "plxnative-crash.log", "plxnative-profile", "plxnative-anim"];
+            const DIAG: [&str; 7] = ["plxnative-events.log", "plxnative-stderr.log", "plxnative-crash.log", "plxnative-profile", "plxnative-anim", "plxnative-remote", "plxnative-capture"];
             std::fs::read_dir("/tmp")
                 .ok()
                 .map(|rd| {
@@ -589,8 +657,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 *route = Route::Account;
                 return;
             }
+            // a library tab pill in the top band: enter that section's grid. (The grid-card
+            // sentinel is rejected by hero_pill_index itself — see its doc comment.)
             if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
-                // a library tab pill in the top band: enter that section's grid
                 crate::ui::library::enter(pill.saturating_sub(1));
                 *route = Route::Library;
                 return;
@@ -679,8 +748,29 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut refresh_hubs_at = 0u32;
 
         let mut ev = [0u8; 128];
+        // dev/testing remote: drain any tokens written to /tmp/plxnative-remote and push
+        // them as synthetic key events BEFORE the poll loop, so they're consumed this frame
+        // by the ONE real key handler (see crate::remote / tools/stream-screen.py).
+        let mut remote = crate::remote::Remote::open();
         while running {
             crate::system::ls2_pump();
+            if let Some(r) = remote.as_mut() {
+                r.drain(|tok| {
+                    // pointer click token "ck:X,Y" — authored 1920x1080 coords
+                    if let Some(rest) = tok.strip_prefix("ck:") {
+                        if let Some((xs, ys)) = rest.split_once(',') {
+                            if let (Ok(x), Ok(y)) = (xs.parse::<i32>(), ys.parse::<i32>()) {
+                                log(&format!("remote: click {},{}", x, y));
+                                remote_synth_ptr(x.clamp(0, 1919), y.clamp(0, 1079));
+                            }
+                        }
+                    } else if let Some((sym, wcode)) = remote_token_key(tok) {
+                        remote_synth_key(sym, wcode);
+                    } else {
+                        log(&format!("remote: unknown token {tok:?}")); // catch mangling in transit
+                    }
+                });
+            }
             while SDL_PollEvent(ev.as_mut_ptr() as *mut c_void) != 0 {
                 let et = rd_u32(&ev, 0);
                 if et == SDL_KEYDOWN || et == SDL_KEYUP {
@@ -1101,14 +1191,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 cur_hidden = true;
                             }
                         }
-                    } else if wcode == 72 || sym == 415 || wcode == 415 {
+                    } else if wcode == WCODE_PAUSE || sym == 415 || wcode == 415 {
                         // PAUSE
                         if matches!(route, Route::Player { .. }) && !paused() {
                             set_paused(true);
                             crate::player::pause();
                         }
                         set_hud(last_input + HUD_LINGER_MS);
-                    } else if wcode == 450 || sym == 19 || wcode == 19 || sym == 402 || wcode == 402 {
+                    } else if wcode == WCODE_PLAY || sym == 19 || wcode == 19 || sym == 402 || wcode == 402 {
                         // PLAY
                         if !matches!(route, Route::Player { .. }) {
                             if crate::player::start_bufferfeed() {
@@ -1129,7 +1219,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::player::resume();
                         }
                         set_hud(last_input + HUD_LINGER_MS);
-                    } else if matches!(route, Route::Player { .. }) && (sym == 413 || wcode == 413) {
+                    } else if matches!(route, Route::Player { .. }) && (sym == WCODE_STOP || wcode == WCODE_STOP) {
                         // Stop
                         exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
                     } else if matches!(route, Route::Player { .. })
@@ -1933,6 +2023,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
             crate::ui::anim::draw_overlay(); // home/detail animations (episode scale-pop, scroll)
             let fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
+            // dev capture stream: grab this finished frame before the swap (after the last draw,
+            // so the copy's pass-flush is work the swap would submit anyway). One atomic when idle.
+            crate::capture::tick(now);
+            let fd_pc_cap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             SDL_GL_SwapWindow(win);
             let fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             crate::ui::profile::frame_end();
@@ -1949,8 +2043,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if framedrop_on {
                 let pump = perf_ms(fd_pc_pump.wrapping_sub(fd_pc0));
                 let draw = perf_ms(fd_pc_draw.wrapping_sub(fd_pc_pump));
-                let swap = perf_ms(fd_pc_swap.wrapping_sub(fd_pc_draw));
-                let total = pump + draw + swap;
+                let cap = perf_ms(fd_pc_cap.wrapping_sub(fd_pc_draw));
+                let swap = perf_ms(fd_pc_swap.wrapping_sub(fd_pc_cap));
+                let total = pump + draw + cap + swap;
                 let (up, px) = crate::posters::take_upload_stats();
                 let (cards, cards_off) = crate::gfx::take_card_stats();
                 if total > fd_worst {
@@ -1958,7 +2053,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
                 if total > framedrop_thresh {
                     log(&format!(
-                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} snap={:.2}",
+                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} cap={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} snap={:.2}",
                         crate::ui::home::snap_pos()
                     ));
                 }
@@ -1977,6 +2072,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if is_started() {
             crate::player::stop_bufferfeed();
         }
+        crate::capture::shutdown();
         crate::posters::posters_shutdown();
         SDL_Quit();
         0

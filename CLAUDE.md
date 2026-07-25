@@ -199,7 +199,24 @@ There is no host-side test suite — the code only runs on the TV. Verify by obs
   bisect knob), and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
   `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre).
-  **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`) marks the boot as
+  Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it
+  every frame on every boot (so it never affects the picker; its DIAG entry is a permanent
+  requirement, not an exception). Write key tokens like `down`/`ok`, or pointer clicks `ck:X,Y`
+  in authored 1920x1080 coords, and they replay through the real key/pointer handlers;
+  `tools/stream-screen.py` is the host driver — its page maps browser clicks on the streamed
+  picture to `ck:` tokens (hover is deliberately NOT forwarded — it used to park app focus on a
+  tab pill so the next ENTER opened the library). The one real trigger here is
+  `/tmp/plxnative-capture[=port]` (the in-app live UI capture stream:
+  the app's own GLES frames over TCP :8910 — **UI plane only**, the video overlay is invisible to
+  it, so the service capture stays the only way to see real playback. Two hello-selected wire
+  modes, **MPEG1-in-TS** (default) and **JPEG/PXFR** (fallback); `stream-screen.py --source
+  app|auto` consumes either and its page switches itself. Both encoders and the measured numbers
+  are documented where they live — `capture.rs`'s module doc (slots, wire formats, fd ownership)
+  and `ff.rs`'s `venc` section (the device-verified FFmpeg ABI offsets + the RGBA→NV12-NEON
+  colorspace path). `make deploy` also ships the NDK's NEON libjpeg-turbo next to the binary
+  best-effort, which JPEG mode dlopen's).
+  **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`/
+  `plxnative-remote`/`plxnative-capture`) marks the boot as
   automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
   stored session entirely — so headless runs always land on a deterministic Home.
   `/tmp/plxnative-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.

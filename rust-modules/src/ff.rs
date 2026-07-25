@@ -5,6 +5,9 @@
 //!
 //! This module is THE media demuxer: robust MKV/MP4/TS demux, HTTP input, and
 //! index-based seeking (av_seek_frame). Design record: docs/ffmpeg-demuxer-plan.md.
+//! It also owns the ONE encode path (`venc`, near the end of the file): the dev
+//! capture stream's MPEG1 + MPEG-TS muxer, kept here because every FFmpeg ABI
+//! detail — struct offsets, AVOption names, custom AVIO — belongs in one module.
 //! The struct layouts below are the FFmpeg n3.3 ABI, confirmed on-device by the
 //! Phase A probe (/tmp/plxnative-ffprobe logs codec_id/width/height for a known title).
 #![allow(dead_code)]
@@ -201,6 +204,18 @@ extern "C" {
         write_packet: Option<extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int>,
         seek: Option<extern "C" fn(*mut c_void, i64, c_int) -> i64>,
     ) -> *mut AVIOContext;
+    // MPEG-TS mux (dev capture stream, venc section)
+    fn avformat_alloc_output_context2(
+        ctx: *mut *mut AVFormatContext,
+        oformat: *mut c_void,
+        format_name: *const c_char,
+        filename: *const c_char,
+    ) -> c_int;
+    fn avformat_new_stream(s: *mut AVFormatContext, c: *const AVCodec) -> *mut AVStream;
+    fn avformat_write_header(s: *mut AVFormatContext, options: *mut *mut AVDictionary) -> c_int;
+    fn av_write_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
+    fn avio_flush(s: *mut AVIOContext);
+    fn avformat_free_context(s: *mut AVFormatContext);
 }
 #[link(name = "avcodec")]
 extern "C" {
@@ -230,6 +245,12 @@ extern "C" {
     ) -> c_int;
     fn avsubtitle_free(sub: *mut AVSubtitle);
     fn avcodec_free_context(ctx: *mut *mut AVCodecContext);
+    fn avcodec_find_encoder_by_name(name: *const c_char) -> *const AVCodec;
+    // MPEG1 encode (dev capture stream, venc section)
+    fn avcodec_send_frame(ctx: *mut AVCodecContext, frame: *const c_void) -> c_int;
+    fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
+    fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
+    fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
 }
 #[link(name = "avutil")]
 extern "C" {
@@ -238,6 +259,28 @@ extern "C" {
     fn av_malloc(size: usize) -> *mut c_void;
     fn av_freep(ptr: *mut c_void);
     fn av_rescale_q(a: i64, bq: AVRational, cq: AVRational) -> i64;
+    // MPEG1 encode input frames + option/pixfmt helpers (venc section)
+    fn av_frame_alloc() -> *mut c_void;
+    fn av_frame_free(frame: *mut *mut c_void);
+    fn av_frame_get_buffer(frame: *mut c_void, align: c_int) -> c_int;
+    fn av_frame_make_writable(frame: *mut c_void) -> c_int;
+    fn av_opt_set(obj: *mut c_void, name: *const c_char, val: *const c_char, search_flags: c_int) -> c_int;
+    fn av_get_pix_fmt(name: *const c_char) -> c_int;
+}
+#[link(name = "swscale")]
+extern "C" {
+    fn sws_getContext(
+        src_w: c_int, src_h: c_int, src_fmt: c_int,
+        dst_w: c_int, dst_h: c_int, dst_fmt: c_int,
+        flags: c_int, src_filter: *mut c_void, dst_filter: *mut c_void, param: *const f64,
+    ) -> *mut c_void;
+    fn sws_scale(
+        c: *mut c_void,
+        src_slice: *const *const u8, src_stride: *const c_int,
+        src_slice_y: c_int, src_slice_h: c_int,
+        dst: *const *mut u8, dst_stride: *const c_int,
+    ) -> c_int;
+    fn sws_freeContext(c: *mut c_void);
 }
 
 // ---- constants (n3.3) ----
@@ -310,6 +353,359 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
         }
     }
     None
+}
+
+// ================================ venc =====================================
+// Dev capture stream MPEG1/TS encoder (used by capture.rs when a client's hello
+// asks for kind=mpegts): RGBA 960x540 -> sws_scale -> yuv420p AVFrame ->
+// mpeg1video (the TV build keeps this encoder) -> mpegts muxer -> custom AVIO
+// write callback -> the client socket, raw unframed TS (self-syncing 188B pkts).
+//
+// ABI strategy (workflow-verified 2026-07-24 against the DEVICE's own libs — the
+// AVOption tables inside libavcodec.so.57.89.100 carry the true field offsets):
+// every numeric encoder knob goes through av_opt_set ("b"/"g"/"bf"/"maxrate"/
+// "bufsize"/"dct"/"time_base"), pix fmts come from av_get_pix_fmt() at runtime
+// (AV_PIX_FMT_RGBA is 28 in THIS build — an FF_API_XVMC alias shifts the enum;
+// never hardcode it), and only width/height/pix_fmt (AVCodecContext) and
+// data/linesize/width/height/format/pts (AVFrame) are raw offset pokes below.
+// After avcodec_open2, avcodec_parameters_from_context round-trips the values
+// through the already-modeled AVCodecParameters as a runtime ABI self-check —
+// a mismatch latches the whole mpeg path off instead of corrupting memory.
+// mpeg1video only accepts the fixed MPEG1 frame-rate table: time_base stays
+// {1,30} regardless of the actual (jittery, <=30fps) capture cadence; jsmpeg in
+// streaming mode ignores timestamps and decodes as data arrives.
+
+// AVCodecContext (n3.3, 32-bit ARM) — width/height/pix_fmt have no AVOption.
+const OFF_CTX_WIDTH: usize = 124;
+const OFF_CTX_HEIGHT: usize = 128;
+const OFF_CTX_PIX_FMT: usize = 144;
+// AVFrame (avutil 55, 32-bit ARM). pts sits at +104: a 4-byte pad at +100
+// 8-aligns the int64 on ARM EABI (the classic AVFrame-on-ARM quirk).
+const OFF_FRAME_DATA: usize = 0; // u8*[8]
+const OFF_FRAME_LINESIZE: usize = 32; // c_int[8]
+const OFF_FRAME_WIDTH: usize = 68;
+const OFF_FRAME_HEIGHT: usize = 72;
+const OFF_FRAME_FORMAT: usize = 80;
+const OFF_FRAME_PTS: usize = 104;
+const SWS_BILINEAR: c_int = 2;
+const VENC_TB: AVRational = AVRational { num: 1, den: 30 };
+
+#[inline]
+unsafe fn poke_i32(base: *mut c_void, off: usize, v: i32) {
+    *((base as *mut u8).add(off) as *mut i32) = v;
+}
+#[inline]
+unsafe fn poke_i64(base: *mut c_void, off: usize, v: i64) {
+    *((base as *mut u8).add(off) as *mut i64) = v;
+}
+
+/// The AVIO write side: raw TS bytes -> the mpeg client's socket. Boxed so the
+/// opaque pointer stays stable; `fd` is refreshed by capture.rs before each
+/// encode, `failed` reports a dead socket back without panicking inside FFmpeg.
+struct VencSink {
+    fd: c_int,
+    failed: bool,
+}
+
+extern "C" fn venc_write_cb(op: *mut c_void, data: *mut u8, n: c_int) -> c_int {
+    unsafe {
+        let s = &mut *(op as *mut VencSink);
+        if s.failed || s.fd < 0 || n <= 0 {
+            s.failed = true;
+            return -1;
+        }
+        // one socket-write policy for the whole feature (partial writes, MSG_NOSIGNAL)
+        if !crate::capture::send_all(s.fd, std::slice::from_raw_parts(data, n as usize)) {
+            s.failed = true;
+            return -1;
+        }
+        n
+    }
+}
+
+pub(crate) struct Venc {
+    ctx: *mut AVCodecContext,
+    frame: *mut c_void,
+    sws: *mut c_void,
+    oc: *mut AVFormatContext,
+    st: *mut AVStream,
+    avio: *mut AVIOContext,
+    pkt: *mut AVPacket,
+    sink: Box<VencSink>,
+    st_tb: AVRational,
+    pts: i64,
+    w: c_int,
+    h: c_int,
+    // RGBA -> YUV420P directly runs swscale's GENERAL scaler — scalar C on this ARM
+    // build, measured ~80ms/frame at 960x540. RGBA -> NV12 has a NEON unscaled
+    // converter (rgbx_to_nv12_neon), so we go RGBA -NEON-> NV12 (Y lands straight in
+    // the frame's Y plane, interleaved UV in this scratch) and deinterleave UV into
+    // the planar U/V planes ourselves (~260KB pass) — mpeg1video only eats yuv420p.
+    nv12_uv: Vec<u8>,
+    // rolling perf split, logged every ~5s: is the cost sws (colorspace) or the codec?
+    t_sws_us: u64,
+    t_enc_us: u64,
+    t_n: u32,
+    t_last_log: std::time::Instant,
+}
+// All FFmpeg objects are owned and touched by the single capture-encoder thread.
+unsafe impl Send for Venc {}
+
+impl Venc {
+    /// Bring up encoder + muxer for one client session. Any failure logs and
+    /// returns None (capture latches the mpeg path off for that client).
+    pub(crate) fn open(w: c_int, h: c_int, bitrate_bps: i64) -> Option<Box<Venc>> {
+        ensure_registered(); // the file's ONE registration guard (av_register_all + network_init)
+        unsafe {
+            let cname = b"mpeg1video\0".as_ptr() as *const c_char;
+            let codec = avcodec_find_encoder_by_name(cname);
+            if codec.is_null() {
+                crate::log("venc: mpeg1video encoder absent");
+                return None;
+            }
+            let fmt_yuv = av_get_pix_fmt(b"yuv420p\0".as_ptr() as *const c_char);
+            let fmt_rgba = av_get_pix_fmt(b"rgba\0".as_ptr() as *const c_char);
+            let fmt_nv12 = av_get_pix_fmt(b"nv12\0".as_ptr() as *const c_char);
+            if fmt_yuv < 0 || fmt_rgba < 0 || fmt_nv12 < 0 {
+                crate::log("venc: pix fmt lookup failed");
+                return None;
+            }
+            let ctx = avcodec_alloc_context3(codec);
+            if ctx.is_null() {
+                return None;
+            }
+            let mut v = Box::new(Venc {
+                ctx,
+                frame: std::ptr::null_mut(),
+                sws: std::ptr::null_mut(),
+                oc: std::ptr::null_mut(),
+                st: std::ptr::null_mut(),
+                avio: std::ptr::null_mut(),
+                pkt: std::ptr::null_mut(),
+                sink: Box::new(VencSink { fd: -1, failed: false }),
+                st_tb: AVRational { num: 1, den: 90000 },
+                pts: 0,
+                w,
+                h,
+                nv12_uv: vec![0u8; (w * h / 2) as usize],
+                t_sws_us: 0,
+                t_enc_us: 0,
+                t_n: 0,
+                t_last_log: std::time::Instant::now(),
+            });
+            poke_i32(ctx as *mut c_void, OFF_CTX_WIDTH, w);
+            poke_i32(ctx as *mut c_void, OFF_CTX_HEIGHT, h);
+            poke_i32(ctx as *mut c_void, OFF_CTX_PIX_FMT, fmt_yuv);
+            // {1,30} is in MPEG1's fixed frame-rate table; a non-table rate hard-fails open2.
+            // maxrate+bufsize MUST be set together (one alone errors) and bufsize (in BITS)
+            // must be >= bit_rate/fps; b/7 with maxrate 1.4x caps I-frame transit spikes on
+            // the ~1MB/s tunnel. dct=fastint: the forward DCT is scalar C on ARM (no asm).
+            let set = |name: &[u8], val: String| {
+                let c = std::ffi::CString::new(val).unwrap();
+                av_opt_set(ctx as *mut c_void, name.as_ptr() as *const c_char, c.as_ptr(), 0)
+            };
+            set(b"time_base\0", "1/30".into());
+            set(b"b\0", bitrate_bps.to_string());
+            set(b"maxrate\0", (bitrate_bps * 7 / 5).to_string());
+            set(b"bufsize\0", (bitrate_bps / 7).to_string());
+            set(b"g\0", "30".into());
+            set(b"bf\0", "0".into());
+            set(b"dct\0", "fastint".into());
+            let r = avcodec_open2(ctx, codec, std::ptr::null_mut());
+            if r < 0 {
+                crate::log(&format!("venc: avcodec_open2 failed ({r})"));
+                return None; // Drop frees ctx
+            }
+            // runtime ABI self-check: the offsets above must round-trip through the
+            // battle-tested AVCodecParameters model, or we stop before feeding frames.
+            let mut par: AVCodecParameters = std::mem::zeroed();
+            if avcodec_parameters_from_context(&mut par, ctx) < 0
+                || par.width != w || par.height != h || par.format != fmt_yuv
+            {
+                crate::log(&format!(
+                    "venc: ABI self-check FAILED (par {}x{} fmt {} vs {}x{} fmt {}) — mpeg off",
+                    par.width, par.height, par.format, w, h, fmt_yuv
+                ));
+                free_ptr(par.extradata as *mut c_void);
+                return None;
+            }
+            free_ptr(par.extradata as *mut c_void);
+            let frame = av_frame_alloc();
+            if frame.is_null() {
+                return None;
+            }
+            v.frame = frame;
+            poke_i32(frame, OFF_FRAME_WIDTH, w);
+            poke_i32(frame, OFF_FRAME_HEIGHT, h);
+            poke_i32(frame, OFF_FRAME_FORMAT, fmt_yuv);
+            if av_frame_get_buffer(frame, 32) < 0 {
+                crate::log("venc: frame buffer alloc failed");
+                return None;
+            }
+            v.sws = sws_getContext(w, h, fmt_rgba, w, h, fmt_nv12, SWS_BILINEAR,
+                                   std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            if v.sws.is_null() {
+                crate::log("venc: sws_getContext failed");
+                return None;
+            }
+            // ---- muxer over custom AVIO ----
+            let mut oc: *mut AVFormatContext = std::ptr::null_mut();
+            let r = avformat_alloc_output_context2(&mut oc, std::ptr::null_mut(),
+                                                   b"mpegts\0".as_ptr() as *const c_char,
+                                                   std::ptr::null());
+            if r < 0 || oc.is_null() {
+                crate::log(&format!("venc: no mpegts muxer in this build ({r})"));
+                return None;
+            }
+            v.oc = oc;
+            let iobuf = av_malloc(32768) as *mut u8;
+            if iobuf.is_null() {
+                return None;
+            }
+            let avio = avio_alloc_context(iobuf, 32768, 1,
+                                          v.sink.as_mut() as *mut VencSink as *mut c_void,
+                                          None, Some(venc_write_cb), None);
+            if avio.is_null() {
+                free_ptr(iobuf as *mut c_void);
+                return None;
+            }
+            v.avio = avio;
+            (*oc).pb = avio;
+            let st = avformat_new_stream(oc, std::ptr::null());
+            if st.is_null() {
+                return None;
+            }
+            v.st = st;
+            let cp = stream_codecpar(st);
+            if avcodec_parameters_from_context(cp, ctx) < 0 {
+                return None;
+            }
+            // write_header emits PAT/PMT (re-emitted every 40 TS pkts + each keyframe by
+            // default — do NOT set pat_period/sdt_period, that DISABLES the count-based
+            // re-emit) and forces st->time_base to 1/90000; read it back for the rescale.
+            // sink.fd is still -1 here: header bytes buffer in the 32KB AVIO buffer and
+            // reach the socket with the first flushed frame.
+            if avformat_write_header(oc, std::ptr::null_mut()) < 0 {
+                crate::log("venc: write_header failed");
+                return None;
+            }
+            v.st_tb = stream_time_base(st);
+            v.pkt = av_packet_alloc();
+            if v.pkt.is_null() {
+                return None;
+            }
+            crate::log(&format!("venc: mpeg1/ts up {}x{} @{}bps (st_tb {}/{})",
+                                w, h, bitrate_bps, v.st_tb.num, v.st_tb.den));
+            Some(v)
+        }
+    }
+
+    /// Encode one top-down RGBA frame and push the muxed TS to `fd`.
+    /// Returns false when the socket died (caller drops the client) — encoder
+    /// errors also return false and the caller reinits on the next frame.
+    pub(crate) fn encode(&mut self, rgba: &[u8], fd: c_int) -> bool {
+        unsafe {
+            debug_assert!(rgba.len() >= (self.w * self.h * 4) as usize);
+            self.sink.fd = fd;
+            self.sink.failed = false;
+            // the encoder keeps GOP reference frames refcounted on our frame's buffers —
+            // make_writable clones them out before we overwrite the pixels (skipping this
+            // corrupts inter prediction, it does not crash).
+            let t0 = std::time::Instant::now();
+            if av_frame_make_writable(self.frame) < 0 {
+                return false;
+            }
+            let src: [*const u8; 4] = [rgba.as_ptr(), std::ptr::null(), std::ptr::null(), std::ptr::null()];
+            let src_stride: [c_int; 4] = [self.w * 4, 0, 0, 0];
+            // NV12 out: Y straight into the frame's Y plane, interleaved UV into scratch
+            let fdata = (self.frame as *mut u8).add(OFF_FRAME_DATA) as *mut *mut u8;
+            let fls = (self.frame as *mut u8).add(OFF_FRAME_LINESIZE) as *mut c_int;
+            let dst: [*mut u8; 4] = [*fdata, self.nv12_uv.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut()];
+            let dst_stride: [c_int; 4] = [*fls, self.w, 0, 0];
+            sws_scale(self.sws, src.as_ptr(), src_stride.as_ptr(), 0, self.h, dst.as_ptr(), dst_stride.as_ptr());
+            // deinterleave UVUV... -> planar U + V (chroma is w/2 x h/2)
+            let (cw, chh) = ((self.w / 2) as usize, (self.h / 2) as usize);
+            let (u_base, v_base) = (*fdata.add(1), *fdata.add(2));
+            let (u_ls, v_ls) = (*fls.add(1) as usize, *fls.add(2) as usize);
+            for row in 0..chh {
+                let s = &self.nv12_uv[row * self.w as usize..row * self.w as usize + cw * 2];
+                let up = u_base.add(row * u_ls);
+                let vp = v_base.add(row * v_ls);
+                for i in 0..cw {
+                    *up.add(i) = s[i * 2];
+                    *vp.add(i) = s[i * 2 + 1];
+                }
+            }
+            let t1 = std::time::Instant::now();
+            poke_i64(self.frame, OFF_FRAME_PTS, self.pts);
+            self.pts += 1;
+            let r = avcodec_send_frame(self.ctx, self.frame);
+            if r < 0 {
+                crate::log(&format!("venc: send_frame failed ({r})"));
+                return false;
+            }
+            loop {
+                let r = avcodec_receive_packet(self.ctx, self.pkt);
+                if r == AVERROR_EAGAIN || r == AVERROR_EOF {
+                    break;
+                }
+                if r < 0 {
+                    crate::log(&format!("venc: receive_packet failed ({r})"));
+                    return false;
+                }
+                av_packet_rescale_ts(self.pkt, VENC_TB, self.st_tb);
+                (*self.pkt).stream_index = 0;
+                let wr = av_write_frame(self.oc, self.pkt);
+                av_packet_unref(self.pkt);
+                if wr < 0 || self.sink.failed {
+                    return false;
+                }
+            }
+            // per-frame flush: the AVIO buffer otherwise batches ~100ms of TS at 2.5Mbps
+            avio_flush(self.avio);
+            self.t_sws_us += (t1 - t0).as_micros() as u64;
+            self.t_enc_us += t1.elapsed().as_micros() as u64;
+            self.t_n += 1;
+            if self.t_last_log.elapsed().as_secs_f32() >= 5.0 && self.t_n > 0 {
+                crate::log(&format!("venc: {} frm, sws {:.1}ms enc {:.1}ms avg",
+                                    self.t_n,
+                                    self.t_sws_us as f32 / self.t_n as f32 / 1000.0,
+                                    self.t_enc_us as f32 / self.t_n as f32 / 1000.0));
+                self.t_sws_us = 0;
+                self.t_enc_us = 0;
+                self.t_n = 0;
+                self.t_last_log = std::time::Instant::now();
+            }
+            !self.sink.failed
+        }
+    }
+}
+
+impl Drop for Venc {
+    fn drop(&mut self) {
+        unsafe {
+            // no av_write_trailer: the peer is usually already gone, and jsmpeg
+            // needs no trailer. Free order: packet, frame, sws, muxer, avio, codec.
+            if !self.pkt.is_null() {
+                av_packet_free(&mut self.pkt);
+            }
+            if !self.frame.is_null() {
+                av_frame_free(&mut self.frame);
+            }
+            if !self.sws.is_null() {
+                sws_freeContext(self.sws);
+            }
+            if !self.oc.is_null() {
+                avformat_free_context(self.oc); // does not free the caller-set pb
+            }
+            if !self.avio.is_null() {
+                free_avio(self.avio);
+            }
+            if !self.ctx.is_null() {
+                avcodec_free_context(&mut self.ctx);
+            }
+        }
+    }
 }
 
 /// How a subtitle stream's payload turns into displayable text — classified by the codec's
