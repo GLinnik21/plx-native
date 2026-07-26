@@ -125,6 +125,11 @@ static SECTIONS_GEN: AtomicU32 = AtomicU32::new(0);
 static FETCHING: AtomicBool = AtomicBool::new(false);
 static GENRE_FETCHING: AtomicBool = AtomicBool::new(false);
 static LETTERS_FETCHING: AtomicBool = AtomicBool::new(false);
+/// Every single-flight flag, in one place. These are cleared ONLY inside a successful mailbox
+/// take, so [`reset`] — which drops the mailboxes — must clear them too or the fetch stays
+/// latched forever and the screen wedges on a spinner. **Add a new flag here, not just above**,
+/// and `reset` picks it up for free.
+const IN_FLIGHT: [&AtomicBool; 3] = [&FETCHING, &GENRE_FETCHING, &LETTERS_FETCHING];
 /// Frames left before another page fetch may spawn after a FAILED one (main-thread; pump
 /// decrements). Stops a fast-failing network from spawning a worker per frame.
 static mut RETRY_CD: u32 = 0;
@@ -174,6 +179,11 @@ pub(crate) fn reset() {
     *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *GENRE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *LETTER_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // Dropping a mailbox without clearing its flag latches the fetch forever (the flag is only
+    // cleared on a successful take), so the two must move together.
+    for f in IN_FLIGHT {
+        f.store(false, Ordering::SeqCst);
+    }
     unsafe {
         *addr_of_mut!(SECTIONS) = Vec::new();
         *addr_of_mut!(STATES) = Vec::new();
@@ -586,4 +596,39 @@ fn maybe_spawn() {
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(PageResult { gen, sec: sec_idx, start, items, total, sorts });
     });
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `reset()` dropped the three result mailboxes but left the single-flight
+    /// flags set, and those are cleared ONLY inside a successful mailbox take. Sequence:
+    /// scroll Library so a page fetch spawns → BACK to Home (pump stops running) → the worker
+    /// lands its result → switch profile → `install_pms` calls `reset()` and nulls the mailbox
+    /// → the flag is now true with nothing left that can ever clear it. `maybe_spawn` returns
+    /// early forever and the Library is a spinner until the app is killed.
+    #[test]
+    fn reset_clears_the_single_flight_flags_with_the_mailboxes() {
+        FETCHING.store(true, Ordering::SeqCst);
+        GENRE_FETCHING.store(true, Ordering::SeqCst);
+        LETTERS_FETCHING.store(true, Ordering::SeqCst);
+        *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+        reset();
+
+        assert!(!FETCHING.load(Ordering::SeqCst), "page fetch stayed latched — Library wedges");
+        assert!(!GENRE_FETCHING.load(Ordering::SeqCst), "genre fetch stayed latched");
+        assert!(!LETTERS_FETCHING.load(Ordering::SeqCst), "letters fetch stayed latched");
+    }
+
+    /// `reset()` must also drop the retry backoff, or a profile switch inherits the previous
+    /// user's cooldown and stalls the first page fetch for up to ~2s.
+    #[test]
+    fn reset_clears_the_retry_backoff() {
+        unsafe { RETRY_CD = 120 };
+        reset();
+        assert_eq!(unsafe { RETRY_CD }, 0);
+    }
 }
