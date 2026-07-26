@@ -1,6 +1,6 @@
 //! SDL2_ttf text rendering (was src/text.c): font cache + glyph-texture LRU +
 //! draw_text. Main-thread only (all GL), so the caches are plain statics (no
-//! locking). Uses gfx's link_program/gfx_use_base (crate path). Mostly GL/TTF FFI —
+//! locking). Uses gfx's link_program/use_prog (crate path). Mostly GL/TTF FFI —
 //! the retui text backend.
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -22,7 +22,6 @@ const FS_TEXT_FADE: &CStr = crate::gfx::glsl!("shaders/fs_text_fade.frag");
 // GL enums
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
-const GL_TEXTURE0: c_uint = 0x84C0;
 const TTF_STYLE_BOLD: c_int = 0x01;
 const TTF_HINTING_LIGHT: c_int = 1;
 
@@ -59,12 +58,10 @@ extern "C" {
     fn glGetUniformLocation(program: c_uint, name: *const c_char) -> c_int;
     fn glBindTexture(target: c_uint, texture: c_uint);
     fn glDeleteTextures(n: c_int, textures: *const c_uint);
-    fn glUseProgram(program: c_uint);
     fn glUniform2f(loc: c_int, x: f32, y: f32);
     fn glUniform4fv(loc: c_int, count: c_int, value: *const f32);
     fn glUniform1i(loc: c_int, x: c_int);
     fn glUniform4f(loc: c_int, x: f32, y: f32, z: f32, w: f32);
-    fn glActiveTexture(texture: c_uint);
     fn glDrawArrays(mode: c_uint, first: c_int, count: c_int);
 }
 
@@ -182,10 +179,19 @@ pub(crate) fn init_text() {
             TLF_TEX = glGetUniformLocation(TPROGF, c"u_tex".as_ptr());
             TLF_FADE = glGetUniformLocation(TPROGF, c"u_tfade".as_ptr());
         }
+        // Constant uniforms, set once per program (per-program state): the fixed 1920x1080
+        // screen and sampler unit 0. draw_text/_fade no longer re-send them per string.
+        crate::gfx::use_prog(TPROG);
+        glUniform2f(TL_SCREEN, SCR_W, SCR_H);
+        glUniform1i(TL_TEX, 0);
+        if TPROGF != 0 {
+            crate::gfx::use_prog(TPROGF);
+            glUniform2f(TLF_SCREEN, SCR_W, SCR_H);
+            glUniform1i(TLF_TEX, 0);
+        }
         if !font_at(28, 0).is_null() {
             TEXT_OK = 1;
         }
-        crate::gfx::gfx_use_base();
         log(&format!("init_text ok={}", TEXT_OK));
     }
 }
@@ -411,16 +417,12 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
             2 => x - w as f32,
             _ => x,
         };
-        glUseProgram(TPROG);
-        glUniform2f(TL_SCREEN, SCR_W, SCR_H);
+        crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
-        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform1i(TL_TEX, 0);
         // glyphs are 1:1 texel:pixel — snap the origin (see gfx::snap for the contract)
         glUniform4f(TL_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        crate::gfx::gfx_use_base(); // restore rect program for subsequent draw_rect
         w as f32
     }
 }
@@ -456,18 +458,14 @@ pub(crate) fn draw_text_fade(
             2 => x - w as f32,
             _ => x,
         };
-        glUseProgram(TPROGF);
-        glUniform2f(TLF_SCREEN, SCR_W, SCR_H);
+        crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
         glUniform4fv(TLF_COL, 1, col);
         // px → string-texture uv (the varying spans the one-quad string)
         let wf = w as f32;
         glUniform2f(TLF_FADE, fade_from / wf, fade_to / wf);
-        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform1i(TLF_TEX, 0);
         glUniform4f(TLF_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        crate::gfx::gfx_use_base(); // restore rect program for subsequent draw_rect
         w as f32
     }
 }

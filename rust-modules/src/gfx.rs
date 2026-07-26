@@ -1,7 +1,7 @@
 //! GLES2 rendering foundation (was src/gfx.c). Three shader programs (SDF
 //! rrect/tri/focus, 4-corner ambient gradient, textured RGBA), the draw primitives,
 //! the spring helper, and the seven-segment FPS digits. All GLES2 calls; state is
-//! main-thread statics. gfx_compile/gfx_use_base are also used by text.rs (crate path).
+//! main-thread statics. link_program/use_prog are also used by text.rs (crate path).
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -238,8 +238,19 @@ pub(crate) fn link_program(vs: *const c_char, fs: *const c_char) -> Option<c_uin
     }
 }
 
-pub(crate) fn gfx_use_base() {
-    unsafe { glUseProgram(PROG) };
+/// Lazy program binding: the driver call is skipped when `p` is already current. Every draw fn
+/// binds ITS OWN program through this (draw_rect no longer assumes PROG is left bound by whoever
+/// ran before it), which deletes the unconditional switch+restore pair the textured/text/ambient/
+/// shadow paths used to pay on every call. Main-thread only, like all GL here.
+static mut CUR_PROG: c_uint = 0;
+#[inline]
+pub(crate) fn use_prog(p: c_uint) {
+    unsafe {
+        if CUR_PROG != p {
+            glUseProgram(p);
+            CUR_PROG = p;
+        }
+    }
 }
 
 static QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -250,7 +261,7 @@ pub(crate) fn init_gl() {
             eprintln!("link failed");
             std::process::exit(1);
         });
-        glUseProgram(PROG);
+        use_prog(PROG);
         LOC_RECT = glGetUniformLocation(PROG, c"u_rect".as_ptr());
         LOC_SCREEN = glGetUniformLocation(PROG, c"u_screen".as_ptr());
         LOC_SIZE = glGetUniformLocation(PROG, c"u_size".as_ptr());
@@ -299,7 +310,20 @@ pub(crate) fn init_gl() {
             SL_COL = glGetUniformLocation(SPROG, c"u_col".as_ptr());
         }
 
-        glUseProgram(PROG);
+        // Hoist the compile-time-constant uniforms: uniforms are per-program state, so each
+        // program's screen size is set ONCE here instead of on every draw call. (The UI is a
+        // fixed 1920x1080 with no DPI scaling — that constancy is what makes this legal.)
+        if APROG != 0 {
+            use_prog(APROG);
+            glUniform2f(AL_SCREEN, SCR_W, SCR_H);
+        }
+        if SPROG != 0 {
+            use_prog(SPROG);
+            glUniform2f(SL_SCREEN, SCR_W, SCR_H);
+        }
+        use_prog(PROG);
+        // Texture unit 0 is the only unit this renderer ever samples from — set it once.
+        glActiveTexture(GL_TEXTURE0);
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -312,6 +336,7 @@ pub(crate) fn init_gl() {
 
 pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, top: *const f32, bot: *const f32, focus: f32) {
     unsafe {
+        use_prog(PROG);
         // Only the rounded/focus SDF path needs the AA bleed; a plain rect takes the fast-path fill
         // and must stay exactly its bounds (a 1px overhang would fatten scrims/backgrounds).
         let aa = if radius >= 0.5 || focus > 0.001 { AA_BLEED } else { 0.0 };
@@ -334,6 +359,7 @@ pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, t
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32) {
     unsafe {
+        use_prog(PROG);
         let aa = AA_BLEED; // a sheened tile is always rounded → always SDF path
         glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
@@ -352,20 +378,19 @@ pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top
 pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
     unsafe {
         let c3 = |p: *const f32, i: usize| *p.add(i);
-        glUseProgram(APROG);
-        glUniform2f(AL_SCREEN, SCR_W, SCR_H);
+        use_prog(APROG); // AL_SCREEN is set once at init (uniforms are per-program state)
         glUniform4f(AL_RECT, x, y, w, h);
         glUniform4f(AL_TL, c3(tl, 0) * dim, c3(tl, 1) * dim, c3(tl, 2) * dim, 1.0);
         glUniform4f(AL_TR, c3(tr, 0) * dim, c3(tr, 1) * dim, c3(tr, 2) * dim, 1.0);
         glUniform4f(AL_BR, c3(br, 0) * dim, c3(br, 1) * dim, c3(br, 2) * dim, 1.0);
         glUniform4f(AL_BL, c3(bl, 0) * dim, c3(bl, 1) * dim, c3(bl, 2) * dim, 1.0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glUseProgram(PROG);
     }
 }
 
 pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
     unsafe {
+        use_prog(PROG);
         // Rounded corners always take the SDF path, so always give the edge band its bleed.
         let aa = if rad_l >= 0.5 || rad_r >= 0.5 { AA_BLEED } else { 0.0 };
         glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
@@ -385,6 +410,7 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
 /// [`draw_rrect`] with the focus edge-sheen baked in (flat fill + `rimw`-px inset rim in `rimcol`).
 pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32, rimw: f32, rimcol: *const f32) {
     unsafe {
+        use_prog(PROG);
         let aa = AA_BLEED;
         glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
@@ -403,8 +429,8 @@ pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad
 /// Soft drop-shadow of the box `(x,y,w,h)` with corner `radius` (w/2 = circle), penumbra `blur` px.
 /// The quad is inflated by `blur` on every side; the shader falls the alpha off outward over that
 /// band (see `FS_SHADOW`). `(x,y)` is the shadow's box origin — the caller bakes any downward offset
-/// into `y`. No-ops if the program failed to link. Own GL program, so it doesn't disturb the base
-/// shader's uniforms (restores `PROG` after).
+/// into `y`. No-ops if the program failed to link. Own GL program (bound lazily via [`use_prog`]),
+/// so it doesn't disturb the base shader's uniforms.
 pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, off: f32, col: *const f32) {
     unsafe {
         if SPROG == 0 {
@@ -412,8 +438,7 @@ pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32
         }
         let b = blur.max(0.5);
         let (qx, qy, qw, qh) = (x - b, y - b, w + 2.0 * b, h + 2.0 * b);
-        glUseProgram(SPROG);
-        glUniform2f(SL_SCREEN, SCR_W, SCR_H);
+        use_prog(SPROG); // SL_SCREEN is set once at init
         glUniform4f(SL_RECT, qx, qy, qw, qh);
         glUniform2f(SL_SIZE, qw, qh);
         glUniform1f(SL_RADIUS, radius);
@@ -421,7 +446,6 @@ pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32
         glUniform1f(SL_OFF, off); // occluder (tile) offset above the shadow box; shader discards the covered interior
         glUniform4fv(SL_COL, 1, col);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glUseProgram(PROG);
     }
 }
 
@@ -535,7 +559,12 @@ pub(crate) fn init_image() {
         IL_CH = glGetUniformLocation(IPROG, c"u_ch".as_ptr());
         IL_SHINV = glGetUniformLocation(IPROG, c"u_shinv".as_ptr());
         IL_SHCOL = glGetUniformLocation(IPROG, c"u_shcol".as_ptr());
-        glUseProgram(PROG);
+        // Set this program's constant uniforms once (per-program state): the fixed screen size
+        // and sampler unit 0. draw_tex_impl no longer re-sends them per quad.
+        use_prog(IPROG);
+        glUniform2f(IL_SCREEN, SCR_W, SCR_H);
+        glUniform1i(IL_TEX, 0);
+        use_prog(PROG);
     }
 }
 
@@ -593,8 +622,7 @@ fn draw_tex_impl(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint:
         let uvsx = if w > 0.0 { qw / w } else { 1.0 };
         let uvsy = if h > 0.0 { qh / h } else { 1.0 };
         let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
-        glUseProgram(IPROG);
-        glUniform2f(IL_SCREEN, SCR_W, SCR_H);
+        use_prog(IPROG); // IL_SCREEN / IL_TEX / texture unit 0 are set once at init
         glUniform4fv(IL_TINT, 1, tint);
         glUniform2f(IL_UVSCALE, uvsx, uvsy);
         glUniform1f(IL_RADIUS, radius);
@@ -603,12 +631,9 @@ fn draw_tex_impl(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint:
         glUniform2f(IL_CH, w * 0.5, h * 0.5);
         glUniform1f(IL_SHINV, shinv);
         glUniform4fv(IL_SHCOL, 1, shcol);
-        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform1i(IL_TEX, 0);
         glUniform4f(IL_RECT, qx, qy, qw, qh);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glUseProgram(PROG);
     }
 }
 
@@ -842,8 +867,9 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
         }
 
         // D. restore the world exactly: framebuffer 0 (or every next frame renders into the
-        //    FBO = frozen screen), full viewport, blend back on (func untouched). draw_tex
-        //    self-restored PROG; texture unit 0 stays active; vertex state untouched.
+        //    FBO = frozen screen), full viewport, blend back on (func untouched). Program binding
+        //    needs no restore — every draw fn binds its own lazily (use_prog); texture unit 0
+        //    stays active; vertex state untouched.
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, CAP_W, CAP_H);
         glEnable(GL_BLEND);
