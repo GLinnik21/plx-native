@@ -49,7 +49,7 @@ static mut profile_chip: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
 /// clamp): a hub refetch can shrink the shelves underneath the raw statics, and the OK dispatch
 /// reads these — an unclamped stale index made OK silently no-op on a visibly focused card.
 pub(crate) fn row() -> c_int {
-    let nh = crate::pms::hub_count() as c_int;
+    let nh = n_hubs() as c_int;
     unsafe { addr_of!(fr).read() }.clamp(0, (nh - 1).max(0))
 }
 pub(crate) fn col() -> c_int {
@@ -87,6 +87,27 @@ fn g_fc() -> c_int {
 // *actual* counts come from pms::hub_count()/hub_len().
 const MAX_HUBS: usize = 16; // Continue Watching, On Deck, Recently Added, collections…
 const MAX_ITEMS: usize = 24; // cards per shelf
+
+/// Rows the grid can actually address: the server's hub count clamped to the fixed `shelves`
+/// array. **Every `shelves[]` index site must go through this** — a server with 3-4 libraries
+/// returns well over `MAX_HUBS` hubs (/hubs promotes several rows per library on top of
+/// continue/ondeck/recentlyAdded), and `pms::hub_count()` is uncapped.
+fn n_hubs_of(server_hubs: usize) -> usize {
+    server_hubs.min(MAX_HUBS)
+}
+fn n_hubs() -> usize {
+    n_hubs_of(crate::pms::hub_count())
+}
+
+/// Step the focus row by `dir`, clamped into the addressable rows. Used by every vertical move:
+/// the raw `fr + dir` it replaces could walk past the end of `shelves` and panic on the keypress
+/// (`Home::env` clamps the value it *returns*, but never writes the clamp back to the global).
+fn step_row(cur: c_int, dir: c_int, nrows: usize) -> c_int {
+    if nrows == 0 {
+        return 0;
+    }
+    (cur + dir).clamp(0, nrows as c_int - 1)
+}
 
 /// the item at (hub row, column) in the home hub grid, or None
 pub(crate) fn movie_at(r: c_int, c: c_int) -> Option<&'static PmsMovie> {
@@ -420,7 +441,7 @@ impl View for Grid {
             let focused = (env.fr as usize == r).then_some(env.fc as usize);
             self.shelves[r].update(crate::pms::hub_len(r), focused, &RowStyle::HOME, env.dt);
         }
-        let nh = crate::pms::hub_count().max(1);
+        let nh = n_hubs().max(1);
         let max_y = (nh as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0);
         // minimal scroll-into-view (the vertical twin of CardRow's rule, same reveal core): only
         // move the page when the focused row's block — title band above, card + focused label
@@ -439,7 +460,7 @@ impl View for Grid {
         }
     }
     fn draw(&self, env: &Env, p: Painter) {
-        let nh = crate::pms::hub_count();
+        let nh = n_hubs();
         // PASS 1 — every shelf's non-focused cells (the globally-focused cell is skipped in grid mode,
         // drawn LAST below so it overlaps neighbouring rows: cross-row z-order, invariant #3).
         for r in 0..nh {
@@ -545,7 +566,7 @@ impl Grid {
     // ---- navigation: writes the fr/fc globals (never caches focus) ----
     fn nav(&self, sym: c_uint) {
         unsafe {
-            let nh = crate::pms::hub_count() as c_int;
+            let nh = n_hubs() as c_int;
             let nc = crate::pms::hub_len(fr.max(0) as usize) as c_int;
             if sym == SDLK_LEFT && fc > 0 {
                 fc -= 1;
@@ -560,7 +581,12 @@ impl Grid {
     }
     /// vertical move keeping VISUAL column alignment across rows' animated scroll
     unsafe fn vert(&self, dir: c_int) {
-        let (cur, ncur) = (g_fr(), g_fr() + dir);
+        // Both indices must be clamped to the addressable rows: `fr` is a raw global that a
+        // stale write (or a server with >MAX_HUBS hubs) can push past the end of `shelves`,
+        // and this runs on the KEYPRESS — it panicked before `draw` was ever reached.
+        let n = n_hubs();
+        let cur = step_row(g_fr(), 0, n);
+        let ncur = step_row(g_fr(), dir, n);
         let cx = MARGIN_X + g_fc() as f32 * (CARD_W + GAP) - self.shelves[cur as usize].scroll_x() + CARD_W * 0.5;
         let mut nc =
             ((cx - MARGIN_X - CARD_W * 0.5 + self.shelves[ncur as usize].scroll_x()) / (CARD_W + GAP) + 0.5) as c_int;
@@ -574,7 +600,7 @@ impl Grid {
     /// and the page spring would chase it (vertical auto-scroll), which is exactly the "pointer
     /// flies away" the pointer rules ban; horizontal scroll-into-view within a row is kept.
     fn hit_at(&self, mx: f32, my: f32) -> Option<(usize, usize)> {
-        for r in 0..crate::pms::hub_count() {
+        for r in 0..n_hubs() {
             let row_y = self.shelves[r].base_y + CARD_DY;
             if my < row_y || my > row_y + CARD_H {
                 continue;
@@ -605,7 +631,7 @@ impl Grid {
     }
     fn wheel(&self, dy: c_int) {
         unsafe {
-            let nh = crate::pms::hub_count() as c_int;
+            let nh = n_hubs() as c_int;
             if dy < 0 && fr < nh - 1 {
                 fr += 1;
             } else if dy > 0 && fr > 0 {
@@ -634,8 +660,8 @@ impl Home {
         let sp = self.snap.pos;
         // clamp the focus into the current hub bounds so a stray write degrades to a
         // valid shelves[fr]/cards[fc] index rather than reading out of range.
-        let nh = crate::pms::hub_count().max(1) as c_int;
-        let cfr = g_fr().clamp(0, (nh - 1).min(MAX_HUBS as c_int - 1));
+        let nh = n_hubs().max(1) as c_int;
+        let cfr = g_fr().clamp(0, nh - 1);
         let ncols = crate::pms::hub_len(cfr as usize).max(1) as c_int;
         let cfc = g_fc().clamp(0, (ncols - 1).min(MAX_ITEMS as c_int - 1));
         Env { dt, screen: Rect::FULL, fr: cfr, fc: cfc, sp, hero_a: hero_alpha(sp, 0.55) }
@@ -786,4 +812,54 @@ pub(crate) fn home_card_click(mx: f32, my: f32) -> bool {
 
 pub(crate) fn home_wheel(dy: c_int) {
     guard(|| scene().grid.wheel(dy));
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// The home screen's focus lives in `static mut fr`/`fc`, so tests that drive it must not
+    /// run concurrently. (This is the cost the audit flagged: module-singleton state makes host
+    /// tests order-dependent. One lock is cheaper than reshaping the screen right now.)
+    static FOCUS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn n_hubs_clamps_the_server_count_to_the_shelf_array() {
+        assert_eq!(n_hubs_of(0), 0);
+        assert_eq!(n_hubs_of(3), 3);
+        assert_eq!(n_hubs_of(MAX_HUBS), MAX_HUBS);
+        // A server with 3-4 libraries returns well over 16 hubs (/hubs promotes several rows
+        // per library on top of continue/ondeck/recentlyAdded). `shelves` is a fixed [_; 16].
+        assert_eq!(n_hubs_of(MAX_HUBS + 1), MAX_HUBS);
+        assert_eq!(n_hubs_of(200), MAX_HUBS);
+    }
+
+    #[test]
+    fn step_row_stays_inside_the_addressable_rows() {
+        assert_eq!(step_row(0, 1, 5), 1);
+        assert_eq!(step_row(4, 1, 5), 4, "DOWN on the last row stays put");
+        assert_eq!(step_row(0, -1, 5), 0, "UP on the first row stays put");
+        assert_eq!(step_row(9, 1, 5), 4, "a stale focus is pulled back into range");
+        assert_eq!(step_row(0, 1, 0), 0, "an empty catalog has no row to move to");
+    }
+
+    /// Regression: with more hubs than the fixed `shelves: [CardRow; 16]` array, a DOWN press on
+    /// row 15 computed `g_fr() + dir == 16` and indexed the array out of bounds — panicking on
+    /// the KEYPRESS, before `draw` was ever reached. `Home::env` clamps the value it *returns*
+    /// but never writes it back, so the raw global kept climbing.
+    #[test]
+    fn vert_cannot_walk_past_the_shelf_array() {
+        let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
+        let grid = Grid::new();
+        set_row(MAX_HUBS as c_int - 1); // 15 — the last shelf the array can hold
+        unsafe { grid.vert(1) };
+        assert!(
+            row() < MAX_HUBS as c_int,
+            "vert() walked to row {} with only {MAX_HUBS} shelves",
+            row()
+        );
+        set_row(0);
+    }
 }
