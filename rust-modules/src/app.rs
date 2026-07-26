@@ -2007,7 +2007,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 
             glViewport(0, 0, SCR_W, SCR_H);
-            if matches!(route, Route::Player { .. }) {
+            let player = matches!(route, Route::Player { .. });
+            if player {
                 crate::system::clear_opaque_region();
                 glClearColor(0.0, 0.0, 0.0, 0.0);
                 glClear(GL_COLOR_BUFFER_BIT);
@@ -2027,43 +2028,35 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
                     crate::ui::chapters_panel::draw();
                 }
-                crate::ui::anim::draw_overlay();
-                SDL_GL_SwapWindow(win);
-                crate::ui::profile::frame_end();
-                if fps_tick(&mut frames_ct, &mut fps_t, &mut fps_shown, now) {
-                    // player path has no on-screen counter — tag the open overlay so an
-                    // Info/Chapters/Menu perf drop is greppable in the event log.
-                    let ov = match route {
-                        Route::Player { overlay: Overlay::Info } => "info",
-                        Route::Player { overlay: Overlay::Chapters } => "chapters",
-                        Route::Player { overlay: Overlay::Menu } => "menu",
-                        _ => "none",
-                    };
-                    log(&format!("FPS={fps_shown} route=player overlay={ov}"));
-                }
-                continue;
-            }
-            if matches!(route, Route::Login) {
-                crate::ui::login::draw();
-            } else if matches!(route, Route::Profiles) {
-                crate::ui::profiles::draw();
-            } else if matches!(route, Route::Detail) {
-                crate::ui::detail::draw();
-            } else if matches!(route, Route::Library) {
-                crate::ui::library::draw();
             } else {
-                crate::ui::home::home_draw();
+                if matches!(route, Route::Login) {
+                    crate::ui::login::draw();
+                } else if matches!(route, Route::Profiles) {
+                    crate::ui::profiles::draw();
+                } else if matches!(route, Route::Detail) {
+                    crate::ui::detail::draw();
+                } else if matches!(route, Route::Library) {
+                    crate::ui::library::draw();
+                } else {
+                    crate::ui::home::home_draw();
+                }
+                if matches!(route, Route::Account) {
+                    crate::ui::account_menu::draw(); // profile popover over Home
+                }
+                // the on-screen FPS counter stays off the player route (chrome over video)
+                let fps_col = [0.4f32, 1.0, 0.55, 1.0];
+                crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
             }
-            if matches!(route, Route::Account) {
-                crate::ui::account_menu::draw(); // profile popover over Home
-            }
-            let fps_col = [0.4f32, 1.0, 0.55, 1.0];
-            crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
-            crate::ui::anim::draw_overlay(); // home/detail animations (episode scale-pop, scroll)
+            crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
             let fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             // dev capture stream: grab this finished frame before the swap (after the last draw,
             // so the copy's pass-flush is work the swap would submit anyway). One atomic when idle.
-            crate::capture::tick(now);
+            // Deliberately NOT on the player route (the UI plane is transparent over video, so
+            // there is nothing to grab) — capture.rs's 5s keepalive resend covers the host's
+            // deadness timer while playback is up.
+            if !player {
+                crate::capture::tick(now);
+            }
             let fd_pc_cap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             SDL_GL_SwapWindow(win);
             let fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
@@ -2074,10 +2067,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Account => "account",
                 Route::Library => "library",
                 Route::Detail => "detail",
+                Route::Player { .. } => "player",
                 _ => "home",
             };
             // frame-drop detector: attribute slow frames to pump(uploads)/draw/swap(GPU). Drains the
             // per-frame upload counters every frame (so the count is per-frame, not cumulative).
+            // ONE tail for every route — this used to live only on the non-player path, which left
+            // /tmp/plxnative-framedrop dead during playback (the timings were collected, then a
+            // `continue` threw them away).
             if framedrop_on {
                 let pump = perf_ms(fd_pc_pump.wrapping_sub(fd_pc0));
                 let draw = perf_ms(fd_pc_draw.wrapping_sub(fd_pc_pump));
@@ -2097,12 +2094,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
             }
             if fps_tick(&mut frames_ct, &mut fps_t, &mut fps_shown, now) {
-                // once/sec render heartbeat — greppable without reading the on-screen counter
+                // once/sec render heartbeat — greppable without reading the on-screen counter.
+                // The harness parses `FPS=(\d+) route=(\w+)(?: overlay=(\w+))?` (tests/run.py), so
+                // the player's overlay tag stays right after route= and worstframe= stays LAST.
+                let ov = match route {
+                    Route::Player { overlay: Overlay::Info } => " overlay=info",
+                    Route::Player { overlay: Overlay::Chapters } => " overlay=chapters",
+                    Route::Player { overlay: Overlay::Menu } => " overlay=menu",
+                    Route::Player { overlay: Overlay::None } => " overlay=none",
+                    _ => "",
+                };
                 if framedrop_on {
-                    log(&format!("FPS={fps_shown} route={rn} worstframe={fd_worst:.1}ms"));
+                    log(&format!("FPS={fps_shown} route={rn}{ov} worstframe={fd_worst:.1}ms"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("FPS={fps_shown} route={rn}"));
+                    log(&format!("FPS={fps_shown} route={rn}{ov}"));
                 }
             }
         }
