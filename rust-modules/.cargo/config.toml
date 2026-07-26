@@ -1,0 +1,24 @@
+# Codegen flags bound to the TARGET, not to one make recipe.
+#
+# These are the flags that keep the binary from SIGILL-ing on this TV, and they used to exist
+# only as a RUSTFLAGS env var inside the Makefile's cargo line. Anything that invoked cargo
+# another way — an IDE, rust-analyzer, a hand-typed `cargo build --target …`, a future CI —
+# produced an ARMv6/CP15 staticlib and wrote it to the SAME path, where `make` would link it
+# without comment (cargo fingerprints RUSTFLAGS, so the bad artifact REPLACES the good one).
+#
+#   target-cpu=cortex-a9   the default arm-*-gnueabi (ARMv6) codegen emits the legacy CP15
+#                          barrier (mcr p15,...,c7,c10,5), UNDEFINED on the A53 → SIGILL.
+#                          cortex-a9 (ARMv7-A) emits the dedicated `dmb`.
+#   target-feature=-neon   NEON is unnecessary (VFP stays on) and dodges crates whose NEON
+#                          path needs unstable intrinsics.
+#
+# CAUTION: the RUSTFLAGS *environment variable* replaces this list wholesale rather than
+# appending to it. The Makefile therefore sets RUSTFLAGS only for DEBUG=1, and repeats the
+# full list there. Do not add a partial RUSTFLAGS anywhere.
+[target.arm-unknown-linux-gnueabi]
+rustflags = ["-C", "target-cpu=cortex-a9", "-C", "target-feature=-neon"]
+
+# std itself must be rebuilt with the flags above — the precompiled std ships the CP15
+# barriers. Needs the nightly toolchain + the rust-src component.
+[unstable]
+build-std = ["std", "panic_unwind"]
