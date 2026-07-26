@@ -172,7 +172,12 @@ pub struct AVSubtitleRect {
 }
 
 // ---- externs ----
-#[link(name = "avformat")]
+// The four `#[link]` directives are gated out of `cfg(test)` so the crate's pure logic stays
+// host-testable: the dev machine has no libavformat to link against, and these are the only
+// hard link directives in the crate (SDL/GLES/curl are resolved by the Makefile's final link,
+// so unreferenced externs are dead-stripped instead). A test that actually CALLS into
+// FFmpeg or GL will fail to link — that is the intended boundary, not a bug.
+#[cfg_attr(not(test), link(name = "avformat"))]
 extern "C" {
     fn av_register_all();
     fn avformat_network_init() -> c_int;
@@ -217,7 +222,7 @@ extern "C" {
     fn avio_flush(s: *mut AVIOContext);
     fn avformat_free_context(s: *mut AVFormatContext);
 }
-#[link(name = "avcodec")]
+#[cfg_attr(not(test), link(name = "avcodec"))]
 extern "C" {
     fn avcodec_version() -> c_uint;
     fn av_packet_alloc() -> *mut AVPacket;
@@ -252,7 +257,7 @@ extern "C" {
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
 }
-#[link(name = "avutil")]
+#[cfg_attr(not(test), link(name = "avutil"))]
 extern "C" {
     fn avutil_version() -> c_uint;
     fn avformat_version() -> c_uint;
@@ -267,7 +272,7 @@ extern "C" {
     fn av_opt_set(obj: *mut c_void, name: *const c_char, val: *const c_char, search_flags: c_int) -> c_int;
     fn av_get_pix_fmt(name: *const c_char) -> c_int;
 }
-#[link(name = "swscale")]
+#[cfg_attr(not(test), link(name = "swscale"))]
 extern "C" {
     fn sws_getContext(
         src_w: c_int, src_h: c_int, src_fmt: c_int,
@@ -1127,6 +1132,23 @@ fn is_hdr10plus_sei(nal: &[u8]) -> bool {
     ptype == 4 && p + 3 <= nal.len() && nal[p] == 0xb5 && nal[p + 1] == 0x00 && nal[p + 2] == 0x3c
 }
 
+/// End offset of a NAL of length `nl` starting at `i`, or None if it is empty or would run
+/// past `size`. **The width is load-bearing**: `usize` is 32 bits on the TV, `nls` is up to 4,
+/// so a hostile/corrupt length up to `0xFFFF_FFFF` makes the natural `i + nl > size` guard WRAP
+/// to a small number, pass its own bounds check, and panic the demux thread inside the slice —
+/// killing the producer before it can EOF the queues, which hangs playback with no error path.
+/// Computing in `u64` makes the bound hold on every target. Never inline this back to `i + nl`.
+fn nal_end(i: usize, nl: usize, size: usize) -> Option<usize> {
+    if nl == 0 {
+        return None;
+    }
+    let end = i as u64 + nl as u64;
+    if end > size as u64 {
+        return None;
+    }
+    Some(end as usize)
+}
+
 /// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
 /// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5 / HEVC IRAP
 /// types 16-23). Returns true if it is a keyframe. Mirrors mkv_handle_block.
@@ -1152,7 +1174,7 @@ unsafe fn packet_to_annexb(
             nl = (nl << 8) | d[i + k] as usize;
         }
         i += nls;
-        if nl == 0 || i + nl > size {
+        if nal_end(i, nl, size).is_none() {
             break;
         }
         let b0 = d[i];
@@ -1179,10 +1201,10 @@ unsafe fn packet_to_annexb(
             nl = (nl << 8) | d[i + k] as usize;
         }
         i += nls;
-        if nl == 0 || i + nl > size {
+        let Some(end) = nal_end(i, nl, size) else {
             break;
-        }
-        let nal = &d[i..i + nl];
+        };
+        let nal = &d[i..end];
         if is_hevc && is_hdr10plus_sei(nal) {
             let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
             if n <= 3 || n % 500 == 0 {
@@ -1597,4 +1619,117 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
     crate::aq::aq_set_eof(aq_p);
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too
     crate::player::log("ff: demux ended");
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
+    fn avcc(nals: &[&[u8]]) -> Vec<u8> {
+        let mut v = Vec::new();
+        for n in nals {
+            v.extend_from_slice(&(n.len() as u32).to_be_bytes());
+            v.extend_from_slice(n);
+        }
+        v
+    }
+
+    fn to_annexb(buf: &[u8], is_hevc: bool, param: &[u8]) -> (bool, Vec<u8>) {
+        let mut out = Vec::new();
+        let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, param, &mut out) };
+        (key, out)
+    }
+
+    // -- nal_end: the 32-bit bounds guard -------------------------------------------------
+
+    #[test]
+    fn nal_end_accepts_a_nal_that_fits() {
+        assert_eq!(nal_end(4, 10, 64), Some(14));
+        assert_eq!(nal_end(4, 60, 64), Some(64), "a NAL ending exactly at `size` is valid");
+    }
+
+    #[test]
+    fn nal_end_rejects_empty_and_overrun() {
+        assert_eq!(nal_end(4, 0, 64), None, "a zero-length NAL terminates the walk");
+        assert_eq!(nal_end(4, 61, 64), None, "one byte past the end is rejected");
+    }
+
+    /// Documents the defect `nal_end` exists to prevent. `usize` is 32 bits on the TV, so the
+    /// guard that shipped — `i + nl > size` — WRAPPED for a length near u32::MAX, passed its own
+    /// bounds check, and panicked the demux thread inside the slice. This assertion cannot fail
+    /// on a 64-bit host (the wrap is unreachable here), so it is a documentation test, not a
+    /// regression gate: the real gate is that `nal_end` is a named function whose doc says not to
+    /// inline it back. Both halves are asserted so the delta is unambiguous to a future reader.
+    #[test]
+    fn nal_end_rejects_what_the_old_32bit_guard_accepted() {
+        let (i, nl, size) = (4usize, 0xFFFF_FFFCusize, 64usize);
+        let old_guard_overruns = (i as u32).wrapping_add(nl as u32) > size as u32;
+        assert!(!old_guard_overruns, "on 32-bit the old guard computed 0 and let this through");
+        assert_eq!(nal_end(i, nl, size), None, "the width-explicit guard rejects it on every target");
+    }
+
+    // -- packet_to_annexb ------------------------------------------------------------------
+
+    #[test]
+    fn h264_idr_is_a_keyframe_and_gets_the_parameter_set_prepended() {
+        // nal_unit_type is the low 5 bits of byte 0; type 5 == IDR.
+        let buf = avcc(&[&[0x65, 0xAA, 0xBB]]);
+        let param = [0u8, 0, 0, 1, 0x67, 0x42];
+        let (key, out) = to_annexb(&buf, false, &param);
+        assert!(key, "0x65 & 0x1f == 5 is an IDR");
+        assert!(out.starts_with(&param), "a keyframe AU must carry the SPS/PPS");
+        assert_eq!(&out[param.len()..], &[0, 0, 0, 1, 0x65, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn h264_non_idr_is_not_a_keyframe_and_gets_no_parameter_set() {
+        let buf = avcc(&[&[0x41, 0x01]]); // type 1, non-IDR slice
+        let (key, out) = to_annexb(&buf, false, &[0xDE, 0xAD]);
+        assert!(!key);
+        assert_eq!(out, vec![0, 0, 0, 1, 0x41, 0x01], "no parameter set on a non-keyframe");
+    }
+
+    #[test]
+    fn hevc_irap_range_is_detected_as_a_keyframe() {
+        // HEVC nal type is bits 1..6 of byte 0; IRAP is 16..=23.
+        for t in [16u8, 19, 23] {
+            let buf = avcc(&[&[t << 1, 0x01, 0x02]]);
+            assert!(to_annexb(&buf, true, &[]).0, "HEVC type {t} is IRAP");
+        }
+        for t in [1u8, 15, 24] {
+            let buf = avcc(&[&[t << 1, 0x01, 0x02]]);
+            assert!(!to_annexb(&buf, true, &[]).0, "HEVC type {t} is not IRAP");
+        }
+    }
+
+    #[test]
+    fn every_nal_is_emitted_with_a_start_code() {
+        let buf = avcc(&[&[0x41, 0x01], &[0x41, 0x02], &[0x41, 0x03]]);
+        let (_, out) = to_annexb(&buf, false, &[]);
+        assert_eq!(
+            out,
+            vec![0, 0, 0, 1, 0x41, 0x01, 0, 0, 0, 1, 0x41, 0x02, 0, 0, 0, 1, 0x41, 0x03]
+        );
+    }
+
+    /// A length field that claims more bytes than the packet holds must truncate cleanly rather
+    /// than panic — this is the ordinary shape of a corrupt or mid-transfer-truncated AU.
+    #[test]
+    fn a_length_past_the_end_truncates_instead_of_panicking() {
+        let mut buf = avcc(&[&[0x41, 0x01]]);
+        buf.extend_from_slice(&0xFFFF_FF00u32.to_be_bytes()); // absurd length, no payload
+        buf.extend_from_slice(&[0x41, 0x02]);
+        let (key, out) = to_annexb(&buf, false, &[]);
+        assert!(!key);
+        assert_eq!(out, vec![0, 0, 0, 1, 0x41, 0x01], "the good NAL survives, the bad one stops the walk");
+    }
+
+    #[test]
+    fn a_runt_packet_is_rejected_before_any_indexing() {
+        let (key, out) = to_annexb(&[0x00, 0x00], false, &[0xFF]);
+        assert!(!key);
+        assert!(out.is_empty(), "size < nls + 1 must bail before the walk");
+    }
 }
