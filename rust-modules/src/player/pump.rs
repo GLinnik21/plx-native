@@ -72,7 +72,7 @@ pub(crate) fn pump(now: u32) {
             SHARED.seek_target_ns.store(tgt, Relaxed); // rebase guard keys on the retried target
             let p = SHARED.hs_ptr.load(Acquire);
             if !p.is_null() {
-                crate::stream::http_close(p); // re-interrupt: the first close raced the reopen
+                crate::stream::http_shutdown(p); // re-interrupt (shutdown wakes the reader; close would not)
             }
             eng.seek_armed_at = now;
             super::log(&format!("seek: in-place stuck → retry reopen at {}s (#{})", tgt / 1_000_000_000, eng.seek_retries));
@@ -143,7 +143,7 @@ pub(crate) fn pump(now: u32) {
         super::log(&format!("seek(in-place): reopen+seek t={t}"));
         let p = SHARED.hs_ptr.load(Acquire);
         if !p.is_null() {
-            crate::stream::http_close(p); // unblock the demux read -> it re-opens
+            crate::stream::http_shutdown(p); // unblock the demux read -> it re-opens
         }
         // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
         // presents against the flush-reset clock immediately — no catch-up freeze
