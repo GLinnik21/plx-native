@@ -479,7 +479,10 @@ fn teardown(for_reload: bool) {
         }
         let p = SHARED.hs_ptr.load(Ordering::Acquire);
         if !p.is_null() {
-            crate::stream::http_close(p);
+            // shutdown, not close: the demux thread is still inside recv here and is joined
+            // below. Closing now would free the fd number for another thread to claim while
+            // this one is still reading it. The real close happens after the join.
+            crate::stream::http_shutdown(p);
         }
     }
     // 2. JOIN every worker before freeing anything they hold raw ptrs into
@@ -491,6 +494,14 @@ fn teardown(for_reload: bool) {
     }
     if let Some(t) = eng.report_th.take() {
         let _ = t.join();
+    }
+    // 2b. every reader is now joined, so this thread is the sole owner: do the real close.
+    // (Before the join it could only shutdown — see step 1.)
+    if stream {
+        let p = SHARED.hs_ptr.load(Ordering::Acquire);
+        if !p.is_null() {
+            crate::stream::http_close(p);
+        }
     }
     // final position report (state=stopped) so the server commits the resume point
     if let Some((rk, pos, dur)) = final_report {
