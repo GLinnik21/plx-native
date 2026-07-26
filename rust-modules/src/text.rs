@@ -83,8 +83,14 @@ static mut TEXT_OK: c_int = 0;
 
 #[derive(Clone, Copy)]
 struct TCacheEntry {
-    s: [u8; 96],
-    hash: u64, // key hash (string+sz+bold) — a cheap pre-compare before the byte memcmp
+    s: [u8; 96], // key PREFIX (set_entry_key truncates to 95 bytes + NUL); klen holds the full length
+    hash: u64,   // key hash (FULL string+sz+bold) — a cheap pre-compare before the byte memcmp
+    // Full (untruncated) key length. Load-bearing for ≥96-byte strings: the stored key is a
+    // truncated prefix, so a `prefix == full_probe` equality could NEVER match — every long
+    // string (a Cyrillic synopsis line crosses 95 bytes at ~48 chars) re-rendered, re-uploaded
+    // and evicted a slot EVERY FRAME. The predicate is hash + klen + prefix; the 64-bit SipHash
+    // over the full string is the discriminator, the prefix/len compares are the sanity check.
+    klen: u32,
     sz: c_int,
     bold: c_int,
     tex: c_uint,
@@ -98,7 +104,7 @@ struct TCacheEntry {
 }
 impl TCacheEntry {
     const ZERO: TCacheEntry =
-        TCacheEntry { s: [0; 96], hash: 0, sz: 0, bold: 0, tex: 0, w: 0, h: 0, ink_t: 0, ink_b: 0, use_: 0 };
+        TCacheEntry { s: [0; 96], hash: 0, klen: 0, sz: 0, bold: 0, tex: 0, w: 0, h: 0, ink_t: 0, ink_b: 0, use_: 0 };
 }
 
 /// the cache key hash: string bytes + size + bold. The per-frame lookup is a linear scan of all
@@ -242,7 +248,11 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
     {
         let cache = &mut *addr_of_mut!(TCACHE_A);
         for e in cache.iter_mut() {
-            if e.hash == hash && e.tex != 0 && e.sz == sz && e.bold == bold && entry_key(e) == s_bytes {
+            // klen + prefix, not full equality: the stored key is truncated to 95 bytes (see
+            // TCacheEntry::klen) — starts_with degrades to equality for every short string.
+            if e.hash == hash && e.tex != 0 && e.sz == sz && e.bold == bold
+                && e.klen as usize == s_bytes.len() && s_bytes.starts_with(entry_key(e))
+            {
                 TCLOCK = TCLOCK.wrapping_add(1);
                 e.use_ = TCLOCK;
                 return (e.tex, e.w, e.h, e.ink_t, e.ink_b);
@@ -281,6 +291,15 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
     }
     set_entry_key(&mut cache[slot], s_bytes);
     cache[slot].hash = hash;
+    cache[slot].klen = s_bytes.len() as u32;
+    if s_bytes.len() >= 96 {
+        // one-shot visibility: long keys are legal (klen disambiguates) but worth knowing about
+        static mut LONG_KEY_LOGGED: bool = false;
+        if !LONG_KEY_LOGGED {
+            LONG_KEY_LOGGED = true;
+            log(&format!("text cache: key len {} exceeds the 95-byte prefix (fine, klen-keyed)", s_bytes.len()));
+        }
+    }
     cache[slot].sz = sz;
     cache[slot].bold = bold;
     cache[slot].tex = tex;
