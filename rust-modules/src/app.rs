@@ -536,6 +536,28 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             Detail,
             Player { overlay: Overlay },
         }
+        /// Which panel owns the frame — the ONE place that decision lives, read by the pointer
+        /// arm (and, when the z bands land, the draw composition) so they cannot drift. The key
+        /// path was always modal for every overlay (each arm `continue`s); the CLICK path used to
+        /// special-case only Menu, so a click with the Info card up fell through onto the
+        /// partly-hidden transport's compile-time rects and started a blind scrub-seek.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Modal {
+            None,
+            Account,
+            Menu,
+            Info,
+            Chapters,
+        }
+        fn modal_of(r: Route) -> Modal {
+            match r {
+                Route::Account => Modal::Account,
+                Route::Player { overlay: Overlay::Menu } => Modal::Menu,
+                Route::Player { overlay: Overlay::Info } => Modal::Info,
+                Route::Player { overlay: Overlay::Chapters } => Modal::Chapters,
+                _ => Modal::None,
+            }
+        }
         // Initial route from the boot gate: Login when we have no usable creds, Profiles for the
         // boot who's-watching picker, else Home.
         let mut route = match boot_to {
@@ -1359,32 +1381,48 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         hud_dismissed = false;
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
-                        // shared HUD geometry: player_hud owns the button rects + scrub band
-                        let icon = crate::ui::player_hud::icon_hit(cx, cy);
-                        let on_scrub = if dur() > 0 { crate::ui::player_hud::scrub_hit(cx, cy) } else { None };
-                        if matches!(route, Route::Player { overlay: Overlay::Menu }) {
-                            crate::ui::track_menu::close();
-                            route = Route::Player { overlay: Overlay::None };
-                        } else if let Some(idx) = icon {
-                            crate::ui::track_menu::open_tab(if idx == 0 { 1 } else { 0 }); // Subtitles button → subtitles tab
-                            route = Route::Player { overlay: Overlay::Menu };
-                            hud_focus = 1;
-                            hud_btn = idx;
-                        } else if let Some(frac) = on_scrub {
-                            let mut t = (frac as f64 * dur() as f64) as i64;
-                            let cap = dur() - 3 * 1_000_000_000;
-                            if cap > 0 && t > cap {
-                                t = cap;
+                        // An open panel owns the click: dismiss it and STOP. The transport is
+                        // partly hidden while a panel is up (draw_hud gets transport:false), so
+                        // its rects must not be consulted — mirrors the modal key arms above.
+                        match modal_of(route) {
+                            Modal::Menu => {
+                                crate::ui::track_menu::close();
+                                route = Route::Player { overlay: Overlay::None };
                             }
-                            set_scrub(t);
-                            ptr_drag = true;
-                        } else {
-                            let np = !paused();
-                            set_paused(np);
-                            if np {
-                                crate::player::pause();
-                            } else {
-                                crate::player::resume();
+                            Modal::Info => {
+                                crate::ui::info_panel::close();
+                                route = Route::Player { overlay: Overlay::None };
+                            }
+                            Modal::Chapters => {
+                                crate::ui::chapters_panel::close();
+                                route = Route::Player { overlay: Overlay::None };
+                            }
+                            _ => {
+                                // shared HUD geometry: player_hud owns the button rects + scrub band
+                                let icon = crate::ui::player_hud::icon_hit(cx, cy);
+                                let on_scrub = if dur() > 0 { crate::ui::player_hud::scrub_hit(cx, cy) } else { None };
+                                if let Some(idx) = icon {
+                                    crate::ui::track_menu::open_tab(if idx == 0 { 1 } else { 0 }); // Subtitles button → subtitles tab
+                                    route = Route::Player { overlay: Overlay::Menu };
+                                    hud_focus = 1;
+                                    hud_btn = idx;
+                                } else if let Some(frac) = on_scrub {
+                                    let mut t = (frac as f64 * dur() as f64) as i64;
+                                    let cap = dur() - 3 * 1_000_000_000;
+                                    if cap > 0 && t > cap {
+                                        t = cap;
+                                    }
+                                    set_scrub(t);
+                                    ptr_drag = true;
+                                } else {
+                                    let np = !paused();
+                                    set_paused(np);
+                                    if np {
+                                        crate::player::pause();
+                                    } else {
+                                        crate::player::resume();
+                                    }
+                                }
                             }
                         }
                         set_hud(last_input + HUD_LINGER_MS);
