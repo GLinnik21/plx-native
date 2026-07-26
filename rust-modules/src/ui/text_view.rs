@@ -12,7 +12,6 @@
 //! ever needs it, cache by `(text, width)` — the API already isolates the wrap step.
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::{Painter, Rect};
-use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -23,12 +22,18 @@ use std::rc::Rc;
 
 // Wrapping is pixel-measured (text_width per word), which is far too slow to redo every frame for
 // every block — the text is stable, so memoize the wrapped lines by (text, sz, bold, width, lines).
-// The lines are shared via Rc, so a cache hit is a refcount bump (not a Vec<String> deep-copy) each
-// frame. Main-thread only (immediate-mode draw), like the poster/icon caches.
+// The lines are shared via Rc, so a cache hit is a refcount bump. Main-thread only (immediate-mode
+// draw), like the poster/icon caches.
 /// Wrapped lines plus whether `max_lines` cut the text off — the latter drives the optional
 /// trailing run (a "MORE" affordance only makes sense when there is hidden text).
+///
+/// Lines are stored **NUL-terminated (`CString`), built once at wrap time**: draw hands
+/// `as_ptr()` straight to the text backend, so a cache hit paints the whole block with ZERO
+/// per-frame allocation. (It used to store `String` and re-run `CString::new` per line per
+/// frame — on the detail episode strip that was ~40 allocations a frame, against the UI's
+/// explicit zero-alloc goal.)
 struct Wrapped {
-    lines: Vec<String>,
+    lines: Vec<CString>,
     truncated: bool,
 }
 static mut WRAP_CACHE: Option<HashMap<u64, Rc<Wrapped>>> = None;
@@ -100,11 +105,17 @@ impl<'a> TextView<'a> {
         if self.leading > 0.0 { self.leading } else { self.sz as f32 * 1.32 }
     }
 
+    /// pixel width of an arbitrary `&str` — allocates a scratch CString, so WRAP-TIME ONLY
+    /// (the trial strings). The draw path measures cached lines via [`measure_c`](Self::measure_c).
     fn measure(&self, s: &str) -> f32 {
         CString::new(s)
             .ok()
             .map(|c| crate::text::text_width(c.as_ptr(), self.sz, self.bold))
             .unwrap_or(0.0)
+    }
+    /// pixel width of an already-NUL-terminated cached line — no allocation, draw-path safe.
+    fn measure_c(&self, c: &CString) -> f32 {
+        crate::text::text_width(c.as_ptr(), self.sz, self.bold)
     }
 
     /// wrapped lines for `width`, memoized (the pixel-wrap is too costly to redo every frame).
@@ -157,6 +168,9 @@ impl<'a> TextView<'a> {
                 *ln = crate::text::elide(ln, width, self.sz, self.bold, true);
             }
         }
+        // NUL-terminate once, here — every later frame draws these by pointer (interior NULs
+        // can't occur in PMS strings; degrade to an empty line rather than panic if one does)
+        let lines = lines.into_iter().map(|s| CString::new(s).unwrap_or_default()).collect();
         Wrapped { lines, truncated }
     }
 
@@ -193,35 +207,36 @@ impl<'a> TextView<'a> {
         let fade_from = fade_to - FADE_BAND;
         for (i, ln) in lines.iter().enumerate() {
             let is_last = i + 1 == n;
-            let text: Cow<str> = if is_last && reserve > 0.0 && self.measure(ln) + reserve > frame.w {
-                Cow::Owned(crate::text::elide(ln, (frame.w - reserve).max(0.0), self.sz, self.bold, true))
+            // Clip the last line short of a reserved trailing run — RARE (a trailing affordance
+            // on a truncated block, e.g. the About card) and the one owned CString on this path;
+            // every ordinary line draws the CACHED CString by pointer, zero alloc.
+            let clipped: Option<CString> = if is_last && reserve > 0.0 && self.measure_c(ln) + reserve > frame.w {
+                let s = ln.to_str().unwrap_or("");
+                CString::new(crate::text::elide(s, (frame.w - reserve).max(0.0), self.sz, self.bold, true)).ok()
             } else {
-                Cow::Borrowed(ln.as_str())
+                None
             };
+            let tc: &CString = clipped.as_ref().unwrap_or(ln);
             let row = Rect::new(frame.x, frame.y + i as f32 * lh, frame.w, 0.0);
             // a truncated last line with a fade_last reservation dissolves into the affordance zone
             // instead of colliding with it (only when it actually reaches that far)
-            if is_last && wrapped.truncated && self.fade_last > 0.0 && self.measure(&text) > fade_from {
+            if is_last && wrapped.truncated && self.fade_last > 0.0 && self.measure_c(tc) > fade_from {
                 let (ct, _) = crate::text::text_cap_band(self.sz, self.bold);
-                if let Ok(cs) = CString::new(text.as_ref()) {
-                    // cap band at row.y, like Label's VAlign::CapTop
-                    p.text_fade(cs.as_ptr(), row.x, row.y - ct, self.sz, self.col, self.bold,
-                        fade_from, fade_to);
-                }
+                // cap band at row.y, like Label's VAlign::CapTop
+                p.text_fade(tc.as_ptr(), row.x, row.y - ct, self.sz, self.col, self.bold,
+                    fade_from, fade_to);
                 continue;
             }
-            if let Ok(cs) = CString::new(text.as_ref()) {
-                let mut lab = Label::new(cs.as_ptr(), self.sz, self.col).h(self.align).v(VAlign::CapTop);
-                if self.bold == 1 {
-                    lab = lab.bold();
-                }
-                lab.draw(p, row);
+            let mut lab = Label::new(tc.as_ptr(), self.sz, self.col).h(self.align).v(VAlign::CapTop);
+            if self.bold == 1 {
+                lab = lab.bold();
             }
+            lab.draw(p, row);
             // the run hugs the (possibly clipped) last line, positioned by its measured width
             if is_last {
                 if let Some((r, rc)) = run {
                     if let Ok(cs) = CString::new(r) {
-                        let rx = frame.x + self.measure(text.as_ref()) + 8.0;
+                        let rx = frame.x + self.measure_c(tc) + 8.0;
                         Label::new(cs.as_ptr(), self.sz, rc).bold().h(HAlign::Left).v(VAlign::CapTop).draw(p, Rect::new(rx, row.y, frame.w, 0.0));
                     }
                 }
