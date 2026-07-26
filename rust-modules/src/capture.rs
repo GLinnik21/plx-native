@@ -215,8 +215,11 @@ fn caplisten(port: u16) {
                 break;
             }
             if fd < 0 {
-                // EINVAL after shutdown() = exiting; anything else transient -> retry
-                if *libc::__errno_location() == libc::EINVAL {
+                // EINVAL after shutdown() = exiting; anything else transient -> retry.
+                // last_os_error() rather than a raw errno deref: `__errno_location` is a
+                // glibc symbol, and reading errno portably is what lets this crate compile
+                // (and therefore host-test) off-device. Must stay adjacent to the failed call.
+                if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
