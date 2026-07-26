@@ -87,6 +87,15 @@ static void install_crash_tracer(void) {
     sigaction(SIGBUS, &sa, NULL);
     sigaction(SIGILL, &sa, NULL);    /* UBSan/overflow traps fire SIGILL/SIGTRAP */
     sigaction(SIGTRAP, &sa, NULL);
+
+    /* Ignore SIGPIPE for the whole process. A Rust program gets this from std::rt::init, but
+       our main() is C and calls plex_run() directly, so that never runs — leaving the DEFAULT
+       disposition (terminate). stream.rs sends the PMS request with flags 0, so a server that
+       closes between connect and write (PMS restart, transcoder session reaped, keep-alive
+       race) would kill the app outright, with no crash-log line: the tracer above handles only
+       SEGV/ABRT/BUS/ILL/TRAP. capture.rs already dodges this per-call with MSG_NOSIGNAL
+       ("SIGPIPE would kill the app", capture.rs); this covers every other socket in one line. */
+    signal(SIGPIPE, SIG_IGN);
 }
 
 int main(int argc, char **argv) {
