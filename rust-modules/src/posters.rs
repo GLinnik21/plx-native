@@ -32,7 +32,11 @@ const P_FAILED: c_int = 6;
 
 #[derive(Clone, Copy)]
 struct Pslot {
-    key: [u8; 256], // full /photo/:/transcode request path = store key
+    // Full /photo/:/transcode request path = store key. NB set_key TRUNCATES to 255 bytes + NUL:
+    // a key at/over 256 bytes would never match its probe again (the text.rs glyph cache had this
+    // exact bug at 96 — fixed with klen there). Real keys run ~135 bytes today; if the path shape
+    // ever grows past ~255, key this the klen way too.
+    key: [u8; 256],
     tex: c_uint,
     pw: c_int,
     ph: c_int,
