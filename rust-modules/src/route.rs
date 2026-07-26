@@ -79,6 +79,13 @@ pub(crate) fn cur_rk() -> String {
 pub(crate) fn cur_audio_sid() -> i64 {
     unsafe { addr_of!(CUR_AUDIO_SID).read() }
 }
+/// The currently-playing item's Part id. Written once per item by `build_stream` from its own
+/// `part` argument. In-playback callers (audio switch, subtitle toggle, retranscode) want this;
+/// `build_stream` must pass its freshly-derived local instead, since this is not yet updated
+/// for the item being started.
+fn cur_part_id() -> i64 {
+    unsafe { addr_of!(CUR_PART_ID).read() }
+}
 /// The current playback's session id (X-Plex-Session-Identifier == transcode session=).
 pub(crate) fn sess() -> String {
     unsafe { (*addr_of!(SESS)).clone() }
@@ -254,8 +261,7 @@ fn apply_decision_codecs(mc: &crate::plex::MediaContainer) {
 /// always burn) — a query-param subtitleStreamID does NOT suppress a default-selected
 /// sub, only the PUT does. So we PUT subtitleStreamID=0 to keep subs OFF (no burn), or
 /// the chosen id to burn it; audioStreamID only when the user switched (else keep default).
-fn put_selection() {
-    let part = unsafe { addr_of!(CUR_PART_ID).read() };
+fn put_selection(part: i64) {
     if part <= 0 {
         return;
     }
@@ -327,6 +333,14 @@ fn ensure_playqueue(rk: &str, session: &str) {
 /// Matroska (same MKV demuxer eats it). Returns (url, transcode session). On the
 /// transcode path this also runs the /decision handshake and stores TBASE for seeks.
 fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, String) {
+    // The part id is derived from THIS call's `part`, before anything else runs, and published
+    // here rather than by the caller after we return. It used to be written by play_movie /
+    // play_episode *after* build_stream finished, so `put_selection` — which runs inside this
+    // function — read the PREVIOUS item's part (or 0, and silently skipped, on the first play
+    // of the process). Every non-MKV item takes the remux branch, so that mis-targeted PUT
+    // failed to suppress a server-default subtitle and burned it into the transcode.
+    let part_id = part_id_of(part);
+    unsafe { addr_of_mut!(CUR_PART_ID).write(part_id) };
     let client = match crate::plex::client_opt() {
         Some(c) => c,
         None => return (String::new(), String::new()),
@@ -421,7 +435,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     }
     // keep the flavor so a later seek rebuilds the same query for start.mkv?...&offset=T
     unsafe { addr_of_mut!(CUR_REMUX).write(video_dp) };
-    put_selection(); // audio/subtitle selection drives the encode/remux + burn
+    put_selection(part_id); // audio/subtitle selection drives the encode/remux + burn
     let sp = transcode_spec(rk, &session, video_dp, -1);
     if let Some(mc) = client.transcode_decision(&sp) {
         apply_decision_codecs(&mc); // the Load payload must match the server's ACTUAL output
@@ -514,7 +528,6 @@ pub(crate) fn play_movie(m: &PmsMovie) {
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
         *addr_of_mut!(CUR_RK) = m.rk.clone();
-        addr_of_mut!(CUR_PART_ID).write(part_id_of(&m.part));
     }
 }
 
@@ -539,7 +552,6 @@ pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud
         *addr_of_mut!(URL) = url;
         *addr_of_mut!(TSESSION) = session;
         *addr_of_mut!(CUR_RK) = rk.to_string();
-        addr_of_mut!(CUR_PART_ID).write(part_id_of(part));
     }
 }
 
@@ -566,7 +578,7 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     // the transcode output is HEVC + AC3 — record it so a pipeline RELOAD (audio switch)
     // builds the H265 Load payload matching the re-encoded stream.
     set_stream_codecs("hevc", "ac3");
-    put_selection(); // audio/subtitle selection drives the encode + burn
+    put_selection(cur_part_id()); // audio/subtitle selection drives the encode + burn
     let qsess = sess();
     let sp = transcode_spec(&rk, &qsess, false, offset_secs.max(0));
     if let Some(mc) = c.transcode_decision(&sp) {
@@ -608,7 +620,7 @@ pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
         // persist the USER's pick server-side (official-client behavior): /status/sessions'
         // selected-stream display keys on the part selection, not the timeline report. Only
         // user picks persist — the start-of-play auto-pick (eng preference) reports only.
-        put_selection();
+        put_selection(cur_part_id());
         crate::player::request_audio_track(idx, codec);
     } else {
         crate::player::request_audio_switch(stream_id);
@@ -626,7 +638,7 @@ pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
     } else {
         // persist the pick server-side (and subs Off PUTs subtitleStreamID=0, clearing a
         // stale server-side selection that would otherwise burn on the next transcode)
-        put_selection();
+        put_selection(cur_part_id());
     }
 }
 
@@ -651,4 +663,41 @@ pub(crate) fn report_timeline(rk: &str, state: crate::plex::TimelineState, t_ms:
         audio_stream_id: cur_audio_sid(),
         subtitle_stream_id: cur_sub_sid(),
     });
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `part_id_of` gates the server-side stream selection: `put_selection` returns early on
+    /// `<= 0`, so a parse miss silently disables subtitle suppression and audio selection for
+    /// the whole item — no error, no log line, just a burned-in subtitle nobody asked for.
+    #[test]
+    fn part_id_is_read_from_the_parts_segment() {
+        assert_eq!(part_id_of("/library/parts/98765/1712345678/file.mkv"), 98765);
+        assert_eq!(part_id_of("/library/parts/1/0/file.mp4"), 1);
+        // a query string rides along on the real keys
+        assert_eq!(part_id_of("/library/parts/42/17/file.mkv?download=0"), 42);
+    }
+
+    #[test]
+    fn part_id_is_zero_when_there_is_no_parts_segment() {
+        assert_eq!(part_id_of(""), 0);
+        assert_eq!(part_id_of("/library/metadata/1234"), 0);
+        assert_eq!(part_id_of("/library/parts"), 0, "trailing `parts` with no id");
+        assert_eq!(part_id_of("/library/parts/notanumber/file.mkv"), 0);
+    }
+
+    /// The direct-play gate: only an MKV part is fed to the demuxer untouched — everything else
+    /// takes the remux branch, which is why the mis-targeted PUT hit every mp4 item.
+    #[test]
+    fn only_an_mkv_part_is_direct_playable() {
+        assert!(part_is_mkv("/library/parts/1/2/movie.mkv"));
+        assert!(part_is_mkv("/library/parts/1/2/movie.mkv?x=1"), "the query must not defeat it");
+        assert!(!part_is_mkv("/library/parts/1/2/movie.mp4"));
+        assert!(!part_is_mkv("/library/parts/1/2/movie.mov"));
+        assert!(!part_is_mkv(""));
+        assert!(!part_is_mkv("/library/parts/1/2/mkv.avi"), "the extension, not a substring");
+    }
 }
