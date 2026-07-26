@@ -41,7 +41,9 @@ CFLAGS       = --sysroot=$(SYSROOT) -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_
 # binary — deploy it only while chasing a crash.
 ifeq ($(DEBUG),1)
 CFLAGS      += -g
-RUSTFLAGS_DBG = -C debuginfo=2
+# The RUSTFLAGS env var REPLACES rust-modules/.cargo/config.toml's list rather than appending,
+# so this must carry the SIGILL-critical flags too, not just -C debuginfo=2.
+RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon -C debuginfo=2"
 endif
 # -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
 # the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
@@ -69,7 +71,7 @@ OBJS = $(SRCS:.c=.o)
 all: pkg/plxnative
 
 # per-file compile; each object depends on ALL headers so a header edit rebuilds all
-src/%.o: src/%.c $(wildcard src/*.h)
+src/%.o: src/%.c $(wildcard src/*.h) Makefile
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Rust staticlib (built-in arm-unknown-linux-gnueabi target = soft-float ABI,
@@ -84,28 +86,36 @@ src/%.o: src/%.c $(wildcard src/*.h)
 #    dodges crates (simd-adler32, ...) whose NEON path uses unstable intrinsics.
 #  - -Z build-std: rebuilds std itself with these flags (precompiled std shipped
 #    the CP15 barriers), so needs the nightly toolchain + rust-src.
-RUSTFLAGS_TV = -C target-cpu=cortex-a9 -C target-feature=-neon $(RUSTFLAGS_DBG)
-$(RUST_LIB): $(wildcard rust-modules/src/*.rs rust-modules/src/ui/*.rs rust-modules/src/player/*.rs rust-modules/src/plex/*.rs) rust-modules/Cargo.toml
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" RUSTFLAGS="$(RUSTFLAGS_TV)" \
-	  cargo +nightly build -Z build-std=std,panic_unwind --release --target $(RUST_TARGET)
+# Codegen flags now live in rust-modules/.cargo/config.toml so they bind to the TARGET and
+# every cargo invocation gets them, not just this recipe. See that file before changing them.
+#
+# The prerequisite list is a `find`, not a hand-kept wildcard: the crate embeds shaders
+# (gfx.rs include_str! of src/shaders/*.vert|*.frag) and icons (ui/icons.rs include_str! of
+# assets/icons/*.svg) at COMPILE time. Those were in no dependency list, so editing a shader
+# or an icon produced no rebuild and the TV silently kept running the old one — the worst
+# failure mode on a project whose only verification is observing the device.
+RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
+$(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/.cargo/config.toml Makefile
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
+	  cargo +nightly build --release --target $(RUST_TARGET)
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
 # -Lstub first so the curl.so.5 stub wins over the sysroot's curl.so.4.
-pkg/plxnative: $(OBJS) $(RUST_LIB) $(STUBS)
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(STUBS) Makefile
 	$(CC) $(CFLAGS) $(OBJS) $(RUST_LIB) -Lstub $(LIBS_REAL) $(LIBS_STUB) -ldl -lpthread -lm -o $@
 
 # stub .so files embed the TV's real SONAMEs (must match DT_NEEDED exactly).
 # FFmpeg (demux + bitstream filters) + libcurl (HTTPS/DNS/TLS for plex.tv login).
-stub/libavformat.so: stub/avformat_stub.c
+stub/libavformat.so: stub/avformat_stub.c Makefile
 	$(CC) $(STUBFLAGS) -Wl,-soname,libavformat.so.57 -o $@ $<
-stub/libavcodec.so: stub/avcodec_stub.c
+stub/libavcodec.so: stub/avcodec_stub.c Makefile
 	$(CC) $(STUBFLAGS) -Wl,-soname,libavcodec.so.57 -o $@ $<
-stub/libavutil.so: stub/avutil_stub.c
+stub/libavutil.so: stub/avutil_stub.c Makefile
 	$(CC) $(STUBFLAGS) -Wl,-soname,libavutil.so.55 -o $@ $<
-stub/libswscale.so: stub/swscale_stub.c
+stub/libswscale.so: stub/swscale_stub.c Makefile
 	$(CC) $(STUBFLAGS) -Wl,-soname,libswscale.so.4 -o $@ $<
-stub/libcurl.so: stub/curl_stub.c
+stub/libcurl.so: stub/curl_stub.c Makefile
 	$(CC) $(STUBFLAGS) -Wl,-soname,libcurl.so.5 -o $@ $<
 
 # --- NDK bootstrap -----------------------------------------------------------
@@ -130,11 +140,20 @@ setup-env:
 # break `make deploy` — the wildcard just finds nothing and the copy is skipped.
 TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 
+# The app payload, in ONE place. `ipk` and `deploy` used to carry different file sets, and the
+# ipk — the only artifact a non-developer ever receives — shipped WITHOUT the fonts, so a clean
+# install silently rendered the whole theme::size ladder in the system DroidSans, invalidating
+# the light-hinting/pixel-snapping contract that tools/font-hint-audit.py exists to guard.
+APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png \
+            pkg/appfont.ttf pkg/appfont-bold.ttf
+
 deploy: pkg/plxnative
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
-	$(SSH) 'test -f $(APPDIR)/appfont.ttf' || $(SCP) pkg/appfont.ttf root@$(TV):$(APPDIR)/appfont.ttf
-	$(SSH) 'test -f $(APPDIR)/appfont-bold.ttf' || $(SCP) pkg/appfont-bold.ttf root@$(TV):$(APPDIR)/appfont-bold.ttf
+	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could
+	# never reach the TV, so a font swap looked like it had no effect. They are ~300 KB.
+	$(SCP) pkg/appfont.ttf root@$(TV):$(APPDIR)/appfont.ttf
+	$(SCP) pkg/appfont-bold.ttf root@$(TV):$(APPDIR)/appfont-bold.ttf
 	@if [ -n "$(TURBOJPEG_SO)" ]; then \
 	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) root@$(TV):$(APPDIR)/libturbojpeg.so.0; \
 	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
@@ -162,8 +181,7 @@ test: deploy run
 # ipk assembly: deb-style ar archive; the NDK ar emits GNU format (macOS ar is BSD)
 ipk: pkg/plxnative
 	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative
-	cp pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png \
-	  ipkroot/data/usr/palm/applications/com.beb.plxnative/
+	cp $(APP_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/
 	cd ipkroot && tar czf control.tar.gz -C ctl control && \
 	  tar czf data.tar.gz -C data usr && \
 	  printf '2.0\n' > debian-binary
