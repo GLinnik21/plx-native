@@ -71,7 +71,15 @@ extern void CP_setContentInfo(void *pipeline, int srcType, void *ci)
 #define CI_PTS_OFF   0x28            /* int64 ptsToDecode offset (verified 3 ways) */
 
 static unsigned char g_smp[65536] __attribute__((aligned(16)));
-static int  g_smp_ready = 0;
+/* Publishes the 64 KB in-place-constructed StarfishMediaAPIs object ACROSS THREADS: written
+   on the load thread (player/threads.rs load_thread) right after SMP_ctor, read on the main
+   thread every frame (pump.rs). A plain int gives the compiler and the A53 licence to make
+   the store visible before the constructor's writes, so the main thread could dispatch
+   SMP_Play / sf_feed through a half-built object — a startup-only, timing-dependent SIGSEGV
+   inside libplayerAPIs. Release/acquire pairs the flag with the ctor that precedes it. */
+static volatile int g_smp_ready = 0;
+#define SMP_READY()      __atomic_load_n(&g_smp_ready, __ATOMIC_ACQUIRE)
+#define SMP_SET_READY(v) __atomic_store_n(&g_smp_ready, (v), __ATOMIC_RELEASE)
 static long g_acb = 0, g_taskId = 0;
 
 /* trampolines: forward library-thread events to the consumer's handlers */
@@ -84,25 +92,25 @@ static void acb_cb(long a, long t, long ev, long app, long play, const char *rep
 /* ---- StarfishMediaAPIs verbs ---- */
 int sf_load(const char *payload) {
     SMP_ctor(g_smp, NULL);   /* uid=NULL: registers on the pre-authorized uMS namespace */
-    g_smp_ready = 1;
+    SMP_SET_READY(1);        /* RELEASE: the ctor's writes must be visible before the flag */
     SMP_notifyForeground(g_smp);
     return SMP_Load(g_smp, payload, sf_cb);
 }
-int  sf_ready(void)               { return g_smp_ready; }
-int  sf_is_load_completed(void)   { return g_smp_ready ? SMP_isLoadCompleted(g_smp) : 0; }
-int  sf_play(void)                { return g_smp_ready ? SMP_Play(g_smp) : 0; }
-int  sf_pause(void)               { return g_smp_ready ? SMP_Pause(g_smp) : 0; }
-int  sf_flush(void)               { return g_smp_ready ? SMP_flush(g_smp) : 0; }
-int  sf_push_eos(void)            { return g_smp_ready ? SMP_pushEOS(g_smp) : 0; }
-void sf_unload(void)              { if (g_smp_ready) SMP_Unload(g_smp); }
-void sf_destroy(void)             { if (g_smp_ready) { SMP_dtor(g_smp); g_smp_ready = 0; } }
+int  sf_ready(void)               { return SMP_READY(); }
+int  sf_is_load_completed(void)   { return SMP_READY() ? SMP_isLoadCompleted(g_smp) : 0; }
+int  sf_play(void)                { return SMP_READY() ? SMP_Play(g_smp) : 0; }
+int  sf_pause(void)               { return SMP_READY() ? SMP_Pause(g_smp) : 0; }
+int  sf_flush(void)               { return SMP_READY() ? SMP_flush(g_smp) : 0; }
+int  sf_push_eos(void)            { return SMP_READY() ? SMP_pushEOS(g_smp) : 0; }
+void sf_unload(void)              { if (SMP_READY()) SMP_Unload(g_smp); }
+void sf_destroy(void)             { if (SMP_READY()) { SMP_dtor(g_smp); SMP_SET_READY(0); } }
 
 /* The CustomPipeline* reached from our object (VERIFIED by decompile: StarfishMediaAPIs::
  * player is a shared_ptr _M_ptr at g_smp+0x4c; AbstractPlayer::pipeline _M_ptr at player+0x4;
  * Pipeline is CustomPipeline's primary base so the ptr is usable as `this`). player@0x4c is
  * populated on our uid=NULL object — sf_play/sf_flush already dispatch through it. */
 static void *sf_pipeline(void) {
-    if (!g_smp_ready) return 0;
+    if (!SMP_READY()) return 0;
     void *player = *(void **)((unsigned char *)g_smp + 0x4c);
     if (!player) return 0;
     return *(void **)((unsigned char *)player + 0x04);
@@ -113,7 +121,7 @@ static void *sf_pipeline(void) {
  * absence is the stale-segment stall the reload path works around). position_ns = the fed
  * (0-based rebased) PTS of that first frame. */
 int sf_set_time_to_decode(long long position_ns) {
-    if (!g_smp_ready) return 0;
+    if (!SMP_READY()) return 0;
     char j[64];
     snprintf(j, sizeof j, "{\"position\":%lld}", position_ns);
     return SMP_setTimeToDecode(g_smp, j);
@@ -146,6 +154,9 @@ int sf_set_content_info(long long position_ns) {
 
 /* Feed one AU; hides the sret std::string (SSO char* at offset 0). 'O'/'B'/'e'. */
 char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
+    /* The only verb that used to dispatch with NO readiness check — it relied entirely on
+       pump.rs returning early. Guard it here too so the object can never be fed mid-ctor. */
+    if (!SMP_READY()) return 'e';
     char j[160];
     snprintf(j, sizeof j, "{\"bufferAddr\":\"%p\",\"bufferSize\":%u,\"pts\":%lld,\"esData\":%d}",
              (const void *)p, size, pts, esData);
