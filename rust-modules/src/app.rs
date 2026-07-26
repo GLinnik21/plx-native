@@ -1378,6 +1378,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
                     if matches!(route, Route::Player { .. }) {
+                        // Sample HUD visibility BEFORE re-arming it: a click must only act on
+                        // transport geometry the user can SEE (the key path's vis gate — a
+                        // hidden-HUD OK falls through to play/pause). Without this, a click in
+                        // the invisible timed-out scrub band committed a blind seek.
+                        let hud_vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed)
+                            || crate::player::loading();
                         hud_dismissed = false;
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -1398,9 +1404,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 route = Route::Player { overlay: Overlay::None };
                             }
                             _ => {
-                                // shared HUD geometry: player_hud owns the button rects + scrub band
-                                let icon = crate::ui::player_hud::icon_hit(cx, cy);
-                                let on_scrub = if dur() > 0 { crate::ui::player_hud::scrub_hit(cx, cy) } else { None };
+                                // shared HUD geometry: player_hud owns the button rects + scrub
+                                // band — consulted only while that geometry is on screen
+                                let icon = if hud_vis { crate::ui::player_hud::icon_hit(cx, cy) } else { None };
+                                let on_scrub =
+                                    if hud_vis && dur() > 0 { crate::ui::player_hud::scrub_hit(cx, cy) } else { None };
                                 if let Some(idx) = icon {
                                     crate::ui::track_menu::open_tab(if idx == 0 { 1 } else { 0 }); // Subtitles button → subtitles tab
                                     route = Route::Player { overlay: Overlay::Menu };
