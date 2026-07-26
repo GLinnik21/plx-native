@@ -472,7 +472,7 @@ impl View for Grid {
             // (the shared card_row::title_lift rule; only lifts when the popped card is under it)
             if env.sp > 0.02 {
                 let focused = (r == env.fr as usize).then_some((env.fc as usize).min(MAX_ITEMS - 1));
-                let lift = card_row::title_lift(&self.shelves[r], focused, &RowStyle::HOME, self.shelves[r].scroll_x() * env.sp);
+                let lift = card_row::title_lift(&self.shelves[r], focused, &RowStyle::HOME, self.eff_scroll(r, env.sp));
                 if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
                     p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, theme::size::HEADLINE, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
                 }
@@ -483,7 +483,7 @@ impl View for Grid {
                 }
                 let m = movie_at(r as c_int, c as c_int);
                 let Some(mm) = m else { continue };
-                let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
+                let x = card_x(c, self.eff_scroll(r, env.sp));
                 if !on_axis(x, CARD_W, SCR_W, GLOW_PAD) {
                     continue;
                 }
@@ -503,7 +503,7 @@ impl View for Grid {
             // The focused card is the only one that can be pressed; fold the ui::press dip/bounce
             // factor into its scale (1.0 when idle, so a no-op unless a click is in flight).
             let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1)) * crate::ui::press::scale();
-            let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x() * env.sp;
+            let x = card_x(c, self.eff_scroll(r, env.sp));
             let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
             let m = movie_at(r as c_int, c as c_int);
             let cw = crate::pms::hub_is_continue(r); // Continue Watching: amber ▶ + "show · X min left"
@@ -559,12 +559,34 @@ fn cw_caption(m: &PmsMovie) -> Option<CString> {
     };
     CString::new(s).ok()
 }
+/// The drawn left edge of grid column `c` in a row whose EFFECTIVE horizontal scroll is `es`.
+/// The one x formula the draw, the pointer hit-test and the vertical column-keeper all share —
+/// hit_at/vert used to re-derive it WITHOUT the `* sp` snap fold the draw applies, so the hover
+/// target disagreed with the drawn frame mid-snap (hero→grid).
+#[inline]
+fn card_x(c: usize, es: f32) -> f32 {
+    MARGIN_X + c as f32 * (CARD_W + GAP) - es
+}
+/// Inverse of [`card_x`]: the column of `count` whose drawn span contains `mx` (hit_at's scan).
+#[inline]
+fn col_at(mx: f32, es: f32, count: usize) -> Option<usize> {
+    (0..count).find(|&c| {
+        let x = card_x(c, es);
+        mx >= x && mx <= x + CARD_W
+    })
+}
 impl Grid {
     fn new() -> Self {
         Grid { shelves: [CardRow::new(); MAX_HUBS], scroll_y: Spring::at(0.0) }
     }
+    /// Row `r`'s DRAWN horizontal scroll: the shelf spring folded by the hero→grid snap `sp`
+    /// (the hero view shows rows unscrolled; the fold is how draw has always applied it).
+    #[inline]
+    fn eff_scroll(&self, r: usize, sp: f32) -> f32 {
+        self.shelves[r].scroll_x() * sp
+    }
     // ---- navigation: writes the fr/fc globals (never caches focus) ----
-    fn nav(&self, sym: c_uint) {
+    fn nav(&self, sym: c_uint, sp: f32) {
         unsafe {
             let nh = n_hubs() as c_int;
             let nc = crate::pms::hub_len(fr.max(0) as usize) as c_int;
@@ -573,23 +595,23 @@ impl Grid {
             } else if sym == SDLK_RIGHT && fc < nc - 1 {
                 fc += 1;
             } else if sym == SDLK_UP && fr > 0 {
-                self.vert(-1);
+                self.vert(-1, sp);
             } else if sym == SDLK_DOWN && fr < nh - 1 {
-                self.vert(1);
+                self.vert(1, sp);
             }
         }
     }
     /// vertical move keeping VISUAL column alignment across rows' animated scroll
-    unsafe fn vert(&self, dir: c_int) {
+    unsafe fn vert(&self, dir: c_int, sp: f32) {
         // Both indices must be clamped to the addressable rows: `fr` is a raw global that a
         // stale write (or a server with >MAX_HUBS hubs) can push past the end of `shelves`,
         // and this runs on the KEYPRESS — it panicked before `draw` was ever reached.
         let n = n_hubs();
         let cur = step_row(g_fr(), 0, n);
         let ncur = step_row(g_fr(), dir, n);
-        let cx = MARGIN_X + g_fc() as f32 * (CARD_W + GAP) - self.shelves[cur as usize].scroll_x() + CARD_W * 0.5;
+        let cx = card_x(g_fc().max(0) as usize, self.eff_scroll(cur as usize, sp)) + CARD_W * 0.5;
         let mut nc =
-            ((cx - MARGIN_X - CARD_W * 0.5 + self.shelves[ncur as usize].scroll_x()) / (CARD_W + GAP) + 0.5) as c_int;
+            ((cx - MARGIN_X - CARD_W * 0.5 + self.eff_scroll(ncur as usize, sp)) / (CARD_W + GAP) + 0.5) as c_int;
         let ncount = crate::pms::hub_len(ncur as usize) as c_int;
         nc = nc.clamp(0, (ncount - 1).max(0));
         fr = ncur;
@@ -599,7 +621,7 @@ impl Grid {
     /// screen is not hoverable unless it is already the focused row — hovering it would move `fr`
     /// and the page spring would chase it (vertical auto-scroll), which is exactly the "pointer
     /// flies away" the pointer rules ban; horizontal scroll-into-view within a row is kept.
-    fn hit_at(&self, mx: f32, my: f32) -> Option<(usize, usize)> {
+    fn hit_at(&self, mx: f32, my: f32, sp: f32) -> Option<(usize, usize)> {
         for r in 0..n_hubs() {
             let row_y = self.shelves[r].base_y + CARD_DY;
             if my < row_y || my > row_y + CARD_H {
@@ -609,18 +631,15 @@ impl Grid {
             if !fully_visible && r != g_fr() as usize {
                 continue;
             }
-            for c in 0..crate::pms::hub_len(r) {
-                let x = MARGIN_X + c as f32 * (CARD_W + GAP) - self.shelves[r].scroll_x();
-                if mx >= x && mx <= x + CARD_W {
-                    return Some((r, c));
-                }
+            if let Some(c) = col_at(mx, self.eff_scroll(r, sp), crate::pms::hub_len(r)) {
+                return Some((r, c));
             }
         }
         None
     }
     /// hover/click focus write: focus the card under the pointer; reports whether one was hit
-    fn hit_test(&self, mx: f32, my: f32) -> bool {
-        if let Some((r, c)) = self.hit_at(mx, my) {
+    fn hit_test(&self, mx: f32, my: f32, sp: f32) -> bool {
+        if let Some((r, c)) = self.hit_at(mx, my, sp) {
             unsafe {
                 fr = r as c_int;
                 fc = c as c_int;
@@ -767,7 +786,11 @@ pub(crate) fn profile_chip_click(mx: f32, my: f32) -> bool {
 }
 
 pub(crate) fn home_move_focus(sym: c_uint) {
-    guard(|| scene().grid.nav(sym));
+    guard(|| {
+        let s = scene();
+        let sp = s.snap.pos; // read once, passed down — hit/vert must see the DRAWN scroll
+        s.grid.nav(sym, sp);
+    });
 }
 
 /// Hero-view horizontal key: LEFT/RIGHT walk the action-row focus (pill → info → chevron); RIGHT
@@ -797,7 +820,9 @@ pub(crate) fn home_hero_key(sym: c_uint) {
 
 pub(crate) fn home_pointer_focus(mx: f32, my: f32) {
     guard(|| {
-        scene().grid.hit_test(mx, my);
+        let s = scene();
+        let sp = s.snap.pos;
+        s.grid.hit_test(mx, my, sp);
     });
 }
 
@@ -806,7 +831,11 @@ pub(crate) fn home_pointer_focus(mx: f32, my: f32) {
 /// half-visible row is ignored rather than scrolling the page.
 pub(crate) fn home_card_click(mx: f32, my: f32) -> bool {
     let mut hit = false;
-    guard(|| hit = scene().grid.hit_test(mx, my));
+    guard(|| {
+        let s = scene();
+        let sp = s.snap.pos;
+        hit = s.grid.hit_test(mx, my, sp);
+    });
     hit
 }
 
@@ -854,12 +883,33 @@ mod tests {
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let grid = Grid::new();
         set_row(MAX_HUBS as c_int - 1); // 15 — the last shelf the array can hold
-        unsafe { grid.vert(1) };
+        unsafe { grid.vert(1, 1.0) };
         assert!(
             row() < MAX_HUBS as c_int,
             "vert() walked to row {} with only {MAX_HUBS} shelves",
             row()
         );
         set_row(0);
+    }
+
+    /// Regression: hit_at re-derived the card x WITHOUT the `* sp` snap fold the draw applies
+    /// (`- scroll_x()` vs `- scroll_x() * env.sp`), so mid-snap the hover target and the drawn
+    /// card disagreed by `scroll_x * (1 - sp)`. Both now go through card_x/col_at with ONE
+    /// effective scroll — this pins the round-trip at every snap phase.
+    #[test]
+    fn pointer_hit_column_matches_the_drawn_card_at_every_snap_phase() {
+        for &scroll in &[0.0f32, 415.0, 830.0] {
+            for &sp in &[0.0f32, 0.37, 1.0] {
+                let es = scroll * sp; // eff_scroll's fold, applied to both draw and hit
+                for c in 0..24usize {
+                    let center = card_x(c, es) + CARD_W * 0.5; // the drawn card's center
+                    assert_eq!(
+                        col_at(center, es, 24),
+                        Some(c),
+                        "clicking the center of drawn card {c} (scroll={scroll}, sp={sp}) must hit it"
+                    );
+                }
+            }
+        }
     }
 }
