@@ -1016,8 +1016,7 @@ fn draw_related(p: Painter) {
     }
     let related_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     let focus_col = if view().section == 3 { view().col } else { -1 };
-    let focused = (focus_col >= 0).then_some(focus_col as usize);
-    let lift = card_row::title_lift(&view().related, focused, &RowStyle::HOME, view().related.scroll_x());
+    let lift = view().related.lift();
     p.text(c"Related".as_ptr(), MARGIN_X, related_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     draw_strip(
         p,
@@ -1049,8 +1048,7 @@ fn draw_cast(p: Painter) {
     }
     let cast_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     let focus_col = if view().section == 4 { view().col } else { -1 };
-    let focused = (focus_col >= 0).then_some(focus_col as usize);
-    let lift = card_row::title_lift(&view().cast, focused, &RowStyle::CAST, view().cast.scroll_x());
+    let lift = view().cast.lift();
     p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let row_y = cast_y + CAST_LABEL_H;
     draw_strip(

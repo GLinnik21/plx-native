@@ -90,30 +90,81 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
     card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
 }
 
+/// The profile chip's diameter: ONE control height with the tab pills and the circle-button
+/// family, so the focused chip's capsule — the avatar plus [`TAB_TRACK_PAD`] all round — is
+/// exactly the tab-bar track's band, and the two sit concentric on the top chrome line.
+pub(crate) const CHIP_D: f32 = TAB_PILL_H;
+/// Avatar → name air inside the expanded chip, and the capsule's tail past the name. The tail is
+/// bigger so the name isn't crowded against the round end (the tab track reads the same: its own
+/// 8px inset plus the end pill's 18px label padding).
+const CHIP_NAME_GAP: f32 = 14.0;
+const CHIP_NAME_TAIL: f32 = 24.0;
+/// Name budget — a long profile name elides rather than growing the capsule into the CENTERED tab
+/// track sitting a few hundred px to its right.
+const CHIP_NAME_MAX: f32 = 320.0;
+
 /// The top-left profile chip's VISUAL (avatar texture, or an initial / person-glyph fallback,
 /// with the shared tile shadow + sheen). Shared by Home and the Library screen — each screen owns
 /// its rect + focus rule and calls this. The session lookup (mutex + UserRef clone) is
 /// snapshotted per profile GENERATION, not per frame.
-pub(crate) fn profile_chip(p: Painter, r: Rect, focused: bool) {
+///
+/// `expand` (0..1) is the focus amount, deliberately a scalar and not a bool: at 1 the chip grows
+/// the **tab bar's own track capsule** around itself and unfurls the profile name to its right. A
+/// lifted shadow alone was far too quiet to read as focus against bright hero art — and the name
+/// is what the stop is actually *for*. The caller owns the spring (Home steps it; the Library
+/// screen has no chip focus stop and passes 0).
+pub(crate) fn profile_chip(p: Painter, r: Rect, expand: f32) {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
-    static mut CHIP: Option<(u32, String, CString)> = None; // (gen, thumb path, initial)
+    static mut CHIP: Option<(u32, String, CString, CString, f32)> = None; // gen, thumb, initial, name, name w
     let d = r.w;
     let gen = crate::plex::session::current_gen();
     let chip = unsafe { &mut *addr_of_mut!(CHIP) };
     if chip.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
         let cur = crate::plex::session::current();
         let thumb = cur.as_ref().map(|u| u.thumb.clone()).unwrap_or_default();
-        let initial = cur
-            .as_ref()
-            .and_then(|u| u.title.chars().next())
-            .map(|c| c.to_uppercase().to_string())
+        let title = cur.as_ref().map(|u| u.title.clone()).unwrap_or_default();
+        let initial =
+            title.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+        // signed out: the menu behind the chip offers Sign in, so the expanded chip says so too
+        let label = if title.is_empty() { "Sign in".to_string() } else { title };
+        let name = CString::new(crate::text::elide(&label, CHIP_NAME_MAX, theme::size::BODY, 1, false))
             .unwrap_or_default();
-        *chip = Some((gen, thumb, CString::new(initial).unwrap_or_default()));
+        let nw = crate::text::text_width(name.as_ptr(), theme::size::BODY, 1);
+        *chip = Some((gen, thumb, CString::new(initial).unwrap_or_default(), name, nw));
     }
-    let (_, thumb_s, initial_c) = chip.as_ref().unwrap();
-    // resting shadow + perimeter stroke always; lift the shadow when focused (same as shelf tiles)
-    p.focus_shadow(r, d * 0.5, if focused { 1.0 } else { 0.0 });
+    let (_, thumb_s, initial_c, name_c, name_w) = chip.as_ref().unwrap();
+    // ---- the focused capsule, UNDER the avatar: the tab track's material, inset and radius,
+    // widened from a bare disc surround to hold the name.
+    let e = expand.clamp(0.0, 1.0);
+    if e > 0.004 {
+        let closed = d + 2.0 * TAB_TRACK_PAD;
+        let open = closed + CHIP_NAME_GAP + name_w + CHIP_NAME_TAIL;
+        let cap = Rect::new(
+            r.x - TAB_TRACK_PAD,
+            r.y - TAB_TRACK_PAD,
+            closed + (open - closed) * e,
+            d + 2.0 * TAB_TRACK_PAD,
+        );
+        p.rect_sheened(cap, cap.h * 0.5, theme::scrim_black(0.72 * e), theme::scrim_black(0.82 * e));
+        // the name rides in on the TAIL of the widening, so the glyphs land in a capsule that has
+        // already made room for them instead of smearing across the grow
+        let na = ((e - 0.55) / 0.45).clamp(0.0, 1.0);
+        if na > 0.004 {
+            let ty = crate::text::text_vcenter_y(theme::size::BODY, 1, r.cy());
+            p.alpha(na).text(
+                name_c.as_ptr(),
+                r.x + d + CHIP_NAME_GAP,
+                ty,
+                theme::size::BODY,
+                theme::TEXT_PRIMARY,
+                0,
+                1,
+            );
+        }
+    }
+    // resting shadow + perimeter stroke always; lift the shadow with the focus (same as shelf tiles)
+    p.focus_shadow(r, d * 0.5, e);
     let mut drew = false;
     if !thumb_s.is_empty() {
         let t = resolve_tex(thumb_s, 128, 128, 0);
@@ -195,6 +246,10 @@ pub struct PageDots {
     pub y: f32,
 }
 impl PageDots {
+    const GAP: f32 = 12.0; // equal edge-gap between every element (dot↔dot and dot↔pill)
+    const DOT: f32 = 10.0; // inactive diameter (also the pill height)
+    const PILL: f32 = 24.0; // active pill width
+
     pub fn new(count: usize) -> Self {
         Self { count, active: 0, x: 0.0, y: 0.0 }
     }
@@ -208,23 +263,35 @@ impl PageDots {
         self.y = y;
         self
     }
+    /// Place the row so it is CENTRED on `cx` — the billboard pager idiom, where the dots belong to
+    /// the screen rather than to the control they sit under. Resolves to a left origin through
+    /// [`width`](Self::width), so `draw` stays one left-to-right walk.
+    pub fn centered_at(self, cx: f32, y: f32) -> Self {
+        let w = self.width();
+        self.at(cx - w * 0.5, y)
+    }
+    /// The row's drawn width — the SAME advance `draw` walks (each element's own width plus one
+    /// gap between neighbours), so a centred row can't drift from the pixels.
+    pub fn width(&self) -> f32 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        (self.count - 1) as f32 * (Self::DOT + Self::GAP) + Self::PILL
+    }
 }
 impl View for PageDots {
     fn draw(&self, _e: &Env, p: Painter) {
-        const GAP: f32 = 12.0; // equal edge-gap between every element (dot↔dot and dot↔pill)
-        const DOT: f32 = 10.0; // inactive diameter (also the pill height)
-        const PILL: f32 = 24.0; // active pill width
         // Advance by each element's own width + a fixed gap, so the gaps are equal even around the
         // wider active pill (equal centre-pitch would squeeze the pill's neighbours). The pill just
         // takes more width and nudges the trailing dots along.
         let mut x = self.x;
         for d in 0..self.count {
             let active = d == self.active;
-            let w = if active { PILL } else { DOT };
+            let w = if active { Self::PILL } else { Self::DOT };
             // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
             let col = crate::ui::theme::with_a(crate::ui::theme::TEXT_PRIMARY, if active { 1.0 } else { 0.35 });
-            p.rect(Rect::new(x, self.y, w, DOT), DOT * 0.5, col, col, 0.0);
-            x += w + GAP;
+            p.rect(Rect::new(x, self.y, w, Self::DOT), Self::DOT * 0.5, col, col, 0.0);
+            x += w + Self::GAP;
         }
     }
 }
@@ -390,6 +457,12 @@ pub(crate) const TOP_BAR_Y: f32 = 44.0;
 /// must be indistinguishable as a control.
 const TAB_PILL_H: f32 = 60.0;
 const TAB_PILL_PAD: f32 = 18.0;
+/// UNIFORM inset from the tab-bar track to the pills inside it, on every side: the pill (r=30) and
+/// the track (r=38) stay CONCENTRIC (outer radius = inner radius + gap), so an end pill's corner
+/// gap reads even all the way around — 16px ends against 8px verticals looked lopsided on the
+/// selected Home pill. The focused [`profile_chip`] wraps itself in the same inset, which is what
+/// makes its capsule and this track one band.
+pub(crate) const TAB_TRACK_PAD: f32 = 8.0;
 static mut PILL_RECTS: [Rect; MAX_TABS] = [Rect::new(0.0, 0.0, 0.0, 0.0); MAX_TABS];
 static mut N_PILLS: usize = 0;
 // label + width cache keyed on browse::sections_gen(): rebuilding the CStrings and
@@ -434,16 +507,13 @@ pub(crate) fn draw_tab_row(p: Painter, selected: std::os::raw::c_int, focused: s
     let x0 = (crate::ui::consts::SCR_W - total_w) * 0.5;
     // ONE translucent dark capsule contains the whole row — the tvOS tab-bar track. It (not the
     // segments) owns legibility over bright hero art: inside it the segments keep their clean
-    // season-tab looks (plain = bare dim text). Sheened for the 1px glass rim.
-    // UNIFORM 8px inset on every side: the pill (r=30) and the track (r=38) stay CONCENTRIC
-    // (outer radius = inner radius + gap), so an end pill's corner gap reads even all the way
-    // around — 16px ends against 8px verticals looked lopsided on the selected Home pill.
-    const TRACK_PAD: f32 = 8.0;
+    // season-tab looks (plain = bare dim text). Sheened for the 1px glass rim. The uniform inset
+    // (and so the concentric radii) is [`TAB_TRACK_PAD`], shared with the focused profile chip.
     let track = Rect::new(
-        x0 - TRACK_PAD,
-        TOP_BAR_Y - TRACK_PAD,
-        total_w + 2.0 * TRACK_PAD,
-        TAB_PILL_H + 2.0 * TRACK_PAD,
+        x0 - TAB_TRACK_PAD,
+        TOP_BAR_Y - TAB_TRACK_PAD,
+        total_w + 2.0 * TAB_TRACK_PAD,
+        TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
     );
     // dark-material weight: light enough to keep a hint of the art, dark enough that the
     // TEXT_TERTIARY plain segments hold contrast even over pure-white art (Toy Story 2)

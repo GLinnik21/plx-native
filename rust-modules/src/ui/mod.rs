@@ -56,6 +56,10 @@ impl Rect {
         self.x + self.w * 0.5
     }
     #[inline]
+    pub fn cy(&self) -> f32 {
+        self.y + self.h * 0.5
+    }
+    #[inline]
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
     }

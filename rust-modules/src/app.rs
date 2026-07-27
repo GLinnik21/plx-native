@@ -679,11 +679,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 *route = Route::Account;
                 return;
             }
-            // a library tab pill in the top band: enter that section's grid. (The grid-card
+            // a tab pill in the top band: pill 0 is Home — the screen we are already on, so OK on
+            // it is a deliberate no-op; 1.. enter that library section's grid. (The grid-card
             // sentinel is rejected by hero_pill_index itself — see its doc comment.)
             if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
-                crate::ui::library::enter(pill.saturating_sub(1));
-                *route = Route::Library;
+                if let Some(sec) = pill.checked_sub(1) {
+                    crate::ui::library::enter(sec);
+                    *route = Route::Library;
+                }
                 return;
             }
             if hf == 2 {
@@ -1365,11 +1368,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // (Detail/Login hover used to silently mutate home's focus behind them)
                         if crate::ui::home::snap_pos() < 0.5 {
                             crate::ui::home::hero_pointer_focus(mx, my);
-                            // the centered library pills are hoverable in hero view too
+                            // the centered tab pills are hoverable in hero view too — Home
+                            // included: it is a real focus stop, it just has nowhere to go
                             if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
-                                if i > 0 {
-                                    crate::ui::home::set_hero_focus(crate::ui::home::hero_focus_for_pill(i));
-                                }
+                                crate::ui::home::set_hero_focus(crate::ui::home::hero_focus_for_pill(i));
                             }
                         } else {
                             crate::ui::home::home_pointer_focus(mx, my);
@@ -1441,10 +1443,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::account_menu::open(); // top-left avatar → profile menu
                             route = Route::Account;
                         } else if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
-                            // the centered library pills work from BOTH hero and grid views
-                            if i > 0 {
-                                crate::ui::library::enter(i - 1);
+                            // the centered tab pills work from BOTH hero and grid views. Home
+                            // (pill 0) is the screen we are on, so a click there just parks focus
+                            // on it — in hero view, which is where the band's focus is visible.
+                            if let Some(sec) = i.checked_sub(1) {
+                                crate::ui::library::enter(sec);
                                 route = Route::Library;
+                            } else if crate::ui::home::snap_pos() < 0.5 {
+                                crate::ui::home::set_hero_focus(crate::ui::home::hero_focus_for_pill(0));
                             }
                         } else if crate::ui::home::snap_pos() < 0.5 {
                             // hero visible: clicks act on the action row via the ONE activation;
