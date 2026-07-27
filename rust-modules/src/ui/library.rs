@@ -36,6 +36,11 @@ const LGAP: f32 = (SCR_W - 2.0 * MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32
 const TOOL_Y: f32 = 134.0;
 const TOOL_H: f32 = 52.0;
 const GRID_TOP: f32 = 214.0;
+/// Bottom edge of the top-chrome scrim gradient: exactly the RESTING popped card's top
+/// (`GRID_TOP` minus the focus pop's upward lift). The chrome draws OVER the focused card now,
+/// so the fade must end where the pinned focused row's card begins — flush below it, the card
+/// is never washed at rest, while a card in transit through the band slides under the bar.
+const SCRIM_END: f32 = GRID_TOP - CARD_H * (RowStyle::HOME.focus_scale - 1.0) * 0.5;
 /// Row pitch: card + the focused under-label band (title + caption) before the next row.
 const PITCH: f32 = CARD_H + 96.0;
 use crate::ui::widgets::{MAX_TABS, TOP_BAR_Y}; // the shared top-bar chrome lives in widgets
@@ -834,11 +839,35 @@ pub(crate) fn draw() {
         }
     }
 
+    // ---- grid: pass 2 — the focused card + under-label, over its NEIGHBOURS but UNDER the top
+    // chrome: the toolbar/pills win, so a focused card scrolling through the top band slides
+    // beneath Sort/Filter/Unwatched instead of popping over it (Home's convention; this used to
+    // draw after the chrome and inverted it).
+    if focused_pass && t > 0 {
+        let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
+        let y = GRID_TOP + r as f32 * PITCH - sc;
+        let x = MARGIN_X + c as f32 * (CARD_W + LGAP);
+        // mid-transit of a page/letter jump the focused row can be off-screen for a few
+        // frames — skip its resolve+draw until the scroll spring brings it on
+        if on_axis(y, CARD_H, SCR_H, GLOW_PAD) {
+            let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
+            let rect = Rect::new(x, y, CARD_W, CARD_H).scaled(s);
+            let m = crate::browse::item(focused_i);
+            let title_c = m.and_then(|mm| CString::new(mm.title.as_str()).ok());
+            let title = title_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+            let caption = m.and_then(|mm| (mm.year > 0).then(|| CString::new(mm.year.to_string()).ok()).flatten());
+            let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+            let resume = m.and_then(PmsMovie::resume_frac);
+            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr, false);
+        }
+    }
+
     // ---- top chrome: scrim under it once the grid has scrolled, then chip + pills + toolbar --
+    // (drawn AFTER the focused card, so the whole band — scrim included — covers it)
     if sc > 1.0 {
         let base = theme::SURFACE_APP;
         p.rect(Rect::new(0.0, 0.0, SCR_W, 170.0), 0.0, base, base, 0.0);
-        p.rect(Rect::new(0.0, 170.0, SCR_W, GRID_TOP - 170.0), 0.0, base, theme::with_a(base, 0.0), 0.0);
+        p.rect(Rect::new(0.0, 170.0, SCR_W, SCRIM_END - 170.0), 0.0, base, theme::with_a(base, 0.0), 0.0);
     }
     crate::ui::widgets::profile_chip(p, Rect::new(MARGIN_X, TOP_BAR_Y, 64.0, 64.0), false);
     let tab_focus = if area() == Area::Tabs && !menu_open() { (unsafe { addr_of!(TAB_F).read() }) as c_int } else { -1 };
@@ -867,26 +896,6 @@ pub(crate) fn draw() {
         let cs = &cache.as_ref().unwrap().2;
         let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, TOOL_Y + TOOL_H * 0.5);
         p.text(cs.as_ptr(), SCR_W - MARGIN_X, ty, theme::size::CAPTION, theme::TEXT_TERTIARY, 2, 0);
-    }
-
-    // ---- grid: pass 2 — the focused card + under-label, over the chrome scrim ----------------
-    if focused_pass && t > 0 {
-        let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
-        let y = GRID_TOP + r as f32 * PITCH - sc;
-        let x = MARGIN_X + c as f32 * (CARD_W + LGAP);
-        // mid-transit of a page/letter jump the focused row can be off-screen for a few
-        // frames — skip its resolve+draw until the scroll spring brings it on
-        if on_axis(y, CARD_H, SCR_H, GLOW_PAD) {
-            let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
-            let rect = Rect::new(x, y, CARD_W, CARD_H).scaled(s);
-            let m = crate::browse::item(focused_i);
-            let title_c = m.and_then(|mm| CString::new(mm.title.as_str()).ok());
-            let title = title_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-            let caption = m.and_then(|mm| (mm.year > 0).then(|| CString::new(mm.year.to_string()).ok()).flatten());
-            let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-            let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr, false);
-        }
     }
 
     // ---- letter rail (right edge; only on the unfiltered ascending-title listing) ------------
