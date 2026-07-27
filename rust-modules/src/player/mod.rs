@@ -31,6 +31,7 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
 pub(crate) use engine::{acb_init, resume_at, start_bufferfeed, stop_bufferfeed, suspend_bufferfeed};
 pub(crate) use pump::pump;
+pub(crate) use shared::PlaybackState;
 pub(crate) fn pause() {
     unsafe { ffi::sf_pause(); }
     acb_mirror_playstate(false);

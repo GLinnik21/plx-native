@@ -4,6 +4,7 @@
 //! now lives in the `TextView` primitive in `text_view.rs`.)
 use crate::pms::PmsMovie;
 use crate::ui::theme;
+use crate::ui::label::{HAlign, Label};
 use crate::ui::{Env, Painter, Rect, View};
 use std::os::raw::{c_char, c_int};
 
@@ -335,6 +336,62 @@ impl View for Spinner {
             let d = self.dot_r;
             p.rect(Rect::new(dx - d, dy - d, 2.0 * d, 2.0 * d), d, c, c, 0.0);
         }
+    }
+}
+
+// ---- StatusOverlay: a centred "something is happening / something failed" read-out — a Spinner
+// (or nothing, for a terminal state) above one line of copy. The player HUD renders it from
+// `player::state()` while the pipeline is Connecting/Buffering/Seeking, and for the Error state,
+// which is what a black screen used to be. `kind` picks the treatment, not the words: the caller
+// supplies the caption so the state machine stays the single source of that string. ----
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StatusKind {
+    /// in flight — spinner + secondary copy
+    Working,
+    /// terminal failure — no spinner, danger-tinted copy
+    Failed,
+}
+/// NB `caption` is a non-owning `*const c_char` — the same contract `Label`/`Button` carry (see
+/// ui/CLAUDE.md): keep the `CString` alive for the whole draw frame.
+pub struct StatusOverlay {
+    pub frame: Rect,
+    pub caption: *const c_char,
+    pub kind: StatusKind,
+    pub phase: u32,
+}
+impl StatusOverlay {
+    pub fn new(frame: Rect, caption: *const c_char, kind: StatusKind) -> Self {
+        Self { frame, caption, kind, phase: 0 }
+    }
+    /// ms clock driving the spinner's rotation (ignored by `Failed`)
+    pub fn phase(mut self, ms: u32) -> Self {
+        self.phase = ms;
+        self
+    }
+}
+impl View for StatusOverlay {
+    fn draw(&self, e: &Env, p: Painter) {
+        // spinner above, caption below, the pair centred on the frame
+        const R: f32 = 22.0;
+        let cy = self.frame.cy();
+        let (tint, working) = match self.kind {
+            StatusKind::Working => (theme::TEXT_SECONDARY, true),
+            StatusKind::Failed => (theme::DANGER, false),
+        };
+        let cap_h = crate::text::text_height(theme::size::BODY, 0);
+        // Working: spinner and caption straddle the centre. Failed: the caption owns it alone.
+        let cap_y = if working {
+            Spinner::new(self.frame.cx(), cy - R - theme::space::XS, R)
+                .phase(self.phase)
+                .tint(tint)
+                .draw(e, p);
+            cy + theme::space::XS
+        } else {
+            cy - cap_h * 0.5
+        };
+        Label::new(self.caption, theme::size::BODY, tint)
+            .h(HAlign::Center)
+            .draw(p, Rect::new(self.frame.x, cap_y, self.frame.w, cap_h));
     }
 }
 
