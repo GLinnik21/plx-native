@@ -169,6 +169,45 @@ roadmaps stall — the engineer has paid for a generic primitive serving two cal
 
 ---
 
+---
+
+## Implementation log
+
+### Step 1 — landed at `a940884`, headline change REVERTED (2026-07-27)
+
+**The fd-publication reversal trigger fired.** Publishing the socket fd before `connect` — the
+change that lets a teardown/BACK interrupt a stalled open — was implemented, host-tested (two new
+regression tests, both verified to fail on the pre-fix code), and then **reverted after device
+runs**.
+
+Why: it makes *every* reopen interruptible, and the demuxer reopens that socket from **two**
+places — its outer-loop head and the AVIO `seek_cb` — while the pump fires `http_shutdown` on the
+same stream to service a seek. Cost `substance_seek_inplace`, confirmed by bisect (fails with the
+change, passes without). A first patch (retry an interrupted reopen) made it worse — 16/18 — and
+the logs showed the demuxer was not even dying; the seek was being rejected by the pump's guard
+and never firing.
+
+Note the coupling that forced an all-or-nothing revert: with the fd unpublished, `close_owned`'s
+`take_fd()` returns -1 and **leaks** the descriptor, so the five-bare-close routing cannot land
+without the publication.
+
+**Consequence for step 3: `Cancel` must ship flag-only** — it can set the flag and have the worker
+check it between round trips, and the generation guard still makes a late landing harmless, but it
+**cannot wake a worker already blocked in `recv(2)`**. The decision's C3 (cancellation with teeth)
+is not delivered. Re-read the scorecard as buying **C5 + the state machine**, and little else.
+
+The likely fix, unimplemented: a `reading: AtomicBool` set once headers are parsed, with two
+interrupt entry points — "wake a blocked read" (seek) vs "kill this stream" (teardown). Design and
+host-test it before it goes near the device again.
+
+### Pre-existing failure, not ours
+
+`morning_show_seek_rapid` fails on **clean HEAD** with the identical message (`only 1
+seek(in-place) fired, need >=2`). It was mis-attributed to step 1 at first. The suite is therefore
+17/18 before and after; this case needs its own investigation and is unrelated to the async work.
+
+---
+
 ## Reversal triggers
 
 **Hard stops in step 1.** If the five bare closes cannot all route through `close_owned` without
