@@ -7,13 +7,32 @@ use super::{ffi, ACB_OK, SHARED, TX};
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
+/// Publish the one value the HUD renders from. Pure derivation off signals the workers already
+/// maintain — no new cross-thread plumbing, and it runs on every path out of `pump` (including
+/// the early returns) so the state can never go stale behind a spinner that never resolves.
+fn set_state(s: super::shared::PlaybackState) {
+    SHARED.pb_state.store(s as u8, Relaxed);
+}
+
 pub(crate) fn pump(now: u32) {
+    use super::shared::PlaybackState;
     let eng = match engine() {
         Some(e) => e,
-        None => return,
+        None => {
+            set_state(PlaybackState::Idle);
+            return;
+        }
     };
     // wait for the media-thread ctor
     if unsafe { ffi::sf_ready() } == 0 {
+        set_state(PlaybackState::Connecting);
+        return;
+    }
+    // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
+    // so it can NEVER fire, and the player used to sit on a black screen forever with no error
+    // and no exit. Surface it instead — BACK is already the escape.
+    if SHARED.demux_failed.load(Relaxed) && SHARED.frames.load(Relaxed) == 0 {
+        set_state(PlaybackState::Error);
         return;
     }
     let stream = matches!(eng.source, Source::Stream);
@@ -235,6 +254,19 @@ pub(crate) fn pump(now: u32) {
     // app.rs tears the player down at the credits instead of freezing on the last frame. Paused
     // at the end stays paused (playpos won't climb) — correct; it fires when resumed. Any seek
     // clears the flag (request_seek), so seeking back from the end doesn't re-trigger. ----------
+    // ---------- publish the derived UI state (see PlaybackState's doc) ----------
+    // Order matters: a seek in flight outranks "we have frames", because the frames on the panel
+    // are the PRE-seek ones and the HUD must show the target, not them.
+    set_state(if SHARED.seeking.load(Relaxed) {
+        PlaybackState::Seeking
+    } else if eng.stage == Stage::Loading {
+        PlaybackState::Connecting
+    } else if SHARED.frames.load(Relaxed) == 0 {
+        PlaybackState::Buffering
+    } else {
+        PlaybackState::Playing
+    });
+
     const EOS_TAIL_NS: i64 = 1_000_000_000;
     if eng.eos_pushed && !SHARED.ended.load(Relaxed) {
         let dur = SHARED.duration_ns.load(Relaxed);

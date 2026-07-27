@@ -47,6 +47,23 @@ impl HttpStream {
     fn take_fd(&self) -> c_int {
         self.fd.swap(-1, Ordering::AcqRel)
     }
+    /// Reset every field EXCEPT `fd`. `http_open` used to `write_bytes`-memset the whole
+    /// struct, which wrote the ATOMIC fd non-atomically — and momentarily as 0, i.e. stdin —
+    /// while another thread could be loading it in `http_shutdown`. `fd` is reset separately
+    /// through its atomic store.
+    ///
+    /// `buf` is deliberately NOT cleared: it is only ever read within `[bpos, blen)`, both of
+    /// which are reset here, so zeroing 64 KB on every request was pure cost.
+    #[inline]
+    fn reset_fields(&mut self) {
+        self.blen = 0;
+        self.bpos = 0;
+        self.content_length = -1;
+        self.consumed = 0;
+        self.status = 0;
+        self.chunked = 0;
+        self.chunk_left = 0;
+    }
 }
 
 /// crate-internal accessors (fields are private) — the player engine reads these.
@@ -173,15 +190,24 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         return -1;
     }
     unsafe {
-        std::ptr::write_bytes(hs as *mut u8, 0, std::mem::size_of::<HttpStream>()); // memset
         let hs = &mut *hs;
+        hs.reset_fields();
         hs.set_fd(-1);
-        hs.content_length = -1;
 
         let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
         if fd < 0 {
             return -1;
         }
+        // DELIBERATELY NOT PUBLISHED YET — see the note above `http_shutdown`.
+        //
+        // Publishing the fd here (so a teardown/BACK can interrupt a stalled open) was tried and
+        // REVERTED: it makes every reopen interruptible, and the demuxer reopens this socket from
+        // TWO places — its outer loop head and the AVIO `seek_cb` — while the pump fires
+        // `http_shutdown` on the very same stream to service a seek. On device that cost two
+        // regressions in the seek path (`substance_seek_inplace`, `morning_show_seek_rapid`).
+        // Making it safe needs the interrupt to distinguish "wake a blocked read" from "kill this
+        // stream", which is a design change, not a line move. Recorded in
+        // docs/async-model-decision.md.
         let mut sa: libc::sockaddr_in = std::mem::zeroed();
         sa.sin_family = libc::AF_INET as libc::sa_family_t;
         sa.sin_port = (port as u16).to_be(); // htons
@@ -197,7 +223,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
             }
         }
         if k != 4 {
-            libc::close(fd);
+            libc::close(fd); // not close_owned: the fd is not published (see above)
             return -1;
         }
         sa.sin_addr.s_addr = u32::from_ne_bytes(oct); // memory bytes = [a,b,c,d]
@@ -290,7 +316,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
             hs.chunked = 1;
         }
 
-        hs.set_fd(fd);
+        hs.set_fd(fd); // published only now: the stream is live and in its body-read phase
         hs.bpos = hdr_end as c_int; // first body byte
         if hs.status < 200 || hs.status >= 300 {
             close_owned(hs);
@@ -414,7 +440,8 @@ pub(crate) fn http_get(host: &str, port: c_int, path: &str, extra: Option<&str>)
     let path_c = std::ffi::CString::new(path).ok()?;
     let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    // fd = -1, never 0: a zeroed box leaves fd = 0, so any stray close would take stdin.
+    let mut hs = http_stream_boxed();
     if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "GET") != 0 {
         return None;
     }
@@ -444,7 +471,8 @@ pub(crate) fn http_put(host: &str, port: c_int, path: &str) -> c_int {
         Ok(c) => c,
         Err(_) => return -1,
     };
-    let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    // fd = -1, never 0: a zeroed box leaves fd = 0, so any stray close would take stdin.
+    let mut hs = http_stream_boxed();
     if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "PUT") != 0 {
         return if hs.status != 0 { hs.status } else { -1 };
     }
@@ -463,7 +491,8 @@ pub(crate) fn http_post(host: &str, port: c_int, path: &str, extra: Option<&str>
     let path_c = std::ffi::CString::new(path).ok()?;
     let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    let mut hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    // fd = -1, never 0: a zeroed box leaves fd = 0, so any stray close would take stdin.
+    let mut hs = http_stream_boxed();
     if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "POST") != 0 {
         return None;
     }
@@ -496,7 +525,18 @@ pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
+
+    /// Descriptors currently open in this process. `/dev/fd` works on both macOS and Linux;
+    /// `read_dir` opens one itself, but that is constant between two calls.
+    fn open_fd_count() -> usize {
+        std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
+    }
+
+    /// Raw-pointer-across-threads shim, mirroring `player::threads::SendPtr`. The pointee is a
+    /// `Box<HttpStream>` owned by the test thread and joined before it drops.
+    struct P(*mut HttpStream);
+    unsafe impl Send for P {}
 
     fn sockaddr(ip: [u8; 4], port: u16) -> libc::sockaddr_in {
         let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
@@ -536,6 +576,35 @@ mod tests {
         unsafe { libc::close(fd) };
         assert_eq!(r, -1, "SO_ERROR must be consulted — a writable socket is not a connected one");
         assert!(waited.as_millis() < 2_000, "a refusal should be immediate, waited {waited:?}");
+    }
+
+    /// A failed `http_open` must leave the stream CLOSED (fd = -1) and leak no descriptor,
+    /// whichever early exit it took. This is what makes `http_stream_boxed`'s fd = -1 contract
+    /// hold end-to-end, and it is the invariant a future interruptible-open design has to keep.
+    #[test]
+    fn every_failed_open_retires_its_fd_and_leaks_nothing() {
+        let ip_bad = std::ffi::CString::new("999.1.2.3").unwrap(); // rejected after socket()
+        let ip_refused = std::ffi::CString::new("127.0.0.1").unwrap(); // nothing listens on :1
+        let path = std::ffi::CString::new("/x").unwrap();
+
+        for (label, ip, port) in [
+            ("malformed dotted-quad", &ip_bad, 80),
+            ("refused connection", &ip_refused, 1),
+        ] {
+            let mut hs = http_stream_boxed();
+            let rv = http_open(&mut *hs, ip.as_ptr(), port, path.as_ptr(), std::ptr::null(), "GET");
+            assert_eq!(rv, -1, "{label}: open must fail");
+            assert_eq!(hs.fd(), -1, "{label}: the fd must be retired, not left published");
+        }
+
+        // …and the descriptor is genuinely closed, not merely un-published.
+        let before = open_fd_count();
+        for _ in 0..32 {
+            let mut hs = http_stream_boxed();
+            let _ = http_open(&mut *hs, ip_refused.as_ptr(), 1, path.as_ptr(), std::ptr::null(), "GET");
+        }
+        let after = open_fd_count();
+        assert!(after <= before + 2, "failed opens leaked descriptors: {before} -> {after}");
     }
 
     /// The claim the whole single-closer protocol rests on: `shutdown(2)` wakes a peer that is

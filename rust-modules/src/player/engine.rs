@@ -291,7 +291,16 @@ pub(crate) fn start_bufferfeed() -> bool {
             let aqp = threads::SendPtr(aqv_raw);
             let aqap = threads::SendPtr(aqa_raw);
             let hsp = threads::SendPtr(hs_raw);
-            stream_th = Some(std::thread::spawn(move || crate::ff::demux(host, port, path, aqp, aqap, hsp)));
+            // The Load payload's audio codec, captured BY VALUE here on the main thread.
+            // `ff::demux` used to call `route::stream_acodec()` from the demux thread, cloning
+            // a `static mut String` that the main thread reassigns (`route::set_stream_codecs`
+            // at route.rs:401/424/426/580, `player::request_audio_track` at mod.rs:92) — a data
+            // race, and a use-after-free if the reassignment dropped the old buffer mid-clone.
+            // Capturing is free: every one of those writers is followed by
+            // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
+            // switch_audio_native), which respawns this thread with the new value.
+            let acodec = crate::route::stream_acodec();
+            stream_th = Some(std::thread::spawn(move || crate::ff::demux(host, port, path, acodec, aqp, aqap, hsp)));
         }
         aqv_box = Some(qv);
         aqa_box = Some(qa);
@@ -472,6 +481,13 @@ fn teardown(for_reload: bool) {
 
     // 1. unblock every thread (abort queues, close the demux socket)
     SHARED.report_stop.store(true, Ordering::Release); // stop the /:/timeline reporter
+    {
+        // …and WAKE it: it waits on this condvar, so the join below returns at once instead
+        // of waiting out up to a second of sleep on the main thread.
+        let (m, cv) = &SHARED.report_wake;
+        *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_all();
+    }
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
         for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()].into_iter().flatten() {

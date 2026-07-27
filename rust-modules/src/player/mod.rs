@@ -76,7 +76,11 @@ pub(crate) fn request_seek(ns: i64) {
 }
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
-pub(crate) fn loading() -> bool { SHARED.seeking.load(Relaxed) }
+pub(crate) fn loading() -> bool { state().is_busy() }
+/// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
+pub(crate) fn state() -> shared::PlaybackState {
+    shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
+}
 pub(crate) fn seek_display_ns() -> i64 { SHARED.seek_display_ns.load(Relaxed) }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
 /// transcode with that source audio at the current position next tick.
