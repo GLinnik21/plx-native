@@ -36,11 +36,13 @@ const LGAP: f32 = (SCR_W - 2.0 * MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32
 const TOOL_Y: f32 = 134.0;
 const TOOL_H: f32 = 52.0;
 const GRID_TOP: f32 = 214.0;
-/// Bottom edge of the top-chrome scrim gradient: exactly the RESTING popped card's top
-/// (`GRID_TOP` minus the focus pop's upward lift). The chrome draws OVER the focused card now,
-/// so the fade must end where the pinned focused row's card begins — flush below it, the card
-/// is never washed at rest, while a card in transit through the band slides under the bar.
-const SCRIM_END: f32 = GRID_TOP - CARD_H * (RowStyle::HOME.focus_scale - 1.0) * 0.5;
+/// Top-chrome scrim fade, two piecewise-linear segments ≈ ease-out: a steep drop to
+/// [`SCRIM_KNEE_A`] by [`SCRIM_KNEE`], then a long gentle tail to 0 at `GRID_TOP`. One short
+/// linear ramp here read as a harsh bar shadow with a visible bottom edge; the knee keeps the
+/// toolbar chips (bottom y≈186) solidly backed while the tail crosses the RESTING popped card's
+/// top (`GRID_TOP - CARD_H*0.045 ≈ 197`) at ≤~26% — a soft entering-the-shadow veil, not a wash.
+const SCRIM_KNEE: f32 = 188.0;
+const SCRIM_KNEE_A: f32 = 0.40;
 /// Row pitch: card + the focused under-label band (title + caption) before the next row.
 const PITCH: f32 = CARD_H + 96.0;
 use crate::ui::widgets::{MAX_TABS, TOP_BAR_Y}; // the shared top-bar chrome lives in widgets
@@ -867,7 +869,14 @@ pub(crate) fn draw() {
     if sc > 1.0 {
         let base = theme::SURFACE_APP;
         p.rect(Rect::new(0.0, 0.0, SCR_W, 170.0), 0.0, base, base, 0.0);
-        p.rect(Rect::new(0.0, 170.0, SCR_W, SCRIM_END - 170.0), 0.0, base, theme::with_a(base, 0.0), 0.0);
+        p.rect(Rect::new(0.0, 170.0, SCR_W, SCRIM_KNEE - 170.0), 0.0, base, theme::with_a(base, SCRIM_KNEE_A), 0.0);
+        p.rect(
+            Rect::new(0.0, SCRIM_KNEE, SCR_W, GRID_TOP - SCRIM_KNEE),
+            0.0,
+            theme::with_a(base, SCRIM_KNEE_A),
+            theme::with_a(base, 0.0),
+            0.0,
+        );
     }
     crate::ui::widgets::profile_chip(p, Rect::new(MARGIN_X, TOP_BAR_Y, 64.0, 64.0), false);
     let tab_focus = if area() == Area::Tabs && !menu_open() { (unsafe { addr_of!(TAB_F).read() }) as c_int } else { -1 };
