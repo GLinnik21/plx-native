@@ -43,6 +43,12 @@ const GRID_TOP: f32 = 214.0;
 /// top (`GRID_TOP - CARD_H*0.045 ≈ 197`) at ≤~26% — a soft entering-the-shadow veil, not a wash.
 const SCRIM_KNEE: f32 = 188.0;
 const SCRIM_KNEE_A: f32 = 0.40;
+/// The scrim FADES IN over the first px of scroll (alpha = `sc / SCRIM_IN`, clamped) instead of
+/// popping on at a 1px threshold. Scroll is spring-driven, so the appear inherits the spring's
+/// easing — scroll-linked, stateless, cannot desync. Fully established by 56px, before a
+/// scrolling poster meaningfully overlaps the chip row (tops reach the chips at ~28px, mid-sweep,
+/// where motion masks the 50% backing for the 2-3 frames it lasts).
+const SCRIM_IN: f32 = 56.0;
 /// Row pitch: card + the focused under-label band (title + caption) before the next row.
 const PITCH: f32 = CARD_H + 96.0;
 use crate::ui::widgets::{MAX_TABS, TOP_BAR_Y}; // the shared top-bar chrome lives in widgets
@@ -866,11 +872,13 @@ pub(crate) fn draw() {
 
     // ---- top chrome: scrim under it once the grid has scrolled, then chip + pills + toolbar --
     // (drawn AFTER the focused card, so the whole band — scrim included — covers it)
-    if sc > 1.0 {
+    let ca = (sc / SCRIM_IN).clamp(0.0, 1.0);
+    if ca > 0.004 {
         let base = theme::SURFACE_APP;
-        p.rect(Rect::new(0.0, 0.0, SCR_W, 170.0), 0.0, base, base, 0.0);
-        p.rect(Rect::new(0.0, 170.0, SCR_W, SCRIM_KNEE - 170.0), 0.0, base, theme::with_a(base, SCRIM_KNEE_A), 0.0);
-        p.rect(
+        let ps = p.alpha(ca); // the appear fade rides the Painter cascade — all three bands together
+        ps.rect(Rect::new(0.0, 0.0, SCR_W, 170.0), 0.0, base, base, 0.0);
+        ps.rect(Rect::new(0.0, 170.0, SCR_W, SCRIM_KNEE - 170.0), 0.0, base, theme::with_a(base, SCRIM_KNEE_A), 0.0);
+        ps.rect(
             Rect::new(0.0, SCRIM_KNEE, SCR_W, GRID_TOP - SCRIM_KNEE),
             0.0,
             theme::with_a(base, SCRIM_KNEE_A),
