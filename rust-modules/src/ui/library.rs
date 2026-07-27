@@ -886,7 +886,10 @@ pub(crate) fn draw() {
             0.0,
         );
     }
-    crate::ui::widgets::profile_chip(p, Rect::new(MARGIN_X, TOP_BAR_Y, 64.0, 64.0), false);
+    // the Library screen has no chip focus stop (its top-band focus is the tab row), so the chip
+    // never unfurls here — expand 0.
+    let cd = crate::ui::widgets::CHIP_D;
+    crate::ui::widgets::profile_chip(p, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
     let tab_focus = if area() == Area::Tabs && !menu_open() { (unsafe { addr_of!(TAB_F).read() }) as c_int } else { -1 };
     crate::ui::widgets::draw_tab_row(p, crate::browse::cur() as c_int + 1, tab_focus);
 

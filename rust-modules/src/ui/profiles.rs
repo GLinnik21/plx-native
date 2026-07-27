@@ -15,6 +15,13 @@ use std::os::raw::{c_int, c_uint};
 use std::ptr::addr_of_mut;
 
 const ROW_Y: f32 = 384.0;
+/// Name band offset below `ROW_Y`. Anchored to the UNSCALED row like every `CardRow` label (a pop
+/// must never shove the label), but spaced off the FOCUSED tile: at `focus_scale` the circle's
+/// bottom edge drops `h·(focus_scale−1)/2`, and the name still keeps a full `space::MD` of air
+/// under it. Derived, so raising the pop can't silently collide the two.
+const NAME_DY: f32 = RowStyle::PROFILES.h
+    + RowStyle::PROFILES.h * (RowStyle::PROFILES.focus_scale - 1.0) * 0.5
+    + theme::space::MD;
 const PIN_LEN: usize = 4;
 const FOOTER_Y: f32 = 780.0; // "Sign out" pill, below the roster/name/error band
 
@@ -222,7 +229,7 @@ fn draw_name(p: Painter, u: &auth::UserTile, cx: f32, focused: bool) {
     let col = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
     let name = crate::text::elide(&u.title, RowStyle::PROFILES.w + RowStyle::PROFILES.gap - 12.0, theme::size::LABEL, if focused { 1 } else { 0 }, false);
     if let Ok(nc) = CString::new(name) {
-        p.text(nc.as_ptr(), cx, ROW_Y + RowStyle::PROFILES.h + 28.0, theme::size::LABEL, col, 1, if focused { 1 } else { 0 });
+        p.text(nc.as_ptr(), cx, ROW_Y + NAME_DY, theme::size::LABEL, col, 1, if focused { 1 } else { 0 });
     }
 }
 

@@ -40,10 +40,22 @@ const HERO_NBTN: usize = 3;
 /// synopsis) tops out at ~438 — the old top-down flow's start. The action row and page dots hang
 /// at fixed offsets below it, so the chrome never jumps between hero items.
 const HERO_TEXT_BOTTOM: f32 = 692.0;
+/// The action row's top edge and control diameter. Module-level because the row SLIDES with its
+/// item while the page dots below it do NOT — two draw sites, one geometry, so they cannot drift.
+const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
+const HERO_CTRL_D: f32 = 60.0;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
+/// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
+/// spring units: the old `pos > 0.995` cut retired the transition while the incoming layer still
+/// sat `0.005 * SCR_W ≈ 10px` short of home, so every flip ended on a visible teleport. The
+/// off-screen layers are culled per-frame, so carrying the spring to a true rest costs nothing.
+const HERO_SLIDE_REST_PX: f32 = 0.5;
 // top-left profile chip (avatar) rect, recorded each draw for pointer hit-testing (opens the
-// account menu). See draw_chip / profile_chip_click.
+// account menu). See draw_chip / profile_chip_click. `chip_expand` is its focus animation — the
+// widget takes the amount as a scalar, and springs belong to the screen, not to a leaf widget.
 static mut profile_chip: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+static mut chip_expand: Spring = Spring::at(0.0);
+const K_CHIP: f32 = 300.0; // chip unfurl — brisk, a touch stiffer than the hero slide
 
 /// Focus accessors clamp INTO THE LIVE HUB BOUNDS at read time (mirroring Home::env's per-frame
 /// clamp): a hub refetch can shrink the shelves underneath the raw statics, and the OK dispatch
@@ -192,20 +204,24 @@ fn hero_item_at(i: c_int) -> Option<&'static PmsMovie> {
 }
 
 /// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info, 2 = chevron.
-/// Below -1 sit the CENTERED library tab pills (the top band, left→right: chip, then pill i as
-/// `-(i+1)`): -2 = the first section (Movies), -3 = the second (TV Shows), …
+/// Below -1 sit the CENTERED tab pills (the top band, left→right: chip, then pill i as `-(i+2)`):
+/// -2 = **Home**, -3 = the first section (Movies), -4 = the second (TV Shows), …
+///
+/// Home is pill 0 and a real focus stop like any other — it used to be packed as `-(i+1)`, which
+/// aliased it onto the chip's -1, so the top band walked chip → Movies and the Home pill could
+/// never take the focused (white) treatment on its own screen.
 pub(crate) fn hero_focus() -> c_int {
     unsafe { addr_of!(hero_fc).read() }
 }
 pub(crate) fn set_hero_focus(v: c_int) {
     // cap at what the tab row can draw — focus must never land on a truncated pill
-    let nsec = crate::browse::section_count().min(crate::ui::widgets::MAX_TABS - 1);
-    let lo = -1 - nsec as c_int;
+    let npill = 1 + crate::browse::section_count().min(crate::ui::widgets::MAX_TABS - 1); // Home + sections
+    let lo = hero_focus_for_pill(npill - 1);
     unsafe { addr_of_mut!(hero_fc).write(v.clamp(lo, HERO_NBTN as c_int - 1)) }
 }
 
 /// Decode a top-band focus value to its tab-pill index (0 = Home, 1.. = sections), or None
-/// when the focus isn't on a pill — the ONE home of the `-(i+1)` packing's sign math (inverse:
+/// when the focus isn't on a pill — the ONE home of the `-(i+2)` packing's sign math (inverse:
 /// [`hero_focus_for_pill`]); it was previously inlined at four sites.
 ///
 /// `c_int::MIN` is app.rs's "focus is a grid card, not the hero band" sentinel and is NOT a
@@ -213,11 +229,11 @@ pub(crate) fn set_hero_focus(v: c_int) {
 /// decode used to send EVERY grid-card OK into the last library section. Rejecting it here —
 /// in the one place that owns the packing — keeps every caller safe by construction.
 pub(crate) fn hero_pill_index(f: c_int) -> Option<usize> {
-    (f <= -2 && f != c_int::MIN).then(|| (-f - 1) as usize)
+    (f <= -2 && f != c_int::MIN).then(|| (-f - 2) as usize)
 }
-/// Encode: the hero-focus value that puts the top band on tab pill `i`.
+/// Encode: the hero-focus value that puts the top band on tab pill `i` (0 = Home).
 pub(crate) fn hero_focus_for_pill(i: usize) -> c_int {
-    -(i as c_int) - 1
+    -(i as c_int) - 2
 }
 
 /// The focused thing is a pressable grid card — the same cross-screen predicate `detail` and
@@ -285,11 +301,16 @@ impl View for Backdrop {
 }
 
 /// One hero item's backdrop layer at horizontal slide offset `dx`: the 1280×720 art (with the
-/// grid-rise parallax/fade) or the ambient wash while the art hasn't resolved.
+/// grid-rise parallax/fade) or the ambient wash while the art hasn't resolved. A layer the slide
+/// has already carried off the panel is culled — the outgoing art is gone for most of the
+/// transition, and skipping it keeps the two-layer flip from doubling a full-screen fill.
 fn backdrop_art(p: Painter, item: Option<&PmsMovie>, sp: f32, dx: f32) {
     let Some(h) = item else {
         return;
     };
+    if !on_axis(dx, SCR_W, SCR_W, 0.0) {
+        return;
+    }
     let bt = crate::ui::widgets::resolve_tex(&h.art, 1280, 720, 0);
     if bt != 0 {
         p.tex(bt, Rect::new(dx, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, 1.0 - sp]);
@@ -313,9 +334,14 @@ impl Hero {
 /// so the synopsis' last line — and with it the pinned action row + page dots below — sits at the
 /// same y for every item (top-down flow made the chrome jump on every flip). Every gap is a
 /// `theme::space` rung and every step advances by the *measured* height of the element just drawn.
-fn hero_content(hero: &PmsMovie, p: Painter) {
+fn hero_content(hero: &PmsMovie, p: Painter, dx: f32) {
     let tx = MARGIN_X;
     let col_w = 660.0f32; // hero text column
+    // a column the slide has carried off the panel costs a full text layout + glyph draws for
+    // nothing (same rule as the backdrop layer's cull)
+    if !on_axis(tx + dx, col_w, SCR_W, 0.0) {
+        return;
+    }
     let w_a = theme::TEXT_PRIMARY; // cascade applies hero_a
     let d_a = theme::TEXT_SECONDARY;
 
@@ -373,54 +399,81 @@ fn hero_content(hero: &PmsMovie, p: Painter) {
     }
 }
 
+/// One hero item's action row — Play/Continue pill, info circle, chevron — at horizontal slide
+/// offset `dx`. It rides WITH its item, in the same phase as the text column and the backdrop art:
+/// the pill's label *is* the item's ("Continue" when that item has a resume point, else "Play"),
+/// and so is its width, so a row that stayed put would have to relabel and resize itself
+/// mid-flip — the one thing on screen contradicting the motion.
+///
+/// The row sits at a FIXED y (the text column above is bottom-anchored, so the button-to-text air
+/// is one MD for every item). Pill + info + chevron are a real focus row (hero_fc), so LEFT/RIGHT
+/// walk buttons instead of paging; the chevron is the pager. The pill launches playback directly
+/// (the info circle is the road to the detail page). MD, not LG: the synopsis' leading box already
+/// carries ~7px of descender slack, and the bigger rung read as the button drifting from its text.
+///
+/// `live` marks the INCOMING (real) row, the one whose rects become the pointer hit targets. They
+/// are recorded at the row's DRAWN position — the same draw-and-hit-must-agree rule the grid's
+/// `card_x` keeps — so a click mid-flip lands on the button the eye sees, and the outgoing ghost
+/// is never clickable.
+fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
+    let tx = MARGIN_X;
+    let pill_y = HERO_ROW_Y;
+    let hf = hero_focus();
+    let (cd, cgap) = (HERO_CTRL_D, 20.0f32); // control diameter + inter-control gap
+    let plabel = if hero.resume_ms > 0 { c"Continue" } else { c"Play" };
+    let isz = theme::size::BODY as f32 * 1.15; // icon box (mirrors Button's own layout)
+    let pw = isz + 12.0 + crate::text::text_width(plabel.as_ptr(), theme::size::BODY, 1) + 68.0;
+    // local (painter-relative) frames, and the screen-space rects that mirror them
+    let pill = Rect::new(tx, pill_y, pw, cd);
+    let info = Rect::new(tx + pw + cgap, pill_y, cd, cd);
+    let chev = Rect::new(info.x + cd + cgap, pill_y, cd, cd);
+    if live {
+        // recorded BEFORE the cull: a live row carried off the panel must take its hit targets
+        // with it, or a click would still land on a button that is no longer there.
+        let screen = [pill, info, chev].map(|r| Rect::new(r.x + dx, r.y, r.w, r.h));
+        unsafe { addr_of_mut!(hero_btns).write(screen) };
+    }
+    if !on_axis(tx + dx, chev.x + cd - tx, SCR_W, 0.0) {
+        return;
+    }
+    Button::new(plabel.as_ptr(), theme::size::BODY, pill).icon(Icon::Play).focused(hf == 0).draw(env, p);
+    CircleButton::new(c"".as_ptr()).icon(Icon::Info).at(info.x, info.y).focused(hf == 1).draw(env, p);
+    CircleButton::new(c"".as_ptr()).icon(Icon::Chevron).at(chev.x, chev.y).focused(hf == 2).draw(env, p);
+}
+
 impl View for Hero {
     fn draw(&self, env: &Env, p: Painter) {
         let Some(hero) = hero_item() else {
             return;
         };
-        let tx = MARGIN_X;
 
-        // per-item content, sliding during a flip (same phase/direction as the backdrop art)
+        // per-item content + its action row, sliding during a flip (same phase/direction as the
+        // backdrop art) — everything that belongs to the ITEM travels together.
         if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
             if let Some(ph) = hero_item_at(prev) {
-                hero_content(ph, p.translate(dx_out, 0.0));
+                let po = p.translate(dx_out, 0.0);
+                hero_content(ph, po, dx_out);
+                hero_actions(ph, env, po, dx_out, false);
             }
-            hero_content(hero, p.translate(dx_in, 0.0));
+            let pi = p.translate(dx_in, 0.0);
+            hero_content(hero, pi, dx_in);
+            hero_actions(hero, env, pi, dx_in, true);
         } else {
-            hero_content(hero, p);
+            hero_content(hero, p, 0.0);
+            hero_actions(hero, env, p, 0.0, true);
         }
 
-        // action row — chrome, does NOT slide, and sits at a FIXED y (the text column above is
-        // bottom-anchored, so the button-to-text air is one MD for every item). Pill + info +
-        // chevron are a real focus row (hero_fc), so LEFT/RIGHT walk buttons instead of paging;
-        // the chevron is the pager. The pill says "Continue" when the hero item has a resume
-        // point, else "Play", and launches playback directly (the info circle is the road to the
-        // detail page). MD, not LG: the synopsis' leading box already carries ~7px of descender
-        // slack, and the bigger rung read as the button drifting away from its text.
-        let pill_y = HERO_TEXT_BOTTOM + theme::space::MD;
-        let hf = hero_focus();
-        let (cd, cgap) = (60.0f32, 20.0f32); // control diameter + inter-control gap
-        let plabel = if hero.resume_ms > 0 { c"Continue" } else { c"Play" };
-        let isz = theme::size::BODY as f32 * 1.15; // icon box (mirrors Button's own layout)
-        let pw = isz + 12.0 + crate::text::text_width(plabel.as_ptr(), theme::size::BODY, 1) + 68.0;
-        unsafe { (*addr_of_mut!(hero_btns))[0] = Rect::new(tx, pill_y, pw, cd) };
-        Button::new(plabel.as_ptr(), theme::size::BODY, Rect::new(tx, pill_y, pw, cd))
-            .icon(Icon::Play)
-            .focused(hf == 0)
-            .draw(env, p);
-        let mut cx = tx + pw + cgap;
-        unsafe { (*addr_of_mut!(hero_btns))[1] = Rect::new(cx, pill_y, cd, cd) };
-        CircleButton::new(c"".as_ptr()).icon(Icon::Info).at(cx, pill_y).focused(hf == 1).draw(env, p);
-        cx += cd + cgap;
-        unsafe { (*addr_of_mut!(hero_btns))[2] = Rect::new(cx, pill_y, cd, cd) };
-        CircleButton::new(c"".as_ptr()).icon(Icon::Chevron).at(cx, pill_y).focused(hf == 2).draw(env, p);
-
-        // page indicator: one dot per pooled hero item, the current one lit. SM keeps the dots
-        // visually grouped with the action row above — at MD they hovered midway to the peeking
-        // shelf and read as stuck to the poster row.
+        // Page indicator: one dot per pooled hero item, the current one lit — CENTRED on the panel,
+        // because it paces the whole billboard rather than the action row it happens to sit under
+        // (left-aligned it read as a fourth control in that row). SM keeps it on the action row's
+        // baseline band — at MD it hovered midway to the peeking shelf and read as stuck to the
+        // poster row instead.
         let pool_n = crate::pms::hero_pool_len();
         if pool_n > 1 {
-            PageDots::new(pool_n).active(hero_index()).at(tx, pill_y + cd + theme::space::SM).draw(env, p);
+            PageDots::new(pool_n)
+                .active(hero_index())
+                .centered_at(SCR_W * 0.5, HERO_ROW_Y + HERO_CTRL_D + theme::space::SM)
+                .draw(env, p);
         }
     }
 }
@@ -437,8 +490,15 @@ impl View for Grid {
     fn update(&mut self, env: &Env) {
         // delegate each row's per-cell scale springs + scroll spring to the shared CardRow (only the
         // focused row's scroll animates — focused=None freezes it, matching the old Shelf::update).
+        //
+        // The pop belongs to the GRID: in hero view the shelf only peeks and focus is on the
+        // billboard, so a magnified tile down there read as "already selected" — and, being scaled
+        // about its centre, it also broke the peek row's even margin/gap rhythm. No cell is focused
+        // until the snap has committed to the grid, on the SAME 0.5 threshold `draw`'s focused-last
+        // pass and [`focus_is_card`] use, so the pop, the label and the z-order all arrive together.
+        let grid = env.sp > 0.5;
         for r in 0..MAX_HUBS {
-            let focused = (env.fr as usize == r).then_some(env.fc as usize);
+            let focused = (grid && env.fr as usize == r).then_some(env.fc as usize);
             self.shelves[r].update(crate::pms::hub_len(r), focused, &RowStyle::HOME, env.dt);
         }
         let nh = n_hubs().max(1);
@@ -468,11 +528,11 @@ impl View for Grid {
             if !on_axis(row_y, CARD_H, SCR_H, 0.0) {
                 continue;
             }
-            // hub title above the row — rises with the magnified card so it's never covered
-            // (the shared card_row::title_lift rule; only lifts when the popped card is under it)
+            // hub title above the row — held clear of the magnified card so the focus glow never
+            // washes over it (the shared CardRow heading-clearance rule: it rises once when a card
+            // moves under it and STAYS up until none is, rather than tracking the pop)
             if env.sp > 0.02 {
-                let focused = (r == env.fr as usize).then_some((env.fc as usize).min(MAX_ITEMS - 1));
-                let lift = card_row::title_lift(&self.shelves[r], focused, &RowStyle::HOME, self.eff_scroll(r, env.sp));
+                let lift = self.shelves[r].lift();
                 if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
                     p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, theme::size::HEADLINE, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
                 }
@@ -726,11 +786,14 @@ pub(crate) fn home_update(dt: f32) {
             if cd > 0.0 {
                 addr_of_mut!(hero_flip_cd).write((cd - dt).max(0.0));
             }
-            // slide transition: step the progress spring, drop the outgoing layer once landed
+            // slide transition: step the progress spring, drop the outgoing layer once the travel
+            // left is sub-pixel (see HERO_SLIDE_REST_PX) — and land the spring exactly on 1.0 so
+            // the retiring frame and the first idle frame draw the same pixels.
             if addr_of!(hero_prev).read() >= 0 {
                 let sl = &mut *addr_of_mut!(hero_slide);
                 sl.step(1.0, K_SLIDE, dt);
-                if sl.pos > 0.995 {
+                if (1.0 - sl.pos).abs() * SCR_W < HERO_SLIDE_REST_PX {
+                    sl.jump(1.0);
                     addr_of_mut!(hero_prev).write(-1);
                 }
             }
@@ -748,6 +811,10 @@ pub(crate) fn home_update(dt: f32) {
         }
         let target = unsafe { addr_of!(snapTarget).read() };
         h.snap.step(target, K_SNAP, dt);
+        // the profile chip's unfurl (stepped here, drawn from `.pos` — home_draw runs at dt=0)
+        unsafe {
+            (*addr_of_mut!(chip_expand)).step(if chip_focused() { 1.0 } else { 0.0 }, K_CHIP, dt)
+        };
         let env = h.env(dt);
         h.grid.update(&env);
     });
@@ -768,16 +835,21 @@ pub(crate) fn home_draw() {
     });
 }
 
+/// Is the chip the focused thing? It is a real focus stop (UP from the hero action row), but only
+/// while the billboard is showing — the grid view has no top-band focus. The ONE predicate the
+/// unfurl spring's target and any future chip state read.
+fn chip_focused() -> bool {
+    hero_focus() == -1 && snap_pos() < 0.5
+}
+
 /// The top-left profile chip — the shared [`widgets::profile_chip`] visual. Records its rect for
 /// pointer hit-testing; a click or UP-in-hero opens the account menu (change profile / sign out).
+/// Focus is handed over as the spring's live position, so the chip unfurls its name capsule.
 fn draw_chip(p: Painter) {
-    let d = 64.0f32;
-    let r = Rect::new(MARGIN_X, 44.0, d, d);
+    let d = crate::ui::widgets::CHIP_D;
+    let r = Rect::new(MARGIN_X, crate::ui::widgets::TOP_BAR_Y, d, d);
     unsafe { addr_of_mut!(profile_chip).write(r) };
-    // chip is a real focus stop (UP from the hero action row) — the same lifted-card focus
-    // treatment as the shelf tiles.
-    let focused = hero_focus() == -1 && snap_pos() < 0.5;
-    crate::ui::widgets::profile_chip(p, r, focused);
+    crate::ui::widgets::profile_chip(p, r, unsafe { addr_of!(chip_expand).read() }.pos);
 }
 
 /// Pointer hit-test on the profile chip (returns true so the caller opens the account menu).
@@ -863,6 +935,22 @@ mod tests {
         // per library on top of continue/ondeck/recentlyAdded). `shelves` is a fixed [_; 16].
         assert_eq!(n_hubs_of(MAX_HUBS + 1), MAX_HUBS);
         assert_eq!(n_hubs_of(200), MAX_HUBS);
+    }
+
+    /// Regression: the top band packed pill `i` as `-(i+1)`, so Home (pill 0) landed on -1 — the
+    /// profile chip's value. `hero_pill_index` rejects anything above -2, so the Home pill was
+    /// unreachable by D-pad and could never wear the focused (white) treatment on its own screen.
+    /// The packing now round-trips for EVERY pill the row can draw, Home included.
+    #[test]
+    fn every_tab_pill_round_trips_through_the_focus_packing() {
+        for i in 0..crate::ui::widgets::MAX_TABS {
+            let f = hero_focus_for_pill(i);
+            assert_ne!(f, -1, "pill {i} must not alias the profile chip");
+            assert_eq!(hero_pill_index(f), Some(i), "pill {i} must decode back to itself");
+        }
+        assert_eq!(hero_pill_index(-1), None, "the profile chip is not a pill");
+        assert_eq!(hero_pill_index(0), None, "the hero Play pill is not a tab pill");
+        assert_eq!(hero_pill_index(c_int::MIN), None, "the grid-card sentinel is not a pill");
     }
 
     #[test]

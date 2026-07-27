@@ -66,13 +66,19 @@ impl RowStyle {
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
+    ///
+    /// The pop is much larger than the shelves' 1.09 **on purpose**: a poster shelf marks its focus
+    /// against close, hard-edged neighbours, but a lone row of widely-spaced circles has no such
+    /// reference and the same 9% read as "nothing is selected". 1.18 still leaves 28px between
+    /// adjacent tiles at full pop (slot 292 − 264), and `profiles::NAME_DY` derives the name band's
+    /// drop from this number so the label can never collide with the popped circle.
     pub(crate) const PROFILES: RowStyle = RowStyle {
         w: 220.0,
         h: 220.0,
         gap: 72.0,
         margin_x: MARGIN_X,
         radius: 110.0,
-        focus_scale: 1.08,
+        focus_scale: 1.18,
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
@@ -100,11 +106,17 @@ impl RowStyle {
 pub(crate) struct CardRow {
     scale: [Spring; MAX_ROW_ITEMS],
     scroll_x: Spring,
+    lift: Spring,
     pub base_y: f32,
 }
 impl CardRow {
     pub(crate) const fn new() -> Self {
-        CardRow { scale: [Spring::at(1.0); MAX_ROW_ITEMS], scroll_x: Spring::at(0.0), base_y: 0.0 }
+        CardRow {
+            scale: [Spring::at(1.0); MAX_ROW_ITEMS],
+            scroll_x: Spring::at(0.0),
+            lift: Spring::at(0.0),
+            base_y: 0.0,
+        }
     }
     /// Step every cell's scale spring (all `MAX_ROW_ITEMS` every frame — invariant #10) toward
     /// `focus_scale` for the focused cell else 1.0; then, ONLY when this row is focused, glide the
@@ -124,6 +136,7 @@ impl CardRow {
                 self.scroll_x.step(want, sty.k_scroll, dt);
             }
         }
+        self.lift.step(heading_clearance(focused, sty, self.scroll_x.pos), sty.k_scale, dt);
     }
     #[inline]
     pub(crate) fn scale(&self, i: usize) -> f32 {
@@ -132,6 +145,12 @@ impl CardRow {
     #[inline]
     pub(crate) fn scroll_x(&self) -> f32 {
         self.scroll_x.pos
+    }
+    /// How far this row's heading must rise, live — see [`heading_clearance`] for the rule and
+    /// [`CardRow::update`] for the spring that holds it there.
+    #[inline]
+    pub(crate) fn lift(&self) -> f32 {
+        self.lift.pos
     }
 }
 
@@ -157,21 +176,27 @@ pub(crate) fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, 
     reveal(cur, lo, hi, max_sx)
 }
 
-/// The heading lift for a focused-magnified tile — the ONE rule home hub titles and the detail
-/// strip headings ("Related", "Cast & Crew") share: the heading rises with the popped tile so the
-/// card + ring never cover it, but only when that tile is actually near the row's left edge
-/// (under the heading), with a proximity ramp so the transition stays continuous. The first TWO
-/// slots get the FULL lift — a heading (plus the focus ring's spill) reaches past slot 1, and a
-/// partial lift there let the ring climb into the title's descender line; the ramp tapers from
-/// slot 2 out. `scroll` is the row's EFFECTIVE scroll at draw time (home scales its scroll by
-/// `env.sp`).
-pub(crate) fn title_lift(row: &CardRow, focused: Option<usize>, sty: &RowStyle, scroll: f32) -> f32 {
+/// How far a row's heading must rise to stay clear of the focused tile — the ONE rule home hub
+/// titles and the detail strip headings ("Related", "Cast & Crew") share. A popped tile's focus
+/// glow spills past its top edge and washes over the heading above it, but only while that tile is
+/// near the row's left edge (under the heading), so this is the FULL pop height tapered by a
+/// proximity ramp. The first TWO slots need the whole clearance — a heading plus the glow's spill
+/// reaches past slot 1, and a partial lift there let the glow climb into the title's descender
+/// line; the ramp tapers from slot 2 out.
+///
+/// It is a **destination, not a readout**: the height comes from the style's `focus_scale`, never
+/// from a live scale spring. Multiplying by the pop's current magnitude tied the heading to the
+/// magnification, so it rode every selection change down and back up — and worse, the frame focus
+/// moved the incoming cell's spring was still at rest, so the heading dropped its whole lift in
+/// one frame and sprang back. [`CardRow`] holds the result on its own spring, so the heading
+/// simply STAYS up for as long as something is under it and settles once when nothing is.
+fn heading_clearance(focused: Option<usize>, sty: &RowStyle, scroll: f32) -> f32 {
     let Some(c) = focused else {
         return 0.0;
     };
     let x = sty.margin_x + c as f32 * (sty.w + sty.gap) - scroll;
     let near = ((sty.margin_x + sty.w * 2.5 + sty.gap - x) / sty.w).clamp(0.0, 1.0);
-    sty.h * (row.scale(c) - 1.0) * 0.5 * near
+    sty.h * (sty.focus_scale - 1.0) * 0.5 * near
 }
 
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
@@ -299,4 +324,85 @@ fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
         p.rect(r, rad, theme::RESUME_FILL, theme::RESUME_FILL, 0.0);
     }
     p.clip_clear();
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DT: f32 = 1.0 / 60.0;
+    /// The full clearance a HOME shelf's heading needs over a popped tile.
+    const FULL: f32 = RowStyle::HOME.h * (RowStyle::HOME.focus_scale - 1.0) * 0.5;
+
+    fn run(row: &mut CardRow, frames: usize, focused: Option<usize>, sty: &RowStyle) {
+        for _ in 0..frames {
+            row.update(8, focused, sty, DT);
+        }
+    }
+
+    /// Regression, two defects in one: the heading clearance used to be `live_scale - 1`, i.e. a
+    /// readout of the focus-pop spring. So (a) the frame focus moved, the incoming cell's spring
+    /// was still at rest and the heading dropped its ENTIRE lift in one frame before springing
+    /// back, and (b) between those it rode the pop up and down. It is a held destination now:
+    /// walking slots 0 → 1 must leave the heading exactly where it is, all the way through.
+    #[test]
+    fn the_heading_holds_still_while_focus_walks_the_slots_beneath_it() {
+        let sty = RowStyle::HOME;
+        let mut row = CardRow::new();
+        run(&mut row, 180, Some(0), &sty);
+        let held = row.lift();
+        assert!((held - FULL).abs() < 0.1, "slot 0 must hold the full clearance ({held} vs {FULL})");
+
+        // slot 1 is also under the heading, so nothing should move — not by a pixel, not for a frame
+        for f in 0..180 {
+            row.update(8, Some(1), &sty, DT);
+            assert!(
+                (row.lift() - held).abs() < 0.1,
+                "heading moved {:.2}px at frame {f} while focus stayed under it",
+                row.lift() - held
+            );
+        }
+    }
+
+    /// And when the popped tile really does leave, the heading settles back — once, smoothly, with
+    /// no frame moving it more than a spring step (the defect moved ~16px in a single frame).
+    #[test]
+    fn the_heading_settles_back_smoothly_once_nothing_is_under_it() {
+        let sty = RowStyle::HOME;
+        let mut row = CardRow::new();
+        run(&mut row, 180, Some(0), &sty);
+        let mut prev = row.lift();
+        for _ in 0..240 {
+            row.update(8, Some(5), &sty, DT); // far down the row — no clearance needed
+            let l = row.lift();
+            assert!((l - prev).abs() < 3.0, "heading jumped {:.1}px in one frame", l - prev);
+            prev = l;
+        }
+        assert!(prev < 0.5, "the heading must come all the way back down (got {prev})");
+    }
+
+    /// A row that owns no focus rests flat — including a row that just LOST focus, which used to
+    /// snap its heading back the same way.
+    #[test]
+    fn an_unfocused_row_lifts_its_heading_by_nothing() {
+        let sty = RowStyle::HOME;
+        let mut row = CardRow::new();
+        run(&mut row, 180, Some(0), &sty);
+        run(&mut row, 240, None, &sty);
+        assert!(row.lift() < 0.5);
+    }
+
+    /// The clearance tapers with distance from the heading: slots 0 and 1 sit under it and get the
+    /// whole thing, slot 2 is on the ramp, and a tile far down the row leaves it alone.
+    #[test]
+    fn the_clearance_tapers_as_the_popped_tile_moves_away_from_the_heading() {
+        let sty = RowStyle::HOME;
+        let at = |c: usize| heading_clearance(Some(c), &sty, 0.0);
+        assert_eq!(at(0), at(1), "the first two slots share the full clearance");
+        assert!((at(0) - FULL).abs() < 0.001);
+        assert!(at(2) > 0.5 && at(2) < at(1), "slot 2 is on the taper ({} vs {})", at(2), at(1));
+        assert_eq!(at(4), 0.0, "a tile far from the heading must not move it");
+        assert_eq!(heading_clearance(None, &sty, 0.0), 0.0);
+    }
 }

@@ -19,7 +19,12 @@ pub const SCR_W: f32 = 1920.0;
 pub const SCR_H: f32 = 1080.0;
 
 // hero <-> grid continuum
-pub const PEEK_Y: f32 = 828.0; // shelf top in hero view
+/// Shelf top in hero view. Re-derived once the peek row stopped magnifying its focused cell: the
+/// peek used to be judged off that popped tile, whose 1.09 scale about its centre lifted its top
+/// edge `CARD_H * 0.09 / 2 ≈ 17px` above every other card in the row. Un-popping the row dropped
+/// the whole shelf by that much, so the peek is 17px shallower here to keep the composition the
+/// hero view was tuned to (828 → 811; card top = `PEEK_Y + CARD_DY` = 837, as the popped one was).
+pub const PEEK_Y: f32 = 811.0;
 // shelf top in grid view — leaves the first hub title (row_y − 34, lifted up to ~10 more when its
 // leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 108)
 pub const GRID_TOP_Y: f32 = 176.0;
