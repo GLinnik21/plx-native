@@ -4,8 +4,8 @@
 //! *reset*, never freed — so a late library callback after teardown writes to a
 //! live object, exactly as the C static globals behaved.
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU8, Ordering};
+use std::sync::{Condvar, Mutex};
 use crate::stream::HttpStream;
 
 /// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
@@ -33,6 +33,69 @@ pub(crate) struct SubBitmap {
     pub w: i32,
     pub h: i32,
     pub rgba: Vec<u8>,
+}
+
+/// What playback is actually doing, as one value the UI can render from.
+///
+/// This replaces the old single `seeking` boolean, which was only ever set by `request_seek` —
+/// so `player::loading()` was **false for the whole initial load** and the `Spinner` that has sat
+/// in `player_hud.rs` all along never fired on first play. The HUD drew a live-looking transport
+/// at 0:00 / -0:00 instead, which is the half of the frozen-HUD report that is not blocking I/O.
+///
+/// Derived once per frame in `pump::derive_state` from signals the workers already publish; no
+/// new cross-thread plumbing. Ordered so `>= Playing` reads as "actually on screen".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum PlaybackState {
+    /// no engine
+    Idle = 0,
+    /// the route/plan resolve is in flight (set by step 7's `Job<Plan>`; nothing sets it yet)
+    Resolving = 1,
+    /// engine started, pipeline not yet loaded — the HTTP GET + Starfish `Load` window
+    Connecting = 2,
+    /// loaded and fed, but no frame has been presented yet
+    Buffering = 3,
+    /// a seek is resolving (reopen → prime → Play)
+    Seeking = 4,
+    /// frames on the panel
+    Playing = 5,
+    /// the producer died (a failed open / no video stream). Terminal until teardown.
+    Error = 6,
+}
+
+impl PlaybackState {
+    pub fn from_u8(v: u8) -> PlaybackState {
+        match v {
+            1 => PlaybackState::Resolving,
+            2 => PlaybackState::Connecting,
+            3 => PlaybackState::Buffering,
+            4 => PlaybackState::Seeking,
+            5 => PlaybackState::Playing,
+            6 => PlaybackState::Error,
+            _ => PlaybackState::Idle,
+        }
+    }
+    /// "something is happening and the user should see a spinner, not a dead transport".
+    pub fn is_busy(self) -> bool {
+        matches!(
+            self,
+            PlaybackState::Resolving
+                | PlaybackState::Connecting
+                | PlaybackState::Buffering
+                | PlaybackState::Seeking
+        )
+    }
+    /// the one-line status the HUD shows beside the spinner
+    pub fn caption(self) -> &'static str {
+        match self {
+            PlaybackState::Resolving => "Preparing…",
+            PlaybackState::Connecting => "Connecting…",
+            PlaybackState::Buffering => "Buffering…",
+            PlaybackState::Seeking => "Seeking…",
+            PlaybackState::Error => "Playback failed",
+            _ => "",
+        }
+    }
 }
 
 pub(crate) struct Shared {
@@ -87,6 +150,18 @@ pub(crate) struct Shared {
     pub pending_retranscode: AtomicBool,
     // tells the /:/timeline progress-reporter thread to exit (set in stop_bufferfeed).
     pub report_stop: AtomicBool,
+    // …and WAKES it so it notices. The reporter used to sleep its ~10 s interval in ten 1 s
+    // steps, checking `report_stop` between them, so `teardown`'s join of that thread cost a
+    // deterministic 0-1000 ms on the MAIN thread — on every stop, every reload-seek and every
+    // audio switch. `teardown` now sets this and notifies before it joins.
+    pub report_wake: (Mutex<bool>, Condvar),
+    // the derived UI state (a `PlaybackState`), published by the pump once a frame and read by
+    // the HUD. Written only on the main thread; atomic because it is read from the draw path.
+    pub pb_state: AtomicU8,
+    // demux (D) -> main (M): the producer died before publishing a duration, so the EOS path
+    // (which needs `duration_ns > 0`) can never fire and the player would sit on a black screen
+    // forever. The pump turns this into `PlaybackState::Error` so the HUD can say so.
+    pub demux_failed: AtomicBool,
 
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
@@ -129,6 +204,9 @@ impl Shared {
             desired_audio_idx: AtomicI32::new(-1),
             pending_retranscode: AtomicBool::new(false),
             report_stop: AtomicBool::new(false),
+            report_wake: (Mutex::new(false), Condvar::new()),
+            pb_state: AtomicU8::new(PlaybackState::Idle as u8),
+            demux_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
             sub_cues: Mutex::new(Vec::new()),
             sub_bitmaps: Mutex::new(Vec::new()),
@@ -160,6 +238,10 @@ impl Shared {
         // native audio-track choice survives seeking. It is reset on a new item (route).
         self.pending_retranscode.store(false, Ordering::Relaxed);
         self.report_stop.store(false, Ordering::Relaxed);
+        // clear the wake latch too, or the NEXT session's reporter returns on its first wait
+        *self.report_wake.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
+        self.demux_failed.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). The cue/bitmap STORES below are transient render state

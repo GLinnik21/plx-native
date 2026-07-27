@@ -18,6 +18,36 @@ pub(crate) fn load_thread(payload: SendPtr<c_char>) {
     super::log(&format!("SMP: Load returned ok={ok}"));
 }
 
+/// How long the progress reporter waits between /:/timeline posts.
+const REPORT_INTERVAL_S: u64 = 10;
+
+/// Wait up to `secs`, returning `true` as soon as teardown asks us to stop.
+///
+/// This used to be ten 1-second `sleep`s with a flag check between them, which made
+/// `engine::teardown`'s join of this thread cost a deterministic 0-1000 ms **on the main
+/// thread** — paid on every stop, every reload-based seek and every audio switch.
+/// `teardown` now latches `report_wake` and notifies before it joins, so the wait ends at
+/// once. The loop re-checks the predicate because `wait_timeout` may wake spuriously; a
+/// spurious wake must not shorten the interval into an early extra POST.
+fn wait_or_stop(secs: u64) -> bool {
+    let (m, cv) = &SHARED.report_wake;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if *g || SHARED.report_stop.load(Ordering::Acquire) {
+            return true;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        g = cv
+            .wait_timeout(g, deadline - now)
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
+    }
+}
+
 /// progress-reporter thread: every ~10s, POST the current position to Plex's
 /// /:/timeline (route::report_timeline → the typed client) so the server updates
 /// viewOffset (the resume point) + watched state. `rk` is captured at spawn (fixed per
@@ -27,14 +57,7 @@ pub(crate) fn load_thread(payload: SendPtr<c_char>) {
 pub(crate) fn timeline_thread(rk: String) {
     use crate::plex::TimelineState;
     loop {
-        // sleep ~10s in 1s steps so we exit promptly on teardown
-        for _ in 0..10 {
-            if SHARED.report_stop.load(Ordering::Acquire) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        if SHARED.report_stop.load(Ordering::Acquire) {
+        if wait_or_stop(REPORT_INTERVAL_S) {
             return;
         }
         let dur = SHARED.duration_ns.load(Ordering::Relaxed);

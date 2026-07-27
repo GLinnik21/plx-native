@@ -1275,7 +1275,7 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
     ]
 }
 
-pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
     DIAG_FIRST.store(true, Ordering::Relaxed);
     ensure_registered();
     let aq_p = aq.0; // VIDEO lane (also the AVIO abort ptr + EOF marker)
@@ -1289,9 +1289,18 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
     // (a live transcode has no seekable index), reopening the whole AVFormatContext.
     'outer: loop {
         unsafe {
+            // Teardown may have raced us here (it aborts the lanes, then shutdown(2)s the
+            // socket, then JOINS this thread on the main thread). Without this check we would
+            // open a BRAND NEW connection that the already-fired shutdown cannot touch, and the
+            // main thread would sit in that join for the full connect+recv budget.
+            if crate::aq::aq_is_aborted(aq_p) {
+                crate::player::log("ff: aborted before reopen");
+                break;
+            }
             crate::stream::http_close(hs_p);
             if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
                 crate::player::log(&format!("ff: http_open FAILED status={}", crate::stream::hs_status(hs_p)));
+                SHARED.demux_failed.store(true, Ordering::Release);
                 break;
             }
             let size = crate::stream::hs_content_length(hs_p);
@@ -1355,7 +1364,7 @@ pub(crate) fn demux(host: String, port: c_int, path: String, aq: SendPtr<AuQueue
             } else {
                 // default: feed the track matching the Load payload's codec (Media[0].audioCodec),
                 // NOT av_find_best_stream — a codec mismatch stalls the audio ES and wedges video.
-                audio_stream_matching(fmt, &crate::route::stream_acodec())
+                audio_stream_matching(fmt, &acodec)
                     .unwrap_or_else(|| av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0))
             };
             if vi < 0 {
