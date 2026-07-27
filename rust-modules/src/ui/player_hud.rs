@@ -7,7 +7,7 @@
 use crate::gfx::{delete_tex, upload_rgba};
 use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::theme;
-use crate::ui::widgets::{Spinner, TabPill, TransportButton};
+use crate::ui::widgets::{Spinner, StatusKind, StatusOverlay, TabPill, TransportButton};
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_uint;
@@ -218,6 +218,31 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     let white = theme::TEXT_PRIMARY;
     let dim = theme::TEXT_SECONDARY;
     let track = theme::RAIL_TRACK;
+
+    // The load/seek/failure read-out, above the transport. Before this, `PlaybackState` was
+    // published every frame and NOTHING read it: the initial load drew a live-looking transport at
+    // 0:00 / -0:00, and a dead producer (`PlaybackState::Error`, which is deliberately not
+    // `is_busy()`) drew a fully black screen with no message and no hint that BACK is the way out.
+    {
+        let st = crate::player::state();
+        let kind = match st {
+            crate::player::PlaybackState::Error => Some(StatusKind::Failed),
+            s if s.is_busy() => Some(StatusKind::Working),
+            _ => None,
+        };
+        // A seek keeps its existing in-transport spinner (beside the elapsed clock) — overlaying
+        // the centre of the screen for a sub-second reposition would be far noisier than the bug.
+        let overlay = matches!(st, crate::player::PlaybackState::Error)
+            || (kind.is_some() && crate::player::frames() == 0);
+        if let (Some(kind), true) = (kind, overlay) {
+            // CString must outlive the draw (Label/StatusOverlay hold a non-owning ptr)
+            if let Ok(cs) = CString::new(st.caption()) {
+                StatusOverlay::new(Rect::new(0.0, 0.0, SCR_W, SCR_H - 340.0), cs.as_ptr(), kind)
+                    .phase(now)
+                    .draw(&e, p);
+            }
+        }
+    }
 
     if transport {
     // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
