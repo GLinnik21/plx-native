@@ -218,4 +218,10 @@ ipk: pkg/plxnative
 threadprobe: tools/threadprobe.c
 	$(CC) $(CFLAGS) -o pkg/threadprobe tools/threadprobe.c -lpthread
 
-.PHONY: all setup-env deploy run run-stream kill test ipk clean threadprobe
+# tools/sockprobe.c — socket semantics the host suite can't answer (cargo test runs on macOS, the
+# app runs on Linux, and they disagree about shutdown-during-connect). Same deal: build, scp, run,
+# delete.
+sockprobe: tools/sockprobe.c
+	$(CC) $(CFLAGS) -o pkg/sockprobe tools/sockprobe.c -lpthread
+
+.PHONY: all setup-env deploy run run-stream kill test ipk clean threadprobe sockprobe

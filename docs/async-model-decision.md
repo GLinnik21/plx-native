@@ -200,6 +200,42 @@ The likely fix, unimplemented: a `reading: AtomicBool` set once headers are pars
 interrupt entry points — "wake a blocked read" (seek) vs "kill this stream" (teardown). Design and
 host-test it before it goes near the device again.
 
+### Step 1's headline change — RE-LANDED (2026-07-29)
+
+Not via the two-entry-point design above: that was solving "distinguish a seek interrupt from a
+teardown interrupt," and **there is no seek interrupt any more.** `5938b5f`/`71929ee` moved seeking
+into the demux thread's own `av_seek_frame`, so the only `http_shutdown` left in the tree is
+teardown's (`player/engine.rs`), where cutting an open short is exactly the intent. The reversal
+trigger dissolved rather than being worked around.
+
+So `http_open` now publishes the fd at `socket()` and all five early returns retire it through
+`close_owned`. What that buys: `teardown` joins the demux thread, and that thread could be inside
+`http_open` — where `http_shutdown` was a no-op — so a stop during a stalled open parked the **main
+loop** for the full 15 s `SO_RCVTIMEO` (or 2 s of connect). Now it costs one syscall.
+
+**The design was decided by a device probe, and my reasoning going in was wrong.** I argued the fd
+should be published *after* `connect`, on the grounds that Linux fails `shutdown` on an unconnected
+socket with ENOTCONN and so the handshake window is uninterruptible anyway. `tools/sockprobe.c`
+(new) says otherwise on this kernel: `shutdown` returns 0 and the handshake dies at 200 ms instead
+of running its 1200 ms deadline. The plan's original `socket()` publication was right. Note this
+could not have been settled on the host — `cargo test` runs on Darwin, where the same call returns
+0 **and makes `connect_timeout` report success on a socket that never connected.** Three platforms'
+worth of divergence in one syscall.
+
+Host coverage: `an_open_stalled_in_the_header_read_is_interruptible` — verified to fail on the
+pre-fix code by taking exactly 15.00 s (the `SO_RCVTIMEO`), and to pass in 0.3 s after.
+
+Device: 18/18 + 5/5 FPS, and the seek tier 12/12 over three runs — `substance_seek_inplace`, the
+case that bisected the original revert, among them.
+
+**Still open, and NOT closed by this:** `http_shutdown` reads the fd and then acts on it, so it can
+race the owner's `close_owned` and shoot a number that has since been recycled by another thread's
+`socket()`. That race pre-dates this change; publishing earlier widens its window from the
+body-read phase to the whole open. The decision's own remedy is the right one — a `Mutex` under
+which both `shutdown(2)` and `close(2)` happen — deliberately not folded in here, because bundling
+a struct-layout change into the re-land of a previously-reverted change is how you earn a second
+revert. Tracked separately.
+
 ### Step 3 — `Job<T>` DECLINED on re-evaluation (2026-07-28)
 
 The board picked B as the vehicle. By the time step 3's turn came, steps 1, 2, 5, 6 and 7 had all
