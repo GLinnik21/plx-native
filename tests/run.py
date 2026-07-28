@@ -250,6 +250,10 @@ RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
 # the 1Hz media position carried on the render heartbeat (app.rs). Anchored to FPS= so it can
 # never pick up a `pos=` that some other line grows later.
 RE_POS = re.compile(r"FPS=\d+ .*?\bpos=(\d+)s")
+# requests a single applied seek MERGED (pump.rs take_coalesced). Present on BOTH paths that
+# apply a coalesced target — the normal `seek(in-place)` and the stuck-watchdog `retry reopen` —
+# which is exactly why op_seek_rapid keys on it instead of on either line. See that docstring.
+RE_COALESCED = re.compile(r"\bcoalesced=(\d+)")
 RE_SUBCUE = re.compile(r'sub cue \[\d+\.\.\d+ms\]\s+"(.*)"')
 # image (PGS/VobSub) subtitle cue: the demuxer decoded a bitmap display-set for the selected
 # track and pushed it to the render store (ff.rs decode_bitmap_cue). Distinct from the text
@@ -429,32 +433,65 @@ def op_seek_inplace(lines, target_s):
     return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
 
 
-def op_seek_rapid(lines, final_s, min_seeks=2):
-    """Rapid tap-burst seek: several request_seek()s land while earlier ones are still
-    resolving, so the pump COALESCES (holds the newest target until the in-flight seek
-    anchors). Assert the burst actually exercised >= min_seeks pump seeks, everything
-    stayed in-place (no stuck-watchdog reload escalation), playback re-anchored near the
-    final target and kept ADVANCING, and the audio lane resumed (the historical
-    rapid-back-tap bug was 10+ s of post-burst silence)."""
-    idxs = [i for i, ln in enumerate(lines) if "seek(in-place)" in ln]
-    if len(idxs) < min_seeks:
-        return False, f"only {len(idxs)} `seek(in-place)` seek(s) fired, need >={min_seeks} (burst did not exercise coalescing)"
+def op_seek_rapid(lines, final_s):
+    """Rapid tap-burst seek: request_seek()s land while an earlier seek is still resolving, so
+    the pump COALESCES — it keeps only the newest target and applies it once the in-flight seek
+    anchors. Assert the merge actually happened, that no seek escalated out of in-place, that
+    playback re-anchored near the final target and kept ADVANCING, and that the audio lane
+    resumed (the historical rapid-back-tap bug was 10+ s of post-burst silence).
+
+    DO NOT go back to counting `seek(in-place)` lines. That is what this assertion used to do
+    (">= 2 fired, so coalescing was exercised") and it measured PMS latency, not merging:
+
+      * a tap that arrives mid-seek is applied by the next pump tick after the in-flight seek
+        anchors — which logs `seek(in-place)`;
+      * unless the anchor takes longer than SEEK_STUCK_MS (1200ms), in which case the
+        stuck-watchdog applies it instead — it swaps the coalesced target out of TX.seek_to_ns
+        (pump.rs) and logs `in-place stuck → retry reopen`, so the second `seek(in-place)`
+        never comes.
+
+    Both are the coalescer working. Which one runs is decided by whether a reopen+av_seek+first
+    keyframe beats 1200ms, i.e. by the network — so the seek count swung 1..5 run to run on
+    identical code, and every value below 2 was scored as a failure. That was the wandering seek
+    tier. The pump now reports `coalesced=<n>` on both paths (n = requests this seek merged),
+    which states the invariant directly and cannot be raced.
+    """
+    taps = [ln for ln in lines if "autoseek: step" in ln]
+    if not taps:
+        return False, "no `autoseek: step` lines — the seek script never ran (nothing was tested)"
+    # Every line either path emits for an applied seek, in order; the burst's tail starts at the
+    # last one, since a watchdog retry can be the final seek of the burst.
+    idxs = [i for i, ln in enumerate(lines) if "coalesced=" in ln]
+    if not idxs:
+        return False, f"{len(taps)} taps fired but the pump applied no seek (no `coalesced=` line)"
+    merged = sum(int(m.group(1)) for ln in lines for m in [RE_COALESCED.search(ln)] if m)
+    if merged < 1:
+        return False, (
+            f"{len(taps)} taps produced {len(idxs)} seeks, none of which merged a request "
+            f"(all `coalesced=0`) — the burst outran nothing, so coalescing went untested. "
+            f"Tighten `gap=` in the case's seek script."
+        )
     if find(lines, "reload_at: fresh Load"):
         return False, "burst escalated to a reload (`reload_at: fresh Load` — stuck-watchdog gave up on in-place)"
+    seg = sum(1 for ln in lines if "in-place seek:" in ln and "sendSegment=1" in ln)
+    if seg < 1:
+        return False, "no seek re-anchored the segment (`in-place seek: … sendSegment=1` absent)"
     tail = lines[idxs[-1]:]
-    ts = timeline_secs(tail)
+    ts = progress_secs(tail)
     if len(ts) < 2:
-        return False, f"only {len(ts)} timeline report(s) after the last seek; playback did not demonstrably resume"
+        return False, f"only {len(ts)} position report(s) after the last seek; playback did not demonstrably resume"
     lo = min(t for t, _ in ts)
     hi = max(t for t, _ in ts)
     if hi < final_s - 8:
-        return False, f"post-burst timeline peaked at {hi}s, expected ~{final_s}s (seek landed wrong / stalled)"
+        return False, f"post-burst position peaked at {hi}s, expected ~{final_s}s (seek landed wrong / stalled)"
     if hi - lo < 8:
-        return False, f"post-burst timeline {lo}s..{hi}s climbed only {hi - lo}s (need >=8s of real playback)"
+        return False, f"post-burst position {lo}s..{hi}s climbed only {hi - lo}s (need >=8s of real playback)"
     if not any("feed a#" in ln for ln in tail):
         return False, "no `feed a#` after the last seek — audio lane never resumed (silent playback)"
-    seg = sum(1 for ln in lines if "in-place seek:" in ln and "sendSegment=1" in ln)
-    return True, f"{len(idxs)} in-place seeks (sendSegment ok on {seg}); post-burst timeline {lo}s..{hi}s; audio alive"
+    return True, (
+        f"{len(taps)} taps → {len(idxs)} pump seeks, {merged} request(s) coalesced away "
+        f"(sendSegment ok on {seg}); post-burst position {lo}s..{hi}s; audio alive"
+    )
 
 
 def op_seek_transcode(lines, target_s):
@@ -562,8 +599,8 @@ def op_resume_transcode(lines, offset_s):
 # So early exit can never turn a FAIL into a PASS on the evidence *seen*; what it can do is
 # stop before evidence that would have failed the case arrives. SETTLE_S keeps watching for a
 # moment after the last assertion flips, and --no-early restores the full fixed window.
-# For the rapid-seek cases the structure already covers most of that risk: op_seek_rapid needs
-# two timeline reports AFTER the last seek, so >=10s of post-burst playback has to elapse
+# For the rapid-seek cases the structure already covers most of that risk: op_seek_rapid wants
+# >=8s of position CLIMB after the last seek, so that much post-burst playback has to elapse
 # before the case can pass at all — well past when the watchdog would have escalated.
 # (Note the old window was itself arbitrary — an error at 70s of a 60s case was never caught.)
 SETTLE_S = 2.0
@@ -578,11 +615,10 @@ def failed_for_good(case, lines):
     """The reason a case can no longer pass however long it runs, or None if it still might.
 
     Returned as a STRING, not a bool, because stopping early can change which failure the case
-    reports. morning_show_seek_rapid is the live example: the burst wedges on its first seek and
-    the watchdog escalates, so `reload_at: fresh Load` is the true disqualifier — but op_seek_rapid
-    tests the seek COUNT first, and at the moment we cut the case short only one seek has fired.
-    The verdict is right either way; the evidence would have pointed at a symptom. So the settled
-    reason is surfaced next to the verdict instead of being thrown away.
+    reports: assertions are written to name the FIRST thing missing, and cutting a case short can
+    leave an earlier check unsatisfied for no reason but the clock, so the reported evidence would
+    point at a symptom of the early exit rather than at the real disqualifier. Surfacing the
+    settled reason next to the verdict keeps the true cause instead of throwing it away.
 
     Only the two ABSENCE checks can conclude this, and it is the mirror image of the rule that
     limits early PASS: once the disqualifying line exists it never un-exists, so the rest of the
@@ -732,7 +768,7 @@ def evaluate(case, lines):
     for op in case["operations"]:
         k = op["op"]
         if k == "seek" and op.get("mode") == "rapid":
-            results.append(("seek_rapid", *op_seek_rapid(lines, op["final_s"], op.get("min_seeks", 2))))
+            results.append(("seek_rapid", *op_seek_rapid(lines, op["final_s"])))
         elif k == "seek" and op.get("mode") == "inplace":
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
         elif k == "seek":
