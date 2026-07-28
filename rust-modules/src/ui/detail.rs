@@ -310,6 +310,10 @@ fn reset_view_state(v: &mut DetailView) {
     v.tab_hscroll.jump(0.0);
 }
 
+/// Open the detail page for a catalog row. BLOCKING: its only caller is the headless
+/// `plxnative-detail` trigger, which replays `move_focus`/`on_ok` in the same frame (and the
+/// `detail-transition` FPS scene needs the sections present before `detailosc` starts swinging
+/// the scroll — an async load there would measure a static hero and pass vacuously).
 pub(crate) fn open(idx: c_int) {
     let v = view();
     v.selected = idx;
@@ -317,7 +321,7 @@ pub(crate) fn open(idx: c_int) {
     if idx >= 0 {
         if let Some(m) = crate::pms::movie(idx as usize) {
             if !m.rk.is_empty() {
-                metadata::load_detail(&m.rk);
+                metadata::load_detail_now(&m.rk);
             }
         }
     }
@@ -585,6 +589,23 @@ pub(crate) fn draw() {
     // `impl Column for DetailView` dispatch). The focused section is never culled.
     let col = view().column;
     col.draw(view(), &env, p);
+    // A fetch is in flight with nothing loaded (`open_rk` clears CURRENT so the page never acts
+    // on or paints a stale item), so `sections()` is hero-only and everything below the buttons
+    // is empty — mark it, the same way the episode row marks a season switch. The hero itself
+    // still reads: with `current()` None, `draw_hero`/`hero_layout` fall back to the catalog row
+    // for the art, title and summary, so only the content area is genuinely blank.
+    //
+    // The `current().is_none()` half is what keeps this off the blocking paths, where the item is
+    // installed before the next draw and a spinner would flash for one frame.
+    if metadata::detail_loading() && metadata::current().is_none() {
+        // centred in the empty content area — derived from the flow (column.top is the measured
+        // hero bottom), so it follows a taller hero down instead of drifting under it
+        let cy = (view().column.top + SCR_H) * 0.5;
+        crate::ui::widgets::Spinner::new(SCR_W * 0.5, cy, 26.0)
+            .phase(view().spin_ms as u32)
+            .tint(theme::TEXT_SECONDARY)
+            .draw(&env, ps);
+    }
 }
 
 // The below-hero sections ARE the ScrollColumn's children (the hero at section id 0 is pinned, drawn
@@ -1118,7 +1139,10 @@ pub(crate) fn on_ok() -> bool {
                     } else {
                         crate::plex::client().scrobble(&rk);
                     }
-                    metadata::load_detail(&rk);
+                    // BLOCKING: the season restore below reads the refreshed item, and a
+                    // deferred landing would install cur_season 0 on top of it — clobbering the
+                    // season the user was browsing, which is exactly what this arm prevents.
+                    metadata::load_detail_now(&rk);
                     if season != 0 {
                         metadata::load_season(season); // keep the season the user was browsing
                     }
@@ -1179,21 +1203,53 @@ pub(crate) fn reselect() {
     }
 }
 
-/// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
-/// catalog row for the backdrop art/blur when the item is in the browse catalog, else
-/// falls back to the loaded detail's own art (no blur).
-pub(crate) fn open_rk(rk: &str) {
+/// Point the page at `rk` — catalog row (for the backdrop art/blur) + fresh focus/scroll. The
+/// two `open_rk*` twins share it so they cannot drift; only the fetch differs.
+fn mount_rk(rk: &str) {
     let idx = crate::pms::index_of_rk(rk);
     let v = view();
     v.selected = idx;
     reset_view_state(v);
-    metadata::load_detail(rk);
+}
+
+/// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
+/// catalog row for the backdrop art/blur when the item is in the browse catalog, else
+/// falls back to the loaded detail's own art (no blur).
+///
+/// ASYNC: the page mounts this frame on the catalog row and the sections fill in when
+/// `metadata::pump_detail` lands the fetch. Callers that must read `metadata::current()` before
+/// the next statement want [`open_rk_now`] instead.
+pub(crate) fn open_rk(rk: &str) {
+    mount_rk(rk);
+    // DROP THE OLD ITEM FIRST. The page is now pointed at `rk`, but the fetch takes 2-5 round
+    // trips — and for that whole window every `current()` reader would otherwise still see the
+    // PREVIOUS item while the page claims to be this one. That is not cosmetic: `on_ok`'s Play
+    // arm would play the old item (or the new one at the old one's resume offset), the watched
+    // toggle would scrobble it on the server, `draw_hero` prefers `current()` over the catalog
+    // row so the whole hero would paint it, and `reselect()` would repoint `selected` back at it.
+    // With CURRENT cleared, every one of those reads None and correctly does nothing until the
+    // landing — the same "refuse the press while the data is in flight" rule `play_episode_at`
+    // already applies during a season switch.
+    //
+    // ORDER MATTERS: `clear()` supersedes the detail generation, so it must run BEFORE the
+    // request that establishes the new one, or it would cancel the fetch it is preparing for.
+    metadata::clear();
+    metadata::request_detail(rk);
+}
+
+/// [`open_rk`] but BLOCKING — for the callers that act on the loaded item in the SAME frame:
+/// [`open_rk_season`] (its `load_season_now` indexes `d.seasons`), home_activate's play-a-show
+/// arm (gated on `current().rk == expect`), and the headless `plxnative-detail` trigger (which
+/// replays move_focus/on_ok immediately). Each of those is a deliberate freeze.
+pub(crate) fn open_rk_now(rk: &str) {
+    mount_rk(rk);
+    metadata::load_detail_now(rk);
 }
 
 /// Open the SHOW detail page for `show_rk` with the season numbered `season_num` selected
 /// (a season entry point routes to the show page, not a standalone season page).
 pub(crate) fn open_rk_season(show_rk: &str, season_num: c_int) {
-    open_rk(show_rk);
+    open_rk_now(show_rk); // BLOCKING: the season lookup below indexes the loaded item's seasons
     if let Some(d) = metadata::current() {
         if let Some(pos) = d.seasons.iter().position(|s| s.index as c_int == season_num) {
             // BLOCKING on purpose: home_activate's season arm plays episodes[0] right after this

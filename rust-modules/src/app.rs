@@ -674,7 +674,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 return;
             }
             crate::route::request_play_movie(mm); // resolve OFF the SDL loop — pump_play starts it
-            crate::metadata::load_detail(&mm.rk); // streams for the in-player audio/subtitle lists
+            // Fetch OFF the loop too — pump_detail lands it. Nothing here reads current(): every
+            // start_playback argument comes from `mm` (the catalog row), and the in-player track
+            // menu reads metadata::playing(), which the resolve worker installs. The one consumer
+            // is sync_now_playing()'s descriptor for the HUD caption and Info card, so a landing a
+            // beat later costs a few frames of missing caption, never a wrong play.
+            // Retire the old descriptor first: it describes the PREVIOUSLY played item, and the
+            // HUD caption + Info card read it every frame — leaving it up would label this
+            // playback with the last one's title for the whole pre-roll. None is honest (the
+            // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
+            // this item), and the landing refills it via sync_now_playing.
+            crate::metadata::set_now_playing(None);
+            crate::metadata::request_detail(&mm.rk);
             start_playback(
                 crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000),
                 false,
@@ -744,7 +755,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if mm.kind == 2 {
                             crate::ui::detail::open_rk_season(&expect, mm.season_index);
                         } else {
-                            crate::ui::detail::open_rk(&expect);
+                            crate::ui::detail::open_rk_now(&expect); // BLOCKING: `loaded` below gates the play
                         }
                         let loaded = crate::metadata::current().map(|d| d.rk.as_str() == expect).unwrap_or(false);
                         if loaded && crate::ui::detail::on_ok() {
@@ -1585,7 +1596,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
                         if let Some(pmm) = crate::ui::home::movie_at(pidx / COLS, pidx % COLS) {
                             crate::route::request_play_movie(pmm);
-                            crate::metadata::load_detail(&pmm.rk);
+                            crate::metadata::load_detail_now(&pmm.rk);
                         }
                     }
                     let fd = matches!(route, Route::Detail);
@@ -1634,10 +1645,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // in-catalog rk keeps the catalog backdrop; an off-catalog rk still opens the
                         // page (open_rk falls back to the item's own art) so tests can target ANY rk.
                         let idx = crate::pms::index_of_rk(rk);
+                        // BLOCKING both ways: the sub-triggers below replay move_focus/on_ok in
+                        // THIS frame, and they walk sections() — which is hero-only until the
+                        // item lands.
                         if idx >= 0 {
                             crate::ui::detail::open(idx);
                         } else {
-                            crate::ui::detail::open_rk(rk);
+                            crate::ui::detail::open_rk_now(rk);
                         }
                         route = Route::Detail;
                         // dev: /tmp/plxnative-detailsec=N jumps N sections down (headless episode/row capture)
@@ -1678,7 +1692,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if let Ok(rk) = std::fs::read_to_string("/tmp/plxnative-play") {
                     let rk = rk.trim();
                     if !rk.is_empty() {
-                        crate::metadata::load_detail(rk); // fetch ANY rk (movie/show/episode)
+                        // BLOCKING on purpose: the leaf extraction below reads current() on the
+                        // next statement, and this block sits behind a one-shot `play_tried`
+                        // latch, so a deferred landing would have nothing left to consume it —
+                        // every case in tests/manifest.json drives through here.
+                        crate::metadata::load_detail_now(rk); // fetch ANY rk (movie/show/episode)
                         // a movie/episode leaf carries its own part+codecs; a show has an
                         // empty part, so fall back to its first episode.
                         let leaf = crate::metadata::current().map(|d| {
@@ -2052,6 +2070,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
                 crate::player::start_bufferfeed();
             }
+            // Async detail load: install the worker's item into CURRENT. Route-unconditional for
+            // the same reason as pump_play — play_item_now requests a detail from Home and flips
+            // straight to the player, so a Detail-gated pump would never land it.
+            crate::metadata::pump_detail();
             crate::posters::poster_pump(3);
             let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 
