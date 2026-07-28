@@ -23,6 +23,25 @@ mod stream;
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
+
+#[cfg(test)]
+pub(crate) mod testlock {
+    //! One lock for every test that touches a process-global.
+    //!
+    //! The app's async seams are process-wide by construction — `static mut CURRENT`, route's play
+    //! mailbox, the player's SHARED block — so tests in DIFFERENT modules contend on the same
+    //! state and `cargo test` threads them. A per-module mutex cannot see that: the season and
+    //! detail mailboxes are two test functions in one file, but the season generation also moves
+    //! under `pump_detail` (which calls `supersede_season`).
+    //!
+    //! Hold the guard for the whole test. Poison is stepped over so a failing test reports ITS
+    //! assertion instead of dragging every later one down with a poison panic.
+    static GLOBALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+        GLOBALS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
 mod text;
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
 

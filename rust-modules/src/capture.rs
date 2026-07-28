@@ -133,7 +133,9 @@ pub(crate) fn shutdown() {
         }
     }
     for h in HANDLES.lock().unwrap().drain(..) {
-        let _ = h.join();
+        // one aggregate name: the Vec mixes cap-listen and cap-encode, and which one stalled is a
+        // question for the next person who sees a number here at all
+        crate::task::join("capture", h);
     }
 }
 

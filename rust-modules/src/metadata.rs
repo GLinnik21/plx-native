@@ -60,6 +60,7 @@ pub(crate) struct Stream {
     pub(crate) external: bool,
 }
 
+#[derive(Default)]
 pub(crate) struct Episode {
     pub(crate) rk: String,
     pub(crate) index: i64,   // episode number
@@ -425,12 +426,18 @@ fn fetch_seasons(rk: &str) -> Vec<Season> {
         .collect()
 }
 
-fn fetch_episodes(season_rk: &str) -> Vec<Episode> {
-    let mc = match crate::plex::client().children(season_rk) {
-        Some(m) => m,
-        None => return Vec::new(),
-    };
-    mc.metadata
+/// A season's episode list, or **None when the `/children` GET failed**. The failure has to stay
+/// distinguishable from a genuinely empty season all the way to the pump: returning an empty Vec
+/// for both is what let one transient GET blank a populated episode row, with no spinner, no error
+/// and no way to ask the tab again. Same rule browse.rs's page fetch carries with its `total < 0`
+/// sentinel ("a wiped-to-empty store here was a review-confirmed bug").
+///
+/// NB its siblings `fetch_seasons`/`fetch_related` deliberately KEEP the degrade-to-empty: both are
+/// only ever called from `fetch_full`, which builds a Detail from nothing — there is no previous
+/// list there to protect, and neither is worth failing the whole page over.
+fn fetch_episodes(season_rk: &str) -> Option<Vec<Episode>> {
+    let mc = crate::plex::client().children(season_rk)?;
+    Some(mc.metadata
         .iter()
         .map(|x| {
             let media0 = x.media.first();
@@ -450,7 +457,7 @@ fn fetch_episodes(season_rk: &str) -> Vec<Episode> {
                 acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
             }
         })
-        .collect()
+        .collect())
 }
 
 fn fetch_related(rk: &str) -> Vec<Related> {
@@ -495,7 +502,9 @@ fn fetch_full(rk: &str) -> Option<Detail> {
     if d.is_show {
         d.seasons = fetch_seasons(rk);
         if let Some(s0) = d.seasons.first() {
-            d.episodes = fetch_episodes(&s0.rk);
+            // a first-season failure is not worth failing the whole page over — the hero, cast
+            // and Related still load, and there is no previous list here to protect
+            d.episodes = fetch_episodes(&s0.rk).unwrap_or_default();
         }
         // a show carries no streams itself — backfill the About footer's audio/
         // subtitle tracks from the first episode (one extra round-trip)
@@ -639,11 +648,24 @@ static SEASON_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 static SEASON_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 struct SeasonResult {
     gen: u32,
-    rk: String, // the show the fetch was for
-    idx: usize,
-    eps: Vec<Episode>,
+    rk: String,  // the show the fetch was for
+    idx: usize,  // the season it was for
+    prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
+    eps: Option<Vec<Episode>>, // None = the fetch failed or panicked — the row keeps its episodes
 }
 static SEASON_RESULT: std::sync::Mutex<Option<SeasonResult>> = std::sync::Mutex::new(None);
+
+/// Post a finished season fetch to the mailbox. MONOTONE: an older fetch landing late must never
+/// clobber a newer result the pump hasn't consumed yet — that lost the newest season forever, and
+/// with it the SEASON_DONE catch-up, wedging the loading spinner on. Named rather than inlined in
+/// the worker closure for the same reason as `land_detail`: the guard is the one piece of this
+/// machinery a test cannot reach through `load_season`.
+fn land_season(gen: u32, rk: String, idx: usize, prev: usize, eps: Option<Vec<Episode>>) {
+    let mut slot = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
+        *slot = Some(SeasonResult { gen, rk, idx, prev, eps });
+    }
+}
 
 /// Invalidate any in-flight/pending season fetch and mark the mailbox settled: bump the generation
 /// (so a late async landing is discarded), catch SEASON_DONE up to it (season_loading() → false),
@@ -663,7 +685,11 @@ fn supersede_season() -> u32 {
 /// episodes arrive via [`pump_season`]. Main-thread only (touches CURRENT).
 pub(crate) fn load_season(idx: usize) {
     use std::sync::atomic::Ordering;
-    let (rk, season_rk) = match current().and_then(|d| d.seasons.get(idx).map(|s| (d.rk.clone(), s.rk.clone()))) {
+    // `prev` rides along so a FAILED fetch can put the tab back on the season whose episodes are
+    // still listed (see `pump_season`) — the optimistic flip below is what has to be undone.
+    let (rk, season_rk, prev) = match current()
+        .and_then(|d| d.seasons.get(idx).map(|s| (d.rk.clone(), s.rk.clone(), d.cur_season)))
+    {
         Some(t) => t,
         None => return,
     };
@@ -674,16 +700,11 @@ pub(crate) fn load_season(idx: usize) {
     }
     let gen = SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let spawned = crate::task::spawn_small("season", move || {
-        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands (empty) —
-        // otherwise season_loading() would report an in-flight fetch forever
-        let eps = catch_unwind(|| fetch_episodes(&season_rk)).unwrap_or_default();
-        let mut slot = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner());
-        // MONOTONE mailbox: an older fetch that lands late must never clobber a newer result the
-        // pump hasn't consumed yet — that lost the newest season forever (and with it the
-        // SEASON_DONE catch-up, wedging the loading spinner on).
-        if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
-            *slot = Some(SeasonResult { gen, rk, idx, eps });
-        }
+        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a
+        // FAILURE (None), not as an empty season: a panic is not "this season has no episodes",
+        // and otherwise season_loading() would report an in-flight fetch forever
+        let eps = catch_unwind(|| fetch_episodes(&season_rk)).unwrap_or(None);
+        land_season(gen, rk, idx, prev, eps);
     });
     if !spawned {
         // no worker means nothing will ever land: catch DONE up or the episode row keeps its
@@ -702,7 +723,12 @@ pub(crate) fn load_season_now(idx: usize) {
             Some(s) => s.rk.clone(),
             None => return,
         };
-        let eps = fetch_episodes(&season_rk);
+        // `unwrap_or_default`, NOT propagation: this blocking twin still degrades to an empty
+        // list on failure. Making it preserve the previous season would silently change what
+        // `open_rk_season`'s chained play of `episodes[0]` launches — the WRONG season's first
+        // episode under the requested season's name — and that path has no host coverage and needs
+        // the full on-device suite. Deferred deliberately.
+        let eps = fetch_episodes(&season_rk).unwrap_or_default();
         supersede_season(); // drop any async fetch in flight; this synchronous list wins
         unsafe {
             if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
@@ -730,17 +756,35 @@ pub(crate) fn pump_season() -> bool {
     if r.gen != SEASON_GEN.load(Ordering::SeqCst) {
         return false; // superseded — the newer fetch will land after this
     }
+    // SETTLE THE SPINNER FIRST — on failure as much as on success. `season_loading()` drives the
+    // episode row's loading dim + spinner AND gates `play_episode_at`, so a failure that returned
+    // before this store would spin that row and refuse every episode press for the rest of the
+    // session.
     SEASON_DONE.store(r.gen, Ordering::SeqCst);
     unsafe {
-        if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
-            if d.rk == r.rk {
-                d.episodes = r.eps;
+        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else { return false };
+        if d.rk != r.rk {
+            return false; // the page moved to another item — not ours to patch
+        }
+        match r.eps {
+            Some(eps) => {
+                d.episodes = eps;
                 d.cur_season = r.idx;
-                return true;
+                true
+            }
+            None => {
+                // THE FETCH FAILED. Keep the episodes already on screen — one transient
+                // `/children` failure used to blank a populated row, with no spinner and no error.
+                // And put `cur_season` back on the season those episodes belong to: the tab
+                // highlight and the row must agree (`play_episode_at` launches `episodes[i]` under
+                // whichever tab reads selected), and it is what makes the tab RETRYABLE — both
+                // load paths fetch only when the target `!= cur_season`, so a tab left marked
+                // selected could never be asked for again.
+                d.cur_season = r.prev;
+                false
             }
         }
     }
-    false
 }
 
 #[cfg(test)]
@@ -764,6 +808,7 @@ mod tests {
     /// into parallel #[test]s would have them racing each other rather than the code.
     #[test]
     fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
+        let _serial = crate::testlock::serial();
         // idle: nothing requested, nothing loading, nothing to pump
         assert!(!detail_loading(), "a fresh process is not loading anything");
         assert!(!pump_detail(), "an empty mailbox pumps nothing");
@@ -808,5 +853,121 @@ mod tests {
         landing(inflight, "arrived-after-close");
         assert!(!pump_detail(), "a landing after close is dropped");
         assert_eq!(cur_rk(), None, "the page stays closed");
+    }
+
+    // ---- the season mailbox -----------------------------------------------------------------
+
+    /// A two-season show with a populated episode row, as a landed detail fetch leaves it. Written
+    /// straight into CURRENT rather than through `pump_detail` — that pump is the other test's
+    /// subject, and routing through it would couple the two.
+    fn install_show(rk: &str, cur: usize, eps: &[&str]) {
+        unsafe {
+            *addr_of_mut!(CURRENT) = Some(Detail {
+                rk: rk.to_string(),
+                is_show: true,
+                seasons: vec![
+                    Season { rk: "sk1".to_string(), index: 1, title: "Season 1".to_string() },
+                    Season { rk: "sk2".to_string(), index: 2, title: "Season 2".to_string() },
+                ],
+                episodes: eps.iter().map(|e| episode(e)).collect(),
+                cur_season: cur,
+                ..Default::default()
+            })
+        };
+    }
+    fn episode(rk: &str) -> Episode {
+        Episode { rk: rk.to_string(), ..Default::default() }
+    }
+    fn listed_eps() -> Vec<String> {
+        current().map(|d| d.episodes.iter().map(|e| e.rk.clone()).collect()).unwrap_or_default()
+    }
+    /// which season tab reads *selected* — the tabs pill `d.cur_season`; the focus ring is a
+    /// separate, view-local column
+    fn selected_tab() -> usize {
+        current().map(|d| d.cur_season).unwrap_or(usize::MAX)
+    }
+    /// arm a season switch exactly as `load_season` does — flip the tab optimistically, then take
+    /// the generation. Hands back what the worker carries to `land_season`.
+    fn begin_switch(to: usize) -> (u32, usize) {
+        let prev = selected_tab();
+        unsafe {
+            if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
+                d.cur_season = to;
+            }
+        }
+        (SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1, prev)
+    }
+
+    /// The whole season mailbox in one serial test — same shape and same reason as the detail one
+    /// above: the statics are global, so splitting this into parallel `#[test]`s would have them
+    /// racing each other rather than the code.
+    ///
+    /// The FIRST block is the audit finding: `fetch_episodes` returned an empty Vec for BOTH "this
+    /// season has no episodes" and "the `/children` GET failed", and `pump_season` installed it
+    /// either way — so one transient PMS failure blanked a populated episode row, with no spinner
+    /// and no error, onto a tab that could then never be asked again. The blocks after it cover the
+    /// supersede / monotone / wrong-item guards this change rewrites; on their own they would pass
+    /// before and after, which is why they live inside the failing test rather than beside it.
+    #[test]
+    fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
+        let _serial = crate::testlock::serial();
+
+        // A FAILED /children GET. It must not be mistaken for a season with no episodes.
+        install_show("show-1", 0, &["s1e1", "s1e2"]);
+        let (gen, prev) = begin_switch(1);
+        assert_eq!(selected_tab(), 1, "the tab flips optimistically while the fetch is in flight");
+        assert!(season_loading(), "a bumped generation with DONE behind it reads as in flight");
+        land_season(gen, "show-1".to_string(), 1, prev, None);
+        assert!(!pump_season(), "a failed fetch is not a new episode list");
+        assert_eq!(listed_eps(), ["s1e1", "s1e2"], "the populated row survives the failure");
+        assert_eq!(selected_tab(), 0, "the failed tab is released, so focusing it again refetches");
+        assert!(!season_loading(), "the episode row must still come out of its loading state");
+
+        // A season that GENUINELY has no episodes is a SUCCESS: the row clears. This is why the
+        // discriminant is an Option and not an `is_empty()` check — a "keep the old list whenever
+        // the new one is empty" fix passes the block above and leaves THIS one showing the
+        // previous season's episodes under the new season's tab.
+        let (gen, prev) = begin_switch(1);
+        land_season(gen, "show-1".to_string(), 1, prev, Some(Vec::new()));
+        assert!(pump_season(), "an empty season is a successful fetch — the row did change");
+        assert!(listed_eps().is_empty(), "and the previous season's episodes are gone");
+        assert_eq!(selected_tab(), 1, "the tab stays on the season that answered");
+
+        // the ordinary success path
+        let (gen, prev) = begin_switch(0);
+        land_season(gen, "show-1".to_string(), 0, prev, Some(vec![episode("s1e1")]));
+        assert!(pump_season());
+        assert_eq!(listed_eps(), ["s1e1"]);
+        assert_eq!(selected_tab(), 0);
+
+        // SUPERSEDED: a blocking `load_season_now`, or a new item's `request_detail`, bumps the
+        // generation — the fetch that was in flight for the old tab is dropped, not applied.
+        let (old, prev) = begin_switch(1);
+        supersede_season();
+        land_season(old, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
+        assert!(!pump_season(), "a landing from a superseded generation is discarded");
+        assert_eq!(listed_eps(), ["s1e1"], "and it must not touch the episode row");
+
+        // MONOTONE mailbox: with a newer result sitting unconsumed, an older fetch finally
+        // returning must not overwrite it. Losing the newest season that way also lost its
+        // SEASON_DONE catch-up, which wedged the loading spinner on.
+        let (old, prev) = begin_switch(1);
+        let (new, _) = begin_switch(1);
+        land_season(new, "show-1".to_string(), 1, prev, Some(vec![episode("fresh")]));
+        land_season(old, "show-1".to_string(), 1, prev, Some(vec![episode("stale")]));
+        assert!(pump_season(), "the newest season lands");
+        assert_eq!(listed_eps(), ["fresh"], "the late older landing was refused");
+
+        // A LANDING FOR ANOTHER ITEM: the page can move (Related -> a new detail) while a season
+        // fetch is in flight, and those episodes belong to nobody on screen. It must still settle
+        // the spinner — nothing else is going to.
+        let (gen, prev) = begin_switch(1);
+        install_show("show-2", 0, &["other-e1"]);
+        land_season(gen, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
+        assert!(!pump_season(), "a landing for a different item reports no change");
+        assert_eq!(listed_eps(), ["other-e1"], "and leaves the item now on screen alone");
+        assert!(!season_loading(), "but it still settles the spinner");
+
+        clear();
     }
 }

@@ -110,6 +110,41 @@ pub(crate) fn spawn_small(what: &str, f: impl FnOnce() + Send + 'static) -> bool
     spawn_with(what, Some(SMALL_STACK), f).is_some()
 }
 
+/// A join this long parked the SDL loop for ~15 frames — the shortest stall a person reads as a
+/// freeze rather than a stutter.
+const STALL_MS: u64 = 250;
+
+/// Join a worker and report what THIS thread paid for it.
+///
+/// The counterpart to [`spawn`], and the reason it exists rather than a bare `let _ = h.join();`:
+/// the frame loop has an FPS heartbeat, `/tmp/plxnative-framedrop` catches the frames that blow the
+/// budget, and `ui::profile` splits a frame by draw phase — but none of them can see a worker, and
+/// every teardown stall this engine has had was the main thread parked in one of these joins with
+/// no number left behind. Unconditional: an `Instant` pair around a call whose whole purpose is to
+/// block cannot perturb what it measures, and gating it would hide the teardown numbers in exactly
+/// the harness runs where they show up.
+///
+/// The number is the JOINER's wait, not the worker's lifetime. Joining a worker that finished
+/// 300 ms ago costs nothing, and two of `engine::teardown`'s three joins are normally of workers
+/// that have already exited — reporting their lifetimes would flag every teardown as stalling and
+/// make the numbers worthless for finding the one that does.
+///
+/// After this, a bare `.join()` anywhere outside this module is a stall nobody can see;
+/// `grep -rn '\.join()' rust-modules/src` is the enforcement, because there is no other.
+pub(crate) fn join(what: &str, h: JoinHandle<()>) {
+    let t0 = std::time::Instant::now();
+    let outcome = h.join();
+    let ms = t0.elapsed().as_millis() as u64;
+    if outcome.is_err() {
+        // Previously swallowed by `let _ = t.join()`. A worker that died holding its socket or an
+        // armed in-flight flag is the first thing worth knowing at teardown.
+        crate::log(&format!("task: worker '{what}' PANICKED (joined after {ms}ms)"));
+    }
+    if ms >= STALL_MS {
+        crate::log(&format!("THREADJOIN {what} {ms}ms STALL"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;

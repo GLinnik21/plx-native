@@ -362,7 +362,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
             crate::stream::http_shutdown(p);
         }
         if let Some(t) = stream_th.take() {
-            let _ = t.join();
+            crate::task::join("demux", t);
         }
         if !p.is_null() {
             crate::stream::http_close(p); // sole owner now: the reader is joined
@@ -558,14 +558,16 @@ fn teardown(mt: &MainThread, for_reload: bool) {
         }
     }
     // 2. JOIN every worker before freeing anything they hold raw ptrs into
+    // Through `task::join` so a stall leaves a number behind: this is the main thread, and every
+    // teardown freeze the engine has had was one of these three.
     if let Some(t) = eng.stream_th.take() {
-        let _ = t.join();
+        crate::task::join("demux", t);
     }
     if let Some(t) = eng.load_th.take() {
-        let _ = t.join();
+        crate::task::join("media", t);
     }
     if let Some(t) = eng.report_th.take() {
-        let _ = t.join();
+        crate::task::join("timeline", t);
     }
     // 2b. every reader is now joined, so this thread is the sole owner: do the real close.
     // (Before the join it could only shutdown — see step 1.)
