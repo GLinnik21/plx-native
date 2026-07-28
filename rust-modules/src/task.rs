@@ -1,10 +1,21 @@
 //! Spawning background work — all of it.
 //!
-//! `std::thread::spawn` **panics** when the OS refuses the thread (EAGAIN/ENOMEM — a real
-//! prospect in a 32-bit address space), and almost every worker here is started from the SDL
-//! loop, so that panic unwinds out of `plex_run` through the C shim and takes the app down with
-//! it. It also fails at the worst possible moment: the caller has just armed an in-flight flag,
-//! so had the app survived, the screen would sit on a spinner that can never resolve.
+//! `std::thread::spawn` **panics** when the OS refuses the thread — it unwraps `Builder::spawn`,
+//! whose `Err` is `pthread_create`'s EAGAIN (glibc returns it when `allocate_stack` cannot `mmap`
+//! the stack, or `clone(2)` hits `RLIMIT_NPROC`/`threads-max`). Almost every worker here is
+//! started from the SDL loop, so that panic unwinds out of `plex_run` through the C shim and
+//! takes the app down. It would also fail at the worst possible moment: the caller has just armed
+//! an in-flight flag, so had the app survived, the screen would sit on a spinner that can never
+//! resolve.
+//!
+//! **Measured on the target (2026-07-28), because the first version of this note guessed:** the
+//! app runs 31 threads at playback peak (13 at Home) against an `RLIMIT_NPROC` of 3746 for its
+//! uid and a system `threads-max` of 7492; `VmSize` peaks at 363 MB of a ~3 GB 32-bit user space;
+//! `vm.overcommit_memory` is 0, so a 2 MB stack `mmap` effectively cannot fail with ~430 MB
+//! available. **EAGAIN is not a live risk on this hardware** — roughly 120x headroom on threads.
+//! This module is not buying us a fix for something that happens; it is refusing to let an
+//! impossible-but-fatal branch exist, at the cost of a return value. `Max open files` (1024 soft)
+//! is the only limit anywhere near reach, and it is not this one.
 //!
 //! Both entry points below report the refusal instead of panicking. Releasing the armed flag
 //! stays with the caller — a latch is a property of the screen, not of the thread.

@@ -231,9 +231,9 @@ comment records why flag-only costs nothing here — the freeze was fixed by get
 the loop, and a lingering worker is invisible once the UI has moved on.
 
 **What the re-evaluation did find, and what shipped instead.** The five copies disagree on one
-invariant, and the disagreement is a live defect: `std::thread::spawn` **panics** when the OS
-refuses a thread, and all but two sites used it, from the SDL loop — so an EAGAIN in a 32-bit
-address space unwinds out of `plex_run` through the C shim and kills the app. Worse, each site had
+invariant: `std::thread::spawn` **panics** when the OS refuses a thread, and all but two sites used
+it, from the SDL loop — so an EAGAIN unwinds out of `plex_run` through the C shim and kills the
+app. Worse, each site had
 just armed an in-flight flag, so the survivable version is a spinner that can never resolve —
 exactly the shape of `browse.rs`'s already-fixed `reset()` latch bug. **The piece worth sharing was
 the spawn, not the mailbox.** `task.rs` exists, at ~50 lines instead of ~200: two entry points that
@@ -241,6 +241,16 @@ report a refusal instead of panicking, plus the 256 KB stack the network workers
 the fourteen spawn sites in the crate is on it; each caller still releases its own latch, because a
 latch belongs to the screen. Host-tested (`a_refused_spawn_reports_instead_of_panicking`, forced
 with an unsatisfiable stack size).
+
+**How likely is the refusal? Measured after the fact, because the first write-up guessed.** 31
+threads at playback peak (13 at Home) against `RLIMIT_NPROC` 3746 for the app's uid and a system
+`threads-max` of 7492; `VmSize` 363 MB of a ~3 GB 32-bit user space; `vm.overcommit_memory` 0 with
+~430 MB available, so the 2 MB stack `mmap` effectively cannot fail. **EAGAIN is not reachable on
+this hardware** — ~120x headroom. So `task.rs` is not fixing something that happens; it is deleting
+an impossible-but-fatal branch for the price of a return value, which is still the right trade
+(a panic across the FFI boundary has no recovery) but is NOT the urgent defect the paragraph above
+would suggest on its own. The one process limit anywhere near reach is `Max open files` (1024
+soft) — a different subsystem, and worth its own look before the fd-publication work below.
 
 **Follow-on, not done here:** re-land step 1's fd publication now that its blocker is gone. The
 payoff is no longer `Job`'s cancellation — it is that `teardown` currently joins the demux thread
