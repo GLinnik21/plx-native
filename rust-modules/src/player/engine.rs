@@ -286,7 +286,6 @@ pub(crate) fn start_bufferfeed() -> bool {
         let aqa_raw = &mut *qa as *mut AuQueue;
         let hs_raw = &mut *hs as *mut HttpStream;
         SHARED.hs_ptr.store(hs_raw, Ordering::Release);
-        SHARED.seek_byte.store(-1, Ordering::Relaxed);
         {
             let aqp = threads::SendPtr(aqv_raw);
             let aqap = threads::SendPtr(aqa_raw);

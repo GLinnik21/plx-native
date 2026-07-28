@@ -28,8 +28,9 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 - `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
   which owns its own GMainContext) and **`timeline_thread`** (the ~10 s `/:/timeline` progress
   reporter). The **demux thread body is `ff::demux`** (spawned by `engine::start_bufferfeed`): open
-  the part URL, read+convert packets, push AUs to the two lanes; its outer loop re-opens on
-  `next_url`/`seek_byte` and `av_seek`s on `seek_to_ns`.
+  the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
+  `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
+  mechanism (nothing interrupts it; see the seek gotcha below).
 - `shared.rs` — the **only** cross-thread state (each field replaces a C `volatile` global — `g_*`).
   New cross-thread state goes here, behind the same discipline; don't smuggle it through a raw static.
 
@@ -60,7 +61,17 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   unreachable in buffer-feed. Both text (SRT/ASS) and image (PGS/VobSub) subs are decoded and drawn by
   us (canvas authored at 1920×1080); don't expect the pipeline to burn or overlay them. See
   `[[tv-subtitle-engine]]` and the `plex/` soft-subs note.
-- **Seeks are in-place** (Kodi-style): flush + reopen the demuxer + `av_seek_frame` to the target,
+- **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
+  demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
+  between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to
+  break the read so the outer loop would reopen and seek, and it could not work, because our AVIO
+  is **seekable** (`seek_cb` reopens with a byte `Range`), so libavformat treats the broken read as
+  recoverable, calls `seek_cb`, gets a fresh connection at the same offset and reads on.
+  `av_read_frame` never returns an error, so the reopen never happens and the seek never lands —
+  it just runs out the stuck-watchdog on pre-seek packets and escalates to a full reload. This
+  survived a long time because the test suite's cases inherited a server-side `viewOffset`, so the
+  seek under test usually had nowhere to go (fixed 2026-07-28; see the root `CLAUDE.md` testing note).
+- **Seeks are in-place** (Kodi-style): flush + `av_seek_frame` to the target,
   then on the first post-seek keyframe `feed_stream` re-anchors the GStreamer segment
   (`setTimeToDecode` + `sendSegmentEvent`) — no reload/decoder re-init. A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`. The rebase machinery

@@ -939,10 +939,9 @@ struct AVIOCtxHead {
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
-        // interrupt: bail out of a blocked read on teardown (aborted) only. A direct-play
-        // seek unblocks the read via the pump's http_close(hs) + a next_url reopen — it must
-        // NOT bail here on seek_to_ns, or the post-reopen find_stream_info reads would fail.
-        // seek_to_ns is now purely the post-reopen av_seek_frame target (§ reopen).
+        // interrupt: bail out of a blocked read on teardown (aborted) only. A seek does NOT
+        // interrupt the read — the demux thread services it itself between two av_read_frame
+        // calls (see the read loop), so there is nothing to unblock and nothing to race.
         if crate::aq::aq_is_aborted(s.aq) {
             return AVERROR_EOF;
         }
@@ -1281,13 +1280,17 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
     let aq_p = aq.0; // VIDEO lane (also the AVIO abort ptr + EOF marker)
     let aqa_p = aqa.0; // AUDIO lane (es=2) — always a distinct queue on the ff (two-lane) path
     let hs_p = hs.0;
-    let mut host_c = CString::new(host).unwrap_or_default();
-    let mut path_c = CString::new(path).unwrap_or_default();
-    let mut port = port;
+    let host_c = CString::new(host).unwrap_or_default();
+    let path_c = CString::new(path).unwrap_or_default();
 
-    // OUTER loop: a transcode seek / audio-switch re-points us at a fresh start.mkv URL
-    // (a live transcode has no seekable index), reopening the whole AVFormatContext.
-    'outer: loop {
+    // Run-once breakable block, NOT a retry loop: every `break` below is an early exit to the
+    // EOF/cleanup tail after it. It used to be a real loop that reopened the whole
+    // AVFormatContext on a fresh URL, which is how a direct-play seek was supposed to reach its
+    // target — but the reopen could never be triggered (see the seek note in the read loop), and
+    // both remaining callers replace the engine outright instead: a transcode seek and an
+    // audio-track switch each build a new start.mkv and `reload_transcode`, which spawns a new
+    // demux thread. So the reopen had no live writer and no live caller.
+    loop {
         unsafe {
             // Teardown may have raced us here (it aborts the lanes, then shutdown(2)s the
             // socket, then JOINS this thread on the main thread). Without this check we would
@@ -1490,8 +1493,8 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                 }
                 let r = av_read_frame(fmt, pkt);
                 if r < 0 {
-                    // EOF, a direct-play seek, or teardown — break to the outer loop, which
-                    // reopens on next_url (same part URL) and av_seek_frame's after reopen.
+                    // Genuine end of stream, or teardown. NOT a seek — a seek is serviced at the
+                    // top of this loop and never surfaces as a read error.
                     break;
                 }
                 let si = (*pkt).stream_index;
@@ -1619,19 +1622,6 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
 
         if unsafe { crate::aq::aq_is_aborted(aq_p) } {
             break;
-        }
-        // transcode seek / audio-switch: re-point at the new start.mkv URL and reopen.
-        let sb = SHARED.seek_byte.swap(-1, Ordering::Acquire);
-        if sb >= 0 {
-            if let Some(nu) = SHARED.next_url.lock().unwrap().take() {
-                let su = crate::plex::StreamUrl::parse(&nu);
-                host_c = CString::new(su.host).unwrap_or_default();
-                path_c = CString::new(su.path).unwrap_or_default();
-                port = su.port;
-                // direct play reopens the SAME url (byte-range); a transcode gets a new &offset url
-                crate::player::log("ff: seek → reopen stream url");
-                continue 'outer;
-            }
         }
         break;
     }

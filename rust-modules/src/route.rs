@@ -174,12 +174,11 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
         return None;
     }
     let c = crate::plex::client_opt()?;
-    // NB: do NOT explicitly /stop the old encoder here — the session id is reused, so a
-    // stop would race the demux (it cuts the stream the demux is still reading; if the
-    // demux hits EOF + checks seek_byte before the pump sets it, it exits). Instead the
-    // pump closes the demux socket AFTER arming the seek, which drops the old connection
-    // (stopping the old transcode), and this new start.mkv?&offset= (same session)
-    // repositions. /decision is just a query and doesn't cut the streaming connection.
+    // NB: do NOT explicitly /stop the old encoder here — the session id is reused, so a stop
+    // would cut the stream the demux thread is still reading out from under it. The caller
+    // (the pump) instead reloads onto this new start.mkv?&offset= (same session), which tears
+    // the old engine down — dropping its connection, and with it the old transcode.
+    // /decision is just a query and doesn't cut the streaming connection.
     let session = sess();
     let sp = transcode_spec(&rk, &session, unsafe { addr_of!(CUR_REMUX).read() }, offset_secs.max(0),
                             cur_audio_sid(), cur_sub_sid());
