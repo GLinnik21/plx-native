@@ -31,14 +31,7 @@ pub(crate) fn pump(now: u32) {
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
     // so it can NEVER fire, and the player used to sit on a black screen forever with no error
     // and no exit. Surface it instead — BACK is already the escape.
-    if SHARED.frames.load(Relaxed) > 0 {
-        SHARED.ever_played.store(true, Relaxed); // latch: survives the seek arm's frames reset
-    }
-    // Gate on ever_played, NOT on `frames == 0`. The seek arm resets `frames` (see below), so the
-    // old check re-armed itself after every seek: once `demux_failed` was set by any mid-session
-    // exit, the next seek made this branch fire forever and the pump stopped servicing anything.
-    // That cost all three seek cases and is why ff.rs's non-initial exits were reverted.
-    if SHARED.demux_failed.load(Relaxed) && !SHARED.ever_played.load(Relaxed) {
+    if SHARED.demux_failed.load(Relaxed) && SHARED.frames.load(Relaxed) == 0 {
         set_state(PlaybackState::Error);
         return;
     }

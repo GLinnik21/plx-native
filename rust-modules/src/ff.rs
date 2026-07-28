@@ -1275,27 +1275,6 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
     ]
 }
 
-/// The demux thread is ending because something FAILED, not because teardown asked it to.
-///
-/// Each of these exits just `break`s the outer loop; the thread ends, the queues EOF, and nothing
-/// says why. Because the pump's end-of-stream path is gated on a `duration_ns` a failed open never
-/// publishes, the player used to sit on a black screen forever with no error and no exit.
-/// `demux_failed` is what lets the pump raise `PlaybackState::Error` so the HUD says so and BACK
-/// gets the user out.
-///
-/// NOT called on the abort exit at the head of the outer loop: that is teardown asking us to stop,
-/// and painting an error over a clean exit would be a new bug.
-///
-/// Safe to set MID-SESSION only because the pump gates Error on `ever_played` rather than on
-/// `frames == 0` — the seek arm resets `frames`, so the older check re-armed after every seek and
-/// wedged the pump. See pump.rs.
-fn fail(aq_p: *mut AuQueue) {
-    if unsafe { crate::aq::aq_is_aborted(aq_p) } {
-        return; // teardown won the race — not our error to report
-    }
-    SHARED.demux_failed.store(true, Ordering::Release);
-}
-
 pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
     DIAG_FIRST.store(true, Ordering::Relaxed);
     ensure_registered();
@@ -1340,7 +1319,6 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             let buf = av_malloc(65536) as *mut u8;
             if buf.is_null() {
                 crate::player::log("ff: av_malloc failed");
-                fail(aq_p);
                 break;
             }
             let avio = avio_alloc_context(
@@ -1355,14 +1333,12 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             if avio.is_null() {
                 crate::player::log("ff: avio_alloc_context failed");
                 free_ptr(buf as *mut c_void);
-                fail(aq_p);
                 break;
             }
             let mut fmt = avformat_alloc_context();
             if fmt.is_null() {
                 crate::player::log("ff: avformat_alloc_context failed");
                 free_avio(avio);
-                fail(aq_p);
                 break;
             }
             (*fmt).pb = avio;
@@ -1370,14 +1346,12 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             if r < 0 || fmt.is_null() {
                 crate::player::log(&format!("ff: open_input failed r={r}"));
                 free_avio(avio);
-                fail(aq_p);
                 break;
             }
             if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
                 crate::player::log("ff: find_stream_info failed");
                 avformat_close_input(&mut fmt);
                 free_avio(avio);
-                fail(aq_p);
                 break;
             }
             let vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
@@ -1397,7 +1371,6 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                 crate::player::log("ff: no video stream");
                 avformat_close_input(&mut fmt);
                 free_avio(avio);
-                fail(aq_p);
                 break;
             }
             let streams = (*fmt).streams;
@@ -1488,7 +1461,6 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                 crate::player::log("ff: packet_alloc failed");
                 avformat_close_input(&mut fmt);
                 free_avio(avio);
-                fail(aq_p);
                 break;
             }
 
