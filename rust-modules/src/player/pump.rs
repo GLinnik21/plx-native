@@ -5,13 +5,26 @@ use super::engine::{drain_aq, engine, feed_audio_lane, feed_sample, feed_stream,
 use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
 use std::os::raw::c_char;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Relaxed, Release};
 
 /// Publish the one value the HUD renders from. Pure derivation off signals the workers already
 /// maintain — no new cross-thread plumbing, and it runs on every path out of `pump` (including
 /// the early returns) so the state can never go stale behind a spinner that never resolves.
 fn set_state(s: super::shared::PlaybackState) {
     SHARED.pb_state.store(s as u8, Relaxed);
+}
+
+/// How many seek requests this pump seek MERGED — i.e. requests that arrived while an earlier
+/// seek was still resolving and so never got a seek of their own. Reset as it's read, so each
+/// logged seek reports only the requests it consumed.
+///
+/// The count is what makes coalescing observable. `seek_to_ns` only ever holds the newest target,
+/// so a burst of six taps and a single tap leave identical state behind; and the burst is applied
+/// by whichever of two paths wins a race with the stuck-watchdog, which log different lines.
+/// Counting either line therefore measures PMS latency, not merging — `coalesced=` measures
+/// merging directly, and both paths report it.
+fn take_coalesced() -> u32 {
+    TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
 
 pub(crate) fn pump(now: u32) {
@@ -85,16 +98,15 @@ pub(crate) fn pump(now: u32) {
         let tgt = if pending >= 0 { pending } else { SHARED.seek_target_ns.load(Relaxed) }.max(0);
         if eng.seek_retries < 2 {
             eng.seek_retries += 1;
-            *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
-            SHARED.seek_byte.store(0, Release);
-            SHARED.seek_to_ns.store(tgt, Release);
+            SHARED.seek_to_ns.store(tgt, Release); // re-publish; the demux thread seeks on it
             SHARED.seek_target_ns.store(tgt, Relaxed); // rebase guard keys on the retried target
-            let p = SHARED.hs_ptr.load(Acquire);
-            if !p.is_null() {
-                crate::stream::http_shutdown(p); // re-interrupt (shutdown wakes the reader; close would not)
-            }
             eng.seek_armed_at = now;
-            super::log(&format!("seek: in-place stuck → retry reopen at {}s (#{})", tgt / 1_000_000_000, eng.seek_retries));
+            super::log(&format!(
+                "seek: in-place stuck → retry reopen at {}s (#{}) coalesced={}",
+                tgt / 1_000_000_000,
+                eng.seek_retries,
+                take_coalesced()
+            ));
         } else {
             super::log(&format!("seek: in-place stuck → reload at {}s", tgt / 1_000_000_000));
             super::engine::reload_at(tgt); // REPLACES the engine — eng dangles, return
@@ -115,6 +127,7 @@ pub(crate) fn pump(now: u32) {
         && (is_transcode || SHARED.file_size.load(Relaxed) > 0)
     {
         TX.seek_to_ns.store(-1, Relaxed);
+        let coalesced = take_coalesced(); // read here so BOTH branches consume this seek's requests
         let t = t.max(0);
         // TRANSCODE seek: restart the encode at the new &offset and do a FULL RELOAD (fresh Load).
         // A flush()+refeed of the new start.mkv left a STALE GStreamer segment → visual artifacts on
@@ -131,7 +144,7 @@ pub(crate) fn pump(now: u32) {
             }
             return;
         }
-        // DIRECT-PLAY seek: Kodi IN-PLACE seek — flush + reopen the demuxer + av_seek, and
+        // DIRECT-PLAY seek: Kodi IN-PLACE seek — flush + av_seek the demuxer, and
         // (in feed_stream, on the first post-flush keyframe) setTimeToDecode + sendSegmentEvent
         // to re-anchor the GStreamer segment WITHOUT a reload/decoder re-init (no A/V-resync
         // glitch). A plain flush()+refeed with NO fresh segment left a STALE GStreamer segment
@@ -149,21 +162,18 @@ pub(crate) fn pump(now: u32) {
             ffi::sf_pause(); // freeze the clock; feed_stream Plays once PRIME_NS is buffered
         }
         drain_aq(eng);
-        // in-place direct-play seek: reopen the AVFormatContext on the same part URL +
-        // av_seek to t (the demux outer loop reopens on next_url/seek_byte, av_seeks on
-        // seek_to_ns). eng.flushed → feed_stream fires setTimeToDecode+sendSegmentEvent on
-        // the first post-seek keyframe. disp_base=0 (rebase to the landed keyframe).
+        // in-place direct-play seek: publish the target and let the DEMUX THREAD av_seek_frame
+        // between two reads (ff.rs's inner loop). Nothing here interrupts the socket: the pump
+        // used to shutdown(2) it to break the read so the outer loop would reopen+seek, but our
+        // AVIO is seekable, so libavformat just healed the broken read through `seek_cb` and read
+        // on — no reopen, no seek, and every direct-play seek escalated to a reload. See ff.rs.
+        // eng.flushed → feed_stream fires setTimeToDecode+sendSegmentEvent on the first post-seek
+        // keyframe. disp_base=0 (rebase to the landed keyframe).
         eng.flushed = true;
-        *SHARED.next_url.lock().unwrap() = Some(crate::route::url());
-        SHARED.seek_byte.store(0, Release); // reopen trigger
-        SHARED.seek_to_ns.store(t, Release); // post-reopen av_seek target
+        SHARED.seek_to_ns.store(t, Release); // the demux thread's av_seek target
         SHARED.seek_target_ns.store(t, Relaxed); // rebase guard: reject stale drifted keyframes
         SHARED.disp_base.store(0, Relaxed);
-        super::log(&format!("seek(in-place): reopen+seek t={t}"));
-        let p = SHARED.hs_ptr.load(Acquire);
-        if !p.is_null() {
-            crate::stream::http_shutdown(p); // unblock the demux read -> it re-opens
-        }
+        super::log(&format!("seek(in-place): av_seek t={t} coalesced={coalesced}"));
         // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;

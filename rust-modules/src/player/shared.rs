@@ -267,6 +267,10 @@ pub(crate) struct Transport {
     pub hud_until: AtomicU32,    // pl_hud_until (SDL ticks)
     pub scrub_ns: AtomicI64,     // pl_scrub_ns (-1 = not scrubbing)
     pub seek_to_ns: AtomicI64,   // g_seek_to_ns (UI seek request, -1 = none)
+    // Seek requests received since the pump last APPLIED one. seek_to_ns only ever holds the
+    // newest target, so without this counter a coalesced burst is indistinguishable from a
+    // single tap after the fact — the pump reports `coalesced=` from it (see pump.rs).
+    pub seek_reqs: AtomicU32,
 }
 impl Transport {
     pub const fn new() -> Self {
@@ -277,6 +281,7 @@ impl Transport {
             hud_until: AtomicU32::new(0),
             scrub_ns: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
+            seek_reqs: AtomicU32::new(0),
         }
     }
     /// reset on stop (mirrors the transport tail of stop_bufferfeed).
@@ -286,6 +291,7 @@ impl Transport {
         self.resume_pend.store(false, Ordering::Relaxed);
         self.scrub_ns.store(-1, Ordering::Relaxed);
         self.seek_to_ns.store(-1, Ordering::Relaxed);
+        self.seek_reqs.store(0, Ordering::Relaxed);
     }
 }
 

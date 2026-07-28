@@ -1464,20 +1464,30 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                 break;
             }
 
-            // Direct-play seek/resume: the pump reopened us on the same part URL and left a
-            // target ns in SHARED.seek_to_ns. Seek on THIS freshly-opened AVFormatContext (an
-            // in-place av_seek_frame on a live context corrupts matroska demuxer state ->
-            // "Playing error"). A transcode reopen leaves seek_to_ns=-1 (start.mkv is already
-            // 0-based at &offset), so it skips this.
-            let seek_ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
-            if seek_ns >= 0 {
-                let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
-                let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
-                crate::player::log(&format!("ff: seek-after-reopen {}s rv={sr}", seek_ns / 1_000_000_000));
-            }
-
             // INNER read loop
             loop {
+                // Direct-play seek (and the armed resume, which is just a seek published before
+                // the first read): the pump leaves a target ns in SHARED.seek_to_ns and THIS
+                // thread — the only one that ever touches `fmt` — av_seek_frame's between two
+                // av_read_frame calls. A transcode leaves seek_to_ns=-1 (start.mkv is already
+                // 0-based at &offset) and so skips this.
+                //
+                // It used to be an INTERRUPT instead: the pump shutdown(2)'d the socket to break
+                // the read, and the outer loop reopened the URL and seeked the fresh context.
+                // That could not work, and the test suite hid it behind inherited resume offsets
+                // until 2026-07-28. Our AVIO is SEEKABLE (`seek_cb` reopens with a byte Range),
+                // so libavformat treats a read error as recoverable, calls seek_cb, and gets a
+                // brand-new connection at the same offset — av_read_frame never returned an
+                // error, the inner loop never broke, and no reopen ever happened. Every
+                // direct-play seek ran out the stuck-watchdog on PRE-seek packets
+                // (`rebase: dropping stale kf` at the old position) and escalated to a full
+                // reload. Seeking here needs no interrupt at all, so nothing can race it.
+                let seek_ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
+                if seek_ns >= 0 {
+                    let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
+                    let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
+                    crate::player::log(&format!("ff: seek {}s rv={sr}", seek_ns / 1_000_000_000));
+                }
                 let r = av_read_frame(fmt, pkt);
                 if r < 0 {
                     // EOF, a direct-play seek, or teardown — break to the outer loop, which

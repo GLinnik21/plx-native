@@ -355,9 +355,9 @@
         {
           "op": "seek",
           "mode": "rapid",
-          "script": "120,+10,+10,+10,-30,+10",
+          "script": "gap=50,120,+10,+10,+10,-30,+10",
           "final_s": 130,
-          "_note": "6 requests at 300ms: 120,130,140,150,120,130 - forward burst + a back jump; the pump coalesces mid-resolve requests"
+          "_note": "6 requests at 50ms: 120,130,140,150,120,130 - forward burst + a back jump. gap=50 is the D-pad AUTO-REPEAT cadence, and it has to beat a whole seek or nothing coalesces: since the seek became a plain av_seek on the demux thread (was a socket interrupt + reopen that never fired) a 4K HEVC seek anchors inside one frame, so the old 300ms burst ran six independent seeks and covered the merge path zero times."
         }
       ],
       "expect": {
@@ -388,9 +388,9 @@
         {
           "op": "seek",
           "mode": "rapid",
-          "script": "200,-10,-10,-10,-10",
+          "script": "gap=50,200,-10,-10,-10,-10",
           "final_s": 160,
-          "_note": "rapid 10s-back taps - the historical stale-audio-silence repro shape (AUDIO_STALE_AHEAD guard)"
+          "_note": "rapid 10s-back taps at the D-pad auto-repeat cadence - the historical stale-audio-silence repro shape (AUDIO_STALE_AHEAD guard). See the substance_seek_rapid note for why gap=50 and not 300."
         }
       ],
       "expect": {

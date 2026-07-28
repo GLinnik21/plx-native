@@ -74,6 +74,9 @@ pub(crate) fn request_seek(ns: i64) {
     SHARED.seeking.store(true, Relaxed); // HUD: spinner + freeze the playhead until it lands
     SHARED.seek_display_ns.store(ns, Relaxed);
     TX.seek_to_ns.store(ns, Relaxed);
+    // Count the request even though the target it carries may be overwritten before the pump
+    // ever sees it — that overwrite IS the coalescing, and this is the only place it's countable.
+    TX.seek_reqs.fetch_add(1, Relaxed);
 }
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
