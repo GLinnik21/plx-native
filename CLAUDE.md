@@ -186,6 +186,25 @@ libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for t
 - **Event log:** the app writes `/tmp/plxnative-events.log` on the TV (LS2/ACB/Starfish replies, feed
   stats, seek/bind steps, key raw bytes, crash tracer). `make run` fetches it automatically; it's
   the primary debugging surface. stderr goes to `/tmp/plxnative-stderr.log`.
+- **A case's `run_secs` is a CAP, not a runtime.** `tests/run.py` launches via `make run-stream`
+  (tail -F over ssh) and re-grades the log as each line arrives, ending the case the moment every
+  assertion passes — so a *passing* case costs what it needs and only a *failing* one burns the
+  full `run_secs`. Sound because assertions are monotone once satisfied, with two ABSENCE-check
+  exceptions that can only flip the other way — `no_error` and `op_seek_rapid`'s `reload_at: fresh
+  Load`; adding a third means re-reading `stream_case`'s soundness note. `--no-early` restores the
+  old fixed window when you want the longer look at a late error. The cap is measured from the
+  app's FIRST LOG LINE, not from ssh start, so it keeps meaning app runtime the way
+  `make run RUN_SECS=` did. Two more consequences when editing the harness: raising a manifest `run_secs` no longer
+  slows the suite down, and **never pre-create the event log on the TV** — the app runs jailed
+  under its own uid, so a root-owned file left in place is one it cannot write (log stays 0 bytes,
+  every assertion reads as a total regression). `make run` keeps the old sleep-then-`cat` shape
+  because the FPS scenes need a fixed sampling window; both share `BOOT_SH`.
+- **The once/sec `FPS=` heartbeat carries `pos=<s>` while frames are presenting** — the same
+  `SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
+  playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
+  costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
+  resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
+  0 and a 0→600 step reads as 600s of "climb" in one second — a false PASS.
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
