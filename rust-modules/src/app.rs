@@ -399,7 +399,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
         // public pin id + code length + that authToken is still null (never a token/secret).
         if std::path::Path::new("/tmp/plxnative-logintest").exists() {
-            std::thread::spawn(|| {
+            let _ = crate::task::spawn_small("logintest", || {
                 let sess = crate::plex::session::load();
                 let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
                 match ac.create_pin() {

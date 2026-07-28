@@ -22,6 +22,7 @@ mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod stream;
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
+mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
 mod text;
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
 

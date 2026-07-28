@@ -4,7 +4,7 @@
 //! `pms_fetch_hubs`); this store pages arbitrarily large sections without ever blocking the
 //! main loop. Data model: one sparse `Vec<Option<PmsMovie>>` per section, sized to the
 //! listing's `totalSize`, filled page-by-page (`PAGE` items) by ONE background fetch at a
-//! time using the season-switch idiom from `metadata.rs` — `std::thread::spawn` + a
+//! time using the season-switch idiom from `metadata.rs` — [`crate::task::spawn_small`] + a
 //! `Mutex` mailbox + generation atomics (a re-query supersedes in-flight landings), applied
 //! on the main thread by [`pump`] once a frame while the Library screen is up.
 //!
@@ -360,7 +360,7 @@ fn kick_directory<T: Send + 'static>(
     }
     let key = sections()[c].key;
     let sgen = sections_gen();
-    std::thread::spawn(move || {
+    let spawned = crate::task::spawn_small("directory", move || {
         let list = catch_unwind(|| {
             let mut v = Vec::new();
             if let Some(client) = crate::plex::client_opt() {
@@ -374,6 +374,12 @@ fn kick_directory<T: Send + 'static>(
         // mailbox filled outside the guard so a panicking fetch still lands (empty)
         *mail.lock().unwrap_or_else(|e| e.into_inner()) = Some((sgen, c, list));
     });
+    if !spawned {
+        // `land_directory` clears the single-flight when it takes the mailbox, and nothing is
+        // ever going to fill it — so release the flag here or this directory never fetches again
+        // for the rest of the session. Callers re-kick every frame, so this retries by itself.
+        flag.store(false, Ordering::SeqCst);
+    }
 }
 
 /// The landing half of [`kick_directory`]: take the mailbox, clear the single-flight, and
@@ -556,7 +562,7 @@ fn maybe_spawn() {
     let key = sec.key;
     let sec_idx = c; // captured on the main thread; the worker must not read the statics
     FETCHING.store(true, Ordering::SeqCst);
-    std::thread::spawn(move || {
+    let spawned = crate::task::spawn_small("page", move || {
         let result = catch_unwind(|| {
             let q = SectionQuery {
                 section_key: key,
@@ -596,6 +602,12 @@ fn maybe_spawn() {
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(PageResult { gen, sec: sec_idx, start, items, total, sorts });
     });
+    if !spawned {
+        // the flag is cleared ONLY inside a successful mailbox take, and nothing will fill that
+        // mailbox — the same latch `reset_clears_the_single_flight_flags_with_the_mailboxes`
+        // guards. `maybe_spawn` runs every frame, so releasing it here retries by itself.
+        FETCHING.store(false, Ordering::SeqCst);
+    }
 }
 
 // ---------------------------------------------------------------------------------------

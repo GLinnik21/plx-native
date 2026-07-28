@@ -614,7 +614,7 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     PLAY_BUSY.store(true, Ordering::SeqCst);
     let (rk, part, vc, ac) = (rk.to_string(), part.to_string(), vcodec.to_string(), acodec.to_string());
-    let _ = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || {
+    let spawned = crate::task::spawn_small("resolve", move || {
         // catch_unwind OUTSIDE the mailbox write, like load_season: a panicking resolve must still
         // land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner forever.
         let plan = std::panic::catch_unwind(|| build_stream(&rk, &part, &vc, &ac, &env))
@@ -624,12 +624,12 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
         if slot.as_ref().map(|(g, _, _)| *g < gen).unwrap_or(true) {
             *slot = Some((gen, plan, rk));
         }
-    }).inspect_err(|e| {
-        // Builder::spawn returns Result (thread::spawn PANICS on EAGAIN). Swallowing it would
-        // latch PLAY_BUSY true forever behind a spinner that can never resolve.
-        crate::player::log(&format!("resolve: spawn failed ({e}) — this play is dropped"));
-        PLAY_BUSY.store(false, Ordering::SeqCst);
     });
+    if !spawned {
+        // there is no worker, so nothing will ever land: releasing this is what keeps the screen
+        // from wedging on a spinner that can never resolve
+        PLAY_BUSY.store(false, Ordering::SeqCst);
+    }
 }
 
 /// ASYNC twins of `play_movie` / `play_episode`: identical HUD strings and inputs, but the

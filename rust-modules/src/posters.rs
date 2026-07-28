@@ -363,7 +363,10 @@ pub(crate) fn posters_init() {
         g.slots = [Pslot::ZERO; PT_CAP];
         g.workers.clear();
     }
-    let handles: Vec<JoinHandle<()>> = (0..2).map(|_| std::thread::spawn(poster_worker)).collect();
+    // filter_map, not map: a refused worker is one fewer decoder, not a dead app. Artwork degrades
+    // to whatever the survivors can fetch (and to nothing at all if both are refused).
+    let handles: Vec<JoinHandle<()>> =
+        (0..2).filter_map(|_| crate::task::spawn("poster", poster_worker)).collect();
     store().workers = handles;
 }
 

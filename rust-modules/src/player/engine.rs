@@ -300,7 +300,14 @@ pub(crate) fn start_bufferfeed() -> bool {
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = crate::route::stream_acodec();
-            stream_th = Some(std::thread::spawn(move || crate::ff::demux(host, port, path, acodec, aqp, aqap, hsp)));
+            stream_th = crate::task::spawn("demux", move || crate::ff::demux(host, port, path, acodec, aqp, aqap, hsp));
+            if stream_th.is_none() {
+                // Nothing will ever fill the AU queues, so there is no session to start. `hs` is
+                // about to drop with this early return, so retract the pointer first — the pump
+                // and teardown both read it straight off SHARED.
+                SHARED.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
+                return false;
+            }
         }
         aqv_box = Some(qv);
         aqa_box = Some(qa);
@@ -311,7 +318,27 @@ pub(crate) fn start_bufferfeed() -> bool {
 
     // the media thread constructs + loads + runs the loop (owns the GMainContext)
     let payload_ptr = threads::SendPtr(payload_c.as_ptr() as *mut c_char);
-    let load_th = Some(std::thread::spawn(move || threads::load_thread(payload_ptr)));
+    let load_th = crate::task::spawn("media", move || threads::load_thread(payload_ptr));
+    if load_th.is_none() {
+        // Without the media thread nothing is ever Loaded and nothing drains the AU queues, so the
+        // demuxer would park in aq_push forever holding raw pointers into locals this return is
+        // about to drop. Stop it exactly the way teardown's stream branch does — abort both lanes,
+        // shutdown to wake the recv, join, and only then the real close.
+        for q in [aqv_box.as_mut(), aqa_box.as_mut()].into_iter().flatten() {
+            crate::aq::aq_abort(&mut **q);
+        }
+        let p = SHARED.hs_ptr.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !p.is_null() {
+            crate::stream::http_shutdown(p);
+        }
+        if let Some(t) = stream_th.take() {
+            let _ = t.join();
+        }
+        if !p.is_null() {
+            crate::stream::http_close(p); // sole owner now: the reader is joined
+        }
+        return false;
+    }
 
     // progress reporter: post the play position to /:/timeline (updates resume + watched).
     // rk is captured now (fixed for the session); skipped for the sample/demo (no rk).
@@ -321,7 +348,8 @@ pub(crate) fn start_bufferfeed() -> bool {
         if rk.is_empty() {
             None
         } else {
-            Some(std::thread::spawn(move || threads::timeline_thread(rk)))
+            // best-effort: refused, the only loss is that the resume point stops being posted
+            crate::task::spawn("timeline", move || threads::timeline_thread(rk))
         }
     } else {
         None
