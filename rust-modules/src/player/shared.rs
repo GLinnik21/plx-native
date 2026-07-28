@@ -120,24 +120,20 @@ pub(crate) struct Shared {
     pub disp_base: AtomicI64,
 
     // main/pump (M) -> demux (D)
-    // reopen trigger (-1 = none): any >=0 value tells the demux outer loop to reopen —
-    // on next_url if set (transcode seek/switch), else the same part URL (direct-play
-    // in-place seek; the actual target rides in seek_to_ns). Was the byte offset for
-    // the retired byte-Range seek; ff seeks by time, so only the trigger role remains.
-    pub seek_byte: AtomicI64,
-    pub seek_to_ns: AtomicI64,                // direct-play demux seek target ns (-1=none); pump -> ff demux
+    // The demux seek target in content-ns (-1 = none). The pump publishes it and the demux
+    // thread consumes it with an av_seek_frame between two reads — it is the ENTIRE direct-play
+    // seek mechanism, and also carries the resume offset armed before the first read. Nothing
+    // interrupts the demuxer to make this happen; a `seek_byte` reopen trigger and a `next_url`
+    // used to sit alongside it for that, and neither could ever fire (see ff.rs).
+    pub seek_to_ns: AtomicI64,
     // the in-place seek's target content-ns, for the feed's rebase guard (drop stale drifted
-    // keyframes). Distinct from seek_to_ns (which the demuxer consumes on reopen). -1 = none.
+    // keyframes). Distinct from seek_to_ns, which the demuxer consumes as it seeks. -1 = none.
     pub seek_target_ns: AtomicI64,
     // UI loading state: true from a seek request until playback resumes at the new position (prime→
     // Play). The HUD shows a spinner + freezes the playhead at `seek_display_ns` so it doesn't
-    // wobble through the reopen/rebase. -1 display = not loading.
+    // wobble through the seek/rebase. -1 display = not loading.
     pub seeking: AtomicBool,
     pub seek_display_ns: AtomicI64,
-    // the URL for the demux outer loop's next re-open: a transcode seek/switch points it
-    // at a NEW start.mkv?&offset= URL; an in-place direct-play seek re-points it at the
-    // SAME part URL (the time target rides in seek_to_ns). Taken on re-open.
-    pub next_url: Mutex<Option<String>>,
     // pending audio-track switch: the Plex audioStreamID to switch to (-1 = none). The
     // pump forces a fresh transcode with that source audio at the current position.
     pub pending_audio_sid: AtomicI64,
@@ -195,12 +191,10 @@ impl Shared {
             source_info: Mutex::new(None),
             pts_shift: AtomicI64::new(0),
             disp_base: AtomicI64::new(0),
-            seek_byte: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
             seek_target_ns: AtomicI64::new(-1),
             seeking: AtomicBool::new(false),
             seek_display_ns: AtomicI64::new(-1),
-            next_url: Mutex::new(None),
             pending_audio_sid: AtomicI64::new(-1),
             pending_audio_idx: AtomicI32::new(-1),
             desired_audio_idx: AtomicI32::new(-1),
@@ -228,12 +222,10 @@ impl Shared {
         *self.source_info.lock().unwrap() = None;
         self.pts_shift.store(0, Ordering::Relaxed);
         self.disp_base.store(0, Ordering::Relaxed);
-        self.seek_byte.store(-1, Ordering::Relaxed);
         self.seek_to_ns.store(-1, Ordering::Relaxed);
         self.seek_target_ns.store(-1, Ordering::Relaxed);
         self.seeking.store(false, Ordering::Relaxed);
         self.seek_display_ns.store(-1, Ordering::Relaxed);
-        *self.next_url.lock().unwrap() = None;
         self.pending_audio_sid.store(-1, Ordering::Relaxed);
         self.pending_audio_idx.store(-1, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
