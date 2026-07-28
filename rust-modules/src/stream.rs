@@ -198,16 +198,9 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         if fd < 0 {
             return -1;
         }
-        // DELIBERATELY NOT PUBLISHED YET — see the note above `http_shutdown`.
-        //
-        // Publishing the fd here (so a teardown/BACK can interrupt a stalled open) was tried and
-        // REVERTED: it makes every reopen interruptible, and the demuxer reopens this socket from
-        // TWO places — its outer loop head and the AVIO `seek_cb` — while the pump fires
-        // `http_shutdown` on the very same stream to service a seek. On device that cost two
-        // regressions in the seek path (`substance_seek_inplace`, `morning_show_seek_rapid`).
-        // Making it safe needs the interrupt to distinguish "wake a blocked read" from "kill this
-        // stream", which is a design change, not a line move. Recorded in
-        // docs/async-model-decision.md.
+        // The fd is published only after the headers parse (below), so `http_shutdown` cannot
+        // interrupt an open in flight. Publishing it early was tried and REVERTED — it makes every
+        // reopen interruptible and broke the seek path. See docs/async-model-decision.md.
         let mut sa: libc::sockaddr_in = std::mem::zeroed();
         sa.sin_family = libc::AF_INET as libc::sa_family_t;
         sa.sin_port = (port as u16).to_be(); // htons
@@ -440,7 +433,6 @@ pub(crate) fn http_get(host: &str, port: c_int, path: &str, extra: Option<&str>)
     let path_c = std::ffi::CString::new(path).ok()?;
     let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    // fd = -1, never 0: a zeroed box leaves fd = 0, so any stray close would take stdin.
     let mut hs = http_stream_boxed();
     if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "GET") != 0 {
         return None;
@@ -471,7 +463,6 @@ pub(crate) fn http_put(host: &str, port: c_int, path: &str) -> c_int {
         Ok(c) => c,
         Err(_) => return -1,
     };
-    // fd = -1, never 0: a zeroed box leaves fd = 0, so any stray close would take stdin.
     let mut hs = http_stream_boxed();
     if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "PUT") != 0 {
         return if hs.status != 0 { hs.status } else { -1 };
@@ -491,7 +482,6 @@ pub(crate) fn http_post(host: &str, port: c_int, path: &str, extra: Option<&str>
     let path_c = std::ffi::CString::new(path).ok()?;
     let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    // fd = -1, never 0: a zeroed box leaves fd = 0, so any stray close would take stdin.
     let mut hs = http_stream_boxed();
     if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "POST") != 0 {
         return None;
@@ -509,7 +499,8 @@ pub(crate) fn http_post(host: &str, port: c_int, path: &str, extra: Option<&str>
     Some(body)
 }
 
-/// A boxed HttpStream in the CLOSED state (fd = -1), so http_close is a no-op until
+/// A boxed HttpStream in the CLOSED state (fd = -1, never 0 — a stray close on a zeroed box
+/// would take stdin), so http_close is a no-op until
 /// http_open assigns a real fd. The player engine pre-allocates the demux/cue sockets
 /// before the worker threads open them; a plain zeroed box leaves fd = 0, and a
 /// teardown before (or without) http_open would then close(0) the process's stdin —
@@ -525,7 +516,7 @@ pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     /// Descriptors currently open in this process. `/dev/fd` works on both macOS and Linux;
     /// `read_dir` opens one itself, but that is constant between two calls.
@@ -533,10 +524,6 @@ mod tests {
         std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
     }
 
-    /// Raw-pointer-across-threads shim, mirroring `player::threads::SendPtr`. The pointee is a
-    /// `Box<HttpStream>` owned by the test thread and joined before it drops.
-    struct P(*mut HttpStream);
-    unsafe impl Send for P {}
 
     fn sockaddr(ip: [u8; 4], port: u16) -> libc::sockaddr_in {
         let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };

@@ -311,6 +311,7 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
 // played leaf's OWN streams. The track menu and the route's audio pick read it; feeding a menu
 // built from episode 1's streams to a playback of episode 5 was a real track-identity bug.
 
+#[derive(Clone)]
 pub(crate) struct PlayingTracks {
     pub(crate) rk: String,
     pub(crate) audio: Vec<Stream>,
@@ -328,10 +329,23 @@ pub(crate) fn playing() -> Option<&'static PlayingTracks> {
 /// loaded detail's streams when it IS this item (no extra GET on the play path — the same
 /// optimization the old `audio_tracks` fetch had); otherwise one metadata fetch. An empty `rk`
 /// (local-sample / URL-override play) clears the store.
-/// PURE: the network half of `load_playing`, safe to call from a worker. Reads NO statics and
-/// writes none — the `CURRENT` cache-hit shortcut and the `PLAYING` install both stay on the main
-/// thread (`route::apply_plan`), because `playing()` hands out a `&'static` whose Vecs the track
-/// menu and info panel hold slices into during playback.
+/// PURE: fetch the playing item's track lists. Safe on a worker — reads and writes no statics.
+/// The cache-hit shortcut is `cached_playing` (main thread) and the install is `install_playing`,
+/// because `playing()` hands out a `&'static` whose Vecs the track menu and info panel hold
+/// slices into during playback.
+/// MAIN THREAD: the cache-hit half of the old `load_playing` — reuse the loaded detail's streams
+/// when it IS this item, so playing from a detail page costs no extra GET. Snapshotted into
+/// `ResolveEnv` and handed to the worker; splitting the fetch out lost this and quietly added a
+/// PMS round trip to every play from a detail page.
+pub(crate) fn cached_playing(rk: &str) -> Option<PlayingTracks> {
+    current().filter(|d| d.rk == rk && !d.audio.is_empty()).map(|d| PlayingTracks {
+        rk: rk.to_string(),
+        audio: d.audio.clone(),
+        subs: d.subs.clone(),
+        video_fps: d.video_fps,
+    })
+}
+
 pub(crate) fn fetch_playing_tracks(rk: &str) -> Option<PlayingTracks> {
     if rk.is_empty() {
         return None;
@@ -350,35 +364,6 @@ pub(crate) fn install_playing(pt: Option<PlayingTracks>) {
             "playing tracks: rk={} audio={} subs={}", pt.rk, pt.audio.len(), pt.subs.len()));
     }
     unsafe { *addr_of_mut!(PLAYING) = pt };
-}
-
-pub(crate) fn load_playing(rk: &str) {
-    if rk.is_empty() {
-        unsafe { *addr_of_mut!(PLAYING) = None };
-        return;
-    }
-    let pt = match current().filter(|d| d.rk == rk && !d.audio.is_empty()) {
-        Some(d) => PlayingTracks {
-            rk: rk.to_string(),
-            audio: d.audio.clone(),
-            subs: d.subs.clone(),
-            video_fps: d.video_fps,
-        },
-        None => {
-            let (audio, subs, video_fps) = crate::plex::client_opt()
-                .and_then(|c| c.metadata(rk))
-                .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
-                .unwrap_or_default();
-            PlayingTracks { rk: rk.to_string(), audio, subs, video_fps }
-        }
-    };
-    crate::player::log(&format!(
-        "playing tracks: rk={} audio={} subs={}",
-        pt.rk,
-        pt.audio.len(),
-        pt.subs.len()
-    ));
-    unsafe { *addr_of_mut!(PLAYING) = Some(pt) };
 }
 
 // ---- list-position → demuxer-ordinal conversion --------------------------------------------
