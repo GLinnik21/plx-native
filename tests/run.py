@@ -614,12 +614,36 @@ def _drain(stream, sink, done):
         done.set()
 
 
+# The remote command `make run-stream` ends in — unique enough to identify our own ssh clients.
+RUN_STREAM_MARK = "tail -F -n +1 /tmp/plxnative-events.log"
+
+
+def _run_stream_pids():
+    """PIDs of every local ssh/sshpass process carrying a run-stream tail."""
+    out = subprocess.run(["ps", "-Ao", "pid,command"], capture_output=True, text=True).stdout
+    pids = set()
+    for ln in out.splitlines():
+        if RUN_STREAM_MARK in ln and " ps -Ao" not in ln:
+            try:
+                pids.add(int(ln.split(None, 1)[0]))
+            except ValueError:
+                pass
+    return pids
+
+
 def stream_case(case, cfg, cap_s, early=True):
     """Launch via `make run-stream` and grade the log as it streams.
 
     Returns (lines, elapsed_s, stopped_early, settled_reason). Lines come back already filtered;
     settled_reason is non-None only when the case was cut short by an already-decided failure.
     """
+    # Snapshot BEFORE launching so the teardown can kill exactly the clients this case started.
+    # killpg is not sufficient on its own: sshpass forks ssh into its OWN process group (measured:
+    # make pgid=P, sshpass pid=A pgid=P, ssh pid=B pgid=B ppid=A), so the group signal never
+    # reaches B, and B reparents to init holding an ssh connection and a remote `tail -F`. These
+    # accumulate one per case — 125 of them piled up against the TV in a single session before
+    # this was noticed, which is real load on a device whose dropbear has a connection limit.
+    pre_pids = _run_stream_pids()
     proc = subprocess.Popen(["make", "-s", "run-stream", f"TV={cfg['tv']}"],
                             cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             text=True, bufsize=1,
@@ -675,6 +699,14 @@ def stream_case(case, cfg, cap_s, early=True):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+        # Reap the ssh clients killpg could not reach (see pre_pids). SIGKILL, not SIGTERM —
+        # sshpass/ssh demonstrably survive the TERM the group already sent them. Only pids that
+        # appeared while this case ran are touched, so a stray unrelated session is left alone.
+        for pid in _run_stream_pids() - pre_pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
     return list(lines), time.monotonic() - started, stopped_early, settled
 
 
