@@ -162,6 +162,11 @@ pub(crate) struct Shared {
     // (which needs `duration_ns > 0`) can never fire and the player would sit on a black screen
     // forever. The pump turns this into `PlaybackState::Error` so the HUD can say so.
     pub demux_failed: AtomicBool,
+    // "this session has presented at least one frame", latched. Distinct from `frames`, which the
+    // seek arm deliberately RESETS to 0 (pump.rs) so it can count only post-seek frames — which
+    // makes `frames == 0` a broken proxy for "we never started": after any seek it is true again.
+    // Cleared only by reset_session, i.e. once per playback session.
+    pub ever_played: AtomicBool,
 
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
@@ -207,6 +212,7 @@ impl Shared {
             report_wake: (Mutex::new(false), Condvar::new()),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
+            ever_played: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
             sub_cues: Mutex::new(Vec::new()),
             sub_bitmaps: Mutex::new(Vec::new()),
@@ -242,6 +248,7 @@ impl Shared {
         *self.report_wake.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
         self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
+        self.ever_played.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). The cue/bitmap STORES below are transient render state
