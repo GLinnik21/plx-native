@@ -78,6 +78,13 @@ pub(crate) fn request_seek(ns: i64) {
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
 pub(crate) fn loading() -> bool { state().is_busy() }
+/// Publish `Resolving` from the frame loop. The pump is the normal writer of `pb_state`, but it
+/// only runs once the engine exists (`app.rs`'s `is_started()` gate) — which is false for the
+/// whole async-resolve window. Without this the HUD sat at `Idle` through the load and drew a
+/// live-looking 0:00 transport, i.e. exactly the bug the state machine was added to kill.
+pub(crate) fn set_resolving() {
+    SHARED.pb_state.store(shared::PlaybackState::Resolving as u8, Relaxed);
+}
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
 pub(crate) fn state() -> shared::PlaybackState {
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))

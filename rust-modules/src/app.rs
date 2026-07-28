@@ -1794,6 +1794,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::track_menu::on_ok();
                 }
             }
+            // A resolve in flight has no engine yet, so `pump` (below) is not running and cannot
+            // publish the state the HUD renders from. Publish it here.
+            if crate::route::play_pending() {
+                crate::player::set_resolving();
+            }
             if is_started() {
                 crate::player::pump(now);
             }

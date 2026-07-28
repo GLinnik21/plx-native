@@ -133,13 +133,13 @@ pub(crate) fn ctxline_cptr() -> *const c_char {
 /// This playback's universal-transcoder spec, rebuilt from the module state (rk + session are
 /// borrowed from the caller's locals; audio/subtitle ride the CURRENT selection) — so every
 /// (re)start of the item's transcode carries identical params.
-fn transcode_spec<'a>(rk: &'a str, session: &'a str, remux: bool, offset_secs: i64) -> crate::plex::TranscodeSpec<'a> {
+fn transcode_spec<'a>(rk: &'a str, session: &'a str, remux: bool, offset_secs: i64, aud: i64, sub: i64) -> crate::plex::TranscodeSpec<'a> {
     crate::plex::TranscodeSpec {
         rating_key: rk,
         session,
         remux,
-        audio_stream_id: cur_audio_sid(),
-        subtitle_stream_id: cur_sub_sid(),
+        audio_stream_id: aud,
+        subtitle_stream_id: sub,
         offset_secs,
     }
 }
@@ -181,7 +181,8 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     // (stopping the old transcode), and this new start.mkv?&offset= (same session)
     // repositions. /decision is just a query and doesn't cut the streaming connection.
     let session = sess();
-    let sp = transcode_spec(&rk, &session, unsafe { addr_of!(CUR_REMUX).read() }, offset_secs.max(0));
+    let sp = transcode_spec(&rk, &session, unsafe { addr_of!(CUR_REMUX).read() }, offset_secs.max(0),
+                            cur_audio_sid(), cur_sub_sid());
     // same session, same output codecs — no payload rebuild here, so the body is unused
     let _ = c.transcode_decision(&sp);
     let url = c.transcode_start_url(&sp).to_url();
@@ -194,8 +195,8 @@ use crate::cbuf::set as set_c; // shared fixed-C-buffer write (the HUD TITLE/CTX
 /// Ask PMS whether `rk` should direct-play (Some(true) → serve the raw Part) or transcode
 /// (Some(false) → start.mkv). None when the server returns no usable Media decision, so the
 /// caller falls back to the local codec test. Registers the session as a side effect.
-fn server_decision(rk: &str) -> Option<bool> {
-    let mc = match crate::plex::client_opt()?.mde_decision(rk, &sess()) {
+fn server_decision(rk: &str, session: &str) -> Option<bool> {
+    let mc = match crate::plex::client_opt()?.mde_decision(rk, session) {
         Some(mc) => mc,
         None => {
             // failed fetch OR unparseable (XML/truncated) body — keep the fallback visible
@@ -279,7 +280,7 @@ fn apply_decision_codecs(mc: &crate::plex::MediaContainer) {
 /// always burn) — a query-param subtitleStreamID does NOT suppress a default-selected
 /// sub, only the PUT does. So we PUT subtitleStreamID=0 to keep subs OFF (no burn), or
 /// the chosen id to burn it; audioStreamID only when the user switched (else keep default).
-fn put_selection(part: i64) {
+fn put_selection(part: i64, aud: i64, sub: i64) {
     if part <= 0 {
         return;
     }
@@ -287,7 +288,6 @@ fn put_selection(part: i64) {
         Some(c) => c,
         None => return,
     };
-    let (aud, sub) = (cur_audio_sid(), cur_sub_sid());
     let st = c.select_streams(&crate::plex::StreamSelection {
         part_id: part,
         audio_stream_id: aud,
@@ -325,12 +325,11 @@ fn ensure_machine_id() {
 /// works (just without the queue ids).
 /// PURE: the `ensure_playqueue` network work, returning (machine_id, pq_id, pq_item_id) instead
 /// of writing MACHINE_ID / PQ_ID / PQ_ITEM_ID. Safe on a worker.
-fn resolve_playqueue(rk: &str, session: &str) -> (String, String, String) {
-    let cached = unsafe { (*addr_of!(MACHINE_ID)).clone() };
+fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> (String, String, String) {
     let mid = if cached.is_empty() {
         crate::plex::client_opt().and_then(|c| c.machine_identity()).unwrap_or_default()
     } else {
-        cached
+        cached.to_string()
     };
     if mid.is_empty() {
         crate::player::log("playqueue: no machineIdentifier (skip)");
@@ -377,6 +376,32 @@ fn ensure_playqueue(rk: &str, session: &str) {
 /// decodes natively); else ask the server to transcode into progressive H264+AC3
 /// Matroska (same MKV demuxer eats it). Returns (url, transcode session). On the
 /// transcode path this also runs the /decision handshake and stores TBASE for seeks.
+/// Every `static mut` the resolve used to READ, captured on the main thread and passed by value.
+///
+/// Making the worker WRITE-pure was not enough: it still cloned `MACHINE_ID` and `SESS` — Strings
+/// that `apply_plan` reassigns on every landing — so a superseded worker could clone a buffer as
+/// it was being dropped (heap corruption on a device with no debugger), and read the two sids as
+/// non-atomic i64s, which on armv7 is a tearable two-word load.
+#[derive(Clone, Default)]
+pub(crate) struct ResolveEnv {
+    pub machine_id: String,
+    pub audio_sid: i64,
+    pub sub_sid: i64,
+}
+
+impl ResolveEnv {
+    /// MAIN THREAD ONLY.
+    fn snapshot() -> ResolveEnv {
+        unsafe {
+            ResolveEnv {
+                machine_id: (*addr_of!(MACHINE_ID)).clone(),
+                audio_sid: CUR_AUDIO_SID,
+                sub_sid: CUR_SUB_SID,
+            }
+        }
+    }
+}
+
 /// Everything `resolve` DECIDES, as owned data. No `static mut`, no `SHARED`, no ACB/Starfish —
 /// so it is `Send` and the resolve can run on a worker. `apply_plan` (main thread) is the ONLY
 /// code that installs it. Adding a field here is how you add a resolve output; writing a static
@@ -404,7 +429,7 @@ pub(crate) struct Plan {
 
 /// PURE resolve: network + decisions only. Runs on the main thread today and on a worker in
 /// `request_play`. MUST NOT write any `static mut` or touch the player engine.
-fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> Plan {
+fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveEnv) -> Plan {
     // The part id is derived from THIS call's `part`, before anything else runs, and published
     // here rather than by the caller after we return. It used to be written by play_movie /
     // play_episode *after* build_stream finished, so `put_selection` — which runs inside this
@@ -422,7 +447,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> Plan {
     let session = new_sess(rk);
     plan.sess = session.clone();
     if !rk.is_empty() {
-        let (mid, pq, it) = resolve_playqueue(rk, &session);
+        let (mid, pq, it) = resolve_playqueue(rk, &session, &env.machine_id);
         plan.machine_id = mid;
         plan.pq_id = pq;
         plan.pq_item_id = it;
@@ -464,7 +489,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> Plan {
     } else if rk.is_empty() {
         false
     } else {
-        server_decision(rk).unwrap_or_else(|| crate::plex::is_dp_audio(acodec))
+        server_decision(rk, &session).unwrap_or_else(|| crate::plex::is_dp_audio(acodec))
     };
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
@@ -520,8 +545,8 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> Plan {
     }
     // keep the flavor so a later seek rebuilds the same query for start.mkv?...&offset=T
     plan.remux = video_dp;
-    put_selection(plan.part_id); // audio/subtitle selection drives the encode/remux + burn
-    let sp = transcode_spec(rk, &session, video_dp, -1);
+    put_selection(plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
+    let sp = transcode_spec(rk, &session, video_dp, -1, env.audio_sid, env.sub_sid);
     if let Some(mc) = client.transcode_decision(&sp) {
         // the Load payload must match the server's ACTUAL output codecs
         if let Some((v, a)) = decision_codecs(&mc) {
@@ -619,7 +644,7 @@ pub(crate) fn play_movie(m: &PmsMovie) {
     }
     crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
     crate::player::reset_subtitle(); // subs Off on a new item (selection persists across seeks/reloads)
-    apply_plan(build_stream(&m.rk, &m.part, &m.vcodec, &m.acodec), &m.rk);
+    apply_plan(build_stream(&m.rk, &m.part, &m.vcodec, &m.acodec, &ResolveEnv::snapshot()), &m.rk);
 }
 
 /// Set the stream URL + HUD strings for a TV episode (from the detail page).
@@ -638,7 +663,7 @@ pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud
     }
     crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
     crate::player::reset_subtitle(); // subs Off on a new item (selection persists across seeks/reloads)
-    apply_plan(build_stream(rk, part, vcodec, acodec), rk);
+    apply_plan(build_stream(rk, part, vcodec, acodec, &ResolveEnv::snapshot()), rk);
 }
 
 // ---- async resolve: worker computes an owned Plan, main thread installs it ------------------
@@ -671,13 +696,15 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
     }
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
+    // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
+    let env = ResolveEnv::snapshot();
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     PLAY_BUSY.store(true, Ordering::SeqCst);
     let (rk, part, vc, ac) = (rk.to_string(), part.to_string(), vcodec.to_string(), acodec.to_string());
     let _ = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || {
         // catch_unwind OUTSIDE the mailbox write, like load_season: a panicking resolve must still
         // land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner forever.
-        let plan = std::panic::catch_unwind(|| build_stream(&rk, &part, &vc, &ac))
+        let plan = std::panic::catch_unwind(|| build_stream(&rk, &part, &vc, &ac, &env))
             .unwrap_or_default();
         let mut slot = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner());
         // MONOTONE: an older resolve landing late must never clobber a newer unconsumed one.
@@ -784,9 +811,9 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     // the transcode output is HEVC + AC3 — record it so a pipeline RELOAD (audio switch)
     // builds the H265 Load payload matching the re-encoded stream.
     set_stream_codecs("hevc", "ac3");
-    put_selection(cur_part_id()); // audio/subtitle selection drives the encode + burn
+    put_selection(cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
     let qsess = sess();
-    let sp = transcode_spec(&rk, &qsess, false, offset_secs.max(0));
+    let sp = transcode_spec(&rk, &qsess, false, offset_secs.max(0), cur_audio_sid(), cur_sub_sid());
     if let Some(mc) = c.transcode_decision(&sp) {
         apply_decision_codecs(&mc); // reload builds a fresh Load payload — match the real output
     }
@@ -826,7 +853,7 @@ pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
         // persist the USER's pick server-side (official-client behavior): /status/sessions'
         // selected-stream display keys on the part selection, not the timeline report. Only
         // user picks persist — the start-of-play auto-pick (eng preference) reports only.
-        put_selection(cur_part_id());
+        put_selection(cur_part_id(), cur_audio_sid(), cur_sub_sid());
         crate::player::request_audio_track(idx, codec);
     } else {
         crate::player::request_audio_switch(stream_id);
@@ -844,7 +871,7 @@ pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
     } else {
         // persist the pick server-side (and subs Off PUTs subtitleStreamID=0, clearing a
         // stale server-side selection that would otherwise burn on the next transcode)
-        put_selection(cur_part_id());
+        put_selection(cur_part_id(), cur_audio_sid(), cur_sub_sid());
     }
 }
 
