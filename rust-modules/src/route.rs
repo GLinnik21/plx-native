@@ -373,7 +373,10 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str) -> (String, St
     // So a direct-playable codec in a non-MKV container is NOT direct-played; it goes to Plex for a
     // container-only REMUX to progressive MKV (copy the codecs, no re-encode — keeps 4K/HDR).
     let streamable = part_is_mkv(part);
-    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(acodec) };
+    // snapshot the track list on the MAIN thread and pass it by reference — the resolve worker
+    // (step 7) gets an owned copy instead, and never touches the `&'static` store.
+    let tracks = crate::metadata::playing().map(|p| p.audio.clone()).unwrap_or_default();
+    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(&tracks, acodec) };
     let directplay = if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265.
         // Anything else (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's
@@ -460,9 +463,14 @@ const PREF_AUDIO_LANG: &str = "eng";
 ///      another track of that codec preceded it);
 ///   3. any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling — smart-DP).
 /// None when NO audio track is direct-playable (→ transcode).
-fn pick_dp_audio(default_acodec: &str) -> Option<(i32, String, i64)> {
+/// PURE: takes the playing item's audio tracks explicitly instead of reaching into
+/// `metadata::playing()`. That matters twice over. (a) `playing()` hands out a `&'static
+/// PlayingTracks` whose `Vec`s `ui/track_menu.rs` and `ui/info_panel.rs` hold slices into during
+/// playback — a worker replacing the store would drop those out from under the draw path, so the
+/// resolve must never touch it. (b) Being pure makes the selection ladder host-testable, which it
+/// has never been; see the tests at the foot of this file.
+fn pick_dp_audio(tracks: &[crate::metadata::Stream], default_acodec: &str) -> Option<(i32, String, i64)> {
     let dp = crate::plex::is_dp_audio;
-    let tracks = crate::metadata::playing().map(|p| p.audio.as_slice()).unwrap_or(&[]);
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
         return if dp(default_acodec) { Some((-1, default_acodec.to_string(), 0)) } else { None };
@@ -673,6 +681,63 @@ mod tests {
     /// `part_id_of` gates the server-side stream selection: `put_selection` returns early on
     /// `<= 0`, so a parse miss silently disables subtitle suppression and audio selection for
     /// the whole item — no error, no log line, just a burned-in subtitle nobody asked for.
+
+    // ---- pick_dp_audio: the direct-play audio selection ladder ------------------------------
+    // Never host-testable before: it read `metadata::playing()`'s `&'static` store. Making it
+    // take the tracks explicitly (step 6 of docs/async-model-decision.md) turned the ladder into
+    // a pure function, and these pin the order the comments claim.
+
+    fn trk(id: i64, codec: &str, lang: &str, default: bool) -> crate::metadata::Stream {
+        crate::metadata::Stream {
+            id,
+            index: id,
+            lang: String::new(),
+            lang_code: lang.into(),
+            codec: codec.into(),
+            channels: 2,
+            layout: String::new(),
+            title: String::new(),
+            sdh: false,
+            ad: false,
+            forced: false,
+            default,
+            external: false,
+        }
+    }
+
+    #[test]
+    fn an_empty_track_list_falls_back_to_the_codec_default() {
+        assert_eq!(pick_dp_audio(&[], "ac3").map(|(i, c, _)| (i, c)), Some((-1, "ac3".into())));
+        assert!(pick_dp_audio(&[], "truehd").is_none(), "a non-direct-playable default must transcode");
+    }
+
+    #[test]
+    fn english_wins_over_the_files_default_track() {
+        // The Office ships a Russian "kubik" track flagged default; we must not open in it.
+        let tracks = [trk(1, "ac3", "rus", true), trk(2, "ac3", "eng", false)];
+        assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((1, "ac3".into(), 2)));
+    }
+
+    #[test]
+    fn the_flagged_default_wins_when_no_english_track_is_direct_playable() {
+        let tracks = [trk(1, "ac3", "deu", false), trk(2, "ac3", "fra", true)];
+        assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((1, "ac3".into(), 2)));
+    }
+
+    #[test]
+    fn smart_dp_takes_a_playable_sibling_over_a_non_playable_default() {
+        // Toy Story 3: TrueHD default + an AC3 sibling — direct-play beats the server's
+        // video-downscaling transcode.
+        let tracks = [trk(1, "truehd", "eng", true), trk(2, "ac3", "eng", false)];
+        assert_eq!(pick_dp_audio(&tracks, "truehd"), Some((1, "ac3".into(), 2)));
+    }
+
+    #[test]
+    fn no_direct_playable_track_means_transcode() {
+        let tracks = [trk(1, "truehd", "eng", true), trk(2, "dts", "eng", false)];
+        assert!(pick_dp_audio(&tracks, "truehd").is_none());
+    }
+
     #[test]
     fn part_id_is_read_from_the_parts_segment() {
         assert_eq!(part_id_of("/library/parts/98765/1712345678/file.mkv"), 98765);
