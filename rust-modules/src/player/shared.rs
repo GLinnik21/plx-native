@@ -42,14 +42,14 @@ pub(crate) struct SubBitmap {
 /// in `player_hud.rs` all along never fired on first play. The HUD drew a live-looking transport
 /// at 0:00 / -0:00 instead, which is the half of the frozen-HUD report that is not blocking I/O.
 ///
-/// Derived once per frame in `pump::derive_state` from signals the workers already publish; no
+/// Derived once per frame in `pump::set_state` from signals the workers already publish; no
 /// new cross-thread plumbing. Ordered so `>= Playing` reads as "actually on screen".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum PlaybackState {
     /// no engine
     Idle = 0,
-    /// the route/plan resolve is in flight (set by step 7's `Job<Plan>`; nothing sets it yet)
+    /// the route/plan resolve is in flight — DERIVED in `player::state()` from `route::play_pending()`
     Resolving = 1,
     /// engine started, pipeline not yet loaded — the HTTP GET + Starfish `Load` window
     Connecting = 2,
@@ -85,15 +85,17 @@ impl PlaybackState {
                 | PlaybackState::Seeking
         )
     }
-    /// the one-line status the HUD shows beside the spinner
-    pub fn caption(self) -> &'static str {
+    /// The one-line status the HUD shows beside the spinner. A `&'static CStr` (the house idiom
+    /// for UI strings) so the draw path allocates nothing — this is read 60x/second for the whole
+    /// load window, and indefinitely in `Error`.
+    pub fn caption(self) -> &'static std::ffi::CStr {
         match self {
-            PlaybackState::Resolving => "Preparing…",
-            PlaybackState::Connecting => "Connecting…",
-            PlaybackState::Buffering => "Buffering…",
-            PlaybackState::Seeking => "Seeking…",
-            PlaybackState::Error => "Playback failed",
-            _ => "",
+            PlaybackState::Resolving => c"Preparing…",
+            PlaybackState::Connecting => c"Connecting…",
+            PlaybackState::Buffering => c"Buffering…",
+            PlaybackState::Seeking => c"Seeking…",
+            PlaybackState::Error => c"Playback failed",
+            _ => c"",
         }
     }
 }

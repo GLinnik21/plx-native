@@ -225,22 +225,19 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
     // `is_busy()`) drew a fully black screen with no message and no hint that BACK is the way out.
     {
         let st = crate::player::state();
+        // A seek keeps its existing in-transport spinner (beside the elapsed clock): overlaying
+        // the centre of the screen for a sub-second reposition would be noisier than the bug.
         let kind = match st {
             crate::player::PlaybackState::Error => Some(StatusKind::Failed),
-            s if s.is_busy() => Some(StatusKind::Working),
+            s if s.is_busy() && crate::player::frames() == 0 => Some(StatusKind::Working),
             _ => None,
         };
-        // A seek keeps its existing in-transport spinner (beside the elapsed clock) — overlaying
-        // the centre of the screen for a sub-second reposition would be far noisier than the bug.
-        let overlay = matches!(st, crate::player::PlaybackState::Error)
-            || (kind.is_some() && crate::player::frames() == 0);
-        if let (Some(kind), true) = (kind, overlay) {
-            // CString must outlive the draw (Label/StatusOverlay hold a non-owning ptr)
-            if let Ok(cs) = CString::new(st.caption()) {
-                StatusOverlay::new(Rect::new(0.0, 0.0, SCR_W, SCR_H - 340.0), cs.as_ptr(), kind)
-                    .phase(now)
-                    .draw(&e, p);
-            }
+        if let Some(kind) = kind {
+            // sits above the transport block, whose geometry is the documented SCR_H-offset carve-out
+            const OVERLAY_BOTTOM: f32 = 340.0;
+            StatusOverlay::new(Rect::new(0.0, 0.0, SCR_W, SCR_H - OVERLAY_BOTTOM), st.caption(), kind)
+                .phase(now)
+                .draw(&e, p);
         }
     }
 

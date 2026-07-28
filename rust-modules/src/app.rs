@@ -619,15 +619,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if resume_ns > 0 && !pending {
                 crate::player::resume_at(resume_ns);
             }
-            // Flip to the player
-            // NOW so the HUD draws its Resolving state this frame; the per-frame `pump_play`
+            // Flip to the player NOW so the HUD draws its Resolving state this frame; `pump_play`
             // below starts the engine when the plan lands. With nothing pending this is the old
             // synchronous behaviour, byte for byte.
-            if pending {
+            let entering = if pending {
                 PENDING_RESUME_NS.store(resume_ns, Relaxed);
-                *played_from_detail = from_detail;
-                *route = Route::Player { overlay: Overlay::None };
-            } else if crate::player::start_bufferfeed() {
+                true
+            } else {
+                crate::player::start_bufferfeed()
+            };
+            if entering {
                 *played_from_detail = from_detail;
                 *route = Route::Player { overlay: Overlay::None };
             }
@@ -1695,7 +1696,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
                             if !part.is_empty() {
                                 log(&format!("plxnative-play: rk={rk} start"));
-                                crate::route::request_play_episode(rk, &part, &vc, &ac, &title, "");
+                                crate::route::request_play(rk, &part, &vc, &ac, &title, "");
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
                                 start_playback(resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
@@ -1793,11 +1794,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::track_menu::focus_row(row);
                     crate::ui::track_menu::on_ok();
                 }
-            }
-            // A resolve in flight has no engine yet, so `pump` (below) is not running and cannot
-            // publish the state the HUD renders from. Publish it here.
-            if crate::route::play_pending() {
-                crate::player::set_resolving();
             }
             if is_started() {
                 crate::player::pump(now);

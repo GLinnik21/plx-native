@@ -351,16 +351,15 @@ pub enum StatusKind {
     /// terminal failure — no spinner, danger-tinted copy
     Failed,
 }
-/// NB `caption` is a non-owning `*const c_char` — the same contract `Label`/`Button` carry (see
-/// ui/CLAUDE.md): keep the `CString` alive for the whole draw frame.
 pub struct StatusOverlay {
     pub frame: Rect,
-    pub caption: *const c_char,
+    /// `&'static CStr` from `PlaybackState::caption()` — no lifetime hazard, no per-frame alloc.
+    pub caption: &'static core::ffi::CStr,
     pub kind: StatusKind,
     pub phase: u32,
 }
 impl StatusOverlay {
-    pub fn new(frame: Rect, caption: *const c_char, kind: StatusKind) -> Self {
+    pub fn new(frame: Rect, caption: &'static core::ffi::CStr, kind: StatusKind) -> Self {
         Self { frame, caption, kind, phase: 0 }
     }
     /// ms clock driving the spinner's rotation (ignored by `Failed`)
@@ -378,8 +377,11 @@ impl View for StatusOverlay {
             StatusKind::Working => (theme::TEXT_SECONDARY, true),
             StatusKind::Failed => (theme::DANGER, false),
         };
+        // Both branches centre the caption the same way — by Label's cap band (VAlign::Middle,
+        // the default). Working straddles the frame centre with the spinner above it; Failed owns
+        // the centre alone. Using the cap band for one and a line-box metric for the other put the
+        // two states on different baselines in the same frame.
         let cap_h = crate::text::text_height(theme::size::BODY, 0);
-        // Working: spinner and caption straddle the centre. Failed: the caption owns it alone.
         let cap_y = if working {
             Spinner::new(self.frame.cx(), cy - R - theme::space::XS, R)
                 .phase(self.phase)
@@ -389,7 +391,7 @@ impl View for StatusOverlay {
         } else {
             cy - cap_h * 0.5
         };
-        Label::new(self.caption, theme::size::BODY, tint)
+        Label::new(self.caption.as_ptr(), theme::size::BODY, tint)
             .h(HAlign::Center)
             .draw(p, Rect::new(self.frame.x, cap_y, self.frame.w, cap_h));
     }

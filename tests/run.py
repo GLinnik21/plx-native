@@ -678,26 +678,19 @@ def run_fps_suite(scenes, cfg, token, include_player):
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
-# ---- case tiers -------------------------------------------------------------------------
-# The 18 playback cases are really two suites. Rather than hand-tag them (a field that drifts
-# the moment someone adds a case), derive the tier from the case's own SHAPE:
-#
-#   codec — `operations` is just [play]. These assert the DECISION (direct-play vs remux vs
-#           transcode) and that the Load payload carries the right output codecs. They never
-#           drive the transport, so they cannot see a seek/teardown/threading regression.
-#           Run them when route.rs or plex/ changes.
-#   logic — anything that also seeks, resumes, switches audio or renders subtitles. These are
-#           what exercises the engine, the pump and the demuxer.
-#
-# The logic tier still spans the codec matrix on its own (substance = H264 direct-play,
-# morning_show + toy_story2 = 4K HEVC direct-play, toy_story4 + home_alone = transcode), which
-# is why it is a safe default for player work. What it drops is decision-logic breadth: Dolby
-# Vision, MP4/sidecar, AAC, and smart-DP's TrueHD-default -> AC3-sibling fallback.
-#
-# A manifest case may set "tier" explicitly to override the derivation.
-def case_tier(case):
-    if case.get("tier"):
-        return case["tier"]
+# ---- case suites -----------------------------------------------------------------------
+# The playback cases are two suites, DERIVED from each case's own shape rather than tagged (a
+# field drifts the moment someone adds a case; `operations` cannot):
+#   codec — operations is just [play]. Asserts the DECISION (direct-play vs remux vs transcode)
+#           and the Load payload's codecs. Never drives the transport, so it cannot see a seek,
+#           teardown or threading regression. Run it when route.rs or plex/ changes.
+#   logic — also seeks / resumes / switches audio / renders subtitles: the engine, pump and
+#           demuxer. Spans the codec matrix on its own (substance = H264 direct-play,
+#           morning_show + toy_story2 = 4K HEVC, toy_story4 + home_alone = transcode), which is
+#           what makes it a safe default for player work. It drops decision BREADTH only:
+#           Dolby Vision, MP4/sidecar, AAC, smart-DP's TrueHD-default -> AC3-sibling.
+# NB `tier` is a DIFFERENT axis, on fps_scenes (ui|player) — do not merge the two vocabularies.
+def case_suite(case):
     ops = {o["op"] for o in case.get("operations", [])}
     return "codec" if ops <= {"play"} else "logic"
 
@@ -706,10 +699,11 @@ def main():
     ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
     ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
     ap.add_argument("--filter", default=None, help="run only cases whose name contains this substring")
-    ap.add_argument("--tier", default=None, choices=["logic", "codec"],
-                    help="run only one tier: 'logic' (seek/resume/audio/subtitle — the engine and "
+    ap.add_argument("--suite", default=None, choices=["logic", "codec"],
+                    help="run only one suite: 'logic' (seek/resume/audio/subtitle — the engine and "
                          "pump; still covers h264-dp, 4k-hevc-dp and transcode) or 'codec' (the "
-                         "play-only decision + Load-payload cases). Default: every case.")
+                         "play-only decision + Load-payload cases). Default: every case. "
+                         "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest)")
     ap.add_argument("--verbose", action="store_true", help="print evidence for passing assertions too")
@@ -729,15 +723,15 @@ def main():
         "pms": manifest.get("pms", {"host": "192.168.0.3", "port": 32400}),
     }
     cases = manifest["cases"]
-    if args.tier:
-        cases = [c for c in cases if case_tier(c) == args.tier]
+    if args.suite:
+        cases = [c for c in cases if case_suite(c) == args.suite]
     if args.filter:
         cases = [c for c in cases if args.filter in c["name"]]
 
     if args.list:
         for c in manifest["cases"]:
             ops = "+".join(o["op"] for o in c["operations"])
-            print(f"{c['name']:32s} tier={case_tier(c):6s} rk={c['rk']:<5} {ops:20s} "
+            print(f"{c['name']:32s} suite={case_suite(c):6s} rk={c['rk']:<5} {ops:20s} "
                   f"{', '.join(c.get('covers', []))}")
         for s in manifest.get("fps_scenes", []):
             tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
@@ -747,6 +741,8 @@ def main():
     # FPS regression suite — a separate path from the playback cases. UI-tier scenes need no video
     # (and no PMS token); --fps-player adds the info/menu scenes, which decode video as the test user.
     if args.fps or args.fps_player:
+        if args.suite:
+            sys.exit("--suite selects playback cases; the FPS scenes use --fps / --fps-player")
         include_player = args.fps_player
         token = None
         if include_player:
@@ -763,7 +759,7 @@ def main():
         return run_fps_suite(manifest.get("fps_scenes", []), cfg, token, include_player)
 
     if not cases:
-        sys.exit(f"no cases match --filter {args.filter!r} / --tier {args.tier!r}")
+        sys.exit(f"no cases match --filter {args.filter!r} / --suite {args.suite!r}")
 
     admin_token = read_token()  # owner token from config.local.h; never printed
 

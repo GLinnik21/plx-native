@@ -233,8 +233,9 @@ fn server_decision(rk: &str, session: &str) -> Option<bool> {
 /// Assuming "a container remux copies the audio" broke mp4 items whose audio PMS re-encodes to
 /// the transcode-target's AC3: the payload said AAC, the stream carried AC3, and the
 /// configured-for-AAC pipeline played silence (Hannah Montana).
-/// PURE: the codec pair the server's /decision OUTPUT declares, or None. Worker-safe twin of
-/// `apply_decision_codecs`.
+/// PURE: the codec pair the server's /decision OUTPUT actually declares, or None if it names
+/// neither. The Load payload must match this, not the source file — a transcode changes the
+/// codec and rate, and describing the source to the decoder gives silent audio.
 fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(String, String)> {
     let streams = mc.metadata.first().and_then(|m| m.media.first()).and_then(|md| md.part.first())
         .map(|p| &p.stream)?;
@@ -250,28 +251,11 @@ fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(String, String)>
 }
 
 fn apply_decision_codecs(mc: &crate::plex::MediaContainer) {
-    let streams = match mc.metadata.first().and_then(|m| m.media.first()).and_then(|md| md.part.first()) {
-        Some(p) => &p.stream,
-        None => return,
-    };
-    let (mut vc, mut ac) = (None, None);
-    for s in streams {
-        // first video/audio stream that CARRIES a codec (an empty codec keeps scanning)
-        match s.stream_type {
-            1 if vc.is_none() && !s.codec.is_empty() => vc = Some(s.codec.to_lowercase()),
-            2 if ac.is_none() && !s.codec.is_empty() => ac = Some(s.codec.to_lowercase()),
-            _ => {}
-        }
+    if let Some((vc, ac)) = decision_codecs(mc) {
+        set_stream_codecs(&vc, &ac);
+        crate::player::log(&format!("decision output: v={vc} a={ac}"));
     }
-    unsafe {
-        if let Some(vc) = vc {
-            *addr_of_mut!(STREAM_VCODEC) = vc;
-        }
-        if let Some(ac) = ac {
-            *addr_of_mut!(STREAM_ACODEC) = ac;
-        }
-    }
-    crate::player::log(&format!("decision output: v={} a={}", stream_vcodec(), stream_acodec()));
+
 }
 
 /// Select the audio + subtitle streams server-side for the current part before a
@@ -310,32 +294,24 @@ fn new_sess(rk: &str) -> String {
     format!("plxnative-{rk}-{}", CTR.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Cache the server machineIdentifier (once) from GET /identity — needed for the PlayQueue uri.
-fn ensure_machine_id() {
-    if !unsafe { &*addr_of!(MACHINE_ID) }.is_empty() {
-        return;
-    }
-    if let Some(mid) = crate::plex::client_opt().and_then(|c| c.machine_identity()) {
-        unsafe { *addr_of_mut!(MACHINE_ID) = mid };
-    }
-}
-
 /// Create a PlayQueue for `rk` so the session is a first-class, remote-controllable player and
 /// the timeline can carry a real playQueueItemID. Best-effort: on failure the timeline still
-/// works (just without the queue ids).
-/// PURE: the `ensure_playqueue` network work, returning (machine_id, pq_id, pq_item_id) instead
-/// of writing MACHINE_ID / PQ_ID / PQ_ITEM_ID. Safe on a worker.
+/// works, just without the queue ids.
+///
+/// PURE: returns `(machine_id, pq_id, pq_item_id)` for `apply_plan` to install. `machine_id` is
+/// `""` when the cached one is still good.
 fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> (String, String, String) {
     let mid = if cached.is_empty() {
         crate::plex::client_opt().and_then(|c| c.machine_identity()).unwrap_or_default()
     } else {
-        cached.to_string()
+        String::new() // unchanged — apply_plan's "" means "leave the cache alone"
     };
-    if mid.is_empty() {
+    let effective = if mid.is_empty() { cached } else { &mid };
+    if effective.is_empty() {
         crate::player::log("playqueue: no machineIdentifier (skip)");
         return (String::new(), String::new(), String::new());
     }
-    match crate::plex::client_opt().and_then(|c| c.create_play_queue(&mid, rk, session)) {
+    match crate::plex::client_opt().and_then(|c| c.create_play_queue(effective, rk, session)) {
         Some((pq, it)) => {
             crate::player::log(&format!("playqueue: id={pq} item={it}"));
             (mid,
@@ -349,33 +325,6 @@ fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> (String, String, 
     }
 }
 
-fn ensure_playqueue(rk: &str, session: &str) {
-    unsafe {
-        *addr_of_mut!(PQ_ID) = String::new();
-        *addr_of_mut!(PQ_ITEM_ID) = String::new();
-    }
-    ensure_machine_id();
-    let mid = unsafe { (*addr_of!(MACHINE_ID)).clone() };
-    if mid.is_empty() {
-        crate::player::log("playqueue: no machineIdentifier (skip)");
-        return;
-    }
-    match crate::plex::client_opt().and_then(|c| c.create_play_queue(&mid, rk, session)) {
-        Some((pq, it)) => {
-            unsafe {
-                *addr_of_mut!(PQ_ID) = if pq > 0 { pq.to_string() } else { String::new() };
-                *addr_of_mut!(PQ_ITEM_ID) = if it > 0 { it.to_string() } else { String::new() };
-            }
-            crate::player::log(&format!("playqueue: id={pq} item={it}"));
-        }
-        None => crate::player::log("playqueue: POST failed"),
-    }
-}
-
-/// Pick the stream URL for an item: direct-play only H264+AC3 (what the pipeline
-/// decodes natively); else ask the server to transcode into progressive H264+AC3
-/// Matroska (same MKV demuxer eats it). Returns (url, transcode session). On the
-/// transcode path this also runs the /decision handshake and stores TBASE for seeks.
 /// Every `static mut` the resolve used to READ, captured on the main thread and passed by value.
 ///
 /// Making the worker WRITE-pure was not enough: it still cloned `MACHINE_ID` and `SESS` — Strings
@@ -387,17 +336,18 @@ pub(crate) struct ResolveEnv {
     pub machine_id: String,
     pub audio_sid: i64,
     pub sub_sid: i64,
+    /// the loaded detail's streams when it IS this item — saves the worker a GET
+    pub cached_tracks: Option<crate::metadata::PlayingTracks>,
 }
 
 impl ResolveEnv {
     /// MAIN THREAD ONLY.
-    fn snapshot() -> ResolveEnv {
-        unsafe {
-            ResolveEnv {
-                machine_id: (*addr_of!(MACHINE_ID)).clone(),
-                audio_sid: CUR_AUDIO_SID,
-                sub_sid: CUR_SUB_SID,
-            }
+    fn snapshot(rk: &str) -> ResolveEnv {
+        ResolveEnv {
+            machine_id: unsafe { (*addr_of!(MACHINE_ID)).clone() },
+            audio_sid: cur_audio_sid(),
+            sub_sid: cur_sub_sid(),
+            cached_tracks: crate::metadata::cached_playing(rk),
         }
     }
 }
@@ -424,11 +374,16 @@ pub(crate) struct Plan {
     pub feed_audio_ordinal: Option<i32>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
     pub playing: Option<crate::metadata::PlayingTracks>,
-    pub ok: bool,
 }
 
-/// PURE resolve: network + decisions only. Runs on the main thread today and on a worker in
-/// `request_play`. MUST NOT write any `static mut` or touch the player engine.
+/// Pick the stream URL for an item: direct-play only what the pipeline decodes natively (H264/
+/// HEVC + a direct-playable audio track); else ask the server to remux or transcode into
+/// progressive MKV. On the transcode path this also runs the /decision handshake.
+///
+/// PURE: runs on the resolve worker. It must neither WRITE nor READ any `static mut` — every
+/// input arrives in `ResolveEnv`, every output leaves in `Plan`, and `apply_plan` installs both
+/// on the main thread. Write-purity alone is not enough: `apply_plan` reassigns the `MACHINE_ID`
+/// and `SESS` Strings, so a still-running superseded worker reading them is a use-after-free.
 fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveEnv) -> Plan {
     // The part id is derived from THIS call's `part`, before anything else runs, and published
     // here rather than by the caller after we return. It used to be written by play_movie /
@@ -441,7 +396,6 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         Some(c) => c,
         None => return plan,
     };
-    plan.ok = true;
     // fresh per-playback session id (BOTH direct-play and transcode report through it) +
     // a PlayQueue so the server tracks this as a real player with a playQueueItemID.
     let session = new_sess(rk);
@@ -454,7 +408,8 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     }
     // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
     // loaded detail can be a different item (show page / straight-from-Home play)
-    plan.playing = crate::metadata::fetch_playing_tracks(rk);
+    // detail already had this item's streams — no GET
+    plan.playing = env.cached_tracks.clone().or_else(|| crate::metadata::fetch_playing_tracks(rk));
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. Falls back to the local codec test if the server returns no usable
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.
@@ -474,8 +429,8 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     let streamable = part_is_mkv(part);
     // snapshot the track list on the MAIN thread and pass it by reference — the resolve worker
     // (step 7) gets an owned copy instead, and never touches the `&'static` store.
-    let tracks = plan.playing.as_ref().map(|p| p.audio.clone()).unwrap_or_default();
-    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(&tracks, acodec) };
+    let tracks = plan.playing.as_ref().map(|p| p.audio.as_slice()).unwrap_or(&[]);
+    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(tracks, acodec) };
     let directplay = if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265.
         // Anything else (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's
@@ -625,47 +580,6 @@ fn part_id_of(part_key: &str) -> i64 {
     0
 }
 
-/// Set the stream URL + HUD strings from a selected movie (direct-play or transcode).
-pub(crate) fn play_movie(m: &PmsMovie) {
-    if m.part.is_empty() {
-        return;
-    }
-    // HUD title + context line ("YEAR · RATING · Hh Mm")
-    let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
-    let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
-    unsafe {
-        set_c(addr_of_mut!(TITLE) as *mut c_char, 128, &m.title);
-        set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, &ctx);
-    }
-    // fresh item: default audio + no burned subtitle until the user picks one
-    unsafe {
-        addr_of_mut!(CUR_AUDIO_SID).write(0);
-        addr_of_mut!(CUR_SUB_SID).write(0);
-    }
-    crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
-    crate::player::reset_subtitle(); // subs Off on a new item (selection persists across seeks/reloads)
-    apply_plan(build_stream(&m.rk, &m.part, &m.vcodec, &m.acodec, &ResolveEnv::snapshot()), &m.rk);
-}
-
-/// Set the stream URL + HUD strings for a TV episode (from the detail page).
-pub(crate) fn play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud_title: &str, hud_ctx: &str) {
-    if part.is_empty() && rk.is_empty() {
-        return;
-    }
-    unsafe {
-        set_c(addr_of_mut!(TITLE) as *mut c_char, 128, hud_title);
-        set_c(addr_of_mut!(CTXLINE) as *mut c_char, 96, hud_ctx);
-    }
-    // fresh item: default audio + no burned subtitle until the user picks one
-    unsafe {
-        addr_of_mut!(CUR_AUDIO_SID).write(0);
-        addr_of_mut!(CUR_SUB_SID).write(0);
-    }
-    crate::player::reset_audio_track(); // default (best) audio stream until the user picks one
-    crate::player::reset_subtitle(); // subs Off on a new item (selection persists across seeks/reloads)
-    apply_plan(build_stream(rk, part, vcodec, acodec, &ResolveEnv::snapshot()), rk);
-}
-
 // ---- async resolve: worker computes an owned Plan, main thread installs it ------------------
 // The house idiom (metadata::load_season / browse.rs): generation counter + single-flight +
 // a monotone one-slot mailbox + a per-frame pump that applies on the MAIN thread.
@@ -697,7 +611,7 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
-    let env = ResolveEnv::snapshot();
+    let env = ResolveEnv::snapshot(rk);
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     PLAY_BUSY.store(true, Ordering::SeqCst);
     let (rk, part, vc, ac) = (rk.to_string(), part.to_string(), vcodec.to_string(), acodec.to_string());
@@ -714,7 +628,7 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
     }).inspect_err(|e| {
         // Builder::spawn returns Result (thread::spawn PANICS on EAGAIN). Swallowing it would
         // latch PLAY_BUSY true forever behind a spinner that can never resolve.
-        crate::player::log(&format!("resolve: spawn failed ({e}) — falling back to inline"));
+        crate::player::log(&format!("resolve: spawn failed ({e}) — this play is dropped"));
         PLAY_BUSY.store(false, Ordering::SeqCst);
     });
 }
@@ -729,10 +643,6 @@ pub(crate) fn request_play_movie(m: &PmsMovie) {
     let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
     let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
     request_play(&m.rk, &m.part, &m.vcodec, &m.acodec, &m.title, &ctx);
-}
-
-pub(crate) fn request_play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud_title: &str, hud_ctx: &str) {
-    request_play(rk, part, vcodec, acodec, hud_title, hud_ctx);
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
@@ -751,7 +661,7 @@ pub(crate) fn pump_play() -> bool {
         return false; // superseded while in flight
     }
     PLAY_BUSY.store(false, Ordering::SeqCst);
-    let ok = plan.ok && !plan.url.is_empty();
+    let ok = !plan.url.is_empty();
     apply_plan(plan, &rk);
     ok
 }
@@ -761,6 +671,9 @@ pub(crate) fn pump_play() -> bool {
 /// ran it.
 fn apply_plan(plan: Plan, rk: &str) {
     crate::metadata::install_playing(plan.playing);
+    if !plan.vcodec.is_empty() {
+        set_stream_codecs(&plan.vcodec, &plan.acodec); // the pair is only ever set together
+    }
     unsafe {
         addr_of_mut!(CUR_PART_ID).write(plan.part_id);
         *addr_of_mut!(SESS) = plan.sess;
@@ -769,12 +682,6 @@ fn apply_plan(plan: Plan, rk: &str) {
         }
         *addr_of_mut!(PQ_ID) = plan.pq_id;
         *addr_of_mut!(PQ_ITEM_ID) = plan.pq_item_id;
-        if !plan.vcodec.is_empty() {
-            *addr_of_mut!(STREAM_VCODEC) = plan.vcodec;
-        }
-        if !plan.acodec.is_empty() {
-            *addr_of_mut!(STREAM_ACODEC) = plan.acodec;
-        }
         *addr_of_mut!(STREAM_FPS) = plan.fps;
         addr_of_mut!(CUR_AUDIO_SID).write(plan.audio_sid);
         addr_of_mut!(CUR_REMUX).write(plan.remux);

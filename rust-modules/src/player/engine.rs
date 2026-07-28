@@ -295,7 +295,8 @@ pub(crate) fn start_bufferfeed() -> bool {
             // `ff::demux` used to call `route::stream_acodec()` from the demux thread, cloning
             // a `static mut String` that the main thread reassigns (`route::set_stream_codecs`
             // at route.rs:401/424/426/580, `player::request_audio_track` at mod.rs:92) — a data
-            // race, and a use-after-free if the reassignment dropped the old buffer mid-clone.
+            // race (writers: `route::set_stream_codecs`, `player::request_audio_track`), and a
+            // use-after-free if the reassignment dropped the old buffer mid-clone.
             // Capturing is free: every one of those writers is followed by
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
