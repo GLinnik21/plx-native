@@ -242,15 +242,28 @@ the fourteen spawn sites in the crate is on it; each caller still releases its o
 latch belongs to the screen. Host-tested (`a_refused_spawn_reports_instead_of_panicking`, forced
 with an unsatisfiable stack size).
 
-**How likely is the refusal? Measured after the fact, because the first write-up guessed.** 31
-threads at playback peak (13 at Home) against `RLIMIT_NPROC` 3746 for the app's uid and a system
-`threads-max` of 7492; `VmSize` 363 MB of a ~3 GB 32-bit user space; `vm.overcommit_memory` 0 with
-~430 MB available, so the 2 MB stack `mmap` effectively cannot fail. **EAGAIN is not reachable on
-this hardware** — ~120x headroom. So `task.rs` is not fixing something that happens; it is deleting
-an impossible-but-fatal branch for the price of a return value, which is still the right trade
-(a panic across the FFI boundary has no recovery) but is NOT the urgent defect the paragraph above
-would suggest on its own. The one process limit anywhere near reach is `Max open files` (1024
-soft) — a different subsystem, and worth its own look before the fd-publication work below.
+**How likely is the refusal? MEASURED, not estimated** — `tools/threadprobe.c` (new), run on the
+TV under the app's own uid with the app closed. The first write-up guessed from `/proc` arithmetic
+and got the binding limit wrong:
+
+| stack | refused at | `VmSize` there | binding limit |
+|---|---|---|---|
+| 2 MB (platform default) | **2043 threads** | 4188 MB | `RLIMIT_AS` = 4294967295, the full AArch32 4 GB space |
+| 256 KB (`spawn_small`) | **3745 threads** | 963 MB | `RLIMIT_NPROC` = 3746, exactly |
+
+Both are EAGAIN(11) — precisely what `std::thread::spawn` unwraps
+(`library/std/src/thread/functions.rs`: `Builder::new().spawn(f).expect("failed to spawn thread")`,
+verified in the local rust-src). Against those ceilings the app runs **31 threads at playback
+peak**, 13 at Home, `VmSize` 363 MB: ~66x and ~11x headroom. RSS is a non-issue either way
+(~12 kB/thread; 31 MB at 3746 threads).
+
+So `task.rs` is not fixing something that happens; it deletes an unreachable-but-unrecoverable
+branch for the price of a return value — still the right trade (a panic across the FFI boundary
+has no recovery) but NOT the urgent defect the paragraph above would suggest on its own. Two
+things worth keeping: **which limit binds depends on the stack size**, and the crossover sits
+between 256 KB and 2 MB, so `spawn_small`'s choice is real and not cosmetic; and the one process
+limit anywhere near reach is `Max open files` (1024 soft, 70 in use with 20 sockets at playback) —
+a different subsystem, worth its own look before the fd-publication work below.
 
 **Follow-on, not done here:** re-land step 1's fd publication now that its blocker is gone. The
 payoff is no longer `Job`'s cancellation — it is that `teardown` currently joins the demux thread

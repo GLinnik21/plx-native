@@ -127,6 +127,11 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
 - `tools/capture-screen.sh` — pull the TV screen (incl. video plane) to a local image.
+- `tools/threadprobe.c` — standalone ARM diagnostic (`make threadprobe`, scp, run as root, delete):
+  spawns under the app's uid until `pthread_create` refuses. Measured 2026-07-28 — **2 MB stacks
+  die at 2043 threads on `RLIMIT_AS` (the full AArch32 4 GB), 256 KB stacks at 3745 on
+  `RLIMIT_NPROC` (3746)**, both EAGAIN, against the app's 31 threads at playback peak. Which limit
+  binds depends on the stack size; that is why `task::spawn_small` uses 256 KB.
 - `docs/pms-api.md` — **verified** PMS REST reference (sections, hubs, metadata, image transcode,
   direct-play URLs, timeline). The authoritative spec for the data layer.
 - `docs/buffer-feed-plan.md` — historical design note for the buffer-feed pivot (partly outdated).

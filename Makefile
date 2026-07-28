@@ -212,4 +212,10 @@ ipk: pkg/plxnative
 	  debian-binary control.tar.gz data.tar.gz
 	shasum -a 256 pkg/com.beb.plxnative_0.1.0_arm.ipk | tee pkg/ipk.sha256
 
-.PHONY: all setup-env deploy run run-stream kill test ipk clean
+# tools/threadprobe.c — measures where pthread_create actually gives up on the TV (the question
+# behind rust-modules/src/task.rs). Standalone diagnostic: not linked into the app, not deployed
+# by `make deploy`. Build it, scp it, run it as root, delete it.
+threadprobe: tools/threadprobe.c
+	$(CC) $(CFLAGS) -o pkg/threadprobe tools/threadprobe.c -lpthread
+
+.PHONY: all setup-env deploy run run-stream kill test ipk clean threadprobe
