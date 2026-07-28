@@ -598,6 +598,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// Load (direct-play av_seek / transcode &offset restart), start the engine, record the
         /// Stop/BACK/EOS return target, and show the HUD. A missed step here used to silently
         /// fork behavior between the interactive and headless paths.
+        /// Resume captured at the keypress, applied when the async resolve lands.
+        static PENDING_RESUME_NS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
         fn start_playback(
             resume_ns: i64,
             from_detail: bool,
@@ -608,7 +611,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if resume_ns > 0 {
                 crate::player::resume_at(resume_ns);
             }
-            if crate::player::start_bufferfeed() {
+            // A resolve may still be in flight (request_play_* spawned it). Flip to the player
+            // NOW so the HUD draws its Resolving state this frame; the per-frame `pump_play`
+            // below starts the engine when the plan lands. With nothing pending this is the old
+            // synchronous behaviour, byte for byte.
+            if crate::route::play_pending() {
+                PENDING_RESUME_NS.store(resume_ns, Relaxed);
+                *played_from_detail = from_detail;
+                *route = Route::Player { overlay: Overlay::None };
+            } else if crate::player::start_bufferfeed() {
                 *played_from_detail = from_detail;
                 *route = Route::Player { overlay: Overlay::None };
             }
@@ -635,6 +646,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// Watching reflects the session that just ended. A new exit path that skips this quietly
         /// re-introduces the stale-CW bug.
         fn exit_player(route: &mut Route, played_from_detail: bool, refresh_hubs_at: &mut u32) {
+            crate::route::cancel_play(); // BACK during a load: supersede, drop the landing
             close_player_overlays();
             crate::player::stop_bufferfeed();
             *route = if played_from_detail { Route::Detail } else { Route::Home };
@@ -652,7 +664,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if mm.rk.is_empty() {
                 return;
             }
-            crate::route::play_movie(mm);
+            crate::route::request_play_movie(mm); // resolve OFF the SDL loop — pump_play starts it
             crate::metadata::load_detail(&mm.rk); // streams for the in-player audio/subtitle lists
             start_playback(
                 crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000),
@@ -2022,6 +2034,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 crate::ui::chapters_panel::update(dt);
             }
             let fd_pc0 = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
+            // Async play resolve: install the worker's plan and start the engine. Route-
+            // unconditional — a landing must never depend on which screen is mounted.
+            if crate::route::pump_play() {
+                let r = PENDING_RESUME_NS.swap(0, Relaxed);
+                if r > 0 {
+                    crate::player::resume_at(r);
+                }
+                crate::player::start_bufferfeed();
+            }
             crate::posters::poster_pump(3);
             let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 

@@ -692,6 +692,22 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
     });
 }
 
+/// ASYNC twins of `play_movie` / `play_episode`: identical HUD strings and inputs, but the
+/// network work runs on a worker and the caller flips the route THIS frame. `app.rs` drains
+/// `pump_play` once a frame and starts the engine when the plan lands.
+pub(crate) fn request_play_movie(m: &PmsMovie) {
+    if m.part.is_empty() {
+        return;
+    }
+    let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
+    let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
+    request_play(&m.rk, &m.part, &m.vcodec, &m.acodec, &m.title, &ctx);
+}
+
+pub(crate) fn request_play_episode(rk: &str, part: &str, vcodec: &str, acodec: &str, hud_title: &str, hud_ctx: &str) {
+    request_play(rk, part, vcodec, acodec, hud_title, hud_ctx);
+}
+
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
 pub(crate) fn cancel_play() {
     PLAY_GEN.fetch_add(1, Ordering::SeqCst);

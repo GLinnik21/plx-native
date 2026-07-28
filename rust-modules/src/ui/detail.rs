@@ -1133,11 +1133,11 @@ pub(crate) fn on_ok() -> bool {
                 play_episode_at(0)
             } else {
                 if let Some(m) = selected() {
-                    crate::route::play_movie(m);
+                    crate::route::request_play_movie(m);
                 } else if let Some(d) = metadata::current() {
                     // a hub refetch can orphan the page's catalog row (the item left the hubs) —
                     // the loaded Detail carries everything the string-based route entry needs
-                    crate::route::play_episode(&d.rk, &d.part, &d.vcodec, &d.acodec, &d.title, "");
+                    crate::route::request_play_episode(&d.rk, &d.part, &d.vcodec, &d.acodec, &d.title, "");
                 } else {
                     return false;
                 }
@@ -1237,7 +1237,7 @@ fn play_episode_at(i: c_int) -> bool {
         detail_rk: d.rk.clone(),
     }));
     set_resume(ep.resume_ms, ep.dur_ms);
-    crate::route::play_episode(&ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
+    crate::route::request_play_episode(&ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
     true
 }
 
