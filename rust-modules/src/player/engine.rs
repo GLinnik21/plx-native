@@ -3,10 +3,17 @@
 //! thread ever names an Engine field: race-free by confinement (like the C
 //! main-thread-only flags). The Engine owns the HttpStream box + the AuQueue
 //! boxes; it hands raw ptrs to the workers and outlives them (drops after join).
+//!
+//! That confinement is **enforced, not just asserted**: the `ENGINE` slot is reachable only
+//! through the four accessors below, each of which takes a [`MainThread`]. Which is also the
+//! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
+//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `resume_at`
+//! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
 use super::shared::Stage;
 use super::{ffi, log, threads, ACB_OK, PTYPE, SHARED, TX};
 use crate::aq::{AuNode, AuQueue};
 use crate::stream::HttpStream;
+use crate::task::MainThread;
 use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -99,14 +106,37 @@ pub(crate) struct Engine {
 }
 
 static mut ENGINE: Option<Engine> = None; // main-thread-only slot
+
+/// The `ENGINE` slot, borrowed mutably. The [`MainThread`] argument is what confines it: this
+/// hands out a `&'static mut` to a `static mut`, so a second caller on another thread is instant
+/// UB, and `static mut` carries no `Sync` bound to stop one (verified by compiling the
+/// counterexample — see `docs/async-model-decision.md`). The other two touches of `ENGINE` are
+/// `start_bufferfeed` and `teardown`, in this file, which take the token for the same reason.
 #[inline]
-pub(crate) fn engine() -> Option<&'static mut Engine> {
+pub(crate) fn engine(_: &MainThread) -> Option<&'static mut Engine> {
     unsafe { (*std::ptr::addr_of_mut!(ENGINE)).as_mut() }
+}
+/// Is a session live? Distinct from [`engine`] because it answers without handing out the
+/// `&'static mut` — `start_bufferfeed`'s double-start guard only needs to ask.
+#[inline]
+fn engine_is_live(_: &MainThread) -> bool {
+    unsafe { (*std::ptr::addr_of!(ENGINE)).is_some() }
+}
+/// Install the freshly-built session. Overwriting a live slot drops an Engine whose workers hold
+/// raw pointers into the boxes it owns — `start_bufferfeed` guards on [`engine_is_live`] first.
+#[inline]
+fn engine_install(_: &MainThread, e: Engine) {
+    unsafe { *std::ptr::addr_of_mut!(ENGINE) = Some(e) }
+}
+/// Take the session out of the slot; the caller then joins its workers and drops it.
+#[inline]
+fn engine_take(_: &MainThread) -> Option<Engine> {
+    unsafe { (*std::ptr::addr_of_mut!(ENGINE)).take() }
 }
 
 /// Create + initialize the ACB (App Common Binding). We deliberately DON'T register
 /// our own com.webos.media client — it collides with the pipeline's uMS connection.
-pub(crate) fn acb_init() {
+pub(crate) fn acb_init(mt: &MainThread) {
     if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-ptype") {
         if let Ok(p) = s.trim().parse::<c_int>() {
             PTYPE.store(p, Ordering::Relaxed);
@@ -116,7 +146,7 @@ pub(crate) fn acb_init() {
     log(&format!("ptype={pt}"));
     let app_c = std::env::var("APPID").ok().and_then(|s| std::ffi::CString::new(s).ok());
     let app_ptr = app_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    let acb = unsafe { ffi::acb_create(app_ptr, pt) };
+    let acb = unsafe { ffi::acb_create(mt, app_ptr, pt) };
     ACB_OK.store(acb != 0, Ordering::Relaxed);
     log(&format!("acb create={acb}"));
 }
@@ -184,12 +214,12 @@ fn fps_rational(fps: f64) -> Option<(i64, i64)> {
     })
 }
 
-pub(crate) fn start_bufferfeed() -> bool {
+pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
     // Engine, detaching its worker threads and freeing the hs/aq boxes those
     // threads still hold raw ptrs into -> use-after-free. If already running, no-op.
     // (Reachable via a PLAY key landing in the WILL->DID foreground window.)
-    if unsafe { (*std::ptr::addr_of!(ENGINE)).is_some() } {
+    if engine_is_live(mt) {
         log("start_bufferfeed: already running (no-op)");
         return true;
     }
@@ -383,9 +413,7 @@ pub(crate) fn start_bufferfeed() -> bool {
         load_th,
         report_th,
     };
-    unsafe {
-        *std::ptr::addr_of_mut!(ENGINE) = Some(eng);
-    }
+    engine_install(mt, eng);
     TX.started.store(true, Ordering::Relaxed);
     log(&format!("SMP: media thread spawned, stream={}", stream as i32));
     true
@@ -430,15 +458,15 @@ pub(crate) fn resume_at(resume_ns: i64) {
 /// ~14.7 MB of upstream buffers filled in ~48 s → permanent BufferFull + "Playing error". A
 /// fresh Load re-establishes a correct segment by construction — the known-good fresh-play
 /// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
-pub(crate) fn reload_at(target_ns: i64) {
+pub(crate) fn reload_at(mt: &MainThread, target_ns: i64) {
     if crate::route::url().is_empty() {
         log("reload_at: no url (ignored)");
         return;
     }
     log(&format!("reload_at: fresh Load at {}s", target_ns / 1_000_000_000));
-    teardown(true); // reload mode: preserve the session (no url-clear / stop-scrobble)
+    teardown(mt, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
     arm_seek(target_ns);
-    start_bufferfeed();
+    start_bufferfeed(mt);
 }
 
 /// NATIVE audio-track switch (direct-play, NO transcode): select the Nth audio stream from the
@@ -446,10 +474,10 @@ pub(crate) fn reload_at(target_ns: i64) {
 /// was already set to the chosen track's codec, so the fresh Load configures the right audio
 /// decoder). desired_audio_idx persists across the reload, so the demuxer keeps feeding the
 /// chosen stream and the choice survives later seeks.
-pub(crate) fn switch_audio_native(audio_idx: i32, pos_ns: i64) {
+pub(crate) fn switch_audio_native(mt: &MainThread, audio_idx: i32, pos_ns: i64) {
     SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
     log(&format!("switch_audio_native: audio_idx={audio_idx} at {}s", pos_ns / 1_000_000_000));
-    reload_at(pos_ns); // fresh direct-play Load at the current position, new audio stream
+    reload_at(mt, pos_ns); // fresh direct-play Load at the current position, new audio stream
 }
 
 /// Reload the pipeline for a MODE/CODEC change — an audio-track switch on a direct-play HEVC
@@ -457,37 +485,37 @@ pub(crate) fn switch_audio_native(audio_idx: i32, pos_ns: i64) {
 /// (feeding H264 into the H265-configured pipeline stalls). Unlike reload_at, the transcode
 /// start.mkv is already 0-based at `&offset`, so no av_seek — just set disp_base to the offset.
 /// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
-pub(crate) fn reload_transcode(offset_ns: i64) {
+pub(crate) fn reload_transcode(mt: &MainThread, offset_ns: i64) {
     if crate::route::url().is_empty() {
         log("reload_transcode: no url (ignored)");
         return;
     }
     log(&format!("reload_transcode: fresh Load at offset {}s", offset_ns / 1_000_000_000));
-    teardown(true); // keep the session; reload mode
+    teardown(mt, true); // keep the session; reload mode
     SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
     SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
-    start_bufferfeed();
+    start_bufferfeed(mt);
 }
 
 /// Stop playback: unblock+join threads, unload+destruct the pipeline, release the
 /// video plane, reset all state so a fresh start_bufferfeed() can restart.
-pub(crate) fn stop_bufferfeed() {
-    teardown(false);
+pub(crate) fn stop_bufferfeed(mt: &MainThread) {
+    teardown(mt, false);
 }
 
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
 /// backgrounded) but PRESERVE the playback session — keep the URL + transcode session, and
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
 /// (resume_at + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
-pub(crate) fn suspend_bufferfeed() {
-    teardown(true);
+pub(crate) fn suspend_bufferfeed(mt: &MainThread) {
+    teardown(mt, true);
 }
 
 /// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
 /// stop: preserve the playback session so start_bufferfeed can restart the SAME item — skip
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
-fn teardown(for_reload: bool) {
-    let mut eng = match unsafe { (*std::ptr::addr_of_mut!(ENGINE)).take() } {
+fn teardown(mt: &MainThread, for_reload: bool) {
+    let mut eng = match engine_take(mt) {
         Some(e) => e,
         None => return,
     };
@@ -556,12 +584,12 @@ fn teardown(for_reload: bool) {
     // destructing, but on webOS 4.5 that event arrives as smp_cb type=23 with no detectable string,
     // SAM force-kills the app during a real stop anyway, and reload — which reconstructs g_smp per
     // seek — has shown no race with immediate destroy across the full suite. So no blocking wait.)
-    if unsafe { ffi::sf_ready() } != 0 {
-        unsafe { ffi::sf_unload() };
+    if unsafe { ffi::sf_ready(mt) } != 0 {
+        unsafe { ffi::sf_unload(mt) };
         if ACB_OK.load(Ordering::Relaxed) {
-            unsafe { ffi::acb_unload() };
+            unsafe { ffi::acb_unload(mt) };
         }
-        unsafe { ffi::sf_destroy() };
+        unsafe { ffi::sf_destroy(mt) };
     }
     // 4. drain + destroy both queues (drain_aq also clears both pendings)
     if stream {
@@ -649,7 +677,7 @@ pub(crate) const PRES_NONE: i64 = i64::MIN;
 /// VIDEO lane feeder (aq_video is video-only). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
 /// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
-pub(crate) fn feed_stream(eng: &mut Engine) {
+pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
     let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
         None => return,
@@ -666,7 +694,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
                 // pipeline drains its last frames instead of hanging on them (Kodi keys EOS to the
                 // video drain). Keyed on the video lane only.
                 if eof != 0 && !eng.eos_pushed && eng.stage >= Stage::Streaming {
-                    unsafe { ffi::sf_push_eos() };
+                    unsafe { ffi::sf_push_eos(mt) };
                     eng.eos_pushed = true;
                     log("EOS pushed at true EOF");
                 }
@@ -701,13 +729,13 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
                     // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
                     // pts_shift=0 → playpos = presented real pts = content time.
                     SHARED.pts_shift.store(0, Ordering::Relaxed);
-                    let ok = unsafe { ffi::sf_set_time_to_decode(pts) };
+                    let ok = unsafe { ffi::sf_set_time_to_decode(mt, pts) };
                     // setTimeToDecode returns 0 on webOS<11 (it needs PausedState); fall back to
                     // the content-info path (loadSpi_getInfo + setContentInfo(ptsToDecode)), which
                     // re-anchors the decode position while Playing. Then always inject the fresh
                     // GStreamer SEGMENT so the sink re-bases instead of stalling.
-                    let ci = if ok == 0 { unsafe { ffi::sf_set_content_info(pts) } } else { 1 };
-                    let seg = unsafe { ffi::sf_send_segment() };
+                    let ci = if ok == 0 { unsafe { ffi::sf_set_content_info(mt, pts) } } else { 1 };
+                    let seg = unsafe { ffi::sf_send_segment(mt) };
                     log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} setContentInfo={ci} sendSegment={seg}"));
                     if seg == 0 {
                         // pipeline not reachable — future seeks fall back to reload-per-seek
@@ -747,7 +775,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
                 break;
             }
         }
-        let r = unsafe { ffi::sf_feed(data, len as u32, fp, es) };
+        let r = unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) };
         if fp > eng.max_fed_video_pts {
             eng.max_fed_video_pts = fp;
         }
@@ -761,7 +789,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
         let vbuf = eng.max_fed_video_pts - eng.seek_base_pts;
         let abuf = eng.max_fed_audio_pts - eng.seek_base_pts;
         if eng.prime_play && vbuf >= PRIME_NS && (abuf >= PRIME_AUDIO_NS || vbuf >= PRIME_VIDEO_MAX_NS) {
-            unsafe { ffi::sf_play() };
+            unsafe { ffi::sf_play(mt) };
             eng.prime_play = false;
             SHARED.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
             log(&format!("primed: v={}ms a={}ms -> Play", vbuf / 1_000_000, abuf / 1_000_000));
@@ -787,7 +815,7 @@ pub(crate) fn feed_stream(eng: &mut Engine) {
 /// keyframe; feeding audio before that would use a stale shift → A/V desync). No prime/Play here —
 /// only the video lane starts the clock. Called AFTER feed_stream each tick, so a same-tick rebase
 /// is already visible.
-pub(crate) fn feed_audio_lane(eng: &mut Engine) {
+pub(crate) fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     if eng.rebase_pending {
         return; // wait for the video lane to publish pts_shift
     }
@@ -829,7 +857,7 @@ pub(crate) fn feed_audio_lane(eng: &mut Engine) {
         if !eng.prime_play && pres != PRES_NONE && fp - pres > MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS {
             break;
         }
-        let r = unsafe { ffi::sf_feed(data, len as u32, fp, es) };
+        let r = unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) };
         if fp > eng.max_fed_audio_pts {
             eng.max_fed_audio_pts = fp;
         }
@@ -847,7 +875,7 @@ pub(crate) fn feed_audio_lane(eng: &mut Engine) {
 }
 
 /// feed the looped /tmp/sample.h264 validation sample (continuous PTS @ 23.976).
-pub(crate) fn feed_sample(eng: &mut Engine) {
+pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
     let s = match &mut eng.source {
         Source::Sample(s) => s,
         _ => return,
@@ -865,7 +893,7 @@ pub(crate) fn feed_sample(eng: &mut Engine) {
         let off = s.au[s.next];
         let end = s.au[s.next + 1];
         let pts = (s.loops * (naus as i64 - 1) + s.next as i64) * 41708333;
-        let r = unsafe { ffi::sf_feed(s.data[off..].as_ptr(), (end - off) as u32, pts, 1) };
+        let r = unsafe { ffi::sf_feed(mt, s.data[off..].as_ptr(), (end - off) as u32, pts, 1) };
         if (r as u8) != b'O' {
             break;
         }

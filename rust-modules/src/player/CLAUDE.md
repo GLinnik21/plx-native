@@ -34,6 +34,15 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 - `shared.rs` — the **only** cross-thread state (each field replaces a C `volatile` global — `g_*`).
   New cross-thread state goes here, behind the same discipline; don't smuggle it through a raw static.
 
+**The main-thread rule is compiler-enforced.** `ffi.rs`'s `extern "C"` declarations are private to
+that module, and every wrapper but one takes a `task::MainThread` — a `!Send` ZST `plex_run` mints
+once and threads down. So does `engine::engine()` and the three other `ENGINE` accessors. Moving any
+of it onto a thread stops compiling (the closure captures a `&MainThread`, which `task::spawn`
+rejects). Two intentional holes, both worth knowing: `sf_load` takes **no** token because
+`load_thread` runs it off-main by design, and `MainThread::assume()` is callable — so an `unsafe`
+block inside a worker still defeats this. The rule for new code: take the token **iff** you reach
+the seam or the Engine, so its presence in a signature keeps meaning something.
+
 ## Gotchas that bite (all verified in code)
 
 - **C-from-C++ Starfish calls** go through `extern … __asm__("<mangled>")`. The object is an
