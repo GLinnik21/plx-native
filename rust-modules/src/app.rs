@@ -608,14 +608,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             route: &mut Route,
             played_from_detail: &mut bool,
         ) {
-            if resume_ns > 0 {
+            // A resolve in flight means the route statics are NOT installed yet. Applying the
+            // resume now would read a stale/empty TSESSION, so `resume_at` would take its
+            // DIRECT-PLAY branch and arm_seek() a transcode — and pump.rs's feed gate requires
+            // `seek_to_ns < 0`, so that stray armed seek blocks feeding forever: no frames, no
+            // ACB bind, timeline frozen at the resume point. (Exactly what broke
+            // toy_story4_av1_transcode. Direct-play never noticed because arm_seek is what the
+            // correct branch does anyway.) Defer it to `pump_play`, after apply_plan.
+            let pending = crate::route::play_pending();
+            if resume_ns > 0 && !pending {
                 crate::player::resume_at(resume_ns);
             }
-            // A resolve may still be in flight (request_play_* spawned it). Flip to the player
+            // Flip to the player
             // NOW so the HUD draws its Resolving state this frame; the per-frame `pump_play`
             // below starts the engine when the plan lands. With nothing pending this is the old
             // synchronous behaviour, byte for byte.
-            if crate::route::play_pending() {
+            if pending {
                 PENDING_RESUME_NS.store(resume_ns, Relaxed);
                 *played_from_detail = from_detail;
                 *route = Route::Player { overlay: Overlay::None };
@@ -1575,7 +1583,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         let pidx = std::fs::read_to_string("/tmp/plxnative-playidx").ok()
                             .and_then(|s| s.trim().parse::<c_int>().ok()).unwrap_or(0);
                         if let Some(pmm) = crate::ui::home::movie_at(pidx / COLS, pidx % COLS) {
-                            crate::route::play_movie(pmm);
+                            crate::route::request_play_movie(pmm);
                             crate::metadata::load_detail(&pmm.rk);
                         }
                     }
@@ -1687,7 +1695,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
                             if !part.is_empty() {
                                 log(&format!("plxnative-play: rk={rk} start"));
-                                crate::route::play_episode(rk, &part, &vc, &ac, &title, "");
+                                crate::route::request_play_episode(rk, &part, &vc, &ac, &title, "");
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
                                 start_playback(resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
