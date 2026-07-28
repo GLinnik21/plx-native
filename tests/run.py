@@ -667,6 +667,52 @@ def _run_stream_pids():
     return pids
 
 
+def teardown(tv):
+    """Leave the TV as we found it. Runs on EVERY exit — pass, fail, Ctrl-C, SIGTERM, crash.
+
+    Three things outlive the harness otherwise, and none of them are cosmetic:
+
+    * THE APP KEEPS RUNNING. Nothing closes it at the end — `make kill` only runs at the START
+      of the next case, so the last case's playback just carries on. It keeps a PMS session
+      open, and its timeline reporter keeps posting progress every 10s, so the next run
+      inherits a resume point on that rk — the exact contamination ee07506 removed between
+      cases, reintroduced at the seam between runs. It is also what "I see FPS tests running"
+      looks like from the outside, long after the suite printed its summary.
+    * THE INJECTED TOKEN STAYS in /tmp/plxnative-token: a real per-server PMS access token,
+      world-readable, on a device with a rooted sshd and a committed password. The normal path
+      did clear it; every abnormal one left it.
+    * ssh CLIENTS. Per-case reaping covers a case that ends normally, but not the harness dying
+      between cases.
+
+    Never raises: a teardown that throws on an unreachable TV would mask the real failure (and
+    on Ctrl-C would replace the user's interrupt with a traceback about ssh).
+    """
+    try:
+        make(["kill", f"TV={tv}"], timeout=40)
+    except Exception:
+        pass
+    try:
+        apply_triggers(tv, [])
+    except Exception:
+        pass
+    for pid in _run_stream_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+# The TV to clean on exit, or None while the harness has not driven one yet. Armed at the point we
+# commit to driving the TV — NOT at startup — so `--list`, a bad `--filter` and a missing token all
+# exit without closing an app the user may be watching.
+_TEARDOWN_TV = None
+
+
+def arm_teardown(tv):
+    global _TEARDOWN_TV
+    _TEARDOWN_TV = tv
+
+
 def stream_case(case, cfg, cap_s, early=True):
     """Launch via `make run-stream` and grade the log as it streams.
 
@@ -985,10 +1031,7 @@ def run_fps_suite(scenes, cfg, token, include_player):
     for name, ok, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] fps:{name}   {detail}")
     print(f"\n{len(results) - nfail} passed, {nfail} failed of {len(results)}")
-    # leave the TV clean — the LAST scene's triggers (e.g. plxnative-play/-menu) would otherwise
-    # persist and derail the next manual/interactive boot (apply_triggers only clears at scene START)
-    apply_triggers(cfg["tv"], [])
-    return 0 if nfail == 0 else 1
+    return 0 if nfail == 0 else 1  # the TV is cleaned by main()'s teardown, on every exit path
 
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1118,7 @@ def main():
                 token = fetch_managed_user_token(admin_token, cfg["pms"]["host"],
                                                  cfg["pms"]["port"], test_user["id"])
                 cfg["inject_token"] = True
+        arm_teardown(cfg["tv"])
         if args.build:
             do_build(cfg["tv"])
         return run_fps_suite(manifest.get("fps_scenes", []), cfg, token, include_player)
@@ -1101,6 +1145,7 @@ def main():
         cfg["inject_token"] = True
     print(f"test identity: {cfg['user_label']}  (playback + watch-history isolation)")
 
+    arm_teardown(cfg["tv"])
     if args.build:
         do_build(cfg["tv"])
 
@@ -1135,9 +1180,22 @@ def main():
             detail = "  <- " + ", ".join(fails)
         print(f"  [{mark}] {name}{detail}")
     print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}")
-    apply_triggers(cfg["tv"], [])  # leave the TV clean (see the same call in run_fps_suite)
     return 0 if real_fail == 0 else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # SIGTERM has to UNWIND rather than kill the interpreter outright, or `kill <harness pid>`
+    # leaves exactly the state teardown() exists to prevent. SIGINT already raises
+    # KeyboardInterrupt, which the same finally catches; a `sys.exit(...)` inside main raises
+    # SystemExit, which also runs the finally on its way out (and keeps its own exit status).
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    code = 1
+    try:
+        code = main()
+    except KeyboardInterrupt:
+        print("\ninterrupted — closing the app and clearing the TV")
+        code = 130
+    finally:
+        if _TEARDOWN_TV:
+            teardown(_TEARDOWN_TV)
+    sys.exit(code)

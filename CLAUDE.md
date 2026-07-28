@@ -218,6 +218,17 @@ libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for t
   costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
   resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
   0 and a 0→600 step reads as 600s of "climb" in one second — a false PASS.
+- **`tests/run.py` always cleans the TV on exit** — pass, fail, Ctrl-C, `kill`, or crash: it closes
+  the app, clears every `/tmp/plxnative-*` trigger **including the injected PMS token**, and reaps
+  stray ssh clients. Only the three append-only `*.log` files survive. Nothing did this before
+  2026-07-28 except the normal path, so an interrupted run left the app playing (scrobbling a
+  resume point the next run then inherited) and a live per-server token in world-readable `/tmp`.
+  The teardown is armed at the moment the harness commits to driving the TV, so `--list` and a
+  no-match `--filter` still exit without closing an app you are watching.
+- **`ps | grep plxnative` finds NOTHING on this TV even while the app is running** — busybox `ps`
+  here shows neither the path nor the argv. Use **`pidof plxnative`** (or `fuser <the binary>`) for
+  liveness. A liveness check built on `ps` reads exactly like "the app is closed", which will
+  cheerfully confirm whatever you were hoping to prove.
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
