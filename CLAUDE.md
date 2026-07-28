@@ -188,8 +188,11 @@ libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for t
   the primary debugging surface. stderr goes to `/tmp/plxnative-stderr.log`.
 - **A case's `run_secs` is a CAP, not a runtime.** `tests/run.py` launches via `make run-stream`
   (tail -F over ssh) and re-grades the log as each line arrives, ending the case the moment every
-  assertion passes — so a *passing* case costs what it needs and only a *failing* one burns the
-  full `run_secs`. Sound because assertions are monotone once satisfied, with two ABSENCE-check
+  assertion passes — so a *passing* case costs what it needs. A failing one burns the full
+  `run_secs` unless its verdict is already settled (`failed_for_good`: a `Playing error`, or a
+  rapid-seek burst that escalated to `reload_at: fresh Load` — lines that never un-appear), since
+  every other failure means "not appeared YET", which more time could still fix.
+  Sound because assertions are monotone once satisfied, with two ABSENCE-check
   exceptions that can only flip the other way — `no_error` and `op_seek_rapid`'s `reload_at: fresh
   Load`; adding a third means re-reading `stream_case`'s soundness note. `--no-early` restores the
   old fixed window when you want the longer look at a late error. The cap is measured from the

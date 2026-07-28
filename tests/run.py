@@ -545,6 +545,35 @@ EVAL_EVERY_S = 0.5
 BOOT_GRACE_S = 45.0
 
 
+def failed_for_good(case, lines):
+    """The reason a case can no longer pass however long it runs, or None if it still might.
+
+    Returned as a STRING, not a bool, because stopping early can change which failure the case
+    reports. morning_show_seek_rapid is the live example: the burst wedges on its first seek and
+    the watchdog escalates, so `reload_at: fresh Load` is the true disqualifier — but op_seek_rapid
+    tests the seek COUNT first, and at the moment we cut the case short only one seek has fired.
+    The verdict is right either way; the evidence would have pointed at a symptom. So the settled
+    reason is surfaced next to the verdict instead of being thrown away.
+
+    Only the two ABSENCE checks can conclude this, and it is the mirror image of the rule that
+    limits early PASS: once the disqualifying line exists it never un-exists, so the rest of the
+    cap is pure waste. Every OTHER failure means "the line has not appeared YET" — exactly what
+    more time could still fix — so those must run to the cap. This matters because a red suite is
+    the one you iterate against: morning_show_seek_rapid burns its full 75s to reach a verdict
+    that is already settled ~25s in.
+    """
+    if case["expect"].get("no_playing_error", True):
+        ok, evidence = a_no_error(lines)
+        if not ok:
+            return evidence
+    # `reload_at: fresh Load` disqualifies only a RAPID seek (op_seek_rapid wants everything to
+    # stay in-place). op_seek_transcode accepts that very line as a valid signal — so scope it.
+    rapid = any(o["op"] == "seek" and o.get("mode") == "rapid" for o in case.get("operations", []))
+    if rapid and find(lines, "reload_at: fresh Load"):
+        return "burst escalated to a reload (`reload_at: fresh Load`) — verdict cannot change"
+    return None
+
+
 def _drain(stream, sink, done):
     """Reader thread: filter the type=43 flood at the door so the grader never re-scans it."""
     try:
@@ -559,7 +588,8 @@ def _drain(stream, sink, done):
 def stream_case(case, cfg, cap_s, early=True):
     """Launch via `make run-stream` and grade the log as it streams.
 
-    Returns (lines, elapsed_s, stopped_early). Lines come back already filtered.
+    Returns (lines, elapsed_s, stopped_early, settled_reason). Lines come back already filtered;
+    settled_reason is non-None only when the case was cut short by an already-decided failure.
     """
     proc = subprocess.Popen(["make", "-s", "run-stream", f"TV={cfg['tv']}"],
                             cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -578,6 +608,7 @@ def stream_case(case, cfg, cap_s, early=True):
     deadline = None
     passed_since = None
     stopped_early = False
+    settled = None
     try:
         while True:
             time.sleep(EVAL_EVERY_S)
@@ -591,9 +622,14 @@ def stream_case(case, cfg, cap_s, early=True):
             elif now >= deadline:
                 break
             if early:
-                ok, _ = evaluate(case, list(lines))
+                snap = list(lines)
+                ok, _ = evaluate(case, snap)
                 if not ok:
                     passed_since = None
+                    settled = failed_for_good(case, snap)
+                    if settled:
+                        stopped_early = True
+                        break  # verdict is settled — don't burn the rest of the cap
                 elif passed_since is None:
                     passed_since = now
                 elif now - passed_since >= SETTLE_S:
@@ -610,7 +646,7 @@ def stream_case(case, cfg, cap_s, early=True):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-    return list(lines), time.monotonic() - started, stopped_early
+    return list(lines), time.monotonic() - started, stopped_early, settled
 
 
 # ---------------------------------------------------------------------------
@@ -697,7 +733,7 @@ def run_case(case, cfg, token, verbose):
     # 4. run + grade the log as it streams (run_secs is the cap, not the runtime)
     early = not cfg.get("no_early")
     print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
-    lines, elapsed, stopped_early = stream_case(case, cfg, run_secs, early=early)
+    lines, elapsed, stopped_early, settled = stream_case(case, cfg, run_secs, early=early)
 
     # 5. evaluate
     passed, results = evaluate(case, lines)
@@ -709,6 +745,10 @@ def run_case(case, cfg, token, verbose):
             print(f"      [{mark}] {label}: {redact(evidence)}")  # never leak the token
     how = f"{elapsed:.0f}s" + (f" (early, cap {run_secs}s)" if stopped_early else f" (full cap {run_secs}s)")
     print(f"    => {'PASS' if passed else 'FAIL'} in {how}")
+    if settled:
+        # the true disqualifier — which is NOT always the assertion printed above (see
+        # failed_for_good), so losing it would point a reader at a symptom instead of the cause.
+        print(f"       stopped early — settled: {redact(settled)}")
     return passed, results, lines
 
 
