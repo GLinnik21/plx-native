@@ -8,14 +8,22 @@
 //! an in-flight flag, so had the app survived, the screen would sit on a spinner that can never
 //! resolve.
 //!
-//! **Measured on the target (2026-07-28), because the first version of this note guessed:** the
-//! app runs 31 threads at playback peak (13 at Home) against an `RLIMIT_NPROC` of 3746 for its
-//! uid and a system `threads-max` of 7492; `VmSize` peaks at 363 MB of a ~3 GB 32-bit user space;
-//! `vm.overcommit_memory` is 0, so a 2 MB stack `mmap` effectively cannot fail with ~430 MB
-//! available. **EAGAIN is not a live risk on this hardware** — roughly 120x headroom on threads.
-//! This module is not buying us a fix for something that happens; it is refusing to let an
-//! impossible-but-fatal branch exist, at the cost of a return value. `Max open files` (1024 soft)
-//! is the only limit anywhere near reach, and it is not this one.
+//! **Measured on the target, not estimated** (`tools/threadprobe.c`, 2026-07-28, run under the
+//! app's own uid — the first version of this note guessed and was wrong about which limit binds):
+//!
+//! | stack | refused at | binding limit |
+//! |---|---|---|
+//! | 2 MB (the platform default) | **2043 threads** | `RLIMIT_AS` — the full AArch32 4 GB space |
+//! | 256 KB (`spawn_small`) | **3745 threads** | `RLIMIT_NPROC`, which is 3746 |
+//!
+//! Both refusals are EAGAIN, exactly the error `spawn` unwraps. Against that, the app runs **31
+//! threads at playback peak** (13 at Home) and peaks at 363 MB of `VmSize` — ~66x and ~11x
+//! headroom. So this module is not fixing something that happens; it is refusing to let an
+//! unreachable-but-unrecoverable branch exist, for the price of a return value.
+//!
+//! The table is also why [`SMALL_STACK`] is not a micro-optimisation: which limit you hit depends
+//! on the stack size, and the crossover sits between these two values. A 2 MB stack spends address
+//! space (the scarcer resource here at 1/2043 per thread); 256 KB spends a thread slot instead.
 //!
 //! Both entry points below report the refusal instead of panicking. Releasing the armed flag
 //! stays with the caller — a latch is a property of the screen, not of the thread.
