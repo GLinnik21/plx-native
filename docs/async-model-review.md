@@ -95,6 +95,25 @@ So the HUD freezes *while it is on screen*, mid-interaction. Note `transcode_see
 
 ### 3b. Teardown joins three workers on the main thread, unbounded
 
+> **SUPERSEDED (2026-07-29) — all three numbered stalls below are FIXED. Re-verified in the tree,
+> because two later proposals mined this section for their headline justification and inherited
+> its stale numbers.**
+>
+> 1. Fixed @`05e623a`. `http_open` publishes the fd at `socket()` (`stream.rs`), *before* connect —
+>    so `http_shutdown` reaches the socket for the whole open window, not just after the header
+>    parse. `tools/sockprobe.c` measured on this kernel that `shutdown(2)` aborts a handshake in
+>    progress (contrary to the documented `ENOTCONN`), which is what makes that publication useful.
+> 2. Fixed. `threads::wait_or_stop` is a **condvar** wait, and `teardown` latches `report_wake` and
+>    `notify_all()`s *before* it joins — the deterministic 0-1000 ms is gone.
+> 3. Fixed. `HttpStream::reset_fields` excludes the atomic `fd`.
+>
+> **Carry this forward:** the timeline reporter's uncancellable window is now the ~10-50 ms it is
+> genuinely inside a POST, not ~99.9% of teardowns. Any rationale that still cites "every teardown
+> pays" is arguing from the pre-fix tree. The exposure that remains is real but rare — and is
+> strictly smaller than the *unconditional* pair of blocking PMS round trips six lines further
+> down the same function (`report_timeline(Stopped)` + `stop_transcode`), which run on 100% of
+> real stops and are tracked separately.
+
 `engine::teardown` (`engine.rs:480-510`) joins the demux, load and timeline threads with no
 timeout, then does **two more blocking PMS calls** (`report_timeline` + `stop_transcode`,
 `engine.rs:508`). This runs on BACK, Stop, EOS, app-switch, and every reload (transcode seek,

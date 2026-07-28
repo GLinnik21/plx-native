@@ -960,6 +960,22 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         if whence == AVSEEK_SIZE {
             return s.size;
         }
+        // Teardown may have raced us here — the same race the reopen site in `demux` guards, and
+        // this is the third way in. Teardown aborts the lanes, fires ONE `http_shutdown` at this
+        // socket, then JOINS this thread from the main thread. Our AVIO is SEEKABLE, so
+        // libavformat treats the broken read as recoverable and heals it by calling US (the
+        // 5938b5f mechanism, spelled out in the read loop's note below). Without this check it
+        // gets a BRAND NEW connection the already-fired shutdown cannot touch — and because
+        // `read_cb` then reports EOF again, that recovery repeats: measured on the host at ONE
+        // full `http_open` per hop, so the main thread's join is held for a whole reopen every
+        // time round, not just once. `read_cb` has bailed on this flag since it was written; a
+        // seek was the way around it.
+        //
+        // Placed AFTER the AVSEEK_SIZE branch on purpose: a size query is a field read, not I/O,
+        // and answering it during teardown costs nothing.
+        if crate::aq::aq_is_aborted(s.aq) {
+            return -1;
+        }
         let target = match whence {
             SEEK_SET => offset,
             SEEK_CUR => s.off + offset,
@@ -1740,5 +1756,145 @@ mod tests {
         let (key, out) = to_annexb(&[0x00, 0x00], false, &[0xFF]);
         assert!(!key);
         assert!(out.is_empty(), "size < nls + 1 must bail before the walk");
+    }
+
+    // -- the AVIO callbacks under teardown -------------------------------------------------
+    //
+    // These drive `read_cb`/`seek_cb` directly, which works on the host precisely because neither
+    // one touches FFmpeg: they are plain `extern "C"` fns over an `AvioState`, whose every field
+    // (an HttpStream, an AuQueue, two CStrings, three integers) is ordinary Rust. So long as a
+    // test stays off `av_*`, the callbacks link and run here exactly as they do on the TV.
+
+    /// A loopback PMS stand-in that COUNTS accepted connections — the observable that matters,
+    /// since "did the callback open a new socket" is the whole question. Each connection gets a
+    /// 200 whose 8-byte body arrives inside the header read, so `http_read` serves it from
+    /// `HttpStream`'s buffer and never needs the socket again.
+    ///
+    /// The count is bumped BEFORE the reply is written, so it is already final by the time any
+    /// `http_open` against this listener can return — every assertion below is causally ordered
+    /// behind that, and needs no sleep and no timing margin.
+    fn with_counting_listener(body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize)) {
+        use std::io::Write;
+        use std::sync::atomic::AtomicUsize;
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        srv.set_nonblocking(true).expect("set_nonblocking"); // so the acceptor can be stopped
+        let accepts = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let mut held = Vec::new(); // hold the peers open: an RST would read as a failed reopen
+                while !stop.load(Ordering::Acquire) {
+                    match srv.accept() {
+                        Ok((mut s, _)) => {
+                            accepts.fetch_add(1, Ordering::AcqRel);
+                            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH");
+                            held.push(s);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(1))
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            // Stop the acceptor on the way out however we leave. A FAILING assertion in `body`
+            // unwinds through here and `scope` joins before it reports, so a flag set only on the
+            // success path would turn every real failure into a hang instead of a message.
+            struct StopAcceptor<'a>(&'a AtomicBool);
+            impl Drop for StopAcceptor<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+            let _stop_on_exit = StopAcceptor(&stop);
+            body(port, &accepts);
+        });
+    }
+
+    /// An open stream plus the aborted video lane behind its AVIO — the state teardown leaves:
+    /// `engine::teardown` aborts both lanes, `http_shutdown`s this socket, then joins the demuxer.
+    fn opened_stream_with_aborted_lane(port: u16) -> (Box<HttpStream>, Box<AuQueue>, CString, CString) {
+        let ip = CString::new("127.0.0.1").unwrap();
+        let path = CString::new("/library/parts/1/file.mkv").unwrap();
+        let mut hs = crate::stream::http_stream_boxed();
+        let rv = crate::stream::http_open(
+            &mut *hs, ip.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET",
+        );
+        assert_eq!(rv, 0, "fixture: the first open must succeed");
+        let mut aq = crate::aq::aq_new(1 << 20);
+        crate::aq::aq_abort(&mut *aq);
+        (hs, aq, ip, path)
+    }
+
+    /// Teardown fires ONE `shutdown(2)` at the demux socket, but our AVIO is SEEKABLE, so
+    /// libavformat heals the resulting broken read by calling `seek_cb` — which reopened the URL
+    /// with a byte Range. That fresh socket is one the already-fired shutdown cannot reach, so the
+    /// demuxer reads on while the main thread sits in `stream_th.join()`. `read_cb` has bailed on
+    /// an aborted lane since it was written, and the reopen site in `demux` carries the same guard
+    /// with a comment naming this exact failure; `seek_cb` was the third way in and had neither.
+    ///
+    /// The invariant is carried by the ACCEPT COUNT, not the return value — a `seek_cb` that
+    /// reopened and then failed for an unrelated reason would also return -1. The trailing
+    /// AVSEEK_SIZE assertion pins the guard's PLACEMENT: bolted to the top of `seek_cb` it would
+    /// start reporting the stream as unsized, a second behaviour change smuggled in under a
+    /// teardown fix.
+    #[test]
+    fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
+        with_counting_listener(|port, accepts| {
+            let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
+            assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
+            let mut st = AvioState {
+                hs: &mut *hs, aq: &mut *aq, host: ip, port: port as c_int, path, off: 0, size: 8,
+            };
+            let op = &mut st as *mut AvioState as *mut c_void;
+
+            let rv = seek_cb(op, 4, SEEK_SET);
+
+            assert_eq!(
+                accepts.load(Ordering::Acquire), 1,
+                "seek_cb opened a SECOND connection during teardown — the one the main thread's \
+                 join is waiting on, and the one its shutdown(2) can no longer reach"
+            );
+            assert_eq!(rv, -1, "an aborted seek must report failure so libavformat stops healing");
+            assert_eq!(seek_cb(op, 0, AVSEEK_SIZE), 8,
+                       "a size query is not I/O — the guard belongs AFTER that branch");
+            crate::stream::http_close(&mut *hs);
+            crate::aq::aq_destroy(&mut *aq);
+        });
+    }
+
+    /// The pair invariant, and the answer to "can an aborted demuxer ping-pong forever?".
+    /// `read_cb` returns AVERROR_EOF unconditionally once the lane is aborted, and libavformat's
+    /// recovery for a failed read on a seekable AVIO is to seek and read again — so if `seek_cb`
+    /// succeeds, every hop of that loop is a full `http_open` (connect + request + header read)
+    /// against a PMS the main thread is already waiting on. Measured on the unguarded code: nine
+    /// accepts for eight hops, i.e. one whole reopen per hop, not the single wasted open the
+    /// static reading of this suggested.
+    #[test]
+    fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
+        with_counting_listener(|port, accepts| {
+            let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
+            let mut st = AvioState {
+                hs: &mut *hs, aq: &mut *aq, host: ip, port: port as c_int, path, off: 0, size: 8,
+            };
+            let op = &mut st as *mut AvioState as *mut c_void;
+            let mut dst = [0u8; 8];
+            let mut reads = Vec::new();
+            let mut seeks = Vec::new();
+            for _ in 0..8 {
+                reads.push(read_cb(op, dst.as_mut_ptr(), dst.len() as c_int));
+                seeks.push(seek_cb(op, 4, SEEK_SET)); // 4, not 0: a seek to 0 returns 0, and 0 is success
+            }
+            assert_eq!(
+                accepts.load(Ordering::Acquire), 1,
+                "the read/seek recovery loop reconnected once per hop — that is the wedge, \
+                 not merely a slow teardown"
+            );
+            assert!(reads.iter().all(|r| *r == AVERROR_EOF), "aborted reads must all report EOF: {reads:?}");
+            assert!(seeks.iter().all(|r| *r == -1), "every hop must refuse the seek: {seeks:?}");
+            crate::stream::http_close(&mut *hs);
+            crate::aq::aq_destroy(&mut *aq);
+        });
     }
 }

@@ -378,7 +378,9 @@ pub(crate) fn posters_shutdown() {
     CV.notify_all();
     let handles = std::mem::take(&mut store().workers);
     for h in handles {
-        let _ = h.join();
+        // these park in `stream::http_get`, whose socket nothing outside the call can reach —
+        // so an app exit against a stalled PMS waits out SO_RCVTIMEO here. Measured, not fixed.
+        crate::task::join("poster", h);
     }
     // free textures + pending decodes (main thread for GL); workers are joined
     let mut to_free = Vec::with_capacity(PT_CAP);
