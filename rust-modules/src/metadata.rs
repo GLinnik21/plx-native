@@ -95,6 +95,7 @@ pub(crate) struct Chapter {
     pub(crate) thumb: String, // server image path → resolve_tex (empty if no chapter thumbs)
 }
 
+#[derive(Default)]
 pub(crate) struct Detail {
     pub(crate) rk: String,
     pub(crate) is_show: bool,
@@ -136,8 +137,11 @@ static mut CURRENT: Option<Detail> = None;
 pub(crate) fn current() -> Option<&'static Detail> {
     unsafe { (*addr_of!(CURRENT)).as_ref() }
 }
-/// drop the loaded detail (on leaving the detail page)
+/// drop the loaded detail (on leaving the detail page). Also supersedes any in-flight async
+/// fetch — otherwise a load requested on the way in lands after the page closed and silently
+/// repopulates CURRENT (and NOW, via `sync_now_playing`) behind whatever screen is now mounted.
 pub(crate) fn clear() {
+    supersede_detail();
     unsafe { *addr_of_mut!(CURRENT) = None }
 }
 
@@ -474,42 +478,157 @@ fn fetch_related(rk: &str) -> Vec<Related> {
     out
 }
 
-/// Fetch the full detail for `rk` (movie or show) into CURRENT: item metadata + cast
-/// + streams, plus — for shows — seasons and the first season's episodes, plus the
-/// related hub. Blocks on several HTTP round-trips (like route::play_movie's
-/// /decision handshake); called synchronously when opening the detail page.
-pub(crate) fn load_detail(rk: &str) {
-    // a fresh detail load supersedes any in-flight season fetch (same show re-opened: a stale
-    // landing would overwrite the fresh first-season episode list)
+/// The full detail fetch for `rk` (movie or show): item metadata + cast + streams, plus — for
+/// shows — seasons, the first season's episodes and its stream backfill, plus the related hub.
+/// 2 PMS round-trips for a movie, 5 for a show.
+///
+/// PURE NETWORK + PARSING — it touches no `static mut`, which is exactly what lets it run either
+/// on the main thread ([`load_detail_now`]) or on a worker ([`request_detail`]). Keep it that way:
+/// installing the result is the caller's job, and on the async path that must happen on the main
+/// thread (see the DETAIL_SLOT note).
+fn fetch_full(rk: &str) -> Option<Detail> {
+    // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
+    // SDL loop, so it is the number to read when judging whether a call site can afford to block
+    // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
+    let t0 = std::time::Instant::now();
+    let mut d = fetch_detail(rk)?;
+    if d.is_show {
+        d.seasons = fetch_seasons(rk);
+        if let Some(s0) = d.seasons.first() {
+            d.episodes = fetch_episodes(&s0.rk);
+        }
+        // a show carries no streams itself — backfill the About footer's audio/
+        // subtitle tracks from the first episode (one extra round-trip)
+        let first_ep_rk = d.episodes.first().map(|e| e.rk.clone());
+        if let Some(ep_rk) = first_ep_rk {
+            fetch_item_streams(&ep_rk, &mut d);
+        }
+    }
+    d.related = fetch_related(rk);
+    crate::player::log(&format!(
+        "detail: rk={} '{}' show={} genres={} cast={} seasons={} eps={} related={} audio={} subs={} ms={}",
+        d.rk, d.title, d.is_show, d.genres.len(), d.cast.len(), d.seasons.len(), d.episodes.len(),
+        d.related.len(), d.audio.len(), d.subs.len(), t0.elapsed().as_millis()
+    ));
+    Some(d)
+}
+
+/// [`request_detail`] but BLOCKING — for the callers that read `current()` on the NEXT statement:
+/// `open_rk_season` (whose chained `load_season_now` indexes `d.seasons`), home_activate's
+/// play-a-show arm (which gates on `current().rk == expect`), and the headless `plxnative-play` /
+/// `plxnative-detail` triggers (which derive the leaf part/codecs, or replay move_focus/on_ok, in
+/// the same frame). Every remaining call of this is a deliberate freeze — hence the `_now` name.
+pub(crate) fn load_detail_now(rk: &str) {
+    // this synchronous load wins over anything in flight — both the detail worker (whose landing
+    // would otherwise overwrite it a beat later) and the season fetch (same show re-opened: a
+    // stale landing would overwrite the fresh first-season episode list)
+    supersede_detail();
     supersede_season();
     let rk = rk.to_string();
     let _ = catch_unwind(move || {
-        let mut d = match fetch_detail(&rk) {
-            Some(d) => d,
-            None => return,
-        };
-        if d.is_show {
-            d.seasons = fetch_seasons(&rk);
-            if let Some(s0) = d.seasons.first() {
-                d.episodes = fetch_episodes(&s0.rk);
-            }
-            // a show carries no streams itself — backfill the About footer's audio/
-            // subtitle tracks from the first episode (one extra round-trip)
-            let first_ep_rk = d.episodes.first().map(|e| e.rk.clone());
-            if let Some(ep_rk) = first_ep_rk {
-                fetch_item_streams(&ep_rk, &mut d);
-            }
+        if let Some(d) = fetch_full(&rk) {
+            unsafe { *addr_of_mut!(CURRENT) = Some(d) }
+            // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor
+            sync_now_playing();
         }
-        d.related = fetch_related(&rk);
-        crate::player::log(&format!(
-            "detail: rk={} '{}' show={} genres={} cast={} seasons={} eps={} related={} audio={} subs={}",
-            d.rk, d.title, d.is_show, d.genres.len(), d.cast.len(), d.seasons.len(), d.episodes.len(),
-            d.related.len(), d.audio.len(), d.subs.len()
-        ));
-        unsafe { *addr_of_mut!(CURRENT) = Some(d) }
-        // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
-        sync_now_playing();
     });
+}
+
+// ---- async detail load ---------------------------------------------------------------------
+// Opening a detail page used to block the SDL loop on 2 (movie) to 5 (show) sequential PMS
+// round-trips, straight off the key handler. `request_detail` spawns the fetch and `pump_detail`
+// installs the result — the page mounts THIS frame on the catalog row's art/title/summary and
+// fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
+//
+// The worker MUST NOT write CURRENT. `current()` hands out a `&'static Detail` that ~25 draw
+// sites read within a frame, so a background store would drop the old `Detail` under a live
+// reference — a use-after-free, not a lint. Keeping the main thread the sole writer is precisely
+// what makes that `&'static` sound, so the worker's only output is the mailbox.
+static DETAIL_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static DETAIL_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+struct DetailResult {
+    gen: u32,
+    d: Option<Detail>, // None = the fetch failed or panicked — the page keeps the previous item
+}
+static DETAIL_SLOT: std::sync::Mutex<Option<DetailResult>> = std::sync::Mutex::new(None);
+
+/// Invalidate any in-flight/pending detail fetch and mark the mailbox settled: bump the
+/// generation (so a late landing is discarded by `pump_detail`), catch DETAIL_DONE up to it
+/// (`detail_loading()` → false), and clear the slot. Returns the fresh generation.
+fn supersede_detail() -> u32 {
+    use std::sync::atomic::Ordering;
+    let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    DETAIL_DONE.store(gen, Ordering::SeqCst);
+    *DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    gen
+}
+
+/// Post a finished fetch to the mailbox. MONOTONE: an older fetch landing late must never clobber
+/// a newer result the pump hasn't consumed yet. Called from the worker (and from the tests, which
+/// is the point of it being a named function rather than inline in the closure — the guard is the
+/// one piece of this machinery that a test can't reach through `request_detail`).
+fn land_detail(gen: u32, d: Option<Detail>) {
+    let mut slot = DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
+        *slot = Some(DetailResult { gen, d });
+    }
+}
+
+/// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and spawns the fetch; the result
+/// lands via [`pump_detail`]. The caller mounts the detail page this same frame.
+pub(crate) fn request_detail(rk: &str) {
+    use std::sync::atomic::Ordering;
+    // drop any season fetch in flight for the OLD item — its landing would patch the new one
+    supersede_season();
+    // NOT supersede_detail(): the generation must move (a stale landing is discarded) but
+    // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
+    let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    *DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let for_log = rk.to_string();
+    let rk = rk.to_string();
+    let spawned = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || {
+        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands (as None) —
+        // otherwise detail_loading() would report an in-flight fetch forever
+        let d = catch_unwind(|| fetch_full(&rk)).unwrap_or(None);
+        land_detail(gen, d);
+    });
+    if let Err(e) = spawned {
+        // Builder::spawn returns Result (thread::spawn PANICS on EAGAIN). Swallowing it would
+        // latch detail_loading() true forever behind a spinner that can never resolve.
+        crate::player::log(&format!("detail: spawn failed ({e}) — rk={for_log} dropped"));
+        DETAIL_DONE.store(gen, Ordering::SeqCst);
+    }
+}
+
+/// MAIN THREAD, once a frame, ROUTE-UNCONDITIONAL (a landing must never depend on which screen is
+/// mounted — the play paths request a detail from Home and flip straight to the player). Installs
+/// a landed fetch into CURRENT and returns true when a fresh item was published. A stale landing —
+/// superseded by a newer request, by a blocking load, or by `clear()` when the page closed — is
+/// dropped.
+pub(crate) fn pump_detail() -> bool {
+    use std::sync::atomic::Ordering;
+    let taken = DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let Some(r) = taken else { return false };
+    if r.gen != DETAIL_GEN.load(Ordering::SeqCst) {
+        return false; // superseded while in flight
+    }
+    DETAIL_DONE.store(r.gen, Ordering::SeqCst);
+    let Some(d) = r.d else { return false }; // fetch failed: keep the previously loaded item
+    // The LANDING is what defines which show's episodes are current, so the season supersede has
+    // to happen here as well as at request time: a tab hop issued while this load was in flight
+    // spawned a fetch against the OLD item, and its landing would patch these fresh episodes.
+    supersede_season();
+    unsafe { *addr_of_mut!(CURRENT) = Some(d) }
+    // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
+    sync_now_playing();
+    true
+}
+
+/// True while a detail fetch is in flight — drives the detail page's loading spinner.
+pub(crate) fn detail_loading() -> bool {
+    use std::sync::atomic::Ordering;
+    let gen = DETAIL_GEN.load(Ordering::SeqCst);
+    gen != 0 && gen != DETAIL_DONE.load(Ordering::SeqCst)
 }
 
 // ---- season switching ----------------------------------------------------------------------
@@ -531,8 +650,9 @@ static SEASON_RESULT: std::sync::Mutex<Option<SeasonResult>> = std::sync::Mutex:
 /// Invalidate any in-flight/pending season fetch and mark the mailbox settled: bump the generation
 /// (so a late async landing is discarded), catch SEASON_DONE up to it (season_loading() → false),
 /// and clear the slot. Returns the fresh generation. The ONE place the three season atomics move
-/// together — used by the blocking `load_season_now` and by `load_detail` (a new item supersedes
-/// the old show's pending fetch).
+/// together — used by the blocking `load_season_now`, and by all three detail entry points (a new
+/// item supersedes the old show's pending fetch): `load_detail_now`, `request_detail` (dropping the
+/// OLD item's fetch) and `pump_detail` (dropping one issued WHILE the load was in flight).
 fn supersede_season() -> u32 {
     use std::sync::atomic::Ordering;
     let gen = SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1;
@@ -617,4 +737,72 @@ pub(crate) fn pump_season() -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// post through the REAL mailbox write, so the monotone guard is under test rather than
+    /// bypassed (an unconditional store here would make the "older lands late" case vacuous)
+    fn landing(gen: u32, rk: &str) {
+        land_detail(gen, Some(Detail { rk: rk.to_string(), ..Default::default() }));
+    }
+    fn slot_rk() -> Option<String> {
+        DETAIL_SLOT.lock().unwrap().as_ref().and_then(|r| r.d.as_ref()).map(|d| d.rk.clone())
+    }
+    fn cur_rk() -> Option<String> {
+        current().map(|d| d.rk.clone())
+    }
+
+    /// The whole detail mailbox in one serial test — the statics are global, so splitting this
+    /// into parallel #[test]s would have them racing each other rather than the code.
+    #[test]
+    fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
+        // idle: nothing requested, nothing loading, nothing to pump
+        assert!(!detail_loading(), "a fresh process is not loading anything");
+        assert!(!pump_detail(), "an empty mailbox pumps nothing");
+
+        // a request is in flight until its landing is pumped
+        let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(detail_loading(), "a bumped generation with DONE behind it reads as in flight");
+        landing(gen, "movie-1");
+        assert!(pump_detail(), "the awaited landing installs");
+        assert_eq!(cur_rk().as_deref(), Some("movie-1"));
+        assert!(!detail_loading(), "pumping the landing settles the spinner");
+
+        // SUPERSEDED: a second request means the first one's landing is stale and must be dropped
+        let old = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        let new = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        landing(old, "stale-show");
+        assert!(!pump_detail(), "a landing from a superseded generation is discarded");
+        assert_eq!(cur_rk().as_deref(), Some("movie-1"), "and it must not touch CURRENT");
+        assert!(detail_loading(), "the NEWER request is still in flight");
+
+        // MONOTONE mailbox: with the newer result already sitting unconsumed, the OLDER fetch
+        // finally returns — it must not overwrite it. (This is the case that wedged the season
+        // mailbox before its guard existed: losing the newest result stalled the spinner on.)
+        landing(new, "fresh-show");
+        landing(old, "stale-show");
+        assert_eq!(slot_rk().as_deref(), Some("fresh-show"), "the late older landing is refused");
+        assert!(pump_detail());
+        assert_eq!(cur_rk().as_deref(), Some("fresh-show"));
+
+        // a FAILED fetch (None) settles the spinner but keeps the previously loaded item
+        let g = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        *DETAIL_SLOT.lock().unwrap() = Some(DetailResult { gen: g, d: None });
+        assert!(!pump_detail(), "a failed fetch reports no fresh item");
+        assert_eq!(cur_rk().as_deref(), Some("fresh-show"), "and leaves the page as it was");
+        assert!(!detail_loading(), "but it does settle the spinner");
+
+        // CLOSING THE PAGE supersedes: a load requested on the way in must not repopulate
+        // CURRENT behind whatever screen is mounted now.
+        let inflight = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        clear();
+        assert!(!detail_loading(), "clear() settles the in-flight fetch");
+        landing(inflight, "arrived-after-close");
+        assert!(!pump_detail(), "a landing after close is dropped");
+        assert_eq!(cur_rk(), None, "the page stays closed");
+    }
 }
