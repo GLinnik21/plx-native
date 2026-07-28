@@ -2153,11 +2153,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Player { overlay: Overlay::None } => " overlay=none",
                     _ => "",
                 };
+                // `pos=<s>` rides the heartbeat while frames are actually being presented: the
+                // same SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
+                // that reporter's 10s cadence. tests/run.py grades playback progress from this.
+                // The cadence is the point: to OBSERVE a 15s climb through 10s samples you must
+                // play ~30s, so the sparse signal was charging every case double its real floor.
+                // Gated on is_playing() (not is_started()) — see that fn for the resume trap.
+                let pos_ns = playpos(); // one read — the test and the value must agree
+                let pos = if crate::player::is_playing() && pos_ns > 0 {
+                    format!(" pos={}s", pos_ns / 1_000_000_000)
+                } else {
+                    String::new()
+                };
                 if framedrop_on {
-                    log(&format!("FPS={fps_shown} route={rn}{ov} worstframe={fd_worst:.1}ms"));
+                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos} worstframe={fd_worst:.1}ms"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("FPS={fps_shown} route={rn}{ov}"));
+                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos}"));
                 }
             }
         }

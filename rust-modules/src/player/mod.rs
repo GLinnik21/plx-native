@@ -78,6 +78,13 @@ pub(crate) fn request_seek(ns: i64) {
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
 pub(crate) fn loading() -> bool { state().is_busy() }
+/// true only while the pipeline is actually presenting frames — not resolving, connecting,
+/// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
+/// resume `resume_at` only arms the seek (it does not seed `playpos_ns`, unlike the transcode
+/// branch), so the position reads 0 until the first decoded frame lands at the resume offset.
+/// Logging that pre-roll 0 would show the harness a 0→600 step and read as 600s of "climb"
+/// inside one second — a false PASS on `min_timeline_climb_s`.
+pub(crate) fn is_playing() -> bool { matches!(state(), shared::PlaybackState::Playing) }
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
 pub(crate) fn state() -> shared::PlaybackState {
     // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once

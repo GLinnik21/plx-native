@@ -162,12 +162,34 @@ deploy: pkg/plxnative
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
 # take; SAM keeps stale "running" state after a hard kill, so close via SAM
 # first or the next launch is a silent no-op relaunch.
-run:
-	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
+#
+# BOOT_SH is the close+launch dance itself, shared verbatim by `run` and `run-stream`
+# so there is exactly ONE copy of the SAM incantation. It leaves the app running and
+# the subscription pid in $$LP; how to observe the app is the caller's business.
+#
+# Only `rm -f` the log — never pre-create it. The app runs jailed under its own uid
+# (not root), so a root-owned 644 file left in place is one the app cannot write: the
+# log stays 0 bytes and every assertion reads as a total regression. `tail -F` retries
+# until the app creates the file itself, which is exactly what -F is for.
+BOOT_SH = (luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
 	  fuser -k $(APPDIR)/plxnative 2>/dev/null; rm -f /tmp/plxnative-events.log; \
-	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & LP=$$!; \
+	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & LP=$$!;
+
+run:
+	$(SSH) '$(BOOT_SH) \
 	  sleep $(RUN_SECS); kill $$LP 2>/dev/null; sleep 1; \
 	  cat /tmp/plxnative-events.log'
+
+# Same launch, but stream the event log as it is written instead of sleeping a fixed
+# RUN_SECS and catting at the end. tests/run.py grades the stream line-by-line and closes
+# the connection the moment a case has passed, which is what stops a 20s case from costing
+# 60s. Hanging up kills the tail; the trap takes the luna-send subscription with it so 18
+# cases don't leave 18 of them behind. There is no time limit here on purpose — the caller
+# owns the deadline (run.py caps each case at its manifest run_secs).
+run-stream:
+	$(SSH) '$(BOOT_SH) \
+	  trap "kill $$LP 2>/dev/null" EXIT INT TERM HUP; \
+	  tail -F -n +1 /tmp/plxnative-events.log'
 
 kill:
 	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
@@ -190,4 +212,4 @@ ipk: pkg/plxnative
 	  debian-binary control.tar.gz data.tar.gz
 	shasum -a 256 pkg/com.beb.plxnative_0.1.0_arm.ipk | tee pkg/ipk.sha256
 
-.PHONY: all setup-env deploy run kill test ipk clean
+.PHONY: all setup-env deploy run run-stream kill test ipk clean

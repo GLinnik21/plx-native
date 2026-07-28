@@ -7,9 +7,12 @@ For each case in manifest.json this driver:
   2. (if the case sets a viewOffset) seeds the item's resume point server-side via
      PUT /:/progress -- AFTER the close, so a live timeline_thread can't re-scrobble over it;
   3. clears every /tmp/plxnative-* trigger on the TV, then writes only the ones this case needs;
-  4. runs `make run TV=<tv> RUN_SECS=<n>`, which relaunches the app, waits, and cats
-     /tmp/plxnative-events.log back;
-  5. filters the `smp_cb type=43 num=0 str=` flood and evaluates the per-op assertions;
+  4. runs `make run-stream TV=<tv>`, which relaunches the app and tails
+     /tmp/plxnative-events.log live;
+  5. filters the `smp_cb type=43 num=0 str=` flood and evaluates the per-op assertions
+     CONTINUOUSLY as lines arrive, stopping the case the moment it passes — the manifest's
+     run_secs is the cap, not the runtime (see stream_case for why that is sound, and
+     --no-early to turn it off);
   6. records PASS/FAIL with the failing evidence line.
 
 Security: the PMS X-Plex-Token is read from src/config.local.h at runtime and is NEVER
@@ -31,8 +34,11 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -178,12 +184,16 @@ def triggers_for_case(case):
     return files
 
 
-def apply_triggers(tv, files):
+def apply_triggers(tv, files, extra=None):
     """Clear every /tmp/plxnative-* trigger (sparing the *.log files), then create the ones this case
     needs, in one ssh round-trip. GLOB-based, not an enumerated list, so a newly-added app trigger can
     never bleed between scenes — a stale plxnative-novsync would uncap vsync and false-PASS an FPS
     scene, a stale plxnative-press/-login would derail a home scene. ALL_TRIGGERS above is now just a
-    human reference of the known triggers."""
+    human reference of the known triggers.
+
+    `extra` is a raw shell command appended to the same round-trip, for a trigger whose VALUE must
+    not reach stdout (the PMS token) and so cannot go through the printed `files` list.
+    """
     # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
     parts = ['for f in /tmp/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done']
     for name, content in files:
@@ -192,6 +202,8 @@ def apply_triggers(tv, files):
         else:
             # single-quote the content; rks / "0,6" / "mkv" never contain quotes
             parts.append(f"printf '%s' '{content}' > /tmp/{name}")
+    if extra:
+        parts.append(extra)
     ssh(tv, "; ".join(parts))
 
 
@@ -206,6 +218,9 @@ def filter_log(raw):
 RE_DECISION = re.compile(r"decision: part=.* -> (DIRECT PLAY|TRANSCODE)")
 RE_CODEC = re.compile(r"ff: v=#0 codec_id=(\d+)\s+(\d+)x(\d+)")
 RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
+# the 1Hz media position carried on the render heartbeat (app.rs). Anchored to FPS= so it can
+# never pick up a `pos=` that some other line grows later.
+RE_POS = re.compile(r"FPS=\d+ .*?\bpos=(\d+)s")
 RE_SUBCUE = re.compile(r'sub cue \[\d+\.\.\d+ms\]\s+"(.*)"')
 # image (PGS/VobSub) subtitle cue: the demuxer decoded a bitmap display-set for the selected
 # track and pushed it to the render store (ff.rs decode_bitmap_cue). Distinct from the text
@@ -242,6 +257,27 @@ def codec_ids(lines):
 def timeline_secs(lines):
     """All `timeline playing t=<S>s` values in order."""
     return [(int(m.group(1)), ln) for ln in lines for m in [RE_TIMELINE.search(ln)] if m]
+
+
+def playpos_secs(lines):
+    """All `pos=<S>s` values from the once/sec render heartbeat, in order.
+
+    Same SHARED.playpos_ns the /:/timeline reporter posts, but sampled at 1 Hz instead of
+    every 10s (app.rs). Density is the whole point: seeing a 15s climb through 10s samples
+    needs ~30s of playback, so the sparse signal charged every case roughly double its real
+    floor. The app only emits the field while genuinely presenting frames, which is what
+    keeps a direct-play resume's pre-roll 0 out of the series (see player::is_playing).
+    """
+    return [(int(m.group(1)), ln) for ln in lines for m in [RE_POS.search(ln)] if m]
+
+
+def progress_secs(lines):
+    """The densest available media-position series: the 1Hz heartbeat, else the 10s timeline.
+
+    The fallback keeps every position assertion working against a log with no `pos=` field —
+    an older binary, or one built before the heartbeat carried it.
+    """
+    return playpos_secs(lines) or timeline_secs(lines)
 
 
 def find(lines, needle):
@@ -302,20 +338,46 @@ def a_video_bound(lines):
 
 
 def a_timeline_climb(lines, min_climb):
-    ts = timeline_secs(lines)
+    """Media position advanced by >= min_climb seconds. Read from the densest signal available.
+
+    This is the floor on every case and it is a real one: playback is 1x realtime, so a 15s
+    climb can never cost less than 15s of wall clock. What the dense signal removes is only
+    the SAMPLING tax on top of it.
+    """
+    dense = playpos_secs(lines)  # scanned once — evaluate() now runs twice a second
+    ts = dense or timeline_secs(lines)
     if len(ts) < 2:
-        return False, f"only {len(ts)} `timeline playing t=` line(s); need >=2 that climb"
+        return False, f"only {len(ts)} media-position sample(s); need >=2 that climb"
     lo = min(t for t, _ in ts)
     hi = max(t for t, _ in ts)
     ok = (hi - lo) >= min_climb
-    return ok, f"timeline {lo}s..{hi}s (climb {hi-lo}s, need >={min_climb}s) over {len(ts)} reports"
+    src = "heartbeat pos=" if dense else "timeline t="
+    return ok, f"{src} {lo}s..{hi}s (climb {hi-lo}s, need >={min_climb}s) over {len(ts)} samples"
+
+
+def a_timeline_post(lines):
+    """At least one /:/timeline progress report reached PMS.
+
+    a_timeline_climb reads the 1Hz heartbeat now, so this is what keeps the SERVER-side
+    reporting path (threads::timeline_thread -> route::report_timeline -> viewOffset and
+    watched state) covered. Without it, switching the climb assertion to the denser local
+    signal would have quietly dropped that coverage.
+    """
+    ts = timeline_secs(lines)
+    if not ts:
+        return False, "no `timeline playing t=` line — progress never reported to PMS"
+    return True, f"{len(ts)} timeline report(s) to PMS, last t={ts[-1][0]}s"
 
 
 # ---- per-op assertions ----
 def _reached_target(lines, target_s):
-    """Shared seek-op tail: the max reported timeline second, or an error string if it
-    never climbed to ~target (the -6s tolerance covers keyframe snap + report cadence)."""
-    ts = timeline_secs(lines)
+    """Shared seek-op tail: the max reported media second, or an error string if it
+    never climbed to ~target (the -6s tolerance covers keyframe snap + report cadence).
+
+    Reads the dense heartbeat when present: confirming a seek landed used to wait up to a
+    full 10s timeline cadence. max() over the series is indifferent to the extra samples.
+    """
+    ts = progress_secs(lines)
     reached = max((t for t, _ in ts), default=-1)
     if reached < target_s - 6:
         return reached, f"timeline reached only {reached}s, expected >= ~{target_s}s after seek"
@@ -454,6 +516,104 @@ def op_resume_transcode(lines, offset_s):
 
 
 # ---------------------------------------------------------------------------
+# Streaming run — grade the event log AS IT ARRIVES, stop as soon as a case passes.
+#
+# The old path slept a fixed run_secs (60/70/75/90 per case — 1190s, ~20 min of pure
+# sleep across the 18 cases) and only graded afterwards. Almost every case satisfies its
+# assertions well before that. What a case can NOT beat is `min_timeline_climb_s` seconds
+# of real playback, because playback is 1x realtime — that is the floor, and it is a
+# coverage decision, not waste. So run_secs stops being the runtime and becomes the CAP:
+# a FAILING case still costs exactly what it costs today; a passing one costs what it needs.
+#
+# Why grading a prefix is sound: almost every assertion is monotone once satisfied — it looks
+# for a line that has appeared, or for a max/climb that only grows. The exceptions are the two
+# ABSENCE checks, which start out true and can only flip the other way:
+#   * a_no_error            — `smp_cb type=18` / `Playing error`
+#   * op_seek_rapid         — `reload_at: fresh Load` (stuck-watchdog gave up on in-place)
+# So early exit can never turn a FAIL into a PASS on the evidence *seen*; what it can do is
+# stop before evidence that would have failed the case arrives. SETTLE_S keeps watching for a
+# moment after the last assertion flips, and --no-early restores the full fixed window.
+# For the rapid-seek cases the structure already covers most of that risk: op_seek_rapid needs
+# two timeline reports AFTER the last seek, so >=10s of post-burst playback has to elapse
+# before the case can pass at all — well past when the watchdog would have escalated.
+# (Note the old window was itself arbitrary — an error at 70s of a 60s case was never caught.)
+SETTLE_S = 2.0
+EVAL_EVERY_S = 0.5
+# How long the app gets to produce its FIRST log line before we give up and grade an empty log.
+# Generous on purpose: boot is ~5-10s, and a TV that is merely slow should fail on its
+# assertions, not on a harness timeout that looks identical to a total regression.
+BOOT_GRACE_S = 45.0
+
+
+def _drain(stream, sink, done):
+    """Reader thread: filter the type=43 flood at the door so the grader never re-scans it."""
+    try:
+        for raw in stream:
+            ln = raw.rstrip("\n")
+            if not TYPE43_SPAM.search(ln):
+                sink.append(ln)
+    finally:
+        done.set()
+
+
+def stream_case(case, cfg, cap_s, early=True):
+    """Launch via `make run-stream` and grade the log as it streams.
+
+    Returns (lines, elapsed_s, stopped_early). Lines come back already filtered.
+    """
+    proc = subprocess.Popen(["make", "-s", "run-stream", f"TV={cfg['tv']}"],
+                            cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            text=True, bufsize=1,
+                            # own process group: terminating `make` alone would orphan the
+                            # sshpass/ssh child and leave the remote tail (and the app) attached.
+                            start_new_session=True)
+    lines, done = [], threading.Event()
+    threading.Thread(target=_drain, args=(proc.stdout, lines, done), daemon=True).start()
+
+    started = time.monotonic()
+    # cap_s is APP runtime, so the clock starts at the app's first log line — not here. Anchoring
+    # it at ssh-start instead would silently shorten every case by the close+launch overhead
+    # (BOOT_SH's own `sleep 2` plus connect), which `make run RUN_SECS=` spent BEFORE it started
+    # counting. That is a couple of seconds off exactly the cases that run to the cap.
+    deadline = None
+    passed_since = None
+    stopped_early = False
+    try:
+        while True:
+            time.sleep(EVAL_EVERY_S)
+            ended = done.is_set()  # sample BEFORE grading, so we grade what arrived last
+            now = time.monotonic()
+            if deadline is None:
+                if lines:
+                    deadline = now + cap_s
+                elif now - started >= BOOT_GRACE_S:
+                    break  # app never wrote a line — grade the empty log, same as a dead TV
+            elif now >= deadline:
+                break
+            if early:
+                ok, _ = evaluate(case, list(lines))
+                if not ok:
+                    passed_since = None
+                elif passed_since is None:
+                    passed_since = now
+                elif now - passed_since >= SETTLE_S:
+                    stopped_early = True
+                    break
+            if ended:
+                break  # ssh hung up (TV asleep / connection lost) — grade what we got
+    finally:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    return list(lines), time.monotonic() - started, stopped_early
+
+
+# ---------------------------------------------------------------------------
 # Case execution
 # ---------------------------------------------------------------------------
 def evaluate(case, lines):
@@ -467,6 +627,7 @@ def evaluate(case, lines):
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
+    results.append(("timeline_post", *a_timeline_post(lines)))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
 
@@ -503,37 +664,40 @@ def run_case(case, cfg, token, verbose):
     print(f"\n=== {name}  (rk={case['rk']}, {case.get('title','')}) ===")
     print(f"    covers: {', '.join(case.get('covers', []))}")
 
-    # 1. close the app first (so a live timeline_thread can't overwrite the viewOffset)
-    make(["kill", f"TV={tv}"], timeout=40)
+    # 1. close the app first (so a live timeline_thread can't overwrite the viewOffset).
+    # ONLY needed when this case seeds one: that race is the entire purpose of the close, and
+    # `make run-stream` closes the app again anyway right before it relaunches. Skipping the
+    # redundant round-trip (it carries its own `sleep 2`) saves ~3s on the 14 cases that seed
+    # nothing. Ordering still holds for the ones that do — the previous case's app is killed
+    # here, before the seed below.
+    setup = case.get("setup", {})
+    seeds_offset = "viewOffset_ms" in setup
+    if seeds_offset:
+        make(["kill", f"TV={tv}"], timeout=40)
 
     # 2. seed the resume point AFTER the close
-    setup = case.get("setup", {})
-    if "viewOffset_ms" in setup:
+    if seeds_offset:
         pms_put_progress(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"],
                          setup["viewOffset_ms"], token)
 
-    # 3. clear + set triggers
+    # 3. clear + set triggers, and inject the effective PMS token in the SAME round-trip.
+    # The token rides `extra=` rather than `files` so its value never reaches stdout — the only
+    # reason it used to need a round-trip of its own. Ordering is what matters and is preserved:
+    # plxnative-token is cleared by the glob wipe that opens the command, and rewritten after it.
+    # Always required — the binary carries no baked token, so /tmp/plxnative-token is the only way
+    # an automated run gets PMS access.
     files = triggers_for_case(case)
-    apply_triggers(tv, files)
+    tok_cmd = f"printf '%s' '{token}' > /tmp/plxnative-token" if cfg.get("inject_token") else None
+    apply_triggers(tv, files, extra=tok_cmd)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown}")
-
-    # 3b. inject the effective PMS token so the APP itself plays (and scrobbles) as this user.
-    # Written in its own ssh round-trip so the token value never reaches stdout; plxnative-token was
-    # just cleared by apply_triggers (it's in ALL_TRIGGERS). Always required: the binary carries
-    # no baked token — /tmp/plxnative-token is the only way an automated run gets PMS access.
-    if cfg.get("inject_token"):
-        ssh(tv, f"printf '%s' '{token}' > /tmp/plxnative-token")
+    if tok_cmd:
         print(f"    plxnative-token: <{cfg['user_label']}, redacted>")
 
-    # 4. run + fetch log
-    print(f"    make run RUN_SECS={run_secs} ...")
-    try:
-        proc = make(["run", f"TV={tv}", f"RUN_SECS={run_secs}"], timeout=run_secs + 90)
-    except subprocess.TimeoutExpired:
-        print("    FAIL: make run timed out")
-        return False, [("harness", False, "make run timed out")], []
-    lines = filter_log(proc.stdout + "\n" + proc.stderr)
+    # 4. run + grade the log as it streams (run_secs is the cap, not the runtime)
+    early = not cfg.get("no_early")
+    print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
+    lines, elapsed, stopped_early = stream_case(case, cfg, run_secs, early=early)
 
     # 5. evaluate
     passed, results = evaluate(case, lines)
@@ -543,7 +707,8 @@ def run_case(case, cfg, token, verbose):
             print(f"      [{mark}] {label}")
         else:
             print(f"      [{mark}] {label}: {redact(evidence)}")  # never leak the token
-    print(f"    => {'PASS' if passed else 'FAIL'}")
+    how = f"{elapsed:.0f}s" + (f" (early, cap {run_secs}s)" if stopped_early else f" (full cap {run_secs}s)")
+    print(f"    => {'PASS' if passed else 'FAIL'} in {how}")
     return passed, results, lines
 
 
@@ -615,11 +780,12 @@ def run_fps_scene(scene, cfg, token):
             files.append((tname, str(scene["rk"])))
         else:
             files.append((tname, str(tval)))
-    apply_triggers(tv, files)  # clears every plxnative-* (incl. plxnative-profile) then writes this scene's
-    # player-tier scenes actually decode video, so inject the test-user token (its own ssh round-trip,
-    # so the value never reaches stdout) exactly like the playback cases do.
-    if is_player and cfg.get("inject_token"):
-        ssh(tv, f"printf '%s' '{token}' > /tmp/plxnative-token")
+    # clears every plxnative-* (incl. plxnative-profile) then writes this scene's. Player-tier
+    # scenes actually decode video, so they need the test-user token too — appended to the same
+    # round-trip via extra= so its value stays off stdout, exactly like the playback cases.
+    tok_cmd = (f"printf '%s' '{token}' > /tmp/plxnative-token"
+               if is_player and cfg.get("inject_token") else None)
+    apply_triggers(tv, files, extra=tok_cmd)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown or '(none)'}   run {run_secs}s, skip first {warmup} sample(s)")
 
@@ -707,6 +873,10 @@ def main():
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest)")
     ap.add_argument("--verbose", action="store_true", help="print evidence for passing assertions too")
+    ap.add_argument("--no-early", action="store_true",
+                    help="don't stop a case as soon as it passes — run the full manifest run_secs. "
+                         "Slower by design: it widens the window for a LATE `Playing error` to show "
+                         "up, which early exit trades away for speed.")
     ap.add_argument("--owner", action="store_true",
                     help="run as the config.local.h OWNER token (default: run as the manifest "
                          "test_user, e.g. Guest, so watch history stays off your real account)")
@@ -721,6 +891,7 @@ def main():
     cfg = {
         "tv": args.tv or manifest.get("tv", "192.168.0.114"),
         "pms": manifest.get("pms", {"host": "192.168.0.3", "port": 32400}),
+        "no_early": args.no_early,
     }
     cases = manifest["cases"]
     if args.suite:
