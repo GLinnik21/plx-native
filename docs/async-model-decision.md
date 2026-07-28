@@ -111,7 +111,7 @@ A's own disqualifier #3, satisfied twice before the sixth site is written.
 |---|---|---|
 | 1 | **Phase A+ — transport hardening + the two real races** | stream.rs, ff.rs, player/{engine,threads,shared}.rs |
 | 2 | **Phase D — a loading state and something to draw** | player/{shared,mod}.rs, ui/{widgets,player_hud}.rs, app.rs |
-| 3 | **`task.rs` — `Job<T>`, zero callers, host-tested** | task.rs (new), lib.rs, stream.rs |
+| 3 | ~~**`task.rs` — `Job<T>`, zero callers, host-tested**~~ **DECLINED** — see the log below; `task.rs` shipped as the spawn, not the mailbox | task.rs (new), lib.rs |
 | 4 | **`MainThread` token on the ACB/Starfish seam** | player/{ffi,engine,pump}.rs, lib.rs |
 | 5 | **metadata onto `Job`** — season, then detail | metadata.rs, ui/detail.rs, app.rs |
 | 6 | **Split `load_playing`** — the prerequisite everyone under-priced | metadata.rs, route.rs |
@@ -199,6 +199,54 @@ is not delivered. Re-read the scorecard as buying **C5 + the state machine**, an
 The likely fix, unimplemented: a `reading: AtomicBool` set once headers are parsed, with two
 interrupt entry points — "wake a blocked read" (seek) vs "kill this stream" (teardown). Design and
 host-test it before it goes near the device again.
+
+### Step 3 — `Job<T>` DECLINED on re-evaluation (2026-07-28)
+
+The board picked B as the vehicle. By the time step 3's turn came, steps 1, 2, 5, 6 and 7 had all
+landed **by hand**, device-verified — so `Job<T>` was no longer "the way the callers get written,"
+it was a rewrite of five working ones. Re-evaluated against the decision's own reversal triggers:
+
+**"Signals A was right" — partly fired.** The trigger reads *"if the migration stalls after step 7
+with `task.rs` serving two callers and five hand-rolled mailboxes still alive."* The migration did
+not stall; it finished without the primitive. Same end state, arrived at from the other direction,
+and the doc's own accounting already conceded it: *"steps 1, 2 and 7 deliver almost all the
+user-visible improvement. Steps 3, 5, 8 are ~400 lines whose payoff is deleting duplication we
+already have."*
+
+**"if any caller needs a per-site flag to fit" — fired outright.** `browse.rs` gates its spawn on
+`done` — a landed-empty list is an answer, not an absence — which is screen state, not in-flight
+state, and `Job` cannot own it. `browse::kick_directory` is *already* a local generic over `T`
+serving its two callers. Meanwhile the three in-flight representations across the five sites
+(`PLAY_BUSY` bool, `GEN`/`DONE` counter pair, a single-flight `AtomicBool`) are not
+interchangeable: each drives a different spinner with different semantics.
+
+**C3 was the last argument, and it is worth less than it was.** The step-1 log says cancellation
+retreated to flag-only, leaving "C5 + the state machine, and little else." Two things since:
+`5938b5f`/`71929ee` deleted the pump's seek-time `http_shutdown` and the demuxer's outer-loop
+reopen, so the coupling that forced step 1's all-or-nothing revert **is gone** — the only
+`http_shutdown` left is teardown's (`engine.rs`), where interrupting a reopen is the intent. That
+re-opens fd publication as a *separate* job (below). But it no longer argues for `Job`: every
+socket phase is already deadline-bounded (2 s connect, 15 s recv, 10 s send), and `route.rs`'s own
+comment records why flag-only costs nothing here — the freeze was fixed by getting the resolve off
+the loop, and a lingering worker is invisible once the UI has moved on.
+
+**What the re-evaluation did find, and what shipped instead.** The five copies disagree on one
+invariant, and the disagreement is a live defect: `std::thread::spawn` **panics** when the OS
+refuses a thread, and all but two sites used it, from the SDL loop — so an EAGAIN in a 32-bit
+address space unwinds out of `plex_run` through the C shim and kills the app. Worse, each site had
+just armed an in-flight flag, so the survivable version is a spinner that can never resolve —
+exactly the shape of `browse.rs`'s already-fixed `reset()` latch bug. **The piece worth sharing was
+the spawn, not the mailbox.** `task.rs` exists, at ~50 lines instead of ~200: two entry points that
+report a refusal instead of panicking, plus the 256 KB stack the network workers want. Every one of
+the fourteen spawn sites in the crate is on it; each caller still releases its own latch, because a
+latch belongs to the screen. Host-tested (`a_refused_spawn_reports_instead_of_panicking`, forced
+with an unsatisfiable stack size).
+
+**Follow-on, not done here:** re-land step 1's fd publication now that its blocker is gone. The
+payoff is no longer `Job`'s cancellation — it is that `teardown` currently joins the demux thread
+while it may be inside `http_open`, so a stop during a stalled reopen blocks the **main loop** for
+up to the 2 s connect or 15 s recv deadline. Same reversal trigger applies: bisect
+`substance_seek_inplace` before and after.
 
 ### Pre-existing failure, not ours
 

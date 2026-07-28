@@ -138,7 +138,11 @@ pub fn start_login() {
     with_ctl(|c| {
         *c = Ctl { phase: Phase::Creating, session: session::load(), ..Ctl::default() };
     });
-    std::thread::spawn(login_thread);
+    if !crate::task::spawn_small("login", login_thread) {
+        // Phase::Creating is a spinner with a worker behind it. Without the worker it never ends,
+        // and the login screen has no other way out — Error at least offers the retry.
+        set_error("Couldn't start sign-in. Try again.");
+    }
 }
 
 /// Retry after an [`Phase::Error`] — same as a fresh login.
@@ -198,7 +202,9 @@ pub fn start_switch() {
         c.session = sess;
         c.phase = Phase::Profiles;
     });
-    std::thread::spawn(|| {
+    // best-effort: a refused spawn just leaves the persisted roster on screen (already installed
+    // above), so there is no flag to release and nothing to tell the user
+    let _ = crate::task::spawn_small("roster", || {
         let (cid, tok) = with_ctl(|c| (c.session.client_id.clone(), c.session.account_token.clone()));
         let ac = AccountClient::new(&cid, Some(&tok));
         match ac.home_users() {
@@ -399,7 +405,7 @@ fn switch_thread(index: usize, pin: Option<String>) {
         c.phase = Phase::Switching;
         c.pin_denied = false;
     });
-    std::thread::spawn(move || {
+    let spawned = crate::task::spawn_small("switch", move || {
         let ac = AccountClient::new(&cid, Some(&account_token));
         let u = match ac.switch_user(&tile.uuid, pin.as_deref()) {
             Some(u) if !u.auth_token.is_empty() => u,
@@ -456,6 +462,14 @@ fn switch_thread(index: usize, pin: Option<String>) {
             }
         }
     });
+    if !spawned {
+        // Phase::Switching is a spinner with nothing behind it now — drop back to the roster the
+        // same way the transport failure above does, so the tile can simply be picked again.
+        with_ctl(|c| {
+            c.error = "Couldn't switch profile. Try again.".into();
+            c.phase = Phase::Profiles;
+        });
+    }
 }
 
 // ---- helpers ----

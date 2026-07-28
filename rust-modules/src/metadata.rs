@@ -584,18 +584,16 @@ pub(crate) fn request_detail(rk: &str) {
     // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
     let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     *DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    let for_log = rk.to_string();
     let rk = rk.to_string();
-    let spawned = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || {
+    let spawned = crate::task::spawn_small("detail", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands (as None) —
         // otherwise detail_loading() would report an in-flight fetch forever
         let d = catch_unwind(|| fetch_full(&rk)).unwrap_or(None);
         land_detail(gen, d);
     });
-    if let Err(e) = spawned {
-        // Builder::spawn returns Result (thread::spawn PANICS on EAGAIN). Swallowing it would
-        // latch detail_loading() true forever behind a spinner that can never resolve.
-        crate::player::log(&format!("detail: spawn failed ({e}) — rk={for_log} dropped"));
+    if !spawned {
+        // no worker means nothing will ever land: catch DONE up or detail_loading() latches true
+        // forever behind a spinner that can never resolve
         DETAIL_DONE.store(gen, Ordering::SeqCst);
     }
 }
@@ -675,7 +673,7 @@ pub(crate) fn load_season(idx: usize) {
         }
     }
     let gen = SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    std::thread::spawn(move || {
+    let spawned = crate::task::spawn_small("season", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands (empty) —
         // otherwise season_loading() would report an in-flight fetch forever
         let eps = catch_unwind(|| fetch_episodes(&season_rk)).unwrap_or_default();
@@ -687,6 +685,12 @@ pub(crate) fn load_season(idx: usize) {
             *slot = Some(SeasonResult { gen, rk, idx, eps });
         }
     });
+    if !spawned {
+        // no worker means nothing will ever land: catch DONE up or the episode row keeps its
+        // loading dim + spinner for the rest of the session. `cur_season` already moved, so the
+        // tab highlight stays where the user put it and the old episodes stay listed.
+        SEASON_DONE.store(gen, Ordering::SeqCst);
+    }
 }
 
 /// [`load_season`] but BLOCKING — for the page-open paths (`open_rk_season`, and any caller that

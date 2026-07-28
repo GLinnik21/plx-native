@@ -98,8 +98,17 @@ pub(crate) fn init() {
     };
     let port: u16 = content.trim().parse().unwrap_or(DEFAULT_PORT);
     let mut hs = HANDLES.lock().unwrap();
-    hs.push(std::thread::spawn(move || caplisten(port)));
-    hs.push(std::thread::spawn(capenc));
+    // Both halves are required — a listener with no encoder serves an empty stream — but whatever
+    // did spawn still goes into HANDLES (Option is IntoIterator) so `shutdown` joins it either way.
+    let listener = crate::task::spawn("cap-listen", move || caplisten(port));
+    let encoder = crate::task::spawn("cap-encode", capenc);
+    let both = listener.is_some() && encoder.is_some();
+    hs.extend(listener);
+    hs.extend(encoder);
+    if !both {
+        log("capture: DISABLED — a worker thread was refused");
+        return;
+    }
     ENABLED.store(true, Ordering::Release);
     log(&format!("capture: enabled, listening on :{port}"));
 }
