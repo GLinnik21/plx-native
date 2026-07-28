@@ -678,10 +678,38 @@ def run_fps_suite(scenes, cfg, token, include_player):
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+# ---- case tiers -------------------------------------------------------------------------
+# The 18 playback cases are really two suites. Rather than hand-tag them (a field that drifts
+# the moment someone adds a case), derive the tier from the case's own SHAPE:
+#
+#   codec — `operations` is just [play]. These assert the DECISION (direct-play vs remux vs
+#           transcode) and that the Load payload carries the right output codecs. They never
+#           drive the transport, so they cannot see a seek/teardown/threading regression.
+#           Run them when route.rs or plex/ changes.
+#   logic — anything that also seeks, resumes, switches audio or renders subtitles. These are
+#           what exercises the engine, the pump and the demuxer.
+#
+# The logic tier still spans the codec matrix on its own (substance = H264 direct-play,
+# morning_show + toy_story2 = 4K HEVC direct-play, toy_story4 + home_alone = transcode), which
+# is why it is a safe default for player work. What it drops is decision-logic breadth: Dolby
+# Vision, MP4/sidecar, AAC, and smart-DP's TrueHD-default -> AC3-sibling fallback.
+#
+# A manifest case may set "tier" explicitly to override the derivation.
+def case_tier(case):
+    if case.get("tier"):
+        return case["tier"]
+    ops = {o["op"] for o in case.get("operations", [])}
+    return "codec" if ops <= {"play"} else "logic"
+
+
 def main():
     ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
     ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
     ap.add_argument("--filter", default=None, help="run only cases whose name contains this substring")
+    ap.add_argument("--tier", default=None, choices=["logic", "codec"],
+                    help="run only one tier: 'logic' (seek/resume/audio/subtitle — the engine and "
+                         "pump; still covers h264-dp, 4k-hevc-dp and transcode) or 'codec' (the "
+                         "play-only decision + Load-payload cases). Default: every case.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest)")
     ap.add_argument("--verbose", action="store_true", help="print evidence for passing assertions too")
@@ -701,13 +729,16 @@ def main():
         "pms": manifest.get("pms", {"host": "192.168.0.3", "port": 32400}),
     }
     cases = manifest["cases"]
+    if args.tier:
+        cases = [c for c in cases if case_tier(c) == args.tier]
     if args.filter:
         cases = [c for c in cases if args.filter in c["name"]]
 
     if args.list:
         for c in manifest["cases"]:
             ops = "+".join(o["op"] for o in c["operations"])
-            print(f"{c['name']:32s} rk={c['rk']:<5} {ops:20s} {', '.join(c.get('covers', []))}")
+            print(f"{c['name']:32s} tier={case_tier(c):6s} rk={c['rk']:<5} {ops:20s} "
+                  f"{', '.join(c.get('covers', []))}")
         for s in manifest.get("fps_scenes", []):
             tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} floor={s['floor']}")
@@ -732,7 +763,7 @@ def main():
         return run_fps_suite(manifest.get("fps_scenes", []), cfg, token, include_player)
 
     if not cases:
-        sys.exit(f"no cases match --filter {args.filter!r}")
+        sys.exit(f"no cases match --filter {args.filter!r} / --tier {args.tier!r}")
 
     admin_token = read_token()  # owner token from config.local.h; never printed
 
