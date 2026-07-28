@@ -1,4 +1,5 @@
-//! Spawning background work — all of it.
+//! The thread seam: where work leaves the main thread ([`spawn`]), and what cannot follow it
+//! ([`MainThread`]).
 //!
 //! `std::thread::spawn` **panics** when the OS refuses the thread — it unwraps `Builder::spawn`,
 //! whose `Err` is `pthread_create`'s EAGAIN (glibc returns it when `allocate_stack` cannot `mmap`
@@ -37,7 +38,42 @@
 //! two handled a refused spawn. The piece worth sharing was the spawn, not the mailbox.
 
 use std::io;
+use std::marker::PhantomData;
 use std::thread::{Builder, JoinHandle};
+
+/// Proof that the holder runs on the SDL main thread.
+///
+/// A ZST whose only content is a `!Send + !Sync` marker, so neither it nor a `&` to it can be
+/// captured by anything handed to [`spawn`]. That is the whole mechanism: functions that must
+/// not leave the main thread take one, and moving such a call onto a thread stops compiling.
+///
+/// It gates the two things in `player/` that were main-thread-confined by comment only:
+///
+/// * **the ACB/Starfish seam** — `player::ffi`'s wrappers. The raw `extern "C"` block is private
+///   to that module, so the token is the only way in. Bind order (`setMediaId` → `LOADED` →
+///   `setMediaVideoData` → `setDisplayWindow` → `PLAYING`) is a sequence of calls with no
+///   locking behind it; a second thread stepping into the middle of it corrupts the sink.
+/// * **the `ENGINE` slot** — `player::engine::engine()`. `static mut`, handed out as
+///   `&'static mut`, with worker threads holding raw pointers into the boxes it owns. Two live
+///   `&mut` to it is instant UB, and nothing else prevents that.
+///
+/// The one deliberate hole: `assume` is callable, so `unsafe { MainThread::assume() }` inside a
+/// worker would defeat this. That is the ceiling of the pattern, not an oversight — what it buys
+/// is that the mistake has to be *written*, in an `unsafe` block, instead of happening by
+/// forgetting a convention documented in three other files.
+pub(crate) struct MainThread(PhantomData<*const ()>);
+
+impl MainThread {
+    /// Mint the token. `plex_run` calls this once, at the top, and nothing else should.
+    ///
+    /// # Safety
+    /// The caller asserts this is the SDL main thread. It is not a memory-safety obligation in
+    /// itself — it is the premise every `&MainThread` downstream is trusted on, including the
+    /// aliasing of `ENGINE`, so a false one reintroduces exactly the races this prevents.
+    pub(crate) unsafe fn assume() -> Self {
+        MainThread(PhantomData)
+    }
+}
 
 /// Stack for the short network workers — one HTTP round trip and a decode. The platform default
 /// (2 MB) is pure reserved address space on a 32-bit target, and several of these run at once.
@@ -85,6 +121,27 @@ mod tests {
     fn a_refused_spawn_reports_instead_of_panicking() {
         let h = super::spawn_with("unsatisfiable", Some(usize::MAX), || unreachable!());
         assert!(h.is_none(), "a spawn that cannot succeed must report, not hand back a handle");
+    }
+
+    /// [`super::MainThread`] earns its keep entirely by NOT being `Send` — that absence is what
+    /// makes a closure which captured one impossible to hand to `spawn`. An absent impl is
+    /// invisible to ordinary code, so detect it: the inherent const applies only when `T: Send`,
+    /// and resolution falls through to the blanket trait when it doesn't. The `i32` line is there
+    /// so a probe that silently answered "never Send" would fail rather than pass everything.
+    #[test]
+    fn the_main_thread_token_cannot_cross_a_spawn() {
+        struct Probe<T>(std::marker::PhantomData<T>);
+        trait NotSend {
+            const SEND: bool = false;
+        }
+        impl<T> NotSend for Probe<T> {}
+        impl<T: Send> Probe<T> {
+            const SEND: bool = true;
+        }
+
+        assert!(Probe::<i32>::SEND, "the probe must see a Send type as Send");
+        assert!(!Probe::<super::MainThread>::SEND, "MainThread must not be Send");
+        assert!(!Probe::<&super::MainThread>::SEND, "nor may a borrow of it — that is the form it is passed in");
     }
 
     #[test]

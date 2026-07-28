@@ -247,6 +247,11 @@ fn is_started() -> bool { crate::player::is_started() }
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     install_panic_logger();
+    // THE main-thread token, minted once — this function IS the SDL main thread. Everything that
+    // touches the ACB/Starfish seam or the Engine slot takes it by reference, and `&MainThread` is
+    // !Send, so `task::spawn` rejects any closure that captured one. See `task::MainThread`.
+    let main_thread = unsafe { crate::task::MainThread::assume() };
+    let mt = &main_thread;
     unsafe {
         SDL_SetMainReady();
         SDL_SetHint(c"SDL_VIDEO_ALLOW_SCREENSAVER".as_ptr(), c"0".as_ptr());
@@ -393,7 +398,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log("boot: no session — starting QR sign-in");
             BootTo::Login
         };
-        crate::player::acb_init();
+        crate::player::acb_init(mt);
         crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/plxnative-ffprobe ABI probe
         // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
         // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
@@ -602,6 +607,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         static PENDING_RESUME_NS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
         fn start_playback(
+            mt: &crate::task::MainThread,
             resume_ns: i64,
             from_detail: bool,
             hud_ms: u32,
@@ -626,7 +632,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 PENDING_RESUME_NS.store(resume_ns, Relaxed);
                 true
             } else {
-                crate::player::start_bufferfeed()
+                crate::player::start_bufferfeed(mt)
             };
             if entering {
                 *played_from_detail = from_detail;
@@ -654,10 +660,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// engine, return to the origin route, and arm the deferred hub refresh so Continue
         /// Watching reflects the session that just ended. A new exit path that skips this quietly
         /// re-introduces the stale-CW bug.
-        fn exit_player(route: &mut Route, played_from_detail: bool, refresh_hubs_at: &mut u32) {
+        fn exit_player(mt: &crate::task::MainThread, route: &mut Route, played_from_detail: bool, refresh_hubs_at: &mut u32) {
             crate::route::cancel_play(); // BACK during a load: supersede, drop the landing
             close_player_overlays();
-            crate::player::stop_bufferfeed();
+            crate::player::stop_bufferfeed(mt);
             *route = if played_from_detail { Route::Detail } else { Route::Home };
             *refresh_hubs_at = unsafe { SDL_GetTicks() }.wrapping_add(800).max(1);
         }
@@ -665,6 +671,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// Direct-play a LEAF catalog item (movie or episode) — the hero-pill / Continue-Watching
         /// "play now" ritual: route cfg + streams metadata + the shared start ritual.
         unsafe fn play_item_now(
+            mt: &crate::task::MainThread,
             mm: &crate::pms::PmsMovie,
             hud_ms: u32,
             route: &mut Route,
@@ -687,6 +694,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::metadata::set_now_playing(None);
             crate::metadata::request_detail(&mm.rk);
             start_playback(
+                mt,
                 crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000),
                 false,
                 hud_ms,
@@ -701,6 +709,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// opens its page under the hood and fires its Play, which resolves the right episode +
         /// resume); the info circle and ordinary grid cards open the detail page.
         unsafe fn home_activate(
+            mt: &crate::task::MainThread,
             hf: c_int,
             hud_ms: u32,
             route: &mut Route,
@@ -745,7 +754,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     && (crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize) || mm.kind == 3));
             if want_play {
                 match mm.kind {
-                    0 | 3 => play_item_now(mm, hud_ms, route, played_from_detail),
+                    0 | 3 => play_item_now(mt, mm, hud_ms, route, played_from_detail),
                     _ => {
                         // show / season: open its page (blocking) and fire its Play — but only
                         // once the load actually landed on the expected item (a failed fetch
@@ -759,7 +768,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         let loaded = crate::metadata::current().map(|d| d.rk.as_str() == expect).unwrap_or(false);
                         if loaded && crate::ui::detail::on_ok() {
-                            start_playback(crate::ui::detail::last_resume_ns(), false, hud_ms, route, played_from_detail);
+                            start_playback(mt, crate::ui::detail::last_resume_ns(), false, hud_ms, route, played_from_detail);
                         } else {
                             *route = Route::Detail; // nothing playable / load failed — land on the page
                         }
@@ -857,7 +866,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         held_sym = 0; // this async route flip must not leave a held key repeating into Home
                         set_scrub(-1);
                         close_player_overlays();
-                        crate::player::suspend_bufferfeed(); // preserve the session for a clean fg reload
+                        crate::player::suspend_bufferfeed(mt); // preserve the session for a clean fg reload
                         route = Route::Home;
                     }
                 } else if et == 0x105 || et == 0x106 {
@@ -881,7 +890,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                             crate::player::resume_at(rt);
-                            let started = crate::player::start_bufferfeed();
+                            let started = crate::player::start_bufferfeed(mt);
                             if started {
                                 route = Route::Player { overlay: Overlay::None };
                                 set_hud(SDL_GetTicks() + HUD_LINGER_MS);
@@ -1045,14 +1054,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     request_seek(0);
                                     if paused() {
                                         set_paused(false);
-                                        crate::player::resume();
+                                        crate::player::resume(mt);
                                     }
                                 }
                                 crate::ui::info_panel::InfoAction::GoToDetail(rk) => {
                                     // stop playback and open the show (episode) or movie detail page
                                     if !rk.is_empty() {
                                         close_player_overlays();
-                                        crate::player::stop_bufferfeed();
+                                        crate::player::stop_bufferfeed(mt);
                                         crate::ui::detail::open_rk(&rk);
                                         opened_from_library = false; // jump-to-detail leaves the library trail
                                         route = Route::Detail;
@@ -1093,7 +1102,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 request_seek(ns);
                                 if paused() {
                                     set_paused(false);
-                                    crate::player::resume();
+                                    crate::player::resume(mt);
                                 }
                             }
                             route = Route::Player { overlay: Overlay::None };
@@ -1199,9 +1208,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 let np = !paused();
                                 set_paused(np);
                                 if np {
-                                    crate::player::pause();
+                                    crate::player::pause(mt);
                                 } else {
-                                    crate::player::resume();
+                                    crate::player::resume(mt);
                                 }
                             }
                             set_hud(last_input + HUD_LINGER_MS);
@@ -1223,6 +1232,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 ok_armed = true;
                             } else if crate::ui::detail::on_ok() {
                                 start_playback(
+                                    mt,
                                     crate::ui::detail::last_resume_ns(),
                                     true, // Stop/BACK/EOS returns to this detail page
                                     HUD_LINGER_MS,
@@ -1239,7 +1249,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if crate::ui::home::snap_pos() < 0.5 {
                                 // hero (Play pill / chip / pills / chevron): activate immediately.
                                 let hf = crate::ui::home::hero_focus();
-                                home_activate(hf, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
+                                home_activate(mt, hf, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
                             } else {
                                 // grid card: tvOS press — dip the focused card now, activate on the
                                 // spring-back (committed from the per-frame loop). Nav cancels, so the
@@ -1257,13 +1267,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // PAUSE
                         if matches!(route, Route::Player { .. }) && !paused() {
                             set_paused(true);
-                            crate::player::pause();
+                            crate::player::pause(mt);
                         }
                         set_hud(last_input + HUD_LINGER_MS);
                     } else if wcode == WCODE_PLAY || sym == 19 || wcode == 19 || sym == 402 || wcode == 402 {
                         // PLAY
                         if !matches!(route, Route::Player { .. }) {
-                            if crate::player::start_bufferfeed() {
+                            if crate::player::start_bufferfeed(mt) {
                                 // resuming a suspended session (bg_was_playing) keeps its origin;
                                 // a fresh play derives it from the current route. Guards the tiny
                                 // bg→fg window where route is still Home but the session came from detail.
@@ -1278,12 +1288,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         } else if paused() {
                             set_paused(false);
-                            crate::player::resume();
+                            crate::player::resume(mt);
                         }
                         set_hud(last_input + HUD_LINGER_MS);
                     } else if matches!(route, Route::Player { .. }) && (sym == WCODE_STOP || wcode == WCODE_STOP) {
                         // Stop
-                        exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
+                        exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at);
                     } else if matches!(route, Route::Player { .. })
                         && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == 417 || wcode == 417 || sym == 412 || wcode == 412)
                     {
@@ -1353,7 +1363,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // from there) -> grid -> hero -> exit. Inside the Library, BACK first walks
                         // menu -> tab bar (library::back), THEN leaves to Home.
                         if matches!(route, Route::Player { .. }) {
-                            exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
+                            exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at);
                         } else if matches!(route, Route::Detail) {
                             crate::ui::detail::close();
                             route = if opened_from_library { Route::Library } else { Route::Home };
@@ -1465,9 +1475,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     let np = !paused();
                                     set_paused(np);
                                     if np {
-                                        crate::player::pause();
+                                        crate::player::pause(mt);
                                     } else {
-                                        crate::player::resume();
+                                        crate::player::resume(mt);
                                     }
                                 }
                             }
@@ -1495,14 +1505,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             let b = crate::ui::home::hero_button_at(cx, cy);
                             if b >= 0 {
                                 crate::ui::home::set_hero_focus(b);
-                                home_activate(b, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
+                                home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
                                 if b == 2 {
                                     ptr_hold_pager = last_input;
                                 }
                             }
                         } else if crate::ui::home::home_card_click(cx, cy) {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
-                            home_activate(c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
+                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
                         }
                     } else if matches!(route, Route::Library) {
                         let cx = rd_i32(&ev, 20) as f32;
@@ -1600,7 +1610,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                     }
                     let fd = matches!(route, Route::Detail);
-                    start_playback(0, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
+                    start_playback(mt, 0, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
                 }
             }
             if !grid_tried && now.wrapping_sub(t0) > 400 {
@@ -1672,6 +1682,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         {
                             let fd = matches!(route, Route::Detail);
                             start_playback(
+                                mt,
                                 crate::ui::detail::last_resume_ns(),
                                 fd,
                                 HUD_HEADLESS_MS,
@@ -1717,7 +1728,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::route::request_play(rk, &part, &vc, &ac, &title, "");
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
-                                start_playback(resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
+                                start_playback(mt, resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail);
                             }
                         }
                     }
@@ -1814,12 +1825,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
             }
             if is_started() {
-                crate::player::pump(now);
+                crate::player::pump(mt, now);
             }
             // end-of-stream: the pipeline drained at the credits → leave the player (back to the
             // detail page or home, whichever is behind), instead of freezing on the last frame.
             if matches!(route, Route::Player { .. }) && crate::player::ended() {
-                exit_player(&mut route, played_from_detail, &mut refresh_hubs_at);
+                exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at);
                 hud_focus = 0;
                 held_sym = 0; // async route flip: don't repeat a still-held key into detail/home
             }
@@ -1940,7 +1951,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 && seek_pending() < 0 && frames() >= 1 && playpos() + 15 * 1_000_000_000 >= bg_pos
             {
                 set_paused(true);
-                crate::player::pause();
+                crate::player::pause(mt);
                 set_resume_pend(false);
             }
 
@@ -1963,12 +1974,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     ok_armed = false;
                     match route {
                         Route::Home | Route::Account => {
-                            home_activate(c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
+                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library);
                         }
                         Route::Library => open_library_card(&mut route, &mut opened_from_library),
                         Route::Detail => {
                             if crate::ui::detail::on_ok() {
-                                start_playback(crate::ui::detail::last_resume_ns(), true, HUD_LINGER_MS, &mut route, &mut played_from_detail);
+                                start_playback(mt, crate::ui::detail::last_resume_ns(), true, HUD_LINGER_MS, &mut route, &mut played_from_detail);
                             }
                         }
                         Route::Profiles => crate::ui::profiles::select_focused(),
@@ -2068,7 +2079,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if r > 0 {
                     crate::player::resume_at(r);
                 }
-                crate::player::start_bufferfeed();
+                crate::player::start_bufferfeed(mt);
             }
             // Async detail load: install the worker's item into CURRENT. Route-unconditional for
             // the same reason as pump_play — play_item_now requests a detail from Home and flips
@@ -2197,7 +2208,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         }
 
         if is_started() {
-            crate::player::stop_bufferfeed();
+            crate::player::stop_bufferfeed(mt);
         }
         crate::capture::shutdown();
         crate::posters::posters_shutdown();

@@ -4,6 +4,7 @@
 use super::engine::{drain_aq, engine, feed_audio_lane, feed_sample, feed_stream, Source};
 use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
+use crate::task::MainThread;
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering::{Relaxed, Release};
 
@@ -27,9 +28,9 @@ fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
 
-pub(crate) fn pump(now: u32) {
+pub(crate) fn pump(mt: &MainThread, now: u32) {
     use super::shared::PlaybackState;
-    let eng = match engine() {
+    let eng = match engine(mt) {
         Some(e) => e,
         None => {
             set_state(PlaybackState::Idle);
@@ -37,7 +38,7 @@ pub(crate) fn pump(now: u32) {
         }
     };
     // wait for the media-thread ctor
-    if unsafe { ffi::sf_ready() } == 0 {
+    if unsafe { ffi::sf_ready(mt) } == 0 {
         set_state(PlaybackState::Connecting);
         return;
     }
@@ -57,7 +58,7 @@ pub(crate) fn pump(now: u32) {
     if stream && nidx >= 0 && eng.stage >= Stage::Playing {
         let pos = SHARED.playpos_ns.load(Relaxed).max(0);
         super::log(&format!("audio switch (native): idx={nidx} at {}s → reload", pos / 1_000_000_000));
-        super::engine::switch_audio_native(nidx, pos);
+        super::engine::switch_audio_native(mt, nidx, pos);
         return;
     }
 
@@ -74,7 +75,7 @@ pub(crate) fn pump(now: u32) {
         let rebuilt = if asid >= 0 { crate::route::switch_audio(asid, secs) } else { crate::route::retranscode(secs) };
         if rebuilt.is_some() {
             super::log(&format!("re-transcode: asid={asid} refresh={refresh} offset={secs}s → reload"));
-            super::engine::reload_transcode(secs * 1_000_000_000);
+            super::engine::reload_transcode(mt, secs * 1_000_000_000);
             return;
         }
     }
@@ -109,7 +110,7 @@ pub(crate) fn pump(now: u32) {
             ));
         } else {
             super::log(&format!("seek: in-place stuck → reload at {}s", tgt / 1_000_000_000));
-            super::engine::reload_at(tgt); // REPLACES the engine — eng dangles, return
+            super::engine::reload_at(mt, tgt); // REPLACES the engine — eng dangles, return
             return;
         }
     }
@@ -138,7 +139,7 @@ pub(crate) fn pump(now: u32) {
         if is_transcode {
             let secs = t / 1_000_000_000;
             if crate::route::transcode_seek(secs).is_some() {
-                super::engine::reload_transcode(t);
+                super::engine::reload_transcode(mt, t);
             } else {
                 super::log("seek(transcode): rebuild failed");
             }
@@ -154,12 +155,12 @@ pub(crate) fn pump(now: u32) {
         // feed_stream when sendSegmentEvent can't find it). reload_at REPLACES the ENGINE, so
         // `eng` dangles after it: return immediately.
         if !super::INPLACE_SEEK_OK.load(Relaxed) {
-            super::engine::reload_at(t);
+            super::engine::reload_at(mt, t);
             return;
         }
         unsafe {
-            ffi::sf_flush(); // drop decoded/queued frames
-            ffi::sf_pause(); // freeze the clock; feed_stream Plays once PRIME_NS is buffered
+            ffi::sf_flush(mt); // drop decoded/queued frames
+            ffi::sf_pause(mt); // freeze the clock; feed_stream Plays once PRIME_NS is buffered
         }
         drain_aq(eng);
         // in-place direct-play seek: publish the target and let the DEMUX THREAD av_seek_frame
@@ -200,7 +201,7 @@ pub(crate) fn pump(now: u32) {
 
     // ---------- load -> Play (decode fed frames as soon as loaded) ----------
     if eng.stage == Stage::Loading
-        && (SHARED.load_completed.load(Relaxed) || unsafe { ffi::sf_is_load_completed() } != 0)
+        && (SHARED.load_completed.load(Relaxed) || unsafe { ffi::sf_is_load_completed(mt) } != 0)
     {
         SHARED.load_completed.store(true, Relaxed);
         super::log("SMP loadCompleted");
@@ -212,7 +213,7 @@ pub(crate) fn pump(now: u32) {
             eng.prime_play = true;
             super::log("SMP loadCompleted (priming before Play)");
         } else {
-            unsafe { ffi::sf_play() };
+            unsafe { ffi::sf_play(mt) };
             super::log("SMP Play");
         }
     }
@@ -221,7 +222,7 @@ pub(crate) fn pump(now: u32) {
     if eng.stage == Stage::Playing && ACB_OK.load(Relaxed) {
         let id = SHARED.media_id.lock().unwrap().clone();
         if let Some(id) = id {
-            unsafe { ffi::acb_bind(id.as_ptr()) };
+            unsafe { ffi::acb_bind(mt, id.as_ptr()) };
             super::log(&format!("SMP ACB bound id={}", id.to_string_lossy()));
             eng.stage = Stage::Bound;
         }
@@ -232,12 +233,12 @@ pub(crate) fn pump(now: u32) {
     if eng.stage == Stage::Bound && !eng.video_info_sent && SHARED.frames.load(Relaxed) >= 2 {
         let bytes = SHARED.source_info.lock().unwrap().clone();
         if let Some(bytes) = bytes {
-            let rv = unsafe { ffi::acb_send_video_data(bytes.as_ptr() as *const c_char) };
+            let rv = unsafe { ffi::acb_send_video_data(mt, bytes.as_ptr() as *const c_char) };
             super::log(&format!("setMediaVideoData rv={rv} frames={}", SHARED.frames.load(Relaxed)));
             if rv != -1 {
                 // -1 = client-side isJsonError reject; else accepted
                 eng.video_info_sent = true;
-                unsafe { ffi::acb_start(0, 0, 1920, 1080) };
+                unsafe { ffi::acb_start(mt, 0, 0, 1920, 1080) };
                 eng.stage = Stage::Streaming;
                 super::log("setMediaVideoData sent → window+PLAYING");
             }
@@ -252,10 +253,10 @@ pub(crate) fn pump(now: u32) {
             // Two-lane feed: VIDEO lane first — it owns the seek rebase (clears rebase_pending +
             // publishes pts_shift) — then the AUDIO lane, which sees that fresh shift the same tick.
             // A BufferFull in one lane no longer stalls the other.
-            feed_stream(eng);
-            feed_audio_lane(eng);
+            feed_stream(mt, eng);
+            feed_audio_lane(mt, eng);
         } else {
-            feed_sample(eng);
+            feed_sample(mt, eng);
         }
     }
 

@@ -112,7 +112,7 @@ A's own disqualifier #3, satisfied twice before the sixth site is written.
 | 1 | **Phase A+ — transport hardening + the two real races** | stream.rs, ff.rs, player/{engine,threads,shared}.rs |
 | 2 | **Phase D — a loading state and something to draw** | player/{shared,mod}.rs, ui/{widgets,player_hud}.rs, app.rs |
 | 3 | ~~**`task.rs` — `Job<T>`, zero callers, host-tested**~~ **DECLINED** — see the log below; `task.rs` shipped as the spawn, not the mailbox | task.rs (new), lib.rs |
-| 4 | **`MainThread` token on the ACB/Starfish seam** | player/{ffi,engine,pump}.rs, lib.rs |
+| 4 | **`MainThread` token on the ACB/Starfish seam** — LANDED, and it grew the `ENGINE` slot | player/{ffi,engine,pump,mod}.rs, task.rs, app.rs |
 | 5 | **metadata onto `Job`** — season, then detail | metadata.rs, ui/detail.rs, app.rs |
 | 6 | **Split `load_playing`** — the prerequisite everyone under-priced | metadata.rs, route.rs |
 | 7 | **The reported bug — resolve off the key handler** | plan.rs (new), route.rs, app.rs, ui/detail.rs |
@@ -306,6 +306,43 @@ payoff is no longer `Job`'s cancellation — it is that `teardown` currently joi
 while it may be inside `http_open`, so a stop during a stalled reopen blocks the **main loop** for
 up to the 2 s connect or 15 s recv deadline. Same reversal trigger applies: bisect
 `substance_seek_inplace` before and after.
+
+### Step 4 — `MainThread` token, LANDED (2026-07-29)
+
+Shipped in the form finding #4 argued for — **a `!Send` ZST passed as an argument**, minted once
+at the top of `plex_run` — and *not* as a marker field on a state type, which that finding refuted
+by compiling the counterexample (`static mut` carries no `Sync` bound, so a `!Send` field inside
+one is still readable from `thread::spawn`).
+
+**It covers more than the seam.** The step was scoped to the ACB/Starfish verbs, but the same
+argument applies harder to `engine::ENGINE`: it is a `static mut` handed out as `&'static mut`,
+with worker threads holding raw pointers into the boxes it owns, and two live `&mut` is instant
+UB. Both are now gated, which is why `mod.rs`/`app.rs` are in the file list and `lib.rs` is not
+(the token lives in `task.rs`, beside `spawn` — the module is now the thread seam in both
+directions: where work leaves the main thread, and what cannot follow it).
+
+What makes it a guarantee rather than a naming convention is **privacy**, the same lever step 7
+used: `ffi.rs`'s `extern "C"` block moved into a private `mod sys`, so the token-taking wrappers
+are the only way in, and `ENGINE`'s four raw `addr_of` touches became four token-taking accessors.
+`start_bufferfeed` is the proof this mattered — it was the one function whose `mt` the compiler
+flagged as unused, precisely because it reached the static directly instead of through `engine()`.
+
+**Verified with teeth, both directions.** A temporary `task::spawn("evil", move || pause(mt))`
+fails to compile (`*const () cannot be shared between threads safely`), and the host test
+`the_main_thread_token_cannot_cross_a_spawn` asserts the `!Send`-ness the whole thing rests on —
+an absent impl being invisible to ordinary code, it uses inherent-vs-trait const resolution to
+detect it, with a `Send` control case so a probe that answered "never Send" would fail.
+
+**Two deliberate holes, both documented where someone would hit them.** `sf_load` takes no token
+because `load_thread` runs it off-main by design — the missing parameter *is* the documentation
+that this one verb is not main-thread. And `MainThread::assume()` is callable, so `unsafe` inside
+a worker still defeats it; that is the ceiling of the pattern. What it buys is that the mistake
+must now be written, in an `unsafe` block, rather than made by forgetting a convention that was
+documented in three other files and enforced by none.
+
+The rule for new code, recorded in `engine.rs` and `player/CLAUDE.md`: **take the token iff you
+reach the seam or the Engine.** `arm_seek`/`resume_at` are main-thread too and deliberately do not
+take one — if it spreads to everything that merely runs on main, it stops carrying information.
 
 ### Pre-existing failure, not ours
 

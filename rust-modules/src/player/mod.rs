@@ -3,6 +3,13 @@
 //! #[no_mangle] and run on the StarfishMediaAPIs library thread; they touch ONLY
 //! `SHARED`. All other cross-thread state is in shared.rs (atomics + Mutex); the
 //! Engine (engine.rs) is main-thread-confined. Design: docs/engine-port-design.md.
+//!
+//! "Runs on the SDL main thread" is a **compile error to violate** for the two things where it
+//! matters — the ACB/Starfish seam and the `ENGINE` slot. Both take a [`MainThread`] token,
+//! which `plex_run` mints once and passes down; it is `!Send`, so a closure that captured one
+//! cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
+//! above are `extern "C"` entry points *from* the library thread and touch only `SHARED`, and
+//! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`).
 #![allow(non_upper_case_globals)]
 pub(crate) mod engine;
 mod ffi;
@@ -10,6 +17,7 @@ mod pump;
 mod shared;
 pub(crate) mod threads;
 
+use crate::task::MainThread;
 use shared::{Shared, SubBitmap, SubCue, Transport};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long};
@@ -32,30 +40,30 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 pub(crate) use engine::{acb_init, resume_at, start_bufferfeed, stop_bufferfeed, suspend_bufferfeed};
 pub(crate) use pump::pump;
 pub(crate) use shared::PlaybackState;
-pub(crate) fn pause() {
-    unsafe { ffi::sf_pause(); }
-    acb_mirror_playstate(false);
+pub(crate) fn pause(mt: &MainThread) {
+    unsafe { ffi::sf_pause(mt); }
+    acb_mirror_playstate(mt, false);
 } // playback_pause
-pub(crate) fn resume() {
-    unsafe { ffi::sf_play(); }
-    acb_mirror_playstate(true);
+pub(crate) fn resume(mt: &MainThread) {
+    unsafe { ffi::sf_play(mt); }
+    acb_mirror_playstate(mt, true);
 } // playback_resume
 
 /// Kodi parity: mirror the ACB PLAYSTATE on transport pause/resume (the pipeline Pause/Play alone
 /// leaves the app-owned sink's ACB state stale). Only once the plane is bound — firing
 /// setState(PAUSED/PLAYING) before setMediaId/LOADED would corrupt the bind ordering.
-fn acb_mirror_playstate(playing: bool) {
+fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
     if !ACB_OK.load(Relaxed) {
         return;
     }
-    if !engine::engine().is_some_and(|e| e.stage >= shared::Stage::Bound) {
+    if !engine::engine(mt).is_some_and(|e| e.stage >= shared::Stage::Bound) {
         return;
     }
     unsafe {
         if playing {
-            ffi::acb_resume();
+            ffi::acb_resume(mt);
         } else {
-            ffi::acb_pause();
+            ffi::acb_pause(mt);
         }
     }
 }
