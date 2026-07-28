@@ -33,6 +33,17 @@
  * Two things worth keeping from this: which limit binds depends on the stack size, and the
  * crossover is between 256 kB and 2 MB — so `task::spawn_small`'s 256 kB is not a micro-
  * optimisation, it is the difference between spending address space and spending thread slots.
+ *
+ * `threadprobe time [stack_kb] [iters]` answers the other half: what does spawning COST, which is
+ * what decides whether a thread-per-request is affordable from a 16600 us frame budget.  Same TV,
+ * 300 iterations of create+join:
+ *
+ *   256 kB   mean 58us  median 45us  p95 125us  max  753us
+ *  2048 kB   mean 82us  median 50us  p95 182us  max 1830us
+ *
+ * The app pays only the create half on the SDL loop (nothing joins these), so ~0.3% of a frame in
+ * the typical case.  Note the tail: a 2 MB stack can cost 1830 us — 11% of a frame — where 256 kB
+ * tops out at 753 us.  A third reason the loop-initiated workers use the small stack.
  */
 #include <errno.h>
 #include <pthread.h>
@@ -40,6 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <time.h>
 #include <unistd.h>
 
 static void *park(void *arg)
@@ -85,8 +97,64 @@ static void report_limits(const char *when)
     }
 }
 
+static void *exit_now(void *arg)
+{
+    (void)arg;
+    return NULL;
+}
+
+static int cmp_long(const void *a, const void *b)
+{
+    long x = *(const long *)a, y = *(const long *)b;
+    return (x > y) - (x < y);
+}
+
+/* How long does ONE create+join cost? This is the number that decides whether spawning per
+ * request is affordable from the SDL loop, whose whole frame budget is 16600us. */
+static void timing_mode(size_t stack_kb, long n)
+{
+    pthread_attr_t attr;
+    long *us = malloc((size_t)n * sizeof *us);
+    long total = 0;
+
+    if (!us) {
+        printf("timing: out of memory\n");
+        return;
+    }
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack_kb * 1024);
+
+    for (long i = 0; i < n; i++) {
+        struct timespec a, b;
+        pthread_t t;
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        if (pthread_create(&t, &attr, exit_now, NULL) != 0) {
+            printf("timing: refused at iteration %ld\n", i);
+            free(us);
+            return;
+        }
+        pthread_join(t, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        us[i] = (b.tv_sec - a.tv_sec) * 1000000 + (b.tv_nsec - a.tv_nsec) / 1000;
+        total += us[i];
+    }
+    qsort(us, (size_t)n, sizeof *us, cmp_long);
+    printf("create+join x%ld @ %zukB stack: mean=%ldus median=%ldus p95=%ldus max=%ldus\n",
+           n, stack_kb, total / n, us[n / 2], us[(n * 95) / 100], us[n - 1]);
+    printf("  (one 60fps frame is 16600us)\n");
+    free(us);
+}
+
 int main(int argc, char **argv)
 {
+    /* timing mode: ./threadprobe time [stack_kb] [iterations] */
+    if (argc > 1 && strcmp(argv[1], "time") == 0) {
+        size_t stack_kb = (argc > 2) ? (size_t)strtoul(argv[2], NULL, 10) : 256;
+        long   iters    = (argc > 3) ? strtol(argv[3], NULL, 10)          : 200;
+        timing_mode(stack_kb, iters);
+        return 0;
+    }
+
     size_t stack_kb = (argc > 1) ? (size_t)strtoul(argv[1], NULL, 10) : 2048;
     uid_t  uid      = (argc > 2) ? (uid_t)strtoul(argv[2], NULL, 10)  : 6910;
     long   cap      = (argc > 3) ? strtol(argv[3], NULL, 10)          : 4096;
