@@ -202,6 +202,16 @@ libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for t
   under its own uid, so a root-owned file left in place is one it cannot write (log stays 0 bytes,
   every assertion reads as a total regression). `make run` keeps the old sleep-then-`cat` shape
   because the FPS scenes need a fixed sampling window; both share `BOOT_SH`.
+- **A case's start position is server state, so the harness resets it every time.** The resume
+  point (`viewOffset`) lives on the PMS, outlives the run, and the app's timeline reporter posts
+  progress every 10s while playing — so before this was fixed, a case inherited wherever the
+  previous case *or the previous run* stopped (`rk=4` is shared by five cases, `rk=1804` by three),
+  and `resume_ns` resumes anything past 10s. "Play from the start" was silently a resume test. Now
+  `run_case` **always** clears first, then seeds `setup.viewOffset_ms` if the case declares one.
+  **The reset must be `/:/unscrobble`** — a `PUT /:/progress?time=0` returns 200 and changes
+  nothing (verified live; `time=1` too), which is exactly what makes this look already handled.
+  Don't make the reset conditional again to save the pre-seed close: the wandering seek-tier
+  failures were this, not the player.
 - **The once/sec `FPS=` heartbeat carries `pos=<s>` while frames are presenting** — the same
   `SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
