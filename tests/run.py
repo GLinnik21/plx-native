@@ -4,8 +4,14 @@ On-device regression harness for the webOS Plex player (plex-native-poc).
 
 For each case in manifest.json this driver:
   1. closes the running app on the TV (luna-send closeByAppId + fuser -k, via `make kill`);
-  2. (if the case sets a viewOffset) seeds the item's resume point server-side via
-     PUT /:/progress -- AFTER the close, so a live timeline_thread can't re-scrobble over it;
+  2. establishes the item's resume point server-side -- AFTER the close, so a live
+     timeline_thread can't re-scrobble over it. ALWAYS clears it first (/:/unscrobble), then
+     seeds `setup.viewOffset_ms` if the case declares one. The offset lives on the SERVER and
+     outlives the run, and the app reports progress every 10s while playing, so an unreset case
+     inherits whatever the last case -- or the last RUN -- left on that rk, and `resume_ns`
+     resumes anything past 10s. rk=4 is shared by five cases and rk=1804 by three, so leaving it
+     implicit turned "play from the start" into "resume from somewhere", varying with suite
+     order and run history. Do not make the reset conditional again;
   3. clears every /tmp/plxnative-* trigger on the TV, then writes only the ones this case needs;
   4. runs `make run-stream TV=<tv>`, which relaunches the app and tails
      /tmp/plxnative-events.log live;
@@ -136,6 +142,29 @@ def make(target_args, timeout, capture=True):
     """Invoke a make target from the repo root (absolute cwd so nothing drifts)."""
     cmd = ["make", "-s", "-C", REPO_ROOT] + target_args
     return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+
+
+def pms_unscrobble(host, port, rk, token):
+    """Clear an item's resume point (and watched flag) via /:/unscrobble. Token never printed.
+
+    This is the ONLY thing that actually resets a viewOffset. `PUT /:/progress?time=0` looks like
+    it should and returns 200, but PMS ignores it and the old offset survives -- verified against
+    the live server (so does time=1). Do not "simplify" this back into a progress PUT.
+    """
+    q = urllib.parse.urlencode({
+        "key": rk,
+        "identifier": "com.plexapp.plugins.library",
+        "X-Plex-Token": token,
+    })
+    url = f"http://{host}:{port}/:/unscrobble?{q}"
+    redacted = url.replace(token, "<token>")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
+            print(f"    progress reset: {redacted} -> {resp.status}")
+            return True
+    except Exception as e:
+        print(f"    WARN: unscrobble failed ({redacted}): {e}")
+        return False
 
 
 def pms_put_progress(host, port, rk, time_ms, token):
@@ -706,15 +735,28 @@ def run_case(case, cfg, token, verbose):
     # redundant round-trip (it carries its own `sleep 2`) saves ~3s on the 14 cases that seed
     # nothing. Ordering still holds for the ones that do — the previous case's app is killed
     # here, before the seed below.
+    # EVERY case seeds, including the ones that mean "from the start" (viewOffset_ms 0). The
+    # resume point is SERVER-side and persists across cases and across whole runs: the app's
+    # timeline reporter posts progress every 10s while playing, so a case that just played rk=4
+    # for 20s leaves a 20s offset on it, and `metadata::resume_ns` resumes anything past 10s.
+    # Left implicit, five different cases share rk=4 and three share rk=1804, so "play from the
+    # start" silently became "resume from wherever the previous case stopped" — a different code
+    # path than the one under test, varying with suite order and with the PREVIOUS run's ending.
+    # Seeding unconditionally is what makes a case's starting position a property of the manifest
+    # instead of of history.
     setup = case.get("setup", {})
-    seeds_offset = "viewOffset_ms" in setup
-    if seeds_offset:
-        make(["kill", f"TV={tv}"], timeout=40)
+    offset_ms = setup.get("viewOffset_ms", 0)
+    # The close is what makes the seed stick: the PREVIOUS case's app is still running, and its
+    # timeline_thread would re-scrobble over the value we are about to write.
+    make(["kill", f"TV={tv}"], timeout=40)
 
-    # 2. seed the resume point AFTER the close
-    if seeds_offset:
-        pms_put_progress(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"],
-                         setup["viewOffset_ms"], token)
+    # 2. establish the resume point AFTER the close. Reset first, ALWAYS: unscrobble is the only
+    # call that actually clears a viewOffset (a time=0 progress PUT returns 200 and changes
+    # nothing -- see pms_unscrobble), and resetting even before a seed keeps the starting state a
+    # function of the manifest alone rather than of whatever was there before.
+    pms_unscrobble(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
+    if offset_ms > 0:
+        pms_put_progress(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], offset_ms, token)
 
     # 3. clear + set triggers, and inject the effective PMS token in the SAME round-trip.
     # The token rides `extra=` rather than `files` so its value never reaches stdout — the only
