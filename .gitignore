@@ -31,3 +31,4 @@ rust-poc/
 .tv-mac
 .tv-stream.pid
 .tv-stream.log
+pkg/sockprobe

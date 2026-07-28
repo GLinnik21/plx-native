@@ -127,6 +127,12 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
 - `tools/capture-screen.sh` — pull the TV screen (incl. video plane) to a local image.
+- `tools/sockprobe.c` — standalone ARM diagnostic (`make sockprobe`, scp, run, delete) for socket
+  semantics **the host suite cannot answer**: `cargo test` runs on Darwin, the app on Linux, and
+  they disagree. Measured 2026-07-28: on this kernel `shutdown(2)` **does** abort a `connect(2)`
+  in progress (rv=0, handshake dies at once) — which is why `stream.rs::http_open` publishes its fd
+  at `socket()`. On Darwin the same call instead makes `connect_timeout` report *success* on a
+  socket that never connected. Reach for this before asserting any syscall behaviour from memory.
 - `tools/threadprobe.c` — standalone ARM diagnostic (`make threadprobe`, scp, run as root, delete):
   spawns under the app's uid until `pthread_create` refuses. Measured 2026-07-28 — **2 MB stacks
   die at 2043 threads on `RLIMIT_AS` (the full AArch32 4 GB), 256 KB stacks at 3745 on

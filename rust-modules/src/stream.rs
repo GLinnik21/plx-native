@@ -198,9 +198,24 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         if fd < 0 {
             return -1;
         }
-        // The fd is published only after the headers parse (below), so `http_shutdown` cannot
-        // interrupt an open in flight. Publishing it early was tried and REVERTED — it makes every
-        // reopen interruptible and broke the seek path. See docs/async-model-decision.md.
+        // PUBLISHED HERE, before connect — which makes the whole open interruptible by
+        // `http_shutdown`, and is why every failure path below must retire it through
+        // `close_owned` rather than a bare `close`: a bare close leaves a stale number armed in
+        // the atomic for the next interrupt to shoot, and leaves `take_fd` nothing to return.
+        //
+        // This was tried once and REVERTED (docs/async-model-decision.md): it made every reopen
+        // interruptible while the pump was firing `http_shutdown` to service a SEEK, which cost
+        // `substance_seek_inplace`. That coupling is gone — 5938b5f/71929ee moved seeking into the
+        // demux thread's own `av_seek_frame`, so the only `http_shutdown` left in the tree is
+        // teardown's (`player/engine.rs`), where cutting an open short is precisely the intent.
+        //
+        // Worth publishing this early only because `shutdown(2)` aborts a handshake in progress on
+        // the TV's kernel — measured with `tools/sockprobe.c`, NOT assumed. Linux is documented to
+        // fail this with ENOTCONN and the host (Darwin) does something different again, so the
+        // question could not be settled by reading or by `cargo test`. If that ever stops holding,
+        // publishing after `connect_timeout` still buys the 15 s `SO_RCVTIMEO` window, which is
+        // the bulk of the win.
+        hs.set_fd(fd);
         let mut sa: libc::sockaddr_in = std::mem::zeroed();
         sa.sin_family = libc::AF_INET as libc::sa_family_t;
         sa.sin_port = (port as u16).to_be(); // htons
@@ -216,12 +231,14 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
             }
         }
         if k != 4 {
-            libc::close(fd); // not close_owned: the fd is not published (see above)
+            close_owned(hs); // published now, so it must be RETIRED, never bare-closed
             return -1;
         }
         sa.sin_addr.s_addr = u32::from_ne_bytes(oct); // memory bytes = [a,b,c,d]
+        // Also the path a teardown takes: `http_shutdown` aborts the handshake and this
+        // reports the failure one poll later instead of after CONNECT_TIMEOUT_MS.
         if connect_timeout(fd, &sa, CONNECT_TIMEOUT_MS) < 0 {
-            libc::close(fd);
+            close_owned(hs);
             return -1;
         }
         let one: c_int = 1;
@@ -256,7 +273,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         while off < bytes.len() {
             let w = libc::send(fd, bytes[off..].as_ptr() as *const c_void, bytes.len() - off, 0);
             if w <= 0 {
-                libc::close(fd);
+                close_owned(hs);
                 return -1;
             }
             off += w as usize;
@@ -269,8 +286,10 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         while hdr_end.is_none() && (hs.blen as usize) < cap - 1 {
             let r = libc::recv(fd, hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
                                cap - hs.blen as usize, 0);
+            // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
+            // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
             if r <= 0 {
-                libc::close(fd);
+                close_owned(hs);
                 return -1;
             }
             hs.blen += r as c_int;
@@ -288,7 +307,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         let hdr_end = match hdr_end {
             Some(e) => e,
             None => {
-                libc::close(fd);
+                close_owned(hs);
                 return -1;
             }
         };
@@ -309,7 +328,6 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
             hs.chunked = 1;
         }
 
-        hs.set_fd(fd); // published only now: the stream is live and in its body-read phase
         hs.bpos = hdr_end as c_int; // first body byte
         if hs.status < 200 || hs.status >= 300 {
             close_owned(hs);
@@ -623,6 +641,41 @@ mod tests {
         assert_eq!(r, 0, "a shut-down socket must report EOF");
         reader.join().unwrap();
         unsafe { libc::close(fd) };
+    }
+
+    /// The point of publishing the fd at `socket()`: an open that stalls is now interruptible.
+    /// A listener that accepts and never answers puts `http_open` in its header `recv`, where it
+    /// would otherwise sit out the full 15 s `SO_RCVTIMEO` — and the main thread waits on that in
+    /// `teardown`'s join, which is the freeze this whole change exists to remove. The interrupt
+    /// must also leave the stream RETIRED, not merely woken: a stale fd left in the atomic is one
+    /// the next `http_shutdown` would shoot after the number had been recycled.
+    #[test]
+    fn an_open_stalled_in_the_header_read_is_interruptible() {
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let ip = std::ffi::CString::new("127.0.0.1").unwrap();
+        let path = std::ffi::CString::new("/stall").unwrap();
+
+        let mut hs = http_stream_boxed();
+        let addr = (&mut *hs) as *mut HttpStream as usize; // raw ptr isn't Send; the box outlives the scope
+        let t0 = Instant::now();
+        let (rv, waited) = std::thread::scope(|sc| {
+            let opener = sc.spawn(move || {
+                let rv = http_open(addr as *mut HttpStream, ip.as_ptr(), port as c_int,
+                                   path.as_ptr(), std::ptr::null(), "GET");
+                (rv, t0.elapsed())
+            });
+            let _peer = srv.accept().expect("accept"); // held open, never written to
+            std::thread::sleep(std::time::Duration::from_millis(200)); // let it reach the recv
+            http_shutdown(addr as *mut HttpStream);
+            opener.join().unwrap()
+        });
+
+        assert_eq!(rv, -1, "an interrupted open must report failure");
+        assert!(waited.as_secs() < 3,
+                "took {waited:?} — the open sat out SO_RCVTIMEO, so it was NOT interrupted");
+        assert_eq!(hs.fd(), -1, "the interrupted open left its fd published — that is the stale \
+                                 descriptor a later http_shutdown would shoot");
     }
 
     /// `take_fd` is the single-closer gate: concurrent claimers must produce exactly one
