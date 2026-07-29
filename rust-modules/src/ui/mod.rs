@@ -19,6 +19,7 @@ pub mod fmt; // shared duration/clock display formatters
 pub mod home;
 pub mod icons;
 pub mod info_panel;
+pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
 pub mod label;
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow

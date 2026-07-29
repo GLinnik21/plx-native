@@ -28,6 +28,15 @@ pub enum Icon {
     Info,
     User,
     Backspace,
+    /// A screen with a play triangle — the item menu's "Go to Episode" leading glyph.
+    Episode,
+    /// A stack of layers — the item menu's "Go to Show" leading glyph (a series of episodes).
+    Show,
+    /// A check inside a circle — the item menu's watched-state ACTION (distinct from [`Icon::Check`],
+    /// which marks the already-active row in a picker).
+    CheckCircle,
+    /// A play triangle behind a leading bar — "Play from Start" (restart, not resume).
+    PlayStart,
 }
 
 fn src(id: Icon) -> &'static str {
@@ -45,6 +54,10 @@ fn src(id: Icon) -> &'static str {
         Icon::Info => include_str!("../../../assets/icons/info.svg"),
         Icon::User => include_str!("../../../assets/icons/user.svg"),
         Icon::Backspace => include_str!("../../../assets/icons/backspace.svg"),
+        Icon::Episode => include_str!("../../../assets/icons/episode.svg"),
+        Icon::Show => include_str!("../../../assets/icons/show.svg"),
+        Icon::CheckCircle => include_str!("../../../assets/icons/check-circle.svg"),
+        Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
     }
 }
 

@@ -910,6 +910,32 @@ pub(crate) fn home_wheel(dy: c_int) {
     guard(|| scene().grid.wheel(dy));
 }
 
+/// The focused grid card's rect at its **focus magnification** (screen coords), or None when the
+/// scene has not been built or the focus points outside the live hubs. The item-menu popover anchors
+/// beside this, off the SAME `card_x`/`eff_scroll`/`base_y`/`scale(c)` the draw and the pointer
+/// hit-test use — a panel placed off a re-derived geometry would drift off its card mid-scroll,
+/// which is the bug `card_x`'s doc comment already records for the hit-test.
+///
+/// It deliberately **omits `press::scale()`**, the one factor the draw also multiplies in
+/// (`Grid::draw`). The only caller opens on a press that is at full dip at that instant and is
+/// cancelled in the same breath, so folding the dip in would anchor the panel off a transient ~8%
+/// shrink and then leave it there while the card springs back out from under it. The rest-size
+/// magnified rect is where the card actually settles.
+///
+/// Note it is the GRID rect: the hero view has no card, so the caller (a press-and-hold, which only
+/// arms on a grid card) is what keeps this meaningful.
+pub(crate) fn focused_card_rect() -> Option<Rect> {
+    let h = unsafe { (*addr_of!(SCENE)).as_ref()? };
+    let r = row().max(0) as usize;
+    let c = col().max(0) as usize;
+    if r >= n_hubs() || c >= crate::pms::hub_len(r) {
+        return None;
+    }
+    let sp = h.snap.pos;
+    let base = Rect::new(card_x(c, h.grid.eff_scroll(r, sp)), h.grid.shelves[r].base_y + CARD_DY, CARD_W, CARD_H);
+    Some(base.scaled(h.grid.shelves[r].scale(c.min(MAX_ITEMS - 1))))
+}
+
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
@@ -991,6 +1017,40 @@ mod tests {
                         Some(c),
                         "clicking the center of drawn card {c} (scroll={scroll}, sp={sp}) must hit it"
                     );
+                }
+            }
+        }
+    }
+
+    /// The item-menu popover anchors off `focused_card_rect`, so it has to agree with the DRAWN
+    /// card at every scroll/snap phase or the panel floats away from the tile it belongs to. This
+    /// pins the geometry the accessor composes — `card_x(c, eff_scroll) × Rect::scaled(focus)` —
+    /// against the same formula `Grid::draw` uses, over the same phase grid as the hit-test test
+    /// above. (The accessor itself needs a live `SCENE` + hubs, neither of which exists on the
+    /// host; what is testable, and what actually broke in the hit-test's own history, is the
+    /// formula.)
+    #[test]
+    fn the_card_anchor_rect_tracks_the_drawn_card_through_scroll_and_snap() {
+        for &scroll in &[0.0f32, 415.0, 830.0] {
+            for &sp in &[0.0f32, 0.37, 1.0] {
+                let es = scroll * sp;
+                for c in 0..8usize {
+                    for &focus in &[1.0f32, RowStyle::HOME.focus_scale] {
+                        let base = Rect::new(card_x(c, es), 176.0 + CARD_DY, CARD_W, CARD_H);
+                        let r = base.scaled(focus);
+                        // magnification is about the card's CENTRE — the anchor must not slide
+                        assert!(
+                            (r.cx() - base.cx()).abs() < 0.001 && (r.cy() - base.cy()).abs() < 0.001,
+                            "card {c} (scroll={scroll}, sp={sp}, focus={focus}) moved its centre"
+                        );
+                        // …and the rect the panel is placed beside is the one the pointer would hit
+                        assert_eq!(
+                            col_at(r.cx(), es, 8),
+                            Some(c),
+                            "anchor centre for card {c} (scroll={scroll}, sp={sp}) is not over that card"
+                        );
+                        assert!(r.w >= CARD_W && r.h >= CARD_H, "focus must not shrink the card");
+                    }
                 }
             }
         }

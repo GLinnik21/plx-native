@@ -158,17 +158,21 @@ fn remote_synth_ptr(x: i32, y: i32) {
 /// release from `state & 0xff` — so the down carries state=1, the up state=0. Both
 /// are required: a grid-card OK arms on down and *commits on release*.
 fn remote_synth_key(sym: c_uint, wcode: c_uint) {
+    remote_synth_key_edge(sym, wcode, true);
+    remote_synth_key_edge(sym, wcode, false);
+}
+
+/// ONE edge of a remote key press. Split out for the `okdown`/`okup` FIFO tokens, because a
+/// **press-and-hold** is only expressible as two tokens with real time between them: the item menu
+/// opens on `press::is_long`, which measures the interval between the down and the up. The paired
+/// `remote_synth_key` above is this called twice back to back (a tap).
+fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
     let mut ev = [0u8; 128];
-    ev[16..20].copy_from_slice(&1u32.to_ne_bytes()); // state = pressed
+    ev[0..4].copy_from_slice(&if down { SDL_KEYDOWN } else { SDL_KEYUP }.to_ne_bytes());
+    ev[16..20].copy_from_slice(&if down { 1u32 } else { 0 }.to_ne_bytes()); // state: pressed / released
     ev[20..24].copy_from_slice(&wcode.to_ne_bytes());
     ev[24..28].copy_from_slice(&sym.to_ne_bytes());
-    unsafe {
-        ev[0..4].copy_from_slice(&SDL_KEYDOWN.to_ne_bytes());
-        SDL_PushEvent(ev.as_ptr() as *const c_void);
-        ev[0..4].copy_from_slice(&SDL_KEYUP.to_ne_bytes());
-        ev[16..20].copy_from_slice(&0u32.to_ne_bytes()); // state = released
-        SDL_PushEvent(ev.as_ptr() as *const c_void);
-    }
+    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
 
 // ui focus state lives in ui::home; reach it through its accessors
@@ -565,6 +569,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
         let mut ok_armed = false;
         let mut press_tried = false; // dev: /tmp/plxnative-press fires one simulated grid-card press
+        let mut press_release_at = 0u32; // …and the tick at which that simulated press releases
+        let mut itemmenu_tried = false; // dev: /tmp/plxnative-itemmenu opens the card context menu once
         let mut dpad_mode = false;
         let mut ptr_drag = false;
         let mut mot_accum = 0.0f32;
@@ -588,6 +594,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             Profiles, // "who's watching" Plex Home picker
             Home,
             Account,  // Home + the top-left profile menu popover (change profile / sign out)
+            ItemMenu, // Home + the press-and-hold card context menu popover (ui/item_menu.rs)
             Library,  // the browse grid (ui/library.rs); its sort/filter menus are internal state
             Detail,
             Player { overlay: Overlay },
@@ -601,6 +608,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         enum Modal {
             None,
             Account,
+            ItemMenu,
             Menu,
             Info,
             Chapters,
@@ -608,6 +616,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         fn modal_of(r: Route) -> Modal {
             match r {
                 Route::Account => Modal::Account,
+                Route::ItemMenu => Modal::ItemMenu,
                 Route::Player { overlay: Overlay::Menu } => Modal::Menu,
                 Route::Player { overlay: Overlay::Info } => Modal::Info,
                 Route::Player { overlay: Overlay::Chapters } => Modal::Chapters,
@@ -846,9 +855,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
         /// Direct-play a LEAF catalog item (movie or episode) — the hero-pill / Continue-Watching
         /// "play now" ritual: route cfg + streams metadata + the shared start ritual.
+        /// `from_start` ignores the item's resume point — the item menu's "Play from Start", which is
+        /// the ONLY difference between restarting a Continue Watching tile and resuming it. Taking it
+        /// as a flag (rather than a resume_ns the caller computes) keeps Plex's resume rule
+        /// (`metadata::resume_ns`, which also refuses to resume the last few percent) in one place.
         unsafe fn play_item_now(
             mt: &crate::task::MainThread,
             mm: &crate::pms::PmsMovie,
+            from_start: bool,
             hud_ms: u32,
             route: &mut Route,
             played_from_detail: &mut bool,
@@ -872,7 +886,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::metadata::request_detail(&mm.rk);
             start_playback(
                 mt,
-                crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000),
+                if from_start { 0 } else { crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000) },
                 false,
                 hud_ms,
                 route,
@@ -933,7 +947,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     && (crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize) || mm.kind == 3));
             if want_play {
                 match mm.kind {
-                    0 | 3 => play_item_now(mt, mm, hud_ms, route, played_from_detail, hud_nav),
+                    0 | 3 => play_item_now(mt, mm, false, hud_ms, route, played_from_detail, hud_nav),
                     _ => {
                         // show / season: open its page (blocking) and fire its Play — but only
                         // once the load actually landed on the expected item (a failed fetch
@@ -969,6 +983,88 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             } else {
                 crate::ui::detail::open_rk(&rk);
                 *route = Route::Detail;
+            }
+        }
+
+        /// Open the item context menu on the focused HOME GRID card — the press-and-hold half of the
+        /// Continue Watching interaction (a SHORT press still plays/opens immediately; see
+        /// `home_activate`). Reports whether it opened, so the caller only flips the route when a
+        /// menu is actually up: the hero view has no card, and a shelf can be empty.
+        fn open_item_menu(route: &mut Route) -> bool {
+            let Some(m) = crate::ui::home::movie_at(crate::ui::home::row(), crate::ui::home::col()) else {
+                return false;
+            };
+            if !crate::ui::item_menu::has_actions(m) {
+                return false;
+            }
+            crate::ui::item_menu::open(m, crate::ui::home::focused_card_rect());
+            *route = Route::ItemMenu;
+            true
+        }
+
+        /// Perform an item-menu [`Action`](crate::ui::item_menu::Action) — the ONE dispatch shared by
+        /// the OK key and the pointer click, exactly like `home_activate` and `activate_ctrl_row`
+        /// (the two paths for the profile menu had already drifted before those were unified).
+        /// The menu itself only reports the choice; every route flip, server call and refresh is here.
+        unsafe fn apply_item_action(
+            mt: &crate::task::MainThread,
+            act: crate::ui::item_menu::Action,
+            route: &mut Route,
+            played_from_detail: &mut bool,
+            opened_from_library: &mut bool,
+            hud_nav: &mut HudNav,
+        ) {
+            use crate::ui::item_menu::Action;
+            // Every arm below turns an rk into a blocking fetch or a play; an empty one would fetch
+            // nothing and land on a blank page. `build` already refuses to offer such a row — this
+            // is the belt to that braces, since the menu is data-driven off the hub rows.
+            let rk_of = |a: &Action| match a {
+                Action::GoToItem(rk) | Action::MarkWatched(rk, _) | Action::PlayFromStart(rk) => rk.clone(),
+                Action::GoToShow(rk, _) => rk.clone(),
+                Action::None => String::new(),
+            };
+            if !matches!(act, Action::None) && rk_of(&act).is_empty() {
+                return;
+            }
+            match act {
+                Action::None => {}
+                Action::GoToItem(rk) => {
+                    crate::ui::detail::open_rk(&rk);
+                    *opened_from_library = false; // reached from Home, so BACK belongs to Home
+                    *route = Route::Detail;
+                }
+                Action::GoToShow(show_rk, season) => {
+                    // the season arm is BLOCKING (it indexes the loaded show's seasons) — the same
+                    // trade `home_activate` makes for a season tile, on a keypress the user just made
+                    if season > 0 {
+                        crate::ui::detail::open_rk_season(&show_rk, season);
+                    } else {
+                        crate::ui::detail::open_rk(&show_rk);
+                    }
+                    *opened_from_library = false;
+                    *route = Route::Detail;
+                }
+                Action::MarkWatched(rk, watched) => {
+                    // Same ritual as the detail page's watched toggle: flip it server-side, then
+                    // refetch the hubs so Continue Watching reflects it (a watched episode leaves the
+                    // shelf; its successor takes the slot). Blocking (~100ms LAN) and deliberately so
+                    // — the shelf must not still show the old state under the user's cursor.
+                    if watched {
+                        crate::plex::client().unscrobble(&rk);
+                    } else {
+                        crate::plex::client().scrobble(&rk);
+                    }
+                    let n = crate::pms::refetch_hubs_reconcile();
+                    log(&format!("item menu: rk={rk} watched={} → hubs refreshed ({n} items)", !watched as i32));
+                }
+                Action::PlayFromStart(rk) => {
+                    // Re-resolve the catalog row by rk rather than holding a borrow across the menu:
+                    // a hub refetch can rebuild the catalog while the popover is open.
+                    let i = crate::pms::index_of_rk(&rk);
+                    if let Some(mm) = (i >= 0).then(|| crate::pms::movie(i as usize)).flatten() {
+                        play_item_now(mt, mm, true, HUD_LINGER_MS, route, played_from_detail, hud_nav);
+                    }
+                }
             }
         }
 
@@ -1019,6 +1115,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 remote_synth_ptr(x.clamp(0, 1919), y.clamp(0, 1079));
                             }
                         }
+                    } else if tok == "okdown" || tok == "okup" {
+                        // the two halves of OK, so a driver can hold it: `okdown`, wait past
+                        // press::LONG_MS, `okup` — the only way to exercise a press-and-hold (and so
+                        // the item menu) over the FIFO, since every other token is a tap.
+                        remote_synth_key_edge(SDLK_RETURN, 0, tok == "okdown");
                     } else if let Some((sym, wcode)) = remote_token_key(tok) {
                         remote_synth_key(sym, wcode);
                     } else {
@@ -1209,6 +1310,28 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             route = Route::Home;
                         } else {
                             crate::ui::account_menu::move_focus(sym as c_int);
+                        }
+                        continue;
+                    }
+                    // the press-and-hold item menu is modal too — rows nav, OK commits, BACK closes
+                    // back to the shelf the card is still sitting on.
+                    if matches!(route, Route::ItemMenu) {
+                        if is_ok(sym) {
+                            let act = crate::ui::item_menu::on_ok();
+                            route = Route::Home; // the dispatch overrides this when it navigates/plays
+                            apply_item_action(mt, act, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
+                            held_sym = 0; // an async route flip must not repeat a held key into the next screen
+                        } else if is_back(sym, wcode) {
+                            crate::ui::item_menu::close();
+                            route = Route::Home;
+                        } else if sym == SDLK_UP || sym == SDLK_DOWN {
+                            // move once on the fresh press; holding repeats via the shared
+                            // client-side timer. Armed ONLY for the two keys the menu acts on, so a
+                            // held key it ignores can't sit in `held_sym` driving a per-frame no-op.
+                            crate::ui::item_menu::move_focus(sym as c_int);
+                            held_sym = sym;
+                            held_since = last_input;
+                            last_rep = last_input;
                         }
                         continue;
                     }
@@ -1624,6 +1747,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::profiles::pointer_focus(mx, my);
                     } else if matches!(route, Route::Account) {
                         crate::ui::account_menu::pointer_focus(mx, my);
+                    } else if matches!(route, Route::ItemMenu) {
+                        crate::ui::item_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Library) {
                         crate::ui::library::pointer_focus(mx, my);
                     } else if matches!(route, Route::Home) {
@@ -1770,6 +1895,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 route = Route::Home;
                             }
                         }
+                    } else if matches!(route, Route::ItemMenu) {
+                        let cx = rd_i32(&ev, 20) as f32;
+                        let cy = rd_i32(&ev, 24) as f32;
+                        // a click on a row commits it; anywhere else dismisses the popover. THIS arm
+                        // existing before the Home arm below is what keeps a click off the panel
+                        // from falling through onto the shelf and launching whatever card it hit —
+                        // the failure `modal_of` was written for. (`modal_of` itself is only
+                        // consulted inside the Player branch, so its ItemMenu case is there for the
+                        // same completeness as `Modal::Account`, not because this arm reads it.)
+                        let act = crate::ui::item_menu::click(cx, cy);
+                        route = Route::Home;
+                        apply_item_action(mt, act, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
                     } else if matches!(route, Route::Profiles) {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -1838,7 +1975,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             if !grid_tried && now.wrapping_sub(t0) > 400 {
                 grid_tried = true;
-                if std::path::Path::new("/tmp/plxnative-grid").exists() {
+                // (plxnative-itemmenu rides along: its popover anchors off a GRID card, so the
+                // headless entry has to snap into the grid first, exactly like plxnative-grid.)
+                if std::path::Path::new("/tmp/plxnative-grid").exists()
+                    || std::path::Path::new("/tmp/plxnative-itemmenu").exists()
+                {
                     set_snap(1.0);
                     set_fr(0);
                 }
@@ -1856,9 +1997,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 }
             }
-            // dev: /tmp/plxnative-press simulates a real OK press on the focused grid card ONCE (an
-            // OK-down with no key-up) — the lost-keyup net then springs it back and commits, so a
+            // dev: /tmp/plxnative-press simulates a real OK TAP on the focused grid card ONCE, so a
             // headless run exercises the whole dip → bounce → deferred-activate path end to end.
+            // The release is scheduled explicitly rather than left to the lost-key-up net: that net
+            // only fires at `press::MAX_HOLD_MS` (1000 ms), which is PAST `press::LONG_MS`, so a
+            // down with no up is a press-and-HOLD — it latches long, never commits, and now opens
+            // the item menu instead. A tap has to be a tap.
             if !press_tried && now.wrapping_sub(t0) > 1600 {
                 press_tried = true;
                 if std::path::Path::new("/tmp/plxnative-press").exists()
@@ -1867,6 +2011,28 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 {
                     crate::ui::press::begin(now);
                     ok_armed = true;
+                    // past MIN_DIP_MS (the dip must be seen), well short of LONG_MS
+                    press_release_at = now.wrapping_add(150).max(1);
+                }
+            }
+            if press_release_at != 0 && now.wrapping_sub(press_release_at) < 0x8000_0000 {
+                press_release_at = 0;
+                crate::ui::press::release(now);
+            }
+            // dev: /tmp/plxnative-itemmenu opens the press-and-hold card menu on the focused grid
+            // card once the snap has settled — the headless entry for the item-menu FPS scene and
+            // its capture (the interactive path is a real hold, which no boot trigger can express).
+            // Late enough that `focused_card_rect`'s `base_y`/scroll have reached the grid layout,
+            // or the panel would anchor off the hero-view position the card no longer occupies.
+            // RETRIES until it takes (or gives up at 12s): `open_item_menu` needs a card, so a
+            // single attempt at a fixed instant fails outright whenever the hub fetch is slow — and
+            // an FPS scene that never opened reads as "the scene never entered this screen", i.e. a
+            // flaky FAIL that looks like a regression.
+            if !itemmenu_tried && now.wrapping_sub(t0) > 1800 {
+                if std::path::Path::new("/tmp/plxnative-itemmenu").exists() && matches!(route, Route::Home) {
+                    itemmenu_tried = open_item_menu(&mut route) || now.wrapping_sub(t0) > 12_000;
+                } else {
+                    itemmenu_tried = true;
                 }
             }
             // dev: /tmp/plxnative-detail=<ratingKey> opens that catalog item's detail page once
@@ -2137,6 +2303,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 match route {
                     Route::Home if g_snap() > 0.5 => crate::ui::home::home_move_focus(held_sym),
                     Route::Home => crate::ui::home::home_hero_key(held_sym), // hero view: hold LEFT/RIGHT pages the billboard
+                    Route::ItemMenu => crate::ui::item_menu::move_focus(held_sym as c_int),
                     Route::Library => crate::ui::library::move_focus(held_sym),
                     Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
                     Route::Player { overlay: Overlay::Menu } => {
@@ -2277,11 +2444,25 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
             // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
             // commits (the spring-back bounce has played), run it for whichever CARD view armed the
-            // press. A long-press latches without committing, so take_commit stays false and the
-            // press simply springs back (is_active clears the arm).
+            // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
+            // on Home it opens the item menu below, and anywhere else it just springs back.
             crate::ui::press::tick(now, dt);
             if ok_armed {
-                if crate::ui::press::take_commit(now) {
+                // PRESS-AND-HOLD → the item context menu, on the latch `press::tick` has always set
+                // and nothing ever read (`LONG_MS`, `is_long`). It fires while the key is still DOWN,
+                // which is what makes the menu feel like a hold rather than a delayed tap; the press
+                // is cancelled so the card springs back, and `ok_armed` is dropped so the eventual
+                // key-up commits nothing. A SHORT press is untouched — a Continue Watching tile still
+                // resumes on OK by design, and this is the other half of that interaction. Ordered
+                // ahead of the commit arm (and exclusive with it) so the two can never both run.
+                if crate::ui::press::is_long(now)
+                    && matches!(route, Route::Home)
+                    && crate::ui::home::snap_pos() >= 0.5
+                    && open_item_menu(&mut route)
+                {
+                    ok_armed = false;
+                    crate::ui::press::cancel();
+                } else if crate::ui::press::take_commit(now) {
                     ok_armed = false;
                     match route {
                         Route::Home | Route::Account => {
@@ -2334,7 +2515,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // (headless pad capture) exactly like OK on the remote
                     crate::ui::profiles::pick(idx);
                 }
-            } else if matches!(route, Route::Home | Route::Account) {
+            } else if matches!(route, Route::Home | Route::Account | Route::ItemMenu) {
                 // dev: sweep the grid focus top↔bottom to reproduce the vertical-scroll judder headlessly
                 if home_osc && now.wrapping_sub(home_osc_last) > 350 {
                     home_osc_last = now;
@@ -2363,6 +2544,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             if matches!(route, Route::Account) {
                 crate::ui::account_menu::update(dt);
+            }
+            if matches!(route, Route::ItemMenu) {
+                crate::ui::item_menu::update(dt);
             }
             if matches!(route, Route::Detail) {
                 // dev: plxnative-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
@@ -2464,6 +2648,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if matches!(route, Route::Account) {
                         crate::ui::account_menu::draw(); // profile popover over Home
                     }
+                    if matches!(route, Route::ItemMenu) {
+                        crate::ui::item_menu::draw(); // press-and-hold card menu, over the live shelf
+                    }
                     // the on-screen FPS counter stays off the player route (chrome over video)
                     let fps_col = [0.4f32, 1.0, 0.55, 1.0];
                     crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
@@ -2487,6 +2674,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Login => "login",
                 Route::Profiles => "profiles",
                 Route::Account => "account",
+                Route::ItemMenu => "itemmenu",
                 Route::Library => "library",
                 Route::Detail => "detail",
                 Route::Player { .. } => "player",
