@@ -506,6 +506,12 @@ pub(crate) struct Plan {
     pub remux: bool,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
+    /// the subtitle stream the server already had selected for this part (0 = none/off), so the
+    /// menu checkmark and the timeline report agree with what is on screen — and a later
+    /// transcode of this item burns the subtitle the user was already watching.
+    pub sub_sid: i64,
+    /// client-renderer ordinal for that subtitle (`metadata::sub_render_ordinal`). None = subs off.
+    pub sub_render_ordinal: Option<i32>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
     pub playing: Option<crate::metadata::PlayingItem>,
     /// the episode queued after this one, straight off the `continuous=1` PlayQueue
@@ -608,6 +614,14 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
                     .unwrap_or(aidx),
             );
         }
+        // honour a subtitle the server already has selected for this part (chosen on another
+        // client, or by this app in an earlier session) — free here, since the direct-play path
+        // renders subtitles itself. apply_plan installs it on the main thread.
+        let sub_sel = plan.playing.as_ref().and_then(|p| pick_dp_subtitle(&p.subs));
+        if let Some((ssid, ord)) = sub_sel {
+            plan.sub_sid = ssid;
+            plan.sub_render_ordinal = Some(ord);
+        }
         // direct-play: no transcode session (transcode_session() stays empty). Carry the
         // session id + identity on the file GET so PMS keys the /status/sessions entry by
         // SESS (not a token= fallback), keeping the timeline correlation consistent.
@@ -661,13 +675,36 @@ const PREF_AUDIO_LANG: &str = "eng";
 /// list_idx -1 = codec-default (demuxer matches by payload codec — only when the track list is
 /// unavailable), else the index into `playing().audio`, with that track's Plex stream id so the
 /// timeline can report the truth. Order of preference:
-///   1. a direct-playable track in PREF_AUDIO_LANG (English), so English shows don't open in a
+///   1. the stream the SERVER already has selected for this part (PMS `Stream.selected`), when
+///      that selection is a real CHOICE and direct-playable — a track picked on another Plex
+///      client (phone, web, another TV) or here in an earlier session outranks our own defaults,
+///      which used to silently overwrite it on every play;
+///   2. a direct-playable track in PREF_AUDIO_LANG (English), so English shows don't open in a
 ///      foreign default dub — the Load payload uses THAT track's codec so there is no mismatch;
-///   2. the file's flagged default track, if its codec is direct-playable — by EXPLICIT index
+///   3. the file's flagged default track, if its codec is direct-playable — by EXPLICIT index
 ///      (matching by codec alone fed the first same-codec stream, not the flagged default, when
 ///      another track of that codec preceded it);
-///   3. any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling — smart-DP).
+///   4. any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling — smart-DP).
 /// None when NO audio track is direct-playable (→ transcode).
+///
+/// Rung 1 carries TWO gates, and both are load-bearing, because PMS reports a selected AUDIO
+/// stream on essentially every part — there is no "nothing selected" state for audio (verified
+/// against the live server: parts this client has never PUT a selection for still come back with
+/// the file's default flagged `selected`).
+///   - **It must differ from the file's `default` flag.** A selection that merely echoes the
+///     container default is not evidence that anyone chose anything, and honouring it verbatim
+///     would delete the English rung below — whose whole reason to exist is that a foreign dub is
+///     often the file default (The Morning Show reports its Russian default as `selected`). When
+///     the server's pick is a DIFFERENT stream, something actually chose it: a user on another
+///     client, or this app's own `put_selection` in an earlier session. The cost of the gate is
+///     that a choice which LANDS on the default is indistinguishable from no choice at all and
+///     falls through to the ladder — that covers both an account-language preference matching the
+///     default and a user here picking the default-flagged track by hand, so neither round-trips.
+///     Fixing it needs state the part does not carry: the account's own defaultAudioLanguage, or
+///     a remembered per-item pick. Both are separate gaps; neither is guessable from this flag.
+///   - **It must be direct-playable.** Otherwise we fall through instead of forcing a transcode to
+///     obey it, which would drop the whole smart-direct-play class (a TrueHD/DTS pick with an AC3
+///     sibling) onto the server's video-downscaling encoder for one audio track.
 /// PURE: takes the playing item's audio tracks explicitly instead of reaching into
 /// `metadata::playing()`. That matters twice over. (a) `playing()` hands out a `&'static
 /// PlayingItem` whose `Vec`s `ui/track_menu.rs` and `ui/info_panel.rs` hold slices into during
@@ -681,11 +718,16 @@ fn pick_dp_audio(tracks: &[crate::metadata::Stream], default_acodec: &str) -> Op
         return if dp(default_acodec) { Some((-1, default_acodec.to_string(), 0)) } else { None };
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
-    // 1. preferred-language, direct-playable
+    // 1. the server's own current selection, when it is a real pick (differs from the file's
+    //    default flag — see the doc) and direct-playable: honours a choice made elsewhere
+    if let Some(i) = tracks.iter().position(|s| s.selected && !s.default && dp(&s.codec.to_lowercase())) {
+        return Some(pick(i));
+    }
+    // 2. preferred-language, direct-playable
     if let Some(i) = tracks.iter().position(|s| dp(&s.codec.to_lowercase()) && s.lang_code == PREF_AUDIO_LANG) {
         return Some(pick(i));
     }
-    // 2. the file's flagged default track, if direct-playable (explicit index)
+    // 3. the file's flagged default track, if direct-playable (explicit index)
     if let Some(i) = tracks.iter().position(|s| s.default && dp(&s.codec.to_lowercase())) {
         return Some(pick(i));
     }
@@ -693,8 +735,54 @@ fn pick_dp_audio(tracks: &[crate::metadata::Stream], default_acodec: &str) -> Op
         // Media[0].audioCodec is DP but no stream carries the default flag — codec-match
         return Some((-1, default_acodec.to_string(), 0));
     }
-    // 3. any direct-playable track (smart direct-play over a non-DP default)
+    // 4. any direct-playable track (smart direct-play over a non-DP default)
     tracks.iter().position(|s| dp(&s.codec.to_lowercase())).map(pick)
+}
+
+/// The subtitle to turn ON at the start of a DIRECT-PLAY, from the server's own per-part
+/// selection — returning (stream id, embedded-subtitle ordinal for the client renderer), or
+/// None to start with subtitles off (the shipped behaviour when the server has no selection).
+///
+/// This is the read-back half of `put_selection`: we have always written the user's pick to
+/// `/library/parts/…` and never consulted the one already there, so a subtitle enabled from Plex
+/// Web or a phone was dropped on the floor at every play. The ordinal is
+/// `metadata::sub_render_ordinal`, i.e. the SAME identifier space the track menu commits and the
+/// demuxer enumerates (embedded streams only, sorted on PMS `Stream.index`) — not a list position.
+///
+/// Unlike the audio rung this carries no "is it a real pick?" gate, because subtitles do have a
+/// "nothing selected" state and use it: probed against the live server, parts carrying a
+/// `default`-flagged subtitle come back with no selection at all, so a selection is a choice even
+/// when it lands on the container default. The case that would blur it is an ACCOUNT-level
+/// subtitle mode (always-show / auto-select forced), which makes PMS select a stream nobody
+/// picked on this part — subtitles would then come up on every direct play of a foreign-audio
+/// item. That is self-correcting (turning them off PUTs `subtitleStreamID=0`, which is a real
+/// per-part override) and it is arguably the account setting working, but if it ever needs
+/// suppressing, the gate belongs here — not on the flag itself.
+///
+/// Two deliberate limits, both about what the client renderer can actually deliver:
+///   - an EXTERNAL (sidecar) selection returns None. It is not in the container, so nothing would
+///     render; only a server burn can show it, and silently forcing a transcode to obey a stored
+///     flag is not a trade the user asked for.
+///   - this is the direct-play path only. The transcode path keeps PUTting `subtitleStreamID=0`
+///     (subs off) as before: honouring a selection there means a server-side BURN, i.e. a
+///     re-encode carrying a picture-quality cost, which is a trade to put behind the settings
+///     surface this app does not have yet rather than to make silently at every play. Once a
+///     direct-played item DOES go to the transcoder mid-session (a DTS/TrueHD audio pick), the
+///     seeded `CUR_SUB_SID` rides along, so the subtitle already on screen keeps burning. Note the
+///     read-back is therefore ONE-WAY on that path: an item that starts as a transcode still PUTs
+///     `subtitleStreamID=0`, which not only suppresses the burn but CLEARS the server's selection
+///     for everyone. That predates this change; honouring it instead is the same burn decision.
+fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
+    let i = subs.iter().position(|s| s.selected && !s.external)?;
+    let ord = crate::metadata::sub_render_ordinal(subs, i);
+    // Both halves must be usable or neither is: the id is what the menu checkmark and the
+    // timeline report key on, so rendering a stream we cannot NAME would show a subtitle while
+    // the menu says Off. (`ord < 0` is unreachable through the `!external` filter above — it is
+    // kept so a change on either side degrades to "off" instead of feeding the renderer a -1.)
+    if ord < 0 || subs[i].id <= 0 {
+        return None;
+    }
+    Some((subs[i].id, ord))
 }
 
 /// True when the part's container is MKV/Matroska — the only container our buffer-feed demuxer
@@ -851,6 +939,9 @@ fn apply_plan(plan: Plan, rk: &str) {
         *addr_of_mut!(PQ_ITEM_ID) = plan.pq_item_id;
         *addr_of_mut!(STREAM_FPS) = plan.fps;
         addr_of_mut!(CUR_AUDIO_SID).write(plan.audio_sid);
+        // the server-selected subtitle (0 = none), so the menu checkmark, the timeline report and
+        // any later transcode of this item all agree with what the renderer was told below
+        addr_of_mut!(CUR_SUB_SID).write(plan.sub_sid);
         addr_of_mut!(CUR_REMUX).write(plan.remux);
         *addr_of_mut!(URL) = plan.url;
         *addr_of_mut!(TSESSION) = plan.tsession;
@@ -859,6 +950,13 @@ fn apply_plan(plan: Plan, rk: &str) {
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
         crate::player::set_audio_track(ord);
+    }
+    // `request_play` turned subtitles off for the new item; turn the server's selection back on
+    // AFTER that reset (this lands a frame or more later, on the main thread, before the engine
+    // starts — so the demuxer's per-block `desired_sub_idx` gate sees it from the first cue).
+    if let Some(ord) = plan.sub_render_ordinal {
+        crate::player::log(&format!("server-selected subtitle: sid={} render_idx={ord}", plan.sub_sid));
+        crate::player::request_subtitle(ord);
     }
 }
 
@@ -1001,7 +1099,22 @@ mod tests {
             forced: false,
             default,
             external: false,
+            selected: false,
         }
+    }
+
+    /// Mark a track as the server's CURRENT pick (PMS `Stream.selected`) — the flag a pick made
+    /// on a phone / Plex Web / another TV arrives on.
+    fn server_selected(mut s: crate::metadata::Stream) -> crate::metadata::Stream {
+        s.selected = true;
+        s
+    }
+
+    /// A subtitle stream, spelled out because the ordinal maths depends on `index` (container
+    /// order, which PMS may report out of document order) and on `external` (sidecars are not in
+    /// the container at all, so the client renderer cannot count them).
+    fn sub(id: i64, index: i64, lang: &str, external: bool) -> crate::metadata::Stream {
+        crate::metadata::Stream { index, external, ..trk(id, "srt", lang, false) }
     }
 
     #[test]
@@ -1035,6 +1148,150 @@ mod tests {
     fn no_direct_playable_track_means_transcode() {
         let tracks = [trk(1, "truehd", "eng", true), trk(2, "dts", "eng", false)];
         assert!(pick_dp_audio(&tracks, "truehd").is_none());
+    }
+
+    // ---- rung 1: the selection the SERVER already holds --------------------------------------
+    // `Stream.selected` is the part's current pick — what `put_selection` writes and what a pick
+    // made on a phone / Plex Web / another TV shows up as. We wrote it for a long time and never
+    // read it, so our own ladder silently overwrote every cross-client choice on the next play.
+    // The shapes below are the ones the live server actually serves (probed per-identity while
+    // this landed), which is where the two gates on the rung come from.
+
+    #[test]
+    fn the_servers_selected_track_outranks_the_english_preference() {
+        // The Substance: a user picks the second Russian dub on their phone. English is still the
+        // FIRST direct-playable track, so the old ladder handed back English on every play.
+        let tracks = [
+            trk(2693, "ac3", "rus", true),
+            server_selected(trk(2694, "ac3", "rus", false)),
+            trk(2695, "ac3", "eng", false),
+        ];
+        assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((1, "ac3".into(), 2694)));
+    }
+
+    #[test]
+    fn a_selection_that_only_echoes_the_files_default_does_not_beat_english() {
+        // THE gate that keeps the English rung alive. PMS reports a selected audio stream on
+        // every part — for one nobody has touched it is just the container's default flag coming
+        // back (The Morning Show: the Russian default reads `selected`). Treating that as a
+        // choice would reinstate exactly the foreign-dub-on-open bug rung 2 exists to prevent.
+        let tracks = [
+            server_selected(trk(10975, "eac3", "rus", true)),
+            trk(10976, "eac3", "eng", false),
+        ];
+        assert_eq!(pick_dp_audio(&tracks, "eac3"), Some((1, "eac3".into(), 10976)));
+    }
+
+    #[test]
+    fn a_selected_track_that_cannot_direct_play_falls_through_to_the_ladder() {
+        // Home Alone's live shape: the server holds the English DTS track (a real pick — it is
+        // not the file default), which this pipeline cannot decode. Honouring it would force a
+        // whole-video transcode for one audio track, so the ladder runs on instead.
+        let tracks = [
+            trk(2663, "ac3", "rus", true),
+            server_selected(trk(2669, "dca", "eng", false)),
+            trk(2673, "ac3", "eng", false),
+        ];
+        assert_eq!(pick_dp_audio(&tracks, "dca"), Some((2, "ac3".into(), 2673)));
+    }
+
+    /// The whole ladder, rung by rung, with the selected flag switched on and off — the order is
+    /// the contract, and every row here is a shape the live server actually serves.
+    #[test]
+    fn the_audio_ladder_walks_its_rungs_in_order() {
+        let cases: [(&str, Vec<crate::metadata::Stream>, &str, Option<(i32, String, i64)>); 7] = [
+            (
+                "rung 1: a real server pick wins even against English",
+                vec![
+                    trk(1, "eac3", "rus", true),
+                    server_selected(trk(2, "eac3", "deu", false)),
+                    trk(3, "eac3", "eng", false),
+                ],
+                "eac3",
+                Some((1, "eac3".into(), 2)),
+            ),
+            (
+                "rung 1 needs a real pick: the default echoed back is not one",
+                vec![server_selected(trk(1, "eac3", "rus", true)), trk(2, "eac3", "eng", false)],
+                "eac3",
+                Some((1, "eac3".into(), 2)),
+            ),
+            (
+                "rung 1 is skipped when the pick can't direct-play, not obeyed by transcoding",
+                vec![
+                    trk(1, "ac3", "rus", true),
+                    server_selected(trk(2, "dca", "eng", false)),
+                    trk(3, "ac3", "eng", false),
+                ],
+                "ac3",
+                Some((2, "ac3".into(), 3)), // Home Alone: rung 2 (English) still applies
+            ),
+            (
+                "rung 2: no selection at all → the English preference, as before",
+                vec![trk(1, "ac3", "rus", true), trk(2, "ac3", "eng", false)],
+                "ac3",
+                Some((1, "ac3".into(), 2)),
+            ),
+            (
+                "rung 3: no English → the file's flagged default",
+                vec![trk(1, "ac3", "deu", false), trk(2, "ac3", "fra", true)],
+                "ac3",
+                Some((1, "ac3".into(), 2)),
+            ),
+            (
+                "rung 4: a selected non-DP track with only a foreign DP sibling — smart-DP",
+                vec![server_selected(trk(1, "truehd", "eng", false)), trk(2, "ac3", "fra", false)],
+                "truehd",
+                Some((1, "ac3".into(), 2)),
+            ),
+            (
+                "nothing direct-playable, selected or not → transcode",
+                vec![server_selected(trk(1, "truehd", "eng", false)), trk(2, "dts", "rus", true)],
+                "truehd",
+                None,
+            ),
+        ];
+        for (what, tracks, acodec, want) in cases {
+            assert_eq!(pick_dp_audio(&tracks, acodec), want, "{what}");
+        }
+    }
+
+    // ---- pick_dp_subtitle: the read-back half of put_selection -------------------------------
+
+    #[test]
+    fn the_selected_subtitle_resolves_to_the_renderers_embedded_ordinal() {
+        // Document order is NOT container order and a sidecar sits in the middle of the list:
+        // the renderer counts only embedded streams, sorted on PMS `Stream.index` — the same
+        // identifier space the track menu commits (metadata::sub_render_ordinal).
+        let subs = [
+            sub(10, 7, "fra", true),  // sidecar — not in the container, not counted
+            sub(11, 3, "rus", false), // embedded, container-first
+            server_selected(sub(12, 4, "eng", false)),
+        ];
+        assert_eq!(pick_dp_subtitle(&subs), Some((12, 1)));
+    }
+
+    #[test]
+    fn an_external_selected_subtitle_is_left_off() {
+        // A sidecar can only be shown by a server burn; forcing a transcode to obey a stored
+        // flag is not a trade the user asked for, so the direct-play path leaves subs off.
+        let subs = [server_selected(sub(10, 3, "eng", true)), sub(11, 4, "rus", false)];
+        assert_eq!(pick_dp_subtitle(&subs), None);
+    }
+
+    #[test]
+    fn no_selected_subtitle_means_subtitles_stay_off() {
+        assert_eq!(pick_dp_subtitle(&[]), None);
+        let subs = [sub(10, 3, "eng", false), sub(11, 4, "rus", false)];
+        assert_eq!(pick_dp_subtitle(&subs), None, "the file's own tracks are not an instruction");
+    }
+
+    #[test]
+    fn a_selection_with_no_stream_id_is_left_off_rather_than_half_applied() {
+        // id and ordinal travel together: the id is what the menu checkmark and the timeline
+        // report key on, so an id-less stream would render subtitles while the menu said Off.
+        let subs = [server_selected(sub(0, 3, "eng", false))];
+        assert_eq!(pick_dp_subtitle(&subs), None);
     }
 
     #[test]
