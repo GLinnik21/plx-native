@@ -341,11 +341,18 @@ the perf gates), and `make test` = `deploy` + `run`.
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
   minutes of episode first), and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
-  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre).
+  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and
+  `/tmp/plxnative-itemmenu` (snap into the grid, then open the **press-and-hold card context menu**
+  on the focused card — `route=itemmenu`; the interactive path is a real ≥500 ms hold, which no boot
+  trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release
+  ~150 ms in, because a down with no up is past `press::LONG_MS` and is a HOLD, not a tap.
   Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it
   every frame on every boot (so it never affects the picker; its DIAG entry is a permanent
   requirement, not an exception). Write key tokens like `down`/`ok`, or pointer clicks `ck:X,Y`
-  in authored 1920x1080 coords, and they replay through the real key/pointer handlers;
+  in authored 1920x1080 coords, and they replay through the real key/pointer handlers. `ok` is a
+  TAP (both edges at once); **`okdown` / `okup` are the split halves**, which is the only way to
+  drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
+  item context menu;
   `tools/stream-screen.py` is the host driver — its page maps browser clicks on the streamed
   picture to `ck:` tokens (hover is deliberately NOT forwarded — it used to park app focus on a
   tab pill so the next ENTER opened the library). The one real trigger here is

@@ -11,7 +11,7 @@
 #   tv-session.sh down           hand the TV back: strip automation, relaunch interactive
 #
 # `up` options:
-#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | player=<rk> | login | account
+#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | player=<rk> | login | account | itemmenu
 #   --guest           run as the managed test user rather than the owner (default: owner)
 #   --stream[=PORT]   also start tools/stream-screen.py for a live browser view (default 8909)
 #                     STREAM_RES=480x270 makes mpeg encode ~4x cheaper (see the skill)
@@ -161,6 +161,9 @@ cmd_up() {
     profiles)  no_token=1; want_route=profiles ;;
     login)     files+=("plxnative-login="); want_route=login ;;
     account)   files+=("plxnative-acct="); want_route=account ;;
+    # the press-and-hold card menu: the trigger snaps into the grid and holds the focused
+    # card for us, because a real hold is a live gesture no boot trigger can express
+    itemmenu)  files+=("plxnative-itemmenu="); want_route=itemmenu ;;
     library)   files+=("plxnative-library="); want_route=library ;;
     library=*) files+=("plxnative-library=${screen#*=}"); want_route=library ;;
     detail=*)  files+=("plxnative-detail=${screen#*=}"); want_route=detail ;;

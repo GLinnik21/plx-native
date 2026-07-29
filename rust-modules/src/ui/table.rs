@@ -40,12 +40,28 @@ pub struct Row {
     /// THE trailing accessory icon slot (an SVG asset, never a font glyph): the drill-in
     /// chevron (via the [`Row::chevron`] sugar) or e.g. the sort menu's direction chevron.
     pub ticon: Option<crate::ui::icons::Icon>,
+    /// THE leading accessory icon — the SAME column the [`Row::checked`] checkmark occupies, for
+    /// lists whose rows are ACTIONS rather than a picker's options (the item context menu's
+    /// `[icon] [label]` rows). `checked` wins the slot when both are set: a picker's active mark is
+    /// state, an action glyph is only decoration.
+    pub licon: Option<crate::ui::icons::Icon>,
     pub dim: bool,      // render dimmer (unavailable / de-emphasised)
+    /// A **non-selectable hairline** that groups the rows above it from the rows below (the item
+    /// menu's navigation-vs-state divider). It occupies a global row index like any other row, but
+    /// [`TableView::move_sel`] steps OVER it, [`TableView::hit_row`] refuses it, and
+    /// [`TableView::set_sections`] never lands the selection on one — so a caller can never focus
+    /// a line that does nothing. (A second `Section` cannot do this job: a headerless section adds
+    /// vertical air but draws no rule, because the hairline rides the section HEADER.)
+    pub sep: bool,
 }
 impl Row {
     pub fn new(label: impl Into<String>) -> Self {
         Self { label: label.into(), detail: String::new(), badges: Vec::new(),
-               checked: false, ticon: None, dim: false }
+               checked: false, ticon: None, licon: None, dim: false, sep: false }
+    }
+    /// The grouping hairline — a row that draws a rule and cannot be focused.
+    pub fn separator() -> Self {
+        Self { sep: true, ..Self::new("") }
     }
     pub fn checked(mut self, v: bool) -> Self { self.checked = v; self }
     pub fn detail(mut self, d: impl Into<String>) -> Self { self.detail = d.into(); self }
@@ -56,8 +72,11 @@ impl Row {
         self
     }
     pub fn ticon(mut self, i: crate::ui::icons::Icon) -> Self { self.ticon = Some(i); self }
+    pub fn licon(mut self, i: crate::ui::icons::Icon) -> Self { self.licon = Some(i); self }
     pub fn dim(mut self, v: bool) -> Self { self.dim = v; self }
-    fn height(&self) -> f32 { if self.detail.is_empty() { ROW_H } else { ROW_H_TALL } }
+    fn height(&self) -> f32 {
+        if self.sep { SEP_H } else if self.detail.is_empty() { ROW_H } else { ROW_H_TALL }
+    }
 }
 
 pub struct Section {
@@ -73,6 +92,14 @@ impl Section {
     pub fn row(mut self, r: Row) -> Self { self.rows.push(r); self }
 }
 
+/// A [`Row::separator`]'s row height. The hairline sits on its centre line, so this IS the gap
+/// between the two groups it divides — a gap between stacked blocks comes from a `space` rung, so
+/// it is the rung, not a hand-tuned number.
+const SEP_H: f32 = theme::space::MD;
+/// The list's own vertical padding: the amount an owning panel must subtract from its height to get
+/// the visible list height for [`TableView::update`]. Exposed because each popover screen was
+/// re-hardcoding `panel_h - 40.0` and would drift the moment either pad changed.
+pub const PAD_V: f32 = TOP_PAD + BOT_PAD;
 const ROW_H: f32 = 60.0; // a plain row (label only) — mockup rowBase padding 13 + 34px label
 const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEADLINE + detail CAPTION)
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
@@ -122,8 +149,8 @@ impl TableView {
         let scroll = self.scroll.pos;
         let mut hit = None;
         self.walk(|cy, gi, _| {
-            if gi < 0 {
-                return;
+            if gi < 0 || self.rows_at(gi).sep {
+                return; // headers and grouping hairlines are not click targets
             }
             let sy = top0 + cy - scroll;
             if my >= sy && my <= sy + self.rows_at(gi).height() {
@@ -138,7 +165,7 @@ impl TableView {
     pub fn set_sections(&mut self, sections: Vec<Section>, sel: i32, slide: bool) {
         self.sections = sections;
         let n = self.n_rows();
-        self.sel = if n == 0 { 0 } else { sel.clamp(0, n - 1) };
+        self.sel = if n == 0 { 0 } else { self.settle_sel(sel) };
         if !slide {
             let top = self.row_top(self.sel);
             self.hl_top.jump(top + PILL_INSET);
@@ -160,11 +187,48 @@ impl TableView {
         self.content_h() + TOP_PAD + BOT_PAD
     }
 
+    /// The nearest **selectable** row to `i`: `i` itself when it is one, else the first non-separator
+    /// after it, else the last one before it — so selection cannot come to rest on a grouping
+    /// hairline, whoever set it. The one exception is a list that is ALL separators, which has no
+    /// selectable row to offer and gets `i` back; that is degenerate rather than defended against
+    /// (nothing can commit — `on_ok` reads no action off a hairline — and nothing panics).
+    fn settle_sel(&self, i: i32) -> i32 {
+        let n = self.n_rows();
+        if n == 0 {
+            return 0;
+        }
+        let i = i.clamp(0, n - 1);
+        if !self.rows_at(i).sep {
+            return i;
+        }
+        (i + 1..n)
+            .find(|&j| !self.rows_at(j).sep)
+            .or_else(|| (0..i).rev().find(|&j| !self.rows_at(j).sep))
+            .unwrap_or(i)
+    }
+
+    /// Move the selection `delta` **selectable** rows: a separator is skipped rather than landed on,
+    /// so one DOWN across the item menu's divider lands on the first state action, not on the rule.
+    /// A step that would run off either end is dropped (the selection stays put), matching the old
+    /// clamp.
     pub fn move_sel(&mut self, delta: i32) {
         let n = self.n_rows();
-        if n > 0 {
-            self.sel = (self.sel + delta).clamp(0, n - 1);
+        if n == 0 {
+            return;
         }
+        let step = if delta < 0 { -1 } else { 1 };
+        let mut cur = self.settle_sel(self.sel);
+        for _ in 0..delta.abs() {
+            let mut j = cur + step;
+            while j >= 0 && j < n && self.rows_at(j).sep {
+                j += step;
+            }
+            if j < 0 || j >= n {
+                break;
+            }
+            cur = j;
+        }
+        self.sel = cur;
     }
 
     /// walk the visual layout top-to-bottom, invoking `f(content_y, global_row_index_or_-1, sec)`
@@ -292,16 +356,24 @@ impl TableView {
             if sy + h < vis_top || sy > vis_bot {
                 return; // fully scrolled out; a partial edge row is drawn and scissor-clipped to `frame`
             }
+            if row.sep {
+                // grouping hairline, on the row's centre line and inset to the label column so it
+                // reads as a divider between groups rather than a full-bleed panel rule
+                p.rect(Rect::new(content_x, sy + h * 0.5 - 1.0, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
+                    0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
+                return;
+            }
             let focused = gi == self.sel;
             let base = if focused { ink } else if row.dim { dimc } else { white };
             let row_bg = if focused { crate::ui::ACCENT } else { PANEL_BG };
             let cyc = sy + h * 0.5; // row vertical center
 
-            // leading check (SVG) on the active row
-            if row.checked {
+            // leading column (SVG): the active row's checkmark, else this row's action glyph —
+            // one column, so an action list and a picker line their labels up identically
+            if let Some(li) = if row.checked { Some(crate::ui::icons::Icon::Check) } else { row.licon } {
                 let cs = 26.0f32;
                 let cr = Rect::new(content_x + (CHECK_W - cs) * 0.5, cyc - cs * 0.5, cs, cs);
-                crate::ui::icons::draw(p, crate::ui::icons::Icon::Check, cr, base);
+                crate::ui::icons::draw(p, li, cr, base);
             }
             // trailing accessory (SVG)
             let mut trailing = 0.0f32;
