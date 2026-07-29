@@ -183,6 +183,51 @@ Returns one `Metadata[0]` with everything from §2 **plus** `tagline`, `studio`,
 (streamType 1=video, 2=audio, 3=subtitle; `codec`, `language`, `languageCode`,
 `channels`, `displayTitle`).
 
+### Intro / credits markers — `?includeMarkers=1` (verified live 2026-07-29, PMS 1.43.2)
+
+`Marker[]` is **omitted from the default response**, exactly like `Chapter[]`; the app asks for
+both on the one metadata GET (`plex::Client::metadata`).
+
+```
+GET /library/metadata/{rk}?includeMarkers=1&includeChapters=1
+```
+
+```jsonc
+"Marker": [
+  { "id": 3096, "type": "credits", "startTimeOffset": 3065648, "endTimeOffset": 3130720,
+    "final": true,  "Attributes": { "id": 3096, "version": 4 } },
+  { "id": 3096, "type": "intro",   "startTimeOffset": 990,     "endTimeOffset": 99625,
+    "Attributes": { "id": 3096 } }
+]
+```
+
+- `type` — `intro` | `credits` (PMS also emits `commercial` on DVR recordings). Offsets are **ms**.
+- `final: true` marks a credits segment that runs to the end of the file. It arrives as a JSON
+  **bool**, so it needs the lenient `de_i64` like every other Plex flag.
+- **The array is NOT sorted by time** — the sample above is verbatim, credits before intro.
+- **`id` is not an identity.** Every marker on every item came back as `id: 3096`; key markers by
+  kind + offsets, never by id.
+- Not every episode has both: The Morning Show S2E2 carries intro + credits, while The Office
+  S5E26 and Top Gear S14E7 carry credits only. Movies generally carry none.
+- A `final` marker's `endTimeOffset` equals the **container** duration, which the decoder's
+  playhead routinely stops short of — treat it as open-ended rather than exclusive, or an
+  end-of-item prompt blinks out over the last frames.
+
+### Up Next — the `continuous=1` PlayQueue already carries it (verified live 2026-07-29)
+
+There is no "what plays next" endpoint to call: the `POST /playQueues?continuous=1` the app makes
+for **every** playback (§7) returns the show's remaining episodes after the selected one, each a
+**full** `Metadata` row — `thumb`, `parentIndex`/`index`, `duration`, `viewOffset`, `summary`, and
+`Media[0].videoCodec`/`audioCodec` + `Part[0].key`. That is everything both the Up Next card and a
+subsequent direct-play need, so the feature costs zero extra round-trips.
+
+- Rows carry `playQueueItemID`; the container carries `playQueueSelectedItemID`,
+  `playQueueSelectedItemOffset` and `playQueueTotalCount`. Find the successor by **item id**, not
+  `ratingKey` — a queue may hold the same item twice.
+- The queue does **not** span past the available episodes: The Office S5E26 (the last episode on
+  this server) returns `playQueueTotalCount: 1`, i.e. no successor. A movie behaves the same way.
+- The POST needs an `X-Plex-Client-Identifier`; without it PMS answers with an empty body.
+
 ### Show chain (verified with "Every Year After", ratingKey 1857)
 
 ```

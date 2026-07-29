@@ -15,7 +15,7 @@ use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, ControlStyle};
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::c_int;
-use std::ptr::addr_of_mut;
+use std::ptr::{addr_of, addr_of_mut};
 
 // ---- retained view-tree migration (step 6.2): detail's mutable state lives in DetailView, reached
 // through the lazy view() accessor. The frozen pub(crate) fns (open/update/draw/move_focus/…) keep
@@ -528,6 +528,7 @@ pub(crate) fn update(dt: f32) {
             v.card_scale.jump(1.0);
         }
     }
+    pump_reveal(); // after pump_season: a landing season resets the episode focus this restores
     view().spin_ms += dt * 1000.0;
     // the flow top rides the measured hero: buttons bottom + one standardized gap (hero_layout)
     view().column.top = hero_layout(selected()).3 + CD + BTN_CONTENT_GAP;
@@ -1278,6 +1279,69 @@ pub(crate) fn open_rk_now(rk: &str) {
 
 /// Open the SHOW detail page for `show_rk` with the season numbered `season_num` selected
 /// (a season entry point routes to the show page, not a standalone season page).
+/// A show page opened FROM playback, landing on the episode that was playing.
+///
+/// The seasons and the episode list arrive from separate fetches, neither of which has landed when
+/// the player exits, so the request is RECORDED and applied by [`pump_reveal`] as the data shows up.
+/// The alternative — the blocking `open_rk_season` the home path uses — would put 2-5 PMS round
+/// trips on the BACK keypress, on the same frame that is already tearing the pipeline down.
+static mut REVEAL: Option<(String, i64, String)> = None; // show rk, season index, episode rk
+
+pub(crate) fn open_show_at_episode(show_rk: &str, season: i64, ep_rk: &str) {
+    open_rk(show_rk);
+    unsafe { *addr_of_mut!(REVEAL) = Some((show_rk.to_string(), season, ep_rk.to_string())) }
+}
+
+/// Apply a pending reveal once its data lands. Two stages, because the season tab and the episode
+/// row come from different fetches; runs AFTER `pump_season` so it wins the focus reset that a
+/// landing season performs.
+fn pump_reveal() {
+    let want = match unsafe { (*addr_of!(REVEAL)).clone() } {
+        Some(w) => w,
+        None => return,
+    };
+    let (show_rk, season, ep_rk) = want;
+    // Everything is read out of `current()` BEFORE `load_season` is called: that write goes through
+    // the same static this borrow came from.
+    let state = metadata::current().map(|d| {
+        (
+            d.rk.clone(),
+            d.seasons.iter().position(|s| s.index == season),
+            d.seasons.is_empty(),
+            d.cur_season,
+            d.episodes.iter().position(|e| e.rk == ep_rk),
+            d.episodes.is_empty(),
+        )
+    });
+    let Some((rk, season_pos, no_seasons, cur_season, ep_pos, no_eps)) = state else { return };
+    if rk != show_rk {
+        unsafe { *addr_of_mut!(REVEAL) = None }; // the page moved on — not ours to steer
+        return;
+    }
+    if no_seasons {
+        return; // the show fetch is still in flight
+    }
+    if let Some(pos) = season_pos {
+        if cur_season != pos {
+            if !metadata::season_loading() {
+                metadata::load_season(pos);
+            }
+            return; // that season's episodes aren't here yet
+        }
+    }
+    if let Some(i) = ep_pos {
+        let v = view();
+        v.section = 2; // the episode row
+        v.col = i as c_int;
+        v.saved_col[2] = i as c_int;
+        v.card_scale.jump(1.0);
+        unsafe { *addr_of_mut!(REVEAL) = None };
+    } else if !no_eps {
+        // the season landed and it isn't in there — stop trying rather than spin
+        unsafe { *addr_of_mut!(REVEAL) = None };
+    }
+}
+
 pub(crate) fn open_rk_season(show_rk: &str, season_num: c_int) {
     open_rk_now(show_rk); // BLOCKING: the season lookup below indexes the loaded item's seasons
     if let Some(d) = metadata::current() {

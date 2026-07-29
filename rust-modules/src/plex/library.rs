@@ -53,10 +53,13 @@ impl Client {
     }
 
     /// GET /library/metadata/{rating_key} → the single item (`.metadata[0]`), or None.
-    /// `includeChapters=1` — PMS omits the `Chapter[]` array from the default response.
+    /// `includeChapters=1` / `includeMarkers=1` — PMS omits BOTH the `Chapter[]` and `Marker[]`
+    /// arrays from the default response. Markers drive the in-player Skip Intro / Skip Credits
+    /// prompt, so they ride the detail fetch rather than costing a second round trip.
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
         let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
             .int("includeChapters", 1)
+            .int("includeMarkers", 1)
             .build();
         self.get_json(&path)?.metadata.into_iter().next()
     }

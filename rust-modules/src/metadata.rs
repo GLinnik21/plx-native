@@ -96,6 +96,106 @@ pub(crate) struct Chapter {
     pub(crate) thumb: String, // server image path → resolve_tex (empty if no chapter thumbs)
 }
 
+/// Which timeline segment a [`Marker`] describes. Only the two the player acts on are modelled —
+/// PMS also emits `commercial` on recorded content, which [`convert_markers`] drops, so an
+/// unhandled kind can never be mistaken for one of these.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MarkerKind {
+    Intro,
+    Credits,
+}
+
+/// A server-detected intro / credits segment of the playing item (`?includeMarkers=1`). Drives
+/// the in-player Skip prompt and — for an episode with something queued after it — the moment the
+/// Up Next control takes over.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Marker {
+    pub(crate) kind: MarkerKind,
+    pub(crate) start_ms: i64,
+    pub(crate) end_ms: i64,
+    /// this credits segment runs to the end of the item (PMS `final: true`)
+    pub(crate) final_seg: bool,
+}
+
+/// Parse a leaf's `Marker[]` into the app's model, dropping kinds the player has no behaviour for
+/// and any segment whose offsets are not a forward range (a zero-length or inverted marker would
+/// otherwise produce a prompt that can never be satisfied by seeking to its end).
+fn convert_markers(markers: &[crate::plex::Marker]) -> Vec<Marker> {
+    markers
+        .iter()
+        .filter_map(|m| {
+            let kind = match m.kind.as_str() {
+                "intro" => MarkerKind::Intro,
+                "credits" => MarkerKind::Credits,
+                _ => return None,
+            };
+            (m.end_time_offset > m.start_time_offset && m.start_time_offset >= 0).then_some(Marker {
+                kind,
+                start_ms: m.start_time_offset,
+                end_ms: m.end_time_offset,
+                final_seg: m.is_final != 0,
+            })
+        })
+        .collect()
+}
+
+/// Segments the user has already skipped in THIS playback, identified by kind + start (a leaf has
+/// at most an intro and a credits, so this never grows past two).
+static mut SKIPPED: Vec<(MarkerKind, i64)> = Vec::new();
+
+/// Record that `m` has been skipped, so it is never offered again for this item.
+///
+/// This is what makes skipping terminal, and it is not belt-and-braces. `av_seek_frame` is called
+/// with `AVSEEK_FLAG_BACKWARD` (`ff.rs`), so it lands on the keyframe **at or before** the target —
+/// seeking to a marker's `end_ms` therefore resumes a few seconds INSIDE the segment, whose keyframe
+/// spacing is the file's, not ours. Without this latch the button reappeared moments after the skip
+/// and pressing it seeked to the same place again: press → jump back a little → press → forever.
+/// Padding the seek target cannot fix that (keyframe intervals vary from 2 s to 10 s); refusing to
+/// re-offer a segment the user has already dismissed can, and is what they meant by the press.
+pub(crate) fn mark_skipped(m: Marker) {
+    let key = (m.kind, m.start_ms);
+    unsafe {
+        let v = &mut *addr_of_mut!(SKIPPED);
+        if !v.contains(&key) {
+            v.push(key);
+        }
+    }
+}
+
+/// The segment the playhead is inside right now, or None — the ONE live "what am I in" read, so
+/// no UI module has to re-derive it (and none has to ask another module a question about it).
+///
+/// Gated on `is_playing()`: through the whole pre-roll (Connecting/Buffering/Seeking) `playpos_ns`
+/// is still 0 or frozen at a seek target, and an item whose intro starts at 0 would otherwise
+/// report a segment during every load. Segments already skipped are filtered out — see
+/// [`mark_skipped`].
+pub(crate) fn active_marker() -> Option<Marker> {
+    if !crate::player::is_playing() {
+        return None;
+    }
+    let m = marker_at(playing_markers(), crate::player::playpos_ns() / 1_000_000)?;
+    let skipped = unsafe { &*addr_of!(SKIPPED) };
+    (!skipped.contains(&(m.kind, m.start_ms))).then_some(m)
+}
+
+/// The marker containing `pos_ms`, if any — the ONE "am I inside a skippable segment" rule, shared
+/// by the skip prompt and the end-of-episode handoff so they can never disagree about where a segment
+/// begins. The range is half-open (`start <= pos < end`) so the prompt clears itself the instant a
+/// skip lands on `end_ms` rather than re-offering the segment it just left.
+///
+/// A `final` credits marker is treated as running to `i64::MAX` rather than its stated `end_ms`:
+/// PMS sets that end to the container duration, but our playhead is the DECODER's, which routinely
+/// stops a few hundred ms short of it — so the prompt would blink out over the last frames.
+pub(crate) fn marker_at(markers: &[Marker], pos_ms: i64) -> Option<Marker> {
+    markers
+        .iter()
+        .find(|m| {
+            let end = if m.final_seg { i64::MAX } else { m.end_ms };
+            pos_ms >= m.start_ms && pos_ms < end
+        })
+        .copied()
+}
+
 #[derive(Default)]
 pub(crate) struct Detail {
     pub(crate) rk: String,
@@ -129,6 +229,7 @@ pub(crate) struct Detail {
     pub(crate) cur_season: usize,
     pub(crate) related: Vec<Related>,
     pub(crate) chapters: Vec<Chapter>,
+    pub(crate) markers: Vec<Marker>, // intro / credits segments (leaf items only)
 }
 
 // The one loaded detail item (the detail page shows a single item at a time).
@@ -260,6 +361,7 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
                 thumb: c.thumb.clone(),
             })
             .collect(),
+        markers: convert_markers(&it.marker),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).
@@ -310,24 +412,34 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
     }
 }
 
-// ---- the PLAYING-item track store — the in-player source of truth ---------------------------
+// ---- the PLAYING-item store — the in-player source of truth ---------------------------------
 // Unlike `current()` (the detail page's item — it stays on the SHOW during an episode play, and
 // can be a different item entirely when playing straight from Home), this always holds the
-// played leaf's OWN streams. The track menu and the route's audio pick read it; feeding a menu
-// built from episode 1's streams to a playback of episode 5 was a real track-identity bug.
+// played leaf's OWN data. The track menu and the route's audio pick read its streams; feeding a
+// menu built from episode 1's streams to a playback of episode 5 was a real track-identity bug.
+// `markers` is here for exactly that reason and not on `Detail`: skipping episode 1's intro
+// timing during episode 5 is the same bug wearing a different hat.
 
 #[derive(Clone)]
-pub(crate) struct PlayingTracks {
+pub(crate) struct PlayingItem {
     pub(crate) rk: String,
     pub(crate) audio: Vec<Stream>,
     pub(crate) subs: Vec<Stream>,
     pub(crate) video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
+    pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
 }
-static mut PLAYING: Option<PlayingTracks> = None;
+static mut PLAYING: Option<PlayingItem> = None;
 
-/// the playing item's track lists (None until a catalog item starts playing). Main-thread only.
-pub(crate) fn playing() -> Option<&'static PlayingTracks> {
+/// the playing leaf's own streams + markers (None until a catalog item starts playing).
+/// Main-thread only.
+pub(crate) fn playing() -> Option<&'static PlayingItem> {
     unsafe { (*addr_of!(PLAYING)).as_ref() }
+}
+
+/// The playing leaf's markers, or an empty slice — the ONE accessor the in-player skip prompt
+/// reads, so no call site has to know the store can be absent mid-resolve.
+pub(crate) fn playing_markers() -> &'static [Marker] {
+    playing().map(|p| p.markers.as_slice()).unwrap_or(&[])
 }
 
 /// Load the playing-item track store for `rk` at play time (route::build_stream). Reuses the
@@ -342,31 +454,55 @@ pub(crate) fn playing() -> Option<&'static PlayingTracks> {
 /// when it IS this item, so playing from a detail page costs no extra GET. Snapshotted into
 /// `ResolveEnv` and handed to the worker; splitting the fetch out lost this and quietly added a
 /// PMS round trip to every play from a detail page.
-pub(crate) fn cached_playing(rk: &str) -> Option<PlayingTracks> {
-    current().filter(|d| d.rk == rk && !d.audio.is_empty()).map(|d| PlayingTracks {
+pub(crate) fn cached_playing(rk: &str) -> Option<PlayingItem> {
+    current().filter(|d| d.rk == rk && !d.audio.is_empty()).map(|d| PlayingItem {
         rk: rk.to_string(),
         audio: d.audio.clone(),
         subs: d.subs.clone(),
         video_fps: d.video_fps,
+        markers: d.markers.clone(),
     })
 }
 
-pub(crate) fn fetch_playing_tracks(rk: &str) -> Option<PlayingTracks> {
+pub(crate) fn fetch_playing_item(rk: &str) -> Option<PlayingItem> {
     if rk.is_empty() {
         return None;
     }
-    let (audio, subs, video_fps) = crate::plex::client_opt()
-        .and_then(|c| c.metadata(rk))
+    let it = crate::plex::client_opt().and_then(|c| c.metadata(rk));
+    // Markers hang off the ITEM, streams off its first Part — so a part-less response still
+    // yields usable markers instead of discarding both.
+    let markers = it.as_ref().map(|it| convert_markers(&it.marker)).unwrap_or_default();
+    let (audio, subs, video_fps) = it
+        .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
-    Some(PlayingTracks { rk: rk.to_string(), audio, subs, video_fps })
+    Some(PlayingItem { rk: rk.to_string(), audio, subs, video_fps, markers })
 }
 
-/// MAIN THREAD: install a fetched track store.
-pub(crate) fn install_playing(pt: Option<PlayingTracks>) {
+/// Retire BOTH descriptions of the item that was playing, together.
+///
+/// They have to move as one. `NOW` feeds the HUD caption and Info card; `PLAYING` feeds the track
+/// menu and — since markers landed here — the skip/Up Next controls. Clearing only `NOW` (which is
+/// what each play path used to do by hand) leaves the FINISHED episode's markers live for the whole
+/// resolve + pre-roll of the next one, and a `final` credits marker is deliberately open-ended to
+/// `i64::MAX`, so a stale one matches any playhead: the new episode would offer to skip its own
+/// credits seconds after starting. Nothing fires today, but only by incidental ordering — this
+/// makes it a contract instead.
+pub(crate) fn retire_playing() {
+    set_now_playing(None);
+    unsafe {
+        *addr_of_mut!(PLAYING) = None;
+        (*addr_of_mut!(SKIPPED)).clear();
+    }
+}
+
+/// MAIN THREAD: install a fetched playing-item store.
+pub(crate) fn install_playing(pt: Option<PlayingItem>) {
+    unsafe { (*addr_of_mut!(SKIPPED)).clear() }; // a different leaf's markers, so a fresh slate
     if let Some(pt) = &pt {
         crate::player::log(&format!(
-            "playing tracks: rk={} audio={} subs={}", pt.rk, pt.audio.len(), pt.subs.len()));
+            "playing item: rk={} audio={} subs={} markers={}",
+            pt.rk, pt.audio.len(), pt.subs.len(), pt.markers.len()));
     }
     unsafe { *addr_of_mut!(PLAYING) = pt };
 }
@@ -784,6 +920,80 @@ pub(crate) fn pump_season() -> bool {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    fn wire(kind: &str, start: i64, end: i64, is_final: bool) -> crate::plex::Marker {
+        crate::plex::Marker {
+            kind: kind.to_string(),
+            start_time_offset: start,
+            end_time_offset: end,
+            is_final: is_final as i64,
+        }
+    }
+    /// The Morning Show S2E2 as the live server actually returns it (2026-07-29): an intro and a
+    /// `final` credits marker, in that wire order — credits FIRST, which is why nothing here may
+    /// assume the array is sorted by time.
+    fn morning_show() -> Vec<Marker> {
+        convert_markers(&[
+            wire("credits", 3_065_648, 3_130_720, true),
+            wire("intro", 990, 99_625, false),
+        ])
+    }
+
+    #[test]
+    fn only_the_kinds_the_player_acts_on_survive_parsing() {
+        let m = morning_show();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].kind, MarkerKind::Credits);
+        assert!(m[0].final_seg);
+        assert_eq!(m[1].kind, MarkerKind::Intro);
+        assert!(!m[1].final_seg);
+        // `commercial` (PMS emits it on recorded content) has no behaviour — it must be DROPPED,
+        // not defaulted into one of the two, or the pill would offer to skip an ad break as an intro.
+        assert!(convert_markers(&[wire("commercial", 10, 20, false)]).is_empty());
+        assert!(convert_markers(&[wire("", 10, 20, false)]).is_empty());
+    }
+
+    #[test]
+    fn a_degenerate_range_is_dropped_rather_than_offered() {
+        // A zero-length or inverted marker would produce a prompt that seeking to `end_ms` can
+        // never satisfy — the pill would sit there and the press would do nothing.
+        assert!(convert_markers(&[wire("intro", 500, 500, false)]).is_empty());
+        assert!(convert_markers(&[wire("intro", 900, 100, false)]).is_empty());
+        assert!(convert_markers(&[wire("credits", -5, 100, true)]).is_empty());
+    }
+
+    #[test]
+    fn the_playhead_selects_the_segment_it_is_inside() {
+        let m = morning_show();
+        assert!(marker_at(&m, 0).is_none(), "before the intro starts (it begins at 990ms)");
+        assert_eq!(marker_at(&m, 990).unwrap().kind, MarkerKind::Intro, "inclusive at the start");
+        assert_eq!(marker_at(&m, 50_000).unwrap().kind, MarkerKind::Intro);
+        assert!(marker_at(&m, 99_625).is_none(), "EXCLUSIVE at the end: skipping to it clears the pill");
+        assert!(marker_at(&m, 2_000_000).is_none(), "the long middle of the episode");
+        assert_eq!(marker_at(&m, 3_065_648).unwrap().kind, MarkerKind::Credits);
+        assert!(marker_at(&[], 1234).is_none());
+    }
+
+    #[test]
+    fn a_final_credits_marker_holds_past_its_stated_end() {
+        // PMS sets a `final` marker's end to the CONTAINER duration, but our playhead is the
+        // decoder's and routinely stops short of it — an exclusive end there made the pill blink
+        // out over the last frames, exactly when it is being reached for.
+        let m = morning_show();
+        assert!(marker_at(&m, 3_130_720).is_some(), "at the stated end");
+        assert!(marker_at(&m, 3_130_720 + 5_000).is_some(), "and past it");
+
+        // A NON-final credits marker (credits before a post-credits scene) must still end, or
+        // playback past it would keep offering a skip for a segment already behind the playhead.
+        let mid = convert_markers(&[wire("credits", 1000, 2000, false)]);
+        assert!(marker_at(&mid, 1500).is_some());
+        assert!(marker_at(&mid, 2000).is_none(), "a non-final segment ends where it says it does");
     }
 }
 

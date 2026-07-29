@@ -336,7 +336,10 @@ the perf gates), and `make test` = `deploy` + `run`.
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (empty =
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or
   tap-relative `+10`/`-10` — rapid-burst seek testing), `/tmp/plxnative-ptype` (ACB playerType
-  bisect knob), and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
+  bisect knob), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
+  server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
+  `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
+  minutes of episode first), and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
   `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre).
   Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it

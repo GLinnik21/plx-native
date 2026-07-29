@@ -88,6 +88,13 @@ pub const ACCENT: [f32; 4] = [0.914, 0.902, 0.878, 1.0];
 pub const ACCENT_INK: [f32; 4] = [0.03, 0.03, 0.04, 1.0];
 /// Alias for [`ACCENT_INK`] read from the "ink over accent" intent.
 pub const INK_ON_ACCENT: [f32; 4] = ACCENT_INK;
+/// The *spent* portion of a control that is counting down ([`Button::progress`](crate::ui::widgets::Button::progress)).
+/// A dimmed [`ACCENT`], NOT a different hue: the control stays focused-looking end to end, so the
+/// sweep reads as time passing rather than as the focus state changing. Deliberately close enough
+/// to `ACCENT` that [`ACCENT_INK`] stays legible on BOTH sides — the first version flipped the ink
+/// at the sweep line and cut the label in half mid-word.
+pub const CONTROL_SPENT_FILL: [f32; 4] = [0.749, 0.739, 0.720, 1.0];
+
 /// Idle (unfocused) control disc/pill fill — solid dark, faintly translucent.
 pub const CONTROL_IDLE_FILL: [f32; 4] = [0.145, 0.145, 0.153, 0.92];
 /// White glyph/label over an idle control.

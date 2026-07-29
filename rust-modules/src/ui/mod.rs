@@ -24,6 +24,7 @@ pub mod library; // the Library browse screen (poster wall + server-driven sort/
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
+pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub mod profile;
@@ -31,6 +32,7 @@ pub mod table;
 pub mod text_view;
 pub mod theme;
 pub mod track_menu;
+pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
 
 /// Player HUD accent palette — the mockup's "Snow": a warm off-white focus fill with near-black
