@@ -359,6 +359,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // must still wipe it — otherwise a profile switch whose fetch fails would leave the
             // previous user's shelves on screen.
             crate::pms::reset();
+            crate::person::reset(); // ditto for an open person page's shelves
             let nmov = crate::pms::pms_fetch_hubs();
             // section discovery (one small GET) so Home's library tab pills carry real titles
             let nsec = crate::browse::ensure_sections();
@@ -606,6 +607,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             ItemMenu, // Home + the press-and-hold card context menu popover (ui/item_menu.rs)
             Library,  // the browse grid (ui/library.rs); its sort/filter menus are internal state
             Detail,
+            /// The person/actor page (ui/person.rs), reached by OK on a detail page's cast
+            /// headshot. Exclusive with Detail like every other node — the detail page it came
+            /// from is remembered by the screen, not encoded here (see `person::leave`).
+            Person,
             Player { overlay: Overlay },
         }
         /// Which panel owns the frame — the ONE place that decision lives, read by the pointer
@@ -652,6 +657,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // Same shape for the Library: BACK from a detail page opened off the browse grid returns
         // to the Library (its focus/scroll persist in the browse store), else Home.
         let mut opened_from_library = false;
+        // And again for the person page: a detail page opened off one of its shelves returns
+        // THERE, not to Home — the person's shelves and focus are still live in `person`, so the
+        // page comes back exactly as it was. It outranks `opened_from_library` (it is the nearer
+        // node), which keeps its value underneath so BACK eventually still reaches the Library.
+        let mut opened_from_person = false;
 
         /// Open the focused Library card's detail page — the ONE library-card activation
         /// (OK-press commit AND pointer click). Library cards are movies/shows, so activation is
@@ -664,6 +674,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let rk = mm.rk.clone();
             crate::ui::detail::open_rk(&rk);
             *opened_from_library = true;
+            *route = Route::Detail;
+        }
+
+        /// Open the focused person-page shelf card's detail page — the ONE person-card activation
+        /// (OK-press commit AND pointer click), the twin of [`open_library_card`]. The person page
+        /// is left standing behind it, so BACK comes straight back to the same shelf position.
+        fn open_person_card(route: &mut Route, opened_from_person: &mut bool) {
+            let Some(mm) = crate::ui::person::focused_item() else { return };
+            if mm.rk.is_empty() {
+                return;
+            }
+            let rk = mm.rk.clone();
+            crate::ui::detail::open_rk(&rk);
+            *opened_from_person = true;
             *route = Route::Detail;
         }
 
@@ -1509,6 +1533,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if !matches!(route, Route::Player { .. }) && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN) {
                         if matches!(route, Route::Detail) {
                             crate::ui::detail::move_focus(sym as c_int);
+                        } else if matches!(route, Route::Person) {
+                            crate::ui::person::move_focus(sym);
                         } else if matches!(route, Route::Library) {
                             crate::ui::library::move_focus(sym);
                         } else if g_snap() < 0.5 {
@@ -1594,6 +1620,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     &mut played_from_detail,
                                     &mut hud_nav,
                                 );
+                            }
+                        } else if matches!(route, Route::Person) {
+                            // every focusable thing on the person page is a poster card → the
+                            // same tvOS press as home's grid, committed on the spring-back
+                            if crate::ui::person::focus_is_card() {
+                                crate::ui::press::begin(SDL_GetTicks());
+                                ok_armed = true;
                             }
                         } else {
                             // home: dispatch through the ONE activation (shared with pointer
@@ -1719,10 +1752,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // menu -> tab bar (library::back), THEN leaves to Home.
                         if matches!(route, Route::Player { .. }) {
                             exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at);
+                        } else if matches!(route, Route::Person) {
+                            // BACK off the person page returns to the detail page its cast row was
+                            // on — `leave` re-opens that item only if this page navigated away from
+                            // it in the meantime.
+                            crate::ui::person::leave();
+                            route = Route::Detail;
                         } else if matches!(route, Route::Detail) {
+                            // a detail page opened off a person shelf returns to that page first
+                            // (nearer node); `opened_from_library` stays set underneath it
                             crate::ui::detail::close();
-                            route = if opened_from_library { Route::Library } else { Route::Home };
-                            opened_from_library = false;
+                            // gated on the store still holding that person: a profile switch
+                            // (`person::reset`) drops it, and routing back to a page with no item
+                            // would draw an empty screen
+                            if opened_from_person && crate::person::current().is_some() {
+                                opened_from_person = false;
+                                route = Route::Person;
+                            } else {
+                                opened_from_person = false;
+                                route = if opened_from_library { Route::Library } else { Route::Home };
+                                opened_from_library = false;
+                            }
                         } else if matches!(route, Route::Library) {
                             if !crate::ui::library::back() {
                                 route = Route::Home;
@@ -1767,6 +1817,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::item_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Library) {
                         crate::ui::library::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Person) {
+                        crate::ui::person::pointer_focus(mx, my);
                     } else if matches!(route, Route::Home) {
                         // hover moves focus on the route that owns the screen — and ONLY there
                         // (Detail/Login hover used to silently mutate home's focus behind them)
@@ -1888,6 +1940,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             crate::ui::library::Action::None => {}
                         }
+                    } else if matches!(route, Route::Person) {
+                        let cx = rd_i32(&ev, 20) as f32;
+                        let cy = rd_i32(&ev, 24) as f32;
+                        if matches!(crate::ui::person::click(cx, cy), crate::ui::person::Action::Card) {
+                            open_person_card(&mut route, &mut opened_from_person);
+                        }
                     } else if matches!(route, Route::Account) {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -1961,6 +2019,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         } else if matches!(route, Route::Detail) {
                             crate::ui::detail::move_focus(if dy < 0 { SDLK_DOWN } else { SDLK_UP } as c_int);
+                        } else if matches!(route, Route::Person) {
+                            crate::ui::person::move_focus(if dy < 0 { SDLK_DOWN } else { SDLK_UP });
                         } else if matches!(route, Route::Library) {
                             crate::ui::library::wheel(dy);
                         }
@@ -2079,6 +2139,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if let Ok(n) = std::fs::read_to_string("/tmp/plxnative-detailcol") {
                             for _ in 0..n.trim().parse::<u32>().unwrap_or(0) {
                                 crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
+                            }
+                        }
+                        // dev: /tmp/plxnative-detailok presses OK on whatever the two triggers
+                        // above focused, WITHOUT the play path — the deterministic one-boot route
+                        // to a section whose OK navigates rather than plays. Today that means the
+                        // cast row → the person page (detailsec/detailcol pick the headshot); the
+                        // press animation is skipped on purpose, this is the activation only.
+                        if std::path::Path::new("/tmp/plxnative-detailok").exists() {
+                            crate::ui::detail::on_ok();
+                            if crate::ui::person::take_request() {
+                                route = Route::Person;
                             }
                         }
                         // dev: /tmp/plxnative-detailplay activates the focused control (headless play test)
@@ -2491,6 +2562,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         Route::Detail => {
                             if crate::ui::detail::on_ok() {
                                 start_playback(mt, crate::ui::detail::last_resume_ns(), true, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut hud_nav);
+                            } else if crate::ui::person::take_request() {
+                                // a cast headshot: `on_ok` loaded the person store, this routes to it
+                                route = Route::Person;
+                            }
+                        }
+                        Route::Person => {
+                            if matches!(crate::ui::person::on_ok(), crate::ui::person::Action::Card) {
+                                open_person_card(&mut route, &mut opened_from_person);
                             }
                         }
                         Route::Profiles => crate::ui::profiles::select_focused(),
@@ -2575,6 +2654,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::detail::move_focus(sym as c_int);
                 }
                 crate::ui::detail::update(dt);
+            }
+            if matches!(route, Route::Person) {
+                // owns the `/library/people/{id}/media` pump — the shelves land here, and the
+                // retry backoff only ticks while the page is actually up
+                crate::ui::person::update(dt);
             }
             if matches!(route, Route::Player { overlay: Overlay::Menu }) {
                 crate::ui::track_menu::update(dt); // pill slide + open fade
@@ -2663,6 +2747,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::profiles::draw();
                     } else if matches!(route, Route::Detail) {
                         crate::ui::detail::draw();
+                    } else if matches!(route, Route::Person) {
+                        crate::ui::person::draw();
                     } else if matches!(route, Route::Library) {
                         crate::ui::library::draw();
                     } else {
@@ -2700,6 +2786,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::ItemMenu => "itemmenu",
                 Route::Library => "library",
                 Route::Detail => "detail",
+                Route::Person => "person",
                 Route::Player { .. } => "player",
                 _ => "home",
             };

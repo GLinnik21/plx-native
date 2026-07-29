@@ -281,6 +281,66 @@ pub(crate) fn draw_focused(
     }
 }
 
+/// THE one-row strip loop: draw a whole horizontal shelf, non-focused tiles first (off-axis
+/// culled) and the focused tile LAST for its z-order — the in-row focused-last rule, which is all
+/// a lone strip needs (home's `Grid` keeps its own CROSS-row pass, which this deliberately does
+/// not try to own).
+///
+/// This is the loop the detail page's Related and Cast rows and the person page's Movies/Shows
+/// shelves all run; it lives here rather than in a screen so the culling discipline travels with
+/// it. **Only tiles that pass `on_axis` are drawn, and therefore only they call `resolve_tex`** —
+/// the 64-slot poster LRU must never see an off-screen request, which is exactly what a
+/// hand-rolled per-screen copy of this loop keeps getting wrong.
+///
+/// The caller supplies the per-index content as closures: `art` the tile's [`Art`], `resume` its
+/// amber progress fraction (`None` = not in progress), `title` the FOCUSED tile's under-title
+/// (`None` for a row that captions every tile instead), and `extra` any per-tile caption drawn
+/// for EVERY tile (cast names/roles). `axis_span` widens the cull band where captions should
+/// survive slightly off-screen.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn strip<'a>(
+    p: Painter,
+    row: &CardRow,
+    n: usize,
+    focus_col: std::os::raw::c_int,
+    row_y: f32,
+    size: (f32, f32),
+    pitch: f32,
+    sty: &RowStyle,
+    axis_span: f32,
+    art: impl Fn(usize) -> Art<'a>,
+    resume: impl Fn(usize) -> Option<f32>,
+    title: impl Fn(usize) -> Option<std::ffi::CString>,
+    extra: impl Fn(Painter, usize, f32, bool),
+) {
+    let sx = row.scroll_x();
+    let pr = p.translate(-sx, 0.0);
+    for i in 0..n {
+        if i as std::os::raw::c_int == focus_col {
+            continue; // focused tile drawn last
+        }
+        let x = sty.margin_x + i as f32 * pitch;
+        if !crate::ui::on_axis(x - sx, size.0, axis_span, 0.0) {
+            continue;
+        }
+        let s = row.scale(i);
+        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        draw_tile(pr, art(i), rect, s, sty, resume(i));
+        extra(pr, i, x, false);
+    }
+    if focus_col >= 0 && (focus_col as usize) < n {
+        let i = focus_col as usize;
+        let x = sty.margin_x + i as f32 * pitch;
+        // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
+        let s = row.scale(i) * crate::ui::press::scale();
+        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        let tc = title(i); // kept alive across the draw call
+        let tp = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+        draw_focused(pr, art(i), rect, s, sty, resume(i), tp, std::ptr::null(), false);
+        extra(pr, i, x, true);
+    }
+}
+
 /// One centered metadata line under a focused tile: elided to the tile-plus-gaps budget and kept
 /// inside the screen edges — a long episode title under an edge tile used to run off the panel.
 fn under_label(

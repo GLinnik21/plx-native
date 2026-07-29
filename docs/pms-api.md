@@ -130,6 +130,47 @@ spec's "Media Queries" section documents the full query language.
 
 ---
 
+## 2c. People — cast/crew tags and the person page (verified live 2026-07-29, PMS 1.43.2)
+
+The tag arrays on an item (`Role[]`, `Director[]`, `Writer[]`) are the entry point, and they
+carry **six** attributes, not the three the app used to parse:
+
+```json
+{ "id": 465, "filter": "actor=465", "tag": "Cynthia Erivo",
+  "tagKey": "5d776c4b7a53e9001e73f56d", "role": "Elphaba",
+  "thumb": "https://metadata-static.plex.tv/b/people/b575cd9….jpg" }
+```
+
+`id` and `tagKey` are what make a person page reachable (`plex::Tag`). `count` also appears in
+the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown, not as none.
+
+- **The person record:** `GET /library/people/{personId}` → `Directory[0]` =
+  `{id, filter, tag, tagType, tagKey, thumb}`. `personId` accepts **either** the numeric `id`
+  **or** the `tagKey` hex guid — both verified against the same record (`161` /
+  `5d77682aeb5d26001f1de4b0`). **There is no biography, no birth date and no social handle
+  here** — the record is only the tag. (`GET /library/metadata/{tagKey}` 404s; that is the wrong
+  endpoint.) A bio needs a plex.tv call, not a PMS one. Because the record adds nothing to what
+  `Role[]` already gave the caller, the app does **not** issue this request: the person page is
+  opened on the cast row's own name + thumb.
+- **The person's titles:** `GET /library/people/{personId}/media` → `Metadata[]`, everything the
+  person appears in **across EVERY library section in one request** (person 161 → 3 items;
+  person 6059 → 6). This is the right call for a person page; `?actor=<id>` below is the right
+  call when you want one section.
+- **`viewGroup` on that container is unreliable — group by each row's own `type`.** Verified:
+  person 6059's response carries `viewGroup:"movie"` over five `movie` rows *and* one `show`.
+- **Per-section listing:** `GET /library/sections/{key}/all?actor=<id>` (the `filter` string on
+  the tag is exactly this query, ready-made).
+- **The whole actor list of a section:** `GET /library/sections/{key}/actor` → `Directory[]` of
+  `{key: "<id>", title, thumb, fastKey: "/library/sections/2/all?actor=691"}` (51 on Movies, 56
+  on TV Shows here). NB the rows key the id as **`key`/`title`**, not `id`/`tag` — a different
+  shape from the tag arrays above. This is the *Categories → by Actor* browse axis.
+- **Headshots are absolute `https://metadata-static.plex.tv/…` URLs**, which the raw-socket
+  client can never fetch (no DNS, no TLS). They render anyway because `image_transcode_path`
+  passes the whole URL as `url=` to `/photo/:/transcode` and **the server does the TLS** — the
+  same path posters take. Never invent another image route for them.
+
+---
+
 ## 3. Hubs (home shelves)
 
 ```

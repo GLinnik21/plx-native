@@ -312,6 +312,12 @@ pub struct Stream {
     pub selected: i64,
 }
 
+/// A tag row — `Genre[]`, `Country[]`, `Role[]`, `Director[]`, `Writer[]`. The three PEOPLE
+/// arrays carry six attributes, all of them modelled here; verified live 2026-07-29:
+/// `{"id":161,"filter":"actor=161","tag":"Idina Menzel","tagKey":"5d77682a…","count":3,
+///   "role":"Elsa (voice)","thumb":"https://metadata-static.plex.tv/…jpg"}`.
+/// [`id`](Tag::id)/[`tag_key`](Tag::tag_key) are what make the person page reachable — either is
+/// the `personId` of `/library/people/{personId}[/media]` (docs/pms-api.md §2c).
 #[derive(Deserialize, Default)]
 pub struct Tag {
     #[serde(default)]
@@ -320,6 +326,24 @@ pub struct Tag {
     pub role: String, // Role[] only (character name)
     #[serde(default)]
     pub thumb: String, // headshot — on the crew arrays (Director[]/Writer[]) as well as Role[]
+    /// The tag's numeric library id — the `personId` of `/library/people/{id}[/media]`, and the
+    /// value behind `?actor=<id>` on a section listing. 0 = absent.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub id: i64,
+    /// Plex's global person guid (`"5d77682aeb5d26001f1de4b0"`) — stable across servers, and the
+    /// alternate `personId` (both forms verified live against the same record).
+    #[serde(rename = "tagKey", default)]
+    pub tag_key: String,
+    /// The server's own ready-made listing filter for this tag, e.g. `"actor=161"` /
+    /// `"director=459"` — append it to `/library/sections/{k}/all?` to list ONE section's items
+    /// for this person. Carries the tag's ROLE in the library (actor vs director vs writer),
+    /// which `id` alone does not.
+    #[serde(default)]
+    pub filter: String,
+    /// How many items in this library carry the tag — Plex's count badge. NOT emitted by every
+    /// server (this one omits it on `Role[]`), so 0 means "unknown", never "none".
+    #[serde(default, deserialize_with = "de_i64")]
+    pub count: i64,
 }
 
 /// Plex `Chapter[]` on a leaf item (movies/episodes with chapter data). Sibling of `Media[]`,
