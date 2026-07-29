@@ -735,7 +735,7 @@ pub(crate) struct PlayingItem {
     pub(crate) subs: Vec<Stream>,
     pub(crate) video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
     pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
-    pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the Chapters tab/strip + rail ticks
+    pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
 }
 static mut PLAYING: Option<PlayingItem> = None;
 
@@ -751,10 +751,10 @@ pub(crate) fn playing_markers() -> &'static [Marker] {
     playing().map(|p| p.markers.as_slice()).unwrap_or(&[])
 }
 
-/// The playing leaf's chapters, or an empty slice — the ONE accessor the Chapters strip and the
-/// scrubber's chapter ticks read. Deliberately NOT `current()`: during a show-page episode play
-/// `current()` is the SHOW (no `Chapter[]` at all), which is why the tab never appeared on that
-/// path, and a `current()` holding a different leaf would seek with another item's offsets.
+/// The playing leaf's chapters, or an empty slice — the ONE accessor the Chapters strip reads.
+/// Deliberately NOT `current()`: during a show-page episode play `current()` is the SHOW (no
+/// `Chapter[]` at all), which is why the tab never appeared on that path, and a `current()` holding
+/// a different leaf would seek with another item's offsets.
 pub(crate) fn playing_chapters() -> &'static [Chapter] {
     playing().map(|p| p.chapters.as_slice()).unwrap_or(&[])
 }
