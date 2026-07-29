@@ -384,11 +384,22 @@ struct QueueInfo {
     id: String,
     item_id: String,
     up_next: Option<UpNext>,
+    rows: Vec<crate::plex::QueueRow>,
 }
 
 /// The next episode of the item now playing, or None (a movie, the last episode, or a queue that
 /// failed). Installed by `apply_plan`; `request_play` retires it the moment a new item resolves.
 static mut UP_NEXT: Option<UpNext> = None;
+
+/// The whole queue behind the item now playing — the playing row included, in queue order,
+/// projected to `plex::QueueRow` ON THE RESOLVE WORKER (a `Metadata` row carries its entire
+/// Media/Part/Stream/Role tree; a show's queue is dozens of them, and this device is 32-bit).
+/// Same lifecycle as `UP_NEXT`: installed by `apply_plan`, retired by `request_play`.
+///
+/// Whatever the server sent is kept, uncapped — a projected row is ~300 bytes on this device, so
+/// even a whole show is tens of KB. The capping that matters is the DRAWING (a still per row is a
+/// GL texture); that belongs to the overlay, and `apply_plan` deliberately warms only `up_next`'s.
+static mut QUEUE: Vec<crate::plex::QueueRow> = Vec::new();
 
 /// The queued next episode. Main-thread only, and — like `metadata::playing()` — it hands out a
 /// `&'static` the Up Next control reads across a frame, so `apply_plan` (main thread) staying its
@@ -398,25 +409,42 @@ pub(crate) fn up_next() -> Option<&'static UpNext> {
     unsafe { (*addr_of!(UP_NEXT)).as_ref() }
 }
 
+/// The current playback's queue rows, in queue order, the row now playing among them — locate it
+/// with `plex::queue_index_of(rows, PQ_ITEM_ID.parse().unwrap_or(0), &cur_rk())`, which is the ONE
+/// implementation of the identity rule (item id, rating key as the fallback). Empty until a plan
+/// lands, and whenever the queue POST failed.
+///
+/// MAIN THREAD ONLY. Unlike [`up_next`] this lends the rows to a closure instead of handing out a
+/// `&'static`, and that is deliberate: `request_play` FREES this Vec as its first act, so a
+/// borrowed row used to start playback would be read after free — exactly the aliasing bug
+/// `request_play_up_next`'s by-value signature exists to make unrepresentable. A caller that wants
+/// to keep a row past the call clones it out (`with_queue(|q| q.get(i).cloned())`); the borrow
+/// checker cannot police a `&'static`, but it does police this.
+#[allow(dead_code)] // nothing reads the rows yet — the queue overlay that draws them is its own batch
+pub(crate) fn with_queue<R>(f: impl FnOnce(&[crate::plex::QueueRow]) -> R) -> R {
+    f(unsafe { &*addr_of!(QUEUE) })
+}
+
 /// Build the Up Next descriptor from a queue row. Episodes only: `continuous=1` on a movie
 /// returns just the movie itself (verified live — total count 1), and "up next" is a show idea.
-fn up_next_of(m: &crate::plex::Metadata) -> Option<UpNext> {
-    if m.kind != "episode" || m.rating_key.is_empty() {
+/// The gate belongs HERE, on the one-item control — the retained row list is deliberately not
+/// episode-gated, because a queue list has to be able to show whatever the queue holds.
+fn up_next_of(r: &crate::plex::QueueRow) -> Option<UpNext> {
+    if r.kind != "episode" || r.rk.is_empty() {
         return None;
     }
-    let media0 = m.media.first();
     Some(UpNext {
-        rk: m.rating_key.clone(),
-        part: m.first_part().map(|p| p.key.clone()).unwrap_or_default(),
-        vcodec: media0.map(|x| x.video_codec.clone()).unwrap_or_default(),
-        acodec: media0.map(|x| x.audio_codec.clone()).unwrap_or_default(),
-        show_title: m.grandparent_title.clone(),
-        ep_title: m.title.clone(),
-        season: m.parent_index,
-        index: m.index,
-        thumb: m.thumb.clone(),
-        dur_ms: m.duration,
-        resume_ms: m.view_offset,
+        rk: r.rk.clone(),
+        part: r.part.clone(),
+        vcodec: r.vcodec.clone(),
+        acodec: r.acodec.clone(),
+        show_title: r.show_title.clone(),
+        ep_title: r.title.clone(),
+        season: r.season,
+        index: r.index,
+        thumb: r.thumb.clone(),
+        dur_ms: r.dur_ms,
+        resume_ms: r.resume_ms,
     })
 }
 
@@ -440,8 +468,8 @@ fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> QueueInfo {
         Some(q) => {
             let up_next = q.next.as_ref().and_then(up_next_of);
             crate::player::log(&format!(
-                "playqueue: id={} item={} remaining={} next={}",
-                q.id, q.selected_item_id, q.remaining,
+                "playqueue: id={} item={} remaining={} rows={} next={}",
+                q.id, q.selected_item_id, q.remaining, q.items.len(),
                 up_next.as_ref().map(|u| format!("S{}E{} {}", u.season, u.index, u.rk))
                     .unwrap_or_else(|| "-".into())
             ));
@@ -450,6 +478,7 @@ fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> QueueInfo {
                 id: if q.id > 0 { q.id.to_string() } else { String::new() },
                 item_id: if q.selected_item_id > 0 { q.selected_item_id.to_string() } else { String::new() },
                 up_next,
+                rows: q.items,
             }
         }
         None => {
@@ -510,6 +539,8 @@ pub(crate) struct Plan {
     pub playing: Option<crate::metadata::PlayingItem>,
     /// the episode queued after this one, straight off the `continuous=1` PlayQueue
     pub up_next: Option<UpNext>,
+    /// that same PlayQueue's whole returned window, projected on the worker (see `QUEUE`)
+    pub queue: Vec<crate::plex::QueueRow>,
 }
 
 /// Pick the stream URL for an item: direct-play only what the pipeline decodes natively (H264/
@@ -542,6 +573,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         plan.pq_id = q.id;
         plan.pq_item_id = q.item_id;
         plan.up_next = q.up_next;
+        plan.queue = q.rows;
     }
     // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
     // loaded detail can be a different item (show page / straight-from-Home play)
@@ -747,8 +779,10 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
         // Retire the OUTGOING item's queue before its successor resolves: this names the episode
         // after the one that WAS playing, and leaving it up would offer the Up Next control a
         // stale "next" for the whole resolve window — including, when the user just started that
-        // very episode from here, the one now on screen.
+        // very episode from here, the one now on screen. The retained rows go with it, for the
+        // same reason and because a fresh `Vec` also hands their strings back to the allocator.
         *addr_of_mut!(UP_NEXT) = None;
+        *addr_of_mut!(QUEUE) = Vec::new();
     }
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
@@ -827,8 +861,12 @@ pub(crate) fn pump_play() -> bool {
 /// ran it.
 fn apply_plan(plan: Plan, rk: &str) {
     crate::metadata::install_playing(plan.playing);
-    // main thread only — `up_next()` hands the Up Next control a `&'static` (see its doc)
-    unsafe { *addr_of_mut!(UP_NEXT) = plan.up_next };
+    // main thread only — `up_next()`/`queue()` hand out `&'static`s (see their docs). The rows
+    // arrive already projected: the worker never retained a `Metadata` tree to install here.
+    unsafe {
+        *addr_of_mut!(UP_NEXT) = plan.up_next;
+        *addr_of_mut!(QUEUE) = plan.queue;
+    }
     // Warm the next episode's still NOW rather than at first draw. The URL has been known since
     // this plan resolved — tens of minutes before the credits — and `resolve_tex` is async, so
     // touching it here costs nothing and spares the control a skeleton for one image-transcode
