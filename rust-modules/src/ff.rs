@@ -250,6 +250,13 @@ extern "C" {
     ) -> c_int;
     fn avsubtitle_free(sub: *mut AVSubtitle);
     fn avcodec_free_context(ctx: *mut *mut AVCodecContext);
+    // Scratch AVCodecParameters for `sub_canvas` — library-allocated so its true size (136 on
+    // this build) is never our problem, and `from_context` starts by av_freep-ing par->extradata.
+    // Both PRESENT on the device's own libavcodec.so.57.89.100 (`tools/abi-probe.sh has
+    // libavcodec.so.57 avcodec_parameters_alloc avcodec_parameters_free`, 2026-07-29) — the stub
+    // .so links either way, so this is checked, not assumed.
+    fn avcodec_parameters_alloc() -> *mut AVCodecParameters;
+    fn avcodec_parameters_free(par: *mut *mut AVCodecParameters);
     fn avcodec_find_encoder_by_name(name: *const c_char) -> *const AVCodec;
     // MPEG1 encode (dev capture stream, venc section)
     fn avcodec_send_frame(ctx: *mut AVCodecContext, frame: *const c_void) -> c_int;
@@ -772,11 +779,98 @@ unsafe fn open_sub_decoder(cp: *const AVCodecParameters) -> *mut AVCodecContext 
     ctx
 }
 
+/// The subtitle stream's AUTHORING CANVAS (the coordinate space the decoded rects' x/y/w/h are
+/// expressed in), or (0,0) if this decoder never declared one. 1920×1080 for Blu-ray PGS,
+/// 720×480/576 for a DVD VobSub rip, 3840×2160 for some 4K PGS — assuming 1080p unconditionally
+/// is what made VobSub land as a postage stamp in the corner.
+///
+/// Read WITHOUT a raw struct poke: `avcodec_parameters_from_context` copies the decoder's
+/// width/height into the AVCodecParameters this crate already models (and whose width/height at
+/// +48/+52 the video path has used on-device since the demuxer landed), so the whole read runs
+/// inside the library's own code and needs no new ABI offset.
+///
+/// ABI proof (device's own `libavcodec.so.57.89.100`, disassembled 2026-07-29 — the build ships
+/// stripped, so this is the primary evidence, not a header):
+/// `avcodec_parameters_from_context+0x88` is `cmp r3,#3 / beq +0x13c` (AVMEDIA_TYPE_SUBTITLE ==
+/// 3) and `+0x13c` is exactly `ldr r2,[r5,#124] / ldr r3,[r5,#128] / str r2,[r4,#48] /
+/// str r3,[r4,#52]` — so THIS build does carry the subtitle case, and it corroborates
+/// `OFF_CTX_WIDTH`/`OFF_CTX_HEIGHT` (124/128) and AVCodecParameters.width/height (48/52) at the
+/// same time. The prologue's `memset(par, 0, 136)` likewise confirms the modeled sizeof = 136.
+///
+/// Must be called AFTER a decode: PGS carries the canvas in the presentation composition segment,
+/// so pgssubdec only sets it while decoding (dvdsub sets it at open, from the .idx `size:` line).
+unsafe fn sub_canvas(dec: *mut AVCodecContext) -> (i32, i32) {
+    let par = avcodec_parameters_alloc();
+    if par.is_null() {
+        return (0, 0);
+    }
+    let wh = if avcodec_parameters_from_context(par, dec) >= 0 {
+        ((*par).width, (*par).height)
+    } else {
+        (0, 0)
+    };
+    let mut p = par;
+    avcodec_parameters_free(&mut p);
+    // A canvas we cannot make sense of is worse than none: report unknown and let the renderer
+    // fall back to 1:1 rather than scale the cue by a garbage ratio. The window spans every real
+    // authoring canvas with room to spare (the smallest in the wild is DVD's 720×480) and rejects
+    // a decoder that reports a rect size, a zero, or an uninitialised field.
+    const MIN: c_int = 160;
+    const MAX: c_int = 8192;
+    if wh.0 < MIN || wh.1 < MIN || wh.0 > MAX || wh.1 > MAX {
+        (0, 0)
+    } else {
+        wh
+    }
+}
+
+/// Convert one decoded PAL8 subtitle rect to a straight-alpha RGBA bitmap (palette entries are
+/// 0xAARRGGBB), or None if the decoder left it unusable. Coords are passed through in the
+/// stream's own authoring canvas — the renderer scales, not us.
+///
+/// Every field here is unvalidated data from a decoder fed by the network, and `usize` is 32
+/// bits on this target, so the size is bounded BEFORE it is multiplied: `w*h*4` for a rect the
+/// decoder claimed was 40000×40000 wraps to a small allocation, and the write loop would then
+/// run off the end of it (a panic on the demux thread, which is outside `ui::guard`).
+unsafe fn rect_to_rgba(r: *const AVSubtitleRect) -> Option<crate::player::SubRect> {
+    if r.is_null() {
+        return None;
+    }
+    let (x, y, w, h, stride) = ((*r).x, (*r).y, (*r).w, (*r).h, (*r).linesize[0]);
+    let idx = (*r).data[0];
+    let pal = (*r).data[1] as *const u32;
+    // no real subtitle bitmap approaches 8192 on a side — the largest authoring canvas in the
+    // wild is 4K, and a rect cannot usefully exceed its own canvas
+    const MAX_SIDE: c_int = 8192;
+    if idx.is_null() || pal.is_null() || w <= 0 || h <= 0 || stride < w || w > MAX_SIDE || h > MAX_SIDE {
+        return None;
+    }
+    let (wu, hu, su) = (w as usize, h as usize, stride as usize);
+    let bytes = match wu.checked_mul(hu).and_then(|n| n.checked_mul(4)) {
+        Some(n) => n,
+        None => return None,
+    };
+    let mut rgba = vec![0u8; bytes];
+    for row in 0..hu {
+        let src = idx.add(row * su);
+        for col in 0..wu {
+            let p = *pal.add(*src.add(col) as usize); // 0xAARRGGBB (native u32)
+            let o = (row * wu + col) * 4;
+            rgba[o] = (p >> 16) as u8; // R
+            rgba[o + 1] = (p >> 8) as u8; // G
+            rgba[o + 2] = p as u8; // B
+            rgba[o + 3] = (p >> 24) as u8; // A
+        }
+    }
+    Some(crate::player::SubRect { x, y, w, h, rgba })
+}
+
 /// Decode one image-subtitle packet for the SELECTED track and push it to the render store.
-/// A CLEAR (num_rects==0) closes the open cue; otherwise rect 0's PAL8 bitmap is converted to
-/// straight-alpha RGBA (palette entries are 0xAARRGGBB) and pushed with start = packet pts (the
-/// end is set later by the next CLEAR or superseding set). The PGS authoring canvas is 1920×1080
-/// (== our UI, confirmed on-device), so x/y/w/h are pixel coords used directly by the renderer.
+/// A CLEAR (num_rects==0) closes the open cue; otherwise EVERY rect of the display set is
+/// converted to straight-alpha RGBA and pushed as one cue with start = packet pts (the end is
+/// set later by the next CLEAR or superseding set). Two-line dialogue and sign-plus-dialogue are
+/// authored as separate rects of the SAME display set, so dropping all but rect 0 (what this did
+/// before) silently lost half the line. The set's canvas comes from `sub_canvas`.
 unsafe fn decode_bitmap_cue(dec: *mut AVCodecContext, pkt: *mut AVPacket, track: c_int, st: *mut AVStream) {
     let mut sub: AVSubtitle = std::mem::zeroed();
     let mut got: c_int = 0;
@@ -789,30 +883,36 @@ unsafe fn decode_bitmap_cue(dec: *mut AVCodecContext, pkt: *mut AVPacket, track:
         avsubtitle_free(&mut sub);
         return;
     }
-    let r0 = *sub.rects;
-    let (x, y, w, h, stride) = ((*r0).x, (*r0).y, (*r0).w, (*r0).h, (*r0).linesize[0]);
-    let idx = (*r0).data[0];
-    let pal = (*r0).data[1] as *const u32;
-    if !idx.is_null() && !pal.is_null() && w > 0 && h > 0 && stride >= w {
-        let (wu, hu, su) = (w as usize, h as usize, stride as usize);
-        let mut rgba = vec![0u8; wu * hu * 4];
-        for row in 0..hu {
-            let src = idx.add(row * su);
-            for col in 0..wu {
-                let p = *pal.add(*src.add(col) as usize); // 0xAARRGGBB (native u32)
-                let o = (row * wu + col) * 4;
-                rgba[o] = (p >> 16) as u8; // R
-                rgba[o + 1] = (p >> 8) as u8; // G
-                rgba[o + 2] = p as u8; // B
-                rgba[o + 3] = (p >> 24) as u8; // A
-            }
+    // A pathological display set cannot be allowed to bloat the 24 MB store or the renderer's
+    // texture set; DVB regions are the realistic source of many rects, PGS allows at most 2.
+    const MAX_RECTS: usize = 8;
+    let n = (sub.num_rects as usize).min(MAX_RECTS);
+    let mut rects = Vec::with_capacity(n);
+    for i in 0..n {
+        if let Some(r) = rect_to_rgba(*sub.rects.add(i)) {
+            rects.push(r);
         }
+    }
+    if !rects.is_empty() {
+        let (cw, ch) = sub_canvas(dec);
         if track == crate::player::desired_sub_idx() {
-            crate::player::log(&format!("image cue [{}ms] {w}x{h} at {x},{y}", pts / 1_000_000));
+            let r0 = &rects[0];
+            crate::player::log(&format!(
+                "image cue [{}ms] {}x{} at {},{} rects={} canvas={cw}x{ch}",
+                pts / 1_000_000,
+                r0.w,
+                r0.h,
+                r0.x,
+                r0.y,
+                rects.len()
+            ));
         }
-        crate::player::push_subtitle_bitmap(track, pts, x, y, w, h, rgba);
-        if sub.num_rects > 1 {
-            crate::player::log(&format!("ff: image-sub track#{track} {} rects (only #0 shown)", sub.num_rects));
+        crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
+        if sub.num_rects as usize > MAX_RECTS {
+            crate::player::log(&format!(
+                "ff: image-sub track#{track} {} rects (capped at {MAX_RECTS})",
+                sub.num_rects
+            ));
         }
     }
     avsubtitle_free(&mut sub);

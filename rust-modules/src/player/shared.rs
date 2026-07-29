@@ -19,20 +19,39 @@ pub(crate) struct SubCue {
     pub text: String,
 }
 
-/// one decoded image-subtitle cue (PGS/VobSub/DVB). `rgba` is a straight-alpha bitmap of
-/// `w`×`h` at position (`x`,`y`) in the PGS 1920×1080 authoring canvas — 1:1 with our UI, so
-/// it draws at those pixel coords directly. `end_ns` is i64::MAX until a CLEAR display-set
-/// (or a superseding set) truncates it. Unlike text cues we push ONLY the selected track
-/// (bitmaps are heavier than text on this RAM-tight TV), keyed by `start_ns` for the renderer.
-pub(crate) struct SubBitmap {
-    pub track: i32,
-    pub start_ns: i64,
-    pub end_ns: i64,
+/// one rect of a decoded image-subtitle display set. `rgba` is a straight-alpha bitmap of
+/// `w`×`h` at position (`x`,`y`) **in the subtitle stream's own authoring canvas** (see
+/// [`SubBitmap::cw`]) — NOT in screen pixels; the renderer scales it into the video rect.
+#[derive(Clone)]
+pub(crate) struct SubRect {
     pub x: i32,
     pub y: i32,
     pub w: i32,
     pub h: i32,
     pub rgba: Vec<u8>,
+}
+
+/// one decoded image-subtitle display set (PGS/VobSub/DVB) — every rect of it, not just the
+/// first: a two-line dialogue or a sign-plus-dialogue set is authored as several rects and they
+/// belong to the same on-screen moment. `end_ns` is i64::MAX until a CLEAR display-set (or a
+/// superseding set) truncates it. Unlike text cues we push ONLY the selected track (bitmaps are
+/// heavier than text on this RAM-tight TV), keyed by `start_ns` for the renderer.
+pub(crate) struct SubBitmap {
+    pub track: i32,
+    pub start_ns: i64,
+    pub end_ns: i64,
+    /// authoring-canvas width/height the rects' coords are expressed in — 1920×1080 for
+    /// Blu-ray PGS, 720×480/576 for a DVD VobSub rip, 3840×2160 for some 4K PGS. `0` = the
+    /// decoder never declared one, in which case the renderer falls back to 1:1.
+    pub cw: i32,
+    pub ch: i32,
+    pub rects: Vec<SubRect>,
+}
+impl SubBitmap {
+    /// total RGBA bytes held by this display set (what the store's byte budget counts)
+    pub fn bytes(&self) -> usize {
+        self.rects.iter().map(|r| r.rgba.len()).sum()
+    }
 }
 
 /// What playback is actually doing, as one value the UI can render from.
