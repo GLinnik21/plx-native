@@ -486,7 +486,9 @@ pub struct TabPill {
     note: TabNote,
 }
 impl TabPill {
-    /// pill width for a `chars`-long label at `sz` (label advance + horizontal padding)
+    /// pill width for a `chars`-long label at `sz` (label advance + horizontal padding). Covers
+    /// the LABEL only — a pill that also carries a [`TabNote`] must add [`note_w`](Self::note_w),
+    /// or the note is drawn outside the fill.
     pub fn width(chars: usize, sz: c_int) -> f32 {
         chars as f32 * sz as f32 * 0.56 + 44.0
     }
@@ -542,8 +544,16 @@ impl View for TabPill {
         }
         // The label centres in the pill MINUS the note group, so a tab carrying a note keeps
         // label+note centred as one unit rather than shoving the label off-centre. The note then
-        // hugs the label's own right edge (its painted width, back from `Label::draw`), which is
+        // hugs the label's own PAINTED right edge (the width `Label::draw` hands back), which is
         // why this needs no knowledge of the caller's pill padding.
+        //
+        // Painted, deliberately, not the width the caller measured: a strip that sizes its tabs
+        // with the BOLD label (as the season tabs and `draw_tab_row` both do, so an advance can't
+        // move with focus) paints a NON-bold label a couple of px narrower. Anchoring off the
+        // caller's number instead would pin the note while the label's right edge slid under it,
+        // i.e. it would trade a constant label→note gap for a variable one. The gap is the
+        // relationship the eye reads here; the few px of slack left inside the pill's own padding
+        // on an unbolded tab is the same slack the label alone already had.
         let nw = Self::note_w(self.note);
         let lw = lab.draw(p, Rect::new(r.x, r.y, r.w - nw, r.h));
         let nx = r.x + (r.w - nw) * 0.5 + lw * 0.5 + NOTE_GAP;
