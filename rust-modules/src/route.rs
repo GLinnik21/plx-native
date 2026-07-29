@@ -750,6 +750,9 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
         // very episode from here, the one now on screen.
         *addr_of_mut!(UP_NEXT) = None;
     }
+    // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
+    // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
+    crate::metadata::retire_playing_item();
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv

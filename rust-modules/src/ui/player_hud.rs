@@ -309,6 +309,92 @@ pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
     ((mx - SB_X) / sb_w()).clamp(0.0, 1.0)
 }
 
+// ---- rail marks: chapter boundaries + intro/credits segments ---------------------------------
+// Both data sets already sit in memory during playback and both belong to the PLAYING leaf —
+// `metadata::playing_chapters()` and `metadata::playing_markers()` (which the Skip control reads
+// every frame). Neither costs a request: `?includeChapters=1&includeMarkers=1` ride the fetch the
+// track store already makes. So this is a draw, not a fetch.
+//
+// The device constraint shapes the geometry: this Mali is FILL-RATE bound and the HUD composites
+// over the transparent UI plane above the hardware video plane, so every mark here is a small
+// opaque quad — no glow, no gradient, no per-mark text. A 3x8px tick costs no measurable fill; what
+// `TICK_MIN_GAP` bounds is the DRAW CALL count (`sb_w() / TICK_MIN_GAP` = 145 worst case, against
+// 10-30 for a real item), which is the axis a per-quad painter actually spends on.
+
+/// chapter tick width, px
+const TICK_W: f32 = 3.0;
+/// Ticks nearer than this to the previous KEPT tick are dropped. Two jobs: a run of short chapters
+/// would otherwise smear into a solid bar, and `sb_w() / TICK_MIN_GAP` is the ceiling on how many
+/// extra quads the rail can add — which is what makes the cost provable instead of assumed.
+const TICK_MIN_GAP: f32 = 12.0;
+/// A tick this close to either end is dropped — it would sit under the rail's own rounded cap and
+/// read as a chipped edge rather than a boundary. (Chapter 1 usually starts at 0:00.)
+const TICK_EDGE: f32 = 8.0;
+/// Floor width for a marker band, so a very short segment on a long item is still a visible mark
+/// rather than a sub-pixel sliver. The rail's end wins over it: a segment starting in the last few
+/// px is drawn short rather than pushed off its own offset.
+const MARKER_MIN_W: f32 = 6.0;
+
+/// PURE: rail x for a position in ms, clamped to the rail. Total by construction — an unknown
+/// duration (the whole pre-roll, and any item the demuxer never reported one for) maps everything
+/// to the rail's start, and the callers below refuse to draw at all in that case.
+fn rail_x(ms: i64, dur_ms: i64, sx: f32, sw: f32) -> f32 {
+    if dur_ms <= 0 {
+        return sx;
+    }
+    sx + sw * (ms as f64 / dur_ms as f64).clamp(0.0, 1.0) as f32
+}
+
+/// PURE: the chapter ticks' CENTRE x on a rail spanning `[sx, sx + sw]`, in rail order.
+///
+/// Offsets at or past the item's end, and the 0:00 chapter every file opens with, are not
+/// boundaries on this rail — they are its ends. The rest are coalesced against the previously KEPT
+/// tick, which both stops a cluster from smearing and bounds the draw.
+///
+/// The coalesce is on DISTANCE, not on the difference: PMS emits chapters in ascending order and
+/// `Chapter[]` is not sorted or validated on the way in (`metadata::convert_chapters`), and PMS
+/// demonstrably does not sort such sibling arrays by offset — its `Marker[]` comes back credits-
+/// before-intro. A signed compare would read every backward step as "too close" and silently drop
+/// the whole rest of the list.
+fn chapter_tick_xs(chapters: &[crate::metadata::Chapter], dur_ms: i64, sx: f32, sw: f32) -> Vec<f32> {
+    let mut xs: Vec<f32> = Vec::new();
+    if dur_ms <= 0 || sw <= 0.0 {
+        return xs;
+    }
+    for c in chapters {
+        if c.start_ms <= 0 || c.start_ms >= dur_ms {
+            continue;
+        }
+        let x = rail_x(c.start_ms, dur_ms, sx, sw);
+        if x - sx < TICK_EDGE || (sx + sw) - x < TICK_EDGE {
+            continue;
+        }
+        if let Some(&prev) = xs.last() {
+            if (x - prev).abs() < TICK_MIN_GAP {
+                continue;
+            }
+        }
+        xs.push(x);
+    }
+    xs
+}
+
+/// PURE: a marker segment's `(left, right)` extent on the rail, or None when it cannot be drawn
+/// (unknown duration, or a segment that starts at/after the end of the item).
+///
+/// A `final` credits marker's stated `end_ms` is the CONTAINER duration and routinely overshoots
+/// the decoder's, so the right edge is clamped to the rail rather than allowed to overhang it —
+/// the same overshoot [`crate::metadata::marker_at`] absorbs by treating such a segment as
+/// open-ended.
+fn marker_band(m: crate::metadata::Marker, dur_ms: i64, sx: f32, sw: f32) -> Option<(f32, f32)> {
+    if dur_ms <= 0 || sw <= 0.0 || m.start_ms >= dur_ms || m.end_ms <= m.start_ms {
+        return None;
+    }
+    let l = rail_x(m.start_ms.max(0), dur_ms, sx, sw);
+    let r = rail_x(m.end_ms, dur_ms, sx, sw).max(l + MARKER_MIN_W).min(sx + sw);
+    (r > l).then_some((l, r))
+}
+
 /// draw a clock string centred on `cx` as ONE label box, clamped so it stays inside [lo, hi].
 /// (The old last-':'-anchor read visibly lopsided once the clock grew to H:MM:SS — "1:05" left of
 /// the knob vs "53" right.) The box width is measured on a same-shape template with every digit
@@ -410,11 +496,28 @@ pub(crate) fn draw_hud(slot: ControlSlot, focus: i32, btn: i32, tab: i32, now: u
     let dur = crate::player::duration_ns();
     let frac = if dur > 0 { (dispos as f64 / dur as f64).clamp(0.0, 1.0) } else { 0.0 };
     p.rect(Rect::new(sx, sy, sw, sh), sh * 0.5, track, track, 0.0);
+    let dur_ms = dur / 1_000_000;
+    // intro / credits segments, UNDER the fill: a segment already watched should read as watched,
+    // exactly like the rest of the rail. At most two per item (an intro and a credits).
+    for m in crate::metadata::playing_markers() {
+        if let Some((l, r)) = marker_band(*m, dur_ms, sx, sw) {
+            let rad = (sh * 0.5).min((r - l) * 0.5);
+            p.rrect(Rect::new(l, sy, r - l, sh), rad, rad, theme::RAIL_MARKER);
+        }
+    }
     let fw = (sw as f64 * frac) as f32;
     if fw > sh * 0.5 {
         p.rrect(Rect::new(sx, sy, fw, sh), sh * 0.5, 0.0, white);
     } else if fw > 0.0 {
         p.rrect(Rect::new(sx, sy, fw, sh), fw * 0.5, 0.0, white);
+    }
+    // chapter boundaries, OVER both bands, so a boundary reads on whichever side of the playhead it
+    // falls. Their x is snapped (unlike the fill and the knob, which move every frame and would
+    // stutter): a tick holds still for the whole item, so a fractional edge only buys it a soft
+    // 3px smear from the SDF's edge AA.
+    for tx in chapter_tick_xs(crate::metadata::playing_chapters(), dur_ms, sx, sw) {
+        let col = if tx < sx + fw { theme::RAIL_TICK_PLAYED } else { theme::RAIL_TICK };
+        p.rect(Rect::new(crate::gfx::snap(tx - TICK_W * 0.5), sy, TICK_W, sh), 0.0, col, col, 0.0);
     }
     // playhead: a focus-glowing knob when the scrubber is focused, a plain knob while scrubbing,
     // else a thin tick.
@@ -488,12 +591,25 @@ pub(crate) fn draw_hud(slot: ControlSlot, focus: i32, btn: i32, tab: i32, now: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::{Marker, MarkerKind};
+    use crate::metadata::{Chapter, Marker, MarkerKind};
     use crate::ui::skip_pill::SkipAction;
 
     fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
         Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg }
     }
+
+    fn seg(start_ms: i64, end_ms: i64, final_seg: bool) -> Marker {
+        Marker { kind: MarkerKind::Credits, start_ms, end_ms, final_seg }
+    }
+
+    fn chap(start_ms: i64) -> Chapter {
+        Chapter { index: 1, start_ms, title: String::new(), thumb: String::new() }
+    }
+
+    // A rail 1000px wide over a 1000ms item: 1px per ms, so an offset reads straight off the x.
+    const SX: f32 = 100.0;
+    const SW: f32 = 1000.0;
+    const DUR: i64 = 1_000;
 
     /// The control row's precedence, which used to live in the ORDER of five separate if-chains
     /// across `player_hud` and `app.rs` — the draw, the OK handler, the pointer handler, the
@@ -544,5 +660,60 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(intro, SkipAction::Seek(2_000 * 1_000_000));
+    }
+
+    /// The rail's chapter ticks: an offset maps to its own x, and the three cases that are NOT
+    /// boundaries — the 0:00 chapter every file opens with, anything at or past the end, and a
+    /// cluster too tight to draw apart — drop out instead of drawing a chipped cap or a grey smear.
+    #[test]
+    fn a_chapter_tick_lands_on_its_own_offset_and_nowhere_else() {
+        let chapters = [
+            chap(0),    // the item's start: the rail's left cap, not a boundary
+            chap(250),  // → 350
+            chap(256),  // 6px behind it — coalesced (TICK_MIN_GAP = 12)
+            chap(500),  // → 600
+            chap(995),  // inside TICK_EDGE of the right cap
+            chap(1_000), // exactly the end
+            chap(1_200), // past the end (a stale chapter list against a shorter part)
+        ];
+        assert_eq!(chapter_tick_xs(&chapters, DUR, SX, SW), vec![350.0, 600.0]);
+
+        // The coalesce measures from the KEPT tick, never from the dropped one — so however dense
+        // the input, no two DRAWN ticks are closer than the gap. (Measuring from the previous input
+        // instead would let a cluster of sub-gap steps smear across the rail.)
+        let creep = [chap(200), chap(208), chap(216), chap(224), chap(232)];
+        let xs = chapter_tick_xs(&creep, DUR, SX, SW);
+        assert_eq!(xs, vec![300.0, 316.0, 332.0], "8px steps against a 12px gap: every other tick");
+        assert!(xs.windows(2).all(|w| w[1] - w[0] >= TICK_MIN_GAP));
+
+        // An out-of-order list must not lose its tail. The coalesce is on distance, so a backward
+        // step reads as "far from the last kept tick" rather than as a negative gap — which a
+        // signed compare would have treated as too close, dropping everything after entry one.
+        assert_eq!(chapter_tick_xs(&[chap(500), chap(250), chap(750)], DUR, SX, SW), vec![600.0, 350.0, 850.0]);
+
+        // no duration yet (the whole pre-roll) → nothing to place ticks against
+        assert!(chapter_tick_xs(&[chap(250)], 0, SX, SW).is_empty());
+        assert!(chapter_tick_xs(&[], DUR, SX, SW).is_empty());
+    }
+
+    /// The intro/credits band covers its own segment, and a `final` credits marker — whose stated
+    /// end is the CONTAINER duration, which routinely overshoots the decoder's — stops at the rail's
+    /// end instead of overhanging it.
+    #[test]
+    fn a_marker_band_covers_its_segment_and_stops_at_the_rail() {
+        assert_eq!(marker_band(seg(100, 200, false), DUR, SX, SW), Some((200.0, 300.0)));
+
+        // a `final` credits segment running to (or past) the container duration
+        assert_eq!(marker_band(seg(900, 1_000, true), DUR, SX, SW), Some((1_000.0, 1_100.0)));
+        assert_eq!(marker_band(seg(900, 1_200, true), DUR, SX, SW), Some((1_000.0, 1_100.0)));
+
+        // a segment shorter than the floor is widened to it rather than drawn sub-pixel
+        let (l, r) = marker_band(seg(500, 501, false), DUR, SX, SW).expect("a 1ms segment still draws");
+        assert_eq!((l, r), (600.0, 600.0 + MARKER_MIN_W));
+
+        // nothing to draw: no duration, a segment that starts at/after the end, an inverted one
+        assert_eq!(marker_band(seg(100, 200, false), 0, SX, SW), None);
+        assert_eq!(marker_band(seg(1_000, 1_100, false), DUR, SX, SW), None);
+        assert_eq!(marker_band(seg(300, 300, false), DUR, SX, SW), None);
     }
 }
