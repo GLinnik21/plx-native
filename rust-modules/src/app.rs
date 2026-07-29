@@ -541,6 +541,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // The last SEGMENT the control row offered. Sticky: it is never cleared back to None, so
         // each segment raises the HUD exactly once per playback however often the row flickers.
         let mut last_offer: Option<(crate::metadata::MarkerKind, i64)> = None;
+        // Did a stand-in own the control row last frame? The reset below is the EDGE of a stand-in
+        // vanishing under the focus ring — see `player_hud::standin_left_the_ring`, which is where
+        // that rule is written down and tested.
+        let mut ctrl_was_standin = false;
         let mut marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
         // UP-from-the-top explicitly dismisses the HUD even while paused; any other player input
         // clears it. Without this, paused() would force the HUD permanently visible.
@@ -1530,7 +1534,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     held_sym = 0; // async route flip: don't repeat a held key into the next screen
                                 }
                             } else if vis && hud_nav.focus == 1 {
-                            } else if vis && hud_nav.focus == 1 {
+                                // …so the discs are what row 1 holds — the complement of the arm
+                                // above, and the row's only other occupant.
                                 // OK on a control button opens its panel (Subtitles / Audio)
                                 crate::ui::track_menu::open_tab(if hud_nav.btn == 0 { 1 } else { 0 });
                                 route = Route::Player { overlay: Overlay::Menu };
@@ -2394,13 +2399,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         hud_nav.focus = 1;
                         hud_nav.btn = 0;
                     }
-                } else if ctrl.is_discs() && hud_nav.focus == 1 {
+                } else if crate::ui::player_hud::standin_left_the_ring(ctrl_was_standin, ctrl, hud_nav.focus == 1) {
                     // The stand-in went away under the focus ring. Without this the row swaps back
                     // to the discs with focus still on it and `btn` still 0, so the next OK opened
                     // the SUBTITLES menu instead of toggling pause — exactly the bug class HudNav's
-                    // own doc says it exists to kill.
+                    // own doc says it exists to kill. Strictly the EDGE: as a steady state it also
+                    // fired on a user who walked UP to the discs on purpose, yanking the ring back
+                    // the same frame and making OK on a disc unreachable by remote.
                     hud_nav = HudNav::HOME;
                 }
+                ctrl_was_standin = !ctrl.is_discs();
                 // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to
                 // the next episode out of nowhere. And if focus has moved off the row, the user is
                 // driving the transport: cancel rather than yank them into the next episode.

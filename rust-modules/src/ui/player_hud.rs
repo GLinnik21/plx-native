@@ -271,6 +271,24 @@ pub(crate) fn slot() -> ControlSlot {
     slot_for(crate::metadata::active_marker(), crate::route::up_next().is_some())
 }
 
+/// PURE edge: has a stand-in just vanished OUT FROM UNDER the focus ring, so the ring has to go
+/// back to the scrubber? `focused` is whether the control row currently holds focus. `was_standin`
+/// is the occupant on the last OVERLAY-FREE frame, not simply the last frame — the caller only
+/// samples it while the transport is bare, so an edge that happens behind an open track menu / Info
+/// card is held and fires on the frame the overlay closes, rather than being lost.
+///
+/// It exists because the row swapping from a Skip pill back to the discs leaves focus on the row
+/// with `btn` still 0, so the next OK opens the SUBTITLES menu instead of toggling pause.
+///
+/// **It is an EDGE, not a steady state**, and that is the whole reason it is a named function with
+/// a test. Written inline as `is_discs() && focused` it is also true on every frame of a user who
+/// deliberately walked UP to the Subtitles/Audio discs — the ring is then yanked back to the
+/// scrubber the same frame it arrives, so focus can never rest on a disc and OK on one is
+/// unreachable by remote. The pointer path never saw it, which is why the on-device suite did not.
+pub(crate) fn standin_left_the_ring(was_standin: bool, now: ControlSlot, focused: bool) -> bool {
+    was_standin && now.is_discs() && focused
+}
+
 /// x of control button `idx` (0 = Subtitles on the left, 1 = Audio on the right)
 fn btn_x(idx: i32) -> f32 {
     let audio_x = CTRL_RIGHT - BTN_S;
@@ -715,5 +733,25 @@ mod tests {
         assert_eq!(marker_band(seg(100, 200, false), 0, SX, SW), None);
         assert_eq!(marker_band(seg(1_000, 1_100, false), DUR, SX, SW), None);
         assert_eq!(marker_band(seg(300, 300, false), DUR, SX, SW), None);
+
+    /// The ring only goes back to the scrubber on the EDGE where a stand-in vanished under it.
+    /// As a steady state (`is_discs() && focused`, which is how it shipped) it fired on every
+    /// frame the user had walked UP to the Subtitles/Audio discs, so focus could not rest there
+    /// and OK on a disc never reached the track menu — invisible to the pointer path, and so to
+    /// the on-device suite.
+    #[test]
+    fn only_a_vanishing_standin_takes_the_focus_ring_back() {
+        let discs = slot_for(None, false);
+        let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false);
+
+        // the edge it exists for: the pill was there last frame, the discs are back, ring on the row
+        assert!(standin_left_the_ring(true, discs, true));
+
+        // the steady state it must NOT fire on: the discs were already there, so nothing vanished
+        assert!(!standin_left_the_ring(false, discs, true), "walking UP to the discs is not a lost stand-in");
+
+        // nothing to take back if the ring is elsewhere, or if a stand-in still owns the row
+        assert!(!standin_left_the_ring(true, discs, false));
+        assert!(!standin_left_the_ring(true, skip, true));
     }
 }
