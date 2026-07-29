@@ -85,6 +85,18 @@ impl Client {
         self.get_json(&format!("/library/metadata/{rating_key}/related"))
     }
 
+    /// GET /library/people/{person_id}/media → `.metadata[]` — every item this person appears
+    /// in, **across every library section in one request** (docs/pms-api.md §2c). `person_id` is
+    /// either the numeric [`Tag::id`](super::Tag::id) or the [`Tag::tag_key`](super::Tag::tag_key)
+    /// guid; both were verified live against the same record on 2026-07-29.
+    ///
+    /// **Group the rows by each row's own `type`, never by the container's `viewGroup`** — that
+    /// field is unreliable here: it read `"movie"` on a response whose only row was a `show`
+    /// (verified on person 6059, 5 movies + 1 show). See `crate::person::split_by_type`.
+    pub fn person_media(&self, person_id: &str) -> Option<MediaContainer> {
+        self.get_json(&format!("/library/people/{person_id}/media"))
+    }
+
     /// GET /:/scrobble — mark watched without a playback time (docs/pms-api.md §timeline).
     /// On a show/season it marks every leaf watched.
     pub fn scrobble(&self, rating_key: &str) {

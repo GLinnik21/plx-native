@@ -42,7 +42,13 @@ token injected → close-first relaunch → process alive → the route heartbea
 on the screen you asked for → the remote FIFO exists. A live view is one flag away.
 
 `--screen` accepts: `home` (default), `profiles`, `login`, `account`, `library[=N]`,
-`detail=<ratingKey>`, `player=<ratingKey>`.
+`detail=<ratingKey>`, `person=<MOVIE ratingKey>`, `player=<ratingKey>`.
+
+`person` is the odd one: the actor page has **no boot trigger of its own** — it is *reached*
+from a detail page's cast row, so the rk you pass is the **movie's**, and `up` arms the three
+triggers that walk there (`detail=<rk>` + `detailsec=1` to drop focus onto Cast & Crew + the
+`detailok` press). Pick a movie whose FIRST cast member has titles in more than one library if
+you want both the Movies and Shows shelves populated.
 
 ## Triggers are boot state; the FIFO is live state
 
