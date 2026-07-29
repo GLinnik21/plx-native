@@ -33,6 +33,25 @@ static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availabilit
 // (loadSpi_getInfo + setContentInfo(ptsToDecode) — the same path the official app uses).
 // Cleared to false if the pipeline can't be reached (sf_send_segment == 0), which drops seeks
 // back to the robust reload-per-seek path.
+//
+// SCOPE: this is a **per-session probe, not a device-capability latch**, and
+// `engine::start_bufferfeed` re-arms it to true for every new session. What `sf_send_segment`
+// reports is whether `sf_pipeline()` could reach the CustomPipeline behind the CURRENT
+// StarfishMediaAPIs object: `SMP_READY()` (constructed by `sf_load`, cleared by `sf_destroy`)
+// plus two non-null shared_ptr hops, `g_smp+0x4c` -> `player+0x04` (src/starfish.c). Every one
+// of those is a property of the live object this session builds and teardown destructs; none of
+// them says anything about what this panel's pipeline can do. `sendSegmentEvent` itself returns
+// void, so a 0 here NEVER means "the segment event was rejected", only "there was nothing to
+// call it on" — a liveness/timing condition by construction.
+// Latching it for the process was therefore a bug with a very long tail: one teardown-window
+// race downgraded every later seek of every later item to a ~1 s reload until the app was
+// restarted. Re-arming per session is self-healing rather than oscillating, too: the fallback
+// the clear selects (`reload_at`) builds a fresh Starfish object, so the exact condition that
+// produced the 0 cannot survive into the session that re-arms — and if a fresh session really
+// can't reach its pipeline either, it re-clears after one seek and stays on the reload path.
+// It remains a static rather than an `Engine` field only because `pump.rs` reads it without an
+// Engine borrow at hand; its LIFETIME is the Engine's, since `start_bufferfeed` is the sole
+// constructor and the flag is only ever read while a session is live.
 pub(crate) static INPLACE_SEEK_OK: AtomicBool = AtomicBool::new(true);
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
@@ -107,6 +126,24 @@ pub(crate) fn state() -> shared::PlaybackState {
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
 }
 pub(crate) fn seek_display_ns() -> i64 { SHARED.seek_display_ns.load(Relaxed) }
+/// The playhead the user INTENDS, which is not always the one being published: while a seek is
+/// still resolving (request → reopen → prime → Play) `playpos_ns` keeps reporting the PRE-seek
+/// spot, so anything snapshotting "where are we?" inside that window snapshots the position the
+/// user just left. The rule — an in-flight seek target wins, else the published position — used to
+/// be open-coded at each reader that remembered it and was simply MISSING at the one that did not
+/// (the OS-background save; see `app::intended_pos`). This is that rule, once.
+///
+/// Use it at every reader that means "where the user is". Keep the raw `playpos_ns` only where the
+/// PUBLISHED position is the point: the re-pause gate (already behind `seek_pending() < 0`) and the
+/// FPS heartbeat's `pos=`, which `tests/run.py` grades real playback progress from — feeding it an
+/// intended position would let a seek that never lands read as playback that climbed.
+///
+/// `ui/player_hud.rs` deliberately does NOT call this: it needs the same outer two rungs with the
+/// live scrub preview between them, so its expression is a superset rather than a caller.
+pub(crate) fn intended_pos_ns() -> i64 {
+    let t = seek_display_ns();
+    if loading() && t >= 0 { t } else { playpos_ns() }
+}
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
 /// transcode with that source audio at the current position next tick.
 pub(crate) fn request_audio_switch(sid: i64) {
