@@ -354,6 +354,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // a (re)install is a login / profile switch: the browse store must never carry the
             // previous user's cached grid, watched-state angles, or section tabs forward
             crate::browse::reset();
+            // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
+            // wifi hiccup can't blank a populated Home), which makes this the one place that
+            // must still wipe it — otherwise a profile switch whose fetch fails would leave the
+            // previous user's shelves on screen.
+            crate::pms::reset();
             let nmov = crate::pms::pms_fetch_hubs();
             // section discovery (one small GET) so Home's library tab pills carry real titles
             let nsec = crate::browse::ensure_sections();
@@ -916,6 +921,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // every Home-originated activation clears the library return-trail HERE (it was
             // hand-reset at each call site before — a set-a-flag-in-N-places smell)
             *opened_from_library = false;
+            // A Home with no shelves is the loading/empty/error read-out, whose only control is
+            // Retry — it takes the press unless it was the top band (chip / tab pills), which
+            // stay usable precisely because they are the escapes from an empty Home.
+            if crate::ui::home::status_activate(hf) {
+                return;
+            }
             let hero_view = hf != c_int::MIN;
             if hf == -1 {
                 crate::ui::account_menu::open();

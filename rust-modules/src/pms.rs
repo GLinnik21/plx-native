@@ -4,6 +4,8 @@
 //! hand-built paths or `Value` scraping here.
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 
 const PMS_MAX_MOVIES: usize = 256;
 
@@ -222,116 +224,478 @@ pub(crate) fn refetch_hubs_reconcile() -> c_int {
 }
 
 /// Fetch the home hubs (Continue Watching, On Deck, Recently Added, collections) into
-/// the catalog + the HUBS grouping. Skips music/photo/playlist hubs + empty ones.
-/// Builds the new catalog/hubs/pool locally, then commits all three statics at once.
-/// A failed fetch commits empty, blanking the home consistently (the old clear-first
-/// code emptied the catalog/shelves but left a stale hero pool floating over them).
+/// the catalog + the HUBS grouping — BLOCKING, and the boot/install path's fetch. Skips
+/// music/photo/playlist hubs + empty ones. Builds the new catalog/hubs/pool locally, then
+/// commits all three statics at once ([`commit`]).
+///
+/// A failure no longer commits empty. It used to — "blanking the home consistently" — which
+/// made a dead server indistinguishable from a server with nothing on it, and left Home a bare
+/// dark screen with no explanation and nothing that would ever try again. Now it lands in
+/// [`fail`]: the previous (consistent) three statics stay exactly as they were, the state
+/// machine goes [`HubState::Failed`], and [`pump`] retries on a backoff. The consistency the
+/// old comment was defending is intact — all three statics still only ever move together.
 pub(crate) fn pms_fetch_hubs() -> c_int {
-    let r = catch_unwind(|| {
-        let mut new_cat: Vec<PmsMovie> = Vec::new();
-        let mut new_hubs: Vec<HubRow> = Vec::new();
-        let mut new_pool: Vec<usize> = Vec::new();
-        if let Some(mc) = crate::plex::client().home_hubs(12) {
-            const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
+    HUB_GEN.fetch_add(1, Ordering::SeqCst); // supersede any retry already in flight
+    match catch_unwind(fetch_build) {
+        Ok(Some(build)) => commit(build),
+        _ => {
+            fail();
+            catalog().len() as c_int
+        }
+    }
+}
 
-            // Build the display shelves as ordered lists of item refs. Continue Watching
-            // (home.continue) and On Deck (home.ondeck) are merged into one "Continue
-            // Watching" shelf — the official-app behaviour: in-progress items unified with
-            // next-up episodes, deduped by ratingKey (the same episode carries one rk in
-            // both hubs; a next-up episode has its own). The merged shelf is then sorted by
-            // lastViewedAt desc so "most recently played" leads, interleaving resume points
-            // and next-up by recency rather than by which hub they came from.
-            let mut shelves: Vec<(String, String, Vec<&crate::plex::Metadata>)> = Vec::new(); // (title, hubIdentifier, items)
-            let mut cw_idx: Option<usize> = None; // shelves slot of the merged Continue Watching
-            let mut cw_seen: Vec<&str> = Vec::new(); // ratingKeys already merged in
-            for hub in &mc.hub {
-                if SKIP.contains(&hub.kind.as_str()) || hub.metadata.is_empty() {
+/// The catalog/hubs/pool triple a fetch produces, before it is committed. Owned data only, so
+/// the off-thread refetch can build it on a worker and hand it over through a mailbox.
+type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<usize>);
+
+/// GET /hubs and project it — the whole fetch, minus the commit. `None` = the request failed
+/// (transport, HTTP, or parse), which is NOT the same as a server with no hubs (`Some` with an
+/// empty build). Shared verbatim by the blocking boot fetch and the off-thread retry.
+fn fetch_build() -> Option<HubBuild> {
+    let mc = crate::plex::client_opt()?.home_hubs(12)?;
+    Some(build_hubs(&mc))
+}
+
+/// Project a /hubs response into the catalog/hubs/pool triple. Pure — no statics, no I/O.
+fn build_hubs(mc: &crate::plex::MediaContainer) -> HubBuild {
+    let mut new_cat: Vec<PmsMovie> = Vec::new();
+    let mut new_hubs: Vec<HubRow> = Vec::new();
+    let mut new_pool: Vec<usize> = Vec::new();
+    const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
+
+    // Build the display shelves as ordered lists of item refs. Continue Watching
+    // (home.continue) and On Deck (home.ondeck) are merged into one "Continue
+    // Watching" shelf — the official-app behaviour: in-progress items unified with
+    // next-up episodes, deduped by ratingKey (the same episode carries one rk in
+    // both hubs; a next-up episode has its own). The merged shelf is then sorted by
+    // lastViewedAt desc so "most recently played" leads, interleaving resume points
+    // and next-up by recency rather than by which hub they came from.
+    let mut shelves: Vec<(String, String, Vec<&crate::plex::Metadata>)> = Vec::new(); // (title, hubIdentifier, items)
+    let mut cw_idx: Option<usize> = None; // shelves slot of the merged Continue Watching
+    let mut cw_seen: Vec<&str> = Vec::new(); // ratingKeys already merged in
+    for hub in &mc.hub {
+        if SKIP.contains(&hub.kind.as_str()) || hub.metadata.is_empty() {
+            continue;
+        }
+        if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
+            if cw_idx.is_none() {
+                // synthetic id: the merged shelf spans home.continue + home.ondeck; tag it with
+                // the former so the hero-pool eligibility can recognize it locale-independently.
+                shelves.push(("Continue Watching".to_string(), "home.continue".to_string(), Vec::new()));
+                cw_idx = Some(shelves.len() - 1);
+            }
+            let si = cw_idx.unwrap();
+            for item in &hub.metadata {
+                if SKIP.contains(&item.kind.as_str()) {
                     continue;
                 }
-                if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
-                    if cw_idx.is_none() {
-                        // synthetic id: the merged shelf spans home.continue + home.ondeck; tag it with
-                        // the former so the hero-pool eligibility can recognize it locale-independently.
-                        shelves.push(("Continue Watching".to_string(), "home.continue".to_string(), Vec::new()));
-                        cw_idx = Some(shelves.len() - 1);
-                    }
-                    let si = cw_idx.unwrap();
-                    for item in &hub.metadata {
-                        if SKIP.contains(&item.kind.as_str()) {
-                            continue;
-                        }
-                        let rk = item.rating_key.as_str();
-                        if !rk.is_empty() && cw_seen.contains(&rk) {
-                            continue;
-                        }
-                        if !rk.is_empty() {
-                            cw_seen.push(rk);
-                        }
-                        shelves[si].2.push(item);
-                    }
-                } else {
-                    shelves.push((hub.title.clone(), hub.hub_identifier.clone(), hub.metadata.iter().collect()));
-                }
-            }
-            if let Some(si) = cw_idx {
-                // stable sort: most recently played first; equal timestamps keep hub order.
-                shelves[si].2.sort_by(|a, b| b.last_viewed_at.cmp(&a.last_viewed_at));
-            }
-
-            for (title, hub_id, items) in &shelves {
-                let start = new_cat.len();
-                for item in items {
-                    if new_cat.len() >= PMS_MAX_MOVIES {
-                        break;
-                    }
-                    let m = parse_item(item);
-                    if !m.title.is_empty() && !m.thumb.is_empty() {
-                        new_cat.push(m); // need a poster to show it in a shelf
-                    }
-                }
-                if new_cat.len() > start {
-                    new_hubs.push(HubRow {
-                        title: title.clone(),
-                        hub_id: hub_id.clone(),
-                        start,
-                        len: new_cat.len() - start,
-                    });
-                }
-            }
-
-            // Build the rotating hero pool: Continue Watching items first, then Recently Added,
-            // deduped by ratingKey. Require landscape `art` (the hero draws a full-bleed backdrop)
-            // and skip seasons (a bare "Season 1" makes a poor billboard). Capped at HERO_MAX.
-            for hub in &new_hubs {
-                // Match on the locale-independent hubIdentifier, not the localized display title:
-                // "home.continue" plus every Recently Added variant (home.movies.recent,
-                // home.television.recent, promoted <type>.recentlyadded.<id>) all carry "recent".
-                let eligible = hub.hub_id == "home.continue" || hub.hub_id.contains("recent");
-                if !eligible {
+                let rk = item.rating_key.as_str();
+                if !rk.is_empty() && cw_seen.contains(&rk) {
                     continue;
                 }
-                for idx in hub.start..hub.start + hub.len {
-                    if new_pool.len() >= HERO_MAX {
-                        break;
-                    }
-                    let m = &new_cat[idx];
-                    if m.art.is_empty() || m.kind == 2 {
-                        continue; // need landscape art; skip seasons
-                    }
-                    if new_pool.iter().any(|&j| new_cat[j].rk == m.rk) {
-                        continue; // dedup by ratingKey
-                    }
-                    new_pool.push(idx);
+                if !rk.is_empty() {
+                    cw_seen.push(rk);
                 }
+                shelves[si].2.push(item);
+            }
+        } else {
+            shelves.push((hub.title.clone(), hub.hub_identifier.clone(), hub.metadata.iter().collect()));
+        }
+    }
+    if let Some(si) = cw_idx {
+        // stable sort: most recently played first; equal timestamps keep hub order.
+        shelves[si].2.sort_by(|a, b| b.last_viewed_at.cmp(&a.last_viewed_at));
+    }
+
+    for (title, hub_id, items) in &shelves {
+        let start = new_cat.len();
+        for item in items {
+            if new_cat.len() >= PMS_MAX_MOVIES {
+                break;
+            }
+            let m = parse_item(item);
+            if !m.title.is_empty() && !m.thumb.is_empty() {
+                new_cat.push(m); // need a poster to show it in a shelf
             }
         }
-        let n = new_cat.len();
-        unsafe {
-            *std::ptr::addr_of_mut!(CATALOG) = new_cat;
-            *std::ptr::addr_of_mut!(HUBS) = new_hubs;
-            *std::ptr::addr_of_mut!(HERO_POOL) = new_pool;
+        if new_cat.len() > start {
+            new_hubs.push(HubRow {
+                title: title.clone(),
+                hub_id: hub_id.clone(),
+                start,
+                len: new_cat.len() - start,
+            });
         }
-        n as c_int
+    }
+
+    // Build the rotating hero pool: Continue Watching items first, then Recently Added,
+    // deduped by ratingKey. Require landscape `art` (the hero draws a full-bleed backdrop)
+    // and skip seasons (a bare "Season 1" makes a poor billboard). Capped at HERO_MAX.
+    for hub in &new_hubs {
+        // Match on the locale-independent hubIdentifier, not the localized display title:
+        // "home.continue" plus every Recently Added variant (home.movies.recent,
+        // home.television.recent, promoted <type>.recentlyadded.<id>) all carry "recent".
+        let eligible = hub.hub_id == "home.continue" || hub.hub_id.contains("recent");
+        if !eligible {
+            continue;
+        }
+        for idx in hub.start..hub.start + hub.len {
+            if new_pool.len() >= HERO_MAX {
+                break;
+            }
+            let m = &new_cat[idx];
+            if m.art.is_empty() || m.kind == 2 {
+                continue; // need landscape art; skip seasons
+            }
+            if new_pool.iter().any(|&j| new_cat[j].rk == m.rk) {
+                continue; // dedup by ratingKey
+            }
+            new_pool.push(idx);
+        }
+    }
+    (new_cat, new_hubs, new_pool)
+}
+
+// ---- fetch state machine: loading / ready / failed + the automatic-retry backoff -------------
+//
+// Modelled on `browse.rs`'s page store, deliberately, because it already learned both lessons
+// this needed: a FAILED fetch must never overwrite a populated store (one wifi hiccup used to
+// blank a whole grid permanently), and a fast-failing network must be held off by a countdown
+// rather than re-spawning a worker every frame.
+
+/// What the last hub fetch produced. Home's loading / empty / error read-out is a projection of
+/// this: an empty catalog is only an empty *screen* when the fetch actually succeeded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum HubState {
+    /// a fetch is in flight, or the first one hasn't run yet — nothing to show is not an answer
+    Loading,
+    /// the server answered; the catalog is whatever it says it is (possibly legitimately empty)
+    Ready,
+    /// the fetch failed — the previous catalog (if any) is untouched and [`pump`] is counting
+    /// down to the next automatic attempt
+    Failed,
+}
+static mut HUB_STATE: HubState = HubState::Loading;
+
+/// Off-thread refetch landing, tagged with the generation it was spawned in. `Built` commits;
+/// `Failed` deliberately carries no data, so a failure cannot be mistaken for "the server
+/// returned nothing".
+enum HubLanding {
+    Built(u32, HubBuild),
+    Failed(u32),
+}
+static HUB_RESULT: Mutex<Option<HubLanding>> = Mutex::new(None);
+/// Bumped by every authoritative fetch ([`reset`] on an identity change, and the blocking
+/// install fetch): a worker spawned before it lands with a stale tag and is DROPPED. Without
+/// this, a retry in flight across a profile switch could commit the previous account's hubs on
+/// top of the new one's — the same late-landing hazard `browse.rs` keys its `GEN` on.
+static HUB_GEN: AtomicU32 = AtomicU32::new(0);
+/// Single flight, cleared ONLY where the mailbox is taken (or where the spawn is refused) — the
+/// same latch discipline as `browse::IN_FLIGHT`: drop one without the other and the hubs never
+/// fetch again for the rest of the session.
+static HUBS_FETCHING: AtomicBool = AtomicBool::new(false);
+
+/// Seconds until the next automatic attempt, and the consecutive-failure count that sizes it.
+/// Main-thread only (stepped by [`pump`], which the Home update drives).
+static mut RETRY_S: f32 = 0.0;
+static mut RETRY_N: u32 = 0;
+/// The backoff ladder's ends. A TV parked on a sleeping server must keep trying — that IS the
+/// feature — without ever becoming a request loop, so the wait doubles from `MIN` to a `MAX`
+/// that still recovers within half a minute of the server coming back.
+const RETRY_MIN_S: f32 = 2.0;
+const RETRY_MAX_S: f32 = 30.0;
+
+/// Wait before attempt `fails + 1`: 2s, 4s, 8s, 16s, then 30s forever. Pure — host-tested.
+fn backoff_secs(fails: u32) -> f32 {
+    let steps = fails.saturating_sub(1).min(6); // 1<<6 already exceeds the cap; guards the shift
+    (RETRY_MIN_S * (1u32 << steps) as f32).min(RETRY_MAX_S)
+}
+
+/// The hub-fetch state — Home's loading/empty/error projection reads it.
+pub(crate) fn hub_state() -> HubState {
+    unsafe { std::ptr::addr_of!(HUB_STATE).read() }
+}
+
+/// Install a finished build: all three statics move together (they always have — a half-applied
+/// catalog once left a stale hero pool floating over emptied shelves), and a success retires the
+/// backoff so the next failure starts at the bottom of the ladder again.
+fn commit(build: HubBuild) -> c_int {
+    let (new_cat, new_hubs, new_pool) = build;
+    let n = new_cat.len();
+    unsafe {
+        *std::ptr::addr_of_mut!(CATALOG) = new_cat;
+        *std::ptr::addr_of_mut!(HUBS) = new_hubs;
+        *std::ptr::addr_of_mut!(HERO_POOL) = new_pool;
+        std::ptr::addr_of_mut!(HUB_STATE).write(HubState::Ready);
+        std::ptr::addr_of_mut!(RETRY_N).write(0);
+        std::ptr::addr_of_mut!(RETRY_S).write(0.0);
+    }
+    n as c_int
+}
+
+/// Record a failed fetch: keep whatever catalog is already committed and arm the next attempt.
+fn fail() {
+    unsafe {
+        let n = std::ptr::addr_of!(RETRY_N).read().saturating_add(1);
+        std::ptr::addr_of_mut!(RETRY_N).write(n);
+        std::ptr::addr_of_mut!(RETRY_S).write(backoff_secs(n));
+        std::ptr::addr_of_mut!(HUB_STATE).write(HubState::Failed);
+        // the ONE line that says a dead Home is dead ON PURPOSE and is coming back — without it
+        // the whole recovery is invisible in the event log
+        crate::log(&format!("hubs: fetch FAILED (attempt {n}) — retrying in {:.0}s", backoff_secs(n)));
+    }
+}
+
+/// Step the automatic-retry countdown by `dt` seconds; true when the next attempt is due. Split
+/// out from [`pump`] so the ladder is testable without spawning a worker or touching a socket.
+fn retry_due(dt: f32) -> bool {
+    unsafe {
+        let left = std::ptr::addr_of!(RETRY_S).read() - dt;
+        std::ptr::addr_of_mut!(RETRY_S).write(left.max(0.0));
+        left <= 0.0
+    }
+}
+
+/// Spawn an off-thread hub refetch (single flight); [`pump`] lands it. The boot/install fetch
+/// stays blocking, but every RETRY goes through here — and that is exactly what lets Home show a
+/// live loading state at all: a blocking fetch on the SDL loop draws no frames while it runs, so
+/// the spinner it is supposed to be spinning would never reach the panel.
+fn kick_refetch() {
+    if HUBS_FETCHING.swap(true, Ordering::SeqCst) {
+        return; // one in flight already — its spinner is the honest answer
+    }
+    unsafe {
+        std::ptr::addr_of_mut!(HUB_STATE).write(HubState::Loading);
+        std::ptr::addr_of_mut!(RETRY_S).write(0.0);
+    }
+    let gen = HUB_GEN.load(Ordering::SeqCst);
+    let spawned = crate::task::spawn_small("hubs", move || {
+        let built = catch_unwind(fetch_build).ok().flatten();
+        // filled OUTSIDE the guard so a panicking fetch still lands (as a failure) rather than
+        // latching the single flight forever
+        *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(built.map(|b| HubLanding::Built(gen, b)).unwrap_or(HubLanding::Failed(gen)));
     });
-    r.unwrap_or(0)
+    if !spawned {
+        // nothing will ever fill the mailbox (the thread limit refused us), so release the latch
+        // here and back off — `pump` will try again on the ladder.
+        HUBS_FETCHING.store(false, Ordering::SeqCst);
+        fail();
+    } else {
+        crate::log("hubs: retrying (off-thread)");
+    }
+}
+
+/// The Retry control's kick: try again NOW, from the bottom of the ladder — a person who asks
+/// for it should never be made to sit out a 30-second automatic wait. A no-op while a fetch is
+/// already in flight.
+pub(crate) fn request_retry() {
+    unsafe {
+        std::ptr::addr_of_mut!(RETRY_N).write(0);
+        std::ptr::addr_of_mut!(RETRY_S).write(0.0);
+    }
+    kick_refetch();
+}
+
+/// Once-a-frame main-thread tick: land a finished refetch, then count down to the next automatic
+/// attempt. Driven by `ui::home::home_update`, so it runs exactly while Home is the screen that
+/// cares (and never spawns a background fetch behind the player).
+pub(crate) fn pump(dt: f32) {
+    // taken into a `let` FIRST: an `if let` scrutinee holds its temporary guard for the whole
+    // body under edition 2021, which would run the commit + `detail::reselect()` with the mailbox
+    // still locked (and changes meaning again under 2024)
+    let landed = HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(landing) = landed {
+        HUBS_FETCHING.store(false, Ordering::SeqCst);
+        let cur = HUB_GEN.load(Ordering::SeqCst);
+        match landing {
+            // a landing from before the last authoritative fetch describes a server (or an
+            // account) we have since moved off — drop it, neither commit nor blame
+            HubLanding::Built(gen, _) | HubLanding::Failed(gen) if gen != cur => {}
+            HubLanding::Built(_, build) => {
+                let n = commit(build);
+                crate::log(&format!("hubs: retry landed — {n} items, {} shelves", hub_count()));
+                // the same post-mutation ritual `refetch_hubs_reconcile` performs: an open
+                // detail page re-resolves its selected row against the rebuilt catalog
+                crate::ui::detail::reselect();
+            }
+            HubLanding::Failed(_) => fail(),
+        }
+    }
+    // Anything but Ready with nothing in flight is a state only a fetch can leave: Failed (with a
+    // backoff owed) or a Loading whose worker landed stale and was dropped — the latter owes
+    // nothing, so it re-kicks on the spot rather than wedging Home on a spinner forever.
+    if hub_state() != HubState::Ready && !HUBS_FETCHING.load(Ordering::SeqCst) && retry_due(dt) {
+        kick_refetch();
+    }
+}
+
+/// A committable build of `n` placeholder rows in one shelf (test fixture). Only the SHAPE is
+/// real — `build_hubs` would have dropped these rows for having no title/poster; what the tests
+/// here assert is the commit/landing bookkeeping, which never looks inside a row.
+#[cfg(test)]
+fn build_test(n: usize) -> HubBuild {
+    let cat: Vec<PmsMovie> = (0..n).map(|_| PmsMovie::default()).collect();
+    let hubs = vec![HubRow { title: "Continue Watching".into(), hub_id: "home.continue".into(), start: 0, len: n }];
+    (cat, hubs, Vec::new())
+}
+
+/// Test hook: put the store in a known place — `items` rows in one shelf, plus a fetch state.
+/// Home's read-out is a pure projection of this pair, and the states a host test cannot reach for
+/// real (a live server answering, or refusing) are exactly the ones worth pinning.
+#[cfg(test)]
+pub(crate) fn seed_for_test(items: usize, state: HubState) {
+    reset();
+    if items > 0 {
+        commit(build_test(items));
+    }
+    unsafe { std::ptr::addr_of_mut!(HUB_STATE).write(state) };
+}
+
+/// Drop the catalog and re-arm the fetch — the identity-change twin of [`crate::browse::reset`],
+/// called from the same place (`install_pms`). Now that a failed fetch KEEPS the previous
+/// catalog, a profile switch whose fetch fails would otherwise leave the previous user's shelves
+/// on screen; this is the one place that must still wipe them.
+pub(crate) fn reset() {
+    HUB_GEN.fetch_add(1, Ordering::SeqCst); // a worker still running belongs to the old identity
+    *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    HUBS_FETCHING.store(false, Ordering::SeqCst);
+    unsafe {
+        *std::ptr::addr_of_mut!(CATALOG) = Vec::new();
+        *std::ptr::addr_of_mut!(HUBS) = Vec::new();
+        *std::ptr::addr_of_mut!(HERO_POOL) = Vec::new();
+        std::ptr::addr_of_mut!(HUB_STATE).write(HubState::Loading);
+        std::ptr::addr_of_mut!(RETRY_N).write(0);
+        std::ptr::addr_of_mut!(RETRY_S).write(0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // NB every test that touches the catalog statics holds the crate-wide serial lock: they are
+    // read from other modules' tests too (`ui::home` walks `hub_len`), which a module-local mutex
+    // cannot see. `reset()` doubles as the teardown.
+
+    /// A landing tagged with the CURRENT generation — what a worker spawned right now would post.
+    fn land(l: impl FnOnce(u32) -> HubLanding) {
+        *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(l(HUB_GEN.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn the_backoff_doubles_then_holds_at_the_ceiling() {
+        assert_eq!(backoff_secs(1), RETRY_MIN_S, "the first retry is the shortest wait");
+        assert_eq!(backoff_secs(2), 4.0);
+        assert_eq!(backoff_secs(3), 8.0);
+        assert_eq!(backoff_secs(4), 16.0);
+        assert_eq!(backoff_secs(5), RETRY_MAX_S, "32s is past the ceiling");
+        assert_eq!(backoff_secs(99), RETRY_MAX_S, "and it never grows past it (nor overflows)");
+    }
+
+    /// The bug this whole unit exists for: a failed fetch used to commit an EMPTY catalog, so one
+    /// unreachable moment blanked a populated Home for good. A failure must leave every one of
+    /// the three statics exactly as it found them.
+    #[test]
+    fn a_failed_landing_never_blanks_a_populated_home() {
+        let _g = crate::testlock::serial();
+        reset();
+        commit(build_test(3));
+        assert_eq!(hub_count(), 1);
+        assert_eq!(hub_len(0), 3);
+
+        land(HubLanding::Failed);
+        pump(0.0);
+
+        assert_eq!(hub_state(), HubState::Failed, "the failure must be distinguishable");
+        assert_eq!(hub_count(), 1, "the shelves survive a failed refetch");
+        assert_eq!(hub_len(0), 3);
+        assert!(unsafe { std::ptr::addr_of!(RETRY_S).read() } > 0.0, "and the next attempt is armed");
+        reset();
+    }
+
+    /// A landing that carries a build commits it, and a success retires the backoff so the next
+    /// failure starts at the bottom of the ladder instead of inheriting a 30s wait.
+    #[test]
+    fn a_successful_landing_commits_and_retires_the_backoff() {
+        let _g = crate::testlock::serial();
+        reset();
+        fail();
+        fail();
+        assert_eq!(hub_state(), HubState::Failed);
+
+        land(|g| HubLanding::Built(g, build_test(2)));
+        pump(0.0);
+
+        assert_eq!(hub_state(), HubState::Ready);
+        assert_eq!(hub_len(0), 2);
+        assert_eq!(unsafe { std::ptr::addr_of!(RETRY_N).read() }, 0);
+        assert_eq!(unsafe { std::ptr::addr_of!(RETRY_S).read() }, 0.0);
+        reset();
+    }
+
+    /// An answer of "nothing" is an ANSWER: it must land as Ready (Home's empty state), not as a
+    /// failure, or the screen would apologise for a server that is simply empty — and retry it
+    /// forever.
+    #[test]
+    fn a_server_with_no_hubs_is_ready_and_empty_not_failed() {
+        let _g = crate::testlock::serial();
+        reset();
+        land(|g| HubLanding::Built(g, (Vec::new(), Vec::new(), Vec::new())));
+        pump(0.0);
+        assert_eq!(hub_state(), HubState::Ready);
+        assert_eq!(hub_count(), 0);
+        reset();
+    }
+
+    /// The countdown is real time (seconds of `dt`), not frames like `browse.rs`'s — a device
+    /// that drops to 30fps must still retry on the same wall clock. NB `retry_due` keeps
+    /// reporting due once it is spent; what makes an attempt happen only once is `kick_refetch`
+    /// re-latching the single flight, not this.
+    #[test]
+    fn the_retry_countdown_fires_when_the_backoff_elapses() {
+        let _g = crate::testlock::serial();
+        reset();
+        fail(); // arms RETRY_MIN_S
+        for _ in 0..3 {
+            assert!(!retry_due(0.5), "0.5s at a time must not fire before the 2s wait is spent");
+        }
+        assert!(retry_due(0.5), "the fourth half-second spends it");
+        reset();
+    }
+
+    /// A retry still in flight when the account changes must not commit the PREVIOUS identity's
+    /// hubs over the new one's: its landing carries the old generation and is dropped whole —
+    /// neither committed nor blamed on the current fetch.
+    #[test]
+    fn a_landing_from_before_a_reset_is_dropped_whole() {
+        let _g = crate::testlock::serial();
+        reset();
+        let stale = HUB_GEN.load(Ordering::SeqCst);
+        reset(); // the identity change
+        commit(build_test(2)); // …and the new identity's catalog
+        *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(HubLanding::Built(stale, build_test(9)));
+        pump(0.0);
+        assert_eq!(hub_len(0), 2, "the stale build must not replace the current catalog");
+        assert_eq!(hub_state(), HubState::Ready, "nor be counted as a failure of the current one");
+        reset();
+    }
+
+    /// `reset` is the profile-switch wipe: the previous user's shelves must not survive it, and
+    /// the state machine must come back as a fresh boot's (Loading, no backoff owed).
+    #[test]
+    fn reset_wipes_the_catalog_and_re_arms_the_fetch() {
+        let _g = crate::testlock::serial();
+        commit(build_test(4));
+        fail();
+        reset();
+        assert_eq!(hub_count(), 0);
+        assert_eq!(catalog().len(), 0);
+        assert_eq!(hero_pool_len(), 0);
+        assert_eq!(hub_state(), HubState::Loading);
+        assert_eq!(unsafe { std::ptr::addr_of!(RETRY_N).read() }, 0);
+    }
 }

@@ -83,8 +83,24 @@ pub(crate) fn snap_pos() -> f32 {
 pub(crate) fn set_row(v: c_int) {
     unsafe { addr_of_mut!(fr).write(v) }
 }
+/// The snap the screen may actually hold, given `nrows` addressable shelves: **no shelves means no
+/// grid**, so it collapses to the hero. ONE pure rule, applied in two places, because either alone
+/// is a bug: `set_snap_target` refuses a new dive (a DOWN press would otherwise slide the
+/// billboard — or the loading/empty/error read-out's hero band — away and land on a bare screen),
+/// and `home_update` re-applies it every frame because a catalog can empty UNDER a snap already
+/// committed. Left at 1.0 with nothing to show, app.rs's pointer gate (`snap_pos() < 0.5`) routes
+/// clicks to the empty grid's hit-test instead of the hero rects, and the status screen's Retry
+/// control — the one way back — is silently unclickable.
+fn pinned_snap(v: f32, nrows: usize) -> f32 {
+    if nrows == 0 {
+        0.0
+    } else {
+        v
+    }
+}
+
 pub(crate) fn set_snap_target(v: f32) {
-    unsafe { addr_of_mut!(snapTarget).write(v) }
+    unsafe { addr_of_mut!(snapTarget).write(pinned_snap(v, n_hubs())) }
 }
 
 #[inline]
@@ -434,7 +450,7 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     let hf = hero_focus();
     let (cd, cgap) = (HERO_CTRL_D, 20.0f32); // control diameter + inter-control gap
     let plabel = if hero.resume_ms > 0 { c"Continue" } else { c"Play" };
-    let pw = crate::ui::widgets::pill_w(plabel.as_ptr(), theme::size::BODY);
+    let pw = Button::pill_w(plabel.as_ptr(), theme::size::BODY, true); // measured from the label it carries
     // local (painter-relative) frames, and the screen-space rects that mirror them
     let pill = Rect::new(tx, pill_y, pw, cd);
     let info = Rect::new(tx + pw + cgap, pill_y, cd, cd);
@@ -786,6 +802,25 @@ pub(crate) fn home_init() {
 pub(crate) fn home_update(dt: f32) {
     guard(|| {
         let h = scene();
+        // The hub-fetch state machine: land an off-thread refetch and count down to the next
+        // automatic retry. It ticks HERE because Home is the only screen that shows the result —
+        // so nothing spawns a background fetch behind the player, and a Home that came up empty
+        // heals itself the moment the server answers again.
+        crate::pms::pump(dt);
+        // The LIVE half of [`pinned_snap`]: a catalog can empty UNDER a committed snap (a profile
+        // switch whose fetch fails does exactly that), and a filter on new writes cannot undo one
+        // already made. Re-applied every frame, so every snap reader falls into line for free.
+        if n_hubs() == 0 {
+            unsafe { addr_of_mut!(snapTarget).write(0.0) };
+            h.snap.jump(0.0); // no slide: there is nothing on either side of it to animate
+        }
+        // spinner phase, wrapped on a whole Spinner period so it stays exact (a bare f32
+        // accumulator loses sub-frame resolution after a few days parked on this screen — and a
+        // screen that sits here for days is precisely the failure this read-out is for)
+        unsafe {
+            let ms = addr_of!(status_ms).read() + dt * 1000.0;
+            addr_of_mut!(status_ms).write(ms % (crate::ui::widgets::Spinner::PERIOD_MS as f32 * 1000.0));
+        };
         unsafe {
             let cd = addr_of!(hero_flip_cd).read();
             if cd > 0.0 {
@@ -836,6 +871,9 @@ pub(crate) fn home_draw() {
         let env = h.env(0.0);
         h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
         h.draw(&env, Painter::root());
+        // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands
+        // in for the hero and grid above it), so the top chrome below still paints over it.
+        draw_status(&env, Painter::root());
         // the centered library tab pills (shared with the Library screen): Home is the selected
         // tab here; a pill holds focus when the hero top band is on it.
         let pf = hero_pill_index(hero_focus()).map(|i| i as c_int).unwrap_or(-1);
@@ -868,6 +906,83 @@ fn draw_chip(p: Painter) {
 /// Pointer hit-test on the profile chip (returns true so the caller opens the account menu).
 pub(crate) fn profile_chip_click(mx: f32, my: f32) -> bool {
     unsafe { addr_of!(profile_chip).read() }.contains(mx, my)
+}
+
+// ---- the loading / empty / error read-out ----------------------------------------------------
+// Home used to draw the SAME bare dark screen whether the hub fetch was still running, the server
+// was unreachable, or the library really was empty — and nothing ever tried again, so a wifi
+// hiccup at boot meant a dead screen until the app was restarted. The three states are now told
+// apart (`pms::HubState`) and the screen is always recoverable: an automatic retry on a backoff,
+// plus a control for the person who doesn't want to wait for it.
+
+/// ms clock for the status spinner. The screen owns its own phase the way `library.rs` does —
+/// `home_draw` runs at dt=0, so only `home_update` can advance one.
+static mut status_ms: f32 = 0.0;
+
+/// Home's "there are no shelves" read-out: caption, treatment, and the label of the control under
+/// it (`None` = no control — while a fetch is in flight the spinner IS the state, and the fetch a
+/// Retry would kick is the one already running).
+///
+/// `None` overall = there IS content, so nothing is drawn over it. A background refresh that fails
+/// behind a populated Home stays silent and retries underneath rather than throwing an error over
+/// shelves the user can still use — the same rule `browse.rs` keeps for its paged grid.
+fn status_read() -> Option<(&'static std::ffi::CStr, crate::ui::widgets::StatusKind, Option<&'static std::ffi::CStr>)> {
+    use crate::ui::widgets::StatusKind;
+    if crate::pms::hub_count() > 0 {
+        return None;
+    }
+    Some(match crate::pms::hub_state() {
+        crate::pms::HubState::Loading => (c"Loading your library\u{2026}", StatusKind::Working, None),
+        crate::pms::HubState::Failed => (c"Can't reach your Plex server", StatusKind::Failed, Some(c"Try Again")),
+        crate::pms::HubState::Ready => (c"Nothing on this server yet", StatusKind::Empty, Some(c"Refresh")),
+    })
+}
+
+/// Draw the read-out over an EMPTY Home: the shared `StatusOverlay` (spinner + caption, or a
+/// tinted caption alone) with its one control below. Deliberately independent of `hero_a` and of
+/// the snap — with no shelves there is nothing for the grid to show, so the message must not fade
+/// out as the snap drifts.
+fn draw_status(env: &Env, p: Painter) {
+    let Some((caption, kind, action)) = status_read() else {
+        return; // there is content: the hero owns the screen, and its own hit targets
+    };
+    crate::ui::widgets::StatusOverlay::new(Rect::FULL, caption, kind)
+        .phase(unsafe { addr_of!(status_ms).read() } as u32)
+        .draw(env, p);
+    // The status screen OWNS the hero action row's focus slot AND its pointer hit targets: the two
+    // can never be on screen together (a status state means an empty catalog, which means
+    // `hero_item()` is None and `Hero::draw` returns before recording anything), so the existing
+    // click path drives Retry with no second hit-test. Focus is `>= 0` rather than `== 0` because
+    // this row has exactly one button — LEFT/RIGHT must not be able to park focus on nothing.
+    // parked OFF the panel rather than at the origin: `Rect::contains` is inclusive, so a
+    // zero-size rect at (0,0) would "contain" a click at exactly (0,0)
+    let none = Rect::new(-1.0, -1.0, 0.0, 0.0);
+    let Some(label) = action else {
+        unsafe { addr_of_mut!(hero_btns).write([none; HERO_NBTN]) };
+        return;
+    };
+    let w = Button::pill_w(label.as_ptr(), theme::size::BODY, false);
+    let btn = Rect::new((SCR_W - w) * 0.5, SCR_H * 0.5 + theme::space::XL, w, HERO_CTRL_D);
+    unsafe { addr_of_mut!(hero_btns).write([btn, none, none]) };
+    Button::new(label.as_ptr(), theme::size::BODY, btn).focused(hero_focus() >= 0).draw(env, p);
+}
+
+/// Does the status screen own this activation? Retry is Home's ONLY control while a read-out is
+/// up, so it takes everything except the top band — the profile chip and the library tab pills,
+/// the two escapes that still work with no shelves. Split from [`status_activate`] so the rule is
+/// testable without kicking a real fetch.
+fn status_takes(hf: c_int) -> bool {
+    status_read().is_some() && hf != -1 && hero_pill_index(hf).is_none()
+}
+
+/// OK (or a click) while a status read-out is up: kick the fetch again. Returns whether it handled
+/// the press; app.rs's ONE home activation asks this first.
+pub(crate) fn status_activate(hf: c_int) -> bool {
+    if !status_takes(hf) {
+        return false;
+    }
+    crate::pms::request_retry();
+    true
 }
 
 pub(crate) fn home_move_focus(sym: c_uint) {
@@ -1057,6 +1172,12 @@ mod tests {
     /// but never writes it back, so the raw global kept climbing.
     #[test]
     fn vert_cannot_walk_past_the_shelf_array() {
+        // Two locks, and both are load-bearing: FOCUS for `static mut fr`/`fc`, and the crate-wide
+        // serial lock because this READS `pms`'s catalog statics (`n_hubs`/`hub_len`) which other
+        // modules' tests now WRITE — `commit` frees the old `HUBS` buffer, so an unsynchronized
+        // read here is a use-after-free, not a flaky assertion. Every writer takes `serial` only,
+        // so this pair can never be acquired in the opposite order.
+        let _s = crate::testlock::serial();
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let grid = Grid::new();
         set_row(MAX_HUBS as c_int - 1); // 15 — the last shelf the array can hold
@@ -1067,6 +1188,81 @@ mod tests {
             row()
         );
         set_row(0);
+    }
+
+    /// The whole point of the status read-out: the three "no shelves" cases must be TOLD APART.
+    /// One bare dark screen used to stand in for all of them — still fetching, server unreachable,
+    /// and library genuinely empty — and content must silence it entirely, because a refresh that
+    /// fails behind populated shelves is not worth covering them with.
+    ///
+    /// Takes the crate-wide serial lock (not this module's `FOCUS`): the catalog it drives is
+    /// `pms`'s, read from other modules' tests too.
+    #[test]
+    fn the_status_readout_tells_loading_empty_and_failed_apart() {
+        use crate::pms::HubState;
+        use crate::ui::widgets::StatusKind;
+        let _g = crate::testlock::serial();
+
+        crate::pms::seed_for_test(0, HubState::Loading);
+        let (_, kind, action) = status_read().expect("an empty Home must say something");
+        assert_eq!(kind, StatusKind::Working);
+        assert!(action.is_none(), "a fetch in flight offers no Retry — it IS the retry");
+
+        crate::pms::seed_for_test(0, HubState::Failed);
+        let (_, kind, action) = status_read().unwrap();
+        assert_eq!(kind, StatusKind::Failed);
+        assert!(action.is_some(), "an unreachable server must offer a way back");
+
+        crate::pms::seed_for_test(0, HubState::Ready);
+        let (_, kind, action) = status_read().unwrap();
+        assert_eq!(kind, StatusKind::Empty, "an empty library is an answer, not an error");
+        assert!(action.is_some());
+
+        crate::pms::seed_for_test(3, HubState::Ready);
+        assert!(status_read().is_none(), "shelves silence the read-out");
+        crate::pms::seed_for_test(3, HubState::Failed);
+        assert!(status_read().is_none(), "…including when a background refresh just failed");
+        crate::pms::reset();
+    }
+
+    /// No shelves means no grid — the rule `set_snap_target` refuses new dives with and
+    /// `home_update` re-applies to the live spring every frame. Both halves matter: a catalog can
+    /// empty UNDER a snap already committed (a profile switch whose fetch fails does exactly
+    /// that), and left at 1.0 with nothing to show, app.rs's pointer gate routes clicks to the
+    /// empty grid's hit-test instead of the hero rects — leaving the status screen's Retry
+    /// control, the one way back, silently unclickable.
+    ///
+    /// Only the pure rule is host-testable: driving `home_update` would drag the panic barrier's
+    /// `gfx::clip_clear` — and with it `glDisable` — into a binary that has no GL to link against.
+    #[test]
+    fn no_shelves_means_no_grid_snap() {
+        assert_eq!(pinned_snap(1.0, 0), 0.0, "an empty catalog has no grid to dive into");
+        assert_eq!(pinned_snap(0.0, 0), 0.0, "…and the hero is where it stays");
+        assert_eq!(pinned_snap(1.0, 1), 1.0, "one shelf is a grid");
+        assert_eq!(pinned_snap(1.0, MAX_HUBS), 1.0);
+        assert_eq!(pinned_snap(0.0, 3), 0.0, "a move back TO the hero is never filtered");
+    }
+
+    /// The escapes from a dead Home must survive it: the profile chip and the library tab pills
+    /// keep their own activations, so only the Retry control takes the press.
+    #[test]
+    fn the_status_screen_takes_ok_but_never_the_top_band() {
+        use crate::pms::HubState;
+        let _g = crate::testlock::serial();
+
+        crate::pms::seed_for_test(0, HubState::Failed);
+        assert!(status_takes(0), "the Retry control takes the press");
+        assert!(status_takes(c_int::MIN), "…and so does an OK that thinks it is on a grid card");
+        assert!(!status_takes(-1), "the profile chip still opens the account menu");
+        // the tab strip is uncapped since unit 10 (it scrolls, so every discovered section is
+        // focusable) — walk a generous range rather than a constant that no longer exists
+        for i in 0..8usize {
+            assert!(!status_takes(hero_focus_for_pill(i)), "tab pill {i} still enters its library");
+        }
+
+        crate::pms::seed_for_test(3, HubState::Failed);
+        assert!(!status_takes(0), "with shelves up, OK belongs to the hero row again");
+        crate::pms::reset();
     }
 
     /// Regression: hit_at re-derived the card x WITHOUT the `* sp` snap fold the draw applies
