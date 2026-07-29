@@ -1002,13 +1002,24 @@ fn draw_episodes(p: Painter) {
         let card = Rect::new(x, ep_y, EP_W, EP_H);
         // episode still + focus ring + scale-pop (shared with the chapters strip)
         crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, popped, sc);
-        // resume bar (tracks the scaled card while it's popped)
+        // Playback state on the still — ONE mark at a time, resolved in the same order the posters
+        // resolve theirs in `widgets::card`: a resume point wins (a part-watched re-run is what the
+        // viewer is in the middle of), otherwise a finished episode carries the watched check.
+        // Without this, a fully-watched episode looked exactly like one never started. Both marks
+        // track the scaled card while it's popped.
+        let cr = if popped { card.scaled(sc) } else { card };
         if ep.resume_ms > 0 && ep.dur_ms > 0 {
-            let cr = if popped { card.scaled(sc) } else { card };
             let frac = (ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0);
             let bar = Rect::new(cr.x + 12.0, cr.y + cr.h - 16.0, cr.w - 24.0, 5.0);
-            pe.rrect(bar, 2.5, 2.5, theme::RAIL_BUFFERED);
-            pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), 2.5, 2.5, theme::RAIL_FILL);
+            // the CARD-BOTTOM resume pair, which is what these two tokens are documented for —
+            // not the player scrubber's `RAIL_*`, which this strip used to borrow. Amber is the
+            // app's one watched-state hue (the poster shelves' resume bar and unwatched angle, the
+            // watched toggle's check, the badge above), so a white bar here left this tile the only
+            // place in the product speaking a second one.
+            pe.rrect(bar, 2.5, 2.5, theme::RESUME_TRACK);
+            pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), 2.5, 2.5, theme::RESUME_FILL);
+        } else if ep.watched {
+            crate::ui::widgets::watched_badge(pe, cr);
         }
         // under-card metadata: kicker → title → full summary → air date. The summary flows off the
         // ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title doesn't leave
