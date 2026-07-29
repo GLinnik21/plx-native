@@ -21,6 +21,10 @@ int avcodec_open2(void *ctx, const void *codec, void **opts) { (void)ctx; (void)
 int avcodec_decode_subtitle2(void *ctx, void *sub, int *got, void *pkt) { (void)ctx; (void)sub; (void)got; (void)pkt; return 0; }
 void avsubtitle_free(void *sub) { (void)sub; }
 void avcodec_free_context(void **ctx) { (void)ctx; }
+/* Scratch AVCodecParameters for ff.rs::sub_canvas (the subtitle authoring canvas, read
+ * through avcodec_parameters_from_context so no raw struct offset is involved). */
+void *avcodec_parameters_alloc(void) { return 0; }
+void avcodec_parameters_free(void **par) { (void)par; }
 
 /* Dev-only probe (capture stream): does the TV's libavcodec build keep encoders? */
 void *avcodec_find_encoder_by_name(const char *name) { (void)name; return 0; }

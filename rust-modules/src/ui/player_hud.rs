@@ -84,7 +84,7 @@ pub(crate) fn draw_subtitles(hud_up: bool) {
     let n = lines.len() as f32;
     let cx = SCR_W * 0.5;
     // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up
-    let baseline = if hud_up { SCR_H - 300.0 } else { SCR_H - 100.0 };
+    let baseline = if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y };
     let block_top = baseline - n * lh;
     let white = [1.0f32, 1.0, 1.0, 1.0]; // subtitles stay pure white for legibility (carve-out)
     let outline = theme::scrim_black(0.85);
@@ -101,38 +101,118 @@ pub(crate) fn draw_subtitles(hud_up: bool) {
     }
 }
 
-/// Client-rendered IMAGE subtitles (PGS/VobSub): composite the active decoded bitmap over the
-/// video at its 1920×1080 canvas coords (== our UI, so used directly). Caches the GL texture and
-/// re-uploads only when the active cue changes (every few seconds). Main-thread only (GL). This
-/// is the image counterpart to draw_subtitles — a selected track is either text or image, so at
-/// most one of the two draws a cue at a time.
-pub(crate) fn draw_subtitle_bitmap() {
-    static mut TEX: c_uint = 0;
+/// Subtitle baseline: where the caption block sits with the transport DOWN, and the ceiling it
+/// lifts to with the transport UP (clear of the scrubber, buttons and tabs). Both paths share
+/// them: text lifts by moving its baseline, images lift by however much they overhang the
+/// ceiling — otherwise a bottom-positioned PGS cue sits behind the scrim while the user seeks.
+const SUB_BASE_Y: f32 = SCR_H - 100.0;
+const SUB_CEIL_Y: f32 = SCR_H - 300.0;
+
+/// Map a decoded image-subtitle rect from the stream's `cw`×`ch` authoring canvas onto the video
+/// rect — which is always the full panel here (the video track is authored 1920×1080; see the
+/// root CLAUDE.md). A subtitle canvas is the picture's own storage grid, so this is exactly the
+/// stretch the TV applies to the video itself: identity for 1080p PGS, 2.67×/2.25 for a 720×480
+/// NTSC VobSub, 0.5× for a 4K PGS track. `cw`/`ch` of 0 means the decoder never declared a canvas
+/// — then the rect is used 1:1, which is what this path did unconditionally before.
+///
+/// Deliberately NOT snapped to whole pixels: this is scaled content, and the crispness contract
+/// (root CLAUDE.md) snaps 1:1-texel content only.
+fn sub_screen_rect(r: (i32, i32, i32, i32), cw: i32, ch: i32) -> Rect {
+    let sx = if cw > 0 { SCR_W / cw as f32 } else { 1.0 };
+    let sy = if ch > 0 { SCR_H / ch as f32 } else { 1.0 };
+    Rect::new(r.0 as f32 * sx, r.1 as f32 * sy, r.2 as f32 * sx, r.3 as f32 * sy)
+}
+
+/// How far UP to shift the rects of a display set that overhang the transport, so they clear it.
+/// Nothing moves while the HUD is down, and the shift never exceeds the overhanging group's own
+/// top, so a set too tall to lift is clamped rather than pushed off the top of the screen.
+///
+/// The lift is measured over the OVERHANGING rects only, and (per [`overhangs`]) applies only to
+/// them. Measuring the whole set breaks the case multi-rect adds: a set carrying a sign at
+/// y≈100 and dialogue at y≈950 would clamp the lift to 100 — sliding the sign for no reason
+/// while leaving the dialogue still behind the scrim. Measuring the group and moving it as ONE
+/// unit is also why this is not a per-rect lift: two-line dialogue is two rects with different
+/// overhangs, and lifting each by its own would collapse them onto each other.
+fn hud_lift<I: Iterator<Item = Rect>>(rects: I, hud_up: bool) -> f32 {
+    if !hud_up {
+        return 0.0;
+    }
+    let (mut top, mut bottom) = (f32::MAX, f32::MIN);
+    for r in rects.filter(|r| overhangs(*r)) {
+        top = top.min(r.y);
+        bottom = bottom.max(r.y + r.h);
+    }
+    if top > bottom {
+        return 0.0; // nothing overhangs
+    }
+    (bottom - SUB_CEIL_Y).max(0.0).min(top.max(0.0))
+}
+
+/// Does this rect reach below the transport ceiling? Only such rects take the lift.
+fn overhangs(r: Rect) -> bool {
+    r.y + r.h > SUB_CEIL_Y
+}
+
+/// Client-rendered IMAGE subtitles (PGS/VobSub): composite the active decoded display set over
+/// the video, scaled from the subtitle stream's own authoring canvas into the video rect
+/// (`sub_screen_rect`) and lifted clear of the transport when `hud_up` (`hud_lift`). EVERY rect
+/// of the set is drawn — two-line dialogue and sign-plus-dialogue are authored as separate rects.
+/// Caches one GL texture per rect and re-uploads only when the active cue changes (every few
+/// seconds); the cached rects are the unlifted screen rects, so the lift can follow the HUD
+/// frame by frame without re-uploading. Main-thread only (GL). This is the image counterpart to
+/// draw_subtitles — a selected track is either text or image, so at most one of the two draws a
+/// cue at a time.
+pub(crate) fn draw_subtitle_bitmap(hud_up: bool) {
+    use std::ptr::addr_of_mut;
+    static mut SET: Vec<(c_uint, Rect)> = Vec::new();
     static mut KEY: i64 = i64::MIN;
-    static mut RECT: (f32, f32, f32, f32) = (0.0, 0.0, 0.0, 0.0);
+    // The cache key is (track, start_ns), not start_ns alone: two image tracks of the same file
+    // routinely start a display set on the SAME pts, so keying on the timestamp alone leaves the
+    // outgoing track's bitmap on screen after a switch between two image tracks.
+    static mut SEL: i32 = i32::MIN;
     unsafe {
-        if crate::player::desired_sub_idx() < 0 {
-            if TEX != 0 {
-                delete_tex(TEX);
-                TEX = 0;
+        let set = &mut *addr_of_mut!(SET);
+        let sel = crate::player::desired_sub_idx();
+        if sel < 0 {
+            for (t, _) in set.drain(..) {
+                delete_tex(t);
             }
             KEY = i64::MIN;
+            SEL = i32::MIN; // reset BOTH halves of the key — neither should prop the other up
             return;
         }
         match crate::player::active_bitmap_key(crate::player::playpos_ns()) {
             None => KEY = i64::MIN, // gap between cues — draw nothing this frame
             Some(k) => {
-                if k != KEY {
-                    if let Some((x, y, w, h, rgba)) = crate::player::bitmap_by_key(k) {
-                        TEX = upload_rgba(TEX, w, h, rgba.as_ptr());
-                        RECT = (x as f32, y as f32, w as f32, h as f32);
-                        KEY = k;
-                    } else {
-                        return; // cue evicted between key lookup and fetch
+                if k != KEY || sel != SEL {
+                    let (cw, ch, rects) = match crate::player::bitmap_by_key(k) {
+                        Some(v) => v,
+                        None => return, // cue evicted between key lookup and fetch
+                    };
+                    // retire the surplus first, then re-spec the ids we keep: upload_rgba reuses
+                    // a non-zero id, so a steady 1-rect stream never allocates a texture twice.
+                    for (t, _) in set.drain(rects.len().min(set.len())..) {
+                        delete_tex(t);
                     }
+                    for (i, r) in rects.iter().enumerate() {
+                        let dst = sub_screen_rect((r.x, r.y, r.w, r.h), cw, ch);
+                        let prev = set.get(i).map_or(0, |(t, _)| *t);
+                        let tex = upload_rgba(prev, r.w, r.h, r.rgba.as_ptr());
+                        match set.get_mut(i) {
+                            Some(slot) => *slot = (tex, dst),
+                            None => set.push((tex, dst)),
+                        }
+                    }
+                    KEY = k;
+                    SEL = sel;
                 }
+                let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up);
                 let white = [1.0f32, 1.0, 1.0, 1.0];
-                Painter::root().tex(TEX, Rect::new(RECT.0, RECT.1, RECT.2, RECT.3), 0.0, white);
+                let p = Painter::root();
+                for (tex, r) in set.iter() {
+                    let dy = if overhangs(*r) { lift } else { 0.0 };
+                    p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, white);
+                }
             }
         }
     }
@@ -753,5 +833,94 @@ mod tests {
         // nothing to take back if the ring is elsewhere, or if a stand-in still owns the row
         assert!(!standin_left_the_ring(true, discs, false));
         assert!(!standin_left_the_ring(true, skip, true));
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.01
+    }
+    fn assert_rect(r: Rect, x: f32, y: f32, w: f32, h: f32) {
+        assert!(
+            close(r.x, x) && close(r.y, y) && close(r.w, w) && close(r.h, h),
+            "got ({}, {}, {}, {}), want ({x}, {y}, {w}, {h})",
+            r.x,
+            r.y,
+            r.w,
+            r.h
+        );
+    }
+
+    /// A 1080p-authored PGS rect must land EXACTLY where it always did — the scale is identity,
+    /// not merely close to it, or every Blu-ray subtitle in the library moves a pixel.
+    #[test]
+    fn image_sub_1080p_canvas_is_identity() {
+        assert_rect(sub_screen_rect((300, 900, 1320, 96), 1920, 1080), 300.0, 900.0, 1320.0, 96.0);
+    }
+
+    /// The bug this unit exists for: a DVD VobSub rip is authored on a 720×480 canvas, so drawn
+    /// 1:1 it is a postage stamp covering the top-left third of the panel. Scaled from its own
+    /// canvas it spans the picture and sits at the bottom, exactly like the PGS case above.
+    #[test]
+    fn image_sub_dvd_canvas_fills_the_panel() {
+        // a full-width, near-bottom VobSub line
+        assert_rect(sub_screen_rect((0, 400, 720, 60), 720, 480), 0.0, 900.0, 1920.0, 135.0);
+        // and an inset one keeps its position within the picture
+        let r = sub_screen_rect((180, 240, 360, 48), 720, 480);
+        assert_rect(r, 480.0, 540.0, 960.0, 108.0);
+        assert!(close(r.x + r.w * 0.5, SCR_W * 0.5), "a canvas-centred rect stays centred");
+    }
+
+    /// PAL (720×576) and 4K PGS (3840×2160) are the other two canvases in the wild; the 4K one
+    /// scales DOWN, which the old 1:1 path drew at double size and half off-screen.
+    #[test]
+    fn image_sub_pal_and_4k_canvases() {
+        assert_rect(sub_screen_rect((0, 480, 720, 72), 720, 576), 0.0, 900.0, 1920.0, 135.0);
+        assert_rect(sub_screen_rect((600, 1800, 2640, 192), 3840, 2160), 300.0, 900.0, 1320.0, 96.0);
+    }
+
+    /// A decoder that never declares a canvas (0) must fall back to 1:1 — the behaviour of the
+    /// whole path before this change — rather than divide by zero or blank the cue.
+    #[test]
+    fn image_sub_unknown_canvas_stays_1to1() {
+        assert_rect(sub_screen_rect((300, 900, 1320, 96), 0, 0), 300.0, 900.0, 1320.0, 96.0);
+        assert_rect(sub_screen_rect((300, 900, 1320, 96), -1, 1080), 300.0, 900.0, 1320.0, 96.0);
+    }
+
+    /// The HUD lift: image cues rise just enough to clear the transport, and only then.
+    #[test]
+    fn image_sub_lifts_only_over_the_transport() {
+        let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0); // bottom 1035, overhangs
+        // transport down: nothing moves, ever
+        assert_eq!(hud_lift([dialogue].into_iter(), false), 0.0);
+        // transport up: a bottom-anchored cue rises exactly its overhang, landing ON the ceiling
+        let lift = hud_lift([dialogue].into_iter(), true);
+        assert!(close(1035.0 - lift, SUB_CEIL_Y), "lifted bottom should sit at the ceiling");
+        // a sign at the top of frame already clears it and must stay put
+        let sign = Rect::new(100.0, 100.0, 200.0, 100.0);
+        assert_eq!(hud_lift([sign].into_iter(), true), 0.0);
+        assert!(!overhangs(sign) && overhangs(dialogue));
+        // a set too tall to lift is clamped instead of being pushed off the top of the screen
+        assert_eq!(hud_lift([Rect::new(0.0, 0.0, 1920.0, SCR_H)].into_iter(), true), 0.0);
+        assert_eq!(hud_lift([Rect::new(0.0, 50.0, 1920.0, SCR_H - 50.0)].into_iter(), true), 50.0);
+    }
+
+    /// The multi-rect case the lift has to get right, and the reason it is measured over the
+    /// OVERHANGING rects rather than the whole set: a sign plus dialogue must lift the dialogue
+    /// clear WITHOUT dragging the sign (whose top would otherwise clamp the whole shift), and
+    /// two-line dialogue must move as one unit or the two lines collapse onto each other.
+    #[test]
+    fn image_sub_lift_spans_only_the_rects_that_overhang() {
+        let sign = Rect::new(100.0, 100.0, 200.0, 100.0);
+        let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0);
+        let lift = hud_lift([sign, dialogue].into_iter(), true);
+        assert!(close(lift, 1035.0 - SUB_CEIL_Y), "the sign's top must not clamp the lift");
+        assert!(close(dialogue.y + dialogue.h - lift, SUB_CEIL_Y), "dialogue clears the transport");
+        assert!(!overhangs(sign), "and the sign is not shifted at all");
+
+        // two-line dialogue: different overhangs, ONE shift, so the gap between them survives
+        let l1 = Rect::new(300.0, 900.0, 1320.0, 50.0); // bottom 950
+        let l2 = Rect::new(300.0, 960.0, 1320.0, 50.0); // bottom 1010
+        let two = hud_lift([l1, l2].into_iter(), true);
+        assert!(close(two, 1010.0 - SUB_CEIL_Y), "measured over the group, not per rect");
+        assert!(overhangs(l1) && overhangs(l2), "both take the same shift");
+        assert!(close((l2.y - two) - (l1.y + l1.h - two), 10.0), "their 10px gap is preserved");
     }
 }

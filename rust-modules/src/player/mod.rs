@@ -19,6 +19,8 @@ pub(crate) mod threads;
 
 use crate::task::MainThread;
 use shared::{Shared, SubBitmap, SubCue, Transport};
+/// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
+pub(crate) use shared::SubRect;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -248,7 +250,14 @@ pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
 /// bitmaps and pushes them here; the renderer (M) reads the active one for the playpos. A new
 /// display-set supersedes any still-open cue on the same track (PGS signals the end via a later
 /// CLEAR or a superseding set, both handled here). Bounded by time like the text store.
-pub(crate) fn push_subtitle_bitmap(track: i32, start_ns: i64, x: i32, y: i32, w: i32, h: i32, rgba: Vec<u8>) {
+///
+/// `cw`/`ch` are the stream's authoring canvas (0 = the decoder never declared one) and every
+/// rect's coords are relative to it — the renderer scales the whole set into the video rect, so
+/// a 720×480 VobSub and a 1920×1080 PGS land the same size on screen.
+pub(crate) fn push_subtitle_bitmap(track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>) {
+    if rects.is_empty() {
+        return;
+    }
     let mut v = SHARED.sub_bitmaps.lock().unwrap();
     for c in v.iter_mut() {
         if c.track == track && c.end_ns == i64::MAX {
@@ -257,16 +266,26 @@ pub(crate) fn push_subtitle_bitmap(track: i32, start_ns: i64, x: i32, y: i32, w:
     }
     let floor = SHARED.playpos_ns.load(Relaxed) - 2_000_000_000;
     v.retain(|c| c.end_ns >= floor);
-    v.push(SubBitmap { track, start_ns, end_ns: i64::MAX, x, y, w, h, rgba });
+    v.push(SubBitmap { track, start_ns, end_ns: i64::MAX, cw, ch, rects });
     // Hard RAM ceiling: decoding ALL image tracks means several are buffered at once, so bound
-    // the store by total RGBA bytes (not count) and evict the oldest first. The time-retain above
-    // already drops most cues behind the playhead; this is the safety valve for many-track 4K
-    // titles. ~24 MB is comfortable headroom on the direct-play path.
+    // the store by total RGBA bytes (not count). ~24 MB is comfortable headroom on the direct-play
+    // path. A multi-rect display set counts as the sum of its rects, which is why the budget is
+    // bytes and not cue count — and which is what made the eviction ORDER start to matter.
+    //
+    // `v` is in demux (increasing-pts) order and the time-retain above has already dropped
+    // everything more than 2s behind the playhead, so `v[0]` is the cue AT or just behind the
+    // playhead — the one about to be drawn — while the tail is the demuxer's 10-20s read-ahead.
+    // Evicting index 0 (what this did) therefore blanks the subtitle the viewer is reading and
+    // keeps cues they have not reached. So: drop a cue the playhead has already passed first,
+    // since it can never be shown again; only when none is left does the FAR END of the
+    // read-ahead go, because that cue is at least not on screen yet.
     const BUDGET: usize = 24 * 1024 * 1024;
-    let mut total: usize = v.iter().map(|c| c.rgba.len()).sum();
+    let mut total: usize = v.iter().map(|c| c.bytes()).sum();
+    let now = SHARED.playpos_ns.load(Relaxed);
     while total > BUDGET && v.len() > 1 {
-        total -= v[0].rgba.len();
-        v.remove(0);
+        let i = v.iter().position(|c| c.end_ns <= now).unwrap_or(v.len() - 1);
+        total -= v[i].bytes();
+        v.remove(i);
     }
 }
 /// A CLEAR display-set (num_rects==0): close the currently-open cue on this track at `end_ns`.
@@ -291,15 +310,16 @@ pub(crate) fn active_bitmap_key(now_ns: i64) -> Option<i64> {
         .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
         .map(|c| c.start_ns)
 }
-/// Fetch (x,y,w,h,rgba) for the selected track's cue with this `start_ns` key. Clones the
-/// bitmap once (only when the renderer sees a new key), so the per-frame path stays cheap.
-pub(crate) fn bitmap_by_key(key: i64) -> Option<(i32, i32, i32, i32, Vec<u8>)> {
+/// Fetch (canvas_w, canvas_h, rects) for the selected track's display set with this `start_ns`
+/// key. Clones the bitmaps once (only when the renderer sees a new key), so the per-frame path
+/// stays cheap.
+pub(crate) fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
     let sel = SHARED.desired_sub_idx.load(Relaxed);
     let v = SHARED.sub_bitmaps.lock().unwrap();
     v.iter()
         .rev()
         .find(|c| c.track == sel && c.start_ns == key)
-        .map(|c| (c.x, c.y, c.w, c.h, c.rgba.clone()))
+        .map(|c| (c.cw, c.ch, c.rects.clone()))
 }
 /// extract displayable text from a subtitle block (SRT = raw UTF-8; ASS = the field
 /// after the 8th comma), stripping tags/override codes and normalizing line breaks.
@@ -404,4 +424,66 @@ pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
         };
         log(&format!("acb_cb ev={ev} reply={r}"));
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> SubRect {
+        SubRect { x, y, w, h, rgba: vec![0u8; (w * h * 4) as usize] }
+    }
+
+    /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three
+    /// invariants moved when multi-rect landed and none of them is observable on the host except
+    /// here: every rect of a set survives the round trip under ONE key (so a two-line PGS cue is
+    /// not silently halved); a later set still closes the one still showing; and the RAM ceiling
+    /// counts a set's rects together, so a multi-rect cue cannot smuggle bytes past the budget.
+    ///
+    /// Takes the crate-wide `testlock` — `SHARED` is a process-global the whole player shares.
+    #[test]
+    fn an_image_display_set_round_trips_whole_and_is_superseded_as_a_unit() {
+        let _g = crate::testlock::serial();
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.playpos_ns.store(0, Relaxed);
+        SHARED.desired_sub_idx.store(0, Relaxed);
+
+        // a two-rect set (dialogue plus a sign), authored on a DVD canvas
+        push_subtitle_bitmap(0, 1_000, 720, 480, vec![rect(60, 400, 600, 60), rect(100, 20, 200, 40)]);
+        let key = active_bitmap_key(1_500).expect("the set should be active at its start");
+        let (cw, ch, rects) = bitmap_by_key(key).expect("the active key must resolve");
+        assert_eq!((cw, ch), (720, 480), "the authoring canvas travels with the set");
+        assert_eq!(rects.len(), 2, "BOTH rects must survive — rect 0 only was the bug");
+        assert_eq!((rects[1].x, rects[1].y), (100, 20));
+
+        // the next set closes the open one AT ITS OWN START — a display set stays up until the
+        // one that replaces it begins, so the handover is seamless and never double-shows
+        push_subtitle_bitmap(0, 5_000, 720, 480, vec![rect(60, 400, 600, 60)]);
+        assert_eq!(active_bitmap_key(4_999), Some(1_000), "the first set holds right up to the handover");
+        assert_eq!(active_bitmap_key(5_000), Some(5_000), "and the second takes over on that exact ns");
+
+        // an empty set is not a cue: it must not land and must not close what is showing
+        push_subtitle_bitmap(0, 6_000, 720, 480, Vec::new());
+        assert_eq!(active_bitmap_key(5_500), Some(5_000));
+
+        // The byte budget charges a set for ALL its rects (2 x 4 MB here), and — the part that
+        // only matters once a set can be big — it must not evict the cue the viewer is READING.
+        // The playhead sits inside the 5_000 cue, so that one has to survive four 8 MB sets
+        // arriving from the demuxer's read-ahead; what goes is the far end of that read-ahead.
+        SHARED.playpos_ns.store(5_500, Relaxed);
+        for i in 0..4 {
+            push_subtitle_bitmap(0, 10_000 + i, 720, 480, vec![rect(0, 0, 1024, 1024), rect(0, 0, 1024, 1024)]);
+        }
+        let v = SHARED.sub_bitmaps.lock().unwrap();
+        let total: usize = v.iter().map(|c| c.bytes()).sum();
+        assert!(total <= 24 * 1024 * 1024, "the store stayed inside its ceiling ({total} bytes)");
+        assert!(v.iter().any(|c| c.start_ns == 5_000), "the cue under the playhead was not evicted");
+        drop(v);
+        assert_eq!(active_bitmap_key(5_500), Some(5_000), "and it is still the one on screen");
+
+        // leave the globals as they were found — `desired_sub_idx` deliberately survives a reset
+        // (shared.rs), so a test that leaves it selected changes what the NEXT one sees
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(-1, Relaxed);
+    }
 }
