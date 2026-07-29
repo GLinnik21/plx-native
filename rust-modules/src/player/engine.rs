@@ -416,6 +416,15 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
         report_th,
         report_stop: Some(report_stop),
     };
+    // Re-arm the in-place-seek probe for this session. `feed_stream` clears it when
+    // `sf_send_segment` can't reach the pipeline, and that is a fact about the StarfishMediaAPIs
+    // object — which `sf_load` constructs and teardown's `sf_destroy` destructs, once per session
+    // — not about the TV (see the SCOPE note on INPLACE_SEEK_OK in mod.rs). Left latched for the
+    // process, one teardown-window race silently turned every subsequent seek, of every
+    // subsequent item, into a full reload for the rest of the app's life. Placed HERE rather than
+    // at the top of this function on purpose: the `engine_is_live` no-op return above must NOT
+    // re-arm, or a stray PLAY landing mid-session would cancel a fallback that is still needed.
+    super::INPLACE_SEEK_OK.store(true, Ordering::Relaxed);
     engine_install(mt, eng);
     TX.started.store(true, Ordering::Relaxed);
     log(&format!("SMP: media thread spawned, stream={}", stream as i32));
@@ -749,8 +758,22 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     let seg = unsafe { ffi::sf_send_segment(mt) };
                     log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} setContentInfo={ci} sendSegment={seg}"));
                     if seg == 0 {
-                        // pipeline not reachable — future seeks fall back to reload-per-seek
+                        // The pipeline ptr wasn't reachable, so NO fresh GStreamer segment was
+                        // injected and THIS seek's buffers are scheduled against the pre-seek
+                        // segment — the stale-segment state that stops the sink draining and
+                        // fills ~14.7 MB of upstream buffers in ~48 s (permanent BufferFull +
+                        // "Playing error"; see reload_at's decompiled ground truth). So drop the
+                        // rest of THIS SESSION's seeks to the reload path, which rebuilds the
+                        // segment by construction; start_bufferfeed re-arms the flag for the next
+                        // session (the SCOPE note in mod.rs argues why that is the right scope).
+                        // Logged loudly because this is the single most consequential state
+                        // change in the seek path and it used to be invisible: instant seeks
+                        // silently became multi-second reloads with nothing in the event log
+                        // naming the cause — only the `sendSegment=0` above, whose consequence
+                        // was not stated anywhere.
                         super::INPLACE_SEEK_OK.store(false, Ordering::Relaxed);
+                        log("in-place seek DOWNGRADE: sendSegment=0 (CustomPipeline unreachable) \
+                             -> reload-per-seek for the rest of this session");
                     }
                     eng.flushed = false;
                 } else {
