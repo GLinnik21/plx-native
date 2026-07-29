@@ -217,6 +217,15 @@ pub(crate) struct Detail {
     pub(crate) vcodec: String, // Media[0].videoCodec (drives the direct-play/transcode decision)
     pub(crate) acodec: String, // Media[0].audioCodec
     pub(crate) video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
+    // ---- the PRIMARY version's technical fields (plex::Metadata::primary_media = Media[0], NOT a
+    // best-of pick — a multi-version item has more, and choosing among them needs a version picker
+    // that does not exist yet). For a SHOW these are borrowed from its first episode, like the
+    // About footer's audio/subtitle lists. `bitrate`/`width`/`height` are unused by the UI today
+    // and carried for the video-quality ladder ("26.1 Mbps 4K (Original)").
+    pub(crate) video_resolution: String, // "4k" | "1080" | "720" | "sd" — the hero's media badge
+    pub(crate) width: i64,               // stored frame size, not the resolution class (1918x802
+    pub(crate) height: i64,              // is a 1080p scope movie) — badge off video_resolution
+    pub(crate) bitrate: i64,             // kbps, whole-stream
     pub(crate) art: String,
     pub(crate) thumb: String,
     pub(crate) genres: Vec<String>,
@@ -310,7 +319,7 @@ pub(crate) fn sync_now_playing() {
 // ---- fetches (all via the typed crate::plex client; serde DTOs, no Value scraping) ----
 fn fetch_detail(rk: &str) -> Option<Detail> {
     let it = crate::plex::client().metadata(rk)?;
-    let media0 = it.media.first();
+    let media0 = it.primary_media();
     let mut d = Detail {
         rk: rk.to_string(),
         is_show: it.kind == "show",
@@ -336,6 +345,12 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
         acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
         video_fps: 0.0, // set from the video Stream by parse_streams below
+        // likewise set by parse_streams (one assignment point), which for a SHOW runs a second
+        // time over its first episode — the show container carries no Media of its own
+        video_resolution: String::new(),
+        width: 0,
+        height: 0,
+        bitrate: 0,
         art: it.art.clone(),
         thumb: it.thumb.clone(),
         genres: it.genre.iter().map(|t| t.tag.clone()).collect(),
@@ -400,8 +415,17 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
     (audio, subs, fps)
 }
 
-/// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer)
+/// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
+/// same version's technical fields (resolution/size/bitrate — the hero's media badge). Both ride
+/// the ONE version (see `plex::Metadata::primary_media`), and both are borrowed from a show's
+/// first episode by the same call in `fetch_item_streams`, so they can't describe different files.
 fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
+    if let Some(m) = it.primary_media() {
+        d.video_resolution = m.video_resolution.clone();
+        d.width = m.width;
+        d.height = m.height;
+        d.bitrate = m.bitrate;
+    }
     if let Some(p) = it.first_part() {
         let (audio, subs, fps) = convert_streams(&p.stream);
         d.audio = audio;

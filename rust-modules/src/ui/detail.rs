@@ -791,7 +791,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         hero_synopsis(summary).draw(p, Rect::new(tx, syn_y, 900.0, 0.0));
     }
 
-    // ---- date · runtime ----
+    // ---- date · runtime · media badges ----
     if let Some(d) = d {
         let mut info = pretty_date(&d.aired, d.year);
         if d.dur_ms >= 60_000 {
@@ -800,9 +800,14 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
             }
             info.push_str(&crate::ui::fmt::dur_long(d.dur_ms));
         }
+        let mut bx = tx;
         if let Ok(ic) = CString::new(info) {
-            p.text(ic.as_ptr(), tx, date_y, theme::size::CAPTION, dim, 0, 0);
+            let w = p.text(ic.as_ptr(), tx, date_y, theme::size::CAPTION, dim, 0, 0);
+            if w > 0.0 {
+                bx += w + theme::space::MD;
+            }
         }
+        draw_media_badges(p, d, bx, date_y);
     }
 
     // ---- buttons (btn_y from hero_layout) ----
@@ -819,6 +824,33 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
             }
         }
     }
+}
+
+/// The hero's media chips, flowed left→right from `x` and cap-band-centred on the text line drawn
+/// at `text_y` (so they sit ON the date/runtime line, not near it). Returns the width consumed.
+///
+/// They describe the item's PRIMARY version — `Media[0]`, see `plex::Metadata::primary_media` — so
+/// a multi-version item (the dev library has episodes with both a 4k and a 1080 version) is badged
+/// by whichever one PMS lists first, until there is a version picker to choose with. Today the row
+/// is the resolution alone; the audio/subtitle chips the reference client shows beside it are the
+/// same `badge` leaf and belong here when they land.
+fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f32 {
+    let mut bx = x;
+    // one Option per chip — the audio/subtitle chips the reference client shows beside the
+    // resolution join this list (and nothing else changes) when they land
+    let chips = [crate::ui::fmt::resolution(&d.video_resolution, d.width, d.height)];
+    for text in chips.into_iter().flatten() {
+        // the gap separates chips, so it is never left dangling after the last one
+        if bx > x {
+            bx += theme::space::XS;
+        }
+        // cap-band centre of the line drawn at `text_y` (the inverse of text::text_vcenter_y),
+        // computed here rather than up front so an empty row touches no glyph cache
+        let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+        let cy = text_y + (cap_top + baseline) * 0.5;
+        bx += crate::ui::widgets::badge(p, bx, cy, &text, crate::ui::widgets::BadgeStyle::Filled);
+    }
+    bx - x
 }
 
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
