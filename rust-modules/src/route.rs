@@ -144,18 +144,71 @@ fn transcode_spec<'a>(rk: &'a str, session: &'a str, remux: bool, offset_secs: i
     }
 }
 
-/// free the server-side transcode encoder if this playback was a transcode.
-pub(crate) fn stop_transcode() {
-    let sess = transcode_session();
-    if sess.is_empty() {
-        return;
-    }
-    if let Some(c) = crate::plex::client_opt() {
-        c.transcode_stop(&sess);
-    }
+/// The end-of-playback PMS work, moved OFF the main thread: the `state=stopped` timeline report
+/// (which commits the server-side resume point and watched state) and the server-side transcode
+/// stop. Replaces the inline `report_timeline` + `stop_transcode` pair in `engine::teardown`.
+///
+/// Both are fire-and-forget POSTs whose results are discarded, and both ran inline on the SDL
+/// thread — two blocking PMS round trips, each bounded by `CONNECT_TIMEOUT_MS` + `SO_RCVTIMEO`
+/// (~17 s), on **100% of real stops**. That was the largest guaranteed main-loop park left in the
+/// engine, and strictly bigger than the rare in-flight-POST window at the joins above it.
+///
+/// Everything the worker needs is read HERE, on the main thread, and the statics are cleared here
+/// too: route's session state is `static mut`, and what keeps it sound is that the main thread is
+/// its only writer. The worker gets owned copies and touches none of it — the same capture the
+/// demux thread's `acodec` does, and for the same reason.
+pub(crate) fn scrobble_stop(final_report: Option<(String, i64, i64)>) {
+    let (session, pq, pqi) = (sess(), pq_id(), pq_item_id());
+    let (aud, sub) = (cur_audio_sid(), cur_sub_sid()); // the selection this playback reported under
+    let tsession = transcode_session();
     unsafe {
         (*addr_of_mut!(TSESSION)).clear();
         addr_of_mut!(CUR_REMUX).write(false);
+    }
+    if final_report.is_none() && tsession.is_empty() {
+        return; // nothing to post
+    }
+    let Some(c) = crate::plex::client_opt() else { return };
+    // Serialise against a previous stop still in flight: these carry a position for a specific
+    // item, and letting two race would let an older one land last. Normally free — the measured
+    // baseline for a finished worker is 0 ms.
+    drain_scrobble();
+    let h = crate::task::spawn_small_keeping("scrobble", move || {
+        if let Some((rk, t_ms, d_ms)) = final_report {
+            c.timeline(&crate::plex::TimelineReport {
+                rating_key: &rk,
+                state: crate::plex::TimelineState::Stopped,
+                time_ms: t_ms,
+                duration_ms: d_ms,
+                session: &session,
+                play_queue_id: &pq,
+                play_queue_item_id: &pqi,
+                audio_stream_id: aud,
+                subtitle_stream_id: sub,
+            });
+            crate::log(&format!("timeline stopped t={}s/{}s", t_ms / 1000, d_ms / 1000));
+        }
+        if !tsession.is_empty() {
+            c.transcode_stop(&tsession);
+        }
+    });
+    *SCROBBLE.lock().unwrap_or_else(|e| e.into_inner()) = h;
+}
+
+/// The final scrobble still in flight, if any.
+static SCROBBLE: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
+
+/// Wait for a pending [`scrobble_stop`] to reach the server.
+///
+/// Called from exactly two places: the next stop (so two reports for different items cannot land
+/// out of order), and `plex_run`'s exit — because the process is about to die and a detached
+/// worker dies with it, which would silently drop the resume point the user just earned. Blocking
+/// there is the same cost the old inline call paid, except it is now paid ONCE at exit instead of
+/// on every BACK out of a movie.
+pub(crate) fn drain_scrobble() {
+    let h = SCROBBLE.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(h) = h {
+        crate::task::join("scrobble", h);
     }
 }
 

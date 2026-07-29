@@ -2210,6 +2210,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if is_started() {
             crate::player::stop_bufferfeed(mt);
         }
+        // The stop scrobble is posted off-thread now, and this process is about to die with any
+        // worker still running — so THIS is the one place its result has to be waited for, or the
+        // resume point the user just earned is silently dropped. Same cost the old inline call
+        // paid, except now it is paid once at exit instead of on every BACK out of a movie.
+        crate::route::drain_scrobble();
         crate::capture::shutdown();
         crate::posters::posters_shutdown();
         SDL_Quit();
