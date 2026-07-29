@@ -192,6 +192,17 @@ impl Metadata {
     pub fn first_part(&self) -> Option<&MediaPart> {
         self.media.first().and_then(|m| m.part.first())
     }
+
+    /// `Media[0]` — the FIRST version listed, **not** a chosen-best one, and the honest name for
+    /// what every caller here actually reads. An item can carry SEVERAL `Media[]` versions
+    /// (docs/pms-api.md §4; the dev library really does — one episode ships a 4k and a 1080
+    /// version, another two 4k versions at different bitrates), and picking among them by
+    /// codec/resolution needs a version picker this client does not have yet. So anything derived
+    /// from this describes **version 0**, and a UI that shows it should be read that way.
+    /// [`first_part`](Self::first_part) carries the same caveat.
+    pub fn primary_media(&self) -> Option<&Media> {
+        self.media.first()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -200,6 +211,21 @@ pub struct Media {
     pub video_codec: String,
     #[serde(rename = "audioCodec", default)]
     pub audio_codec: String,
+    /// Whole-stream bitrate in **kbps** (PMS's unit) — the source rung of the video-quality ladder
+    /// ("26.1 Mbps 4K (Original)") and the input to any bandwidth cap.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub bitrate: i64,
+    /// Coded frame size. Note it is the STORED size, not the resolution class: a 2.35:1 1080p
+    /// movie is 1918x802 on this server, so `height` alone would label it 720p — prefer
+    /// [`video_resolution`](Self::video_resolution) for a badge and keep these for the ladder.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub width: i64,
+    #[serde(default, deserialize_with = "de_i64")]
+    pub height: i64,
+    /// PMS's coarse resolution class, always a STRING even when it looks numeric — verified live:
+    /// `"4k"`, `"1080"`, `"720"`, `"576"`, `"sd"`. The version-picker key per docs/pms-api.md §4.
+    #[serde(rename = "videoResolution", default, deserialize_with = "de_str")]
+    pub video_resolution: String,
     #[serde(rename = "Part", default)]
     pub part: Vec<MediaPart>,
 }
@@ -406,6 +432,30 @@ fn de_opt_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::
     })
 }
 
+/// Lenient String: a JSON string, a number stringified, or null → "". `videoResolution` is a
+/// string on this server ("1080"/"4k", verified live) but reads like a number, and a strict
+/// `String` that meets one is a WHOLE-`MediaContainer` parse failure — the same blast radius
+/// `de_i64` exists to avoid, just pointing the other way. Use it for any stringly-typed number.
+fn de_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrIntFloatBool {
+        S(String),
+        I(i64),
+        F(f64),
+        // no arm for a shape = the whole container fails on it, which is the one outcome this
+        // adapter exists to prevent — so carry the bool too (`de_i64` learned that the hard way)
+        B(bool),
+    }
+    Ok(match Option::<StrIntFloatBool>::deserialize(d)? {
+        Some(StrIntFloatBool::S(s)) => s,
+        Some(StrIntFloatBool::I(n)) => n.to_string(),
+        Some(StrIntFloatBool::F(f)) => f.to_string(),
+        Some(StrIntFloatBool::B(b)) => b.to_string(),
+        None => String::new(),
+    })
+}
+
 /// Accept `{…}` OR `[{…}]` (D-1) and return the first, or None.
 fn de_ultrablur<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<UltraBlurColors>, D::Error> {
     #[derive(Deserialize)]
@@ -419,4 +469,47 @@ fn de_ultrablur<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<UltraBl
         Some(OneOrMany::Many(v)) => v.into_iter().next(),
         None => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Envelope;
+
+    /// The `Media[]` technical fields feed the resolution badge and (later) the quality ladder, and
+    /// PMS is free to string-encode any of them. A strict field there does not lose one number —
+    /// it fails the WHOLE `MediaContainer`, i.e. the entire detail page. Both encodings must land,
+    /// and the several-versions case must stay several (`primary_media` is version 0, not the only
+    /// one) — see docs/pms-api.md §4.
+    #[test]
+    fn media_technical_fields_survive_both_encodings_and_keep_every_version() {
+        let json = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"1859","title":"Every Summer After",
+            "Media":[
+              {"bitrate":14663,"width":3840,"height":2160,"videoResolution":"4k","videoCodec":"hevc",
+               "Part":[{"id":1,"key":"/library/parts/1/1/file.mkv"}]},
+              {"bitrate":"2372","width":"1920","height":"1080","videoResolution":1080,
+               "videoCodec":"h264","Part":[{"id":2,"key":"/library/parts/2/1/file.mkv"}]}
+            ]}]}}"#;
+        let env: Envelope = serde_json::from_slice(json).expect("lenient parse");
+        let it = &env.media_container.metadata[0];
+        assert_eq!(it.media.len(), 2, "both versions are kept for a future picker");
+
+        let v0 = it.primary_media().expect("Media[0]");
+        assert_eq!((v0.bitrate, v0.width, v0.height), (14663, 3840, 2160));
+        assert_eq!(v0.video_resolution, "4k");
+        // version 1 sends the same fields string-encoded, and videoResolution as a bare NUMBER
+        let v1 = &it.media[1];
+        assert_eq!((v1.bitrate, v1.width, v1.height), (2372, 1920, 1080));
+        assert_eq!(v1.video_resolution, "1080");
+        // the two versions therefore badge differently ("4K" vs "1080p" — see ui::fmt::resolution's
+        // own tests), which is the whole reason the accessor has to name WHICH one it returned.
+    }
+
+    /// A show container carries no `Media` at all — the accessor must say so rather than panic,
+    /// because the detail page asks every item for its primary version.
+    #[test]
+    fn a_show_container_has_no_primary_media() {
+        let json = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"9","type":"show","title":"A Show"}]}}"#;
+        let env: Envelope = serde_json::from_slice(json).expect("parse");
+        assert!(env.media_container.metadata[0].primary_media().is_none());
+    }
 }

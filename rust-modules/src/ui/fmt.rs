@@ -54,3 +54,75 @@ pub(crate) fn clock(ms: i64) -> String {
 pub(crate) fn episode_kicker(season: i64, index: i64, title: &str) -> String {
     format!("S{season}, E{index} \u{b7} {title}")
 }
+
+/// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no
+/// video (a show container, a music item, an unparsed response).
+///
+/// `res` is PMS's `Media.videoResolution` and is PREFERRED over the frame size, because the frame
+/// size is the STORED one: a 2.35:1 1080p film is 1918x802 on the dev server, and a height rule
+/// would badge it 720p. Verified values are `"4k"`, `"1080"`, `"720"`, `"576"`, `"sd"` — and PMS
+/// sends every one of them as a numeric-looking STRING, which is exactly the shape this maps.
+/// `width`/`height` are only the fallback for a version that omits the class.
+pub(crate) fn resolution(res: &str, width: i64, height: i64) -> Option<String> {
+    let r = res.trim().to_ascii_lowercase();
+    if !r.is_empty() {
+        // "4k"/"8k" are already the badge; a bare number is a scan-line count ("1080" → "1080p");
+        // anything else (e.g. "sd") is a class name and reads as itself, upper-cased.
+        return Some(match r.as_str() {
+            _ if r.chars().all(|c| c.is_ascii_digit()) => format!("{r}p"),
+            _ => r.to_ascii_uppercase(),
+        });
+    }
+    // No class: fall back to the frame WIDTH, which (unlike height) is constant across aspect
+    // ratios. Thresholds sit below each nominal width (3840/2560/1920/1280/1024) so a cropped or
+    // anamorphic frame still lands in its own class, and the buckets are the SAME vocabulary the
+    // class path emits — the two paths must not disagree about the same file.
+    // saturating: these are wire values via the lenient `de_i64`, so a garbage 19-digit height
+    // must not overflow (a debug-build panic, a silently wrapped badge in release)
+    let w = if width > 0 { width } else { height.saturating_mul(16) / 9 };
+    Some(match w {
+        w if w <= 0 => return None,
+        w if w >= 3000 => "4K".to_string(),
+        w if w >= 2400 => "1440p".to_string(),
+        w if w >= 1700 => "1080p".to_string(),
+        w if w >= 1100 => "720p".to_string(),
+        w if w >= 900 => "576p".to_string(),
+        _ => "SD".to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolution;
+
+    /// The mapping is fed PMS's own values, and PMS string-encodes them — including the ones that
+    /// look like integers ("1080"), which is the case that must come out as "1080p" and not as a
+    /// number or an empty badge.
+    #[test]
+    fn resolution_labels_pms_string_encoded_classes() {
+        // verified live on the dev server: every videoResolution is a JSON string
+        assert_eq!(resolution("4k", 3840, 2160).as_deref(), Some("4K"));
+        assert_eq!(resolution("1080", 1920, 1080).as_deref(), Some("1080p"));
+        assert_eq!(resolution("720", 1280, 720).as_deref(), Some("720p"));
+        assert_eq!(resolution("576", 1024, 576).as_deref(), Some("576p"));
+        assert_eq!(resolution("sd", 826, 452).as_deref(), Some("SD"));
+        // whitespace/casing from the wire must not produce a second spelling of a badge
+        assert_eq!(resolution(" 4K ", 0, 0).as_deref(), Some("4K"));
+        // the class WINS over the frame size: a 2.35:1 1080p film is 1918x802 (a height rule
+        // would call it 720p, a width rule 1080p — either way the server's own answer decides)
+        assert_eq!(resolution("1080", 1918, 802).as_deref(), Some("1080p"));
+    }
+
+    #[test]
+    fn resolution_falls_back_to_frame_width() {
+        assert_eq!(resolution("", 3840, 2160).as_deref(), Some("4K"));
+        assert_eq!(resolution("", 1918, 802).as_deref(), Some("1080p")); // scope 1080p, by WIDTH
+        assert_eq!(resolution("", 1280, 720).as_deref(), Some("720p"));
+        assert_eq!(resolution("", 720, 480).as_deref(), Some("SD"));
+        // the fallback speaks the class path's vocabulary: the same file must not badge "576p"
+        // with a videoResolution and "SD" without one
+        assert_eq!(resolution("", 1024, 576).as_deref(), resolution("576", 1024, 576).as_deref());
+        assert_eq!(resolution("", 0, 1080).as_deref(), Some("1080p")); // width absent → from height
+        assert_eq!(resolution("", 0, 0), None); // no video at all (a show container) → no badge
+    }
+}
