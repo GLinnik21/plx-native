@@ -106,15 +106,25 @@ impl Session {
     }
 }
 
+/// Read the persisted session and nothing else — **no minting, no write.** For readers that merely
+/// want to know what the session says (the account surfaces): [`load`]'s client-id minting means a
+/// read can turn into a `save`, and `save` truncates in place, so a file that momentarily fails to
+/// parse would be overwritten with a bare client_id — a silent sign-out. That is an acceptable
+/// trade on the boot path, which must end up with an id; it is not one on a path a keypress can
+/// reach. Falls back to the pre-relocation path (migration), same as `load`.
+pub fn peek() -> Session {
+    std::fs::read(AUTH_PATH)
+        .ok()
+        .or_else(|| std::fs::read(AUTH_PATH_OLD).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
 /// Load the persisted session, ensuring a stable `client_id` exists (generated + saved on first
 /// boot). Never returns an error — a missing/corrupt file degrades to a fresh, logged-out session.
 /// Falls back to the pre-relocation path once and re-saves at the new one (migration).
 pub fn load() -> Session {
-    let mut s: Session = std::fs::read(AUTH_PATH)
-        .ok()
-        .or_else(|| std::fs::read(AUTH_PATH_OLD).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let mut s: Session = peek();
     if s.client_id.is_empty() {
         s.client_id = new_client_id();
         save(&s);
@@ -170,4 +180,63 @@ fn new_client_id() -> String {
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
     )
+}
+
+// ---- What the account surfaces are allowed to SAY about the user ----
+
+/// The account facts the UI may state — see [`Session::account`]. An account surface must word
+/// itself from THIS, never from [`current`] alone: that profile is a bare `UserRef::default()` —
+/// empty title, empty thumb — for every account **without Plex Home**, because auth's single-user
+/// path enters Home without ever writing one. Reading that emptiness as "signed out" is how a
+/// signed-in owner ends up being offered "Sign in".
+///
+/// Converted so far: `ui/account_menu.rs`. **Not yet: the Home profile chip** (`ui/widgets.rs`
+/// `profile_chip`), which still labels itself off `title.is_empty()` and so still says "Sign in"
+/// to that same owner — the remaining half of the bug, and a one-block change once this lands.
+pub struct Account {
+    /// **This device** holds a session: a plex.tv account token, or at least a server + PMS token
+    /// it can stream on. The opposite of "offer them Sign in". Note it describes the session ON
+    /// DISK, not the identity currently in use: an automated boot on `/tmp/plxnative-token` streams
+    /// on an injected token yet still reports the stored account here — deliberately, because the
+    /// stored account is exactly what a "Sign out" would clear.
+    pub signed_in: bool,
+    /// Profile switching is possible. It needs the **plex.tv account token**: both the Plex Home
+    /// roster and the per-user tokens come from plex.tv, so a server-only session cannot switch
+    /// (`auth::start_switch` refuses one outright). Deliberately NOT gated on the roster length —
+    /// see `home_users`' note on why an empty roster means "unknown", not "there are none".
+    pub can_switch: bool,
+    /// Who we may say the user is: the active managed profile, else the account owner off the
+    /// persisted roster. `None` = signed in but nameless (no roster has ever landed), which is a
+    /// missing name and not a missing user — say "Account", never "Sign in".
+    pub name: Option<String>,
+}
+
+impl Session {
+    /// The account facts for the UI, from the persisted session plus the in-memory active profile
+    /// (`active`, i.e. [`current`]). The profile is the better name once a managed user has been
+    /// picked; the persisted roster's `admin` entry is what names an owner who has no Plex Home
+    /// and therefore never got a profile written at all.
+    ///
+    /// **`home_users` being empty means "unknown", not "none".** It is only ever filled by a
+    /// sign-in or a "Change profile", and a *failed* fetch persists an empty vec
+    /// (`auth.rs`'s `home_users().unwrap_or_default()`), so "never fetched", "fetch failed" and
+    /// "genuinely empty" are one value. Anything deciding on it must treat empty as "ask" — which
+    /// is why [`Account::can_switch`] keeps the switch row: that row is what re-fetches the roster,
+    /// and hiding it on an empty one would be a one-way door out of a Plex Home created later.
+    pub fn account(&self, active: Option<&UserRef>) -> Account {
+        let named = |t: &str| Some(t.to_string()).filter(|t| !t.is_empty());
+        // the roster hop searches for a NAMED admin, then any named entry — a `find(admin)` whose
+        // hit happens to carry an empty title must not swallow the answer sitting behind it, which
+        // is the same shape of bug this whole function exists to fix.
+        let roster = || {
+            let named_admin = self.home_users.iter().find(|u| u.admin && !u.title.is_empty());
+            named_admin.or_else(|| self.home_users.iter().find(|u| !u.title.is_empty())).map(|u| u.title.clone())
+        };
+        let name = active.and_then(|u| named(&u.title)).or_else(|| named(&self.user.title)).or_else(roster);
+        Account {
+            signed_in: !self.account_token.is_empty() || self.can_go_local(),
+            can_switch: !self.account_token.is_empty(),
+            name,
+        }
+    }
 }
