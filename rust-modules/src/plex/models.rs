@@ -390,7 +390,7 @@ pub struct Marker {
 /// One row of a leaf's `Rating[]` — a single provider's review score.
 ///
 /// `image` names BOTH the provider and the icon state (`rottentomatoes://image.rating.ripe`,
-/// `rottentomatoes://image.rating.spilled`, `imdb://image.rating`, `themoviedb://image.rating`),
+/// `…rating.certified`, `…rating.spilled`, `imdb://image.rating`, `themoviedb://image.rating`),
 /// which is why the badge art is chosen by parsing this string rather than by thresholding
 /// `value` — see `metadata::RatingArt`. `value` is normalised 0–10 by PMS for every provider
 /// (a 91% tomato arrives as 9.1). `kind` is `"critic"` | `"audience"`; note it does NOT identify

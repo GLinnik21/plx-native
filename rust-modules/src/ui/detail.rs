@@ -1152,12 +1152,14 @@ fn rating_mark(art: metadata::RatingArt) -> (crate::ui::icons::Icon, [f32; 4]) {
     use metadata::RatingArt as A;
     match art {
         A::TomatoFresh => (Icon::Tomato, theme::RATING_FRESH),
+        // Certified Fresh is still fresh, so it keeps the red — the LAUREL is what distinguishes it
+        A::TomatoCertified => (Icon::TomatoCertified, theme::RATING_FRESH),
         A::TomatoRotten => (Icon::TomatoRotten, theme::RATING_ROTTEN),
         // the upright bucket is the audience score's POSITIVE art, so it shares the fresh red
         A::PopcornUpright => (Icon::Popcorn, theme::RATING_FRESH),
         A::PopcornSpilled => (Icon::PopcornSpilled, theme::RATING_ROTTEN),
         A::Imdb => (Icon::Star, theme::RATING_IMDB),
-        A::Tmdb => (Icon::Ring, theme::RATING_TMDB),
+        A::Tmdb => (Icon::Tmdb, theme::RATING_TMDB),
     }
 }
 

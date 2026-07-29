@@ -3,6 +3,27 @@
 //! assets/icons/ (authored as a white #ffffff mask), embedded via include_str!. On first use
 //! at a given pixel size we rasterize it (crate::svg → nanosvg), upload it once as a GL texture
 //! (cached), and draw it through the Painter with a per-state tint. Main/GL-thread only.
+//!
+//! ## Authoring contract (what an asset may contain)
+//!
+//! The result is a **mask**: only alpha survives, so gradients and multi-colour fills are wasted
+//! and the tint is the whole colour story. Beyond that, two rules that are not obvious until a
+//! mark looks wrong on the panel — both verified by rasterizing through `src/svg.c` itself:
+//!
+//! 1. **A mark is ONE `<path>`; a composite mark is that path's overlapping SUBPATHS.** Subpaths
+//!    of one path are winding-unioned by the rasterizer, so the joins carry no seam. Separate
+//!    `<circle>`/`<path>` ELEMENTS are alpha-composited instead — `a1 + a2(1-a1)` — so wherever
+//!    two antialiased edges run together the union lands at ~0.75 alpha and the mark wears a
+//!    visible crease. The pre-redraw `popcorn-spilled.svg` did exactly that (140/255 at 34px,
+//!    16/255 at 136px — a composite seam gets WORSE with resolution, which is how it tells itself
+//!    apart from a real notch).
+//! 2. **Every subpath winds the same way** (these are all clockwise). Nonzero fill turns a
+//!    counter-clockwise subpath into a HOLE punched through whatever it overlaps, which looks
+//!    like a rasterizer bug and is not one.
+//!
+//! Grade a new mark by rasterizing it at its real draw size and at 4×: full opacity reached, no
+//! sub-255 pixel more than 2px inside the ink except where the geometry really is notched (it
+//! resolves to a clean gap at 4×), and no ink on the border.
 #![allow(dead_code)]
 use crate::gfx::upload_rgba;
 use crate::ui::{Painter, Rect};
@@ -18,8 +39,9 @@ pub enum Icon {
     // rasterizer draws untransformed, so direction is per-asset, not a rotation)
     ChevronDown,
     ChevronUp,
-    /// Hollow circle — the Unwatched toolbar chip's off state, and (tinted
-    /// [`theme::RATING_TMDB`](crate::ui::theme::RATING_TMDB)) The Movie Database's user-score ring.
+    /// Hollow circle — the Unwatched toolbar chip's off state. It used to double as The Movie
+    /// Database's mark; [`Icon::Tmdb`] is that now, so the chip is free to change shape without
+    /// silently redrawing a brand mark.
     Ring,
     /// The amber unwatched corner mark (top-right of a poster): a right triangle whose outer
     /// corner is pre-rounded to sit flush inside the card's 14px corner radius. Filled mask.
@@ -40,13 +62,17 @@ pub enum Icon {
     CheckCircle,
     /// A play triangle behind a leading bar — "Play from Start" (restart, not resume).
     PlayStart,
-    // ---- review-score brand marks (the detail hero's ratings row). Which of the four Rotten
+    // ---- review-score brand marks (the detail hero's ratings row). Which of the five Rotten
     // Tomatoes marks a badge draws comes from the server's `Rating.image` state, never from the
-    // score — see `metadata::RatingArt`. All four are plain silhouettes because the rasterizer
+    // score — see `metadata::RatingArt`. All of them are plain silhouettes because the rasterizer
     // renders a MASK: the brand colour is the tint (`theme::RATING_*`), so the tomato is red and
-    // the splat green without either asset knowing that. ----
+    // the splat green without either asset knowing that. Each is drawn for the 34px badge box
+    // (`widgets::RATING_MARK`) rather than scaled down from a poster-sized drawing — at that size
+    // the mark carries the VERDICT, so anything that blurs into a blob has failed. ----
     /// Rotten Tomatoes' fresh tomato — `rottentomatoes://image.rating.ripe`.
     Tomato,
+    /// Rotten Tomatoes' Certified Fresh tomato, wreathed in laurels — `…image.rating.certified`.
+    TomatoCertified,
     /// Rotten Tomatoes' splattered tomato — `…image.rating.rotten`.
     TomatoRotten,
     /// The upright popcorn bucket (audience score) — `…image.rating.upright`.
@@ -55,6 +81,11 @@ pub enum Icon {
     PopcornSpilled,
     /// Five-point star — the IMDb score mark.
     Star,
+    /// The Movie Database's score dial — a filled annulus. TMDB's brand is a wordmark, which no
+    /// 34px single-colour silhouette can spell, so the mark borrows the score DIAL that TMDB's own
+    /// product wraps every rating in. Its own asset rather than [`Icon::Ring`]'s, so the Unwatched
+    /// chip and a brand mark stop sharing one file.
+    Tmdb,
 }
 
 fn src(id: Icon) -> &'static str {
@@ -78,10 +109,12 @@ fn src(id: Icon) -> &'static str {
         Icon::CheckCircle => include_str!("../../../assets/icons/check-circle.svg"),
         Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
         Icon::Tomato => include_str!("../../../assets/icons/tomato.svg"),
+        Icon::TomatoCertified => include_str!("../../../assets/icons/tomato-certified.svg"),
         Icon::TomatoRotten => include_str!("../../../assets/icons/tomato-rotten.svg"),
         Icon::Popcorn => include_str!("../../../assets/icons/popcorn.svg"),
         Icon::PopcornSpilled => include_str!("../../../assets/icons/popcorn-spilled.svg"),
         Icon::Star => include_str!("../../../assets/icons/star.svg"),
+        Icon::Tmdb => include_str!("../../../assets/icons/tmdb.svg"),
     }
 }
 
