@@ -1767,6 +1767,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::item_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Library) {
                         crate::ui::library::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Detail) {
+                        // the detail page owns its own screen, so hover moves ITS focus (the rule
+                        // above); it declines the moves that would scroll the page under a
+                        // stationary pointer — see detail::hover_allows
+                        if crate::ui::detail::pointer_focus(mx, my) && ok_armed {
+                            // the pointer slid off the control the click was armed on: abort the
+                            // press without activating, exactly as a nav key does above
+                            crate::ui::press::cancel();
+                            ok_armed = false;
+                        }
                     } else if matches!(route, Route::Home) {
                         // hover moves focus on the route that owns the screen — and ONLY there
                         // (Detail/Login hover used to silently mutate home's focus behind them)
@@ -1888,6 +1898,40 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             crate::ui::library::Action::None => {}
                         }
+                    } else if matches!(route, Route::Detail) {
+                        // Magic-Remote click on the detail page: focus what was clicked, then run the
+                        // SAME activation the OK key does (detail::click did the hit-test) — a CARD
+                        // (episode / Related / Cast) gets the tvOS press dip, committed on the
+                        // button-up spring-back below; the Play pill, watched disc and season tabs
+                        // act at once, exactly as in the key arm.
+                        let cx = rd_i32(&ev, 20) as f32;
+                        let cy = rd_i32(&ev, 24) as f32;
+                        // A FRESH click supersedes a press still in flight from the previous one —
+                        // the pointer's twin of the nav-key abort above. Without this, clicking a
+                        // card and then something else within the ~210ms commit window let the
+                        // card's deferred activation fire AFTER the second click had already acted
+                        // (two `on_ok`s: the watched toggle flipped twice, each with its own
+                        // blocking refetch). The card branch re-arms from scratch below.
+                        if ok_armed {
+                            crate::ui::press::cancel();
+                            ok_armed = false;
+                        }
+                        if crate::ui::detail::click(cx, cy) {
+                            if crate::ui::detail::focus_is_card() {
+                                crate::ui::press::begin(last_input);
+                                ok_armed = true;
+                            } else if crate::ui::detail::on_ok() {
+                                start_playback(
+                                    mt,
+                                    crate::ui::detail::last_resume_ns(),
+                                    true, // Stop/BACK/EOS returns to this detail page
+                                    HUD_LINGER_MS,
+                                    &mut route,
+                                    &mut played_from_detail,
+                                    &mut hud_nav,
+                                );
+                            }
+                        }
                     } else if matches!(route, Route::Account) {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -1933,6 +1977,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 } else if et == SDL_MOUSEBUTTONUP {
                     last_input = SDL_GetTicks();
+                    // a click that armed the tvOS press (a detail card) releases on the button-up,
+                    // the pointer's twin of the OK key-up: without it the dip would sit there until
+                    // press.rs's dropped-key-up ceiling fired. A no-op when no press is in flight.
+                    crate::ui::press::release(last_input);
                     ptr_hold_pager = 0; // releasing the click stops the hero click-hold pager
                     if ptr_drag {
                         ptr_drag = false;

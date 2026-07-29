@@ -121,9 +121,12 @@ const SECTION_GAP: f32 = theme::space::XL; // vertical padding between top-level
 const TAB_EP_GAP: f32 = theme::space::MD; // season tabs → their episode row (they read as one unit)
 const SCROLLED: f32 = CONTENT_TOP - TOP_MARGIN; // backdrop-dim saturation reference (= 800)
 const BTN_CONTENT_GAP: f32 = theme::space::XL; // hero button row → first below-hero block (64)
+const HERO_FADE: f32 = 400.0; // px of scroll over which the hero fades out (draw + pointer share it)
+const HERO_HIT_MIN_A: f32 = 0.5; // a hero control must be at least this opaque to be CLICKABLE
 
 // Season tabs (header for the episode row)
 const TAB_ROW_H: f32 = CD; // tab pills stand as tall as the hero buttons (one control height)
+const TAB_PAD: f32 = 18.0; // season-tab pill padding either side of its label
 const TAB_ADVANCE: f32 = 52.0; // per-tab horizontal advance past the label width
 const SEASON_SETTLE: f32 = 0.2; // hold a season tab this long (s) before its episodes are fetched
 // Episodes: landscape stills + under-card metadata
@@ -155,6 +158,80 @@ const CAST_D: f32 = 190.0; // headshot diameter
 const CAST_SLOT: f32 = 230.0; // per-member horizontal pitch (room for the name)
 const CAST_LABEL_H: f32 = 60.0; // "Cast & Crew" heading → headshot row
 const CAST_UNDER_H: f32 = 92.0; // headshot → name/role → block bottom (name LABEL + role CAPTION)
+
+// ---- one geometry source per focusable region -------------------------------------------------
+// Each of these is called by the DRAW and by the pointer hit-test (`hit_at`), so a control can never
+// be drawn in one place and clicked in another. Same immediate-mode contract as `home::card_x` /
+// `col_at`: derive, don't record — the rects fall out of the same constants the painter uses.
+
+/// The Play pill's label — the word the press will actually perform, so it decides the pill's WIDTH
+/// as well as its text. One source for the painter and for [`hero_pill_w`].
+fn hero_pill_label() -> &'static std::ffi::CStr {
+    if has_restart() {
+        c"Resume"
+    } else {
+        c"Play"
+    }
+}
+/// …and the pill's drawn width: measured from that label through the one hero-pill formula
+/// (`widgets::pill_w`), floored at `PW` so a pathologically short label still gets a pill.
+fn hero_pill_w() -> f32 {
+    // `icon: true` — the hero pill carries the Play glyph, so its frame reserves the icon box
+    Button::pill_w(hero_pill_label().as_ptr(), theme::size::BODY, true).max(PW)
+}
+
+/// The hero action-row control rect for index `i` at row top `y`.
+///
+/// The row is DYNAMIC — the ↺ restart disc exists only while [`has_restart`] — and the pill's width
+/// follows its label, so positions are ACCUMULATED rather than per-control constants: the pill sits
+/// at the margin, and every control after it is a `CD` disc one `CD + CGAP` further along than the
+/// last. Indices stay contiguous (`hero_col` shifts focus with the set, `btn_watched` is always the
+/// end), so "disc slot" is simply `i - BTN_PLAY - 1` and the watched toggle slides left by exactly
+/// one disc when the restart control is absent. Walked by `draw_buttons` AND by the pointer
+/// hit-test — anything else would put the click a control out of step whenever a resume point
+/// exists, which is precisely the state a pointer user is most likely to be in.
+fn hero_btn_rect(i: c_int, y: f32) -> Rect {
+    hero_btn_rect_w(i, y, hero_pill_w())
+}
+/// [`hero_btn_rect`]'s pure core — the accumulation itself, for a pill of measured width `pw`.
+///
+/// Split from the measurement on purpose: `hero_pill_w` reaches SDL_ttf, and a host test that calls
+/// into the TV's text stack fails to LINK on the dev Mac (the crate's Tier-1 limit). Parameterising
+/// the width keeps the row's geometry host-testable at BOTH pill widths — "Play" and the wider
+/// "Resume" — which is the case the fontless host could otherwise never see.
+fn hero_btn_rect_w(i: c_int, y: f32, pw: f32) -> Rect {
+    if i <= BTN_PLAY {
+        return Rect::new(MARGIN_X, y, pw, CD);
+    }
+    let slot = (i - BTN_PLAY - 1) as f32;
+    Rect::new(MARGIN_X + pw + CGAP + slot * (CD + CGAP), y, CD, CD)
+}
+
+/// A season tab's pill: padded `TAB_PAD` either side of the tab's CONTENT (its label plus whatever
+/// trailing note it carries — `TabLay::w` already measures both), standing the full row height so
+/// tabs and hero buttons read as one control family. `top` is the row's local y for the draw and its
+/// screen y for the hit-test; the horizontal scroll is applied by the caller, which is why this
+/// takes the layout entry rather than reaching for one.
+fn tab_pill_rect(lay: &TabLay, top: f32) -> Rect {
+    Rect::new(lay.x - TAB_PAD, top, lay.w + 2.0 * TAB_PAD, TAB_ROW_H)
+}
+
+/// The content-space left edge of strip index `i` at horizontal pitch `pitch` — the ONE x formula
+/// the episode filmstrip and the Related/Cast shelves (`draw_strip`) advance by.
+#[inline]
+fn strip_x(i: usize, pitch: f32) -> f32 {
+    MARGIN_X + i as f32 * pitch
+}
+
+/// Inverse of [`strip_x`]: which of `n` tiles of width `w` has screen x `mx` inside its DRAWN span,
+/// given the row's live horizontal scroll `sx`. (home's `col_at`, for detail's three strips.)
+#[inline]
+fn strip_at(mx: f32, sx: f32, n: usize, pitch: f32, w: f32) -> Option<usize> {
+    (0..n).find(|&i| {
+        let x = strip_x(i, pitch) - sx;
+        mx >= x && mx <= x + w
+    })
+}
 
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
@@ -397,16 +474,22 @@ fn ep_meta_h() -> f32 {
 }
 /// scroll offset that lifts the focused section's top to TOP_MARGIN
 fn scroll_target() -> f32 {
-    let v = view();
-    if v.section == 0 {
+    scroll_target_for(view().section)
+}
+/// [`scroll_target`] for an ARBITRARY section — the page's resting scroll while `sec` holds focus.
+/// Parameterized so the pointer can ask "would focusing this move the page?" without moving it
+/// (`hover_allows`); the focused-section call above is the same function with today's section.
+fn scroll_target_for(sec: c_int) -> f32 {
+    if sec == 0 {
         return 0.0;
     }
     // episodes anchor on the season tabs above them, so the tabs stay visible while browsing episodes
-    let anchor = if v.section == 2 { 1 } else { v.section };
+    let anchor = if sec == 2 { 1 } else { sec };
     let (s, n) = sections();
     // the anchor's non-hero ScrollColumn index; lift its top to margin (== the old section_y math)
     match s[..n].iter().position(|&x| x == anchor) {
         Some(pos) if pos >= 1 => {
+            let v = view();
             let col = v.column;
             col.lift_target(v, pos - 1)
         }
@@ -771,7 +854,7 @@ pub(crate) fn draw() {
     let scroll = view().column.scroll.pos;
     use crate::ui::profile::phase;
     phase("dt.backdrop", || draw_backdrop(p, m, scroll));
-    let hero_a = hero_alpha(scroll, 400.0);
+    let hero_a = hero_alpha(scroll, HERO_FADE);
     let ps = p.translate(0.0, -scroll);
     // hero fades out as the page scrolls down into the rows (pinned but scrolled)
     if hero_a > 0.01 {
@@ -903,7 +986,7 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
     // bottom scrim for the hero's lower-left content — tied to the hero's own fade (it serves that
     // text), so it clears once the hero is gone rather than lingering the whole scroll (a wasted
     // full-screen-width pass through the back half of the transition).
-    let hero_vis = hero_alpha(scroll, 400.0);
+    let hero_vis = hero_alpha(scroll, HERO_FADE);
     if hero_vis > 0.01 {
         p.rect(
             Rect::new(0.0, SCR_H * 0.34, SCR_W, SCR_H * 0.66),
@@ -1103,8 +1186,8 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // solid dark discs. Play reuses the pill Button; the ↺ disc restarts a resumable item from
     // 00:00; the check disc is the watched toggle (its glyph lights RESUME amber while the item is
     // marked watched). The discs are placed by an ACCUMULATED x, not per-control constants, because
-    // the middle one comes and goes — see `hero_btns`.
-    let tx = MARGIN_X;
+    // the middle one comes and goes — see `hero_btns`. That accumulation IS `hero_btn_rect`, which
+    // the pointer hit-test walks too, so no control can be drawn in one place and clicked in another.
     let focus = focus();
     let restart = has_restart();
 
@@ -1112,22 +1195,21 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // Continue Watching shelf, and the word is the shelf's. On an item page the control has a
     // sibling: "Resume" and the ↺ disc beside it are a PAIR, read together, the way every reference
     // client words it. The pill's width follows its label (`Button::pill_w`, the ONE pill width
-    // formula) so the longer word gets its own air instead of being crammed into "Play"'s frame.
-    let plabel = if restart { c"Resume" } else { c"Play" };
-    let pw = Button::pill_w(plabel.as_ptr(), theme::size::BODY, true).max(PW);
-    let mut cx = tx + pw + CGAP;
+    // formula, reached through `hero_pill_w` so the pointer measures the very same frame) — the
+    // longer word gets its own air instead of being crammed into "Play"'s.
+    let plabel = hero_pill_label();
 
-    Button::new(plabel.as_ptr(), theme::size::BODY, Rect::new(tx, y, pw, CD))
+    Button::new(plabel.as_ptr(), theme::size::BODY, hero_btn_rect(BTN_PLAY, y))
         .icon(crate::ui::icons::Icon::Play)
         .focused(focus == BTN_PLAY)
         .draw(env, p);
     if restart {
+        let r = hero_btn_rect(BTN_RESTART, y);
         CircleButton::new(c"".as_ptr())
             .icon(crate::ui::icons::Icon::Restart)
-            .at(cx, y)
+            .at(r.x, r.y)
             .focused(focus == BTN_RESTART)
             .draw(env, p);
-        cx += CD + CGAP;
     }
     let watched = metadata::current().map(|d| d.watched).unwrap_or(false);
     let wf = focus == btn_watched();
@@ -1136,10 +1218,11 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     } else {
         ControlStyle::Accent
     };
+    let wr = hero_btn_rect(btn_watched(), y);
     CircleButton::new(c"".as_ptr())
         .icon(crate::ui::icons::Icon::Check)
         .style(wstyle)
-        .at(cx, y)
+        .at(wr.x, wr.y)
         .focused(wf)
         .draw(env, p);
 }
@@ -1202,11 +1285,13 @@ fn draw_tabs(p: Painter) {
         let selected = lay.i == d.cur_season;
         let focused = sec == 1 && col == lay.i as c_int;
         // pill sized to the (bold) label plus its trailing note — content sits at x, pill padded
-        // ±18, tabs advance by that content width + TAB_ADVANCE (see tabs_layout). The pill fills
-        // the block height (TAB_ROW_H == the hero-button CD), so tabs and buttons read as one
-        // control family.
-        if on_axis(lay.x - 18.0 - sx, lay.w + 36.0, SCR_W, 0.0) {
-            TabPill::new(lay.label.as_ptr(), theme::size::BODY, Rect::new(lay.x - 18.0, tab_y, lay.w + 36.0, TAB_ROW_H))
+        // ±TAB_PAD, tabs advance by that content width + TAB_ADVANCE (see tabs_layout). The pill
+        // fills the block height (TAB_ROW_H == the hero-button CD), so tabs and buttons read as one
+        // control family. `tab_pill_rect` is that frame, shared with the pointer hit-test — a tab
+        // widened by its episode count must stay clickable across the whole pill it draws.
+        let pill = tab_pill_rect(&lay, tab_y);
+        if on_axis(pill.x - sx, pill.w, SCR_W, 0.0) {
+            TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
                 .segment(selected)
                 .focused(focused)
                 .note(lay.note())
@@ -1236,7 +1321,7 @@ fn draw_episodes(p: Painter) {
     let dimc = theme::TEXT_TERTIARY;
     let ep_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     for (i, ep) in d.episodes.iter().enumerate() {
-        let x = MARGIN_X + i as f32 * (EP_W + EP_GAP);
+        let x = strip_x(i, EP_W + EP_GAP);
         if !on_axis(x - sx, EP_W, SCR_W, 0.0) {
             continue; // off-screen
         }
@@ -1334,7 +1419,7 @@ fn draw_strip<'a>(
         if i as c_int == focus_col {
             continue; // focused tile drawn last
         }
-        let x = MARGIN_X + i as f32 * pitch;
+        let x = strip_x(i, pitch);
         if !on_axis(x - sx, size.0, axis_span, 0.0) {
             continue;
         }
@@ -1345,7 +1430,7 @@ fn draw_strip<'a>(
     }
     if focus_col >= 0 && (focus_col as usize) < n {
         let i = focus_col as usize;
-        let x = MARGIN_X + i as f32 * pitch;
+        let x = strip_x(i, pitch);
         // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
         let s = row.scale(i) * crate::ui::press::scale();
         let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
@@ -2152,6 +2237,281 @@ mod tests {
 
         mount(None, 0);
     }
+
+    // ---- pointer hit-tests: the rects the pointer answers with must be the ones the painter drew.
+    // Detail's twins of home's "the pointer hit column matches the drawn card at every snap phase".
+
+    /// The pointer's inverse must land on the tile the painter drew — for detail's three horizontal
+    /// strips. Both sides go through `strip_x`, so this pins the round trip at every horizontal
+    /// scroll phase, including the gutter, which belongs to no tile at all.
+    #[test]
+    fn pointer_hit_index_matches_the_drawn_tile_in_every_strip() {
+        // (pitch, tile width) for the episode filmstrip, the Related shelf and the Cast shelf
+        for &(pitch, w) in &[(EP_W + EP_GAP, EP_W), (REL_W + REL_GAP, REL_W), (CAST_SLOT, CAST_D)] {
+            assert!(pitch > w + 1.0, "a strip's pitch must leave a real gutter ({pitch} vs {w})");
+            for &sx in &[0.0f32, 137.0, 1024.0] {
+                for i in 0..12usize {
+                    let x = strip_x(i, pitch) - sx; // the DRAWN left edge at this scroll
+                    for probe in [x + 1.0, x + w * 0.5, x + w - 1.0] {
+                        assert_eq!(
+                            strip_at(probe, sx, 12, pitch, w),
+                            Some(i),
+                            "clicking drawn tile {i} (pitch={pitch}, scroll={sx}) must hit it"
+                        );
+                    }
+                }
+                // the gutter between two tiles is a miss, not the neighbour
+                assert_eq!(strip_at(strip_x(1, pitch) - sx - 1.0, sx, 12, pitch, w), None);
+            }
+        }
+    }
+
+    /// The hero action row, on a row whose control SET changes under the pointer. With a resume
+    /// point the ↺ disc takes index 1 and the watched toggle slides to 2, so a hit-test built on
+    /// per-control constants would answer one control out of step for exactly the items a pointer
+    /// user is most likely to open. The invariant is therefore the ACCUMULATION `hero_btn_rect`
+    /// performs — the pill at the margin, every later control one `CD + CGAP` past the last —
+    /// asserted whatever the pill measures (the host has no fonts, so `pill_w` floors at `PW`
+    /// there and carries real metrics on the TV; the walk holds either way).
+    #[test]
+    fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
+        let _serial = crate::testlock::serial();
+        let y = 812.0; // any row top; the live one comes from hero_chain
+
+        // (item, control count, the pill width its label measures to). The widths stand in for
+        // `hero_pill_w` — "Resume" is the wider word, and the row must accumulate off whichever it
+        // is rather than off a constant.
+        for (d, want, pw) in
+            [(movie(0, 7_200_000), 2, PW), (movie(1_800_000, 7_200_000), 3, PW + 62.0)]
+        {
+            mount(Some(d), 0);
+            assert_eq!(hero_btns(), want, "the control set this case means to exercise");
+
+            let pill = hero_btn_rect_w(BTN_PLAY, y, pw);
+            assert_eq!(pill.x, MARGIN_X, "the pill starts at the margin");
+            assert_eq!((pill.w, pill.h), (pw, CD), "the pill IS the measured frame");
+            assert!(!pill.contains(MARGIN_X - 1.0, y + CD * 0.5), "the left margin is not the pill");
+
+            let mut prev = pill;
+            for i in (BTN_PLAY + 1)..hero_btns() {
+                let r = hero_btn_rect_w(i, y, pw);
+                assert_eq!((r.w, r.h), (CD, CD), "control {i} is a CD disc");
+                assert_eq!(r.x, prev.x + prev.w + CGAP, "control {i} accumulates past its neighbour");
+                assert!(
+                    !prev.contains(r.cx(), r.cy()) && !r.contains(prev.cx(), prev.cy()),
+                    "controls {} and {i} must each answer only for themselves",
+                    i - 1
+                );
+                // the gutter between two controls belongs to neither
+                let gutter = prev.x + prev.w + CGAP * 0.5;
+                assert!(!prev.contains(gutter, y + CD * 0.5) && !r.contains(gutter, y + CD * 0.5));
+                prev = r;
+            }
+            // the watched toggle is always the row's LAST control — it shifts, it is not displaced
+            assert_eq!(hero_btn_rect_w(btn_watched(), y, pw).x, prev.x, "the toggle ends the row");
+        }
+
+        mount(None, 0);
+    }
+
+    /// A season tab's pill covers its whole CONTENT — the label plus the trailing note (the episode
+    /// count, or the tick a finished season wears) — and never overlaps its neighbour at the
+    /// layout's own advance. `TabLay::w` measures label + note, so a counted tab is wider than its
+    /// label alone: a pill built from the label would leave the note outside the click target.
+    #[test]
+    fn season_tab_pills_cover_their_note_and_never_overlap() {
+        let top = 120.0;
+        let mid = top + TAB_ROW_H * 0.5;
+        let mut x = MARGIN_X;
+        let mut prev: Option<Rect> = None;
+        // (label width, note width): a bare tab, a counted one, and a long title wearing a tick
+        for (lw, nw) in [(86.0f32, 0.0f32), (140.0, 34.0), (210.0, 26.0)] {
+            let lay = TabLay {
+                i: 0,
+                x,
+                w: lw + nw, // exactly what tabs_layout stores: label width + TabPill::note_w
+                label: CString::default(),
+                count: CString::default(),
+                done: false,
+            };
+            let r = tab_pill_rect(&lay, top);
+            assert!(r.contains(x, mid), "the pill must cover its label's left edge");
+            assert!(r.contains(x + lw + nw, mid), "…and the far edge of its trailing note");
+            assert_eq!(r.h, TAB_ROW_H, "the pill stands one control tall");
+            if let Some(p) = prev {
+                assert!(r.x > p.x + p.w, "neighbouring season pills must not overlap");
+            }
+            prev = Some(r);
+            x += lay.w + TAB_ADVANCE; // tabs_layout's advance
+        }
+    }
+}
+
+// ---- pointer (the Magic Remote's primary input) ----------------------------------------------
+// The remote's pointer arrives as ordinary SDL mouse events, and `app.rs`'s remote FIFO synthesizes
+// clicks as `ck:X,Y` in the SAME authored 1920x1080 space — so hit-testing in authored coords serves
+// both by construction. Every rect below is re-derived from the geometry helpers the painter uses
+// (`hero_btn_rect`, `tab_pill_rect`, `strip_x`, the `ScrollColumn` flow), never recorded, so a
+// sibling change to a section's layout moves the draw and the click target together.
+
+/// Screen-space top of section `sec` right now: its place in the below-hero flow (`child_top` — the
+/// same y the `ScrollColumn` pre-translates that block's painter to) minus the live scroll. `None`
+/// for a section that isn't present, and for the hero (0), which is pinned rather than a child.
+fn section_screen_top(sec: c_int) -> Option<f32> {
+    let (s, n) = sections();
+    let pos = s[..n].iter().position(|&x| x == sec)?;
+    if pos == 0 {
+        return None;
+    }
+    let v = view();
+    let col = v.column;
+    Some(col.child_top(v, pos - 1) - col.scroll.pos)
+}
+
+/// The (section, item) under the pointer, or `None` for a miss. Checked in draw order — the pinned
+/// hero first, then each present below-hero block against its own strip pitch. The About footer (5)
+/// is deliberately absent: its four "items" are a read-only card and three text columns whose
+/// activation is a no-op, so a click there is a miss rather than a focus jump into a dead end.
+fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
+    let scroll = view().column.scroll.pos;
+    // hero action row: it scrolls with the hero, and it stops answering while the hero fades out.
+    // The threshold is FIRMER than the paint's `> 0.01` on purpose — a control faded to a percent
+    // of a percent is not something the user can see, and clicking apparently-empty space must not
+    // start playback. Only reachable mid-transition anyway (the scroll rests at 0 or well past the
+    // fade), which is exactly when a stray click is least intended.
+    if hero_alpha(scroll, HERO_FADE) > HERO_HIT_MIN_A {
+        let y = hero_layout(selected()).3 - scroll;
+        // the LIVE control set, not a constant: `hero_btns()` is 3 only while the restart disc is
+        // up, and `hero_btn_rect` slides the watched toggle to match
+        for b in 0..hero_btns() {
+            if hero_btn_rect(b, y).contains(mx, my) {
+                return Some((0, b));
+            }
+        }
+    }
+    let d = metadata::current()?; // nothing below the hero is drawn until the item lands
+    // season tabs: the strip scrolls horizontally, so the pill is placed at its DRAWN label x. The
+    // row band is tested FIRST because `tabs_layout` measures every season's label through an
+    // unmemoised TTF call — this runs on every motion event, so it must not pay that per pixel of
+    // pointer travel across the rest of the page.
+    if let Some(top) = section_screen_top(1).filter(|t| my >= *t && my <= t + TAB_ROW_H) {
+        let sx = view().tab_hscroll.pos;
+        for lay in tabs_layout(d) {
+            // `tab_pill_rect` is the frame the painter drew, in the strip's CONTENT space (the
+            // painter applies `-sx` as a translate), so the pointer is converted into that space
+            // rather than the rect out of it. A tab widened by its episode-count note is therefore
+            // clickable across the note too — that width is `TabLay::w`, which measures both.
+            if tab_pill_rect(&lay, top).contains(mx + sx, my) {
+                return Some((1, lay.i as c_int));
+            }
+        }
+    }
+    // episode filmstrip: the whole block (still + its under-card metadata) belongs to that episode,
+    // so clicking the title or the blurb picks the same one as clicking the still.
+    if let Some(top) = section_screen_top(2) {
+        if my >= top && my <= top + block_h(2) {
+            let n = n_items(2).max(0) as usize;
+            if let Some(i) = strip_at(mx, view().ep_hscroll.pos, n, EP_W + EP_GAP, EP_W) {
+                return Some((2, i as c_int));
+            }
+        }
+    }
+    // Related / Cast: the two shared `CardRow` strips, each below its heading
+    if let Some(top) = section_screen_top(3) {
+        let row_y = top + REL_LABEL_H;
+        if my >= row_y && my <= row_y + REL_H {
+            let n = n_items(3).max(0) as usize;
+            if let Some(i) = strip_at(mx, view().related.scroll_x(), n, REL_W + REL_GAP, REL_W) {
+                return Some((3, i as c_int));
+            }
+        }
+    }
+    if let Some(top) = section_screen_top(4) {
+        let row_y = top + CAST_LABEL_H;
+        if my >= row_y && my <= row_y + CAST_D {
+            let n = n_items(4).max(0) as usize;
+            if let Some(i) = strip_at(mx, view().cast.scroll_x(), n, CAST_SLOT, CAST_D) {
+                return Some((4, i as c_int));
+            }
+        }
+    }
+    None
+}
+
+/// Land focus on (`sec`, `col`) exactly the way [`move_focus`] would: remember the strip we are
+/// leaving (so returning to it restores the item), re-pop the newly focused card, and queue a
+/// debounced season load when the focus lands on a tab. Reports whether focus actually MOVED — the
+/// caller aborts an armed click on a move, since the press belongs to the control it started on.
+fn focus_to(sec: c_int, col: c_int) -> bool {
+    let v = view();
+    if v.section == sec && v.col == col {
+        return false; // already there — don't restart the pop, or re-arm the season debounce
+    }
+    if v.section != sec && matches!(v.section, 2 | 3 | 4) {
+        v.saved_col[v.section as usize] = v.col;
+    }
+    if v.section == 1 && sec != 1 {
+        // Focus is LEAVING the tabs before the debounce fired, so the season it queued was never
+        // dwelled on — drop it. The pointer makes this the common case rather than a rarity: a
+        // hover brushing up across the tab strip and back down onto the episodes would otherwise
+        // commit a season switch 200ms later, and `pump_season` resets the episode row under the
+        // hand that was reaching for it.
+        v.pending_season = -1;
+    }
+    v.section = sec;
+    v.col = col;
+    v.card_scale.jump(1.0);
+    if sec == 1 {
+        v.pending_season = col;
+        v.season_settle = 0.0;
+    }
+    true
+}
+
+/// May a HOVER move focus to `sec`? Only when doing so would not scroll the page.
+///
+/// This is the detail page's form of home's vertical fly-away guard. There the rule is "a partially
+/// visible row is not hoverable"; here focus DRIVES the scroll (`scroll_target_for` lifts the focused
+/// block to `TOP_MARGIN`), so a hover that changes section would yank hundreds of pixels of content
+/// out from under a stationary pointer — and whatever slid under it would then claim focus in turn.
+/// So hover walks the items of the block that already holds focus (its own row scrolls horizontally
+/// into view, exactly as home allows), plus any block that shares its anchor — the season tabs and
+/// their episode row, which is the pair the user is actually browsing. Everything else needs a
+/// deliberate CLICK, which is allowed to scroll because the user aimed at it.
+fn hover_allows(sec: c_int) -> bool {
+    (scroll_target_for(sec) - scroll_target_for(view().section)).abs() < 0.5
+}
+
+// Both entry points run under `ui::guard`, as home's do: they are reached from the `extern "C"`
+// event loop, which the draw-dispatch barrier does not cover, so an arithmetic panic here would
+// take the process rather than a frame. `hit_at` is the most computed of the pointer paths and it
+// runs on every motion event.
+
+/// Pointer motion: focus what the pointer is over, where that is free of page movement. Reports
+/// whether focus MOVED, so `app.rs` can abort a click armed on the control the pointer just left.
+pub(crate) fn pointer_focus(mx: f32, my: f32) -> bool {
+    let mut moved = false;
+    crate::ui::guard(|| {
+        if let Some((sec, col)) = hit_at(mx, my) {
+            if hover_allows(sec) {
+                moved = focus_to(sec, col);
+            }
+        }
+    });
+    moved
+}
+
+/// Pointer click: focus what was clicked and report the hit, so `app.rs` can run the SAME activation
+/// as OK — the tvOS press dip for a card, immediate for the Play pill / watched disc / season tab.
+pub(crate) fn click(mx: f32, my: f32) -> bool {
+    let mut hit = false;
+    crate::ui::guard(|| {
+        if let Some((sec, col)) = hit_at(mx, my) {
+            focus_to(sec, col);
+            hit = true;
+        }
+    });
+    hit
 }
 
 /// "YYYY-MM-DD" -> "D Mon YYYY"; falls back to the year, then empty
