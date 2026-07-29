@@ -779,9 +779,13 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     }
     // the whole y-chain below comes from the ONE shared layout (also feeds the scroll flow)
     let (meta_y, syn_y, date_y, btn_y) = hero_layout(m);
+    let mut meta_w = 0.0f32;
     if let Ok(mc) = CString::new(parts.join("   \u{b7}   ")) {
-        p.text(mc.as_ptr(), tx, meta_y, theme::size::BODY, d_a, 0, 0);
+        meta_w = p.text(mc.as_ptr(), tx, meta_y, theme::size::BODY, d_a, 0, 0);
     }
+
+    // ---- review scores, flowed on after the meta line (same row, same optical centre) ----
+    draw_ratings(p, tx + meta_w + theme::space::LG, meta_y);
 
     // ---- synopsis: the shared fine-print TextView (hero_synopsis — one size app-wide, matches
     // the home hero); its measured height is already folded into date_y/btn_y by hero_layout ----
@@ -818,6 +822,47 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
                 p.text(sc.as_ptr(), SCR_W - MARGIN_X - w, btn_y + 16.0, theme::size::LABEL, d_a, 0, 1);
             }
         }
+    }
+}
+
+/// `RatingArt` → the mask and brand tint that draw it. The mapping lives here, in the UI layer, so
+/// `metadata::RatingArt` (which is parsed out of the server's `Rating.image` string) stays free of
+/// `Icon`/colour — and so the *state* the server named is what picks the art, end to end.
+fn rating_mark(art: metadata::RatingArt) -> (crate::ui::icons::Icon, [f32; 4]) {
+    use crate::ui::icons::Icon;
+    use metadata::RatingArt as A;
+    match art {
+        A::TomatoFresh => (Icon::Tomato, theme::RATING_FRESH),
+        A::TomatoRotten => (Icon::TomatoRotten, theme::RATING_ROTTEN),
+        // the upright bucket is the audience score's POSITIVE art, so it shares the fresh red
+        A::PopcornUpright => (Icon::Popcorn, theme::RATING_FRESH),
+        A::PopcornSpilled => (Icon::PopcornSpilled, theme::RATING_ROTTEN),
+        A::Imdb => (Icon::Star, theme::RATING_IMDB),
+        A::Tmdb => (Icon::Ring, theme::RATING_TMDB),
+    }
+}
+
+/// The review-score row: one [`widgets::rating_badge`] per parsed rating, flowed left→right from
+/// `x` and centred on the meta line's own cap band (so it sits on that line rather than at a
+/// guessed y). A badge that would cross the right margin is dropped, and the flow stops there — a
+/// long genre list must not push a tomato off the panel edge.
+fn draw_ratings(p: Painter, x: f32, meta_y: f32) {
+    let ratings = match metadata::current() {
+        Some(d) if !d.ratings.is_empty() => &d.ratings,
+        _ => return,
+    };
+    let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
+    let cy = meta_y + (cap_top + baseline) * 0.5;
+    let mut bx = x;
+    for r in ratings.iter() {
+        let (icon, tint) = rating_mark(r.art);
+        let score = crate::ui::fmt::rating_score(r.art, r.value);
+        let w = crate::ui::widgets::rating_badge_w(&score);
+        if w <= 0.0 || bx + w > SCR_W - MARGIN_X {
+            break;
+        }
+        crate::ui::widgets::rating_badge(p, bx, cy, icon, tint, &score);
+        bx += w + theme::space::MD;
     }
 }
 

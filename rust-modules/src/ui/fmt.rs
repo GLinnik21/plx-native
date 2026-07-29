@@ -54,3 +54,14 @@ pub(crate) fn clock(ms: i64) -> String {
 pub(crate) fn episode_kicker(season: i64, index: i64, title: &str) -> String {
     format!("S{season}, E{index} \u{b7} {title}")
 }
+
+/// A review score, in the shape its own provider publishes it. PMS normalises every provider onto
+/// one 0–10 scale, which is not how any of them are quoted: Rotten Tomatoes and TMDB are
+/// PERCENTAGES (9.1 → "91%") and IMDb is out of ten ("7.4"). Printing the raw 9.1 beside a tomato
+/// would read as a 9.1% score, so the badge's number is put back into the provider's own units here.
+pub(crate) fn rating_score(art: crate::metadata::RatingArt, value: f64) -> String {
+    match art {
+        crate::metadata::RatingArt::Imdb => format!("{value:.1}"),
+        _ => format!("{}%", (value * 10.0).round().clamp(0.0, 100.0) as i64),
+    }
+}

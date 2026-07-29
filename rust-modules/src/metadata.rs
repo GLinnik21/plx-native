@@ -196,6 +196,120 @@ pub(crate) fn marker_at(markers: &[Marker], pos_ms: i64) -> Option<Marker> {
         .copied()
 }
 
+/// Which badge artwork a `Rating.image` string names — the provider AND its icon state, both of
+/// which the server encodes in that one string: `rottentomatoes://image.rating.ripe` is the fresh
+/// tomato, `…rating.rotten` the green splat, `…rating.upright` the standing popcorn bucket and
+/// `…rating.spilled` the tipped one; `imdb://image.rating` and `themoviedb://image.rating` carry no
+/// state because those providers have only one mark.
+///
+/// The art is chosen by parsing that string and **never** by comparing `value` to a threshold:
+/// Rotten Tomatoes' critic and audience cutoffs differ from each other and move, so a 6.0 can be
+/// fresh on one axis and rotten on the other — the server already knows which, and says so here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RatingArt {
+    TomatoFresh,
+    TomatoRotten,
+    PopcornUpright,
+    PopcornSpilled,
+    Imdb,
+    Tmdb,
+}
+
+impl RatingArt {
+    /// Parse `provider://image.rating[.state]`. An unknown provider — or a Rotten Tomatoes string
+    /// with no state we recognise, which leaves tomato-vs-popcorn genuinely undetermined — yields
+    /// `None`: a score whose artwork cannot be attributed is not badged at all, rather than badged
+    /// with a guess.
+    pub(crate) fn from_image(image: &str) -> Option<RatingArt> {
+        let (provider, rest) = image.split_once("://")?;
+        // "image.rating.ripe" → "ripe"; a stateless "image.rating" → "rating", which matches no arm
+        let state = rest.rsplit_once('.').map(|(_, s)| s).unwrap_or("");
+        match provider {
+            "rottentomatoes" => match state {
+                // `certified` is RT's Certified Fresh — still a (fresh) tomato. Not seen on this
+                // server's library, mapped defensively because the alternative is dropping a badge.
+                "ripe" | "certified" => Some(RatingArt::TomatoFresh),
+                "rotten" => Some(RatingArt::TomatoRotten),
+                "upright" => Some(RatingArt::PopcornUpright),
+                "spilled" => Some(RatingArt::PopcornSpilled),
+                _ => None,
+            },
+            "imdb" => Some(RatingArt::Imdb),
+            "themoviedb" | "tmdb" => Some(RatingArt::Tmdb),
+            _ => None,
+        }
+    }
+
+    /// Display order of the badge row — Rotten Tomatoes' critic tomato, then its audience popcorn,
+    /// then IMDb, then TMDB. Fixed here (rather than left as wire order) so the row reads the same
+    /// on every item; PMS returns the array alphabetically by provider.
+    fn rank(self) -> u8 {
+        match self {
+            RatingArt::TomatoFresh | RatingArt::TomatoRotten => 0,
+            RatingArt::PopcornUpright | RatingArt::PopcornSpilled => 1,
+            RatingArt::Imdb => 2,
+            RatingArt::Tmdb => 3,
+        }
+    }
+}
+
+/// One review score to badge on the detail hero: the artwork the server named, the score as PMS
+/// normalises it (0–10 for every provider — a 91% tomato arrives as 9.1), and whether PMS filed it
+/// as a critic or an audience score.
+pub(crate) struct Rating {
+    pub(crate) art: RatingArt,
+    pub(crate) value: f64,
+    pub(crate) critic: bool,
+}
+
+/// Build the badge list from an item's review scores. `Rating[]` wins whenever it is present: it is
+/// the superset AND the only form carrying per-score provider identity.
+///
+/// The flat `rating`/`audienceRating` pair is the fallback for a response that omits the array.
+/// **Today's only caller is `fetch_detail`, and `/library/metadata/{rk}` always sends the array**,
+/// so that branch is reached by nothing but its test right now — it is here because the OTHER
+/// shape is already on the wire and already needed: a section listing sends the flat pair and no
+/// `Rating[]` at all (verified live 2026-07-29), so the moment a grid or the home hero wants a
+/// score, this is the function it will call. In that branch the SLOT is the critic/audience
+/// distinction — that is precisely what the two field names mean — since a flat row has no `type`.
+///
+/// Rows whose artwork cannot be attributed are dropped, as are non-positive scores: PMS omits a
+/// score it does not have, and `de_f64` defaults that to 0.0, so "0.0" means absent, not zero.
+fn convert_ratings(it: &crate::plex::Metadata) -> Vec<Rating> {
+    let mut out: Vec<Rating> = if !it.ratings.is_empty() {
+        it.ratings
+            .iter()
+            .filter_map(|r| {
+                Some(Rating {
+                    art: RatingArt::from_image(&r.image)?,
+                    value: r.value,
+                    critic: r.kind == "critic",
+                })
+            })
+            .filter(|r| r.value > 0.0)
+            .collect()
+    } else {
+        [
+            (it.rating_image.as_str(), it.rating, true),
+            (it.audience_rating_image.as_str(), it.audience_rating, false),
+        ]
+        .into_iter()
+        .filter_map(|(img, value, critic)| Some(Rating { art: RatingArt::from_image(img)?, value, critic }))
+        .filter(|r| r.value > 0.0)
+        .collect()
+    };
+    // Rank orders the marks; `critic` breaks a tie inside one rank, so if a provider ever sends
+    // both a critic and an audience score behind the SAME mark, the critic one still leads. Stable
+    // sort, so anything these two keys don't separate keeps its wire order.
+    out.sort_by_key(|r| (r.art.rank(), !r.critic));
+    // ONE badge per slot. Two rows at the same rank is a contradiction the row cannot draw — a
+    // ripe AND a rotten critic score, or the two flat fields both naming IMDb (the OpenAPI spec's
+    // own example puts `imdb://image.rating` in `audienceRatingImage`) — and two identical marks
+    // carrying different numbers is worse than one. The sort already put the one to keep first.
+    out.dedup_by_key(|r| r.art.rank());
+    out
+}
+
 #[derive(Default)]
 pub(crate) struct Detail {
     pub(crate) rk: String,
@@ -230,6 +344,7 @@ pub(crate) struct Detail {
     pub(crate) related: Vec<Related>,
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) markers: Vec<Marker>, // intro / credits segments (leaf items only)
+    pub(crate) ratings: Vec<Rating>, // review scores, critic-first (see convert_ratings)
 }
 
 // The one loaded detail item (the detail page shows a single item at a time).
@@ -362,6 +477,7 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
             })
             .collect(),
         markers: convert_markers(&it.marker),
+        ratings: convert_ratings(&it),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).
@@ -994,6 +1110,157 @@ mod marker_tests {
         let mid = convert_markers(&[wire("credits", 1000, 2000, false)]);
         assert!(marker_at(&mid, 1500).is_some());
         assert!(marker_at(&mid, 2000).is_none(), "a non-final segment ends where it says it does");
+    }
+}
+
+#[cfg(test)]
+mod rating_tests {
+    use super::*;
+
+    /// one `Rating[]` row on the wire
+    fn wire(image: &str, value: f64, kind: &str) -> crate::plex::Rating {
+        crate::plex::Rating { image: image.to_string(), value, kind: kind.to_string() }
+    }
+    fn arts(v: &[Rating]) -> Vec<RatingArt> {
+        v.iter().map(|r| r.art).collect()
+    }
+
+    /// The `image` string picks the ARTWORK — provider AND state — and the score never does. Both
+    /// halves matter: a threshold would put a fresh tomato on 6.0 (`My Fault: London` is 4.0 and
+    /// ROTTEN, `Hannah Montana…` is 6.0 and RIPE on this server), and a provider read off `type`
+    /// would be wrong for IMDb and TMDB, which both arrive as `audience`.
+    #[test]
+    fn image_string_picks_the_provider_and_the_state() {
+        use RatingArt::*;
+        for (image, want) in [
+            ("rottentomatoes://image.rating.ripe", TomatoFresh),
+            ("rottentomatoes://image.rating.rotten", TomatoRotten),
+            ("rottentomatoes://image.rating.upright", PopcornUpright),
+            ("rottentomatoes://image.rating.spilled", PopcornSpilled),
+            ("rottentomatoes://image.rating.certified", TomatoFresh),
+            ("imdb://image.rating", Imdb),
+            ("themoviedb://image.rating", Tmdb),
+        ] {
+            assert_eq!(RatingArt::from_image(image), Some(want), "{image}");
+        }
+        // the negative variants are a different MARK, not the same mark recoloured, so nothing may
+        // collapse ripe→rotten or upright→spilled
+        assert_ne!(RatingArt::from_image("rottentomatoes://image.rating.ripe"), RatingArt::from_image("rottentomatoes://image.rating.rotten"));
+        assert_ne!(RatingArt::from_image("rottentomatoes://image.rating.upright"), RatingArt::from_image("rottentomatoes://image.rating.spilled"));
+    }
+
+    /// Anything we cannot attribute is dropped rather than guessed at: an unknown provider, a
+    /// Rotten Tomatoes string with no state (tomato or popcorn? the string does not say), and
+    /// junk that is not a `scheme://path` at all.
+    #[test]
+    fn an_unattributable_image_yields_no_badge() {
+        for image in [
+            "metacritic://image.rating",
+            "rottentomatoes://image.rating",
+            "rottentomatoes://image.rating.mouldy",
+            "imdb", // no "://" — a truncated/blank field must not panic or match
+            "",
+            "://image.rating",
+        ] {
+            assert_eq!(RatingArt::from_image(image), None, "{image}");
+        }
+    }
+
+    /// `Rating[]` wins whenever present — it is the superset and the only form that names each
+    /// score's provider — and the row is ordered critic-tomato → audience-popcorn → IMDb → TMDB
+    /// regardless of the wire order (PMS sends it alphabetically by provider).
+    #[test]
+    fn the_array_wins_over_the_flat_pair_and_orders_the_row() {
+        // Luca, verbatim off the live server 2026-07-29
+        let it = crate::plex::Metadata {
+            ratings: vec![
+                wire("imdb://image.rating", 7.4, "audience"),
+                wire("rottentomatoes://image.rating.ripe", 9.1, "critic"),
+                wire("rottentomatoes://image.rating.upright", 8.5, "audience"),
+                wire("themoviedb://image.rating", 7.8, "audience"),
+            ],
+            // the flat pair is also on the wire for this item; the array must win
+            rating: 9.1,
+            rating_image: "rottentomatoes://image.rating.ripe".to_string(),
+            audience_rating: 8.5,
+            audience_rating_image: "rottentomatoes://image.rating.upright".to_string(),
+            ..Default::default()
+        };
+        let got = convert_ratings(&it);
+        use RatingArt::*;
+        assert_eq!(arts(&got), [TomatoFresh, PopcornUpright, Imdb, Tmdb]);
+        assert_eq!(got[0].value, 9.1);
+        assert!(got[0].critic, "the tomato is the critic score");
+        assert!(!got[2].critic, "IMDb arrives as an audience score, not a critic one");
+    }
+
+    /// The flat pair is the fallback for the OTHER response shape — a section listing carries it
+    /// and no `Rating[]` at all (verified live 2026-07-29). Nothing calls `convert_ratings` on that
+    /// shape yet, so this test is currently the branch's only exercise; it is here so the fallback
+    /// cannot rot before the first grid-side caller arrives.
+    #[test]
+    fn the_flat_pair_is_used_when_the_array_is_absent() {
+        let it = crate::plex::Metadata {
+            rating: 4.0,
+            rating_image: "rottentomatoes://image.rating.rotten".to_string(),
+            audience_rating: 8.3,
+            audience_rating_image: "rottentomatoes://image.rating.upright".to_string(),
+            ..Default::default()
+        };
+        let got = convert_ratings(&it);
+        use RatingArt::*;
+        assert_eq!(arts(&got), [TomatoRotten, PopcornUpright]);
+        assert!(got[0].critic && !got[1].critic);
+    }
+
+    /// A score PMS never sent defaults to 0.0, which means ABSENT — badging it as "0%" would
+    /// invent a review. An unattributable row must also not take its neighbours down with it.
+    #[test]
+    fn absent_scores_and_unknown_providers_drop_out() {
+        let it = crate::plex::Metadata {
+            ratings: vec![
+                wire("rottentomatoes://image.rating.ripe", 0.0, "critic"), // absent
+                wire("metacritic://image.rating", 8.8, "critic"),          // unknown provider
+                wire("imdb://image.rating", 7.4, "audience"),              // the one real row
+            ],
+            ..Default::default()
+        };
+        assert_eq!(arts(&convert_ratings(&it)), [RatingArt::Imdb]);
+
+        // nothing usable at all → an empty row, and the hero simply draws no badges
+        let empty = crate::plex::Metadata { rating: 9.1, ..Default::default() }; // score, no image
+        assert!(convert_ratings(&empty).is_empty());
+    }
+
+    /// One badge per slot. Two rows behind the same mark cannot both be drawn — the row would show
+    /// one provider twice with two different numbers — so the second is dropped after the
+    /// critic-first sort has decided which one that is.
+    #[test]
+    fn a_slot_is_only_badged_once() {
+        let it = crate::plex::Metadata {
+            ratings: vec![
+                wire("rottentomatoes://image.rating.upright", 8.5, "audience"),
+                // a contradictory second critic row: ripe AND rotten for the same item
+                wire("rottentomatoes://image.rating.rotten", 4.0, "critic"),
+                wire("rottentomatoes://image.rating.ripe", 9.1, "critic"),
+            ],
+            ..Default::default()
+        };
+        let got = convert_ratings(&it);
+        assert_eq!(arts(&got), [RatingArt::TomatoRotten, RatingArt::PopcornUpright]);
+        assert_eq!(got[0].value, 4.0, "wire order decides between two equally-ranked critic rows");
+    }
+
+    /// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
+    /// provider actually publishes, or a 9.1 tomato reads as a 9.1% score.
+    #[test]
+    fn a_score_is_formatted_in_its_provider_s_own_units() {
+        use crate::ui::fmt::rating_score;
+        assert_eq!(rating_score(RatingArt::TomatoFresh, 9.1), "91%");
+        assert_eq!(rating_score(RatingArt::PopcornSpilled, 4.05), "41%"); // rounded, not truncated
+        assert_eq!(rating_score(RatingArt::Tmdb, 7.8), "78%");
+        assert_eq!(rating_score(RatingArt::Imdb, 7.4), "7.4");
+        assert_eq!(rating_score(RatingArt::TomatoFresh, 10.0), "100%");
     }
 }
 

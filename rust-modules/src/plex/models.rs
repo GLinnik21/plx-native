@@ -184,6 +184,24 @@ pub struct Metadata {
     // and misses it). `de_ultrablur` accepts object OR array and yields the first.
     #[serde(rename = "UltraBlurColors", default, deserialize_with = "de_ultrablur")]
     pub ultra_blur_colors: Option<UltraBlurColors>,
+    /// Review scores, one row per provider — the SUPERSET, and the only form that carries each
+    /// score's provider identity. Present on `/library/metadata/{rk}`; **absent from a section
+    /// listing**, which sends only the flat pair below (verified live 2026-07-29), so both forms
+    /// are parsed and `metadata::convert_ratings` prefers this one.
+    #[serde(rename = "Rating", default)]
+    pub ratings: Vec<Rating>,
+    /// The flat critic score (0–10) and the provider/state `image` that goes with it — the legacy
+    /// pair, kept as the fallback for responses that omit `Rating[]`.
+    #[serde(default, deserialize_with = "de_f64")]
+    pub rating: f64,
+    #[serde(rename = "ratingImage", default)]
+    pub rating_image: String,
+    /// The flat audience score + its image (`rottentomatoes://image.rating.upright`, and on some
+    /// items `imdb://image.rating` / `themoviedb://image.rating`).
+    #[serde(rename = "audienceRating", default, deserialize_with = "de_f64")]
+    pub audience_rating: f64,
+    #[serde(rename = "audienceRatingImage", default)]
+    pub audience_rating_image: String,
 }
 
 impl Metadata {
@@ -317,6 +335,24 @@ pub struct Marker {
     /// Rust keyword, hence the rename.) Arrives as a JSON bool; `de_i64` folds it to 1/0.
     #[serde(rename = "final", default, deserialize_with = "de_i64")]
     pub is_final: i64,
+}
+
+/// One row of a leaf's `Rating[]` — a single provider's review score.
+///
+/// `image` names BOTH the provider and the icon state (`rottentomatoes://image.rating.ripe`,
+/// `rottentomatoes://image.rating.spilled`, `imdb://image.rating`, `themoviedb://image.rating`),
+/// which is why the badge art is chosen by parsing this string rather than by thresholding
+/// `value` — see `metadata::RatingArt`. `value` is normalised 0–10 by PMS for every provider
+/// (a 91% tomato arrives as 9.1). `kind` is `"critic"` | `"audience"`; note it does NOT identify
+/// the provider — IMDb and TMDB both arrive as `audience` (verified live 2026-07-29).
+#[derive(Deserialize, Default)]
+pub struct Rating {
+    #[serde(default)]
+    pub image: String,
+    #[serde(default, deserialize_with = "de_f64")]
+    pub value: f64,
+    #[serde(rename = "type", default)]
+    pub kind: String,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]
