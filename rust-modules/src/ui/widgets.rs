@@ -91,6 +91,38 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
     card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
 }
 
+/// Diameter of the [`watched_badge`] disc and its inset from the still's corner — the same 12px
+/// the episode filmstrip's resume bar insets by, so the two states sit on one margin. Both are
+/// CONSTANT through the focus pop (like that bar's height): the check is a 1:1-texel mask, and a
+/// size riding the scale spring would rasterize + upload a fresh texture every animating frame.
+const WATCHED_BADGE_D: f32 = 34.0;
+const WATCHED_BADGE_INSET: f32 = 12.0;
+
+/// The **watched** mark for a landscape still: a dark disc with the amber check, pinned to the
+/// tile's top-right corner. Wears exactly the pair the detail page's watched toggle already does
+/// (`CONTROL_IDLE_FILL` face + `RESUME_FILL` ink), so "this is watched" reads the same as a button
+/// and as a badge, and stays inside the app's one watched-state hue.
+///
+/// The **done** state of [`card`]'s progress vocabulary (amber corner ANGLE = never started, amber
+/// resume BAR = in progress). Mutual exclusion is the CALLER's rule — PMS keeps a resume point on a
+/// re-started episode, so the wire says both — exactly as the poster's `resume_ms == 0` gate does.
+/// NB the episode filmstrip, its only caller today, draws the bar and this but **not** the angle:
+/// on a still, never-started is still the absence of a mark. Pass the rect actually drawn — the
+/// SCALED one while the card is popped — and the badge rides the pop without resizing.
+pub(crate) fn watched_badge(p: Painter, r: Rect) {
+    let d = WATCHED_BADGE_D;
+    let disc = Rect::new(r.x + r.w - WATCHED_BADGE_INSET - d, r.y + WATCHED_BADGE_INSET, d, d);
+    p.rect(disc, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL, 0.0);
+    // glyph on the shared round-control ratio, so the check sits in the disc like every other one
+    let i = (d * DISC_ICON_RATIO).round();
+    crate::ui::icons::draw(
+        p,
+        crate::ui::icons::Icon::Check,
+        Rect::new(disc.cx() - i * 0.5, disc.cy() - i * 0.5, i, i),
+        theme::RESUME_FILL,
+    );
+}
+
 /// The profile chip's diameter: ONE control height with the tab pills and the circle-button
 /// family, so the focused chip's capsule — the avatar plus [`TAB_TRACK_PAD`] all round — is
 /// exactly the tab-bar track's band, and the two sit concentric on the top chrome line.
