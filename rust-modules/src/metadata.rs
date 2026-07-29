@@ -35,9 +35,12 @@ pub(crate) fn friendly_codec(codec: &str) -> String {
     }
 }
 
+/// One credit on the Cast & Crew shelf. PMS ships crew (`Director[]`/`Writer[]`) in the SAME shape
+/// as the actors (`Role[]`) minus the `role` attribute, so a crew credit is this same struct with
+/// its JOB in `role` — see [`crew_credits`].
 pub(crate) struct Cast {
-    pub(crate) tag: String,   // actor name
-    pub(crate) role: String,  // character
+    pub(crate) tag: String,   // person's name
+    pub(crate) role: String,  // character (an actor) — or the job, "Director"/"Writer" (crew)
     pub(crate) thumb: String, // headshot (often an external metadata-static.plex.tv URL)
 }
 
@@ -272,6 +275,12 @@ pub(crate) struct Detail {
     pub(crate) genres: Vec<String>,
     pub(crate) countries: Vec<String>,
     pub(crate) cast: Vec<Cast>,
+    /// Director[] tags, in server order — the hero's "Directed by …" line.
+    pub(crate) directors: Vec<String>,
+    /// Director[] + Writer[] as credits (each carrying its JOB in `role`), drawn on the Cast &
+    /// Crew shelf AFTER the actors. Kept apart from `cast` so "who acted" stays answerable; the
+    /// shelf addresses both through [`Detail::credit`].
+    pub(crate) crew: Vec<Cast>,
     pub(crate) audio: Vec<Stream>,
     pub(crate) subs: Vec<Stream>,
     pub(crate) seasons: Vec<Season>,   // shows only
@@ -282,6 +291,22 @@ pub(crate) struct Detail {
     pub(crate) markers: Vec<Marker>, // intro / credits segments (leaf items only)
 }
 
+impl Detail {
+    /// How many tiles the Cast & Crew shelf holds: every actor, then every crew credit.
+    pub(crate) fn credits_len(&self) -> usize {
+        self.cast.len() + self.crew.len()
+    }
+    /// The `i`th shelf credit in that one flat index space, so the screen's focus/geometry can
+    /// address a tile by position without re-deriving which vec it fell in.
+    pub(crate) fn credit(&self, i: usize) -> Option<&Cast> {
+        if i < self.cast.len() {
+            self.cast.get(i)
+        } else {
+            self.crew.get(i - self.cast.len())
+        }
+    }
+}
+
 // The one loaded detail item (the detail page shows a single item at a time).
 static mut CURRENT: Option<Detail> = None;
 
@@ -289,6 +314,15 @@ static mut CURRENT: Option<Detail> = None;
 pub(crate) fn current() -> Option<&'static Detail> {
     unsafe { (*addr_of!(CURRENT)).as_ref() }
 }
+/// TEST-ONLY installer for the loaded item. The UI's layout tests need a `Detail` on screen with
+/// no PMS behind them; every other writer of `CURRENT` goes through the landing mailbox, which is
+/// exactly the invariant those tests must not have to fake. Crate-global, so callers hold
+/// [`crate::testlock::serial`].
+#[cfg(test)]
+pub(crate) fn install_for_test(d: Option<Detail>) {
+    unsafe { *addr_of_mut!(CURRENT) = d }
+}
+
 /// drop the loaded detail (on leaving the detail page). Also supersedes any in-flight async
 /// fetch — otherwise a load requested on the way in lands after the page closed and silently
 /// repopulates CURRENT (and NOW, via `sync_now_playing`) behind whatever screen is now mounted.
@@ -405,6 +439,10 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
             .iter()
             .map(|r| Cast { tag: r.tag.clone(), role: r.role.clone(), thumb: r.thumb.clone() })
             .collect(),
+        // deduped like the shelf below it: a repeated Director[] row would otherwise read
+        // "Directed by Jane Doe, Jane Doe"
+        directors: dedup_tags(&it.director),
+        crew: crew_credits(&it),
         audio: Vec::new(),
         subs: Vec::new(),
         seasons: Vec::new(),
@@ -418,6 +456,47 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
     // episodes do, so load_detail backfills a show's streams from its first episode).
     parse_streams(&it, &mut d);
     Some(d)
+}
+
+/// The crew jobs we surface, in the order they appear on the shelf. PMS names the job by the
+/// ARRAY the person arrived in (`Director[]`/`Writer[]`) — the rows themselves carry no job
+/// attribute, and (verified live) no `role` either, so this is where the sub-caption comes from.
+const CREW_JOBS: [&str; 2] = ["Director", "Writer"];
+
+/// The named tags of one crew array, in server order, without the blanks or the repeats.
+fn dedup_tags(tags: &[crate::plex::Tag]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags.iter().filter(|t| !t.tag.is_empty()) {
+        if !out.iter().any(|s| s == &t.tag) {
+            out.push(t.tag.clone());
+        }
+    }
+    out
+}
+
+/// Fold `Director[]` + `Writer[]` into the credits the Cast & Crew shelf draws after the actors.
+///
+/// One person credited twice collapses into ONE tile: two identical headshots side by side read as
+/// a duplication bug, not as two credits. Across the arrays that means the writer-director's tile
+/// reads "Director, Writer"; WITHIN one array (PMS does emit a repeated tag row after an agent
+/// merge) the job is already there and is not repeated — "Director, Director" is nobody's credit.
+/// Nameless rows are dropped: a tile with no name and (often) no headshot is a blank circle the
+/// focus can still land on.
+fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
+    let mut out: Vec<Cast> = Vec::new();
+    for (job, list) in CREW_JOBS.iter().zip([&it.director, &it.writer]) {
+        for t in list.iter().filter(|t| !t.tag.is_empty()) {
+            match out.iter_mut().find(|c| c.tag == t.tag) {
+                Some(c) if !c.role.ends_with(job) => {
+                    c.role.push_str(", ");
+                    c.role.push_str(job);
+                }
+                Some(_) => {}
+                None => out.push(Cast { tag: t.tag.clone(), role: job.to_string(), thumb: t.thumb.clone() }),
+            }
+        }
+    }
+    out
 }
 
 /// Convert a part's Stream[] into (audio, subs, video_fps) — the ONE plex::Stream → Stream
@@ -742,8 +821,8 @@ fn fetch_full(rk: &str) -> Option<Detail> {
     }
     d.related = fetch_related(rk);
     crate::player::log(&format!(
-        "detail: rk={} '{}' show={} genres={} cast={} seasons={} eps={} related={} audio={} subs={} ms={}",
-        d.rk, d.title, d.is_show, d.genres.len(), d.cast.len(), d.seasons.len(), d.episodes.len(),
+        "detail: rk={} '{}' show={} genres={} cast={} crew={} seasons={} eps={} related={} audio={} subs={} ms={}",
+        d.rk, d.title, d.is_show, d.genres.len(), d.cast.len(), d.crew.len(), d.seasons.len(), d.episodes.len(),
         d.related.len(), d.audio.len(), d.subs.len(), t0.elapsed().as_millis()
     ));
     Some(d)
@@ -1342,5 +1421,68 @@ mod tests {
         // viewedLeafCount can lead leafCount right after a scrobble of a season being re-indexed;
         // more-watched-than-exists is still watched, never a negative remainder.
         assert!(season(10, 11).watched(), "an over-count is still watched");
+    }
+    // ---- credits (Cast & Crew) ----------------------------------------------------------------
+
+    /// The crew fold, parsed from the shape PMS actually sends (verified live 2026-07-29): the
+    /// `Director[]`/`Writer[]` rows are `Role[]` rows MINUS the `role` attribute, so the job — the
+    /// only thing left to caption a crew tile with — exists nowhere but the array name.
+    ///
+    /// Deliberately driven through serde rather than a hand-built `Metadata`, because the parse is
+    /// half the claim: if the DTO ever stops carrying `Director[]`, the tiles vanish silently.
+    #[test]
+    fn crew_credits_fold_both_job_arrays_into_one_deduplicated_shelf_list() {
+        let body = br#"{
+            "Director": [
+                { "id": 161, "filter": "director=161", "tag": "Jane Doe",
+                  "tagKey": "5d77682a", "count": 3,
+                  "thumb": "https://metadata-static.plex.tv/c/people/c.jpg" },
+                { "id": 162, "filter": "director=162", "tag": "" }
+            ],
+            "Writer": [
+                { "id": 163, "filter": "writer=163", "tag": "Jane Doe",
+                  "tagKey": "5d77682a", "count": 3,
+                  "thumb": "https://metadata-static.plex.tv/c/people/c.jpg" },
+                { "id": 164, "filter": "writer=164", "tag": "Sam Scribe" }
+            ]
+        }"#;
+        let it: crate::plex::Metadata = serde_json::from_slice(body).expect("the live crew shape parses");
+        assert_eq!(it.director.len(), 2, "Director[] is on the DTO");
+        assert_eq!(it.writer.len(), 2, "and so is Writer[]");
+        assert!(it.director[0].role.is_empty(), "crew rows carry no role — the JOB is the caption");
+
+        let crew = crew_credits(&it);
+        let got: Vec<(&str, &str)> = crew.iter().map(|c| (c.tag.as_str(), c.role.as_str())).collect();
+        assert_eq!(
+            got,
+            [("Jane Doe", "Director, Writer"), ("Sam Scribe", "Writer")],
+            "directors first, and the writer-director is ONE tile listing both jobs — not two \
+             identical headshots side by side"
+        );
+        assert_eq!(crew[0].thumb, "https://metadata-static.plex.tv/c/people/c.jpg", "the headshot rides along");
+        assert!(crew[1].thumb.is_empty(), "a crew member with no headshot is still a credit");
+    }
+
+    /// The shelf's flat index space: the screen addresses one row of tiles, so `credit(i)` must run
+    /// the actors out first and then the crew, and refuse an index past the end rather than panic —
+    /// the focus column outlives the item it was set on (a Related jump reloads underneath it).
+    #[test]
+    fn the_credit_index_space_runs_every_actor_then_every_crew_member() {
+        let person = |t: &str, r: &str| Cast { tag: t.to_string(), role: r.to_string(), thumb: String::new() };
+        let d = Detail {
+            cast: vec![person("Actor A", "Hero"), person("Actor B", "Villain")],
+            crew: vec![person("Jane Doe", "Director")],
+            ..Default::default()
+        };
+        assert_eq!(d.credits_len(), 3, "the shelf is as long as the two lists together");
+        let seen: Vec<(&str, &str)> =
+            (0..d.credits_len()).filter_map(|i| d.credit(i)).map(|c| (c.tag.as_str(), c.role.as_str())).collect();
+        assert_eq!(seen, [("Actor A", "Hero"), ("Actor B", "Villain"), ("Jane Doe", "Director")]);
+        assert!(d.credit(3).is_none(), "one past the end is None, not a panic");
+        assert!(d.credit(usize::MAX).is_none(), "and so is a wildly stale focus column");
+
+        let crew_only = Detail { crew: vec![person("Jane Doe", "Director")], ..Default::default() };
+        assert_eq!(crew_only.credits_len(), 1, "a crew-only item still fills the shelf");
+        assert_eq!(crew_only.credit(0).map(|c| c.tag.as_str()), Some("Jane Doe"), "and its first tile is the crew");
     }
 }

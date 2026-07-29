@@ -103,6 +103,10 @@ const BTN_RESTART: c_int = 1;
 const PW: f32 = 168.0;
 const CGAP: f32 = 20.0;
 const CD: f32 = 60.0; // circle button diameter
+/// The hero text column's width — the synopsis wrap AND every fine-print line under it (the
+/// date/runtime pair, the "Directed by" credit) share it, so nothing in the block can grow past
+/// the right-aligned "Starring" line.
+const HERO_TEXT_W: f32 = 900.0;
 
 // Below-the-hero content is ONE vertical scroll of stacked blocks, driven by the shared retui
 // `ScrollColumn` (`impl Column for DetailView`): its `child_top` COMPUTES each block's pre-scroll top
@@ -285,7 +289,7 @@ fn sections() -> ([c_int; 6], usize) {
         // Cast & Crew (credits) before Related — the flow order is the push order here (block_h /
         // draw_child / move_focus all key off the section id, not its position, so this is the one
         // place ordering lives).
-        if !d.cast.is_empty() {
+        if d.credits_len() > 0 {
             v[n] = 4;
             n += 1;
         }
@@ -304,7 +308,7 @@ fn n_items(section: c_int) -> c_int {
         1 => metadata::current().map(|d| d.seasons.len()).unwrap_or(0) as c_int,
         2 => metadata::current().map(|d| d.episodes.len()).unwrap_or(0) as c_int,
         3 => metadata::current().map(|d| d.related.len()).unwrap_or(0) as c_int,
-        4 => metadata::current().map(|d| d.cast.len()).unwrap_or(0) as c_int,
+        4 => metadata::current().map(|d| d.credits_len()).unwrap_or(0) as c_int, // actors + crew
         5 => 4, // About: card + Information + Languages + Accessibility (selection moves between them)
         _ => 0,
     }
@@ -652,21 +656,46 @@ fn hero_synopsis(summary: &str) -> TextView<'_> {
     TextView::new(summary, theme::size::MICRO, theme::TEXT_SECONDARY).leading(29.0).max_lines(4)
 }
 
+/// The loaded item's director credits, or None when the server sent no `Director[]` — the ONE
+/// rule for whether the hero carries a "Directed by …" line. The flow (`hero_layout`) reserves the
+/// line's band on it and the paint (`draw_hero`) formats it, so the two cannot disagree. Borrowed
+/// rather than formatted: `hero_layout` runs twice a frame and has no business allocating.
+fn directors() -> Option<&'static [String]> {
+    metadata::current().map(|d| d.directors.as_slice()).filter(|v| !v.is_empty())
+}
+
 /// The hero text column's y-chain — title bottom (566) → meta (+36) → synopsis (+46, MEASURED) →
-/// date (+20) → buttons (+46) — computed ONCE for both the painter (draw_hero) and the flow
-/// (update()'s column.top), so the pixels and the scroll math cannot desync. A 4-line synopsis
-/// used to push the Play pill to within 2px of the season tabs; the flow now keeps one
-/// standardized gap (`BTN_CONTENT_GAP`) under the buttons for every title.
-/// Returns (meta_y, syn_y, date_y, btn_y).
-fn hero_layout(m: Option<&PmsMovie>) -> (f32, f32, f32, f32) {
+/// date (+20) → "Directed by" (+`space::LG`, only when there is one) → buttons (+46) — computed
+/// ONCE for both the painter (draw_hero) and the flow (update()'s column.top), so the pixels and
+/// the scroll math cannot desync. A 4-line synopsis used to push the Play pill to within 2px of
+/// the season tabs; the flow now keeps one standardized gap (`BTN_CONTENT_GAP`) under the buttons
+/// for every title.
+/// Returns (meta_y, syn_y, date_y, btn_y, dir_y) — `dir_y` is APPENDED rather than slotted into
+/// flow order so the existing element indices keep their meaning (`update()` reads `.3` for the
+/// button row), and it is only meaningful when [`directors`] is Some.
+fn hero_layout(m: Option<&PmsMovie>) -> (f32, f32, f32, f32, f32) {
     let d = metadata::current();
     let owned = if d.is_none() { m.map(|m| m.summary.clone()).unwrap_or_default() } else { String::new() };
     let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&owned);
-    let syn_h = if summary.is_empty() { 0.0 } else { hero_synopsis(summary).measure_h(900.0) };
+    let syn_h = if summary.is_empty() { 0.0 } else { hero_synopsis(summary).measure_h(HERO_TEXT_W) };
+    hero_chain(syn_h, directors().is_some())
+}
+
+/// The pure arithmetic half of [`hero_layout`] — everything except the synopsis measurement, which
+/// is the one part that needs a font. Split out so the flow-vs-paint contract this chain exists to
+/// hold (above all the CONDITIONAL "Directed by" band) is host-testable; measuring is not, since
+/// the host suite opens no SDL_ttf.
+fn hero_chain(syn_h: f32, has_director: bool) -> (f32, f32, f32, f32, f32) {
     let meta_y = 566.0 + 36.0;
     let syn_y = meta_y + 46.0;
     let date_y = syn_y + syn_h.max(34.0) + 20.0;
-    (meta_y, syn_y, date_y, date_y + 46.0)
+    // The credit line sits one air rung under the date/runtime line — a PITCH like its siblings
+    // above (these ys are line tops, so a `space::LG` step leaves ~10px of ink gap at CAPTION,
+    // which is the "two separate fine-print statements" reading, not a paragraph). It takes NO
+    // space at all on an item without directors — the button row keeps its old y there.
+    let dir_y = date_y + theme::space::LG;
+    let last_y = if has_director { dir_y } else { date_y };
+    (meta_y, syn_y, date_y, last_y + 46.0, dir_y)
 }
 
 pub(crate) fn update(dt: f32) {
@@ -931,7 +960,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         }
     }
     // the whole y-chain below comes from the ONE shared layout (also feeds the scroll flow)
-    let (meta_y, syn_y, date_y, btn_y) = hero_layout(m);
+    let (meta_y, syn_y, date_y, btn_y, dir_y) = hero_layout(m);
     if let Ok(mc) = CString::new(parts.join("   \u{b7}   ")) {
         p.text(mc.as_ptr(), tx, meta_y, theme::size::BODY, d_a, 0, 0);
     }
@@ -941,7 +970,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     let summary_owned = if d.is_none() { m.map(|m| m.summary.clone()).unwrap_or_default() } else { String::new() };
     let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&summary_owned);
     if !summary.is_empty() {
-        hero_synopsis(summary).draw(p, Rect::new(tx, syn_y, 900.0, 0.0));
+        hero_synopsis(summary).draw(p, Rect::new(tx, syn_y, HERO_TEXT_W, 0.0));
     }
 
     // ---- date · runtime ----
@@ -955,6 +984,23 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         }
         if let Ok(ic) = CString::new(info) {
             p.text(ic.as_ptr(), tx, date_y, theme::size::CAPTION, dim, 0, 0);
+        }
+    }
+
+    // ---- "Directed by …" — the crew credit the reference puts in the metadata block. A step
+    // brighter than the date/runtime fine print above it (these are names, not filing data), and
+    // elided to the hero text column so a five-director title can't run under the Starring line.
+    // Its band is reserved by hero_layout, so an item without directors moves nothing. ----
+    if let Some(names) = directors() {
+        let line = crate::text::elide(
+            &format!("Directed by {}", names.join(", ")),
+            HERO_TEXT_W,
+            theme::size::CAPTION,
+            0,
+            false,
+        );
+        if let Ok(dc) = CString::new(line) {
+            p.text(dc.as_ptr(), tx, dir_y, theme::size::CAPTION, d_a, 0, 0);
         }
     }
 
@@ -1268,12 +1314,18 @@ fn draw_related(p: Painter) {
 /// `RowStyle::CAST`): spring focus-magnification + animated scroll + glow ring, exactly like the
 /// poster/Related shelves. Cast shows every member's name/role (a poster row titles only the
 /// focused tile), so the labels ride the `extra` hook.
+///
+/// The row is the item's whole CREDIT list — actors first, then the crew the server sent
+/// (`metadata::Detail::credit`), which is what finally makes the heading true. The sub-caption is
+/// the character for an actor and the job ("Director", "Writer") for a crew member, because crew
+/// rows carry no `role` on the wire; both ride the same `cast_label`.
 fn draw_cast(p: Painter) {
     let d = match metadata::current() {
         Some(d) => d,
         None => return,
     };
-    if d.cast.is_empty() {
+    let n = d.credits_len();
+    if n == 0 {
         return;
     }
     let cast_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
@@ -1284,21 +1336,30 @@ fn draw_cast(p: Painter) {
     draw_strip(
         p,
         &view().cast,
-        d.cast.len(),
+        n,
         focus_col,
         row_y,
         (CAST_D, CAST_D),
         CAST_SLOT,
         &RowStyle::CAST,
         SCR_W + CAST_D,
-        |i| Art::Thumb { key: &d.cast[i].thumb, res: (300, 300) },
+        // Art::Person, not Thumb: plenty of crew (and some actors) have no headshot on the
+        // server, and the person glyph says "no photo" where a bare placeholder disc said
+        // "broken image". The absolute metadata-static.plex.tv URL rides the SAME server-side
+        // /photo/:/transcode fetch the actor headshots already use.
+        |i| Art::Person { key: d.credit(i).map_or("", |c| c.thumb.as_str()), res: (300, 300) },
         |_| None,
-        |pc, i, x, focused| cast_label(pc, &d.cast[i].tag, &d.cast[i].role, x + CAST_D * 0.5, row_y, focused),
+        |pc, i, x, focused| {
+            if let Some(c) = d.credit(i) {
+                cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, focused);
+            }
+        },
     );
 }
 
-/// A cast member's name + role, centred under the headshot and elided to the per-member slot (long
-/// names like "Benedict Cumberbatch" would otherwise run into the neighbour at couch-legible sizes).
+/// A credit's name + sub-caption (an actor's character, or a crew member's job), centred under the
+/// headshot and elided to the per-member slot (long names like "Benedict Cumberbatch" would
+/// otherwise run into the neighbour at couch-legible sizes).
 fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: bool) {
     let name_c = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
     let budget = CAST_SLOT - 12.0;
@@ -1306,7 +1367,9 @@ fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: 
         p.text(nc.as_ptr(), cx, row_y + CAST_D + 26.0, theme::size::LABEL, name_c, 1, if focused { 1 } else { 0 });
     }
     if !role.is_empty() {
-        if let Ok(rc) = CString::new(crate::text::elide(role, budget, theme::size::CAPTION, 1, false)) {
+        // measured at the weight it is DRAWN (regular): measuring bold cut it a word early, which
+        // the longer crew captions ("Director, Writer") hit far more often than a character name
+        if let Ok(rc) = CString::new(crate::text::elide(role, budget, theme::size::CAPTION, 0, false)) {
             p.text(rc.as_ptr(), cx, row_y + CAST_D + 58.0, theme::size::CAPTION, theme::TEXT_TERTIARY, 1, 0);
         }
     }
@@ -1801,30 +1864,60 @@ fn draw_about(p: Painter) {
     }
 }
 
-/// "YYYY-MM-DD" -> "D Mon YYYY"; falls back to the year, then empty
-fn pretty_date(iso: &str, year: i64) -> String {
-    let parts: Vec<&str> = iso.split('-').collect();
-    if parts.len() == 3 {
-        if let (Ok(y), Ok(mo), Ok(da)) =
-            (parts[0].parse::<i64>(), parts[1].parse::<usize>(), parts[2].parse::<i64>())
-        {
-            const MON: [&str; 12] =
-                ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-            if (1..=12).contains(&mo) {
-                return format!("{da} {} {y}", MON[mo - 1]);
-            }
-        }
-    }
-    if year > 0 {
-        year.to_string()
-    } else {
-        String::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn item(directors: &[&str]) -> metadata::Detail {
+        metadata::Detail {
+            rk: "rk-1".to_string(),
+            title: "An Item".to_string(),
+            directors: directors.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+    fn credit(name: &str, job: &str) -> metadata::Cast {
+        metadata::Cast { tag: name.to_string(), role: job.to_string(), thumb: String::new() }
+    }
+
+    /// `hero_chain` is the ONE y-chain the hero's paint and the below-hero scroll flow share
+    /// (`update()` reads `.3` for the button row). The "Directed by" line therefore has to reserve
+    /// its band in the chain itself: drawing it without doing so would put a credit line under the
+    /// Play pill, and reserving it unconditionally would leave a 40px hole on every item PMS sent
+    /// no `Director[]` for — which is most TV shows.
+    #[test]
+    fn the_directed_by_band_is_reserved_when_there_is_a_line_and_never_otherwise() {
+        // driven at both a short and a tall synopsis: the band must be the ONLY difference
+        for syn_h in [0.0f32, 116.0] {
+            let (_, _, date_y, btn_y, _) = hero_chain(syn_h, false);
+            assert_eq!(btn_y, date_y + 46.0, "no directors: the button row keeps the y it always had");
+
+            let (_, _, date2, btn2, dir_y) = hero_chain(syn_h, true);
+            assert_eq!(date2, date_y, "nothing ABOVE the credit line moves");
+            assert_eq!(dir_y, date_y + theme::space::LG, "the credit sits one air rung under the date line");
+            assert_eq!(btn2, dir_y + 46.0, "and the buttons clear the line that is now there");
+            assert!(btn2 > btn_y, "the reserved band is real space, not an overlap");
+        }
+    }
+
+    /// The shelf is the whole credit list, so an item with crew but no actors still gets one — the
+    /// section gate and the item count must agree on that or the page offers a focus stop it draws
+    /// nothing into.
+    #[test]
+    fn a_crew_only_item_still_gets_the_cast_and_crew_shelf() {
+        let _serial = crate::testlock::serial();
+        let mut d = item(&["Jane Doe"]);
+        d.crew = vec![credit("Jane Doe", "Director, Writer")];
+        metadata::install_for_test(Some(d));
+
+        let (secs, n) = sections();
+        assert!(secs[..n].contains(&4), "section 4 is present for a crew-only item");
+        assert_eq!(n_items(4), 1, "and it holds the one credit");
+
+        metadata::install_for_test(None);
+        assert!(!sections().0[..sections().1].contains(&4), "with nothing loaded there is no shelf");
+    }
+
     use crate::metadata::{Detail, Episode};
 
     /// Install `d` as the loaded item and park hero focus on `col`. Both statics are crate-wide
@@ -1981,5 +2074,26 @@ mod tests {
         assert_eq!(focus(), 0, "the pill holds index 0 through a set change");
 
         mount(None, 0);
+    }
+}
+
+/// "YYYY-MM-DD" -> "D Mon YYYY"; falls back to the year, then empty
+fn pretty_date(iso: &str, year: i64) -> String {
+    let parts: Vec<&str> = iso.split('-').collect();
+    if parts.len() == 3 {
+        if let (Ok(y), Ok(mo), Ok(da)) =
+            (parts[0].parse::<i64>(), parts[1].parse::<usize>(), parts[2].parse::<i64>())
+        {
+            const MON: [&str; 12] =
+                ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            if (1..=12).contains(&mo) {
+                return format!("{da} {} {y}", MON[mo - 1]);
+            }
+        }
+    }
+    if year > 0 {
+        year.to_string()
+    } else {
+        String::new()
     }
 }
