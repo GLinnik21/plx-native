@@ -11,7 +11,7 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, ControlStyle};
+use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, ControlStyle, TabNote, TabPill};
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -432,19 +432,53 @@ pub(crate) fn move_focus(sym: c_int) {
     }
 }
 
-/// ONE source of truth for the season-tab strip's layout: per tab, its index, content-space
-/// label x, label width, and the label CString — the draw pass and the focus/scroll geometry
-/// both walk this, so their x-advance can't drift. A label that can't be a CString (interior
-/// NUL — never in practice) is skipped entirely (not drawn, no advance).
-fn tabs_layout(d: &crate::metadata::Detail) -> Vec<(usize, f32, f32, CString)> {
+/// ONE season tab's resolved layout: its index, content-space label x, the tab's CONTENT width
+/// (label plus whatever trailing note it carries), the label CString and the note's own pieces.
+struct TabLay {
+    i: usize,
+    x: f32,
+    w: f32,
+    label: CString,
+    /// the season's episode count, pre-rendered; empty when the tab shows no count
+    count: CString,
+    /// every episode of the season is watched → the note is a tick, not a count
+    done: bool,
+}
+impl TabLay {
+    /// This tab's trailing note. Borrows `count`, so it must not outlive the layout entry.
+    fn note(&self) -> TabNote {
+        if self.done {
+            TabNote::Done
+        } else if self.count.as_bytes().is_empty() {
+            TabNote::None
+        } else {
+            TabNote::Count(self.count.as_ptr())
+        }
+    }
+}
+
+/// ONE source of truth for the season-tab strip's layout — the draw pass and the focus/scroll
+/// geometry both walk this, so their x-advance can't drift. A label that can't be a CString
+/// (interior NUL — never in practice) is skipped entirely (not drawn, no advance).
+///
+/// Each tab carries a quiet second fact past its name: how many episodes the season holds, or a
+/// tick once they are all watched (`metadata::Season::watched` is the ONE rule for that, shared
+/// with the item-level watched state). A season the server sent no `leafCount` for shows neither.
+fn tabs_layout(d: &crate::metadata::Detail) -> Vec<TabLay> {
     let mut x = MARGIN_X;
     let mut out = Vec::with_capacity(d.seasons.len());
     for (i, s) in d.seasons.iter().enumerate() {
         let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
         if let Ok(lc) = CString::new(label) {
-            let w = crate::text::text_width(lc.as_ptr(), theme::size::BODY, 1);
-            out.push((i, x, w, lc));
-            x += w + TAB_ADVANCE;
+            let count = if s.watched() || s.leaf_count <= 0 {
+                CString::default()
+            } else {
+                CString::new(s.leaf_count.to_string()).unwrap_or_default()
+            };
+            let mut lay = TabLay { i, x, w: 0.0, label: lc, count, done: s.watched() };
+            lay.w = crate::text::text_width(lay.label.as_ptr(), theme::size::BODY, 1) + TabPill::note_w(lay.note());
+            x += lay.w + TAB_ADVANCE;
+            out.push(lay);
         }
     }
     out
@@ -458,11 +492,11 @@ fn tab_focus_geom() -> (f32, f32) {
     };
     let col = view().col.max(0) as usize;
     let mut x_end = MARGIN_X;
-    for (i, x, w, _lc) in tabs_layout(d) {
-        if i == col {
-            return (x, w);
+    for lay in tabs_layout(d) {
+        if lay.i == col {
+            return (lay.x, lay.w);
         }
-        x_end = x + w + TAB_ADVANCE;
+        x_end = lay.x + lay.w + TAB_ADVANCE;
     }
     (x_end, 0.0)
 }
@@ -902,16 +936,18 @@ fn draw_tabs(p: Painter) {
     // segmented control: the *selected* season carries a subtle pill (bright ACCENT while the tab row
     // is focused); non-selected seasons are plain dim text. (TabPill handles the state → look.)
     let e = Env::inert();
-    for (i, x, w, lc) in tabs_layout(d) {
-        let selected = i == d.cur_season;
-        let focused = sec == 1 && col == i as c_int;
-        // pill sized to the (bold) label — text sits at x, pill padded ±18, tabs advance by label
-        // width + TAB_ADVANCE (see tabs_layout). The pill fills the block height (TAB_ROW_H == the
-        // hero-button CD), so tabs and buttons read as one control family.
-        if on_axis(x - 18.0 - sx, w + 36.0, SCR_W, 0.0) {
-            crate::ui::widgets::TabPill::new(lc.as_ptr(), theme::size::BODY, Rect::new(x - 18.0, tab_y, w + 36.0, TAB_ROW_H))
+    for lay in tabs_layout(d) {
+        let selected = lay.i == d.cur_season;
+        let focused = sec == 1 && col == lay.i as c_int;
+        // pill sized to the (bold) label plus its trailing note — content sits at x, pill padded
+        // ±18, tabs advance by that content width + TAB_ADVANCE (see tabs_layout). The pill fills
+        // the block height (TAB_ROW_H == the hero-button CD), so tabs and buttons read as one
+        // control family.
+        if on_axis(lay.x - 18.0 - sx, lay.w + 36.0, SCR_W, 0.0) {
+            TabPill::new(lay.label.as_ptr(), theme::size::BODY, Rect::new(lay.x - 18.0, tab_y, lay.w + 36.0, TAB_ROW_H))
                 .segment(selected)
                 .focused(focused)
+                .note(lay.note())
                 .draw(&e, pt);
         }
     }
