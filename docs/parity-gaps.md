@@ -154,7 +154,7 @@ Ranked. Each is one file, roughly under 150 lines.
 | 3 | Raise/scroll `MAX_TABS` → libraries 5+ become reachable | `ui/widgets.rs:511` |
 | 4 | Play-from-Start + Play→Resume relabel on the detail hero | `ui/detail.rs:833` |
 | 5 | Keep `Chapter[]` on the episode-play path → the Chapters tab appears | `metadata.rs`, `ui/chapters_panel.rs` |
-| 6 | Chapter + intro/credits ticks on the scrubber rail | `ui/player_hud.rs:412` |
+| 6 | ~~Chapter~~ + intro/credits ticks on the scrubber rail — **chapter ticks BUILT then REMOVED at the owner's request (taste, not a defect); do not re-add. Intro/credits bands shipped and stay.** | `ui/player_hud.rs:412` |
 | 7 | Surface `Director[]`/`Writer[]` — already parsed, thrown away | `ui/detail.rs` |
 | 8 | Read back the server's per-part stream selection | `plex/models.rs`, `route.rs` |
 | 9 | Add bitrate/width/height/`videoResolution` to the DTO (unblocks the whole ladder) | `plex/models.rs` |
@@ -358,6 +358,28 @@ Corrections to the gap list, all verified live against the PMS on 2026-07-29 unl
 - **Watchlist** and everything Discover — plex.tv, not PMS, so it is out of this spec by construction.
 - **BIF scrub thumbnails** — `GET /library/sections/{id}/indexes` appears; the per-part index path the
   player would actually stream is not described.
+
+## Superseded by owner decisions
+
+This report is a dated audit snapshot; its findings describe the state on 2026-07-29 and are left
+intact as a record. Where a later owner decision overrides one, it is noted here rather than by
+rewriting the finding — but read this list before acting on the tables above, because several
+entries would otherwise be rebuilt.
+
+- **Chapter ticks on the scrubber rail (cheap win #6) — removed after shipping.** Owner: *"I don't
+  like chapters markers in HUD. Just remove it."* A taste call, not a defect. The intro/credits
+  marker bands are a different feature (they belong to Skip Intro) and remain. Do not re-add the
+  ticks; `ui/player_hud.rs` carries the same warning at the call site.
+- **Season tab episode counts — removed after shipping.** Owner wants the fully-watched tick only.
+- **Rating provider marks are client-side assets.** §5d's advice stands, but do not go looking for
+  them on the server: probed three ways (mediaTagPrefix 404s while sibling categories serve PNGs,
+  Media-Flags.bundle has no rating category, and the Plex web bundle imports them as SVG
+  components). Also: five states, not four — `certified` joins ripe/rotten/upright/spilled.
+- **Person bio IS available**, contradicting §5b's "not available from the local server". True of
+  PMS, but `GET https://discover.provider.plex.tv/library/people/{tagKey}` serves `summary`,
+  `bornAt`, `birthPlace`, `knownFor`, `External[]` socials and `CreditType[]` — **only when
+  `X-Plex-Product` and `X-Plex-Client-Identifier` headers are sent**, which is why the first probe
+  reported 404. Needs DNS+TLS, so it goes through `net.rs` (libcurl), never `stream.rs`.
 
 ## Appendix — full inventory
 
