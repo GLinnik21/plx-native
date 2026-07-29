@@ -51,7 +51,7 @@ const SCRIM_KNEE_A: f32 = 0.40;
 const SCRIM_IN: f32 = 56.0;
 /// Row pitch: card + the focused under-label band (title + caption) before the next row.
 const PITCH: f32 = CARD_H + 96.0;
-use crate::ui::widgets::{MAX_TABS, TOP_BAR_Y}; // the shared top-bar chrome lives in widgets
+use crate::ui::widgets::TOP_BAR_Y; // the shared top-bar chrome lives in widgets
 
 // ---- screen state (main-thread statics, same discipline as home.rs) -------------------------
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +126,16 @@ fn menu() -> Menu {
 fn area() -> Area {
     unsafe { addr_of!(AREA).read() }
 }
+/// The tab pill holding remote focus, or -1. ONE source for it: the draw pass and the strip's
+/// scroll step must agree on which pill to keep on screen, or the row chases a pill it isn't
+/// highlighting.
+fn tab_focus() -> c_int {
+    if area() == Area::Tabs && !menu_open() {
+        unsafe { addr_of!(TAB_F).read() as c_int }
+    } else {
+        -1
+    }
+}
 
 // ---- derived grid facts ---------------------------------------------------------------------
 fn total() -> usize {
@@ -183,6 +193,10 @@ pub(crate) fn enter(sec: usize) {
     crate::browse::set_cur(sec.min(n - 1));
     crate::browse::kick_letters();
     restore_view();
+    // with more libraries than fit the row, a section past the visible pills would open with its
+    // own tab off screen (the `/tmp/plxnative-library=N` boot, or a restored far-right section).
+    // Put it on screen once, here, rather than dragging the row every frame.
+    crate::ui::widgets::tab_row_reveal(crate::browse::cur() + 1);
     unsafe {
         AREA = Area::Grid;
         MENU = Menu::None;
@@ -308,6 +322,10 @@ pub(crate) fn update(dt: f32) {
         // remember the view for re-entry (state amnesia is the official app's #2 complaint)
         crate::browse::save_view(focus_idx(), (*addr_of!(SCROLL)).pos);
     }
+    // the shared tab strip's horizontal scroll — with more libraries than fit the row, this is
+    // what reaches the far pills. Drawn from `.pos`; the draw pass runs at dt=0. Off the tab row
+    // it tracks THIS section's pill, which `enter` already put on screen, so it holds still.
+    crate::ui::widgets::tab_row_update(crate::browse::cur() as c_int + 1, tab_focus(), dt);
     if menu_open() {
         pop().update(dt);
         let ph = panel_rect().h;
@@ -338,8 +356,9 @@ pub(crate) fn move_focus(sym: c_uint) {
     unsafe {
         match area() {
             Area::Tabs => {
-                // clamp to what the row can DRAW — focus must never walk onto a truncated pill
-                let n = (1 + crate::browse::section_count()).min(MAX_TABS);
+                // Home + every section: the row scrolls the far pills into view, so focus may
+                // walk to the last one (it used to stop at a hard cap of 4 sections)
+                let n = crate::ui::widgets::tab_count();
                 if sym == SDLK_LEFT && TAB_F > 0 {
                     TAB_F -= 1;
                 } else if sym == SDLK_RIGHT && TAB_F + 1 < n {
@@ -890,8 +909,7 @@ pub(crate) fn draw() {
     // never unfurls here — expand 0.
     let cd = crate::ui::widgets::CHIP_D;
     crate::ui::widgets::profile_chip(p, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
-    let tab_focus = if area() == Area::Tabs && !menu_open() { (unsafe { addr_of!(TAB_F).read() }) as c_int } else { -1 };
-    crate::ui::widgets::draw_tab_row(p, crate::browse::cur() as c_int + 1, tab_focus);
+    crate::ui::widgets::draw_tab_row(p, crate::browse::cur() as c_int + 1, tab_focus());
 
     let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && unsafe { addr_of!(TOOL_F).read() } == i;
     let unw = crate::browse::unwatched();

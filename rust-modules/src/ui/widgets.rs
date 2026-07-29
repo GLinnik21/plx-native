@@ -506,9 +506,15 @@ impl View for TabPill {
 // sections>) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
 // Library screen so they read as one global tab bar; the pill rects live here so both
 // screens' pointer paths share [`tab_pill_at`]. ----
-/// Home + up to 4 sections. Focus walking and the rects clamp to this — a pill that can't be
-/// drawn must never be focusable.
-pub(crate) const MAX_TABS: usize = 5;
+/// Home + **every** discovered library section. Focus walking clamps to this — the invariant is
+/// still "a pill that can't be drawn must never be focusable", but it now holds by construction
+/// rather than by a cap: the strip scrolls horizontally inside its track (see
+/// [`tab_scroll_target`]), so every pill can be brought into view and every pill is focusable.
+/// This used to be a hard `MAX_TABS = 5`, which left a fifth `movie`/`show` section unreachable
+/// from the UI even though `browse` discovers it and the grid browses it fine.
+pub(crate) fn tab_count() -> usize {
+    1 + crate::browse::section_count()
+}
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 pub(crate) const TOP_BAR_Y: f32 = 44.0;
 /// SAME element, SAME geometry as the detail season tabs (user directive): one control height
@@ -522,28 +528,59 @@ const TAB_PILL_PAD: f32 = 18.0;
 /// selected Home pill. The focused [`profile_chip`] wraps itself in the same inset, which is what
 /// makes its capsule and this track one band.
 pub(crate) const TAB_TRACK_PAD: f32 = 8.0;
-static mut PILL_RECTS: [Rect; MAX_TABS] = [Rect::new(0.0, 0.0, 0.0, 0.0); MAX_TABS];
-static mut N_PILLS: usize = 0;
+/// Inter-pill air ≈ the season tabs' rhythm (their `TAB_ADVANCE` 52 minus the 2×18 pad the pills
+/// here already carry — pill edge to pill edge reads the same). Doubles as the scroll-into-view
+/// context margin, exactly as the season tabs use their advance.
+const TAB_GAP: f32 = 16.0;
+/// How wide the pill strip may grow before it starts scrolling. The row stays CENTERED, but it
+/// must never reach the profile chip (a focus stop of its own at `MARGIN_X`), so the viewport is
+/// the screen less a symmetric chip-clearing margin, less the track's own inset on both ends.
+const TAB_SIDE_CLEAR: f32 = crate::ui::consts::MARGIN_X + CHIP_D + theme::space::MD;
+const TAB_VIEW_MAX: f32 = crate::ui::consts::SCR_W - 2.0 * (TAB_SIDE_CLEAR + TAB_TRACK_PAD);
+/// The strip's scroll stiffness. The detail page's season-tab row springs at the same 240 — same
+/// control, same overflow problem, so the two rows must move alike (the user directive that keeps
+/// the tab pills and the season tabs in step covers their motion, not just their geometry).
+const K_TAB_SCROLL: f32 = 240.0;
+/// The VISIBLE part of each pill as drawn this frame (scroll folded in, then intersected with the
+/// strip's viewport), one entry per pill — never a fixed array's worth, or the hit test would stop
+/// where the old cap did. Storing the *clipped* rect is what keeps the hit test and the scissor
+/// telling the same story: a pill scrolled out of the track has zero width here, so it is neither
+/// drawn nor clickable, and a half-visible one is clickable exactly across the half you can see.
+static mut PILL_RECTS: Vec<Rect> = Vec::new();
+/// Horizontal scroll of the strip inside its track; 0 whenever the whole row fits.
+static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
 // label + width cache keyed on browse::sections_gen(): rebuilding the CStrings and
 // re-measuring every frame — on Home's hot path too — was a review-confirmed waste
 static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
 
-/// The tab pill under the pointer (0 = Home, 1.. = sections), or None.
+/// The tab pill under the pointer (0 = Home, 1.. = sections), or None. Matches against the
+/// CLIPPED rects, so only the pill area you can actually see is clickable.
+///
+/// One consequence worth knowing: these rects are the last DRAWN frame's, so a click that lands
+/// while the strip is mid-reveal is graded against where the pills were when the user last saw
+/// them — which is the right frame to grade against, but does mean a click aimed at a pill the
+/// spring is still carrying can land on its neighbour. The strip only moves in response to the
+/// user's own focus move, so the two gestures do not overlap in practice.
 pub(crate) fn tab_pill_at(mx: f32, my: f32) -> Option<usize> {
-    let n = unsafe { std::ptr::addr_of!(N_PILLS).read() };
-    let rects = unsafe { std::ptr::addr_of!(PILL_RECTS).read() };
-    rects[..n].iter().position(|r| r.contains(mx, my))
+    let rects = unsafe { &*std::ptr::addr_of!(PILL_RECTS) };
+    rects.iter().position(|r| r.w > 0.5 && r.contains(mx, my))
 }
 
-/// Draw the centered pill row. `selected` = the tab whose screen is showing (0 = Home);
-/// `focused` = the pill holding remote focus, or -1. Records the rects for [`tab_pill_at`].
-pub(crate) fn draw_tab_row(p: Painter, selected: std::os::raw::c_int, focused: std::os::raw::c_int) {
+/// Run `f` with the tab row's labels + pill widths, rebuilding them only when
+/// `browse::sections_gen()` moves. Shared by the per-frame scroll step and the draw, so the two
+/// can't measure the strip differently.
+///
+/// Deliberately a closure and not a `&'static` getter: the borrow points into `TAB_CACHE`, and a
+/// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
+/// `*const c_char`. Scoping it here makes that impossible to write by accident — so do NOT call
+/// this again from inside `f`.
+fn with_tab_metrics<R>(f: impl FnOnce(&[std::ffi::CString], &[f32]) -> R) -> R {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
     let gen = crate::browse::sections_gen();
     let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
     if cache.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
-        let nsec = crate::browse::section_count().min(MAX_TABS - 1);
+        let nsec = crate::browse::section_count();
         let mut labels: Vec<CString> = Vec::with_capacity(1 + nsec);
         labels.push(CString::new("Home").unwrap_or_default());
         for i in 0..nsec {
@@ -558,37 +595,132 @@ pub(crate) fn draw_tab_row(p: Painter, selected: std::os::raw::c_int, focused: s
         *cache = Some((gen, labels, widths));
     }
     let (_, labels, widths) = cache.as_ref().unwrap();
-    let n = labels.len();
-    // inter-pill air ≈ the season tabs' rhythm (their TAB_ADVANCE 52 minus the 2×18 pad the
-    // pills here already carry — pill edge to pill edge reads the same)
-    let gap = 16.0f32;
-    let total_w: f32 = widths.iter().sum::<f32>() + gap * (n as f32 - 1.0);
-    let x0 = (crate::ui::consts::SCR_W - total_w) * 0.5;
-    // ONE translucent dark capsule contains the whole row — the tvOS tab-bar track. It (not the
-    // segments) owns legibility over bright hero art: inside it the segments keep their clean
-    // season-tab looks (plain = bare dim text). Sheened for the 1px glass rim. The uniform inset
-    // (and so the concentric radii) is [`TAB_TRACK_PAD`], shared with the focused profile chip.
-    let track = Rect::new(
-        x0 - TAB_TRACK_PAD,
-        TOP_BAR_Y - TAB_TRACK_PAD,
-        total_w + 2.0 * TAB_TRACK_PAD,
-        TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
-    );
-    // dark-material weight: light enough to keep a hint of the art, dark enough that the
-    // TEXT_TERTIARY plain segments hold contrast even over pure-white art (Toy Story 2)
-    p.rect_sheened(track, track.h * 0.5, theme::scrim_black(0.72), theme::scrim_black(0.82));
-    let mut x = x0;
-    let env = Env::inert();
-    unsafe { N_PILLS = n };
-    for i in 0..n {
-        let r = Rect::new(x, TOP_BAR_Y, widths[i], TAB_PILL_H);
-        unsafe { (*std::ptr::addr_of_mut!(PILL_RECTS))[i] = r };
-        TabPill::new(labels[i].as_ptr(), theme::size::BODY, r)
-            .segment(i as c_int == selected)
-            .focused(i as c_int == focused)
-            .draw(&env, p);
-        x += widths[i] + gap;
+    f(labels, widths)
+}
+
+/// Content width of the whole pill strip: the pills plus the air between them.
+fn tab_content_w(widths: &[f32]) -> f32 {
+    widths.iter().sum::<f32>() + TAB_GAP * (widths.len() as f32 - 1.0).max(0.0)
+}
+/// The VISIBLE pill area: the strip's own width until it outgrows [`TAB_VIEW_MAX`], then that.
+fn tab_view_w(widths: &[f32]) -> f32 {
+    tab_content_w(widths).min(TAB_VIEW_MAX).max(0.0)
+}
+/// Content-space x of pill `i`'s left edge (0 = the strip's start).
+fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
+    let i = i.min(widths.len());
+    widths[..i].iter().sum::<f32>() + TAB_GAP * i as f32
+}
+/// Scroll offset that brings pill `idx` into the strip's viewport: the minimal scroll-into-view
+/// rule the season tabs and every shelf share ([`card_row::reveal`]) — move only when the pill
+/// (± one gap of context) would clip, and never past the content ends. Pure, so the "every pill
+/// is reachable" invariant is host-testable without a font.
+fn tab_scroll_target(widths: &[f32], idx: usize, cur: f32) -> f32 {
+    let view_w = tab_view_w(widths);
+    let max = (tab_content_w(widths) - view_w).max(0.0);
+    if idx >= widths.len() {
+        return cur.clamp(0.0, max);
     }
+    let x = tab_pill_x(widths, idx);
+    let lo = x + widths[idx] + TAB_GAP - view_w; // right edge (+ context) on screen
+    let hi = x - TAB_GAP; // left edge (− context) on screen
+    crate::ui::card_row::reveal(cur, lo, hi, max)
+}
+
+/// Step the strip's horizontal scroll — called once per frame from BOTH screens' update (the draw
+/// runs at dt=0, like the profile chip's unfurl). `focused` = the pill holding remote focus or -1,
+/// `selected` = the tab whose screen is showing.
+///
+/// Off the row it tracks the SELECTED pill, and on Home that means the strip returns to the start
+/// when focus leaves the band. That is deliberate, and it is where this differs from the season
+/// tabs (which HOLD): the way back INTO the band is the profile chip and then the Home pill — its
+/// left end — so a strip parked far to the right would be showing pills that the next keypress
+/// cannot reach without scrolling back anyway, under a row with no selected tab visible. Reveal
+/// is minimal-scroll, so this is a no-op whenever the selected pill is already on screen, which is
+/// the whole of the Library screen's life after [`tab_row_reveal`] placed it.
+pub(crate) fn tab_row_update(selected: c_int, focused: c_int, dt: f32) {
+    use std::ptr::{addr_of, addr_of_mut};
+    let idx = if focused >= 0 { focused } else { selected.max(0) } as usize;
+    let cur = unsafe { addr_of!(TAB_SCROLL).read() };
+    let t = with_tab_metrics(|_, w| tab_scroll_target(w, idx, cur.pos));
+    unsafe { (*addr_of_mut!(TAB_SCROLL)).step(t, K_TAB_SCROLL, dt) };
+    let s = unsafe { addr_of!(TAB_SCROLL).read() };
+    crate::ui::anim::probe("tabrow.scroll", s.pos, s.vel, t, dt);
+}
+
+/// Put pill `idx` on screen at once (no glide). For screen ENTRY — the Library screen opened
+/// straight into a far-right section (the `/tmp/plxnative-library=N` boot, or a section restored
+/// from the saved view) must show its own tab, and a long slide on arrival would be motion the
+/// user never asked for. Mirrors `detail.rs`'s `tab_hscroll.jump` on a fresh detail page.
+pub(crate) fn tab_row_reveal(idx: usize) {
+    use std::ptr::{addr_of, addr_of_mut};
+    let cur = unsafe { addr_of!(TAB_SCROLL).read() };
+    let t = with_tab_metrics(|_, w| tab_scroll_target(w, idx, cur.pos));
+    unsafe { (*addr_of_mut!(TAB_SCROLL)).jump(t) };
+}
+
+/// Draw the centered pill row. `selected` = the tab whose screen is showing (0 = Home);
+/// `focused` = the pill holding remote focus, or -1. Records the rects for [`tab_pill_at`].
+pub(crate) fn draw_tab_row(p: Painter, selected: std::os::raw::c_int, focused: std::os::raw::c_int) {
+    use std::ptr::{addr_of, addr_of_mut};
+    let rects = unsafe { &mut *addr_of_mut!(PILL_RECTS) };
+    rects.clear(); // nothing drawn = nothing hittable, including on the early return below
+    with_tab_metrics(|labels, widths| {
+        let n = labels.len();
+        if n == 0 {
+            return;
+        }
+        let content_w = tab_content_w(widths);
+        let view_w = tab_view_w(widths);
+        // ONE translucent dark capsule contains the whole row — the tvOS tab-bar track. It (not the
+        // segments) owns legibility over bright hero art: inside it the segments keep their clean
+        // season-tab looks (plain = bare dim text). Sheened for the 1px glass rim. The uniform inset
+        // (and so the concentric radii) is [`TAB_TRACK_PAD`], shared with the focused profile chip.
+        // The track is the strip's width until the strip outgrows the screen, then it caps and the
+        // pills scroll inside it — the track itself never moves.
+        let x0 = (crate::ui::consts::SCR_W - view_w) * 0.5;
+        let track = Rect::new(
+            x0 - TAB_TRACK_PAD,
+            TOP_BAR_Y - TAB_TRACK_PAD,
+            view_w + 2.0 * TAB_TRACK_PAD,
+            TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
+        );
+        // dark-material weight: light enough to keep a hint of the art, dark enough that the
+        // TEXT_TERTIARY plain segments hold contrast even over pure-white art (Toy Story 2)
+        p.rect_sheened(track, track.h * 0.5, theme::scrim_black(0.72), theme::scrim_black(0.82));
+        // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
+        // scissor case (see the ui/CLAUDE.md clipping rule): a pill leaving the row is cut at the
+        // pill area's edge — which is also the "there is more over there" affordance. Paired below.
+        // A non-zero scroll clips too even when the strip now fits: the section table can shrink
+        // (sign-out, server switch) and the spring takes a few frames to unwind, and those frames
+        // must not paint pills outside the track.
+        let view = Rect::new(x0, TOP_BAR_Y, view_w, TAB_PILL_H);
+        let sx = unsafe { addr_of!(TAB_SCROLL).read() }.pos;
+        let scrolls = content_w > view_w + 0.5 || sx.abs() > 0.5;
+        if scrolls {
+            p.clip(view);
+        }
+        let env = Env::inert();
+        rects.reserve(n);
+        for i in 0..n {
+            let r = Rect::new(x0 + tab_pill_x(widths, i) - sx, TOP_BAR_Y, widths[i], TAB_PILL_H);
+            // ONE rule for "is this pill on screen": its rect clipped to the viewport. The clipped
+            // rect is what gets recorded for the hit test AND what decides whether to draw at all
+            // (a 12-library server would otherwise lay out three rows' worth of text the scissor
+            // throws away), so the two can never disagree about a sliver at the edge.
+            let vis = r.intersect(view);
+            rects.push(vis);
+            if vis.w > 0.5 {
+                TabPill::new(labels[i].as_ptr(), theme::size::BODY, r)
+                    .segment(i as c_int == selected)
+                    .focused(i as c_int == focused)
+                    .draw(&env, p);
+            }
+        }
+        if scrolls {
+            p.clip_clear();
+        }
+    })
 }
 
 /// Which colour treatment a control (Button / CircleButton) wears. One control widget, three looks —
@@ -747,4 +879,82 @@ pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, style: BadgeStyle) 
     let ty = crate::text::text_vcenter_y(sz, 1, cy);
     p.text(lc.as_ptr(), x + w * 0.5, ty, sz, ink, 1, 1);
     w
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A spread of pill widths. Deliberately wider than the device's (a real "TV" pill measures
+    /// ≈67px at `size::BODY`, "Kids & Family Movies" ≈350) so a modest pill count crosses
+    /// [`TAB_VIEW_MAX`] and the overflow arithmetic is exercised without inventing 30 libraries —
+    /// the thresholds below are therefore about the geometry, not about a particular server.
+    fn widths_for(n: usize) -> Vec<f32> {
+        (0..n).map(|i| 140.0 + (i % 5) as f32 * 60.0).collect()
+    }
+
+    /// The unit-10 invariant, stated the way the [`tab_count`] doc states it: EVERY pill can be
+    /// drawn, because the strip scrolls to it. For any section count, and from any starting
+    /// scroll, the target for pill `i` puts that whole pill inside the visible strip — so no
+    /// focusable index can lack a drawn rect, which is what the old `MAX_TABS` cap used to buy
+    /// by refusing to focus the pills it could not reach.
+    #[test]
+    fn every_pill_scrolls_fully_into_the_strips_viewport() {
+        for n in 1..=16usize {
+            let w = widths_for(n);
+            let view_w = tab_view_w(&w);
+            let max = (tab_content_w(&w) - view_w).max(0.0);
+            for &start in &[0.0f32, 400.0, -900.0, 9000.0] {
+                for i in 0..n {
+                    let t = tab_scroll_target(&w, i, start);
+                    assert!(t >= -0.01 && t <= max + 0.01, "n={n} i={i}: scroll {t} outside 0..={max}");
+                    let x = tab_pill_x(&w, i) - t; // the pill's left edge in viewport space
+                    assert!(
+                        x >= -0.01 && x + w[i] <= view_w + 0.01,
+                        "n={n} i={i} (start {start}): pill spans {x}..{} of a {view_w}-wide strip",
+                        x + w[i]
+                    );
+                }
+            }
+        }
+    }
+
+    /// A row that fits must keep its centered, unscrolled tvOS look — the track IS the content and
+    /// there is nowhere to scroll to. Past that the scroll is minimal, not eager: asking for a
+    /// pill that is already on screen must leave the strip exactly where it is, wherever that is.
+    #[test]
+    fn the_strip_scrolls_only_once_it_outgrows_the_row_and_only_as_far_as_it_must() {
+        let fits = widths_for(4);
+        assert!(tab_content_w(&fits) <= TAB_VIEW_MAX, "4 pills of this size must still fit");
+        assert_eq!(tab_view_w(&fits), tab_content_w(&fits), "the track is the content");
+        assert_eq!(tab_content_w(&fits) - tab_view_w(&fits), 0.0, "…so there is no scroll range");
+
+        let over = widths_for(12);
+        assert!(tab_content_w(&over) > TAB_VIEW_MAX, "12 pills of this size must overflow");
+        assert_eq!(tab_view_w(&over), TAB_VIEW_MAX, "the track caps at the viewport");
+        assert!(tab_scroll_target(&over, 11, 0.0) > 0.0, "the last pill must be scrolled to");
+        assert_eq!(tab_scroll_target(&over, 0, 0.0), 0.0, "the first pill is already at the start");
+        assert_eq!(tab_scroll_target(&over, 1, 0.0), 0.0, "a pill in view does not move the strip");
+        // and the same rule part-way along: pill 5 sits inside the viewport at scroll 800, so the
+        // strip HOLDS there rather than re-centering on it
+        assert_eq!(tab_scroll_target(&over, 5, 800.0), 800.0, "a mid-strip pill in view holds");
+    }
+
+    /// A focus index left over from a bigger section table (the table is refetched on sign-in or
+    /// a server switch) must clamp, not index out of bounds — the strip is drawn from these same
+    /// widths every frame, so a panic here would be a panic in the frame loop. Graded on an
+    /// OVERFLOWING row so the clamp has a non-zero range to be wrong about.
+    #[test]
+    fn a_stale_pill_index_clamps_instead_of_panicking() {
+        let w = widths_for(12);
+        let max = tab_content_w(&w) - tab_view_w(&w);
+        assert!(max > 0.0, "the fixture must actually have somewhere to scroll");
+        assert_eq!(tab_scroll_target(&w, 99, 500.0), 500.0, "an in-range scroll is left alone");
+        assert_eq!(tab_scroll_target(&w, 99, 9e3), max, "an over-scroll is pulled back to the end");
+        assert_eq!(tab_scroll_target(&w, 99, -5.0), 0.0, "a negative scroll is pulled to the start");
+        assert_eq!(tab_pill_x(&w, 99), tab_pill_x(&w, 12), "past the end reads as the strip's end");
+        assert_eq!(tab_content_w(&[]), 0.0, "an empty strip has no width and no gaps");
+        assert_eq!(tab_scroll_target(&[], 0, 12.0), 0.0);
+    }
 }

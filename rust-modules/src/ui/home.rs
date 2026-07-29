@@ -216,10 +216,21 @@ pub(crate) fn hero_focus() -> c_int {
     unsafe { addr_of!(hero_fc).read() }
 }
 pub(crate) fn set_hero_focus(v: c_int) {
-    // cap at what the tab row can draw — focus must never land on a truncated pill
-    let npill = 1 + crate::browse::section_count().min(crate::ui::widgets::MAX_TABS - 1); // Home + sections
-    let lo = hero_focus_for_pill(npill - 1);
-    unsafe { addr_of_mut!(hero_fc).write(v.clamp(lo, HERO_NBTN as c_int - 1)) }
+    unsafe { addr_of_mut!(hero_fc).write(v.clamp(hero_focus_lo(), HERO_NBTN as c_int - 1)) }
+}
+
+/// The lowest (most negative) hero-focus value: the LAST tab pill. Every discovered library
+/// section has one — the row scrolls to reach the pills past the screen width, so the clamp is
+/// the section count, no longer a hard cap that hid a fifth library from the whole UI.
+/// ([`crate::ui::widgets::tab_count`] is the one source of that count; it is never 0, so the
+/// subtraction can't wrap.)
+fn hero_focus_lo() -> c_int {
+    hero_focus_lo_for(crate::ui::widgets::tab_count())
+}
+/// The pure half of [`hero_focus_lo`] — split out so the "focus reaches the LAST section however
+/// many there are" invariant is host-testable without a live section table.
+fn hero_focus_lo_for(npill: usize) -> c_int {
+    hero_focus_for_pill(npill.max(1) - 1)
 }
 
 /// Decode a top-band focus value to its tab-pill index (0 = Home, 1.. = sections), or None
@@ -810,6 +821,10 @@ pub(crate) fn home_update(dt: f32) {
         unsafe {
             (*addr_of_mut!(chip_expand)).step(if chip_focused() { 1.0 } else { 0.0 }, K_CHIP, dt)
         };
+        // the shared tab strip's horizontal scroll, same deal: a server with more libraries than
+        // fit the row reaches the rest by scrolling the focused pill into view. Home is always
+        // this screen's selected tab, so off the band the strip returns to the start.
+        crate::ui::widgets::tab_row_update(0, hero_pill_index(hero_focus()).map(|i| i as c_int).unwrap_or(-1), dt);
         let env = h.env(dt);
         h.grid.update(&env);
     });
@@ -822,11 +837,15 @@ pub(crate) fn home_draw() {
         let env = h.env(0.0);
         h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
         h.draw(&env, Painter::root());
-        draw_chip(Painter::root());
         // the centered library tab pills (shared with the Library screen): Home is the selected
         // tab here; a pill holds focus when the hero top band is on it.
         let pf = hero_pill_index(hero_focus()).map(|i| i as c_int).unwrap_or(-1);
         crate::ui::widgets::draw_tab_row(Painter::root(), 0, pf);
+        // the chip goes on TOP of the tab track, not under it. Its focused capsule unfurls the
+        // profile name to its right, and with enough libraries the (centered) track now reaches
+        // far enough left to meet it — under the track, the name was painted over by the track's
+        // own scrim. Both are the same dark material, so an overlap reads as one band.
+        draw_chip(Painter::root());
     });
 }
 
@@ -935,10 +954,11 @@ mod tests {
     /// Regression: the top band packed pill `i` as `-(i+1)`, so Home (pill 0) landed on -1 — the
     /// profile chip's value. `hero_pill_index` rejects anything above -2, so the Home pill was
     /// unreachable by D-pad and could never wear the focused (white) treatment on its own screen.
-    /// The packing now round-trips for EVERY pill the row can draw, Home included.
+    /// The packing now round-trips for EVERY pill the row can draw, Home included — and the row
+    /// is no longer capped at 5, so the sweep runs well past the old bound.
     #[test]
     fn every_tab_pill_round_trips_through_the_focus_packing() {
-        for i in 0..crate::ui::widgets::MAX_TABS {
+        for i in 0..32usize {
             let f = hero_focus_for_pill(i);
             assert_ne!(f, -1, "pill {i} must not alias the profile chip");
             assert_eq!(hero_pill_index(f), Some(i), "pill {i} must decode back to itself");
@@ -946,6 +966,55 @@ mod tests {
         assert_eq!(hero_pill_index(-1), None, "the profile chip is not a pill");
         assert_eq!(hero_pill_index(0), None, "the hero Play pill is not a tab pill");
         assert_eq!(hero_pill_index(c_int::MIN), None, "the grid-card sentinel is not a pill");
+    }
+
+    /// Regression (unit 10): the top band clamped focus at `MAX_TABS - 1` = 4 sections, so a
+    /// server with a fifth `movie`/`show` library had no way at all to reach it — `browse`
+    /// discovered it, the grid browsed it, and RIGHT simply stopped. Walking RIGHT from the Home
+    /// pill must now land on the LAST pill for any section count, and never past it.
+    #[test]
+    fn top_band_focus_walks_to_the_last_section_whatever_the_count() {
+        for npill in 1..=8usize {
+            let lo = hero_focus_lo_for(npill);
+            // RIGHT in the top band is `set_hero_focus(f - 1)` (more negative = further right)
+            let mut f = hero_focus_for_pill(0);
+            for _ in 0..npill + 4 {
+                f = (f - 1).clamp(lo, HERO_NBTN as c_int - 1);
+                assert!(
+                    hero_pill_index(f).map(|i| i < npill).unwrap_or(false),
+                    "walking RIGHT with {npill} pills left focus on {f}, which is not a drawable pill"
+                );
+            }
+            assert_eq!(
+                hero_pill_index(f),
+                Some(npill - 1),
+                "RIGHT must reach the last of {npill} pills"
+            );
+            // and LEFT walks back through every pill to Home, then off the pills onto the chip
+            for _ in 0..npill - 1 {
+                f = (f + 1).clamp(lo, HERO_NBTN as c_int - 1);
+            }
+            assert_eq!(hero_pill_index(f), Some(0), "LEFT must return to the Home pill");
+            f = (f + 1).clamp(lo, HERO_NBTN as c_int - 1);
+            assert_eq!(f, -1, "one more LEFT leaves the pills for the profile chip");
+        }
+    }
+
+    /// …and the clamp is actually WIRED to the pill count. The walk above drives the pure helper;
+    /// this drives the real setter, which is the line the cap used to live on. The host has no
+    /// section table (`browse::reset` — the only writer any test reaches — always leaves it
+    /// empty), so the row here is the Home pill alone and the band's last pill IS Home.
+    #[test]
+    fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
+        let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = hero_focus();
+        assert_eq!(crate::ui::widgets::tab_count(), 1, "no sections discovered on the host");
+        set_hero_focus(c_int::MIN / 2);
+        assert_eq!(hero_focus(), hero_focus_for_pill(0), "past the last pill clamps onto it");
+        assert_eq!(hero_pill_index(hero_focus()), Some(0));
+        set_hero_focus(999);
+        assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "past the action row clamps to its end");
+        set_hero_focus(saved);
     }
 
     #[test]
