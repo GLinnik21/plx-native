@@ -5,7 +5,7 @@
 //! held — so a HELD OK is a measurable long-press ([`held_ms`]/[`is_long`]), not a tap. The design
 //! (`Home Screen.dc.html`) fakes down/up with a fixed `setTimeout`; the real remote gives us both
 //! edges, so we use them. That long press is what opens the **item context menu** on a home shelf
-//! card (`ui/item_menu.rs`) — see [`LONG_MS`].
+//! card and on the detail page's episode still (`ui/item_menu.rs`) — see [`LONG_MS`].
 //!
 //! ONE control is pressed at a time (always the currently focused one), so a single global suffices —
 //! the renderer multiplies the focused tile's scale by [`scale`] while [`is_active`]. Focus can't move
@@ -45,9 +45,10 @@ const MAX_HOLD_MS: u32 = 1000;
 /// cancelled ([`tick`]'s latch) and the press just holds + springs back without activating.
 ///
 /// This is the threshold the **item context menu** opens on (`ui/item_menu.rs`, via `app.rs`'s
-/// per-frame press block reading [`is_long`] while the key is still DOWN). On a screen with no hold
-/// action the latch still fires and the long press stays a deliberate no-op, which is why the
-/// cancellation lives here rather than at the one call site that acts on it.
+/// per-frame press block reading [`is_long`] while the key is still DOWN) — on a home shelf card and
+/// on the detail page's episode still. On a screen with no hold action the latch still fires and the
+/// long press stays a deliberate no-op, which is why the cancellation lives here rather than at the
+/// call sites that act on it.
 pub const LONG_MS: u32 = 500;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -180,8 +181,9 @@ pub fn tick(now: u32, dt: f32) {
             // Long-press latch: once held past LONG_MS this is a press-and-hold, NOT a tap — cancel
             // the normal activation so it can never launch (the hard cap below would otherwise fire
             // it). The press then just holds the dip and springs back; whether anything HAPPENS is
-            // the caller's business, read off `is_long` (Home opens the item context menu there;
-            // every other screen leaves a hold as a deliberate no-op).
+            // the caller's business, read off `is_long` (Home and the detail page's episode
+            // filmstrip open the item context menu there; every other screen leaves a hold as a
+            // deliberate no-op).
             if s.want_commit && now.wrapping_sub(s.down_at) >= LONG_MS {
                 s.want_commit = false;
                 s.long = true;

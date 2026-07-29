@@ -12,6 +12,12 @@
 //! interaction, and until it existed Go-to-Show, per-item Mark-as-Watched and Play-from-Start had
 //! nowhere to live (`docs/parity-gaps.md` §1.2/§1.3, §5a).
 //!
+//! **Two screens open it**, through two builders and one presenter: a home shelf card ([`open`]) and
+//! the detail page's episode filmstrip ([`open_episode`], the owner-reported gap — a long press on
+//! an episode still did nothing, so there was nowhere to mark an episode watched). The row SET
+//! differs because a navigation row that leads to the page you are standing on is not an action;
+//! everything else — the panel, the placement, the choreography, the state rows — is shared.
+//!
 //! Like [`crate::ui::account_menu`], this module only **reports** the chosen [`Action`]; `app.rs`
 //! performs the routing, the server call and the hub refresh. It never mutates playback or PMS
 //! state itself.
@@ -87,10 +93,23 @@ pub(crate) fn has_actions(m: &PmsMovie) -> bool {
 /// Open the menu for `m`, anchored beside `anchor` (the focused card's drawn rect; `None` centres
 /// it, which is only reachable from the headless trigger).
 pub(crate) fn open(m: &PmsMovie, anchor: Option<Rect>) {
+    present(build(m), anchor);
+}
+
+/// Open the menu for the DETAIL page's focused episode still — the owner-reported gap (a long press
+/// on an episode tile had no menu at all, so there was nowhere to mark one watched). Same panel,
+/// same choreography, a shorter row set: see [`build_episode`].
+pub(crate) fn open_episode(rk: &str, watched: bool, anchor: Option<Rect>) {
+    present(build_episode(rk, watched), anchor);
+}
+
+/// Put a built row set on screen beside `anchor`. Shared by both entry points so the panel's
+/// choreography — anchor fallback, compact rows, selection reset, the appear spring — is written
+/// once and cannot drift between the screens the menu serves.
+fn present((rows, a): (Section, Vec<Option<Action>>), anchor: Option<Rect>) {
     let fallback =
         Rect::new((SCR_W - CARD_W) * 0.5 - PANEL_W * 0.5, (SCR_H - CARD_H) * 0.5, CARD_W, CARD_H);
     unsafe { addr_of_mut!(ANCHOR).write(anchor.unwrap_or(fallback)) };
-    let (rows, a) = build(m);
     *acts() = a;
     table().compact = true; // a short list of one-line actions — BODY labels, not menu-size HEADLINE
     table().set_sections(vec![rows], 0, false);
@@ -149,13 +168,43 @@ fn build(m: &PmsMovie) -> (Section, Vec<Option<Action>>) {
     // cannot distinguish part-watched from fully-watched — so those keep the one-way "Mark as
     // Watched" rather than claim a toggle they can't compute. (Follow-up: carry viewedLeafCount /
     // leafCount on the catalog row and this becomes a toggle everywhere.)
-    let watched = leaf && !m.unwatched;
-    sec = sec.row(Row::new(if watched { "Mark as Unwatched" } else { "Mark as Watched" }).licon(Icon::CheckCircle));
-    acts.push(Some(Action::MarkWatched(m.rk.clone(), watched)));
+    let sec = state_rows(sec, &mut acts, &m.rk, leaf && !m.unwatched, leaf);
+    (sec, acts)
+}
+
+/// The state group every menu ends with: the watched toggle, then (for a leaf) Play from Start.
+/// ONE builder, because these are the rows the menu exists for and they must read identically
+/// wherever it is opened — the label flips on `watched`, so the row is an exact toggle rather than
+/// two rows the user has to pick between.
+fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, watched: bool, leaf: bool) -> Section {
+    let mut sec = sec
+        .row(Row::new(if watched { "Mark as Unwatched" } else { "Mark as Watched" }).licon(Icon::CheckCircle));
+    acts.push(Some(Action::MarkWatched(rk.to_string(), watched)));
     if leaf {
         sec = sec.row(Row::new("Play from Start").licon(Icon::PlayStart));
-        acts.push(Some(Action::PlayFromStart(m.rk.clone())));
+        acts.push(Some(Action::PlayFromStart(rk.to_string())));
     }
+    sec
+}
+
+/// The DETAIL page's episode filmstrip: the same panel and the same state rows, with **no
+/// navigation group**.
+///
+/// Both navigation rows the shelf menu offers an episode are dead ends from here. "Go to Show" is
+/// the page you are standing on. "Go to Episode" is the judgement call, and it goes the same way:
+/// the episode's own page carries nothing the tile the popover is anchored to is not already
+/// showing — its still, title, full summary and air date are all right there — and reaching it
+/// would REPLACE this page rather than stack on it (`detail::open_rk` re-mounts in place, as the
+/// Related row does), so BACK would then land on Home instead of the season being browsed. A row
+/// that navigates away from a page to show less of what that page already shows, and loses your
+/// place doing it, is not an action.
+///
+/// `watched` is exact here — it comes off the episode's own `viewCount` in the loaded season — so
+/// the toggle is a true toggle, and with no nav group there is no separator either (`build`'s rule:
+/// the divider only exists when there is a group above it).
+fn build_episode(rk: &str, watched: bool) -> (Section, Vec<Option<Action>>) {
+    let mut acts: Vec<Option<Action>> = Vec::new();
+    let sec = state_rows(Section::new(""), &mut acts, rk, watched, true);
     (sec, acts)
 }
 
@@ -311,6 +360,36 @@ mod tests {
         s.show_rk.clear();
         let (sec, _) = build(&s);
         assert_eq!(labels(&sec), ["Mark as Watched"]);
+    }
+
+    /// The detail page's filmstrip menu: the state rows, no navigation group, and therefore no
+    /// leading separator. It shares `state_rows` with the shelf menu, so the row the owner asked
+    /// for cannot say one thing on Home and another on the episode page — asserted by comparing the
+    /// two builders' tails rather than by re-listing the labels here.
+    #[test]
+    fn the_filmstrip_menu_is_the_state_group_alone() {
+        let (sec, acts) = build_episode("42", false);
+        assert_eq!(labels(&sec), ["Mark as Watched", "Play from Start"]);
+        assert!(acts.iter().all(|a| a.is_some()), "no separator, so every row acts");
+        // the shelf menu's episode rows END with exactly these two, in this order
+        let (shelf, _) = build(&item(3, true));
+        assert_eq!(labels(&sec), labels(&shelf)[shelf.rows.len() - 2..]);
+
+        // a watched episode gets the reverse toggle, carrying its OWN rk (the menu captured its
+        // target at open time — nothing here may resolve through a live focus index)
+        let (sec, acts) = build_episode("77", true);
+        assert_eq!(labels(&sec), ["Mark as Unwatched", "Play from Start"]);
+        match acts[0].as_ref().unwrap() {
+            Action::MarkWatched(rk, watched) => assert_eq!((rk.as_str(), *watched), ("77", true)),
+            _ => panic!("row 0 must be the watched toggle"),
+        }
+        match acts[1].as_ref().unwrap() {
+            Action::PlayFromStart(rk) => assert_eq!(rk, "77"),
+            _ => panic!("row 1 must be Play from Start"),
+        }
+        // and nothing navigates: both rows the shelf menu offers an episode are dead ends from the
+        // page that episode already belongs to
+        assert!(!acts.iter().flatten().any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
     }
 
     #[test]

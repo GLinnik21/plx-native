@@ -661,13 +661,21 @@ mod tests {
         }
 
         // …and the descriptor is genuinely closed, not merely un-published.
+        //
+        // The slack is deliberately loose, because `open_fd_count` is PROCESS-wide and this suite
+        // runs in parallel: the sibling socket tests (loopback listeners, the two `ff.rs` counting
+        // accepts) hold descriptors open across this window, so a strict +2 made the assertion fire
+        // on their scheduling rather than on a leak — it was already failing ~1 run in 6 before this
+        // branch and got worse as the suite grew, which is a red gate that says nothing. What is
+        // being detected is 32 leaked sockets; anything under a handful is other tests, and the two
+        // are three quarters of an order of magnitude apart.
         let before = open_fd_count();
         for _ in 0..32 {
             let mut hs = http_stream_boxed();
             let _ = http_open(&mut *hs, ip_refused.as_ptr(), 1, path.as_ptr(), std::ptr::null(), "GET");
         }
         let after = open_fd_count();
-        assert!(after <= before + 2, "failed opens leaked descriptors: {before} -> {after}");
+        assert!(after <= before + 8, "failed opens leaked descriptors: {before} -> {after}");
     }
 
     /// The claim the whole single-closer protocol rests on: `shutdown(2)` wakes a peer that is
