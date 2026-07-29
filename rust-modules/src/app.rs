@@ -598,13 +598,35 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             Info,
             Chapters,
         }
+        /// Which screen a [`Route::ItemMenu`] popover is sitting over.
+        ///
+        /// The menu is a popover on a LIVE screen, not a page of its own — the card and its row keep
+        /// drawing and animating behind it — so the route has to name the screen underneath, both to
+        /// go on drawing/updating it and to know where the popover closes back to.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum MenuHost {
+            /// a home shelf card
+            Home,
+            /// the detail page's episode filmstrip
+            Detail,
+        }
+        impl MenuHost {
+            /// the route the popover returns to when it closes
+            fn route(self) -> Route {
+                match self {
+                    MenuHost::Home => Route::Home,
+                    MenuHost::Detail => Route::Detail,
+                }
+            }
+        }
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Route {
             Login,    // plex.tv sign-in (QR) — shown when there's no usable session
             Profiles, // "who's watching" Plex Home picker
             Home,
             Account,  // Home + the top-left profile menu popover (change profile / sign out)
-            ItemMenu, // Home + the press-and-hold card context menu popover (ui/item_menu.rs)
+            /// `over` + the press-and-hold context menu popover (ui/item_menu.rs)
+            ItemMenu { over: MenuHost },
             Library,  // the browse grid (ui/library.rs); its sort/filter menus are internal state
             Detail,
             /// The person/actor page (ui/person.rs), reached by OK on a detail page's cast
@@ -630,7 +652,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         fn modal_of(r: Route) -> Modal {
             match r {
                 Route::Account => Modal::Account,
-                Route::ItemMenu => Modal::ItemMenu,
+                Route::ItemMenu { .. } => Modal::ItemMenu,
                 Route::Player { overlay: Overlay::Menu } => Modal::Menu,
                 Route::Player { overlay: Overlay::Info } => Modal::Info,
                 Route::Player { overlay: Overlay::Chapters } => Modal::Chapters,
@@ -1047,7 +1069,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 return false;
             }
             crate::ui::item_menu::open(m, crate::ui::home::focused_card_rect());
-            *route = Route::ItemMenu;
+            *route = Route::ItemMenu { over: MenuHost::Home };
+            true
+        }
+
+        /// The same popover on the DETAIL page's episode filmstrip — the owner-reported gap: a long
+        /// press on an episode still did nothing, so there was nowhere to mark an episode watched.
+        /// Reports whether it opened, so the caller only flips the route when a menu is actually up:
+        /// the filmstrip may not hold focus, and a season fetch in flight makes the row's contents a
+        /// lie (see `detail::focused_episode`).
+        fn open_episode_menu(route: &mut Route) -> bool {
+            let Some((rk, watched)) = crate::ui::detail::focused_episode() else {
+                return false;
+            };
+            if rk.is_empty() {
+                return false;
+            }
+            crate::ui::item_menu::open_episode(&rk, watched, crate::ui::detail::focused_episode_rect());
+            *route = Route::ItemMenu { over: MenuHost::Detail };
             true
         }
 
@@ -1055,9 +1094,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// the OK key and the pointer click, exactly like `home_activate` and `activate_ctrl_row`
         /// (the two paths for the profile menu had already drifted before those were unified).
         /// The menu itself only reports the choice; every route flip, server call and refresh is here.
+        ///
+        /// `host` is the screen the popover was over, and it genuinely changes what an action MEANS:
+        /// on Home the item is a catalog row, so a play resolves through `pms::index_of_rk` and a
+        /// scrobble only has to refresh the hubs; on the detail page the item is an episode of the
+        /// loaded season, which the hub catalog usually does not contain at all, and the page itself
+        /// has to re-read the state that just changed.
         unsafe fn apply_item_action(
             mt: &crate::task::MainThread,
             act: crate::ui::item_menu::Action,
+            host: MenuHost,
             route: &mut Route,
             played_from_detail: &mut bool,
             opened_from_library: &mut bool,
@@ -1103,10 +1149,31 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else {
                         crate::plex::client().scrobble(&rk);
                     }
+                    // …and when the popover was over the DETAIL page, that page is the surface the
+                    // user is watching: re-read the mounted show so the filmstrip's checks, the
+                    // season tab's tick and the hero's own toggle all show what was just committed.
+                    // The same refresh its hero watched toggle performs — one function, so the two
+                    // ways to mark something watched can't leave the page in two different states.
+                    // The rk rides along so the row lands back on the episode that changed (see
+                    // `detail::KEEP_EP`).
+                    if matches!(host, MenuHost::Detail) {
+                        crate::ui::detail::refresh_view_state(&rk);
+                    }
                     let n = crate::pms::refetch_hubs_reconcile();
                     log(&format!("item menu: rk={rk} watched={} → hubs refreshed ({n} items)", !watched as i32));
                 }
                 Action::PlayFromStart(rk) => {
+                    // On the detail page the target is an episode of the LOADED SEASON, which the hub
+                    // catalog usually doesn't hold at all (only the one Continue Watching is showing
+                    // ever does) — so it plays through the page's own episode path, the same one OK
+                    // on the still uses, with the resume dropped.
+                    if matches!(host, MenuHost::Detail) {
+                        if crate::ui::detail::play_episode_rk_from_start(&rk) {
+                            let resume = crate::ui::detail::last_resume_ns();
+                            start_playback(mt, resume, true, HUD_LINGER_MS, route, played_from_detail, hud_nav);
+                        }
+                        return;
+                    }
                     // Re-resolve the catalog row by rk rather than holding a borrow across the menu:
                     // a hub refetch can rebuild the catalog while the popover is open.
                     let i = crate::pms::index_of_rk(&rk);
@@ -1363,16 +1430,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         continue;
                     }
                     // the press-and-hold item menu is modal too — rows nav, OK commits, BACK closes
-                    // back to the shelf the card is still sitting on.
-                    if matches!(route, Route::ItemMenu) {
+                    // back to the shelf (or filmstrip) the card is still sitting on.
+                    if let Route::ItemMenu { over } = route {
                         if is_ok(sym) {
                             let act = crate::ui::item_menu::on_ok();
-                            route = Route::Home; // the dispatch overrides this when it navigates/plays
-                            apply_item_action(mt, act, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
+                            route = over.route(); // the dispatch overrides this when it navigates/plays
+                            apply_item_action(mt, act, over, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
                             held_sym = 0; // an async route flip must not repeat a held key into the next screen
                         } else if is_back(sym, wcode) {
                             crate::ui::item_menu::close();
-                            route = Route::Home;
+                            route = over.route();
                         } else if sym == SDLK_UP || sym == SDLK_DOWN {
                             // move once on the fresh press; holding repeats via the shared
                             // client-side timer. Armed ONLY for the two keys the menu acts on, so a
@@ -1823,7 +1890,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::profiles::pointer_focus(mx, my);
                     } else if matches!(route, Route::Account) {
                         crate::ui::account_menu::pointer_focus(mx, my);
-                    } else if matches!(route, Route::ItemMenu) {
+                    } else if matches!(route, Route::ItemMenu { .. }) {
                         crate::ui::item_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Library) {
                         crate::ui::library::pointer_focus(mx, my);
@@ -2023,7 +2090,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 route = Route::Home;
                             }
                         }
-                    } else if matches!(route, Route::ItemMenu) {
+                    } else if let Route::ItemMenu { over } = route {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
                         // a click on a row commits it; anywhere else dismisses the popover. THIS arm
@@ -2033,8 +2100,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // consulted inside the Player branch, so its ItemMenu case is there for the
                         // same completeness as `Modal::Account`, not because this arm reads it.)
                         let act = crate::ui::item_menu::click(cx, cy);
-                        route = Route::Home;
-                        apply_item_action(mt, act, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
+                        route = over.route();
+                        apply_item_action(mt, act, over, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
                     } else if matches!(route, Route::Profiles) {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -2446,7 +2513,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 match route {
                     Route::Home if g_snap() > 0.5 => crate::ui::home::home_move_focus(held_sym),
                     Route::Home => crate::ui::home::home_hero_key(held_sym), // hero view: hold LEFT/RIGHT pages the billboard
-                    Route::ItemMenu => crate::ui::item_menu::move_focus(held_sym as c_int),
+                    Route::ItemMenu { .. } => crate::ui::item_menu::move_focus(held_sym as c_int),
                     Route::Library => crate::ui::library::move_focus(held_sym),
                     Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
                     Route::Player { overlay: Overlay::Menu } => {
@@ -2598,14 +2665,25 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // and nothing ever read (`LONG_MS`, `is_long`). It fires while the key is still DOWN,
                 // which is what makes the menu feel like a hold rather than a delayed tap; the press
                 // is cancelled so the card springs back, and `ok_armed` is dropped so the eventual
-                // key-up commits nothing. A SHORT press is untouched — a Continue Watching tile still
-                // resumes on OK by design, and this is the other half of that interaction. Ordered
-                // ahead of the commit arm (and exclusive with it) so the two can never both run.
-                if crate::ui::press::is_long(now)
-                    && matches!(route, Route::Home)
-                    && crate::ui::home::snap_pos() >= 0.5
-                    && open_item_menu(&mut route)
-                {
+                // key-up commits nothing. A SHORT press is untouched on BOTH screens — a Continue
+                // Watching tile still resumes on OK, and OK on an episode still still plays it, by
+                // design; this is the other half of those interactions. Ordered ahead of the commit
+                // arm (and exclusive with it) so the two can never both run.
+                //
+                // `is_long` leads and short-circuits, deliberately: everything after it OPENS a
+                // menu, so evaluating the arms first would put the popover up on the key-DOWN of
+                // every tap.
+                let held_menu = crate::ui::press::is_long(now)
+                    && match route {
+                        // the grid, not the hero: the hero has no card to anchor a panel beside
+                        Route::Home => crate::ui::home::snap_pos() >= 0.5 && open_item_menu(&mut route),
+                        // the detail page's episode filmstrip (`focused_episode` declines every
+                        // other section, so a held OK on the Related/Cast shelves — which arm the
+                        // same press — falls through to the ordinary spring-back, unchanged)
+                        Route::Detail => open_episode_menu(&mut route),
+                        _ => false,
+                    };
+                if held_menu {
                     ok_armed = false;
                     crate::ui::press::cancel();
                 } else if crate::ui::press::take_commit(now) {
@@ -2678,7 +2756,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // (headless pad capture) exactly like OK on the remote
                     crate::ui::profiles::pick(idx);
                 }
-            } else if matches!(route, Route::Home | Route::Account | Route::ItemMenu) {
+            } else if matches!(route, Route::Home | Route::Account | Route::ItemMenu { over: MenuHost::Home }) {
                 // dev: sweep the grid focus top↔bottom to reproduce the vertical-scroll judder headlessly
                 if home_osc && now.wrapping_sub(home_osc_last) > 350 {
                     home_osc_last = now;
@@ -2708,13 +2786,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(route, Route::Account) {
                 crate::ui::account_menu::update(dt);
             }
-            if matches!(route, Route::ItemMenu) {
+            if matches!(route, Route::ItemMenu { .. }) {
                 crate::ui::item_menu::update(dt);
             }
-            if matches!(route, Route::Detail) {
+            // The detail page keeps DRAWING under its own context-menu popover (that is what makes it
+            // a popover and not a page), so it keeps updating too — otherwise every spring behind the
+            // panel freezes mid-pop and the page snaps back into motion when the menu closes.
+            if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
                 // dev: plxnative-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
-                // transition (the settled ends already hold 60).
-                if detail_osc {
+                // transition (the settled ends already hold 60). Only while the PAGE holds focus: the
+                // popover is modal, and sweeping focus under it would walk the anchor out from under it.
+                if detail_osc && matches!(route, Route::Detail) {
                     let sym = if (now / 450) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
                     crate::ui::detail::move_focus(sym as c_int);
                 }
@@ -2810,7 +2892,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::login::draw();
                     } else if matches!(route, Route::Profiles) {
                         crate::ui::profiles::draw();
-                    } else if matches!(route, Route::Detail) {
+                    } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
+                        // the page stays live UNDER its context menu — the popover is anchored beside
+                        // the episode still it acts on, which has to still be there to be beside
                         crate::ui::detail::draw();
                     } else if matches!(route, Route::Person) {
                         crate::ui::person::draw();
@@ -2822,8 +2906,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if matches!(route, Route::Account) {
                         crate::ui::account_menu::draw(); // profile popover over Home
                     }
-                    if matches!(route, Route::ItemMenu) {
-                        crate::ui::item_menu::draw(); // press-and-hold card menu, over the live shelf
+                    if matches!(route, Route::ItemMenu { .. }) {
+                        crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
                     }
                     // the on-screen FPS counter stays off the player route (chrome over video)
                     let fps_col = [0.4f32, 1.0, 0.55, 1.0];
@@ -2848,7 +2932,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Login => "login",
                 Route::Profiles => "profiles",
                 Route::Account => "account",
-                Route::ItemMenu => "itemmenu",
+                Route::ItemMenu { .. } => "itemmenu",
                 Route::Library => "library",
                 Route::Detail => "detail",
                 Route::Person => "person",

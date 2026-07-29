@@ -385,7 +385,7 @@ impl TableView {
             }
             // reserve the inline-badge run so the label elides before it
             let badge_reserve: f32 =
-                row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text()) + 10.0).sum();
+                row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None) + 10.0).sum();
             // Single-line rows centre their label on the row by cap band. Two-line rows stack a
             // title over a detail sub-line: lay the pair out off both cap bands and centre it in the
             // tall row, with an explicit gap between the title baseline and the detail cap-top
@@ -423,7 +423,7 @@ impl TableView {
             for b in row.badges.iter() {
                 // the shared chip leaf, in this row's contextual colours (ink over pill/panel)
                 let sty = crate::ui::widgets::BadgeStyle::Outlined { col: base, bg: row_bg };
-                bx += crate::ui::widgets::badge(p, bx, bcy, b.text(), sty) + 10.0;
+                bx += crate::ui::widgets::badge(p, bx, bcy, b.text(), None, sty) + 10.0;
             }
             // detail sub-line, elided (long Cyrillic descriptors would run off the edge)
             if !row.detail.is_empty() {

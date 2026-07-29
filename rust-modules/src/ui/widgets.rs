@@ -528,25 +528,30 @@ enum TabStyle {
 }
 
 /// The quiet annotation a [`TabPill`] can carry after its label — the detail page's season tabs use
-/// it for "how many episodes are in here" and "you have watched them all". It is deliberately
-/// subordinate to the label: one type rung down, never bold, and a step of alpha under the label's
-/// own ink, so a tab still reads as its label first and its count second.
+/// it for "you have watched everything behind this tab". It is deliberately subordinate to the
+/// label: it stands one type rung down and a step of alpha under the label's own ink, so a tab
+/// still reads as its name first and its state second.
+///
+/// It carried an episode COUNT too, and no longer does (owner call, 2026-07-29: *"I don't like
+/// unwatched episodes count in season tab selector. I think it's ok to leave just marks that we
+/// watched."*). A count is filing data the season's own episode row already answers by simply
+/// existing, and it made every tab wider for a number nobody was reading. The tick is the one fact
+/// a tab strip can state that its content cannot: which seasons are behind you.
 #[derive(Clone, Copy, Default)]
 pub enum TabNote {
     #[default]
     None,
-    /// a small count after the label. Non-owning, exactly like [`TabPill::label`] — keep the
-    /// `CString` alive for the whole draw frame.
-    Count(*const c_char),
-    /// everything behind this tab is watched — a tick takes the count's place.
+    /// everything behind this tab is watched — a small tick after the label.
     Done,
 }
 
-/// Type rung of a tab's trailing note: one below the label, still at the couch legibility floor.
+/// Type rung the trailing note is measured against: one below the label, at the couch legibility
+/// floor. The tick is a glyph rather than text, but it stands in the same band a label at this rung
+/// would, so the note reads as a peer of the name it follows.
 const NOTE_SZ: c_int = theme::size::CAPTION;
 /// Label → note air inside the pill.
 const NOTE_GAP: f32 = theme::space::SM;
-/// The watched tick stands as tall as the note's own rung, so a count and a tick take the same band.
+/// The watched tick stands as tall as the note's own rung.
 const NOTE_TICK_D: f32 = NOTE_SZ as f32;
 /// The note's ink is the pill's own ink one alpha step down — de-emphasis without a second colour
 /// role, so it stays legible in every one of [`TabStyle`]'s ink states (including the already-dim
@@ -581,7 +586,7 @@ impl TabPill {
         self.style = TabStyle::Segment { selected };
         self
     }
-    /// attach a trailing [`TabNote`] (a count, or the watched tick).
+    /// attach a trailing [`TabNote`] (the watched tick).
     pub fn note(mut self, note: TabNote) -> Self {
         self.note = note;
         self
@@ -592,7 +597,6 @@ impl TabPill {
     pub fn note_w(note: TabNote) -> f32 {
         match note {
             TabNote::None => 0.0,
-            TabNote::Count(t) => NOTE_GAP + crate::text::text_width(t, NOTE_SZ, 0),
             TabNote::Done => NOTE_GAP + NOTE_TICK_D,
         }
     }
@@ -637,9 +641,6 @@ impl View for TabPill {
         let note_ink = theme::with_a(ink, NOTE_INK_A);
         match self.note {
             TabNote::None => {}
-            TabNote::Count(t) => {
-                Label::new(t, NOTE_SZ, note_ink).draw(p, Rect::new(nx, r.y, 0.0, r.h));
-            }
             TabNote::Done => {
                 let d = NOTE_TICK_D;
                 crate::ui::icons::draw(
@@ -1010,10 +1011,11 @@ impl View for Button {
     }
 }
 
-// ---- Badge: the small rounded metadata chip (CC / SDH / AD / FORCED / codec tags). ONE leaf for
-// the track-menu rows, the Info card meta line, and the detail About column, so the chip look
-// can't drift. Cap-band-centred bold CAPTION label; width hugs the label with a floor so short
-// tags (CC) still read as a chip. Returns the drawn width so callers can flow chips inline. ----
+// ---- Badge: the small rounded metadata chip (CC / SDH / AD / FORCED / codec tags), with an
+// OPTIONAL leading glyph. ONE leaf for the track-menu rows, the Info card meta line, the detail
+// About column and the episode filmstrip's duration pill, so the chip look can't drift. Cap-band-
+// centred bold CAPTION label; width hugs the label with a floor so short tags (CC) still read as a
+// chip. Returns the drawn width so callers can flow chips inline. ----
 pub(crate) enum BadgeStyle {
     /// 2px border + knockout interior: border+label in `col`, interior filled `bg` (the surface
     /// behind the chip — keeps the outline clean over a light focus pill or a dark panel).
@@ -1021,27 +1023,50 @@ pub(crate) enum BadgeStyle {
     /// solid translucent fill ([`theme::BADGE_FILL`]), label in [`theme::TEXT_HEADING`] — the
     /// About column's accessibility chips.
     Filled,
+    /// A CAPSULE that rides on ARTWORK: the idle-control pair ([`theme::CONTROL_IDLE_FILL`] face,
+    /// [`theme::CONTROL_IDLE_INK`] ink) and fully rounded ends — the same surface
+    /// [`watched_badge`]'s disc wears, so a chip and a disc laid over the same still read as one
+    /// family. Deliberately NOT [`BadgeStyle::Filled`]: that chip's translucent light fill is
+    /// legible in a dark text column and disappears over a bright thumbnail.
+    ///
+    /// Its ink is NEUTRAL on purpose. Amber (`RESUME_*`) is the app's one watched-STATE hue, and a
+    /// chip in that hue over a tile that already carries a state mark would be a second, competing
+    /// claim about the same item (see `ui/CLAUDE.md`'s one-vocabulary rule).
+    OverArt,
 }
-/// pixel width [`badge`] will occupy for `text` — the layout companion (e.g. reserving the
-/// inline-chip run so a row label elides before it).
-pub(crate) fn badge_w(text: &str) -> f32 {
+/// The chip's height — one band for every style, so a row mixing them stays on one line. Public
+/// because a caller that pins a chip to an edge (the episode still's duration pill) needs to know
+/// how tall the thing it is placing is.
+pub(crate) const BADGE_H: f32 = 34.0;
+/// A leading glyph's box, at the label's own type size — a touch over its cap height, the same
+/// relationship [`rating_badge`]'s brand mark has to its score. Deliberately smaller than
+/// [`Button`]'s `sz * BTN_ICON_RATIO`: this chip is half a button's height, so a button-proportioned
+/// glyph would fill it edge to edge.
+const BADGE_ICON: f32 = theme::size::CAPTION as f32;
+/// Glyph → label air. They are one run, so the tightest rung (as in [`rating_badge`]).
+const BADGE_ICON_GAP: f32 = theme::space::XS;
+
+/// pixel width [`badge`] will occupy for `text` (+ `icon`) — the layout companion (e.g. reserving
+/// the inline-chip run so a row label elides before it). The icon's band is added OUTSIDE the
+/// short-tag floor, so a bare "CC" still measures its minimum and a glyphed chip still fits both.
+pub(crate) fn badge_w(text: &str, icon: Option<crate::ui::icons::Icon>) -> f32 {
     const PAD: f32 = 12.0;
     const MIN_W: f32 = 56.0;
+    let lead = if icon.is_some() { BADGE_ICON + BADGE_ICON_GAP } else { 0.0 };
     std::ffi::CString::new(text)
         .ok()
-        .map(|c| (crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1) + 2.0 * PAD).max(MIN_W))
+        .map(|c| (crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1) + 2.0 * PAD).max(MIN_W) + lead)
         .unwrap_or(0.0)
 }
 /// Draw one chip with its LEFT edge at `x`, vertically centred on `cy`; returns its width.
-pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, style: BadgeStyle) -> f32 {
-    const H: f32 = 34.0;
+pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, icon: Option<crate::ui::icons::Icon>, style: BadgeStyle) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
         Err(_) => return 0.0,
     };
     let sz = theme::size::CAPTION;
-    let w = badge_w(text);
-    let r = Rect::new(x, cy - H * 0.5, w, H);
+    let w = badge_w(text, icon);
+    let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
     let ink = match style {
         BadgeStyle::Outlined { col, bg } => {
             let bw = 2.0f32;
@@ -1053,9 +1078,23 @@ pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, style: BadgeStyle) 
             p.rrect(r, 7.0, 7.0, theme::BADGE_FILL);
             theme::TEXT_HEADING
         }
+        BadgeStyle::OverArt => {
+            let rad = r.h * 0.5;
+            p.rrect(r, rad, rad, theme::CONTROL_IDLE_FILL);
+            theme::CONTROL_IDLE_INK
+        }
     };
     let ty = crate::text::text_vcenter_y(sz, 1, cy);
-    p.text(lc.as_ptr(), x + w * 0.5, ty, sz, ink, 1, 1);
+    // [glyph + gap + label] centred in the chip as ONE run — the same composition `Button::draw`
+    // uses, so a chip and a pill put their icon in the same optical place. With no icon `lead` is 0
+    // and this collapses to the label centred on its own, which is what it always did.
+    let lead = if icon.is_some() { BADGE_ICON + BADGE_ICON_GAP } else { 0.0 };
+    let tw = crate::text::text_width(lc.as_ptr(), sz, 1);
+    let gl = r.cx() - (lead + tw) * 0.5;
+    if let Some(i) = icon {
+        crate::ui::icons::draw(p, i, Rect::new(gl, cy - BADGE_ICON * 0.5, BADGE_ICON, BADGE_ICON), ink);
+    }
+    p.text(lc.as_ptr(), gl + lead, ty, sz, ink, 0, 1); // left-aligned after the glyph
     w
 }
 

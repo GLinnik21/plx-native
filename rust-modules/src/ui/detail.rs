@@ -134,6 +134,22 @@ const EP_ANIM_MAX: usize = 40; // per-episode pop-spring count (episodes past th
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
+// ---- marks ON the still. All four constants are CONSTANT through the focus pop (they ride the
+// scaled rect without resizing) for the same reason `widgets::watched_badge`'s disc is: they are
+// 1:1-texel content, and a size on the scale spring would rasterize + upload a fresh mask every
+// animating frame.
+/// The margin every mark on a still sits on — the resume bar's side inset, the duration pill's left
+/// edge, and the same inset `widgets::watched_badge` gives its corner disc. One value, so the marks
+/// line up with each other and with the neighbouring tile's.
+const EP_MARK_INSET: f32 = 12.0;
+/// The resume bar: its height, and how far its TOP edge sits above the still's bottom.
+const EP_BAR_H: f32 = 5.0;
+const EP_BAR_TOP: f32 = 16.0;
+/// The duration pill's bottom inset. Deliberately CONSTANT rather than "12 unless there's a bar":
+/// it clears the resume bar's band by one XS rung, so the pills across a filmstrip sit on one line
+/// whether or not each tile happens to carry a bar. A pill that moved with the bar would make a row
+/// of stills read as ragged.
+const EP_PILL_BOT: f32 = EP_BAR_TOP + theme::space::XS;
 // Under-still metadata: kicker → title → summary → date. The (fine-print) air date sits at the
 // BOTTOM of the block, under the summary; offsets are from the meta top (EP_H + EP_META_TOP below
 // the still) and the block height is derived from the tallest episode summary (see `ep_meta_h`)
@@ -518,6 +534,8 @@ fn reset_view_state(v: &mut DetailView) {
     v.hero_had_restart = false;
     v.pending_season = -1;
     v.saved_col = [0; 6];
+    // a keep-focus latch belongs to the item that armed it — a new page must not inherit one
+    unsafe { *addr_of_mut!(KEEP_EP) = None };
     v.column.scroll.jump(0.0);
     v.ep_hscroll.jump(0.0);
     v.tab_hscroll.jump(0.0);
@@ -637,26 +655,22 @@ pub(crate) fn move_focus(sym: c_int) {
 }
 
 /// ONE season tab's resolved layout: its index, content-space label x, the tab's CONTENT width
-/// (label plus whatever trailing note it carries), the label CString and the note's own pieces.
+/// (label plus whatever trailing note it carries) and the label CString.
 struct TabLay {
     i: usize,
     x: f32,
     w: f32,
     label: CString,
-    /// the season's episode count, pre-rendered; empty when the tab shows no count
-    count: CString,
-    /// every episode of the season is watched → the note is a tick, not a count
+    /// every episode of the season is watched → the tab wears a tick
     done: bool,
 }
 impl TabLay {
-    /// This tab's trailing note. Borrows `count`, so it must not outlive the layout entry.
+    /// This tab's trailing note — a tick on a finished season, nothing otherwise.
     fn note(&self) -> TabNote {
         if self.done {
             TabNote::Done
-        } else if self.count.as_bytes().is_empty() {
-            TabNote::None
         } else {
-            TabNote::Count(self.count.as_ptr())
+            TabNote::None
         }
     }
 }
@@ -665,28 +679,29 @@ impl TabLay {
 /// geometry both walk this, so their x-advance can't drift. A label that can't be a CString
 /// (interior NUL — never in practice) is skipped entirely (not drawn, no advance).
 ///
-/// Each tab carries a quiet second fact past its name: how many episodes the season holds, or a
-/// tick once they are all watched (`metadata::Season::watched` is the ONE rule for that, shared
-/// with the item-level watched state). A season the server sent no `leafCount` for shows neither.
+/// Each tab carries at most ONE quiet fact past its name: a tick once every episode behind it is
+/// watched (`metadata::Season::watched` is the ONE rule for that, shared with the item-level
+/// watched state). Nothing otherwise — a part-watched or untouched season is simply its name.
+///
+/// It used to show an episode COUNT on every unfinished season, and deliberately no longer does
+/// (owner call, 2026-07-29): the count is filing data the episode row right underneath already
+/// answers by existing, and it widened every tab in the strip for a number nobody reads. What a
+/// tab strip can say that its content cannot is *which seasons are behind you*, so that is all it
+/// says now. See [`TabNote`].
 ///
 /// COST: this is uncached and runs on the draw path (and again per frame while the tab row holds
-/// focus, through `tab_focus_geom`), so it is one `CString` + one `text_width` per season per call
-/// — and the count adds a second of each. Both are cheap now that `text::text_width` is a
-/// `TTF_SizeUTF8` metrics walk rather than a rasterize+upload, but a many-season strip (Top Gear)
-/// is the shape that would want the fingerprinted cache `ep_meta_h` uses, and no FPS scene covers
-/// it: `fps:detail-transition` is a MOVIE, which returns from `draw_tabs` before reaching here.
+/// focus, through `tab_focus_geom`), so it is one `CString` + one `text_width` per season per call.
+/// Cheap now that `text::text_width` is a `TTF_SizeUTF8` metrics walk rather than a
+/// rasterize+upload, but a many-season strip (Top Gear) is the shape that would want the
+/// fingerprinted cache `ep_meta_h` uses, and no FPS scene covers it: `fps:detail-transition` is a
+/// MOVIE, which returns from `draw_tabs` before reaching here.
 fn tabs_layout(d: &crate::metadata::Detail) -> Vec<TabLay> {
     let mut x = MARGIN_X;
     let mut out = Vec::with_capacity(d.seasons.len());
     for (i, s) in d.seasons.iter().enumerate() {
         let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
         if let Ok(lc) = CString::new(label) {
-            let count = if s.watched() || s.leaf_count <= 0 {
-                CString::default()
-            } else {
-                CString::new(s.leaf_count.to_string()).unwrap_or_default()
-            };
-            let mut lay = TabLay { i, x, w: 0.0, label: lc, count, done: s.watched() };
+            let mut lay = TabLay { i, x, w: 0.0, label: lc, done: s.watched() };
             lay.w = crate::text::text_width(lay.label.as_ptr(), theme::size::BODY, 1) + TabPill::note_w(lay.note());
             x += lay.w + TAB_ADVANCE;
             out.push(lay);
@@ -787,14 +802,19 @@ fn hero_chain(syn_h: f32, has_director: bool) -> (f32, f32, f32, f32, f32) {
 }
 
 pub(crate) fn update(dt: f32) {
-    // apply a landed async season fetch: the episode row starts over on the new list (focus +
-    // scroll to episode 0 — the remembered position belonged to the previous season)
+    // Apply a landed async season fetch: the episode row starts over on the new list (focus +
+    // scroll to episode 0 — the remembered position belonged to the previous season). The ONE
+    // exception is a refresh of the season already on screen (`KEEP_EP`), which lands the same list
+    // with one field changed and must therefore hold the user's place rather than take it away.
     if metadata::pump_season() {
+        let keep = take_kept_episode(); // reads metadata, so resolved before `view()` is borrowed
         let v = view();
-        v.ep_hscroll.jump(0.0);
-        v.saved_col[2] = 0;
+        v.saved_col[2] = keep.unwrap_or(0);
+        if keep.is_none() {
+            v.ep_hscroll.jump(0.0); // a kept row is already scrolled where it belongs
+        }
         if v.section == 2 {
-            v.col = 0;
+            v.col = v.saved_col[2];
             v.card_scale.jump(1.0);
         }
     }
@@ -1139,7 +1159,7 @@ fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f
         // computed here rather than up front so an empty row touches no glyph cache
         let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
         let cy = text_y + (cap_top + baseline) * 0.5;
-        bx += crate::ui::widgets::badge(p, bx, cy, &text, crate::ui::widgets::BadgeStyle::Filled);
+        bx += crate::ui::widgets::badge(p, bx, cy, &text, None, crate::ui::widgets::BadgeStyle::Filled);
     }
     bx - x
 }
@@ -1293,7 +1313,7 @@ fn draw_tabs(p: Painter) {
         // ±TAB_PAD, tabs advance by that content width + TAB_ADVANCE (see tabs_layout). The pill
         // fills the block height (TAB_ROW_H == the hero-button CD), so tabs and buttons read as one
         // control family. `tab_pill_rect` is that frame, shared with the pointer hit-test — a tab
-        // widened by its episode count must stay clickable across the whole pill it draws.
+        // widened by its watched tick must stay clickable across the whole pill it draws.
         let pill = tab_pill_rect(&lay, tab_y);
         if on_axis(pill.x - sx, pill.w, SCR_W, 0.0) {
             TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
@@ -1347,25 +1367,35 @@ fn draw_episodes(p: Painter) {
         let card = Rect::new(x, ep_y, EP_W, EP_H);
         // episode still + focus ring + scale-pop (shared with the chapters strip)
         crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, popped, sc);
-        // Playback state on the still — ONE mark at a time, resolved in the same order the posters
-        // resolve theirs in `widgets::card`: a resume point wins (a part-watched re-run is what the
-        // viewer is in the middle of), otherwise a finished episode carries the watched check.
-        // Without this, a fully-watched episode looked exactly like one never started. Both marks
-        // track the scaled card while it's popped.
+        // Playback STATE on the still — ONE state mark at a time, resolved in the same order the
+        // posters resolve theirs in `widgets::card`: a resume point wins (a part-watched re-run is
+        // what the viewer is in the middle of), otherwise a finished episode carries the watched
+        // check. Without this, a fully-watched episode looked exactly like one never started. Both
+        // marks track the scaled card while it's popped.
         let cr = if popped { card.scaled(sc) } else { card };
-        if ep.resume_ms > 0 && ep.dur_ms > 0 {
+        let resuming = ep.resume_ms > 0 && ep.dur_ms > 0;
+        if resuming {
             let frac = (ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0);
-            let bar = Rect::new(cr.x + 12.0, cr.y + cr.h - 16.0, cr.w - 24.0, 5.0);
+            let bar = Rect::new(
+                cr.x + EP_MARK_INSET,
+                cr.y + cr.h - EP_BAR_TOP,
+                cr.w - 2.0 * EP_MARK_INSET,
+                EP_BAR_H,
+            );
             // the CARD-BOTTOM resume pair, which is what these two tokens are documented for —
             // not the player scrubber's `RAIL_*`, which this strip used to borrow. Amber is the
             // app's one watched-state hue (the poster shelves' resume bar and unwatched angle, the
             // watched toggle's check, the badge above), so a white bar here left this tile the only
             // place in the product speaking a second one.
-            pe.rrect(bar, 2.5, 2.5, theme::RESUME_TRACK);
-            pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), 2.5, 2.5, theme::RESUME_FILL);
+            let rad = EP_BAR_H * 0.5;
+            pe.rrect(bar, rad, rad, theme::RESUME_TRACK);
+            pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), rad, rad, theme::RESUME_FILL);
         } else if ep.watched {
             crate::ui::widgets::watched_badge(pe, cr);
         }
+        // …and the DURATION, which is not a state mark and therefore rides alongside whichever one
+        // is up (see `ep_duration_pill`).
+        ep_duration_pill(pe, cr, ep, resuming);
         // under-card metadata: kicker → title → full summary → air date. The summary flows off the
         // ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title doesn't leave
         // a gap — and the fine-print date (MICRO) closes the block at the bottom. The block height
@@ -1395,6 +1425,53 @@ fn draw_episodes(p: Painter) {
             }
         }
     }
+}
+
+/// The episode still's **duration pill** — the bottom-left chip the reference (Apple TV's episode
+/// grid) puts on every tile: a play triangle and the FULL runtime on an episode you have not
+/// started, the restart glyph and what is LEFT of one you are part-way through.
+///
+/// **It is not a state mark, and that is what lets it coexist with one.** `ui/CLAUDE.md`'s rule is
+/// one watched-state vocabulary in one hue — amber corner angle / resume bar / check, never two at
+/// once — and this pill is outside it by construction: it is neutral (`BadgeStyle::OverArt`'s idle
+/// control pair, no amber), it lives in the opposite corner from the check, and what it states is a
+/// DURATION. Its glyph says what OK will do with that duration — ▶ start it, ↺ pick it back up —
+/// which is the same distinction the amber marks make about state, said about the action instead.
+/// So a finished episode shows the amber check AND `▶ 48 min`: the check is the state, the pill is
+/// how long it runs and that pressing OK would start it over. Both are true, neither is the other's
+/// second opinion. (Suppressing the pill on watched tiles was the alternative; it makes the one
+/// row of tiles a viewer scans for "how long is this" the one row that sometimes won't say.)
+///
+/// Both strings come from `ui::fmt`, and from the same FAMILY of it — `dur_long`'s "48 min" and
+/// `time_left`'s "12 min left" spell their units identically, where `dur_short`'s "48m" beside a
+/// neighbouring "12 min left" would put two spellings of a minute in one filmstrip.
+fn ep_duration_pill(p: Painter, card: Rect, ep: &metadata::Episode, resuming: bool) {
+    let Some((icon, text)) = ep_duration_note(ep, resuming) else { return };
+    // pinned to the still's bottom-left; `cy` is the chip's centre line, so its height comes from
+    // the widget rather than being guessed here
+    let cy = card.y + card.h - EP_PILL_BOT - crate::ui::widgets::BADGE_H * 0.5;
+    crate::ui::widgets::badge(
+        p,
+        card.x + EP_MARK_INSET,
+        cy,
+        &text,
+        Some(icon),
+        crate::ui::widgets::BadgeStyle::OverArt,
+    );
+}
+
+/// [`ep_duration_pill`]'s pure half — the glyph and the string, or `None` for an episode the server
+/// sent no runtime for (a pill with nothing to say is not a pill). Split out because it is the part
+/// worth pinning: the *choice* is the behaviour, while drawing it needs a font and a GL context.
+fn ep_duration_note(ep: &metadata::Episode, resuming: bool) -> Option<(crate::ui::icons::Icon, String)> {
+    if ep.dur_ms <= 0 {
+        return None;
+    }
+    Some(if resuming {
+        (crate::ui::icons::Icon::Restart, crate::ui::fmt::time_left(ep.dur_ms - ep.resume_ms))
+    } else {
+        (crate::ui::icons::Icon::Play, crate::ui::fmt::dur_long(ep.dur_ms))
+    })
 }
 
 /// "Related" — a horizontal row of portrait poster cards from the related hub. A real instance of
@@ -1535,21 +1612,15 @@ pub(crate) fn on_ok() -> bool {
             if action == HeroAction::Watched {
                 // watched toggle: scrobble/unscrobble, then re-fetch so the button state, the
                 // resume bars and the Continue Watching shelf all reflect the new view state.
-                if let Some((rk, watched, season)) =
-                    metadata::current().map(|d| (d.rk.clone(), d.watched, d.cur_season))
-                {
+                if let Some((rk, watched)) = metadata::current().map(|d| (d.rk.clone(), d.watched)) {
                     if watched {
                         crate::plex::client().unscrobble(&rk);
                     } else {
                         crate::plex::client().scrobble(&rk);
                     }
-                    // BLOCKING: the season restore below reads the refreshed item, and a
-                    // deferred landing would install cur_season 0 on top of it — clobbering the
-                    // season the user was browsing, which is exactly what this arm prevents.
-                    metadata::load_detail_now(&rk);
-                    if season != 0 {
-                        metadata::load_season(season); // keep the season the user was browsing
-                    }
+                    // the page re-reads itself, season and all. No keep-focus target: the press was
+                    // on the hero, so there is no filmstrip position to protect.
+                    refresh_view_state("");
                     crate::pms::refetch_hubs_reconcile(); // CW shelf changes with the view state
                 }
                 return false;
@@ -1624,6 +1695,126 @@ pub(crate) fn on_ok() -> bool {
         }
         _ => false,
     }
+}
+
+// ---- the episode filmstrip's press-and-hold context menu (ui/item_menu.rs) -------------------
+// Three seams, because the menu is screen-agnostic by design: it only ever REPORTS an Action, and
+// `app.rs` performs it. detail.rs supplies the item, the rect to anchor beside, and the two
+// operations an Action can turn into here.
+
+/// The focused episode's identity for the context menu — its ratingKey and whether it is watched
+/// (`viewCount >= 1`, which is EXACT for a leaf, so the row can be a true toggle). `None` unless
+/// the filmstrip actually holds focus.
+///
+/// Also `None` while a season fetch is in flight: the row is still drawing the PREVIOUS season's
+/// episodes (dimmed, under a spinner) while `cur_season` already names the new one, so a menu built
+/// from it would offer to mark the wrong episode watched — the same trap `play_episode_at` refuses
+/// the press for.
+pub(crate) fn focused_episode() -> Option<(String, bool)> {
+    if metadata::season_loading() {
+        return None;
+    }
+    let v = view();
+    if v.section != 2 {
+        return None;
+    }
+    let ep = metadata::current()?.episodes.get(v.col.max(0) as usize)?;
+    Some((ep.rk.clone(), ep.watched))
+}
+
+/// The focused episode still's DRAWN rect, in screen space — what the popover anchors BESIDE.
+///
+/// Derived from the very formulas `draw_episodes` walks (`strip_x` for the column, the live
+/// h-scroll, `section_screen_top` for the band, the cell's own pop spring for the scale), never
+/// recorded, so the panel hangs off the tile the user is looking at at the size it is really drawn.
+/// The press dip is deliberately NOT folded in: opening the menu cancels the press, so the cell is
+/// on its way back to the resting popped scale by the frame the anchor is captured.
+pub(crate) fn focused_episode_rect() -> Option<Rect> {
+    if view().section != 2 {
+        return None;
+    }
+    let i = view().col.max(0) as usize;
+    if i >= n_items(2).max(0) as usize {
+        return None;
+    }
+    // read one field at a time (as `draw_episodes` does) rather than holding a `&mut DetailView`
+    // across `section_screen_top`, which reaches for the same static
+    let top = section_screen_top(2)?;
+    let x = strip_x(i, EP_W + EP_GAP) - view().ep_hscroll.pos;
+    // episodes past the spring cap are drawn at the focus scale without animating — same fallback
+    let sc = view().ep_scale.get(i).map(|s| s.pos).unwrap_or(crate::ui::widgets::CARD_FOCUS_SCALE);
+    Some(Rect::new(x, top, EP_W, EP_H).scaled(sc))
+}
+
+/// Re-read the mounted item from the server after something changed its view state, KEEPING the
+/// season the user was browsing.
+///
+/// Shared by the hero's watched toggle and by the filmstrip's context menu, which mark different
+/// things watched — the whole show versus one of its episodes — but both need this page to be
+/// showing the truth afterwards (the tab ticks, the episode checks, the resume bars and the hero's
+/// own toggle all read the refetched item).
+/// `keep_ep` is the episode this refresh is ABOUT, if any (the filmstrip menu passes the one it
+/// just toggled; the hero passes nothing) — see [`KEEP_EP`] for why the row would otherwise scroll
+/// itself away from the tile the user just acted on.
+pub(crate) fn refresh_view_state(keep_ep: &str) {
+    let Some((rk, season)) = metadata::current().map(|d| (d.rk.clone(), d.cur_season)) else {
+        return;
+    };
+    // BLOCKING: the season restore below reads the refreshed item, and a deferred landing would
+    // install cur_season 0 on top of it — clobbering the season the user was browsing.
+    metadata::load_detail_now(&rk);
+    if season != 0 {
+        // Armed BEFORE the request, so a landing can never beat the latch into place. Season 0
+        // needs neither: `load_detail_now` already leaves the page on it, so no fetch lands and
+        // nothing resets the row.
+        if !keep_ep.is_empty() {
+            unsafe { *addr_of_mut!(KEEP_EP) = Some((keep_ep.to_string(), season)) };
+        }
+        metadata::load_season(season); // keep the season the user was browsing
+    }
+}
+
+/// The episode the filmstrip must land back on when the next season fetch lands, and the season it
+/// belongs to.
+///
+/// Armed by [`refresh_view_state`] alone, because that refetch is the one case that re-requests the
+/// season already on screen. `update`'s "a landed season starts the row over" reset is right for a
+/// genuine tab switch — it is a different list — but here the SAME list lands with one field
+/// changed, and starting over would scroll the filmstrip off the very tile whose state the user
+/// just changed, which reads as the page losing their place as a *result* of their action.
+///
+/// One-shot, and only honoured for the season it names (see [`take_kept_episode`]): a tab switch
+/// that overtakes the refresh still starts its own season over.
+static mut KEEP_EP: Option<(String, usize)> = None;
+
+/// Consume a pending keep-focus request, resolved to an episode INDEX in the list that just landed.
+/// `None` when there is none, when the landed season is not the one it was armed for, or when the
+/// episode is no longer in the list — in every one of those the row falls back to starting over.
+///
+/// Deliberately consuming even when it does not resolve: a latch that survived a landing it could
+/// not be applied to would sit there steering some later, unrelated season switch.
+fn take_kept_episode() -> Option<c_int> {
+    let (rk, season) = unsafe { (*addr_of_mut!(KEEP_EP)).take()? };
+    let d = metadata::current()?;
+    if d.cur_season != season {
+        return None;
+    }
+    d.episodes.iter().position(|e| e.rk == rk).map(|i| i as c_int)
+}
+
+/// Play the loaded season's episode `rk` ignoring its resume point — the filmstrip menu's "Play
+/// from Start". Reports whether playback should start, exactly like [`on_ok`], and leaves the
+/// resume in [`last_resume_ns`] for `app.rs` to read (which [`commit_resume`] has just zeroed).
+///
+/// Resolved by rk rather than by the focus index: the menu captured its target when it opened, and
+/// a pointer hover walking the popover's rows must not be able to retarget the press.
+pub(crate) fn play_episode_rk_from_start(rk: &str) -> bool {
+    let Some(i) = metadata::current().and_then(|d| d.episodes.iter().position(|e| e.rk == rk)) else {
+        return false;
+    };
+    let started = play_episode_at(i as c_int);
+    commit_resume(true);
+    started
 }
 
 /// The rk the person page must come BACK to — the detail item currently mounted here. Read by
@@ -2004,8 +2195,9 @@ fn draw_about(p: Painter) {
     } else {
         let mut ay = col_y + 64.0;
         for (label, desc) in access {
-            // the shared chip leaf (filled style) — cy = chip top + half its 34px height
-            crate::ui::widgets::badge(p, ax, ay + 17.0, label, crate::ui::widgets::BadgeStyle::Filled);
+            // the shared chip leaf (filled style) — cy = chip top + half its height
+            let cy = ay + crate::ui::widgets::BADGE_H * 0.5;
+            crate::ui::widgets::badge(p, ax, cy, label, None, crate::ui::widgets::BadgeStyle::Filled);
             let h = TextView::new(desc, theme::size::CAPTION, val).leading(30.0).max_lines(4).draw(p, Rect::new(ax, ay + 52.0, 500.0, 0.0));
             ay += 52.0 + h + 26.0;
         }
@@ -2356,24 +2548,136 @@ mod tests {
         mount(None, 0);
     }
 
-    /// A season tab's pill covers its whole CONTENT — the label plus the trailing note (the episode
-    /// count, or the tick a finished season wears) — and never overlaps its neighbour at the
-    /// layout's own advance. `TabLay::w` measures label + note, so a counted tab is wider than its
-    /// label alone: a pill built from the label would leave the note outside the click target.
+    /// Marking an episode watched from the filmstrip's context menu refetches the page, which
+    /// re-requests the season already on screen — and `update`'s landing handler starts the episode
+    /// row over, which is right for a tab switch and wrong here. The latch is what tells the two
+    /// apart, and every way it can be wrong ends in the SAME fallback (start over), never in a
+    /// stale latch steering a later, unrelated season switch.
+    #[test]
+    fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_tab_switch() {
+        let _serial = crate::testlock::serial();
+        let season2 = |cur_season| Detail {
+            rk: "s1".into(),
+            is_show: true,
+            cur_season,
+            episodes: vec![
+                Episode { rk: "e1".into(), ..Default::default() },
+                Episode { rk: "e2".into(), ..Default::default() },
+                Episode { rk: "e3".into(), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let arm = |rk: &str, season| unsafe { *addr_of_mut!(KEEP_EP) = Some((rk.to_string(), season)) };
+
+        // the ordinary case: the same season lands back, and the row holds the episode it acted on
+        metadata::set_current_for_test(Some(season2(2)));
+        arm("e3", 2);
+        assert_eq!(take_kept_episode(), Some(2), "the row must land back on the tile that changed");
+        assert_eq!(take_kept_episode(), None, "…and the latch is one-shot");
+
+        // a tab switch overtook the refresh: a DIFFERENT season landed, so it starts over
+        metadata::set_current_for_test(Some(season2(3)));
+        arm("e3", 2);
+        assert_eq!(take_kept_episode(), None, "a latch never applies to a season it wasn't armed for");
+        assert_eq!(unsafe { (*addr_of!(KEEP_EP)).is_none() }, true, "and is consumed all the same");
+
+        // the episode left the list (an unwatched-only filter, a server-side edit): start over
+        metadata::set_current_for_test(Some(season2(2)));
+        arm("gone", 2);
+        assert_eq!(take_kept_episode(), None);
+
+        // opening another page drops a latch the previous item armed
+        arm("e3", 2);
+        reset_view_state(view());
+        assert_eq!(take_kept_episode(), None, "a new page must not inherit the old page's latch");
+
+        mount(None, 0);
+    }
+
+    /// The duration pill says the runtime on a tile you have not started and the REMAINDER on one
+    /// you are part-way through, and its glyph names the press each of those implies (▶ start it /
+    /// ↺ pick it back up). Pinned because both halves are easy to get subtly wrong: a resuming tile
+    /// showing the full runtime is a lie about what is left, and an episode the server sent no
+    /// duration for must draw no pill at all rather than "0 min".
+    #[test]
+    fn the_duration_pill_states_runtime_before_you_start_and_the_remainder_after() {
+        use crate::ui::icons::Icon;
+        let ep = |dur_ms, resume_ms| Episode { dur_ms, resume_ms, ..Default::default() };
+
+        // never started: the play glyph and the whole runtime
+        let (icon, text) = ep_duration_note(&ep(48 * 60_000, 0), false).expect("a runtime is a pill");
+        assert!(icon == Icon::Play, "an unstarted episode's pill leads with ▶");
+        assert_eq!(text, "48 min");
+
+        // part-watched: the restart glyph and what is LEFT, not the runtime
+        let (icon, text) = ep_duration_note(&ep(60 * 60_000, 60_000), true).expect("still a pill");
+        assert!(icon == Icon::Restart, "a resumable episode's pill leads with ↺");
+        assert_eq!(text, "59 min left", "the remainder, not the runtime");
+
+        // the two strings must spell a minute the SAME way — they sit on neighbouring tiles of one
+        // filmstrip, and `dur_short`'s "48m" beside `time_left`'s "59 min left" is the exact drift
+        // `ui::fmt` exists to prevent
+        assert!(text.contains(" min"), "{text}");
+
+        // a WATCHED episode still gets one (the check badge is the state; this is the duration),
+        // and PMS clears the resume point when it scrobbles, so it reads as startable
+        let mut done = ep(48 * 60_000, 0);
+        done.watched = true;
+        let (icon, text) = ep_duration_note(&done, false).expect("a watched tile still states its runtime");
+        assert!(icon == Icon::Play);
+        assert_eq!(text, "48 min");
+
+        // nothing to say → no pill
+        assert!(ep_duration_note(&ep(0, 0), false).is_none(), "no runtime on the wire, no pill");
+    }
+
+    /// The pill and the resume bar are the two things pinned to a still's bottom edge, so the pill's
+    /// band is placed off the BAR's rather than at its own guessed inset — and it must hold at every
+    /// phase of the focus pop, since both marks ride the scaled rect.
+    #[test]
+    fn the_duration_pill_clears_the_resume_bar_at_every_pop_phase() {
+        for sc in [1.0f32, 1.03, crate::ui::widgets::CARD_FOCUS_SCALE] {
+            let cr = Rect::new(300.0, 480.0, EP_W, EP_H).scaled(sc);
+            let bar_top = cr.y + cr.h - EP_BAR_TOP;
+            let pill_bot = cr.y + cr.h - EP_PILL_BOT;
+            assert!(pill_bot <= bar_top, "the pill's bottom ({pill_bot}) sits in the bar ({bar_top})");
+            // …and the whole chip stays on the still rather than hanging off its top edge
+            assert!(pill_bot - crate::ui::widgets::BADGE_H > cr.y, "the pill overhangs the still's top");
+        }
+        // the inset is the one the shared watched badge uses, so all three marks sit on one margin
+        assert_eq!(EP_MARK_INSET, 12.0, "the still's marks share `watched_badge`'s corner inset");
+    }
+
+    /// The season tab's note is a TICK or nothing — never a count (owner call, 2026-07-29: the
+    /// strip should mark what you have finished, not file how many episodes each season holds).
+    /// Pinned because one value feeds three things: `TabPill::note_w` sizes the pill, the strip's
+    /// x-advance and the pointer's click target, so a note can never come back in only one of them.
+    #[test]
+    fn a_season_tab_notes_only_that_it_is_finished() {
+        let lay = |done| TabLay { i: 0, x: MARGIN_X, w: 0.0, label: CString::default(), done };
+        assert!(matches!(lay(true).note(), TabNote::Done), "a finished season wears the tick");
+        assert!(matches!(lay(false).note(), TabNote::None), "every other season says nothing");
+        assert_eq!(TabPill::note_w(TabNote::None), 0.0, "…and costs its label no extra width");
+        assert!(TabPill::note_w(TabNote::Done) > 0.0, "the tick reserves a band of its own");
+    }
+
+    /// A season tab's pill covers its whole CONTENT — the label plus the trailing tick a finished
+    /// season wears — and never overlaps its neighbour at the layout's own advance. `TabLay::w`
+    /// measures label + note, so a ticked tab is wider than its label alone: a pill built from the
+    /// label would leave the tick outside the click target.
     #[test]
     fn season_tab_pills_cover_their_note_and_never_overlap() {
         let top = 120.0;
         let mid = top + TAB_ROW_H * 0.5;
         let mut x = MARGIN_X;
         let mut prev: Option<Rect> = None;
-        // (label width, note width): a bare tab, a counted one, and a long title wearing a tick
+        // (label width, note width): a bare tab, a ticked one, and a long title wearing a tick
         for (lw, nw) in [(86.0f32, 0.0f32), (140.0, 34.0), (210.0, 26.0)] {
             let lay = TabLay {
                 i: 0,
                 x,
                 w: lw + nw, // exactly what tabs_layout stores: label width + TabPill::note_w
                 label: CString::default(),
-                count: CString::default(),
                 done: false,
             };
             let r = tab_pill_rect(&lay, top);
@@ -2441,7 +2745,7 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
         for lay in tabs_layout(d) {
             // `tab_pill_rect` is the frame the painter drew, in the strip's CONTENT space (the
             // painter applies `-sx` as a translate), so the pointer is converted into that space
-            // rather than the rect out of it. A tab widened by its episode-count note is therefore
+            // rather than the rect out of it. A tab widened by its watched tick is therefore
             // clickable across the note too — that width is `TabLay::w`, which measures both.
             if tab_pill_rect(&lay, top).contains(mx + sx, my) {
                 return Some((1, lay.i as c_int));
