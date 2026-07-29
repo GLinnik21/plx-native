@@ -183,6 +183,37 @@ Returns one `Metadata[0]` with everything from §2 **plus** `tagline`, `studio`,
 (streamType 1=video, 2=audio, 3=subtitle; `codec`, `language`, `languageCode`,
 `channels`, `displayTitle`).
 
+### Review scores — `Rating[]` + the flat pair (verified live 2026-07-29, PMS 1.43.2)
+
+An item carries its review scores **twice**, in two shapes:
+
+```jsonc
+"rating": 9.1,          "ratingImage":         "rottentomatoes://image.rating.ripe",
+"audienceRating": 8.5,  "audienceRatingImage": "rottentomatoes://image.rating.upright",
+"Rating": [
+  { "image": "imdb://image.rating",                     "value": 7.4, "type": "audience" },
+  { "image": "rottentomatoes://image.rating.ripe",      "value": 9.1, "type": "critic"   },
+  { "image": "rottentomatoes://image.rating.upright",   "value": 8.5, "type": "audience" },
+  { "image": "themoviedb://image.rating",               "value": 7.8, "type": "audience" }
+]
+```
+(*Luca*, ratingKey 2032, verbatim. Some items also carry a `count` per row.)
+
+- **`image` names the provider AND the icon state**, and is the ONLY thing that may pick the badge
+  art: `…rating.ripe` = fresh tomato, `…rating.rotten` = green splat, `…rating.upright` = standing
+  popcorn, `…rating.spilled` = tipped popcorn. All four occur on this library. Do **not** threshold
+  `value` to decide fresh-vs-rotten — RT's critic and audience cutoffs differ and move (*My Fault:
+  London* is 4.0 **rotten**, *Hannah Montana 20th Anniversary Special* is 6.0 **ripe**).
+- **`type` does not identify the provider.** IMDb and TMDB both arrive as `audience`; only
+  Rotten Tomatoes' tomato is ever `critic`.
+- `value` is normalised **0–10 for every provider**, including the ones that publish percentages —
+  a 91% tomato arrives as 9.1, and a TMDB 78% as 7.8.
+- **`Rating[]` is only on `/library/metadata/{rk}`.** A section listing (`/library/sections/{k}/all`)
+  sends the flat `rating`/`ratingImage`/`audienceRating`/`audienceRatingImage` pair and no array, so
+  a client that reads only the array shows nothing in a grid. Prefer the array (it is the superset
+  and carries per-score provider identity); fall back to the pair.
+- An absent score is an **omitted field**, not a 0 — so a lenient-parsed 0.0 means "no score".
+
 ### Intro / credits markers — `?includeMarkers=1` (verified live 2026-07-29, PMS 1.43.2)
 
 `Marker[]` is **omitted from the default response**, exactly like `Chapter[]`; the app asks for

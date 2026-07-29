@@ -191,6 +191,25 @@ pub const BADGE_FILL: [f32; 4] = [0.86, 0.88, 0.92, 0.20];
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
 pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
+// ── Review-score brand marks (detail hero ratings row) ───────────────────────
+// These four are the ONE place the palette borrows someone else's colour, and the exception earns
+// itself: a rating badge is a BRAND MARK, and a tomato that isn't red (or an IMDb star that isn't
+// gold) has stopped doing the badge's whole job. They tint an icon MASK only — never text, never a
+// surface — so they cannot leak into the rest of the UI. Two are the provider's exact brand hex;
+// the two Rotten Tomatoes ones are lightened a step, because RT authors its marks against white
+// and the untouched values sit too dark on this hero's scrim.
+/// Rotten Tomatoes' **fresh** red — the ripe tomato AND the upright popcorn bucket. `#f5341a`
+/// (their `#fa320a` lifted a hair).
+pub const RATING_FRESH: [f32; 4] = [0.961, 0.204, 0.102, 1.0];
+/// Rotten Tomatoes' **rotten** green — the splattered tomato and the spilled bucket. `#3ec96b`,
+/// lightened from their darker splat green. The counter-intuitive polarity (red = good, green =
+/// bad) is Rotten Tomatoes' own; don't "fix" it.
+pub const RATING_ROTTEN: [f32; 4] = [0.243, 0.788, 0.420, 1.0];
+/// IMDb gold `#f5c518` (exact) — the IMDb star.
+pub const RATING_IMDB: [f32; 4] = [0.961, 0.773, 0.094, 1.0];
+/// The Movie Database's teal `#01b4e4` (exact) — its user-score ring.
+pub const RATING_TMDB: [f32; 4] = [0.004, 0.706, 0.894, 1.0];
+
 // ── Card-glow geometry (the glow *color* is shader-baked in gfx.rs's FS_SRC/FS_IMG; only geometry
 // is tunable). The hero-grid card's wide glow pad is `consts::GLOW_PAD` (shared with off-screen
 // culling, so it has one home there).
