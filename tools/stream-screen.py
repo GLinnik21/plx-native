@@ -610,6 +610,10 @@ def source_supervisor(hub: FrameHub, stats: dict, args, w, h, min_interval_ms, r
 VALID_KEYS = {
     "up", "down", "left", "right", "ok", "enter", "select", "back", "esc",
     "pageup", "chup", "pagedown", "chdown", "play", "pause", "stop",
+    # the two halves of OK. Every other token is a TAP (the app pushes both key edges back to
+    # back), so a press-and-HOLD — which is what opens the item context menu, at press::LONG_MS
+    # = 500ms — is only expressible as `okdown`, a wait, then `okup`.
+    "okdown", "okup",
 }
 CLICK_RE = re.compile(r"^ck:\d{1,4},\d{1,4}$")  # pointer click at authored 1920x1080 coords
 

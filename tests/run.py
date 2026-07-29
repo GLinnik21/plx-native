@@ -67,6 +67,8 @@ ALL_TRIGGERS = [
     "plxnative-detailosc", "plxnative-info", "plxnative-chapters", "plxnative-profile",
     # boot-flow triggers (heroidx pins the hero + bypasses the who's-watching picker; pickuser forces it)
     "plxnative-heroidx", "plxnative-pickuser",
+    # itemmenu snaps into the grid and opens the press-and-hold card context menu (route=itemmenu)
+    "plxnative-itemmenu",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
