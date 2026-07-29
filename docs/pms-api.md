@@ -149,9 +149,20 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
   **or** the `tagKey` hex guid — both verified against the same record (`161` /
   `5d77682aeb5d26001f1de4b0`). **There is no biography, no birth date and no social handle
   here** — the record is only the tag. (`GET /library/metadata/{tagKey}` 404s; that is the wrong
-  endpoint.) A bio needs a plex.tv call, not a PMS one. Because the record adds nothing to what
-  `Role[]` already gave the caller, the app does **not** issue this request: the person page is
-  opened on the cast row's own name + thumb.
+  endpoint.) Because the record adds nothing to what `Role[]` already gave the caller, the app does
+  **not** issue this request: the person page is opened on the cast row's own name + thumb.
+- **The biography is NOT on PMS — it is on plex.tv, and it does exist.** "PMS has no biography" is
+  true and was once written down as "Plex has none", which is not. It lives at
+  `GET https://discover.provider.plex.tv/library/people/{tagKey}` (verified live 2026-07-29) and
+  carries `summary`, `bornAt`, `diedAt`, `birthPlace`, `knownFor`, `CreditType[]` (the "Actor,
+  Producer" roles line + the counts Plex's Filmography tabs show) and `External[]` (social handles).
+  Three traps, all measured: **only the `tagKey` guid works** there — the numeric `id` PMS accepts
+  for `/media` returns `404 "Invalid value provided for metadataId!"`; **`Accept: application/json`
+  is required** or you get XML; and **an unknown person is a `200` with `totalSize:0`**, not a 404,
+  so "no such person" and "the request failed" are different answers. Being a different HOST, it
+  needs DNS+TLS and therefore `net.rs`/libcurl, never the raw `stream.rs` socket. The typed client is
+  `plex/discover.rs`; a filmography list (`…/library/people/{tagKey}/credits` → `CreditGroup[]` of
+  Discover items, NOT local library rows) is documented there and not yet built.
 - **The person's titles:** `GET /library/people/{personId}/media` → `Metadata[]`, everything the
   person appears in **across EVERY library section in one request** (person 161 → 3 items;
   person 6059 → 6). This is the right call for a person page; `?actor=<id>` below is the right

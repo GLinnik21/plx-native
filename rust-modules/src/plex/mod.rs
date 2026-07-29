@@ -30,6 +30,11 @@ mod transcoder;
 pub(crate) mod account;
 pub(crate) mod session;
 
+// The plex.tv METADATA PROVIDER (`discover.provider.plex.tv`) — a third service, but one that
+// shares the account API's transport + identity headers exactly, so it only adds an
+// `impl AccountClient` block (same pattern as the PMS op files above).
+pub(crate) mod discover;
+
 // The re-exports are the public surface the call sites import.
 #[allow(unused_imports)]
 pub use client::{client, client_opt, install, Client, StreamUrl};

@@ -127,6 +127,31 @@ mod tests {
     }
 }
 
+/// A calendar date from a Plex `YYYY-MM-DD` — `"1 Feb 1921"`. ONE spelling, because the same value
+/// is now drawn by two screens: detail's episode air dates and the person page's Born/Died line.
+/// `year` is the fallback when the item carries only a year (an episode with no `originallyAvailableAt`);
+/// pass 0 when there is none, and an unparseable date yields the empty string rather than a
+/// half-formatted one — every caller draws a date line only when it is non-empty.
+pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
+    let parts: Vec<&str> = iso.split('-').collect();
+    if parts.len() == 3 {
+        if let (Ok(y), Ok(mo), Ok(da)) =
+            (parts[0].parse::<i64>(), parts[1].parse::<usize>(), parts[2].parse::<i64>())
+        {
+            const MON: [&str; 12] =
+                ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            if (1..=12).contains(&mo) {
+                return format!("{da} {} {y}", MON[mo - 1]);
+            }
+        }
+    }
+    if year > 0 {
+        year.to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// A review score, in the shape its own provider publishes it. PMS normalises every provider onto
 /// one 0–10 scale, which is not how any of them are quoted: Rotten Tomatoes and TMDB are
 /// PERCENTAGES (9.1 → "91%") and IMDb is out of ten ("7.4"). Printing the raw 9.1 beside a tomato

@@ -1684,13 +1684,17 @@ pub(crate) fn on_ok() -> bool {
             // same way — so the tile that shows a director opens the director.
             //
             // The page needs nothing this row doesn't already hold: the tag carries the name, the
-            // headshot AND the personId, so it mounts on that header and only its shelves are
-            // fetched. A row PMS sent with neither id form is simply not actionable
-            // (`person_key` empty) and raises no request, so app.rs leaves the route here.
+            // headshot AND the personId, so it mounts on that header and only the rest is fetched.
+            // A row PMS sent with neither id form is simply not actionable (`person_key` empty)
+            // and raises no request, so app.rs leaves the route here.
+            //
+            // BOTH ids go through, because they address different services: `person_key` is the
+            // LOCAL id for `/library/people/{id}/media`, while `tag_key` (the guid) is the only
+            // one plex.tv's biography provider answers to. Passing one for the other 404s.
             if let Some(c) = metadata::current().and_then(|d| d.credit(col.max(0) as usize)) {
                 let key = c.person_key();
                 if !key.is_empty() {
-                    crate::ui::person::open(&key, &c.tag, &c.thumb);
+                    crate::ui::person::open(&key, &c.tag_key, &c.tag, &c.thumb);
                 }
             }
             false
@@ -2862,23 +2866,8 @@ pub(crate) fn click(mx: f32, my: f32) -> bool {
     hit
 }
 
-/// "YYYY-MM-DD" -> "D Mon YYYY"; falls back to the year, then empty
-fn pretty_date(iso: &str, year: i64) -> String {
-    let parts: Vec<&str> = iso.split('-').collect();
-    if parts.len() == 3 {
-        if let (Ok(y), Ok(mo), Ok(da)) =
-            (parts[0].parse::<i64>(), parts[1].parse::<usize>(), parts[2].parse::<i64>())
-        {
-            const MON: [&str; 12] =
-                ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-            if (1..=12).contains(&mo) {
-                return format!("{da} {} {y}", MON[mo - 1]);
-            }
-        }
-    }
-    if year > 0 {
-        year.to_string()
-    } else {
-        String::new()
-    }
-}
+/// "YYYY-MM-DD" -> "D Mon YYYY"; falls back to the year, then empty. Moved to [`crate::ui::fmt`]
+/// when the person page's Born/Died line needed the same spelling — `fmt.rs` is the ONE home for a
+/// display formatter, and two screens printing the same date two ways is exactly the drift it
+/// exists to stop.
+use crate::ui::fmt::pretty_date;
