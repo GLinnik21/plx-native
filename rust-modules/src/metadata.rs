@@ -269,17 +269,25 @@ pub(crate) fn marker_at(markers: &[Marker], pos_ms: i64) -> Option<Marker> {
 }
 
 /// Which badge artwork a `Rating.image` string names — the provider AND its icon state, both of
-/// which the server encodes in that one string: `rottentomatoes://image.rating.ripe` is the fresh
-/// tomato, `…rating.rotten` the green splat, `…rating.upright` the standing popcorn bucket and
+/// which the server encodes in that one string. Rotten Tomatoes has **five** states:
+/// `rottentomatoes://image.rating.ripe` is the fresh tomato, `…rating.certified` the Certified
+/// Fresh one, `…rating.rotten` the green splat, `…rating.upright` the standing popcorn bucket and
 /// `…rating.spilled` the tipped one; `imdb://image.rating` and `themoviedb://image.rating` carry no
 /// state because those providers have only one mark.
 ///
 /// The art is chosen by parsing that string and **never** by comparing `value` to a threshold:
 /// Rotten Tomatoes' critic and audience cutoffs differ from each other and move, so a 6.0 can be
 /// fresh on one axis and rotten on the other — the server already knows which, and says so here.
+/// The PROVIDER likewise comes from the URI scheme and never from `Rating.type`: IMDb and TMDB both
+/// arrive as `audience`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RatingArt {
     TomatoFresh,
+    /// Certified Fresh — a distinct Rotten Tomatoes mark (the wreathed tomato), not a synonym for
+    /// [`RatingArt::TomatoFresh`]. It is a rarer, higher bar than plain fresh, the server takes the
+    /// trouble to name it, and it is the one state whose art we would otherwise be inventing by
+    /// substitution. Folding it onto the plain tomato threw that away silently.
+    TomatoCertified,
     TomatoRotten,
     PopcornUpright,
     PopcornSpilled,
@@ -288,19 +296,23 @@ pub(crate) enum RatingArt {
 }
 
 impl RatingArt {
-    /// Parse `provider://image.rating[.state]`. An unknown provider — or a Rotten Tomatoes string
-    /// with no state we recognise, which leaves tomato-vs-popcorn genuinely undetermined — yields
-    /// `None`: a score whose artwork cannot be attributed is not badged at all, rather than badged
-    /// with a guess.
+    /// Parse `provider://image.rating[.state]`. The state is the **last dot-separated segment**,
+    /// which is how Plex's own web bundle reads it (`t.substr(t.lastIndexOf(".") + 1)`) — so a
+    /// state we have never seen still lands on the right arm instead of on a prefix match.
+    ///
+    /// An unknown provider — or a Rotten Tomatoes string with no state we recognise, which leaves
+    /// tomato-vs-popcorn genuinely undetermined — yields `None`: a score whose artwork cannot be
+    /// attributed is not badged at all, rather than badged with a guess.
     pub(crate) fn from_image(image: &str) -> Option<RatingArt> {
         let (provider, rest) = image.split_once("://")?;
-        // "image.rating.ripe" → "ripe"; a stateless "image.rating" → "rating", which matches no arm
+        // "image.rating.ripe" → "ripe"; a stateless "image.rating" → "rating", which matches no arm.
+        // A path with no dot at all yields "" here where Plex yields the whole URI — both match
+        // nothing, which is the answer that matters.
         let state = rest.rsplit_once('.').map(|(_, s)| s).unwrap_or("");
         match provider {
             "rottentomatoes" => match state {
-                // `certified` is RT's Certified Fresh — still a (fresh) tomato. Not seen on this
-                // server's library, mapped defensively because the alternative is dropping a badge.
-                "ripe" | "certified" => Some(RatingArt::TomatoFresh),
+                "ripe" => Some(RatingArt::TomatoFresh),
+                "certified" => Some(RatingArt::TomatoCertified),
                 "rotten" => Some(RatingArt::TomatoRotten),
                 "upright" => Some(RatingArt::PopcornUpright),
                 "spilled" => Some(RatingArt::PopcornSpilled),
@@ -314,10 +326,11 @@ impl RatingArt {
 
     /// Display order of the badge row — Rotten Tomatoes' critic tomato, then its audience popcorn,
     /// then IMDb, then TMDB. Fixed here (rather than left as wire order) so the row reads the same
-    /// on every item; PMS returns the array alphabetically by provider.
+    /// on every item; PMS returns the array alphabetically by provider. All three tomato states
+    /// share rank 0 because they are one SLOT — the critic verdict — in three moods.
     fn rank(self) -> u8 {
         match self {
-            RatingArt::TomatoFresh | RatingArt::TomatoRotten => 0,
+            RatingArt::TomatoFresh | RatingArt::TomatoCertified | RatingArt::TomatoRotten => 0,
             RatingArt::PopcornUpright | RatingArt::PopcornSpilled => 1,
             RatingArt::Imdb => 2,
             RatingArt::Tmdb => 3,
@@ -1408,10 +1421,10 @@ mod rating_tests {
         use RatingArt::*;
         for (image, want) in [
             ("rottentomatoes://image.rating.ripe", TomatoFresh),
+            ("rottentomatoes://image.rating.certified", TomatoCertified),
             ("rottentomatoes://image.rating.rotten", TomatoRotten),
             ("rottentomatoes://image.rating.upright", PopcornUpright),
             ("rottentomatoes://image.rating.spilled", PopcornSpilled),
-            ("rottentomatoes://image.rating.certified", TomatoFresh),
             ("imdb://image.rating", Imdb),
             ("themoviedb://image.rating", Tmdb),
         ] {
@@ -1421,6 +1434,59 @@ mod rating_tests {
         // collapse ripe→rotten or upright→spilled
         assert_ne!(RatingArt::from_image("rottentomatoes://image.rating.ripe"), RatingArt::from_image("rottentomatoes://image.rating.rotten"));
         assert_ne!(RatingArt::from_image("rottentomatoes://image.rating.upright"), RatingArt::from_image("rottentomatoes://image.rating.spilled"));
+    }
+
+    /// All FIVE Rotten Tomatoes states are distinct art, and `certified` is not an alias for
+    /// `ripe`: Certified Fresh is a rarer, higher bar that the server takes the trouble to name,
+    /// and it has its own mark (the wreathed tomato). It stays in the critic SLOT, so its rank
+    /// still collides with the other tomatoes and `convert_ratings` cannot draw two of them.
+    #[test]
+    fn certified_fresh_is_its_own_mark_in_the_tomato_slot() {
+        let five = [
+            RatingArt::from_image("rottentomatoes://image.rating.ripe"),
+            RatingArt::from_image("rottentomatoes://image.rating.certified"),
+            RatingArt::from_image("rottentomatoes://image.rating.rotten"),
+            RatingArt::from_image("rottentomatoes://image.rating.upright"),
+            RatingArt::from_image("rottentomatoes://image.rating.spilled"),
+        ];
+        for (i, a) in five.iter().enumerate() {
+            assert!(a.is_some(), "state {i} unparsed");
+            for (j, b) in five.iter().enumerate() {
+                assert_eq!(i == j, a == b, "states {i} and {j} must differ");
+            }
+        }
+        assert_eq!(RatingArt::TomatoCertified.rank(), RatingArt::TomatoFresh.rank());
+        // …so an item that somehow carried both critic tomatoes still badges exactly one
+        let it = crate::plex::Metadata {
+            ratings: vec![
+                wire("rottentomatoes://image.rating.certified", 9.4, "critic"),
+                wire("rottentomatoes://image.rating.ripe", 9.4, "critic"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(arts(&convert_ratings(&it)), [RatingArt::TomatoCertified]);
+    }
+
+    /// The state is the LAST dot-separated segment, the way Plex's own bundle reads it
+    /// (`t.substr(t.lastIndexOf(".") + 1)`) — not a prefix or a `contains`. A mark chosen by
+    /// substring would answer `…rating.ripeness` (or a future `…rating.rotten_v2`) with art the
+    /// server never asked for, and this parse is the ONLY thing standing between the server's
+    /// verdict and the wrong tomato on the hero.
+    #[test]
+    fn the_state_is_the_last_dot_segment_only() {
+        for image in [
+            "rottentomatoes://image.rating.ripeness", // ripe is a PREFIX of it, not the segment
+            "rottentomatoes://image.ripe.rating",     // right word, wrong (non-final) position
+            "rottentomatoes://ripe",                  // no dot at all → no segment to read
+            "rottentomatoes://image.rating.CERTIFIED", // states arrive lower-case; no case-folding
+        ] {
+            assert_eq!(RatingArt::from_image(image), None, "{image}");
+        }
+        // a deeper path still resolves on its final segment
+        assert_eq!(
+            RatingArt::from_image("rottentomatoes://image.rating.tomato.spilled"),
+            Some(RatingArt::PopcornSpilled)
+        );
     }
 
     /// Anything we cannot attribute is dropped rather than guessed at: an unknown provider, a

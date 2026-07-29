@@ -1,1 +1,6 @@
-<svg viewBox="0 0 24 24" fill="#ffffff"><path d="M12 1.9 L14.7 9.0 L22.1 9.3 L16.3 13.9 L18.2 21.1 L12 17.0 L5.8 21.1 L7.7 13.9 L1.9 9.3 L9.3 9.0 Z"/></svg>
+<!-- IMDb (`imdb://image.rating`) — a five-point star, chunky (inner/outer 0.45) so the points
+     still have body after a 34px raster.
+     ONE path, every subpath clockwise: see ui/icons.rs for why that is the rule. -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <path d="M 12 2.11 L 14.89 9.06 L 22.4 9.67 L 16.68 14.56 L 18.43 21.89 L 12 17.97 L 5.57 21.89 L 7.32 14.56 L 1.6 9.67 L 9.11 9.06 Z"/>
+</svg>
