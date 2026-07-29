@@ -577,10 +577,14 @@ fn teardown(mt: &MainThread, for_reload: bool) {
             crate::stream::http_close(p);
         }
     }
-    // final position report (state=stopped) so the server commits the resume point
-    if let Some((rk, pos, dur)) = final_report {
-        crate::route::report_timeline(&rk, crate::plex::TimelineState::Stopped, pos, dur);
-        log(&format!("timeline stopped t={}s/{}s", pos / 1000, dur / 1000));
+    // Final position report (state=stopped, so the server commits the resume point) + the
+    // server-side transcode stop, both dispatched to a worker. They used to run inline HERE and
+    // twelve lines below — two blocking PMS round trips on the SDL thread, ~17 s each worst case,
+    // on 100% of real stops. `scrobble_stop` reads and clears route's session statics on THIS
+    // thread and hands the worker owned copies; `plex_run` drains it at exit so the report still
+    // lands. Skipped for a reload, which is not a stop.
+    if !for_reload {
+        crate::route::scrobble_stop(final_report);
     }
     // 3. unload + destruct the pipeline, release the plane. (Kodi waits for UNLOADCOMPLETED before
     // destructing, but on webOS 4.5 that event arrives as smp_cb type=23 with no detectable string,
@@ -606,8 +610,7 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     SHARED.reset_session();
     TX.reset();
     if !for_reload {
-        crate::route::stop_transcode();
-        crate::route::clear_url();
+        crate::route::clear_url(); // the transcode stop rode out with `scrobble_stop` above
     }
     log("stop_bufferfeed: torn down");
     // Engine (hs/aq boxes, payload) drops here — after all joins
