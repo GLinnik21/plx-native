@@ -24,6 +24,14 @@ use std::ptr::addr_of_mut;
 // draw before open must not panic, so view() builds a default DetailView on first touch.
 struct DetailView {
     selected: c_int,
+    /// The ratingKey the page is pointed at, kept so `reselect` can re-resolve `selected` while the
+    /// fetch is still in flight. `selected` is an INDEX into a catalog that a hub refetch rebuilds
+    /// wholesale (Continue Watching re-sorts by `lastViewedAt`, so every row before the just-played
+    /// item shifts) — the index is only meaningful next to the identity that produced it, and
+    /// `metadata::current()` is deliberately None for the whole 2-5 round-trip window (see
+    /// `open_rk`). Without this, a refetch landing inside that window left `selected` naming a
+    /// different movie for the rest of the visit.
+    mounted_rk: String,
     section: c_int, // 0=hero buttons, 1=season tabs, 2=episodes, 3=related, 4=cast, 5=about
     col: c_int,     // focused item within the section
     // the below-hero sections are a shared ScrollColumn: it owns the vertical scroll spring, the
@@ -54,6 +62,7 @@ impl DetailView {
     fn new() -> Self {
         Self {
             selected: -1,
+            mounted_rk: String::new(),
             section: 0,
             col: 0,
             column: ScrollColumn::new(CONTENT_TOP, TOP_MARGIN), // top re-derived per frame (update)
@@ -308,6 +317,16 @@ fn reset_view_state(v: &mut DetailView) {
     v.column.scroll.jump(0.0);
     v.ep_hscroll.jump(0.0);
     v.tab_hscroll.jump(0.0);
+    // Related and Cast are `CardRow`s, and their scroll offset is retained state exactly like the
+    // two h-scrolls above — it just isn't a field we can `jump`, because a CardRow's scroll/lift/
+    // per-cell pop springs are private to card_row.rs. Left alone, opening a second item inherited
+    // the previous one's horizontal position: a Related row scrolled six posters deep for the last
+    // movie opened the next one parked mid-poster, with the first few items off-screen left.
+    // Re-seating the whole component is the reset — `CardRow::new()` is the same const value the
+    // `DetailView::new()` constructor uses, and its one non-spring field (`base_y`) is written only
+    // by home's grid, never by detail (detail's rows sit at the ScrollColumn's local origin).
+    v.related = CardRow::new();
+    v.cast = CardRow::new();
 }
 
 /// Open the detail page for a catalog row. BLOCKING: its only caller is the headless
@@ -320,6 +339,7 @@ pub(crate) fn open(idx: c_int) {
     reset_view_state(v);
     if idx >= 0 {
         if let Some(m) = crate::pms::movie(idx as usize) {
+            v.mounted_rk = m.rk.clone(); // keep the index reconcilable — see `reselect`
             if !m.rk.is_empty() {
                 metadata::load_detail_now(&m.rk);
             }
@@ -330,7 +350,9 @@ pub(crate) fn open(idx: c_int) {
 /// Leave the detail page (drop the loaded item).
 pub(crate) fn close() {
     metadata::clear();
-    view().selected = -1;
+    let v = view();
+    v.selected = -1;
+    v.mounted_rk.clear(); // a closed page must not be reconciled by a late refetch
 }
 
 pub(crate) fn move_focus(sym: c_int) {
@@ -1198,7 +1220,14 @@ pub(crate) fn on_ok() -> bool {
 /// Re-resolve the selected catalog row after a hub refetch rebuilt the catalog underneath an open
 /// detail page (indices move; the rk is the stable identity).
 pub(crate) fn reselect() {
-    if let Some(rk) = metadata::current().map(|d| d.rk.clone()) {
+    // Fall back to the mounted rk when the fetch is still in flight: `open_rk` clears CURRENT for
+    // that whole window on purpose, and a refetch landing inside it would otherwise leave
+    // `selected` pointing into the OLD catalog's ordering. Re-pointing an index only ever needed
+    // the item's identity, never its loaded detail.
+    let rk = metadata::current()
+        .map(|d| d.rk.clone())
+        .unwrap_or_else(|| view().mounted_rk.clone());
+    if !rk.is_empty() {
         view().selected = crate::pms::index_of_rk(&rk);
     }
 }
@@ -1209,6 +1238,7 @@ fn mount_rk(rk: &str) {
     let idx = crate::pms::index_of_rk(rk);
     let v = view();
     v.selected = idx;
+    v.mounted_rk = rk.to_string();
     reset_view_state(v);
 }
 
