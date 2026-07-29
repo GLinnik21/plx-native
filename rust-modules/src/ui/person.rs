@@ -440,30 +440,22 @@ pub(crate) fn draw() {
 /// from the child's local origin — the `ScrollColumn` has already translated to the block top.
 fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     let portrait = Rect::new((SCR_W - PORTRAIT_D) * 0.5, 0.0, PORTRAIT_D, PORTRAIT_D);
+    // `Art::Person`, not `Thumb` — the SAME art case the credits shelf this page was opened from
+    // draws, so a person with no headshot wears the person glyph here exactly as their circle did
+    // there. It also draws that glyph only for an EMPTY key, never for a texture still resolving,
+    // which is the distinction a hand-rolled `thumb.is_empty()` branch here got wrong: it would
+    // have flashed "no photo" on every portrait for the length of its fetch.
     // NEVER pixel-snapped: this is scaled art, and snapping it would fight the transcoder's
     // resampling exactly the way snapping a poster does.
-    if person.thumb.is_empty() {
-        // no headshot on file — the person glyph on a placeholder disc, the same fallback the
-        // profile chip uses, so an art-less person still reads as a person
-        p.rrect_sheened(portrait, PORTRAIT_D * 0.5, theme::CARD_PLACEHOLDER);
-        let d = (PORTRAIT_D * 0.5).round();
-        crate::ui::icons::draw(
-            p,
-            crate::ui::icons::Icon::User,
-            Rect::new(portrait.cx() - d * 0.5, portrait.cy() - d * 0.5, d, d),
-            theme::TEXT_TERTIARY,
-        );
-    } else {
-        crate::ui::widgets::card(
-            p,
-            portrait,
-            Art::Thumb { key: &person.thumb, res: PORTRAIT_RES },
-            PORTRAIT_D * 0.5,
-            false,
-            1.0,
-            0.0,
-        );
-    }
+    crate::ui::widgets::card(
+        p,
+        portrait,
+        Art::Person { key: &person.thumb, res: PORTRAIT_RES },
+        PORTRAIT_D * 0.5,
+        false,
+        1.0,
+        0.0,
+    );
 
     let name_y = PORTRAIT_D + NAME_GAP;
     Label::new(sc.name_c.as_ptr(), theme::size::HERO, theme::TEXT_PRIMARY)
@@ -599,6 +591,13 @@ mod tests {
         seed(2, 0);
         scene().requested = true;
         scene().from_rk = "2005".to_string();
+        // the detail page we came from is still loaded, which is `leave`'s common case AND keeps
+        // this test from spawning a re-open worker it has no use for (a stray background thread
+        // perturbs `stream.rs`'s process-wide fd count — see the note in that test)
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            rk: "2005".to_string(),
+            ..Default::default()
+        }));
 
         leave();
 
