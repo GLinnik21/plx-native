@@ -11,6 +11,10 @@
 //!
 //! Tokens (`Pin.auth_token`, `Resource.access_token`, `SwitchedUser.auth_token`) are secrets: they
 //! are never logged here and never printed by callers.
+//!
+//! `discover.rs` is this client's op-file sibling: the plex.tv **metadata provider** speaks the
+//! same transport and the same identity headers, so it adds an `impl AccountClient` block rather
+//! than a second client — which is why [`AccountClient::get`] is `pub(super)`.
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
@@ -49,7 +53,9 @@ impl AccountClient {
         h
     }
 
-    fn get<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
+    /// `pub(super)` so the sibling op file `discover.rs` can add its `impl AccountClient` block on
+    /// top of this ONE transport + identity choke point instead of hand-rolling a second one.
+    pub(super) fn get<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
         let resp = crate::net::https_get(url, &self.headers())?;
         if !resp.ok() {
             return None;
