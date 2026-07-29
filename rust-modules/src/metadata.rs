@@ -77,7 +77,9 @@ pub(crate) struct Episode {
     pub(crate) acodec: String, // Media[0].audioCodec
 }
 
-#[derive(Default)]
+// Deliberately NOT `Default`: every construction site spells every field, so adding one to a
+// season is a compile error at each of them rather than a silent zero (the counts below are
+// exactly the kind of field that reads as a legitimate value when it defaults).
 pub(crate) struct Season {
     pub(crate) rk: String,
     pub(crate) index: i64,
@@ -1094,8 +1096,8 @@ mod tests {
                 rk: rk.to_string(),
                 is_show: true,
                 seasons: vec![
-                    Season { rk: "sk1".to_string(), index: 1, title: "Season 1".to_string(), ..Default::default() },
-                    Season { rk: "sk2".to_string(), index: 2, title: "Season 2".to_string(), ..Default::default() },
+                    Season { rk: "sk1".to_string(), index: 1, title: "Season 1".to_string(), leaf_count: 0, viewed_leaf_count: 0 },
+                    Season { rk: "sk2".to_string(), index: 2, title: "Season 2".to_string(), leaf_count: 0, viewed_leaf_count: 0 },
                 ],
                 episodes: eps.iter().map(|e| episode(e)).collect(),
                 cur_season: cur,
@@ -1207,9 +1209,11 @@ mod tests {
     #[test]
     fn a_season_is_watched_only_when_the_server_counted_episodes_and_all_of_them_are_seen() {
         let season = |leaf: i64, viewed: i64| Season {
+            rk: String::new(),
+            index: 0,
+            title: String::new(),
             leaf_count: leaf,
             viewed_leaf_count: viewed,
-            ..Default::default()
         };
         assert!(season(10, 10).watched(), "every episode seen");
         assert!(!season(10, 1).watched(), "one episode in is not watched");

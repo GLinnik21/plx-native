@@ -464,6 +464,13 @@ impl TabLay {
 /// Each tab carries a quiet second fact past its name: how many episodes the season holds, or a
 /// tick once they are all watched (`metadata::Season::watched` is the ONE rule for that, shared
 /// with the item-level watched state). A season the server sent no `leafCount` for shows neither.
+///
+/// COST: this is uncached and runs on the draw path (and again per frame while the tab row holds
+/// focus, through `tab_focus_geom`), so it is one `CString` + one `text_width` per season per call
+/// — and the count adds a second of each. Both are cheap now that `text::text_width` is a
+/// `TTF_SizeUTF8` metrics walk rather than a rasterize+upload, but a many-season strip (Top Gear)
+/// is the shape that would want the fingerprinted cache `ep_meta_h` uses, and no FPS scene covers
+/// it: `fps:detail-transition` is a MOVIE, which returns from `draw_tabs` before reaching here.
 fn tabs_layout(d: &crate::metadata::Detail) -> Vec<TabLay> {
     let mut x = MARGIN_X;
     let mut out = Vec::with_capacity(d.seasons.len());
