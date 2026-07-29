@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(marker_band(seg(100, 200, false), 0, SX, SW), None);
         assert_eq!(marker_band(seg(1_000, 1_100, false), DUR, SX, SW), None);
         assert_eq!(marker_band(seg(300, 300, false), DUR, SX, SW), None);
-
+    }
     /// The ring only goes back to the scrubber on the EDGE where a stand-in vanished under it.
     /// As a steady state (`is_discs() && focused`, which is how it shipped) it fired on every
     /// frame the user had walked UP to the Subtitles/Audio discs, so focus could not rest there
@@ -833,7 +833,7 @@ mod tests {
         // nothing to take back if the ring is elsewhere, or if a stand-in still owns the row
         assert!(!standin_left_the_ring(true, discs, false));
         assert!(!standin_left_the_ring(true, skip, true));
-
+    }
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 0.01
     }
