@@ -344,6 +344,34 @@ The rule for new code, recorded in `engine.rs` and `player/CLAUDE.md`: **take th
 reach the seam or the Engine.** `arm_seek`/`resume_at` are main-thread too and deliberately do not
 take one — if it spreads to everything that merely runs on main, it stops carrying information.
 
+### The audit round — all five findings closed (2026-07-29)
+
+The nine-step plan finished, then an adversarial audit of the whole range (`4e7c4b0..HEAD`, 5 lenses
+→ 18 raw → 9 verified → 5 confirmed) found what was left. **Every survivor was the same class: a
+cancellation gap.** No data race, no UAF, nothing wrong in the primitives. Landed in order of value:
+
+| Finding | Fix | Evidence |
+|---|---|---|
+| `ff::seek_cb` had no abort guard | mirror `read_cb`'s check | host test: **9 accepts for 8 hops** unguarded — one full `http_open` per hop, not the single wasted open static review predicted |
+| a failed `/children` landed as an empty season | `Option` failure model, matching the detail sibling | host test fails on the old `pump_season` |
+| teardown's 2 UNCONDITIONAL blocking POSTs | `route::scrobble_stop` onto a worker, drained at exit | `/status/sessions` empty 6 s after BACK — the stopped report lands from the worker |
+| teardown joined the reporter's POST | per-session `ReportStop`; the join rides out with the scrobble worker | **6974 ms → 0.5 s**, measured with `tools/netcond.py` |
+| `http_shutdown` vs `close_owned` on a recycled fd | one gate over both, fd re-read under it | structural; no host-reproducible test, and said so |
+
+**The lesson worth keeping is about method, not any one bug.** Four of the five were fault-conditional
+— invisible on a healthy LAN, where the measured teardown-join baseline is `demux 0ms media 0ms
+timeline 0ms`. They were argued about for two sessions and settled in one, by building
+`tools/netcond.py` and making the server misbehave on demand. Two things it corrected on contact:
+the reporter freeze was real (7 s of parked frame loop, exactly `SO_RCVTIMEO` minus elapsed), and a
+`POST /playQueues` failure that looked like a regression was the proxy's own artifact — confirmed by
+re-running direct. **Condition the network before theorising about a network failure.**
+
+The one fix that did not come from the audit's own proposal is the reporter's. The obvious remedy
+was a cancellation path — thread a caller-owned socket through four layers. The real reason the join
+existed was that the reporter's stop flag lived in `SHARED`, which `reset_session` clears at the end
+of teardown, so a reporter still parked in its POST would resurrect. Per-session ownership removed
+the need to join on the main thread at all, and deleted shared state instead of adding a mechanism.
+
 ### Pre-existing failure, not ours
 
 `morning_show_seek_rapid` fails on **clean HEAD** with the identical message (`only 1
