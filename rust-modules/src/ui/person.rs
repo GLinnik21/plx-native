@@ -40,7 +40,10 @@ use std::ptr::addr_of_mut;
 /// Shelves, in flow order. Kind 0 = Movies, 1 = Shows — the same order `crate::person`'s store
 /// uses, so an index means one thing across the store, the focus model and the hit-test.
 const NSHELF: usize = 2;
-const SHELF_TITLE: [&str; NSHELF] = ["Movies", "Shows"];
+/// Headings as C-string LITERALS, not `&str` — they are drawn every frame, and `CString::new`
+/// per shelf per frame is a heap allocation the draw path does not need (the same reason
+/// `detail.rs` writes `c"Related"` / `c"Cast & Crew"`).
+const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
 
 /// Portrait diameter. Requested from the image transcoder at 300×300 — the SAME size the detail
 /// page's cast circles ask for, so arriving here from a headshot is a poster-cache HIT, not a
@@ -91,10 +94,13 @@ struct Scene {
     from_rk: String,
     /// a cast headshot was just activated; app.rs takes this and routes (see [`take_request`])
     requested: bool,
+    /// The name, NUL-terminated once at [`open`] rather than per frame. `Label` holds a
+    /// non-owning pointer, so this must outlive the draw — a field does; a temporary would not.
+    name_c: CString,
 }
 
 impl Scene {
-    const fn new() -> Self {
+    fn new() -> Self {
         Scene {
             focus_kind: 0,
             col: [0; NSHELF],
@@ -103,6 +109,7 @@ impl Scene {
             spin_ms: 0.0,
             from_rk: String::new(),
             requested: false,
+            name_c: CString::default(),
         }
     }
 }
@@ -164,7 +171,7 @@ impl Column for Scene {
     fn draw_child(&self, i: usize, _env: &Env, p: Painter) {
         let Some(person) = crate::person::current() else { return };
         if i == 0 {
-            draw_header(p, person);
+            draw_header(p, person, self);
             return;
         }
         let (kinds, n) = present(person);
@@ -242,6 +249,7 @@ pub(crate) fn open(key: &str, name: &str, thumb: &str) {
     sc.column.scroll.jump(0.0);
     sc.spin_ms = 0.0;
     sc.from_rk = crate::ui::detail::mounted_rk();
+    sc.name_c = CString::new(name).unwrap_or_default();
     sc.requested = true;
 }
 
@@ -257,7 +265,10 @@ pub(crate) fn take_request() -> bool {
 /// that item unless this page opened a DIFFERENT one in the meantime, in which case it is
 /// re-opened by rk (async — the page mounts on the catalog row this frame).
 pub(crate) fn leave() {
-    let from = scene().from_rk.clone();
+    let from = std::mem::take(&mut scene().from_rk);
+    // and drop any un-consumed request with it: `requested` is a LATCH, and one left set here
+    // would fire on some unrelated OK several screens later
+    scene().requested = false;
     let same = crate::metadata::current().map(|d| d.rk == from).unwrap_or(false);
     if !same && !from.is_empty() {
         crate::ui::detail::open_rk(&from);
@@ -290,11 +301,14 @@ pub(crate) fn on_ok() -> Action {
 // ---- update ----------------------------------------------------------------------------------
 
 pub(crate) fn update(dt: f32) {
-    let sc = scene();
-    sc.spin_ms += dt * 1000.0;
+    // BOTH of these reach `scene()` themselves, so they run BEFORE this function takes its own
+    // `&'static mut` — holding one across a call that mints a second is aliasing UB, not a lint.
+    // (`detail.rs::update` carries the same note for the same reason.)
     if crate::person::pump() {
         clamp_focus();
     }
+    let sc = scene();
+    sc.spin_ms += dt * 1000.0;
     let n_items = |k: usize| crate::person::current().map(|p| p.shelf(k).len()).unwrap_or(0);
     for k in 0..NSHELF {
         // a shelf that does not hold focus freezes its scroll (CardRow's `None` contract) — the
@@ -350,27 +364,36 @@ pub(crate) fn move_focus(sym: c_uint) {
     clamp_focus();
 }
 
-/// Screen-space rect of shelf `kind`'s tile `i` — the ONE geometry the draw and the pointer
-/// hit-test share, so a click can never land on a card that isn't where it looks.
-fn tile_rect(sc: &Scene, p: &Person, kind: usize, i: usize) -> Option<Rect> {
-    let (kinds, n) = present(p);
-    let pos = kinds[..n].iter().position(|&k| k == kind)?;
-    let top = sc.column.child_top(sc, pos + 1) - sc.column.scroll.pos;
-    let x = MARGIN_X + i as f32 * (CARD_W + GAP) - sc.shelves[kind].scroll_x();
-    Some(Rect::new(x, top + SHELF_LABEL_H, CARD_W, CARD_H))
+/// Screen-space y of shelf `kind`'s poster row, given its flow position among the present
+/// shelves. The ONE vertical geometry the draw and the pointer hit-test share.
+fn shelf_row_y(sc: &Scene, pos: usize) -> f32 {
+    sc.column.child_top(sc, pos + 1) - sc.column.scroll.pos + SHELF_LABEL_H
 }
 
 /// The shelf tile under the pointer, or None in the gaps.
+///
+/// O(VISIBLE), deliberately — the same discipline `library.rs::cell_at` documents. Two things
+/// make it that: the per-shelf `row_y` is computed ONCE outside the column loop (it goes through
+/// `child_top` → `header_h` → the text cap band, which is a cache scan, so calling it per tile
+/// re-measured the whole flow ~48 times per pointer motion), and the column is derived
+/// arithmetically from x instead of being searched for.
 fn tile_at(mx: f32, my: f32) -> Option<(usize, usize)> {
     let sc = scene();
     let p = crate::person::current()?;
     let (kinds, n) = present(p);
-    for &kind in &kinds[..n] {
-        for i in 0..p.shelf(kind).len() {
-            if tile_rect(sc, p, kind, i).map(|r| r.contains(mx, my)).unwrap_or(false) {
-                return Some((kind, i));
-            }
+    for (pos, &kind) in kinds[..n].iter().enumerate() {
+        let row_y = shelf_row_y(sc, pos);
+        if my < row_y || my > row_y + CARD_H {
+            continue; // not in this shelf's band
         }
+        let slot = CARD_W + GAP;
+        let x = mx - (MARGIN_X - sc.shelves[kind].scroll_x());
+        if x < 0.0 {
+            return None;
+        }
+        let i = (x / slot) as usize;
+        // reject the inter-card gap: only the card's own width is a hit
+        return (i < p.shelf(kind).len() && x - i as f32 * slot <= CARD_W).then_some((kind, i));
     }
     None
 }
@@ -415,7 +438,7 @@ pub(crate) fn draw() {
 
 /// The header: centred circular portrait, the name, and (when one exists) the 3-line bio. Drawn
 /// from the child's local origin — the `ScrollColumn` has already translated to the block top.
-fn draw_header(p: Painter, person: &Person) {
+fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     let portrait = Rect::new((SCR_W - PORTRAIT_D) * 0.5, 0.0, PORTRAIT_D, PORTRAIT_D);
     // NEVER pixel-snapped: this is scaled art, and snapping it would fight the transcoder's
     // resampling exactly the way snapping a poster does.
@@ -443,13 +466,11 @@ fn draw_header(p: Painter, person: &Person) {
     }
 
     let name_y = PORTRAIT_D + NAME_GAP;
-    if let Ok(nc) = CString::new(person.name.clone()) {
-        Label::new(nc.as_ptr(), theme::size::HERO, theme::TEXT_PRIMARY)
-            .bold()
-            .h(HAlign::Center)
-            .v(VAlign::CapTop)
-            .draw(p, Rect::new(0.0, name_y, SCR_W, 0.0));
-    }
+    Label::new(sc.name_c.as_ptr(), theme::size::HERO, theme::TEXT_PRIMARY)
+        .bold()
+        .h(HAlign::Center)
+        .v(VAlign::CapTop)
+        .draw(p, Rect::new(0.0, name_y, SCR_W, 0.0));
     if !person.bio.is_empty() {
         let by = name_y + cap_h(theme::size::HERO, 1) + BIO_GAP;
         bio_view(&person.bio).draw(p, Rect::new((SCR_W - BIO_W) * 0.5, by, BIO_W, 0.0));
@@ -464,8 +485,7 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
     let items = person.shelf(kind);
     let row = &sc.shelves[kind];
     let focus_col = if sc.focus_kind == kind { sc.col[kind] } else { -1 };
-    let Ok(head) = CString::new(SHELF_TITLE[kind]) else { return };
-    Label::new(head.as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING)
+    Label::new(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING)
         .bold()
         .v(VAlign::CapTop)
         .draw(p, Rect::new(MARGIN_X, -row.lift(), SCR_W, 0.0));
@@ -567,6 +587,24 @@ mod tests {
         assert_eq!(scene().col[1], 0, "the vanished shelf's remembered column clamps too");
         assert_eq!(focused_item().map(|m| m.rk.clone()), Some("m0".to_string()));
         crate::person::close();
+    }
+
+    /// `leave()` must drop the un-consumed request as well as the return rk. `requested` is a
+    /// LATCH — `detail::on_ok`'s cast arm raises it and only app.rs's per-frame drain lowers it —
+    /// so one left set here fires on an unrelated OK several screens later and teleports the user
+    /// onto an actor page they never asked for.
+    #[test]
+    fn leaving_drops_the_un_consumed_request_and_the_return_rk() {
+        let _serial = crate::testlock::serial();
+        seed(2, 0);
+        scene().requested = true;
+        scene().from_rk = "2005".to_string();
+
+        leave();
+
+        assert!(!take_request(), "the request latched past the page it belonged to");
+        assert!(scene().from_rk.is_empty(), "a stale return rk survived the page");
+        assert!(crate::person::current().is_none());
     }
 
     /// The header's own height needs the text stack (the name's cap band), which the host suite

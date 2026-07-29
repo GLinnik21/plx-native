@@ -666,7 +666,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// Open the focused Library card's detail page — the ONE library-card activation
         /// (OK-press commit AND pointer click). Library cards are movies/shows, so activation is
         /// always the detail page (playback then starts from there).
-        fn open_library_card(route: &mut Route, opened_from_library: &mut bool) {
+        fn open_library_card(route: &mut Route, opened_from_library: &mut bool, opened_from_person: &mut bool) {
             let Some(mm) = crate::ui::library::focused_item() else { return };
             if mm.rk.is_empty() {
                 return;
@@ -674,6 +674,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let rk = mm.rk.clone();
             crate::ui::detail::open_rk(&rk);
             *opened_from_library = true;
+            // this detail page hangs off the LIBRARY now; any older person trail is superseded
+            // (leaving it set sent BACK to an actor page reached from a different item entirely)
+            *opened_from_person = false;
             *route = Route::Detail;
         }
 
@@ -940,14 +943,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             route: &mut Route,
             played_from_detail: &mut bool,
             opened_from_library: &mut bool,
+            opened_from_person: &mut bool,
             hud_nav: &mut HudNav,
         ) {
-            // every Home-originated activation clears the library return-trail HERE (it was
-            // hand-reset at each call site before — a set-a-flag-in-N-places smell)
+            // every Home-originated activation clears the return-trail HERE (it was hand-reset at
+            // each call site before — a set-a-flag-in-N-places smell). BOTH flags: a trail left
+            // over from a person page is as stale as a library one once the user is acting on
+            // Home, and a live `person` store would otherwise send a later BACK to an actor page
+            // reached from a completely different item.
             *opened_from_library = false;
+            *opened_from_person = false;
             // A Home with no shelves is the loading/empty/error read-out, whose only control is
             // Retry — it takes the press unless it was the top band (chip / tab pills), which
             // stay usable precisely because they are the escapes from an empty Home.
+            // NB both trail flags are cleared ABOVE this early return: a Retry press is still the
+            // user acting on Home, so a stale trail must not survive it.
             if crate::ui::home::status_activate(hf) {
                 return;
             }
@@ -1637,7 +1647,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if crate::ui::home::snap_pos() < 0.5 {
                                 // hero (Play pill / chip / pills / chevron): activate immediately.
                                 let hf = crate::ui::home::hero_focus();
-                                home_activate(mt, hf, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
+                                home_activate(mt, hf, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut opened_from_person, &mut hud_nav);
                             } else {
                                 // grid card: tvOS press — dip the focused card now, activate on the
                                 // spring-back (committed from the per-frame loop). Nav cancels, so the
@@ -1921,14 +1931,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             let b = crate::ui::home::hero_button_at(cx, cy);
                             if b >= 0 {
                                 crate::ui::home::set_hero_focus(b);
-                                home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
+                                home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut opened_from_person, &mut hud_nav);
                                 if b == 2 {
                                     ptr_hold_pager = last_input;
                                 }
                             }
                         } else if crate::ui::home::home_card_click(cx, cy) {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
-                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
+                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut opened_from_person, &mut hud_nav);
                         }
                     } else if matches!(route, Route::Library) {
                         let cx = rd_i32(&ev, 20) as f32;
@@ -1936,7 +1946,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         match crate::ui::library::click(cx, cy) {
                             crate::ui::library::Action::GoHome => route = Route::Home,
                             crate::ui::library::Action::Card => {
-                                open_library_card(&mut route, &mut opened_from_library);
+                                open_library_card(&mut route, &mut opened_from_library, &mut opened_from_person);
                             }
                             crate::ui::library::Action::None => {}
                         }
@@ -2147,10 +2157,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // cast row → the person page (detailsec/detailcol pick the headshot); the
                         // press animation is skipped on purpose, this is the activation only.
                         if std::path::Path::new("/tmp/plxnative-detailok").exists() {
-                            crate::ui::detail::on_ok();
-                            if crate::ui::person::take_request() {
-                                route = Route::Person;
-                            }
+                            crate::ui::detail::on_ok(); // a cast row raises a person request; the
+                            // per-frame drain below routes on it, like every other OK path
                         }
                         // dev: /tmp/plxnative-detailplay activates the focused control (headless play test)
                         if std::path::Path::new("/tmp/plxnative-detailplay").exists()
@@ -2556,15 +2564,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     ok_armed = false;
                     match route {
                         Route::Home | Route::Account => {
-                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut hud_nav);
+                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut opened_from_library, &mut opened_from_person, &mut hud_nav);
                         }
-                        Route::Library => open_library_card(&mut route, &mut opened_from_library),
+                        Route::Library => open_library_card(&mut route, &mut opened_from_library, &mut opened_from_person),
                         Route::Detail => {
                             if crate::ui::detail::on_ok() {
                                 start_playback(mt, crate::ui::detail::last_resume_ns(), true, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut hud_nav);
-                            } else if crate::ui::person::take_request() {
-                                // a cast headshot: `on_ok` loaded the person store, this routes to it
-                                route = Route::Person;
                             }
                         }
                         Route::Person => {
@@ -2578,6 +2583,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else if !crate::ui::press::is_active() {
                     ok_armed = false; // long-press / cancelled — disarm without activating
                 }
+            }
+
+            // The ONE consumer of a cast-row person request, drained every frame whatever the
+            // route. `detail::on_ok`'s cast arm raises it, and it is reached from three places
+            // (the immediate OK, the press-commit above, and the `plxnative-detailok`/-detailplay
+            // dev triggers) — polling next to each of those left the flag SET on any path that
+            // didn't poll, and a set flag then fired on an unrelated OK several screens later.
+            // One drain cannot latch. Routing here also supersedes the old person trail: the
+            // detail page being left is what this new page hangs off now.
+            if crate::ui::person::take_request() && !matches!(route, Route::Player { .. }) {
+                opened_from_person = false;
+                route = Route::Person;
             }
 
             // login flow: install resolved creds on the MAIN thread, then follow the flow phase →
