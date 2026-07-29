@@ -867,6 +867,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         set_scrub(-1);
                         close_player_overlays();
                         crate::player::suspend_bufferfeed(mt); // preserve the session for a clean fg reload
+                        // …and drop any play resolve still in flight. `start_playback` flips to
+                        // Route::Player as soon as a resolve starts, with NO engine behind it, so
+                        // this arm fires during that whole window — and `suspend_bufferfeed` is a
+                        // no-op when there is no engine yet. Without this the plan lands later in
+                        // the route-UNCONDITIONAL `pump_play` arm and starts playback with the UI
+                        // on Home, where OK/Stop/seek and the EOS teardown are all route-gated:
+                        // audio and video running that the user cannot pause or end.
+                        crate::route::cancel_play();
                         route = Route::Home;
                     }
                 } else if et == 0x105 || et == 0x106 {
@@ -2079,7 +2087,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if r > 0 {
                     crate::player::resume_at(r);
                 }
-                crate::player::start_bufferfeed(mt);
+                // A live engine with the route anywhere but Player is unrecoverable BY THE USER —
+                // every transport key and the EOS teardown are route-gated — so repair the
+                // invariant here rather than trust that no path can violate it. The one that
+                // could is cancelled above; this is the backstop, and it is the cheaper half.
+                if crate::player::start_bufferfeed(mt) && !matches!(route, Route::Player { .. }) {
+                    log("pump_play: engine started off-route → restoring Route::Player");
+                    route = Route::Player { overlay: Overlay::None };
+                }
             }
             // Async detail load: install the worker's item into CURRENT. Route-unconditional for
             // the same reason as pump_play — play_item_now requests a detail from Home and flips
