@@ -131,6 +131,13 @@ const STALL_MS: u64 = 250;
 ///
 /// After this, a bare `.join()` anywhere outside this module is a stall nobody can see;
 /// `grep -rn '\.join()' rust-modules/src` is the enforcement, because there is no other.
+///
+/// **Baseline measured on device** (2026-07-29, BACK out of a direct-play movie on a healthy LAN,
+/// captured by temporarily setting `STALL_MS` to 0): `demux 0ms`, `media 0ms`, `timeline 0ms` —
+/// all three joins are free in the ordinary case. That is the number the teardown findings have to
+/// be read against: the joins are fault-conditional, not an everyday cost, and it independently
+/// confirms the condvar fix that superseded `docs/async-model-review.md` §3b's "every teardown
+/// pays 0-1000 ms". It also means a single `THREADJOIN` line in a log is signal, never noise.
 pub(crate) fn join(what: &str, h: JoinHandle<()>) {
     let t0 = std::time::Instant::now();
     let outcome = h.join();
