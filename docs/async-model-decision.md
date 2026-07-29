@@ -117,7 +117,7 @@ A's own disqualifier #3, satisfied twice before the sixth site is written.
 | 6 | **Split `load_playing`** — the prerequisite everyone under-priced | metadata.rs, route.rs |
 | 7 | **The reported bug — resolve off the key handler** | plan.rs (new), route.rs, app.rs, ui/detail.rs |
 | 8 | **browse.rs onto `Job`** — partially, and say so | browse.rs, app.rs, ui/library.rs |
-| 9 | **The pump's two network arms — LAST, hand-written** | player/pump.rs, route.rs |
+| 9 | ~~**The pump's two network arms — LAST, hand-written**~~ **NOT DONE, NOT DECIDED** — both arms still block the main-thread pump; see the log below | player/pump.rs, route.rs |
 
 **Step 1** publishes the fd at `socket()`, replaces the whole-struct memset with a tail-only zero
 (the atomic `fd` must never be transiently 0), **routes all five bare closes through
@@ -344,9 +344,77 @@ The rule for new code, recorded in `engine.rs` and `player/CLAUDE.md`: **take th
 reach the seam or the Engine.** `arm_seek`/`resume_at` are main-thread too and deliberately do not
 take one — if it spreads to everything that merely runs on main, it stops carrying information.
 
+### Step 9 — NOT DONE, and never actually decided (open, recorded 2026-07-29)
+
+**This entry exists because the doc was claiming otherwise.** "The nine-step plan finished" was
+written in the audit-round section below; it was not true. Step 9 was never started, and — more to
+the point — the escape hatch the plan granted it was never *taken* on the record. Nothing here
+argues it should be done. It argues only that "not done" and "deliberately declined" are different
+states, and this one is the first.
+
+**The two arms, as they stand on HEAD.** Both live in `player/pump.rs`, which runs on the main
+thread every frame, and both make blocking PMS round trips before handing off to
+`engine::reload_transcode`:
+
+  - **`pump.rs:75` — the audio-switch / subtitle-burn-refresh arm.** A pending `pending_audio_sid`
+    or `pending_retranscode` calls `route::switch_audio(asid, secs)` (which is `retranscode` with
+    the source audio recorded first) or `route::retranscode(secs)`. That is a `PUT
+    /library/parts` selection commit **plus** a `GET /video/:/transcode/universal/decision`, both
+    synchronous, before the reload.
+  - **`pump.rs:141` — the transcode-seek arm.** `route::transcode_seek(secs)` re-registers the
+    encode at the new `&offset`; its own doc comment says it "**blocks on two HTTP round-trips**
+    (like `play_movie`'s `/decision`), which is fine during a seek (the pipeline is flushed)."
+
+**Why they are still blocking — the escape hatch's own reasoning, restated rather than ratified.**
+The plan's hatch reads: *if either arm cannot be expressed as a two-state enum without breaking the
+seek coalescing guard or `SEEK_STUCK_MS`, leave it blocking. It is a few hundred ms behind a spinner
+the HUD already draws, and that code has self-DoS'd before.* **Only one half survives contact with
+the code.**
+
+**The spinner half is false, and it matters, because it is the premise that made leaving these arms
+blocking look cheap.** `pb_state` — the one value the HUD renders from — is published by
+`set_state`, and on the playing path the only call that runs is `pump.rs:271`, at the very END of
+`pump`. Both arms `return` before reaching it (the audio arm at ~:80, the seek arm at ~:148; the
+three earlier `set_state` calls at :36/:42/:49 are stage-gated early returns that do not fire while
+playing). So the state on screen throughout the block is the one published on the PREVIOUS frame —
+`Playing`. `is_busy()` is false, so neither the centre `StatusOverlay` nor the transport `Spinner`
+(gated on `player::loading()`) draws. And because app.rs drains events → `pump` → swaps in one
+iteration, no frame is composed between the request and the block at all: the panel holds the frame
+from *before* the request — for an audio switch, the still-open track menu. `request_audio_switch`
+sets only `pending_audio_sid`; `request_seek` sets `seeking`, which nothing has drawn from yet.
+**These blocks are silent freezes, not represented waits.**
+
+The other half stands. "Self-DoS'd before" is not rhetoric: the
+500ms stuck-watchdog self-DoS under a rapid-seek burst is the bug `op_seek_rapid` exists to catch
+(fixed at `211b834`), which is exactly the machinery a two-state split would have to re-derive.
+There is also a structural wrinkle the plan did not name: `reload_transcode` **replaces the
+ENGINE**, so `eng` dangles and both arms `return` immediately — a deferred continuation would have
+to resume against an engine that no longer exists, which is precisely the "cannot be expressed as a
+two-state enum" shape.
+
+**But none of that was ever measured or written down as a decision, so it is an open question.**
+What is missing is a number. Nobody has measured what these two arms actually cost on the main
+thread, in the field, on a bad network — the assumption is "a few hundred ms" and it has never been
+checked. That was expensive to check when the plan was written and is cheap now: **`tools/netcond.py`
+did not exist then.** Scoping a `delay:<ms>` or `stall` to the `/video/:/transcode/universal/`
+and `/library/parts` paths freezes exactly these two arms while leaving the rest of the app alone,
+which turns "a few hundred ms" from an assumption into a measurement.
+
+**What would have to be true to revisit.** Any one of: (a) the netcond measurement shows either arm
+parking the main loop past roughly a second — the reporter-join finding in the audit below measured
+**0 ms on a healthy LAN and 6974 ms** once the network was conditioned, so a healthy-LAN prior about
+a blocking network call is worth very little here; (b) a user-visible symptom
+lands, e.g. BACK or the transport going unresponsive during an audio switch — and note this is now
+*more* likely than the hatch assumed, since there is no spinner to explain the stall to the user,
+only a frozen track menu; or (c) someone finds a formulation that
+survives `reload_transcode` replacing the engine mid-flight without weakening the coalescing guard
+or `SEEK_STUCK_MS`. Absent one of those, leaving it is defensible — but it should then be recorded
+as a decision **with the number attached**, which is what this entry is not yet able to do.
+
 ### The audit round — all five findings closed (2026-07-29)
 
-The nine-step plan finished, then an adversarial audit of the whole range (`4e7c4b0..HEAD`, 5 lenses
+Steps 1–8 finished (step 3 declined, step 9 never started — see the entry above), then an
+adversarial audit of the whole range (`4e7c4b0..HEAD`, 5 lenses
 → 18 raw → 9 verified → 5 confirmed) found what was left. **Every survivor was the same class: a
 cancellation gap.** No data race, no UAF, nothing wrong in the primitives. Landed in order of value:
 
@@ -372,11 +440,20 @@ existed was that the reporter's stop flag lived in `SHARED`, which `reset_sessio
 of teardown, so a reporter still parked in its POST would resurrect. Per-session ownership removed
 the need to join on the main thread at all, and deleted shared state instead of adding a mechanism.
 
-### Pre-existing failure, not ours
+### Pre-existing failure, not ours — and since RESOLVED
 
-`morning_show_seek_rapid` fails on **clean HEAD** with the identical message (`only 1
-seek(in-place) fired, need >=2`). It was mis-attributed to step 1 at first. The suite is therefore
-17/18 before and after; this case needs its own investigation and is unrelated to the async work.
+`morning_show_seek_rapid` failed on **clean HEAD** with the identical message (`only 1
+seek(in-place) fired, need >=2`). It was mis-attributed to step 1 at first. The suite was therefore
+17/18 before and after, and this case was left as unrelated to the async work.
+
+**Update 2026-07-29: it passes. The suite is 18/18.** The case was never investigated on its own, and
+this was **not bisected** — it was fixed in passing by something in the range. The two candidates,
+both landed after the paragraph above was written, are `5938b5f`'s seekable-AVIO correction and the
+harness's per-case `viewOffset` reset (which stopped a case inheriting the previous run's resume
+point, so the seek under test finally had somewhere to go). The second is the better fit for *this*
+symptom — a coalesced-away second seek — but neither is confirmed. Recorded because the paragraph
+above outlived its truth by a week, and a stale "known failure" is worse than none: it makes the next
+real regression look expected, and it makes a genuine 18/18 look like a fluke.
 
 ---
 

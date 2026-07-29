@@ -91,6 +91,17 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
 
 ## Verifying playback changes
 
-There's no host runtime — deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps, seek/rebase,
-`RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root `CLAUDE.md`
-testing section (run as GUEST by default; never run two harness jobs at once).
+**Start with `make check`** — the host unit suite (`cargo test --lib`, ~0.3s) covers a real
+slice of this pipeline's pure logic: `ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
+the AVIO abort guards (a seek after teardown must not open a second connection — graded on an accept
+count), `stream.rs`'s socket lifecycle, `route.rs`'s direct-play-vs-transcode selection, and
+`task.rs`'s `MainThread` token being genuinely `!Send`. Cheap enough that there is no reason to skip
+it before a deploy.
+
+But there is **no host *runtime*** — nothing above decodes a frame or touches Starfish/ACB (`ff.rs`
+gates its `#[link]` directives out of `cfg(test)` precisely so the pure logic stays host-testable; a
+test that actually calls FFmpeg fails to link, by design), and the host is Darwin while the TV is
+Linux, which is why `tools/sockprobe.c` exists. So anything about *playback behaviour* is only
+observable on device: deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps,
+seek/rebase, `RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root
+`CLAUDE.md` testing section (run as GUEST by default; never run two harness jobs at once).

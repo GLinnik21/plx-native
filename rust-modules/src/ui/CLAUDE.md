@@ -44,18 +44,27 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 
 ## What lives where
 
+This table is the map of the directory — **every** `.rs` file under `ui/` has a row, so a missing
+entry means the table is stale, not that the module is unimportant. Keep it that way when you add
+one: an undocumented module is one the next person re-implements.
+
 | File | Owns |
 |---|---|
-| `theme.rs` | **all color tokens** + the **`size` type scale** (HERO…CAPTION, floor 24) + `scrim`/`scrim_black`/`with_a`/`dim` helpers + focus-ring geometry consts. The single palette + type ladder. |
+| `theme.rs` | **all color tokens** + the **`size` type scale** (HERO…MICRO, legibility floor CAPTION 24) + the **`space` gap scale** (`XS` 8 / `SM` 16 / `MD` 24 / `LG` 40 / `XL` 64 — the sibling axis of `size`; a gap between stacked blocks comes from a rung, never a hand-tuned offset) + `scrim`/`scrim_black`/`with_a`/`dim` helpers + focus-ring geometry consts. The single palette + type/space ladder. |
 | `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen), `Rect`/`Size`/`Spring`/`Env`, the `View` trait, and the shared screen primitives `on_axis` (the ONE off-screen cull test the scroll flow uses to skip off-frame children — culling, not the `Painter::clip` scissor) / `hero_alpha` (the ONE hero-fade curve both screens call) / `ScrollColumn`+`Column` (the scroll-into-content container detail's below-hero flow is composed from). |
 | `label.rs` | `Label` — single-run cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
 | `text_view.rs` | `TextView` — multi-line cap-band text: pixel word-wrap + ellipsis + `measure_h`, wrap-cached. |
-| `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill`, `TransportButton`, `CircleButton`, `ProgressBar`, `Spinner`, `PageDots`, the shared art-tile core (`card`/`draw_card` + `Art`), plus the poster-resolve helper. |
-| `card_row.rs` | `CardRow` — the animated poster-shelf component shared by the home grid and detail Related (`RowStyle::HOME` = the single source of shelf motion+geometry; owns per-cell scale springs + scroll spring + `draw_tile`/`draw_focused`). Callers keep their own x/scroll/z-order loop (home's cross-row focused-last stays in `Grid`). |
+| `widgets.rs` | reusable leaves: `Button` (+`ControlStyle`), `TabPill` (+`TabStyle`), `TransportButton`, `CircleButton`, `Spinner`, `PageDots`, `StatusOverlay` (+`StatusKind` — the Working/Failed treatment the player draws over Connecting/Buffering/Seeking/Error; the *caller* supplies the caption so the state machine stays the single source of that string), the shared art-tile core (`card`/`draw_card` + `Art`), plus the poster-resolve helper `resolve_tex`. **There is no `ProgressBar` type** — the HUD scrubber is immediate-mode inside `player_hud.rs` (see the deliberately-immediate-mode gotcha below); if you need a bar elsewhere, that is the moment to promote one here, not to assume it exists. |
+| `card_row.rs` | `CardRow` + `RowStyle` — the animated shelf component shared by the home grid, detail Related, the library grid, and (circular, via `RowStyle::PROFILES`) the who's-watching avatars. `RowStyle::HOME` is the single source of shelf motion+geometry; the row owns per-cell scale springs + the scroll spring and exposes `draw_tile`/`draw_focused` plus the `reveal`/`scroll_into_view` scroll math. Callers keep their own x/scroll/z-order loop (home's cross-row focused-last stays in `Grid`). |
 | `table.rs` | `TableView`/`Section`/`Row`/`Badge` — the animated list (settings/track-menu look). |
 | `icons.rs` | `Icon` enum + antialiased SVG rasterizer; color is the `tint` you pass. |
+| `popover.rs` | `Popover` — the ONE open/appear choreography every modal panel shares (track menu, Info card, Chapters strip, profile menu): an OPEN flag + a critically-damped 0→1 appear spring driving fade + slide, with an optional full-screen scrim, handed out as a ready-made `painter(scrim_a, rise)`. Each panel used to hand-wire its own `static OPEN + APPEAR` pair, so any motion change was a four-file edit — **do not re-fork it.** |
+| `press.rs` | The shared tvOS-style **click**: OK-down dips the focused control, OK-up releases with an overshoot bounce and commits the activation a beat later (so the bounce is actually on screen). Genuinely event-driven, so a held OK is a measurable long-press (`is_long`), not a tap. ONE control is pressed at a time (focus can't move mid-press — navigation `cancel`s it), which is why it is a global: `begin`/`release`/`cancel`/`tick`/`take_commit` + the `scale()` the renderer multiplies the focused tile by. Resolves stuck presses three ways because the Magic Remote drops key-ups. |
+| `consts.rs` | Layout + input + animation constants — card/gap/margin geometry, `ROW_PITCH`, and the webOS **remote wcodes** with the `is_ok`/`is_back` predicates (see the raw-`SDL_KeyboardEvent` gotcha in the root `CLAUDE.md`). One source so hand-tuned pixel offsets can't drift between widgets. |
+| `fmt.rs` | The shared display formatters — `dur_short` ("2h 15m") / `dur_long` / `time_left` / `clock`. ONE home for these, replacing the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min" drift across screens. Format a duration here, never inline. |
 | `profile.rs` | draw profiler (diagnostic). `profile::phase("name", \|\| draw_x())` brackets a phase with `glFinish` to log its real per-frame GPU cost; on via `/tmp/plxnative-profile`, zero-overhead off. Use it to find fill/overdraw before guessing. FPS is also logged once/sec (grep `FPS=`). |
-| `home.rs` / `detail.rs` / `player_hud.rs` / `info_panel.rs` / `track_menu.rs` / `chapters_panel.rs` | **screens** — compose the above; hold their own springs + input. Should contain almost no color literals. |
+| `anim.rs` | spring diagnostic (not chrome). `anim::probe(name, pos, vel, target, dt)` right after a `Spring::step` logs that spring's settle metrics (frames, ms, overshoot %) and draws a live approach-curve overlay; on via `/tmp/plxnative-anim` or the ANIM toggle, zero cost off. Reach for it before hand-tuning a stiffness. |
+| `home.rs` / `detail.rs` / `player_hud.rs` / `info_panel.rs` / `track_menu.rs` / `chapters_panel.rs` / `library.rs` / `login.rs` / `profiles.rs` / `account_menu.rs` | **screens** — compose the above; hold their own springs + input. Should contain almost no color literals. `library.rs` is the Library browse screen (shared top tab row + server-driven Sort/Filter/Unwatched chips + a 6-across grid of `card_row` tiles, menus built from `Popover`+`TableView`); `login.rs` is the QR / short-code sign-in driven by `crate::auth`'s phase; `profiles.rs` is the "who's watching" picker + PIN keypad, built on the **shared** `CardRow` with a circular `RowStyle::PROFILES` so avatars get the same springs as the poster shelves; `account_menu.rs` is the top-left profile popover (change profile / sign out) on the same `TableView` as the track menu. |
 
 ## Gotchas that bite
 
@@ -89,7 +98,18 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 
 ## When you're done
 
-`make` is the only correctness signal (ARM cross-build; no host runtime). After a UI change, `make`
-must stay green, and for anything that moves pixels, capture the panel on the TV
+Three signals, in ascending cost. **`make check`** first — the host unit suite (`cargo test --lib`,
+~0.3s) includes nine UI tests: `home.rs`'s focus packing round trips, row stepping staying
+inside the shelf array, and the pointer hit column matching the drawn card at every snap phase; and
+`card_row.rs`'s heading-clearance behaviour driven frame by frame (the regression that the heading
+must hold still while focus walks the slots beneath it). If you touch focus navigation, hit-testing,
+or shelf motion, **add a test here** — that math is host-testable and these caught real bugs.
+Note the asymmetry, because it tells you where to put a new test: `card_row.rs` drives a **local**
+`CardRow`, so its tests are ordinary and parallel; `home.rs` keeps focus in `static mut fr`/`fc`, so
+its tests must take the module's `FOCUS` mutex or they race each other rather than the code. That
+lock is the cost of screen-level singleton state — hold it, don't work around it.
+
+Then **`make`** must stay green (ARM cross-build). Then the device: there is no host *runtime*, so
+nothing above draws a single pixel. For anything that moves pixels, capture the panel on the TV
 (`tools/capture-screen.sh out.png DISPLAY|GRAPHIC`) and eyeball it — the token collapses and
 cap-band re-centering are invisible until deployed.

@@ -34,6 +34,9 @@ full one-time setup + troubleshooting.
 - `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
 - `make run` — close any running instance, wipe `/tmp/plxnative-events.log`, launch, keep alive
   `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
+- `make check` — the **host** unit suite (`cargo test --lib`, ~0.3s, no TV). Not a
+  prerequisite of `all` — the cross-build must never depend on a host toolchain run. See the
+  testing section for what it does and does not cover.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - `make ipk` — repackage the installable `pkg/com.beb.plxnative_0.1.0_arm.ipk`.
@@ -200,13 +203,71 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 - Video track is always full-panel `1920x1080`; the UI is authored at a fixed `1920x1080`
   (`SCR_W`/`SCR_H`), no DPI scaling (panel is 1:1 at 1080p).
 
-## Testing / verification (on-device, no host runtime)
+## Testing / verification (two tiers: a fast host unit suite, then the device)
 
-There is no host-side test suite — the code only runs on the TV. Verify by observing behavior.
-**Wake the TV first** (`wake-tv` skill) — asleep, every assertion fails as "no line found", which
-reads exactly like a total regression. The **`tv-session` skill** is the bring-up/observe/drive
-loop; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new FFI into the TV's own
-libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for the perf gates).
+There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
+them is how this section used to be wrong in three files at once.
+
+**Tier 1 — `make check` (host, sub-second).** `cd rust-modules && cargo test --lib` runs the whole
+host suite in **~0.3s** on the dev Mac, no TV involved (48 tests as of 2026-07-29 — re-derive with
+`cargo test --lib -- --list | grep -c ': test'` rather than trusting this or the per-module counts
+below; the first version of this section was stale within one commit because two agents added tests
+to the same batch that documented it). `make check` is that command; it is deliberately **not**
+a prerequisite of `all`, so an ordinary `make` still cross-compiles without ever invoking a host
+toolchain run. Run it before `make test` — it is free by comparison, and it is the only signal you
+get without waking a television. What it covers today, by module:
+
+  - `stream.rs` (10) — **socket semantics against real loopback sockets, plus response-header
+    parsing**: `connect(2)` giving up on its deadline (RFC 5737 TEST-NET black hole), a refused
+    connect failing fast rather than reporting success, every failed open retiring its fd (asserted
+    by counting `/dev/fd`), `shutdown(2)` waking a reader already blocked in `recv`, the fd being
+    claimable exactly once — and, since headers are parsed as bytes rather than strict UTF-8, that
+    one non-UTF-8 byte cannot turn a good 200 into a transport failure, that a status line
+    straddling the status offset is rejected rather than fatal, and that header names are found
+    whatever their casing.
+  - `remote.rs` (3) — **the remote-FIFO token framing**: complete tokens fire while a partial
+    trailing one is held over to the next drain, and a multi-byte whitespace separates tokens
+    without panicking the tokenizer (the separator search is ASCII-only because the split that
+    follows is by BYTE index). The FIFO is world-writable in `/tmp` and drained every frame on every
+    boot, so a panic here unwinds out of the SDL loop and kills the app.
+  - `ff.rs` (11) — the **pure** demuxer logic: the `nal_end` 32-bit bounds guard, AVCC→Annex-B
+    conversion (keyframe detection, parameter-set prepending, truncation instead of panic), and the
+    AVIO abort guards (a seek after teardown must not open a second connection — graded on an
+    accept COUNT from a counting listener, not a return value).
+  - `route.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, English over
+    the file's default, the flagged default, part-id parsing, mkv-only direct play.
+  - `ui/home.rs` (5) + `ui/card_row.rs` (4) — **focus/geometry/spring math**: focus packing round
+    trips, row stepping staying inside the shelf array, the pointer hit column matching the drawn
+    card at every snap phase, and the shelf heading's clearance behaviour frame by frame.
+  - `metadata.rs` (2) + `browse.rs` (2) — **async landing/mailbox invariants**: a detail or season
+    response only installs while it is still the one being awaited (a failed `/children` must not
+    land as an empty season), and `reset` clearing the single-flight flags and retry backoff.
+  - `task.rs` (3) — **threading invariants**: a refused spawn is a return value not a panic, and the
+    `MainThread` token cannot cross a spawn (an absent `!Send` impl is invisible to ordinary code,
+    so it is detected via inherent-vs-trait const resolution, with a `Send` control case).
+
+  Three structural limits, all deliberate and all worth knowing before you trust a green run.
+  **(1) It cannot link the TV's libraries.** `ff.rs`'s four `#[link]` directives are
+  `cfg_attr(not(test))`-gated precisely so the crate's pure logic stays host-testable; the dev Mac
+  has no libavformat, so a test that actually *calls* FFmpeg or GL fails to link — that is the
+  intended boundary, not a bug. **(2) It runs on Darwin; the app runs on Linux, and they disagree**
+  — see `tools/sockprobe.c` above, where `shutdown`-during-`connect` behaves oppositely on the two
+  kernels. A socket assertion that passes here is evidence about macOS, not about the TV.
+  **(3) The app's async seams are process-wide**, so some tests are serialized rather than parallel:
+  `metadata.rs`'s two take `lib.rs`'s crate-wide `testlock::serial()` (the detail and season
+  mailboxes contend across modules — a per-module mutex cannot see that, because the season
+  generation also moves under `pump_detail`), and `ui/home.rs`'s five take that module's own `FOCUS`
+  mutex for `static mut fr`/`fc`. Those locks are load-bearing, not incidental — hold one for the
+  whole test in anything new that touches a crate global, and reach for `testlock` (not a fresh
+  local mutex) whenever the global is shared across modules.
+
+**Tier 2 — the device, which is still the real gate.** There is no host *runtime*: nothing above
+draws a pixel, decodes a frame, or talks to Starfish/ACB, so playback and UI correctness are only
+observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
+fails as "no line found", which reads exactly like a total regression. The **`tv-session` skill** is
+the bring-up/observe/drive loop; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
+FFI into the TV's own libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for
+the perf gates), and `make test` = `deploy` + `run`.
 
 - **Event log:** the app writes `/tmp/plxnative-events.log` on the TV (LS2/ACB/Starfish replies, feed
   stats, seek/bind steps, key raw bytes, crash tracer). `make run` fetches it automatically; it's
