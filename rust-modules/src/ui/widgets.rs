@@ -628,6 +628,25 @@ pub struct Button {
     /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
     pub progress: Option<f32>,
 }
+/// [`Button`]'s icon box, as a multiple of its type size, and the icon→label gap. Named because
+/// `pill_w` measures the same run the renderer lays out — a literal in each would let the two drift.
+const BTN_ICON_RATIO: f32 = 1.15;
+const BTN_ICON_GAP: f32 = 12.0;
+/// Total horizontal air a hero action pill carries around its icon+label run.
+const BTN_PILL_AIR: f32 = 68.0;
+
+/// The width a hero action pill wants for `label` at type size `sz`: the [`Button`] content run
+/// (icon box + gap + label) plus one fixed air budget. ONE formula, because both hero rows relabel
+/// their pill from the item's state — home's "Play"/"Continue", detail's "Play"/"Resume" — and a
+/// fixed frame that fits the short word crams the long one against its own capsule ends.
+///
+/// Assumes the pill CARRIES an icon (both hero pills do); an icon-less button measured through this
+/// gets an icon box of air it will not fill. Size that one from `text::text_width` directly.
+pub(crate) fn pill_w(label: *const c_char, sz: c_int) -> f32 {
+    let isz = sz as f32 * BTN_ICON_RATIO;
+    isz + BTN_ICON_GAP + crate::text::text_width(label, sz, 1) + BTN_PILL_AIR
+}
+
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
         Self { frame, label, sz, icon: None, focused: false, style: ControlStyle::Accent, progress: None }
@@ -691,7 +710,8 @@ impl View for Button {
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
         let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
         let tw = crate::text::text_width(self.label, self.sz, 1);
-        let (isz, gap) = if self.icon.is_some() { (self.sz as f32 * 1.15, 12.0) } else { (0.0, 0.0) };
+        let (isz, gap) =
+            if self.icon.is_some() { (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
         let gl = r.cx() - (isz + gap + tw) * 0.5;
         if let Some(icon) = self.icon {
             crate::ui::icons::draw(p, icon, Rect::new(gl, r.y + (r.h - isz) * 0.5, isz, isz), ink);

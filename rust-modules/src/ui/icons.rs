@@ -25,6 +25,8 @@ pub enum Icon {
     UnwatchedAngle,
     Play,
     Pause,
+    /// Counter-clockwise circular arrow (↺) — "play from the start", the detail hero's restart disc.
+    Restart,
     Info,
     User,
     Backspace,
@@ -42,6 +44,7 @@ fn src(id: Icon) -> &'static str {
         Icon::UnwatchedAngle => include_str!("../../../assets/icons/angle.svg"),
         Icon::Play => include_str!("../../../assets/icons/play.svg"),
         Icon::Pause => include_str!("../../../assets/icons/pause.svg"),
+        Icon::Restart => include_str!("../../../assets/icons/restart.svg"),
         Icon::Info => include_str!("../../../assets/icons/info.svg"),
         Icon::User => include_str!("../../../assets/icons/user.svg"),
         Icon::Backspace => include_str!("../../../assets/icons/backspace.svg"),
