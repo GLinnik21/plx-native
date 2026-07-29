@@ -71,6 +71,11 @@ pub(crate) struct Episode {
     pub(crate) dur_ms: i64,
     pub(crate) thumb: String,
     pub(crate) resume_ms: i64, // viewOffset (0 = not started)
+    /// `viewCount ≥ 1` — played through at least once. Deliberately INDEPENDENT of `resume_ms`
+    /// on the wire: PMS keeps both on an episode that was finished and then started again, so
+    /// which of the two a tile shows is a presentation rule at the draw site (see
+    /// `ui/detail.rs`'s filmstrip), not a mutual exclusion the data layer can assume.
+    pub(crate) watched: bool,
     pub(crate) part: String,   // Media[0].Part[0].key (to play)
     pub(crate) rating: String,
     pub(crate) vcodec: String, // Media[0].videoCodec (for the direct-play/transcode decision)
@@ -573,27 +578,34 @@ fn fetch_seasons(rk: &str) -> Vec<Season> {
 /// list there to protect, and neither is worth failing the whole page over.
 fn fetch_episodes(season_rk: &str) -> Option<Vec<Episode>> {
     let mc = crate::plex::client().children(season_rk)?;
-    Some(mc.metadata
-        .iter()
-        .map(|x| {
-            let media0 = x.media.first();
-            Episode {
-                rk: x.rating_key.clone(),
-                index: x.index,
-                season: x.parent_index,
-                title: x.title.clone(),
-                summary: x.summary.clone(),
-                aired: x.originally_available_at.clone(),
-                dur_ms: x.duration,
-                thumb: x.thumb.clone(),
-                resume_ms: x.view_offset,
-                part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
-                rating: x.content_rating.clone(),
-                vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
-                acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
-            }
-        })
-        .collect())
+    Some(mc.metadata.iter().map(convert_episode).collect())
+}
+
+/// One `/children` row → an [`Episode`]. Split out of [`fetch_episodes`] so the wire → model
+/// mapping is host-testable without a PMS — the watched flag in particular is DERIVED, and a
+/// derivation nothing can exercise is how `viewCount` came to be parsed at
+/// `plex/models.rs` and then dropped on the floor here for the whole life of the episode row.
+fn convert_episode(x: &crate::plex::Metadata) -> Episode {
+    let media0 = x.media.first();
+    Episode {
+        rk: x.rating_key.clone(),
+        index: x.index,
+        season: x.parent_index,
+        title: x.title.clone(),
+        summary: x.summary.clone(),
+        aired: x.originally_available_at.clone(),
+        dur_ms: x.duration,
+        thumb: x.thumb.clone(),
+        resume_ms: x.view_offset,
+        // `viewCount` is ABSENT until the leaf has been watched once, so `> 0` is the whole test —
+        // the same rule `fetch_detail` applies to a movie. (A show/season instead compares
+        // `viewedLeafCount` to `leafCount`; an episode is a leaf and has neither.)
+        watched: x.view_count > 0,
+        part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+        rating: x.content_rating.clone(),
+        vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
+        acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
+    }
 }
 
 fn fetch_related(rk: &str) -> Vec<Related> {
@@ -994,6 +1006,53 @@ mod marker_tests {
         let mid = convert_markers(&[wire("credits", 1000, 2000, false)]);
         assert!(marker_at(&mid, 1500).is_some());
         assert!(marker_at(&mid, 2000).is_none(), "a non-final segment ends where it says it does");
+    }
+}
+
+#[cfg(test)]
+mod episode_tests {
+    use super::*;
+
+    /// One `/library/metadata/{season}/children` row, shaped the way PMS actually sends one — the
+    /// counters STRING-encoded, which is the form `models.rs`'s lenient `de_i64` exists for. Goes
+    /// through serde on purpose rather than hand-building a `Metadata`: the DTO field and the
+    /// mapping are the two halves of this gap, and a hand-built struct would only ever exercise
+    /// the half that was already right.
+    fn row(extra: &str) -> crate::plex::Metadata {
+        let json = format!(
+            r#"{{"type":"episode","ratingKey":"1804","index":"3","parentIndex":"2",
+                 "title":"Ep","duration":"3000000"{extra}}}"#
+        );
+        serde_json::from_str(&json).expect("a /children row parses")
+    }
+
+    /// The gap this closes: `viewCount` was parsed at the DTO and then never copied onto
+    /// [`Episode`], so a fully-watched episode and one never started carried identical values all
+    /// the way to the filmstrip. No `testlock` here — `convert_episode` is pure and reads no
+    /// crate global.
+    #[test]
+    fn view_count_on_the_wire_becomes_the_episode_watched_flag() {
+        // ABSENT is the unwatched case: PMS omits the key entirely rather than sending 0, which is
+        // why the flag can be a presence test and why a missing field must default to false.
+        let e = convert_episode(&row(""));
+        assert!(!e.watched, "an absent viewCount is unwatched");
+        assert_eq!(e.resume_ms, 0, "and carries no resume point");
+        assert_eq!((e.rk.as_str(), e.index, e.season), ("1804", 3, 2), "the rest still maps");
+
+        // …and a literal 0 is unwatched too. PMS omits the key rather than sending this, but
+        // `de_i64` would deliver a real 0, so the flag must be a THRESHOLD and not a presence test
+        // on the JSON — the two only agree while the server keeps omitting.
+        assert!(!convert_episode(&row(r#","viewCount":0"#)).watched, "an explicit 0 is unwatched");
+
+        assert!(convert_episode(&row(r#","viewCount":"1""#)).watched, "watched once");
+        assert!(convert_episode(&row(r#","viewCount":4"#)).watched, "and re-watched, sent numeric");
+
+        // Watched AND resuming is a real server state — finished, then started again. Both must
+        // survive the mapping: the mutual exclusion is a rule of the DRAW site (which shows the
+        // resume bar over the check), so collapsing it here would silently lose the resume point.
+        let both = convert_episode(&row(r#","viewCount":"1","viewOffset":"120000""#));
+        assert!(both.watched, "a re-started episode is still watched");
+        assert_eq!(both.resume_ms, 120_000, "and keeps the resume point the player needs");
     }
 }
 
