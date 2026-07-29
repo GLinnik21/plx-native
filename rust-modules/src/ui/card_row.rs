@@ -105,6 +105,13 @@ impl RowStyle {
 #[derive(Clone, Copy)]
 pub(crate) struct CardRow {
     scale: [Spring; MAX_ROW_ITEMS],
+    /// The ONE spring every cell PAST the array shares — see [`CardRow::scale`]. A cast row is
+    /// routinely 60 names long, so "the tiles past the 24th simply don't animate" is not a corner
+    /// case; it is most of the Cast & Crew shelf, and the crew now lives at its far end.
+    overflow: Spring,
+    /// Which cell holds focus (`-1` none), so an overflow cell can claim `overflow` while its
+    /// neighbours — which read the same spring — stay at rest.
+    focus: i32,
     scroll_x: Spring,
     lift: Spring,
     pub base_y: f32,
@@ -113,6 +120,8 @@ impl CardRow {
     pub(crate) const fn new() -> Self {
         CardRow {
             scale: [Spring::at(1.0); MAX_ROW_ITEMS],
+            overflow: Spring::at(1.0),
+            focus: -1,
             scroll_x: Spring::at(0.0),
             lift: Spring::at(0.0),
             base_y: 0.0,
@@ -126,10 +135,14 @@ impl CardRow {
     /// `focused == None` freezes the scroll (a non-focused row holds its position — exactly the
     /// home shelf's behavior).
     pub(crate) fn update(&mut self, n: usize, focused: Option<usize>, sty: &RowStyle, dt: f32) {
+        self.focus = focused.map(|f| f as i32).unwrap_or(-1);
         for (i, sp) in self.scale.iter_mut().enumerate() {
             let target = if focused == Some(i) { sty.focus_scale } else { 1.0 };
             sp.step(target, sty.k_scale, dt);
         }
+        // the shared overflow spring pops only while focus is actually out past the array
+        let ot = if focused.is_some_and(|f| f >= MAX_ROW_ITEMS) { sty.focus_scale } else { 1.0 };
+        self.overflow.step(ot, sty.k_scale, dt);
         if let Some(fc) = focused {
             if n > 0 {
                 let want = scroll_into_view(self.scroll_x.pos, fc, n, sty.w, sty.gap, SCR_W - 2.0 * sty.margin_x);
@@ -138,9 +151,21 @@ impl CardRow {
         }
         self.lift.step(heading_clearance(focused, sty, self.scroll_x.pos), sty.k_scale, dt);
     }
+    /// Cell `i`'s live focus-pop scale. Cells inside the spring array own a spring each; every cell
+    /// PAST it shares `overflow`, and only the focused one reads it — otherwise the whole tail of a
+    /// long row would pop together. The cost of sharing is that stepping between two overflow cells
+    /// swaps the pop instantly instead of crossfading; the alternative (this used to clamp the index,
+    /// so an overflow cell read cell 23's spring) was a focused tile with NO pop, NO lifted shadow
+    /// and NO ring — the entire focus treatment is derived from this number.
     #[inline]
     pub(crate) fn scale(&self, i: usize) -> f32 {
-        self.scale[i.min(MAX_ROW_ITEMS - 1)].pos
+        if i < MAX_ROW_ITEMS {
+            self.scale[i].pos
+        } else if self.focus == i as i32 {
+            self.overflow.pos
+        } else {
+            1.0
+        }
     }
     #[inline]
     pub(crate) fn scroll_x(&self) -> f32 {
@@ -404,5 +429,35 @@ mod tests {
         assert!(at(2) > 0.5 && at(2) < at(1), "slot 2 is on the taper ({} vs {})", at(2), at(1));
         assert_eq!(at(4), 0.0, "a tile far from the heading must not move it");
         assert_eq!(heading_clearance(None, &sty, 0.0), 0.0);
+    }
+
+    /// A row LONGER than the spring array. Every focus treatment a tile gets — the pop, the lifted
+    /// shadow, the ring — is derived from `scale(i)`, and the index used to be clamped into the
+    /// array, so focusing tile 30 of a 60-name cast row popped nothing at all (it read cell 23's
+    /// resting spring). The shared overflow spring must pop for the focused tile, and for it alone:
+    /// its neighbours read the same spring.
+    #[test]
+    fn a_focused_tile_past_the_spring_array_still_pops_and_its_neighbours_do_not() {
+        let sty = RowStyle::CAST;
+        let mut row = CardRow::new();
+        let far = MAX_ROW_ITEMS + 6; // a crew credit at the end of a long cast list
+        for _ in 0..180 {
+            row.update(far + 2, Some(far), &sty, DT);
+        }
+        assert!(
+            (row.scale(far) - sty.focus_scale).abs() < 0.01,
+            "the focused overflow tile must reach the focus scale (got {})",
+            row.scale(far)
+        );
+        assert_eq!(row.scale(far + 1), 1.0, "the tile after it shares the spring, not the focus");
+        assert_eq!(row.scale(far - 1), 1.0, "nor the one before it");
+        assert!((row.scale(MAX_ROW_ITEMS - 1) - 1.0).abs() < 0.01, "and the last in-array cell rests");
+
+        // focus coming back inside the array releases the overflow pop
+        for _ in 0..180 {
+            row.update(far + 2, Some(0), &sty, DT);
+        }
+        assert_eq!(row.scale(far), 1.0, "focus left the tail, so no overflow tile reads the spring");
+        assert!((row.scale(0) - sty.focus_scale).abs() < 0.01, "and the in-array cell pops as ever");
     }
 }
