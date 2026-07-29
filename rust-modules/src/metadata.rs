@@ -247,6 +247,16 @@ pub(crate) fn clear() {
     unsafe { *addr_of_mut!(CURRENT) = None }
 }
 
+/// TEST ONLY — install `d` as the loaded item, bypassing the fetch and its mailbox. The screens'
+/// pure focus/label math reads `current()`, and the only real way to populate it is a PMS round
+/// trip, which the host suite has no server for. Compiled out of the shipped binary. CURRENT is a
+/// crate-wide global that this module's own tests also drive, so hold `crate::testlock::serial()`
+/// across any test that calls this.
+#[cfg(test)]
+pub(crate) fn set_current_for_test(d: Option<Detail>) {
+    unsafe { *addr_of_mut!(CURRENT) = d }
+}
+
 /// A compact descriptor of the item currently *playing*, for the in-player Info card. Unlike
 /// `current()` (which stays on the detail page's show/movie), this always describes the playing
 /// **leaf**: an episode carries the show title + SxEy + episode name + its still; a movie carries the
