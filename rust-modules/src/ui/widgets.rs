@@ -748,3 +748,46 @@ pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, style: BadgeStyle) 
     p.text(lc.as_ptr(), x + w * 0.5, ty, sz, ink, 1, 1);
     w
 }
+
+// ---- Rating badge: one review score behind its provider's brand mark (Rotten Tomatoes' tomato /
+// popcorn, IMDb's star, TMDB's score ring). Deliberately NOT a [`badge`] chip: a chip's border
+// boxes in art that is already a distinct silhouette, and four boxed chips in a row shout over the
+// hero. The mark is an icon MASK tinted the brand colour, the score is ordinary primary ink, and
+// the pair reads as part of the metadata line it flows after. Returns the drawn width so a row can
+// flow badges inline, with [`rating_badge_w`] as the measure-first companion (same contract as
+// `badge`/`badge_w`). ----
+/// Mark box (px). A little over the meta line's cap height so a 24-unit silhouette still resolves
+/// at couch distance — the marks carry the state (fresh vs rotten), so they have to be legible.
+const RATING_MARK: f32 = 34.0;
+/// Mark → score gap. They are one unit, so the tightest rung.
+const RATING_GAP: f32 = theme::space::XS;
+
+/// pixel width [`rating_badge`] will occupy for `value` — measure before drawing so a row can stop
+/// at a margin instead of running a badge off the panel.
+pub(crate) fn rating_badge_w(value: &str) -> f32 {
+    std::ffi::CString::new(value)
+        .ok()
+        .map(|c| RATING_MARK + RATING_GAP + crate::text::text_width(c.as_ptr(), theme::size::LABEL, 1))
+        .unwrap_or(0.0)
+}
+
+/// Draw one rating badge with its LEFT edge at `x`, centred on `cy`; returns its width.
+pub(crate) fn rating_badge(
+    p: Painter,
+    x: f32,
+    cy: f32,
+    mark: crate::ui::icons::Icon,
+    tint: [f32; 4],
+    value: &str,
+) -> f32 {
+    let vc = match std::ffi::CString::new(value) {
+        Ok(c) => c,
+        Err(_) => return 0.0,
+    };
+    crate::ui::icons::draw(p, mark, Rect::new(x, cy - RATING_MARK * 0.5, RATING_MARK, RATING_MARK), tint);
+    let ty = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy);
+    p.text(vc.as_ptr(), x + RATING_MARK + RATING_GAP, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 0, 1);
+    // the MEASURED width, not what `text` reports it rasterized — `badge` calls `badge_w` for the
+    // same reason: a draw and its measurer that can disagree will eventually be caught disagreeing
+    rating_badge_w(value)
+}

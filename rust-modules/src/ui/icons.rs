@@ -18,7 +18,8 @@ pub enum Icon {
     // rasterizer draws untransformed, so direction is per-asset, not a rotation)
     ChevronDown,
     ChevronUp,
-    /// Hollow circle — the Unwatched toolbar chip's off state.
+    /// Hollow circle — the Unwatched toolbar chip's off state, and (tinted
+    /// [`theme::RATING_TMDB`](crate::ui::theme::RATING_TMDB)) The Movie Database's user-score ring.
     Ring,
     /// The amber unwatched corner mark (top-right of a poster): a right triangle whose outer
     /// corner is pre-rounded to sit flush inside the card's 14px corner radius. Filled mask.
@@ -28,6 +29,21 @@ pub enum Icon {
     Info,
     User,
     Backspace,
+    // ---- review-score brand marks (the detail hero's ratings row). Which of the four Rotten
+    // Tomatoes marks a badge draws comes from the server's `Rating.image` state, never from the
+    // score — see `metadata::RatingArt`. All four are plain silhouettes because the rasterizer
+    // renders a MASK: the brand colour is the tint (`theme::RATING_*`), so the tomato is red and
+    // the splat green without either asset knowing that. ----
+    /// Rotten Tomatoes' fresh tomato — `rottentomatoes://image.rating.ripe`.
+    Tomato,
+    /// Rotten Tomatoes' splattered tomato — `…image.rating.rotten`.
+    TomatoRotten,
+    /// The upright popcorn bucket (audience score) — `…image.rating.upright`.
+    Popcorn,
+    /// The tipped, spilled bucket — `…image.rating.spilled`.
+    PopcornSpilled,
+    /// Five-point star — the IMDb score mark.
+    Star,
 }
 
 fn src(id: Icon) -> &'static str {
@@ -45,6 +61,11 @@ fn src(id: Icon) -> &'static str {
         Icon::Info => include_str!("../../../assets/icons/info.svg"),
         Icon::User => include_str!("../../../assets/icons/user.svg"),
         Icon::Backspace => include_str!("../../../assets/icons/backspace.svg"),
+        Icon::Tomato => include_str!("../../../assets/icons/tomato.svg"),
+        Icon::TomatoRotten => include_str!("../../../assets/icons/tomato-rotten.svg"),
+        Icon::Popcorn => include_str!("../../../assets/icons/popcorn.svg"),
+        Icon::PopcornSpilled => include_str!("../../../assets/icons/popcorn-spilled.svg"),
+        Icon::Star => include_str!("../../../assets/icons/star.svg"),
     }
 }
 
