@@ -200,9 +200,9 @@ clean:
 
 test: deploy run
 
-# `make check` — the HOST unit suite (~0.3s), the only correctness signal available
-# without a television. Deliberately NOT a prerequisite of `all`: the normal build is a cross
-# compile for the TV and must not be made to depend on a host toolchain run succeeding (a host
+# `make check` — the HOST unit suite (~0.3s) plus `lint` below, the only correctness signal
+# available without a television. Deliberately NOT a prerequisite of `all`: the normal build is a
+# cross compile for the TV and must not be made to depend on a host toolchain run succeeding (a host
 # cargo failure has nothing to do with whether the ARM staticlib is buildable, and `make deploy`
 # on a machine mid-toolchain-churn should not be blocked by it). Run it before `make test`.
 #
@@ -214,8 +214,29 @@ test: deploy run
 # that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crate's own
 # `#[cfg(test)] mod tests` blocks (there are no integration tests in tests/ — that directory is the
 # on-device Python harness, a different thing entirely).
-check:
+check: lint
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo test --lib
+
+# `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
+# suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
+# real arm, so OK on the Subtitles/Audio discs did nothing at all — no menu, no log line — and rustc
+# does not warn on a repeated condition. That dispatch lives inside the SDL event loop, so there is
+# no host test for it; the lint is the whole gate. Explicitly NAMED lints, not a group: `-A
+# clippy::all` first because this crate is not clippy-clean and making it so is not this gate's job,
+# and naming them means a nightly bump cannot silently widen what `make check` fails on. All three
+# are clean as of 2026-07-29 (so is `clippy::correctness` as a group, except ff.rs:1330's deliberate
+# `loop { … break; }`). `--all-targets` so the `#[cfg(test)]` blocks are linted too, not just the
+# lib. ~12s cold, <1s warm — clippy needs the nightly clippy component, which rustup's DEFAULT
+# profile ships (a `--profile minimal` nightly does not).
+#
+# `if_same_then_else` is the one with a legitimate false positive here: two deliberately-identical
+# arms, e.g. `if back { exit_player() } else if stop { exit_player() }` — which app.rs's key chain
+# is full of. The escape hatch is this repo's own habit: clippy suppresses it when each arm carries
+# its own comment. Comment the arms, do not reach for an `#[allow]`.
+lint:
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +nightly clippy --all-targets -- \
+	  -A clippy::all \
+	  -D clippy::ifs_same_cond -D clippy::same_functions_in_if_condition -D clippy::if_same_then_else
 
 # ipk assembly: deb-style ar archive; the NDK ar emits GNU format (macOS ar is BSD)
 ipk: pkg/plxnative
@@ -241,4 +262,4 @@ threadprobe: tools/threadprobe.c
 sockprobe: tools/sockprobe.c
 	$(CC) $(CFLAGS) -o pkg/sockprobe tools/sockprobe.c -lpthread
 
-.PHONY: all setup-env deploy run run-stream kill check test ipk clean threadprobe sockprobe
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe
