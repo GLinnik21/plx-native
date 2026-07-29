@@ -11,7 +11,9 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{Art, Button, CircleButton, PageDots};
-use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
+// `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
+// doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
+use crate::ui::{guard, hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
 use std::ptr::{addr_of, addr_of_mut};
@@ -765,13 +767,6 @@ static mut SCENE: Option<Home> = None;
 #[inline]
 fn scene() -> &'static mut Home {
     unsafe { (*addr_of_mut!(SCENE)).as_mut().expect("home_init not called") }
-}
-
-/// Run an entry-point body panic-guarded so a stray panic degrades to a skipped
-/// frame instead of unwinding into C (matches img/pms). Main-thread-only.
-#[inline]
-fn guard(f: impl FnOnce()) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 }
 
 pub(crate) fn home_init() {
