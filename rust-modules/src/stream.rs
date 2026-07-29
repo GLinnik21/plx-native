@@ -4,6 +4,9 @@
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uchar, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Mutex;
+
+static FD_GATE: Mutex<()> = Mutex::new(());
 
 // repr(C) for a stable layout: the player boxes it + hands raw ptrs across threads.
 #[repr(C)]
@@ -415,6 +418,7 @@ pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_i
 /// the fd number for another thread's `socket()` to claim. To interrupt a reader that is still
 /// running, use [`http_shutdown`].
 unsafe fn close_owned(hs: &HttpStream) {
+    let _gate = FD_GATE.lock().unwrap_or_else(|e| e.into_inner());
     let fd = hs.take_fd();
     if fd >= 0 {
         libc::close(fd);
@@ -436,13 +440,29 @@ pub(crate) fn http_shutdown(hs: *mut HttpStream) {
     if hs.is_null() {
         return;
     }
+    let _gate = FD_GATE.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
+        // Re-read UNDER the gate. The `take_fd` swap alone makes exactly one caller close, but it
+        // does not make this pair atomic: read the number, lose the CPU, and by the time the
+        // syscall runs the owner may have closed it and another thread's `socket()` may have been
+        // handed the same number — so the interrupt lands on an unrelated, healthy connection.
+        // Holding the gate across BOTH the read and the syscall is what removes that window,
+        // because the only close is under the same gate.
         let fd = (*hs).fd();
         if fd >= 0 {
             libc::shutdown(fd, libc::SHUT_RDWR);
         }
     }
 }
+
+/// Serialises `shutdown(2)` against `close(2)` on a stream's descriptor — see [`http_shutdown`].
+///
+/// One process-wide gate rather than a field on `HttpStream`: the struct is `#[repr(C)]` and built
+/// by zeroing a `Box` (`http_stream_boxed`), so a `Mutex` field would have to be constructed
+/// instead of zeroed, and a zeroed `Mutex` is not a thing to rely on. Contention is not a concern
+/// either — between them these two run a handful of times per playback, and each holds the gate for
+/// exactly one syscall on an already-open descriptor. Deliberately NOT taken by `set_fd`/`fd()`:
+/// `hs_getb` loads the fd per byte on the chunked path, which is why it stays an atomic.
 
 /// Rust-friendly one-shot GET: open -> read to end -> close. Used by pms.
 /// (http_stream carries a 64KB buffer, so box it off the caller's stack.)
