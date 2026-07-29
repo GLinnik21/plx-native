@@ -275,7 +275,7 @@ pub struct Tag {
     #[serde(default)]
     pub role: String, // Role[] only (character name)
     #[serde(default)]
-    pub thumb: String, // Role[] headshot
+    pub thumb: String, // headshot — on the crew arrays (Director[]/Writer[]) as well as Role[]
 }
 
 /// Plex `Chapter[]` on a leaf item (movies/episodes with chapter data). Sibling of `Media[]`,

@@ -22,11 +22,17 @@ pub(crate) fn resolve_tex(path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
     crate::posters::poster_get(key.as_ptr() as *const c_char)
 }
 
-/// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton) or any
-/// keyed thumbnail at an explicit resolution (flat placeholder skeleton).
+/// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton), any
+/// keyed thumbnail at an explicit resolution (flat placeholder skeleton), or a person's headshot
+/// (the same thumbnail, but its EMPTY case draws a person glyph rather than a blank tile).
 pub(crate) enum Art<'a> {
     Poster(Option<&'a PmsMovie>),
     Thumb { key: &'a str, res: (c_int, c_int) },
+    /// A credit's headshot (the Cast & Crew shelf). Distinct from [`Art::Thumb`] because a
+    /// missing headshot is ROUTINE here — the server has one for most actors and for few crew —
+    /// and an empty circle beside named circles reads as a broken image rather than as a person
+    /// the metadata agent has no photo of.
+    Person { key: &'a str, res: (c_int, c_int) },
 }
 
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
@@ -71,8 +77,38 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
             }
         }
+        Art::Person { key, res } => {
+            let t = resolve_tex(key, res.0, res.1, 0);
+            if t != 0 {
+                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
+            } else {
+                p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
+                // Only for a person the server has NO headshot of — an unresolved texture with a
+                // key behind it is merely still loading, and glyphing that would flash a "no
+                // photo" mark on every tile of every page for the length of its fetch.
+                if key.is_empty() {
+                    // quantize the glyph box to 4px so the focus-pop animation reuses a handful of
+                    // cached icon masks instead of rasterizing + uploading one per rounded pixel
+                    // (same discipline as the unwatched angle above)
+                    let d = ((r.w * PERSON_GLYPH_RATIO) / 4.0).round() * 4.0;
+                    crate::ui::icons::draw(
+                        p,
+                        crate::ui::icons::Icon::User,
+                        Rect::new(r.cx() - d * 0.5, r.cy() - d * 0.5, d, d),
+                        theme::TEXT_TERTIARY,
+                    );
+                }
+            }
+        }
     }
 }
+
+/// Person-glyph box as a fraction of a headshot tile — the [`Art::Person`] fallback's one ratio.
+/// Deliberately TIGHTER than [`DISC_ICON_RATIO`] (0.54, the ratio every disc *control* glyph uses,
+/// and what the profile chip's own fallback works out to): a headshot tile is 190px, and 0.54 of it
+/// is past `icons::tex_for`'s 96px rasterization clamp — the mask would be upscaled and soft. At
+/// 0.44 the box lands at 84-88px across the whole focus pop, inside the clamp and crisp.
+const PERSON_GLYPH_RATIO: f32 = 0.44;
 
 /// The scale a focused card pops to (shared by every animated card row).
 pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
