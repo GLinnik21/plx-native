@@ -49,6 +49,18 @@
       }
     },
     {
+      "name": "item-menu",
+      "tier": "ui",
+      "route": "itemmenu",
+      "_floor_note": "45 like the other scrim'd-popover scenes (track-menu, library-switch): this one draws a full-screen scrim plus a panel OVER the live home grid, which is strictly more fill than home-grid's 50.",
+      "floor": 45,
+      "run_secs": 18,
+      "warmup_s": 6,
+      "triggers": {
+        "plxnative-itemmenu": true
+      }
+    },
+    {
       "name": "library-scroll",
       "tier": "ui",
       "route": "library",

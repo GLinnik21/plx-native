@@ -4,7 +4,8 @@
 //! activation. It is genuinely event-driven — the dip persists for as long as the button is physically
 //! held — so a HELD OK is a measurable long-press ([`held_ms`]/[`is_long`]), not a tap. The design
 //! (`Home Screen.dc.html`) fakes down/up with a fixed `setTimeout`; the real remote gives us both
-//! edges, so we use them.
+//! edges, so we use them. That long press is what opens the **item context menu** on a home shelf
+//! card (`ui/item_menu.rs`) — see [`LONG_MS`].
 //!
 //! ONE control is pressed at a time (always the currently focused one), so a single global suffices —
 //! the renderer multiplies the focused tile's scale by [`scale`] while [`is_active`]. Focus can't move
@@ -41,9 +42,12 @@ const LOST_MS: u32 = 350;
 /// hold shorter than this always waits for the real release). Also the long-press ceiling.
 const MAX_HOLD_MS: u32 = 1000;
 /// A hold at least this long is a long press: it is NO LONGER a tap, so the normal activation is
-/// cancelled ([`tick`]'s latch) and the press just holds + springs back doing nothing. The
-/// press-and-hold MENU will hook in at this threshold later ("so we can indicate long presses
-/// afterwards"); until it exists a long press is deliberately a no-op rather than a launch.
+/// cancelled ([`tick`]'s latch) and the press just holds + springs back without activating.
+///
+/// This is the threshold the **item context menu** opens on (`ui/item_menu.rs`, via `app.rs`'s
+/// per-frame press block reading [`is_long`] while the key is still DOWN). On a screen with no hold
+/// action the latch still fires and the long press stays a deliberate no-op, which is why the
+/// cancellation lives here rather than at the one call site that acts on it.
 pub const LONG_MS: u32 = 500;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -62,7 +66,7 @@ struct State {
     release_at: u32, // tick of the real key-up (0 = still held)
     commit_at: u32,  // tick at which the activation may fire (0 = none scheduled)
     want_commit: bool, // false after a cancel or the long-press latch — spring back, do NOT activate
-    long: bool,      // the hold crossed LONG_MS → a press-and-hold, not a tap (menu hook, future)
+    long: bool,      // the hold crossed LONG_MS → a press-and-hold, not a tap (see `was_long`)
     took: bool,      // the caller already consumed the commit
 }
 
@@ -139,15 +143,22 @@ pub fn is_active() -> bool {
     st().phase != Phase::Idle
 }
 
-/// The focused control has been held down at least [`LONG_MS`] RIGHT NOW (still in the press) — the
-/// live hook a future hold menu opens on.
+/// The focused control has been held down at least [`LONG_MS`] RIGHT NOW (still in the press).
+/// **This is the one the hold menu opens on** (`app.rs`'s press block → `ui::item_menu`): firing
+/// while the key is still down is what makes it read as a hold rather than a delayed tap.
 pub fn is_long(now: u32) -> bool {
     let s = st();
     s.phase == Phase::Down && now.wrapping_sub(s.down_at) >= LONG_MS
 }
 
 /// The current / most-recent press crossed into a press-and-hold (latched at [`LONG_MS`]; stays true
-/// until the next [`begin`]). The future hold menu reads this on release to branch tap-vs-hold.
+/// until the next [`begin`]) — the AFTER-THE-FACT form of [`is_long`], for a caller that wants to
+/// branch tap-vs-hold on the release rather than act the instant the threshold is crossed.
+///
+/// Nothing reads it today: the item menu deliberately opens on the live [`is_long`] instead, so the
+/// panel is up while the finger is still down. Kept because the latch it reports is what makes the
+/// distinction observable at all, and a screen whose hold action can only run on release (one that
+/// must not fire mid-press) needs exactly this.
 pub fn was_long() -> bool {
     st().long
 }
@@ -168,8 +179,9 @@ pub fn tick(now: u32, dt: f32) {
             s.sp.step(DIP, K_DOWN, dt); // fast, non-bouncy dip
             // Long-press latch: once held past LONG_MS this is a press-and-hold, NOT a tap — cancel
             // the normal activation so it can never launch (the hard cap below would otherwise fire
-            // it). For now a long press just holds the dip and springs back doing nothing; the
-            // press-and-hold MENU will hook in right here later.
+            // it). The press then just holds the dip and springs back; whether anything HAPPENS is
+            // the caller's business, read off `is_long` (Home opens the item context menu there;
+            // every other screen leaves a hold as a deliberate no-op).
             if s.want_commit && now.wrapping_sub(s.down_at) >= LONG_MS {
                 s.want_commit = false;
                 s.long = true;
