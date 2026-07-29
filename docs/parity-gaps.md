@@ -377,9 +377,20 @@ entries would otherwise be rebuilt.
   components). Also: five states, not four — `certified` joins ripe/rotten/upright/spilled.
 - **Person bio IS available**, contradicting §5b's "not available from the local server". True of
   PMS, but `GET https://discover.provider.plex.tv/library/people/{tagKey}` serves `summary`,
-  `bornAt`, `birthPlace`, `knownFor`, `External[]` socials and `CreditType[]` — **only when
-  `X-Plex-Product` and `X-Plex-Client-Identifier` headers are sent**, which is why the first probe
-  reported 404. Needs DNS+TLS, so it goes through `net.rs` (libcurl), never `stream.rs`.
+  `bornAt`, `birthPlace`, `knownFor`, `External[]` socials and `CreditType[]`. Three facts that
+  cost time to establish, all verified live:
+  - The **`tagKey` guid is the only id that works** — the numeric tag `id` PMS accepts returns
+    `404 "Invalid value provided for metadataId!"`. Carry both off the credits row.
+  - **`Accept: application/json` is the only header that matters** (else it answers XML). No token
+    is needed; `X-Plex-Product`/`X-Plex-Client-Identifier` are **not** required. An earlier note
+    here claimed they were — that was a confounded probe whose original 404 came from the wrong
+    path (`/library/metadata/{tagKey}`), corrected in the same step the headers were added.
+  - An **unknown person is `200` with `totalSize: 0`**, not a 404; treating it as failure gives a
+    page that retries forever.
+
+  Needs DNS+TLS, so it goes through `net.rs` (libcurl), never `stream.rs`. Landed as
+  `plex/discover.rs`, hanging off `AccountClient` so it reuses that transport rather than adding
+  a fourth client.
 
 ## Appendix — full inventory
 
