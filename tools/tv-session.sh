@@ -11,7 +11,8 @@
 #   tv-session.sh down           hand the TV back: strip automation, relaunch interactive
 #
 # `up` options:
-#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | player=<rk> | login | account | itemmenu
+#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | person=<movie rk>
+#                     | player=<rk> | login | account | itemmenu
 #   --guest           run as the managed test user rather than the owner (default: owner)
 #   --stream[=PORT]   also start tools/stream-screen.py for a live browser view (default 8909)
 #                     STREAM_RES=480x270 makes mpeg encode ~4x cheaper (see the skill)
@@ -167,6 +168,11 @@ cmd_up() {
     library)   files+=("plxnative-library="); want_route=library ;;
     library=*) files+=("plxnative-library=${screen#*=}"); want_route=library ;;
     detail=*)  files+=("plxnative-detail=${screen#*=}"); want_route=detail ;;
+    # the person page has no boot trigger of its own — it is REACHED, by opening a movie's
+    # detail page, walking focus down to Cast & Crew (a movie's second section) and pressing
+    # OK on the first headshot. So the rk here is the MOVIE's, not the person's.
+    person=*)  files+=("plxnative-detail=${screen#*=}" "plxnative-detailsec=1" "plxnative-detailok=")
+               want_route=person ;;
     player=*)  files+=("plxnative-play=${screen#*=}"); want_route=player ;;
     *) echo "unknown --screen: $screen" >&2; exit 2 ;;
   esac

@@ -61,6 +61,21 @@
       }
     },
     {
+      "name": "person-page",
+      "tier": "ui",
+      "route": "person",
+      "floor": 50,
+      "run_secs": 20,
+      "warmup_s": 6,
+      "rk": "2005",
+      "comment": "cast[0] of this movie is Peter Sallis, who has titles in BOTH libraries, so the page draws two poster shelves. detailsec=1 walks the hero focus down to the credits row (a movie's second section); detailok presses OK on it.",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailsec": 1,
+        "plxnative-detailok": true
+      }
+    },
+    {
       "name": "library-scroll",
       "tier": "ui",
       "route": "library",
