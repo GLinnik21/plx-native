@@ -423,8 +423,7 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     let hf = hero_focus();
     let (cd, cgap) = (HERO_CTRL_D, 20.0f32); // control diameter + inter-control gap
     let plabel = if hero.resume_ms > 0 { c"Continue" } else { c"Play" };
-    let isz = theme::size::BODY as f32 * 1.15; // icon box (mirrors Button's own layout)
-    let pw = isz + 12.0 + crate::text::text_width(plabel.as_ptr(), theme::size::BODY, 1) + 68.0;
+    let pw = crate::ui::widgets::pill_w(plabel.as_ptr(), theme::size::BODY);
     // local (painter-relative) frames, and the screen-space rects that mirror them
     let pill = Rect::new(tx, pill_y, pw, cd);
     let info = Rect::new(tx + pw + cgap, pill_y, cd, cd);

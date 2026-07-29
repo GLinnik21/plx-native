@@ -52,6 +52,11 @@ struct DetailView {
     related: CardRow,   // the Related row = the SAME animated shelf component the home grid uses
     cast: CardRow,      // Cast & Crew row — the same component, circular RowStyle::CAST
     last_resume_ns: i64, // resume position (ns) on_ok just started (0 = from start); app.rs seeks here
+    // Whether the hero row carried a restart disc the last time its focus was resolved. The row's
+    // control SET is derived from the loaded item, which arrives (and changes) asynchronously — so
+    // the index the focus holds has to be carried across a set change or it silently comes to mean a
+    // different button. See `hero_col`.
+    hero_had_restart: bool,
     // per-section focus memory (episodes/related/cast): leaving a row and coming back restores the
     // item you were on — paired with the frozen h-scrolls, a row "stays where it was" instead of
     // snapping to its start whenever focus moves elsewhere. Indexed by section id.
@@ -75,6 +80,7 @@ impl DetailView {
             related: CardRow::new(),
             cast: CardRow::new(),
             last_resume_ns: 0,
+            hero_had_restart: false,
             saved_col: [0; 6],
             spin_ms: 0.0,
         }
@@ -85,8 +91,16 @@ fn view() -> &'static mut DetailView {
     unsafe { (*addr_of_mut!(VIEW)).get_or_insert_with(DetailView::new) }
 }
 
-const NBTN: c_int = 2; // Play + watched toggle (an info disc would be a no-op on its own page)
-const PW: f32 = 168.0; // Play pill width
+// ---- the hero action row ----
+// Play/Resume pill (0), the restart disc (1, present ONLY while there is a resume point to ignore),
+// then the watched toggle. An info disc would be a no-op on its own page, so the row stops there.
+// The set is DYNAMIC, so nothing may hard-code the watched index: see `hero_btns`/`btn_watched`.
+const BTN_PLAY: c_int = 0;
+const BTN_RESTART: c_int = 1;
+// Play pill MINIMUM width. The drawn width is `widgets::pill_w`, measured from the label, and for
+// "Play" that lands ~2px above this — so the detail Play pill is now pixel-identical to home's
+// rather than approximating it with a constant. The floor only guards a pathologically short label.
+const PW: f32 = 168.0;
 const CGAP: f32 = 20.0;
 const CD: f32 = 60.0; // circle button diameter
 
@@ -147,11 +161,106 @@ fn selected() -> Option<&'static PmsMovie> {
     crate::pms::movie(idx as usize)
 }
 
-/// the focused hero button (0=Play), or -1 when the hero section isn't focused
-pub(crate) fn focus() -> c_int {
+/// The resume position (ns) the hero's Play control would ACTUALLY apply — i.e. exactly what
+/// `on_ok`'s play arm hands `app.rs`. A movie resumes from its own `viewOffset`; a show page's Play
+/// starts `episodes[0]` of the selected season (see `play_episode_at`), so it reads that leaf's.
+///
+/// Both go through `metadata::resume_ns`, the same Plex rule the action applies, deliberately: keyed
+/// on a raw `resume_ms > 0` instead (as the home hero is), a 4-second offset or one past the 95%
+/// end-of-item mark would label the pill "Resume" for a play that starts at 0, and hang a restart
+/// disc beside it that does nothing. The label and the control set have to promise what the press
+/// delivers.
+fn hero_resume_ns() -> i64 {
+    let Some(d) = metadata::current() else { return 0 };
+    if d.is_show {
+        d.episodes.first().map(|e| metadata::resume_ns(e.resume_ms, e.dur_ms)).unwrap_or(0)
+    } else {
+        metadata::resume_ns(d.resume_ms, d.dur_ms)
+    }
+}
+/// is there a resume point for the restart disc to ignore? (no resume point → Play already starts
+/// at 0, so a restart control would be a second button doing the first one's job)
+fn has_restart() -> bool {
+    hero_resume_ns() > 0
+}
+/// how many controls the hero row is showing right now
+fn hero_btns() -> c_int {
+    if has_restart() {
+        3
+    } else {
+        2
+    }
+}
+/// index of the watched toggle — always last, so it shifts with the restart disc
+fn btn_watched() -> c_int {
+    hero_btns() - 1
+}
+/// The hero row's focused index, resolved against the LIVE control set and written back — so the
+/// correction IS the state rather than something each reader has to remember.
+///
+/// The set is derived from an item that arrives, and changes, asynchronously, so an index alone is
+/// not a stable way to name a control. Both directions bite, and both are reachable by hand:
+///
+/// - It **grows**. `open_rk` deliberately clears `current()` for the whole 2-5 round-trip fetch, so
+///   during that window the row is two buttons and index 1 is the watched toggle. Press RIGHT there,
+///   let a part-watched item land, and index 1 has quietly become the restart disc — the next OK
+///   would start playback instead of toggling watched.
+/// - It **shrinks**. The watched toggle is the control that can delete the restart disc from under
+///   the focus, because scrobbling clears the server's `viewOffset`. Focus left at index 2 of a
+///   two-button row draws nothing focused and makes every later OK inert.
+///
+/// So the focus follows its CONTROL, not its index: the disc is inserted at (and removed from)
+/// `BTN_RESTART`, so everything at or after it shifts by one when the set flips. The clamp then
+/// catches anything else. NB `move_focus` reads `col` raw, which is sound only because this runs
+/// every drawn frame (`env_of`) and the event loop polls keys BEFORE `update` lands a fetch — a key
+/// press therefore always sees a `col` already resolved against the set that press is acting on.
+fn hero_col() -> c_int {
     let v = view();
     if v.section == 0 {
-        v.col
+        let now = has_restart();
+        if now != v.hero_had_restart {
+            if v.col >= BTN_RESTART {
+                v.col += if now { 1 } else { -1 };
+            }
+            v.hero_had_restart = now;
+        }
+        v.col = v.col.clamp(0, hero_btns() - 1);
+    }
+    v.col
+}
+
+/// What an OK on hero control `col` means. The row's indices MOVE with its control set, so the
+/// mapping lives in one pure function instead of a literal compared at each site — and it is the
+/// half of the press that is host-testable, the actions themselves being PMS round trips.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HeroAction {
+    Play,
+    /// the same play, with the resume rule dropped
+    Restart,
+    Watched,
+    None,
+}
+fn hero_action(col: c_int) -> HeroAction {
+    if col == btn_watched() {
+        HeroAction::Watched
+    } else if col == BTN_PLAY {
+        HeroAction::Play
+    } else if has_restart() && col == BTN_RESTART {
+        HeroAction::Restart
+    } else {
+        HeroAction::None
+    }
+}
+
+/// The focused hero button (0=Play), or -1 when the hero section isn't focused.
+///
+/// **This WRITES** (through `hero_col`), unlike the read-only accessor it used to be. Harmless from
+/// where it is called today — `env_of` and `draw_buttons`, both outside the `col.draw(view(), …)`
+/// window in `draw()` — but do not reach for it from inside a `Column::draw_child`, which holds a
+/// `&DetailView` reborrowed from that same `&'static mut`.
+pub(crate) fn focus() -> c_int {
+    if view().section == 0 {
+        hero_col()
     } else {
         -1
     }
@@ -191,7 +300,7 @@ fn sections() -> ([c_int; 6], usize) {
 }
 fn n_items(section: c_int) -> c_int {
     match section {
-        0 => NBTN,
+        0 => hero_btns(),
         1 => metadata::current().map(|d| d.seasons.len()).unwrap_or(0) as c_int,
         2 => metadata::current().map(|d| d.episodes.len()).unwrap_or(0) as c_int,
         3 => metadata::current().map(|d| d.related.len()).unwrap_or(0) as c_int,
@@ -312,6 +421,9 @@ pub(crate) fn is_show() -> bool {
 fn reset_view_state(v: &mut DetailView) {
     v.section = 0;
     v.col = 0;
+    // re-derived by the next `hero_col`; listed here because it is retained hero-row state, even
+    // though col is 0 at this point so no shift could fire off a stale value anyway
+    v.hero_had_restart = false;
     v.pending_season = -1;
     v.saved_col = [0; 6];
     v.column.scroll.jump(0.0);
@@ -865,18 +977,38 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // One shared control family (widgets::Button/CircleButton, default ControlStyle::Accent — the
     // same as the info card): the focused control fills warm ACCENT with dark ink, the rest are
-    // solid dark discs. Play reuses the pill Button; the check disc is the watched toggle (its
-    // glyph lights RESUME amber while the item is marked watched).
+    // solid dark discs. Play reuses the pill Button; the ↺ disc restarts a resumable item from
+    // 00:00; the check disc is the watched toggle (its glyph lights RESUME amber while the item is
+    // marked watched). The discs are placed by an ACCUMULATED x, not per-control constants, because
+    // the middle one comes and goes — see `hero_btns`.
     let tx = MARGIN_X;
     let focus = focus();
-    let cx1 = tx + PW + CGAP;
+    let restart = has_restart();
 
-    Button::new(c"Play".as_ptr(), theme::size::BODY, Rect::new(tx, y, PW, CD))
+    // The pill says what the press will DO. Home's hero says "Continue" — that row belongs to the
+    // Continue Watching shelf, and the word is the shelf's. On an item page the control has a
+    // sibling: "Resume" and the ↺ disc beside it are a PAIR, read together, the way every reference
+    // client words it. The pill's width follows its label (widgets::pill_w, the one hero-pill
+    // formula) so the longer word gets its own air instead of being crammed into "Play"'s frame.
+    let plabel = if restart { c"Resume" } else { c"Play" };
+    let pw = crate::ui::widgets::pill_w(plabel.as_ptr(), theme::size::BODY).max(PW);
+    let mut cx = tx + pw + CGAP;
+
+    Button::new(plabel.as_ptr(), theme::size::BODY, Rect::new(tx, y, pw, CD))
         .icon(crate::ui::icons::Icon::Play)
-        .focused(focus == 0)
+        .focused(focus == BTN_PLAY)
         .draw(env, p);
+    if restart {
+        CircleButton::new(c"".as_ptr())
+            .icon(crate::ui::icons::Icon::Restart)
+            .at(cx, y)
+            .focused(focus == BTN_RESTART)
+            .draw(env, p);
+        cx += CD + CGAP;
+    }
     let watched = metadata::current().map(|d| d.watched).unwrap_or(false);
-    let wstyle = if watched && focus != 1 {
+    let wf = focus == btn_watched();
+    let wstyle = if watched && !wf {
         ControlStyle::Custom { fill: theme::CONTROL_IDLE_FILL, ink: theme::RESUME_FILL }
     } else {
         ControlStyle::Accent
@@ -884,8 +1016,8 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     CircleButton::new(c"".as_ptr())
         .icon(crate::ui::icons::Icon::Check)
         .style(wstyle)
-        .at(cx1, y)
-        .focused(focus == 1)
+        .at(cx, y)
+        .focused(wf)
         .draw(env, p);
 }
 
@@ -1189,6 +1321,15 @@ pub(crate) fn last_resume_ns() -> i64 {
 fn set_resume(resume_ms: i64, dur_ms: i64) {
     view().last_resume_ns = metadata::resume_ns(resume_ms, dur_ms);
 }
+/// The resume `on_ok` finally leaves for `app.rs`. Both play arms bake `metadata::resume_ns` into
+/// `last_resume_ns` — the movie one via `set_resume`, the episode one inside `play_episode_at` — so
+/// Restart drops it AFTER the fact and covers them both with one statement, rather than threading a
+/// from-start flag through two call sites that would then have to be kept in step forever.
+fn commit_resume(from_start: bool) {
+    if from_start {
+        view().last_resume_ns = 0;
+    }
+}
 
 /// OK/SELECT on the detail page: returns true if playback should start (the route
 /// URL/HUD have already been set). Section 0 = hero Play, 1 = season tab, 2 = episode.
@@ -1205,7 +1346,10 @@ pub(crate) fn on_ok() -> bool {
     let col = view().col;
     match sec {
         0 => {
-            if col == 1 {
+            // the hero row's indices move with its control set, so resolve the press through the
+            // one pure mapping (`hero_col` also corrects a focus the set shrank under)
+            let action = hero_action(hero_col());
+            if action == HeroAction::Watched {
                 // watched toggle: scrobble/unscrobble, then re-fetch so the button state, the
                 // resume bars and the Continue Watching shelf all reflect the new view state.
                 if let Some((rk, watched, season)) =
@@ -1227,10 +1371,14 @@ pub(crate) fn on_ok() -> bool {
                 }
                 return false;
             }
-            if col != 0 {
-                return false; // watched (col 1) handled above; everything else inert
+            // Restart (↺) is the SAME play the pill performs, with the resume rule dropped —
+            // applied by `commit_resume` once the arm has run (app.rs reads `last_resume_ns` only
+            // after `on_ok` returns, which is what makes the after-the-fact override sound).
+            let from_start = action == HeroAction::Restart;
+            if !from_start && action != HeroAction::Play {
+                return false; // watched handled above; everything else inert
             }
-            if is_show() {
+            let started = if is_show() {
                 play_episode_at(0)
             } else {
                 if let Some(m) = selected() {
@@ -1247,7 +1395,9 @@ pub(crate) fn on_ok() -> bool {
                     metadata::current().map(|d| d.dur_ms).unwrap_or(0),
                 );
                 true
-            }
+            };
+            commit_resume(from_start);
+            started
         }
         1 => {
             // only a season that isn't already selected loads — OK on the highlighted tab used to
@@ -1669,5 +1819,167 @@ fn pretty_date(iso: &str, year: i64) -> String {
         year.to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::{Detail, Episode};
+
+    /// Install `d` as the loaded item and park hero focus on `col`. Both statics are crate-wide
+    /// (`metadata::CURRENT` and detail's own `VIEW`), so every caller holds `testlock::serial()`.
+    /// `hero_had_restart` is seeded from the item so a mount is a settled starting state — a test
+    /// that means to exercise a set CHANGE makes it happen explicitly, after the mount.
+    fn mount(d: Option<Detail>, col: c_int) {
+        metadata::set_current_for_test(d);
+        let restart = has_restart();
+        let v = view();
+        v.section = 0;
+        v.col = col;
+        v.last_resume_ns = 0;
+        v.hero_had_restart = restart;
+    }
+    fn movie(resume_ms: i64, dur_ms: i64) -> Detail {
+        Detail { rk: "m1".into(), dur_ms, resume_ms, ..Default::default() }
+    }
+    fn show(ep_resume_ms: i64, dur_ms: i64) -> Detail {
+        Detail {
+            rk: "s1".into(),
+            is_show: true,
+            episodes: vec![Episode { rk: "e1".into(), dur_ms, resume_ms: ep_resume_ms, ..Default::default() }],
+            ..Default::default()
+        }
+    }
+
+    /// The restart disc exists exactly when the play beside it would resume — the pill's label, the
+    /// control count and the watched index all hang off that one predicate, and it is Plex's resume
+    /// RULE (`metadata::resume_ns`), not a raw `viewOffset > 0`.
+    #[test]
+    fn restart_disc_tracks_the_resume_the_play_would_actually_apply() {
+        let _serial = crate::testlock::serial();
+
+        mount(None, 0);
+        assert_eq!(hero_btns(), 2, "no item loaded: nothing to restart");
+        assert_eq!(btn_watched(), 1);
+
+        mount(Some(movie(0, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 2, "unwatched movie: Play already starts at 0");
+
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 3, "part-watched movie: Play resumes, so restart is reachable");
+        assert_eq!(btn_watched(), 2, "the watched toggle stays LAST — it shifts, it is not displaced");
+
+        // the two rule edges: a few seconds in is not a resume point, and neither is the 95% tail
+        // (both resume_ns to 0, where "Resume" would be a lie and ↺ a second Play)
+        mount(Some(movie(4_000, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 2, "a 4s offset is below Plex's resume floor");
+        mount(Some(movie(7_100_000, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 2, "past the 95% mark the item plays from the start");
+
+        // a show page's Play starts episodes[0] of the selected season, so the row reads THAT leaf
+        mount(Some(show(0, 2_700_000)), 0);
+        assert_eq!(hero_btns(), 2, "show whose first episode has not been started");
+        mount(Some(show(600_000, 2_700_000)), 0);
+        assert_eq!(hero_btns(), 3, "show whose first episode is part-watched");
+        view().section = 1;
+        assert_eq!(focus(), -1, "focus() still reports -1 off the hero section");
+
+        mount(None, 0);
+    }
+
+    /// The index→action mapping, which is the whole reason the row can grow a control: with a
+    /// resume point index 1 is the restart disc and the toggle has moved to 2; without one, index 1
+    /// is the toggle and there is no restart to reach.
+    #[test]
+    fn hero_indices_mean_different_actions_in_the_two_control_sets() {
+        let _serial = crate::testlock::serial();
+
+        mount(Some(movie(0, 7_200_000)), 0);
+        assert_eq!(hero_action(0), HeroAction::Play);
+        assert_eq!(hero_action(1), HeroAction::Watched, "no restart disc: index 1 is the toggle");
+        assert_eq!(hero_action(2), HeroAction::None, "and there is no index 2");
+
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        assert_eq!(hero_action(0), HeroAction::Play);
+        assert_eq!(hero_action(1), HeroAction::Restart);
+        assert_eq!(hero_action(2), HeroAction::Watched, "the toggle moved, and OK must follow it");
+
+        mount(None, 0);
+    }
+
+    /// The watched toggle can delete the control the focus is sitting on: scrobbling clears the
+    /// server's viewOffset, so the row goes 3 → 2 under a focus parked at index 2. The clamp must
+    /// bring it back to the toggle rather than leave it past the end — where nothing draws focused
+    /// and, since `hero_action` would answer `None`, every later OK is inert.
+    #[test]
+    fn hero_focus_is_clamped_when_the_control_set_shrinks_under_it() {
+        let _serial = crate::testlock::serial();
+
+        mount(Some(movie(1_800_000, 7_200_000)), 2);
+        assert_eq!(focus(), 2, "3-button row: focus sits on the watched toggle");
+
+        // the scrobble landed: watched, and no resume point any more, so the restart disc is gone
+        metadata::set_current_for_test(Some(Detail { watched: true, ..movie(0, 7_200_000) }));
+        assert_eq!(hero_btns(), 2);
+        assert_eq!(focus(), 1, "focus lands back on the watched toggle, not past the end");
+        assert_eq!(view().col, 1, "and the clamp is written back — it IS the state");
+        assert_eq!(hero_action(view().col), HeroAction::Watched);
+
+        mount(None, 0);
+    }
+
+    /// `commit_resume` is the whole of the restart action — it runs over whatever the play arm baked
+    /// in, so one statement covers the movie path and the episode path. `on_ok` itself is a PMS
+    /// round trip; the field it leaves behind is all app.rs reads, and that is host-checkable.
+    #[test]
+    fn restart_drops_the_resume_both_play_paths_bake_in() {
+        let _serial = crate::testlock::serial();
+
+        // the movie arm: set_resume applies the rule, then the press decides whether it survives
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        set_resume(1_800_000, 7_200_000);
+        commit_resume(false);
+        assert_eq!(last_resume_ns(), 1_800_000_000_000, "Play keeps the resume: 30 minutes in");
+        commit_resume(true);
+        assert_eq!(last_resume_ns(), 0, "Restart drops it: 00:00");
+
+        // the episode arm bakes its resume in at play_episode_at's tail — same override, same result
+        mount(Some(show(600_000, 2_700_000)), BTN_RESTART);
+        set_resume(600_000, 2_700_000);
+        commit_resume(false);
+        assert_eq!(last_resume_ns(), 600_000_000_000, "the episode Play resumes 10 minutes in");
+        assert_eq!(hero_action(hero_col()), HeroAction::Restart, "and the disc is what index 1 means here");
+        commit_resume(true);
+        assert_eq!(last_resume_ns(), 0);
+
+        mount(None, 0);
+    }
+
+    /// The set can also GROW under a parked focus: `open_rk` clears `current()` for the whole fetch,
+    /// so a RIGHT pressed in that window lands on the watched toggle of a TWO-button row — and if
+    /// the item then arrives part-watched, index 1 has become the restart disc. Focus must travel
+    /// with its control, or that press plays the item instead of marking it watched.
+    #[test]
+    fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
+        let _serial = crate::testlock::serial();
+
+        // mid-fetch: nothing loaded, so the row is Play + watched and RIGHT parks on the toggle
+        mount(None, 0);
+        assert_eq!(focus(), 0);
+        view().col = 1;
+        assert_eq!(hero_action(focus()), HeroAction::Watched, "index 1 is the toggle while the row is short");
+
+        // the fetch lands, part-watched: the row grows a restart disc AT index 1
+        metadata::set_current_for_test(Some(movie(1_800_000, 7_200_000)));
+        assert_eq!(focus(), 2, "the focus moved with the toggle rather than staying on the index");
+        assert_eq!(hero_action(focus()), HeroAction::Watched, "so OK still means what the user aimed at");
+
+        // Play never shifts — it is before the insertion point
+        view().col = 0;
+        metadata::set_current_for_test(Some(movie(0, 7_200_000)));
+        assert_eq!(focus(), 0, "the pill holds index 0 through a set change");
+
+        mount(None, 0);
     }
 }
