@@ -21,43 +21,59 @@ pub(crate) fn load_thread(payload: SendPtr<c_char>) {
 /// How long the progress reporter waits between /:/timeline posts.
 const REPORT_INTERVAL_S: u64 = 10;
 
-/// Wait up to `secs`, returning `true` as soon as teardown asks us to stop.
+/// One reporter's stop signal — **owned by that reporter and its Engine**, not shared.
 ///
-/// This used to be ten 1-second `sleep`s with a flag check between them, which made
-/// `engine::teardown`'s join of this thread cost a deterministic 0-1000 ms **on the main
-/// thread** — paid on every stop, every reload-based seek and every audio switch.
-/// `teardown` now latches `report_wake` and notifies before it joins, so the wait ends at
-/// once. The loop re-checks the predicate because `wait_timeout` may wake spuriously; a
-/// spurious wake must not shorten the interval into an early extra POST.
-fn wait_or_stop(secs: u64) -> bool {
-    let (m, cv) = &SHARED.report_wake;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
-    loop {
-        if *g || SHARED.report_stop.load(Ordering::Acquire) {
-            return true;
+/// It used to be `SHARED.report_stop` + `SHARED.report_wake`, which `reset_session` clears at the
+/// END of teardown. So a reporter still alive at that moment — parked in its POST — came back to a
+/// cleared flag and looped forever, which is precisely why teardown had to JOIN it before letting
+/// the session reset. That join is on the MAIN thread, and `stream`'s one-shot wrappers box their
+/// socket privately, so nothing could interrupt the POST: against a server that accepts and then
+/// goes quiet the frame loop parked for the rest of `SO_RCVTIMEO`. **Measured at 6974 ms** with
+/// `tools/netcond.py` in `stall@/:/timeline` mode.
+///
+/// Per-session ownership makes the stop unambiguous: a detached reporter always sees ITS OWN flag
+/// set and exits, no matter what the next session does to `SHARED`. That is what lets the join
+/// move off the main thread.
+pub(crate) struct ReportStop {
+    flag: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl ReportStop {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(ReportStop { flag: std::sync::Mutex::new(false), cv: std::sync::Condvar::new() })
+    }
+
+    /// Tell this reporter to exit, and wake it so it notices now rather than up to 10 s from now.
+    pub(crate) fn stop(&self) {
+        *self.flag.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
+    }
+
+    /// Wait up to `secs`, returning `true` as soon as [`stop`](Self::stop) has been called.
+    ///
+    /// The loop re-checks the predicate because `wait_timeout` may wake spuriously, and a spurious
+    /// wake must not shorten the interval into an early extra POST.
+    fn wait_or_stop(&self, secs: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        let mut g = self.flag.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if *g {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            g = self.cv.wait_timeout(g, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
         }
-        let now = std::time::Instant::now();
-        if now >= deadline {
-            return false;
-        }
-        g = cv
-            .wait_timeout(g, deadline - now)
-            .unwrap_or_else(|e| e.into_inner())
-            .0;
     }
 }
 
-/// progress-reporter thread: every ~10s, POST the current position to Plex's
-/// /:/timeline (route::report_timeline → the typed client) so the server updates
-/// viewOffset (the resume point) + watched state. `rk` is captured at spawn (fixed per
-/// playback session, no static-mut race). Exits when SHARED.report_stop is set; the
-/// final state=stopped report is sent by stop_bufferfeed (main thread) with the last
-/// position.
-pub(crate) fn timeline_thread(rk: String) {
+pub(crate) fn timeline_thread(rk: String, stop: std::sync::Arc<ReportStop>) {
     use crate::plex::TimelineState;
     loop {
-        if wait_or_stop(REPORT_INTERVAL_S) {
+        if stop.wait_or_stop(REPORT_INTERVAL_S) {
             return;
         }
         let dur = SHARED.duration_ns.load(Ordering::Relaxed);

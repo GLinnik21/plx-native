@@ -157,7 +157,10 @@ fn transcode_spec<'a>(rk: &'a str, session: &'a str, remux: bool, offset_secs: i
 /// too: route's session state is `static mut`, and what keeps it sound is that the main thread is
 /// its only writer. The worker gets owned copies and touches none of it — the same capture the
 /// demux thread's `acodec` does, and for the same reason.
-pub(crate) fn scrobble_stop(final_report: Option<(String, i64, i64)>) {
+pub(crate) fn scrobble_stop(
+    final_report: Option<(String, i64, i64)>,
+    report_th: Option<std::thread::JoinHandle<()>>,
+) {
     let (session, pq, pqi) = (sess(), pq_id(), pq_item_id());
     let (aud, sub) = (cur_audio_sid(), cur_sub_sid()); // the selection this playback reported under
     let tsession = transcode_session();
@@ -165,8 +168,8 @@ pub(crate) fn scrobble_stop(final_report: Option<(String, i64, i64)>) {
         (*addr_of_mut!(TSESSION)).clear();
         addr_of_mut!(CUR_REMUX).write(false);
     }
-    if final_report.is_none() && tsession.is_empty() {
-        return; // nothing to post
+    if final_report.is_none() && tsession.is_empty() && report_th.is_none() {
+        return; // nothing to post and nobody to wait for
     }
     let Some(c) = crate::plex::client_opt() else { return };
     // Serialise against a previous stop still in flight: these carry a position for a specific
@@ -174,6 +177,13 @@ pub(crate) fn scrobble_stop(final_report: Option<(String, i64, i64)>) {
     // baseline for a finished worker is 0 ms.
     drain_scrobble();
     let h = crate::task::spawn_small_keeping("scrobble", move || {
+        // The progress reporter's last `playing` POST must land BEFORE this `stopped` one, or the
+        // server is left believing playback continues. That ordering is why teardown used to join
+        // it — on the main thread. Waiting for it HERE keeps the guarantee and moves the cost off
+        // the frame loop.
+        if let Some(t) = report_th {
+            crate::task::join("timeline", t);
+        }
         if let Some((rk, t_ms, d_ms)) = final_report {
             c.timeline(&crate::plex::TimelineReport {
                 rating_key: &rk,

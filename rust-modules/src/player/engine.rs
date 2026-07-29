@@ -103,6 +103,7 @@ pub(crate) struct Engine {
     pub stream_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
     pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
+    pub report_stop: Option<std::sync::Arc<threads::ReportStop>>, // ITS stop signal, not SHARED's
 }
 
 static mut ENGINE: Option<Engine> = None; // main-thread-only slot
@@ -372,14 +373,15 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
 
     // progress reporter: post the play position to /:/timeline (updates resume + watched).
     // rk is captured now (fixed for the session); skipped for the sample/demo (no rk).
-    SHARED.report_stop.store(false, Ordering::Relaxed);
+    let report_stop = threads::ReportStop::new();
     let report_th = if stream {
         let rk = crate::route::cur_rk();
         if rk.is_empty() {
             None
         } else {
             // best-effort: refused, the only loss is that the resume point stops being posted
-            crate::task::spawn("timeline", move || threads::timeline_thread(rk))
+            let st = report_stop.clone();
+            crate::task::spawn("timeline", move || threads::timeline_thread(rk, st))
         }
     } else {
         None
@@ -412,6 +414,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
         stream_th,
         load_th,
         report_th,
+        report_stop: Some(report_stop),
     };
     engine_install(mt, eng);
     TX.started.store(true, Ordering::Relaxed);
@@ -536,13 +539,8 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     };
 
     // 1. unblock every thread (abort queues, close the demux socket)
-    SHARED.report_stop.store(true, Ordering::Release); // stop the /:/timeline reporter
-    {
-        // …and WAKE it: it waits on this condvar, so the join below returns at once instead
-        // of waiting out up to a second of sleep on the main thread.
-        let (m, cv) = &SHARED.report_wake;
-        *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        cv.notify_all();
+    if let Some(st) = eng.report_stop.take() {
+        st.stop(); // this reporter's own signal — unaffected by the reset_session below
     }
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
@@ -566,9 +564,6 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     if let Some(t) = eng.load_th.take() {
         crate::task::join("media", t);
     }
-    if let Some(t) = eng.report_th.take() {
-        crate::task::join("timeline", t);
-    }
     // 2b. every reader is now joined, so this thread is the sole owner: do the real close.
     // (Before the join it could only shutdown — see step 1.)
     if stream {
@@ -583,8 +578,14 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     // on 100% of real stops. `scrobble_stop` reads and clears route's session statics on THIS
     // thread and hands the worker owned copies; `plex_run` drains it at exit so the report still
     // lands. Skipped for a reload, which is not a stop.
+    // The reporter is NOT joined here. Its handle rides out with the scrobble worker, which
+    // joins it before posting `stopped` — so the last `playing` report still lands first, but the
+    // MAIN thread stops paying for it. It parked the frame loop for the remainder of SO_RCVTIMEO
+    // whenever that POST had stalled (measured: `THREADJOIN timeline 6974ms`, tools/netcond.py in
+    // `stall@/:/timeline`). Safe to outlive the Engine: the reporter names no Engine field, only
+    // SHARED atomics and its own owned `rk`.
     if !for_reload {
-        crate::route::scrobble_stop(final_report);
+        crate::route::scrobble_stop(final_report, eng.report_th.take());
     }
     // 3. unload + destruct the pipeline, release the plane. (Kodi waits for UNLOADCOMPLETED before
     // destructing, but on webOS 4.5 that event arrives as smp_cb type=23 with no detectable string,
@@ -611,6 +612,11 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     TX.reset();
     if !for_reload {
         crate::route::clear_url(); // the transcode stop rode out with `scrobble_stop` above
+    } else if let Some(t) = eng.report_th.take() {
+        // A reload posts no `stopped`, so there is nothing to order against: detach. Its own
+        // ReportStop is already set, so it exits after its current POST and cannot be revived by
+        // the next session — which is exactly what the shared flag could not guarantee.
+        drop(t);
     }
     log("stop_bufferfeed: torn down");
     // Engine (hs/aq boxes, payload) drops here — after all joins

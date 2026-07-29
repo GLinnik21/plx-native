@@ -5,7 +5,7 @@
 //! live object, exactly as the C static globals behaved.
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU8, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::Mutex;
 use crate::stream::HttpStream;
 
 /// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
@@ -146,13 +146,6 @@ pub(crate) struct Shared {
     // pending "re-transcode at the current position with the current audio + subtitle" —
     // set when a subtitle is (de)selected while transcoding, so Plex re-burns (or drops) it.
     pub pending_retranscode: AtomicBool,
-    // tells the /:/timeline progress-reporter thread to exit (set in stop_bufferfeed).
-    pub report_stop: AtomicBool,
-    // …and WAKES it so it notices. The reporter used to sleep its ~10 s interval in ten 1 s
-    // steps, checking `report_stop` between them, so `teardown`'s join of that thread cost a
-    // deterministic 0-1000 ms on the MAIN thread — on every stop, every reload-seek and every
-    // audio switch. `teardown` now sets this and notifies before it joins.
-    pub report_wake: (Mutex<bool>, Condvar),
     // the derived UI state (a `PlaybackState`), published by the pump once a frame and read by
     // the HUD. Written only on the main thread; atomic because it is read from the draw path.
     pub pb_state: AtomicU8,
@@ -199,8 +192,6 @@ impl Shared {
             pending_audio_idx: AtomicI32::new(-1),
             desired_audio_idx: AtomicI32::new(-1),
             pending_retranscode: AtomicBool::new(false),
-            report_stop: AtomicBool::new(false),
-            report_wake: (Mutex::new(false), Condvar::new()),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
@@ -231,9 +222,6 @@ impl Shared {
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
         self.pending_retranscode.store(false, Ordering::Relaxed);
-        self.report_stop.store(false, Ordering::Relaxed);
-        // clear the wake latch too, or the NEXT session's reporter returns on its first wait
-        *self.report_wake.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
         self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
