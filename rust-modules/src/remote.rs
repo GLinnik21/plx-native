@@ -63,7 +63,23 @@ impl Remote {
         }
         // Everything up to and including the last whitespace is complete; the tail is
         // an unterminated token to carry over.
-        match self.buf.rfind(char::is_whitespace) {
+        //
+        // ASCII whitespace SPECIFICALLY, not `char::is_whitespace`. The split below slices the
+        // buffer at `i` and `i + 1` — byte indices — which is only a char boundary when the
+        // matched separator is ONE byte long. `char::is_whitespace` also matches U+00A0, U+2028,
+        // U+3000 and friends, and `rfind` reports the byte index where such a char STARTS, so
+        // both `buf[..=i]` and `buf[i + 1..]` landed mid-codepoint and panicked. This drains a
+        // world-writable FIFO in /tmp on a rooted TV, once per frame on every boot, so the
+        // panicking input is one stray keystroke away from any process on the box — and a panic
+        // here unwinds out of the SDL loop and takes the app down.
+        //
+        // Restricting the SEPARATOR search to ASCII loses nothing: the protocol is ASCII tokens
+        // by construction (`app.rs::remote_token_key` matches `up`/`down`/`ok`/`back`/… and the
+        // `ck:X,Y` pointer form, and `tools/stream-screen.py` only ever writes those, one per
+        // `\n`). Note the `split_whitespace` below is deliberately left Unicode-aware: it
+        // operates on a `&str` and never indexes it, so a stray NBSP *between* two tokens still
+        // separates them correctly once an ASCII newline terminates the run.
+        match self.buf.rfind(|c: char| c.is_ascii_whitespace()) {
             Some(i) => {
                 let ready = self.buf[..=i].to_string();
                 self.buf = self.buf[i + 1..].to_string();
@@ -81,5 +97,58 @@ impl Drop for Remote {
         unsafe {
             libc::close(self.fd);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run `drain` over a pre-loaded buffer with **no FIFO**: fd = -1 makes the `read(2)` fail
+    /// with EBADF on the first call, so `drain` falls straight through to the tokenizer — which
+    /// is the half under test. (`Drop` then `close(-1)`s, which is a harmless EBADF too.)
+    /// Returns the tokens it emitted and the tail it kept for the next frame.
+    fn drain_buffer(pre: &str) -> (Vec<String>, String) {
+        let mut r = Remote { fd: -1, buf: pre.to_string() };
+        let mut out = Vec::new();
+        r.drain(|t| out.push(t.to_string()));
+        (out, r.buf.clone())
+    }
+
+    /// Regression: the separator search was `char::is_whitespace`, whose match can be several
+    /// bytes wide, while the split that follows is by BYTE index — so any multi-byte whitespace
+    /// sliced through the middle of a codepoint and panicked, out of the SDL loop, taking the
+    /// app with it. U+00A0 arrives from an ordinary copy-paste; U+3000 from a CJK keyboard; the
+    /// FIFO is world-writable in /tmp, so neither needs to be our own fault.
+    ///
+    /// The trailing-NBSP case is the exact panic: `rfind` returned the index where the NBSP
+    /// STARTS, and `buf[..=i]` then cut between its two bytes.
+    #[test]
+    fn a_multibyte_whitespace_does_not_panic_the_tokenizer() {
+        for pre in ["down\u{a0}", "\u{3000}", "ok\u{2028}", "up\u{a0}\u{3000}"] {
+            let (toks, tail) = drain_buffer(pre);
+            assert!(toks.is_empty(), "{pre:?}: no ASCII terminator, so nothing is complete yet");
+            assert_eq!(tail, pre, "{pre:?}: the unterminated tail must be carried over intact");
+        }
+    }
+
+    /// …and once an ASCII terminator does arrive, a multi-byte whitespace sitting BETWEEN two
+    /// tokens still separates them: the ready slice is handed to `split_whitespace`, which is
+    /// Unicode-aware and never indexes, so restricting only the *search* to ASCII costs nothing.
+    #[test]
+    fn a_multibyte_whitespace_between_tokens_still_separates_them() {
+        let (toks, tail) = drain_buffer("up\u{a0}ok\n");
+        assert_eq!(toks, ["up", "ok"]);
+        assert!(tail.is_empty(), "a newline-terminated write leaves no tail");
+    }
+
+    /// The ordinary protocol, unchanged: complete tokens fire, the unterminated tail waits for
+    /// the next frame (a host write can be split across two reads).
+    #[test]
+    fn complete_tokens_fire_and_a_partial_one_is_held_over() {
+        let (toks, tail) = drain_buffer("down ok\r\nck:100,200\nle");
+        assert_eq!(toks, ["down", "ok", "ck:100,200"]);
+        assert_eq!(tail, "le", "the partial token must survive to be completed next frame");
     }
 }

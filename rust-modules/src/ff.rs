@@ -1299,6 +1299,27 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
     let host_c = CString::new(host).unwrap_or_default();
     let path_c = CString::new(path).unwrap_or_default();
 
+    // PANIC BARRIER around the whole producer body. Not about the unwind itself — this thread is
+    // started by `task::spawn`, so std already catches a panic at the thread boundary and turns it
+    // into the `Err` that `task::join` logs. The problem is what the unwind SKIPS: the two
+    // `aq_set_eof` calls in the tail below. The consumer is a one-way FIFO with no other liveness
+    // signal — `aq_pop` reports EOF only from the `eof` flag the producer sets — so a producer that
+    // dies without setting it leaves `pump` feeding a queue that will never fill and never end:
+    // no EOS is ever pushed (`engine.rs`'s EOS is keyed on the video lane's true EOF), no error is
+    // ever surfaced, and the app sits on a frozen picture until BACK. That is strictly worse than
+    // the crash it came from — a rare panic became a common-looking hang with no log line pointing
+    // at it. So: catch it, name it in the event log, and then run the SAME teardown the normal exit
+    // runs, so the pump terminates the way it does at end-of-stream.
+    //
+    // `AssertUnwindSafe` is honest here rather than a rubber stamp: the state the closure mutates
+    // across the boundary is the two AU queues (their own pthread mutexes, and this is their only
+    // producer, which is now dead) and `SHARED`'s atomics. What a panic DOES leak is the FFmpeg
+    // side — `AVFormatContext`/`AVIOContext`/`AVPacket` are freed at the end of the block, not by a
+    // `Drop`, so an unwind past them leaks them plus the socket buffer. That is deliberate: the
+    // alternative is calling `avformat_close_input` on a context whose invariants a panicking
+    // libavformat may have left broken, and a one-off leak on a path that is meant never to run is
+    // cheaper than a segfault. The session ends here either way.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     // Run-once breakable block, NOT a retry loop: every `break` below is an early exit to the
     // EOF/cleanup tail after it. It used to be a real loop that reopened the whole
     // AVFormatContext on a fresh URL, which is how a direct-play seek was supposed to reach its
@@ -1640,6 +1661,29 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             break;
         }
         break;
+    }
+    })); // end panic barrier. The body above is deliberately NOT re-indented into the closure: a
+         // ~340-line whitespace diff would bury every real change this file ever gets again.
+
+    // The panic path joins the normal one HERE, so both leave the consumer in the same state.
+    if let Err(e) = &outcome {
+        // The payload is almost always a `&str`/`String` (a slice index, an `unwrap`), and the
+        // message is worth far more than the bare fact of a panic: this thread walks packet buffers
+        // whose sizes come off the wire, so knowing WHICH one gave way is most of the triage. The
+        // C tracer in `main.c` cannot help here — nothing faults, so there is no PC to symbolize.
+        let what = e
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string payload>".to_string());
+        crate::player::log(&format!("ff: demux PANICKED — {what}"));
+        // The producer is gone before it could publish a duration or a single frame, which is the
+        // one case EOF alone cannot resolve: `engine.rs` pushes EOS only once the pipeline has
+        // reached `Stage::Streaming`, so a panic during open/find_stream_info would otherwise leave
+        // the pump waiting on a stage it can never reach. This is the same flag the `http_open`
+        // failure above raises, and `pump` turns it into `PlaybackState::Error` (gated on
+        // `frames == 0`, so a panic MID-playback is left to the EOF/EOS path below instead).
+        SHARED.demux_failed.store(true, Ordering::Release);
     }
     crate::aq::aq_set_eof(aq_p);
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too

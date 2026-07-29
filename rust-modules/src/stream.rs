@@ -34,6 +34,20 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+/// Case-insensitive search for an ASCII `needle` in a byte haystack — the header-block lookup
+/// that used to be `hdr.to_ascii_lowercase().find(…)`. Header field names are case-insensitive
+/// (RFC 9110 §5.1), so the search has to be; doing it in place drops the 64 KB-worst-case
+/// `String` the lowercase copy allocated on every single request, and — the point of the rewrite
+/// — needs no UTF-8 in the first place. Returns the offset into `hay`, which is an offset into
+/// the ORIGINAL bytes (an ASCII-case fold cannot change any byte's length, but nothing here
+/// relies on that any more).
+fn find_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w.eq_ignore_ascii_case(needle))
+}
+
 impl HttpStream {
     /// the live socket, or < 0 once it has been closed
     #[inline]
@@ -315,19 +329,43 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
             }
         };
 
-        // parse status line + Content-Length + chunked (headers are ASCII)
-        let hdr = std::str::from_utf8(&hs.buf[..hdr_end]).unwrap_or("");
-        if hdr.starts_with("HTTP/1.") {
-            hs.status = hdr[9..].chars().take_while(|c| c.is_ascii_digit())
-                .collect::<String>().parse().unwrap_or(0);
+        // Parse status line + Content-Length + chunked. HEADERS ARE BYTES, not UTF-8 (RFC 9110
+        // §5.5: field values are octets, and a recipient must not reject the message for them).
+        // This used to run on `from_utf8(...).unwrap_or("")`, which meant ONE stray byte anywhere
+        // in the block — a Latin-1 character in a filename echoed back in a header, a mojibake
+        // title in an `X-Plex-*` round-trip — collapsed the WHOLE header block to "", left
+        // `status` at 0, and made the `status < 200` check below close a perfectly good 200 and
+        // report it as a transport failure. The bytes we actually care about are all ASCII, so
+        // reading them as bytes costs nothing and cannot be poisoned from a distance.
+        let hdr = &hs.buf[..hdr_end];
+        if hdr.starts_with(b"HTTP/1.") {
+            // `hdr[9..]` (a fixed index straight after "HTTP/1.x ") was also a panic: on the old
+            // `&str` it split a multi-byte char whose bytes straddled index 9, and on a byte slice
+            // it would still be an out-of-range index on a truncated line. `get` makes it total.
+            let rest = hdr.get(9..).unwrap_or(&[]);
+            let ndig = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+            // RFC 9110 §15: status-code is exactly 3DIGIT. Requiring that (rather than folding a
+            // digit run of any length) keeps the well-formed case bit-identical while making the
+            // accumulate below unable to overflow. Anything else stays 0 — which is what the old
+            // `parse().unwrap_or(0)` produced for a malformed line too, and 0 fails the check
+            // below exactly as before.
+            hs.status = if ndig == 3 {
+                rest[..3].iter().fold(0 as c_int, |acc, &b| acc * 10 + (b - b'0') as c_int)
+            } else {
+                0
+            };
         }
-        let lower = hdr.to_ascii_lowercase();
-        if let Some(p) = lower.find("\r\ncontent-length:") {
+        if let Some(p) = find_ci(hdr, b"\r\ncontent-length:") {
             let v = &hdr[p + 17..];
-            let num: String = v.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
-            hs.content_length = num.parse().unwrap_or(-1);
+            // Only spaces/tabs are skipped (the OWS the grammar allows after the colon), NOT the
+            // `str::trim_start` of before, which also ate CR/LF and so could run on into the next
+            // header line's value. Identical on well-formed input, where there is one space.
+            let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
+            let ndig = v.iter().take_while(|b| b.is_ascii_digit()).count();
+            hs.content_length = std::str::from_utf8(&v[..ndig]).ok()
+                .and_then(|s| s.parse::<i64>().ok()).unwrap_or(-1);
         }
-        if lower.contains("\r\ntransfer-encoding: chunked") {
+        if find_ci(hdr, b"\r\ntransfer-encoding: chunked").is_some() {
             hs.chunked = 1;
         }
 
@@ -728,5 +766,99 @@ mod tests {
         let fl = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
         assert_eq!(fl & libc::O_NONBLOCK, 0, "O_NONBLOCK leaked out of the handshake");
         unsafe { libc::close(fd) };
+    }
+
+    /// Answer ONE request with `resp` verbatim, then close; hands back the bound port and the
+    /// server thread to join. `resp` is written as raw bytes precisely so a test can put things in
+    /// a header that no `&str` could hold. The listener moves into the thread, so the socket is
+    /// released once the response is out — which is also what gives the reader its EOF.
+    fn one_shot_server(resp: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = srv.accept() {
+                // Drain the request so our send() completes; it arrives in one write.
+                let mut req = [0u8; 2048];
+                let _ = s.read(&mut req);
+                let _ = s.write_all(&resp);
+            }
+        });
+        (port, h)
+    }
+
+    /// `http_open` a GET against a loopback port, handing back the stream AND its verdict.
+    fn open_against(port: u16) -> (Box<HttpStream>, c_int) {
+        let ip = std::ffi::CString::new("127.0.0.1").unwrap();
+        let path = std::ffi::CString::new("/x").unwrap();
+        let mut hs = http_stream_boxed();
+        let rv = http_open(&mut *hs, ip.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET");
+        (hs, rv)
+    }
+
+    /// Regression: the header block was parsed as STRICT UTF-8 (`from_utf8(…).unwrap_or("")`), so a
+    /// single non-UTF-8 byte anywhere in it — here a lone Latin-1 `0xE9` in a header value, which
+    /// is exactly what a PMS echo of a filename or title produces — emptied the whole block. The
+    /// status then stayed 0, and `http_open`'s `status < 200` check closed a perfectly good 200 and
+    /// reported it as a transport failure: an unplayable item / a missing poster with a healthy
+    /// server on the other end. The response is otherwise entirely well formed.
+    #[test]
+    fn one_non_utf8_byte_in_a_header_does_not_turn_a_200_into_a_failure() {
+        let mut resp: Vec<u8> = Vec::new();
+        resp.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Plex-Title: caf");
+        resp.push(0xE9); // 'é' in Latin-1 — a lone 0xE9 is not valid UTF-8 in any position
+        resp.extend_from_slice(b"\r\n\r\nhello");
+        let (port, h) = one_shot_server(resp);
+
+        let (mut hs, rv) = open_against(port);
+        assert_eq!(rv, 0, "a 200 must open, whatever bytes the other headers carry");
+        assert_eq!(hs.status, 200, "the status line is ASCII and was never in doubt");
+        assert_eq!(hs.content_length, 5, "…and Content-Length must survive the same way");
+
+        let mut body = Vec::new();
+        let mut chunk = [0u8; 16];
+        loop {
+            let r = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
+            if r <= 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..r as usize]);
+        }
+        assert_eq!(body.as_slice(), b"hello", "the body must be delivered intact");
+        http_close(&mut *hs);
+        h.join().unwrap();
+    }
+
+    /// The status extraction indexed a fixed `[9..]`. On the old `&str` that panicked outright when
+    /// a multi-byte character straddled index 9 — a panic inside `http_open`, which runs on the
+    /// demux and poster workers as well as the main loop. A garbage status line must be REJECTED
+    /// (status 0 → open fails), never fatal.
+    #[test]
+    fn a_status_line_that_straddles_the_status_offset_is_rejected_not_fatal() {
+        // The 4-byte U+1F600 starts at index 7, so it OWNS index 9 — the old `&str[9..]` split it.
+        let (port, h) = one_shot_server("HTTP/1.\u{1F600} 200 OK\r\n\r\n".as_bytes().to_vec());
+
+        let (mut hs, rv) = open_against(port);
+        assert_eq!(rv, -1, "an unparseable status line must fail the open");
+        assert_eq!(hs.status, 0, "…with no status invented for it");
+        assert_eq!(hs.fd(), -1, "a failed open retires its fd (see the leak test above)");
+        http_close(&mut *hs); // already closed by the failure path; keeps the intent explicit
+        h.join().unwrap();
+    }
+
+    /// Header field NAMES are case-insensitive (RFC 9110 §5.1) and PMS does not send one casing
+    /// consistently. The old code got that from lowercasing the whole block; `find_ci` has to give
+    /// it back, and — the part that matters to the caller — the offset it returns must index the
+    /// ORIGINAL bytes, since the value is read from there. Tested directly rather than through a
+    /// loopback round trip: it is a pure function, and every socket a test holds open is one the
+    /// fd-leak test above can miscount while the two run in parallel.
+    #[test]
+    fn header_names_are_found_whatever_their_casing() {
+        let hdr = b"HTTP/1.1 200 OK\r\nCONTENT-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let p = find_ci(hdr, b"\r\ncontent-length:").expect("a shouted header name must be found");
+        assert_eq!(&hdr[p + 17..p + 20], b" 42", "the offset must index the ORIGINAL bytes");
+        assert!(find_ci(hdr, b"\r\ntransfer-encoding: chunked").is_some());
+        assert!(find_ci(hdr, b"\r\ncontent-range:").is_none(), "no false positives");
+        assert!(find_ci(b"HT", b"\r\ncontent-length:").is_none(), "a needle longer than the hay");
     }
 }
