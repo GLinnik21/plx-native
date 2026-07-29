@@ -2433,9 +2433,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::system::clear_opaque_region();
                     glClearColor(0.0, 0.0, 0.0, 0.0);
                     glClear(GL_COLOR_BUFFER_BIT);
-                    crate::ui::player_hud::draw_subtitle_bitmap(); // PGS/VobSub image subs
                     let hud_up = hud_shown(now, hud_until(), paused(), hud_dismissed) || crate::player::loading();
-                    crate::ui::player_hud::draw_subtitles(hud_up || matches!(route, Route::Player { overlay: Overlay::Menu }));
+                    // Both subtitle paths lift clear of the transport for the same reason and by
+                    // the same test — an open track menu counts, since that is exactly when the
+                    // user is reading the bottom of the screen.
+                    let subs_lift = hud_up || matches!(route, Route::Player { overlay: Overlay::Menu });
+                    crate::ui::player_hud::draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
+                    crate::ui::player_hud::draw_subtitles(subs_lift);
                     if hud_up || !matches!(route, Route::Player { overlay: Overlay::None }) {
                         // hide the transport middle behind the Info card / Chapters strip
                         crate::ui::player_hud::draw_hud(ctrl, hud_nav.focus, hud_nav.btn, hud_nav.tab, now, !matches!(route, Route::Player { overlay: Overlay::Info | Overlay::Chapters }));

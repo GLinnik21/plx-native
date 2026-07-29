@@ -149,7 +149,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `morning_show_audio_native` | 1804 | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
 | `home_alone_audio_transcode` | 3 | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
 | `substance_subtitle_srt` | 4 | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] "text"` lines |
-| `toy_story2_subtitle_pgs` | 1919 | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y` (op flagged `"image": true`) |
+| `toy_story2_subtitle_pgs` | 1919 | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y rects=N canvas=WxH` (op flagged `"image": true`) |
 
 ### Key log signals asserted (filter `smp_cb type=43 num=0 str=$` first)
 
@@ -164,8 +164,10 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
   `reload_at: fresh Load at 140s`.
 - **audio switch:** `audio switch (native)` / `re-transcode:` + `reload_transcode:`.
 - **subtitles (text):** `sub cue [<a>..<b>ms] "<text>"`.
-- **subtitles (image PGS/VobSub):** `image cue [<t>ms] <W>x<H> at <x>,<y>` (a decoded bitmap
-  display-set pushed to the render store).
+- **subtitles (image PGS/VobSub):** `image cue [<t>ms] <W>x<H> at <x>,<y> rects=<N>
+  canvas=<W>x<H>` (a decoded display-set pushed to the render store — `rects` is how many bitmaps
+  it carries, `canvas` the stream's authoring canvas the renderer scales them from, `0x0` when the
+  decoder declares none). The assertion matches the prefix, so the tail can grow.
 
 ## Gotchas the harness handles for you
 
