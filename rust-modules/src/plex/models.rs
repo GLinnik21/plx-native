@@ -35,6 +35,13 @@ pub struct MediaContainer {
     pub play_queue_id: i64,
     #[serde(rename = "playQueueSelectedItemID", default, deserialize_with = "de_i64")]
     pub play_queue_selected_item_id: i64,
+    /// How many items the whole queue holds (the returned `Metadata[]` may be a window of it) —
+    /// the resolve logs how many remain, derived from this and the offset below.
+    #[serde(rename = "playQueueTotalCount", default, deserialize_with = "de_i64")]
+    pub play_queue_total_count: i64,
+    /// Position of the selected item within the WHOLE queue (not within the returned window).
+    #[serde(rename = "playQueueSelectedItemOffset", default, deserialize_with = "de_i64")]
+    pub play_queue_selected_item_offset: i64,
     /// /transcode/universal/decision verdict codes — Option (not defaulted 0) so the route
     /// log distinguishes "absent" from a real code, matching the old find_num scan.
     #[serde(rename = "generalDecisionCode", default, deserialize_with = "de_opt_i64")]
@@ -166,6 +173,13 @@ pub struct Metadata {
     pub role: Vec<Tag>,
     #[serde(rename = "Chapter", default)]
     pub chapter: Vec<Chapter>,
+    #[serde(rename = "Marker", default)]
+    pub marker: Vec<Marker>,
+    /// POST /playQueues rows only: this row's id within the queue. The up-next lookup walks to
+    /// the row AFTER the one `playQueueSelectedItemID` names, so it must be able to identify
+    /// rows — a ratingKey can repeat in a queue, a playQueueItemID cannot.
+    #[serde(rename = "playQueueItemID", default, deserialize_with = "de_i64")]
+    pub play_queue_item_id: i64,
     // D-1: PMS returns UltraBlurColors as an ARRAY `[{…}]` (the old code reads it as an object
     // and misses it). `de_ultrablur` accepts object OR array and yields the first.
     #[serde(rename = "UltraBlurColors", default, deserialize_with = "de_ultrablur")]
@@ -280,6 +294,29 @@ pub struct Chapter {
     pub tag: String,
     #[serde(default)]
     pub thumb: String,
+}
+
+/// Plex `Marker[]` on a leaf item — the server-detected intro / credits segments, present only
+/// with `?includeMarkers=1`. `kind` is `"intro"` | `"credits"` (PMS also emits `"commercial"` on
+/// recorded content); offsets are ms into the item. `is_final` marks a credits segment that runs
+/// to the end of the file — the usual case, and what makes "skip credits" equivalent to "finish".
+///
+/// Verified against the live server 2026-07-29: The Morning Show S2E2 carries both an intro
+/// (0.99s–99.6s) and a `final` credits marker (3065.6s–3130.7s); The Office S5E26 and Top Gear
+/// S14E7 carry credits only. The `id` field repeats across items (every marker came back as
+/// `id: 3096`), so it is NOT an identity — the app keys markers by kind + offsets, never by id.
+#[derive(Deserialize, Default)]
+pub struct Marker {
+    #[serde(rename = "type", default)]
+    pub kind: String, // intro | credits | commercial
+    #[serde(rename = "startTimeOffset", default, deserialize_with = "de_i64")]
+    pub start_time_offset: i64,
+    #[serde(rename = "endTimeOffset", default, deserialize_with = "de_i64")]
+    pub end_time_offset: i64,
+    /// `final: true` — this credits marker runs to the end of the item. (`final` is a reserved
+    /// Rust keyword, hence the rename.) Arrives as a JSON bool; `de_i64` folds it to 1/0.
+    #[serde(rename = "final", default, deserialize_with = "de_i64")]
+    pub is_final: i64,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]

@@ -625,10 +625,12 @@ pub struct Button {
     pub icon: Option<crate::ui::icons::Icon>,
     pub focused: bool,
     pub style: ControlStyle,
+    /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
+    pub progress: Option<f32>,
 }
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, icon: None, focused: false, style: ControlStyle::Accent }
+        Self { frame, label, sz, icon: None, focused: false, style: ControlStyle::Accent, progress: None }
     }
     pub fn icon(mut self, i: crate::ui::icons::Icon) -> Self {
         self.icon = Some(i);
@@ -642,12 +644,49 @@ impl Button {
         self.style = s;
         self
     }
+    /// Turn the pill into its own countdown: `frac` of its width is filled with
+    /// [`theme::CONTROL_SPENT_FILL`], the rest with the button's normal face, so time reads as a
+    /// sweep across the control itself instead of a separate rail beside it.
+    ///
+    /// **Progress and focus are separate channels, deliberately.** The first version drew the
+    /// filled part as the FOCUSED face and the rest as the idle one, which collapsed the two: a
+    /// focused counting button was pixel-identical to an unfocused idle one at t=0, and the label's
+    /// ink flipped at the sweep line — bisecting a word with a hard edge, which from a couch reads
+    /// as a torn glyph atlas rather than a timer. Now the face is drawn once, at its true focus
+    /// state, and only the FILL BEHIND the label changes — the ink never inverts.
+    pub fn progress(mut self, frac: f32) -> Self {
+        self.progress = Some(frac);
+        self
+    }
+
+    /// The pill's filled background, including the countdown sweep when one is set.
+    fn plate(&self, p: Painter, bg: [f32; 4]) {
+        let r = self.frame;
+        let rad = r.h * 0.5;
+        p.rrect(r, rad, rad, bg);
+        let Some(frac) = self.progress else { return };
+        let w = r.w * frac.clamp(0.0, 1.0);
+        if w <= 0.0 {
+            return;
+        }
+        // Scissor so the sweep inherits the capsule's rounded ends instead of a square edge; it is
+        // GLOBAL GL state, so it is set and cleared inside this one draw and never left armed.
+        p.clip(Rect::new(r.x, r.y, w, r.h));
+        p.rrect(r, rad, rad, theme::CONTROL_SPENT_FILL);
+        p.clip_clear();
+    }
 }
 impl View for Button {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
         let (bg, ink) = self.style.colors(self.focused);
-        p.rrect(r, r.h * 0.5, r.h * 0.5, bg);
+        // Every control in this family carries the card system's RESTING shadow. Without it an
+        // ACCENT capsule over a white frame measures ~1.2:1 against its surround — the shape
+        // vanishes and only the dark label survives, floating. The discs and the shelves already
+        // solved this; the pills were the one control that hadn't.
+        p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        self.plate(p, bg);
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
         let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);

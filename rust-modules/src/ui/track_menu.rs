@@ -30,7 +30,7 @@ fn pop() -> &'static mut Popover {
 /// The PLAYING item's track lists — the menu's ONLY data source. `metadata::current()` is the
 /// detail page's item, which is the SHOW during an episode play (its lists are episode 1's) and
 /// can be a different item entirely when playing straight from Home.
-fn tracks() -> Option<&'static metadata::PlayingTracks> {
+fn tracks() -> Option<&'static metadata::PlayingItem> {
     metadata::playing()
 }
 

@@ -205,12 +205,32 @@ def triggers_for_case(case):
             files.append(("plxnative-autoseek", op["script"]))
         elif kind == "seek":
             files.append(("plxnative-autoseek", None))          # touch -> one seek to 140s
+        elif kind == "skip":
+            files.append(("plxnative-marker", op["marker"]))
+        elif kind == "marker":
+            # jump to 5s before the named server marker, so the skip/Up Next control row is
+            # reachable in seconds instead of 50 minutes into an episode
+            files.append(("plxnative-marker", op["marker"]))
         elif kind == "audio_switch":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         # "play" and "resume" need no extra trigger (resume rides the seeded viewOffset).
     return files
+
+
+def key_inject_for_case(case):
+    """(log-pattern, remote-token) for a case that presses a key MID-RUN, or None.
+
+    The app mkfifos /tmp/plxnative-remote and drains it every frame, so a token written while it
+    runs replays through the real key handler. Keying the write to a LOG LINE rather than to a
+    wall-clock delay is what makes it deterministic: the press lands the moment the control is
+    actually on screen, however long the resolve took.
+    """
+    for op in case["operations"]:
+        if op["op"] == "skip":
+            return (f"marker offer: {op['marker'].capitalize()}", op.get("press", "ok"))
+    return None
 
 
 def apply_triggers(tv, files, extra=None):
@@ -713,7 +733,7 @@ def arm_teardown(tv):
     _TEARDOWN_TV = tv
 
 
-def stream_case(case, cfg, cap_s, early=True):
+def stream_case(case, cfg, cap_s, early=True, inject=None):
     """Launch via `make run-stream` and grade the log as it streams.
 
     Returns (lines, elapsed_s, stopped_early, settled_reason). Lines come back already filtered;
@@ -735,6 +755,7 @@ def stream_case(case, cfg, cap_s, early=True):
     lines, done = [], threading.Event()
     threading.Thread(target=_drain, args=(proc.stdout, lines, done), daemon=True).start()
 
+    injected = inject is None
     started = time.monotonic()
     # cap_s is APP runtime, so the clock starts at the app's first log line — not here. Anchoring
     # it at ssh-start instead would silently shorten every case by the close+launch overhead
@@ -756,6 +777,11 @@ def stream_case(case, cfg, cap_s, early=True):
                     break  # app never wrote a line — grade the empty log, same as a dead TV
             elif now >= deadline:
                 break
+            if not injected and any(inject[0] in l for l in lines):
+                injected = True
+                # the FIFO has a live reader (the app drains it per frame), so this returns at once
+                ssh(cfg["tv"], f"printf '{inject[1]}\\n' > /tmp/plxnative-remote", timeout=15)
+                print(f"    injected key '{inject[1]}' on '{inject[0]}'")
             if early:
                 snap = list(lines)
                 ok, _ = evaluate(case, snap)
@@ -795,6 +821,71 @@ def stream_case(case, cfg, cap_s, early=True):
 # ---------------------------------------------------------------------------
 # Case execution
 # ---------------------------------------------------------------------------
+def op_marker_offer(lines, kind):
+    """The control row OFFERED the named segment.
+
+    Proves the whole server-marker path against the live server: `?includeMarkers=1` came back,
+    `convert_markers` kept the segment, the playhead landed inside it, and `player_hud::slot_for`
+    handed the row to a stand-in. The host suite covers the precedence in isolation; only the
+    device can show that real `Marker[]` data drives it.
+    """
+    want = f"marker offer: {kind}"
+    hit = [l for l in lines if want in l]
+    if not hit:
+        seen = [l.strip() for l in lines if "marker" in l.lower()][-3:]
+        return False, f"no '{want}' line; nearest marker lines: {seen or 'none'}"
+    return True, hit[-1].strip()
+
+
+def op_skip_marker(lines, kind, min_pos_after, min_climb_after):
+    """The skip was offered, PRESSING it landed, and playback carried on past the segment.
+
+    This is the press path end to end on the real device: the marker came off the wire, the control
+    row offered it, a key written to the remote FIFO replayed through the real handler, the seek
+    executed, and the playhead kept climbing past the segment afterwards.
+
+    What it does NOT pin is the consumed-marker latch (`metadata::mark_skipped`), and that is worth
+    stating because the obvious reading of "offered exactly once" suggests otherwise. Verified by
+    negative control: with `mark_skipped` commented out this case still PASSES. Two reasons —
+    `app.rs`'s `last_offer` is sticky, so a re-offered segment never logs a second line for the
+    count to catch; and on this episode `av_seek_frame`'s AVSEEK_FLAG_BACKWARD keyframe happens to
+    land PAST the marker, so the regression does not even reproduce here. Pinning it needs a signal
+    for "the row is offering again" plus content whose keyframe lands inside the segment.
+    """
+    offers = [l for l in lines if f"marker offer: {kind}" in l]
+    if not offers:
+        return False, f"no 'marker offer: {kind}' line — the control row never offered the segment"
+    if len(offers) > 1:
+        return False, f"segment offered {len(offers)}x — it came back after the skip: {offers[-1].strip()}"
+    ts = [t for t, _ in playpos_secs(lines) if t >= min_pos_after]
+    if not ts:
+        return False, f"offered once, but the playhead never reached {min_pos_after}s (the skip did not land)"
+    climb = max(ts) - min(ts)
+    if climb < min_climb_after:
+        return False, (f"offered once and skipped to >={min_pos_after}s, but only {climb}s of play "
+                       f"after it (need >={min_climb_after}s for the no-recurrence check to mean anything)")
+    return True, f"offered 1x, skipped past {min_pos_after}s, {climb}s of play after with no re-offer"
+
+
+def op_up_next(lines, expect_rk):
+    """The credits marker handed off to the queued episode, and that episode actually played.
+
+    Three links in one assertion, because each is worthless without the next: the `continuous=1`
+    PlayQueue named a successor, the countdown started it, and the pipeline installed ITS item
+    store (i.e. it really began playing, not just resolved).
+    """
+    queued = [l for l in lines if "playqueue:" in l and "next=" in l and "next=-" not in l]
+    if not queued:
+        return False, "no playqueue line naming a successor (next=...)"
+    started = [l for l in lines if "up next:" in l and f"rk={expect_rk}" in l]
+    if not started:
+        return False, f"successor queued but never started (want 'up next: ... rk={expect_rk}'): {queued[-1].strip()}"
+    playing = [l for l in lines if "playing item:" in l and f"rk={expect_rk}" in l]
+    if not playing:
+        return False, f"started but its item store never landed: {started[-1].strip()}"
+    return True, f"{queued[-1].strip()} | {started[-1].strip()}"
+
+
 def evaluate(case, lines):
     """Run every assertion for a case. Returns (passed, [(label, ok, evidence)])."""
     exp = case["expect"]
@@ -819,6 +910,15 @@ def evaluate(case, lines):
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
         elif k == "seek":
             results.append(("seek_transcode", *op_seek_transcode(lines, op.get("target_s", 140))))
+        elif k == "skip":
+            results.append(("skip_marker", *op_skip_marker(
+                lines, op["marker"].capitalize(),
+                op.get("min_pos_after_s", 100), op.get("min_climb_after_s", 8))))
+        elif k == "marker" and op.get("expect_up_next"):
+            results.append(("marker_offer", *op_marker_offer(lines, "Credits")))
+            results.append(("up_next", *op_up_next(lines, op["expect_up_next"])))
+        elif k == "marker":
+            results.append(("marker_offer", *op_marker_offer(lines, op["marker"].capitalize())))
         elif k == "audio_switch" and op.get("mode") == "native":
             results.append(("audio_native", *op_audio_native(lines)))
         elif k == "audio_switch":
@@ -871,6 +971,12 @@ def run_case(case, cfg, token, verbose):
     pms_unscrobble(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
     if offset_ms > 0:
         pms_put_progress(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], offset_ms, token)
+    # A case that AUTO-ADVANCES plays a second item this run, and that item's resume point is
+    # server state exactly like the first one's -- left alone, the successor starts wherever a
+    # previous run stopped it, which is the same history-dependence `setup.viewOffset_ms` exists
+    # to kill. Declared per case rather than inferred, so the manifest still says what it starts from.
+    for rk in setup.get("also_reset", []):
+        pms_unscrobble(cfg["pms"]["host"], cfg["pms"]["port"], rk, token)
 
     # 3. clear + set triggers, and inject the effective PMS token in the SAME round-trip.
     # The token rides `extra=` rather than `files` so its value never reaches stdout — the only
@@ -889,7 +995,8 @@ def run_case(case, cfg, token, verbose):
     # 4. run + grade the log as it streams (run_secs is the cap, not the runtime)
     early = not cfg.get("no_early")
     print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
-    lines, elapsed, stopped_early, settled = stream_case(case, cfg, run_secs, early=early)
+    lines, elapsed, stopped_early, settled = stream_case(
+        case, cfg, run_secs, early=early, inject=key_inject_for_case(case))
 
     # 5. evaluate
     passed, results = evaluate(case, lines)

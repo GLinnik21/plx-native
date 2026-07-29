@@ -154,6 +154,113 @@
       }
     },
     {
+      "name": "morning_show_skip_intro",
+      "rk": "1804",
+      "kind": "episode",
+      "title": "The Morning Show S2E2 (skip-intro offer)",
+      "covers": [
+        "markers",
+        "includeMarkers",
+        "skip-intro",
+        "control-row-standin"
+      ],
+      "run_secs": 75,
+      "setup": {
+        "viewOffset_ms": 0
+      },
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "marker",
+          "marker": "intro"
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "codec_id": 174,
+        "min_video_width": 3000,
+        "min_timeline_climb_s": 8,
+        "no_playing_error": true,
+        "require_video_bound": true
+      }
+    },
+    {
+      "name": "morning_show_skip_intro_press",
+      "rk": "1804",
+      "kind": "episode",
+      "title": "The Morning Show S2E2 (press Skip Intro)",
+      "covers": [
+        "markers",
+        "skip-intro",
+        "consumed-marker-latch",
+        "remote-injection"
+      ],
+      "run_secs": 90,
+      "setup": {
+        "viewOffset_ms": 0
+      },
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "skip",
+          "marker": "intro",
+          "press": "ok",
+          "min_pos_after_s": 100,
+          "min_climb_after_s": 8
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "codec_id": 174,
+        "min_video_width": 3000,
+        "min_timeline_climb_s": 8,
+        "no_playing_error": true,
+        "require_video_bound": true
+      }
+    },
+    {
+      "name": "morning_show_up_next_autoadvance",
+      "rk": "1804",
+      "kind": "episode",
+      "title": "The Morning Show S2E2 -> S2E3 (credits auto-advance)",
+      "covers": [
+        "markers",
+        "credits-final",
+        "playqueue-continuous",
+        "up-next",
+        "auto-advance"
+      ],
+      "run_secs": 110,
+      "setup": {
+        "viewOffset_ms": 0,
+        "also_reset": [
+          "1805"
+        ]
+      },
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "marker",
+          "marker": "credits",
+          "expect_up_next": "1805"
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "codec_id": 174,
+        "min_video_width": 3000,
+        "min_timeline_climb_s": 5,
+        "no_playing_error": true,
+        "require_video_bound": true
+      }
+    },
+    {
       "name": "toy_story3_smart_dp",
       "rk": "1926",
       "kind": "movie",

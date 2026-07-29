@@ -10,7 +10,7 @@ use crate::ui::theme;
 use crate::ui::widgets::{Spinner, StatusKind, StatusOverlay, TabPill, TransportButton};
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
-use std::os::raw::c_uint;
+use std::os::raw::{c_int, c_uint};
 use std::sync::atomic::Ordering::Relaxed;
 
 /// The HUD widgets draw purely from their own fields and ignore their Env.
@@ -149,10 +149,131 @@ const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
 const BTN_GAP: f32 = 22.0;
 const BTN_Y: f32 = SCR_H - 288.0;
 
+// The control row, exported for `skip_pill` — while a marker is under the playhead the Skip button
+// STANDS IN for the two discs, and it has to land on exactly their row and right edge or the
+// transport visibly jumps when a segment begins.
+/// control-row height (one disc's diameter)
+pub(crate) const CTRL_H: f32 = BTN_S;
+/// control-row top
+pub(crate) const CTRL_Y: f32 = BTN_Y;
+/// control-row right edge — 80px margin, matching the track-menu panel (right:80)
+pub(crate) const CTRL_RIGHT: f32 = SCR_W - 80.0;
+/// width the Subtitles+Audio pair occupies, the floor for anything replacing them
+pub(crate) const CTRL_PAIR_W: f32 = 2.0 * BTN_S + BTN_GAP;
+
+/// The shared control-row slot for anything that STANDS IN for the disc pair: right-aligned to the
+/// discs' own edge, and never narrower than the pair it replaces so the row does not visibly shrink
+/// when it appears. ONE geometry for both stand-ins and for the pointer hit-test.
+///
+/// The measured width is memoised per label: `text::text_width` is an uncached `TTF_SizeUTF8`, and
+/// the labels are compile-time constants whose width can never change — re-measuring them 2-3× a
+/// frame is exactly the thrash `text::elide`'s memo exists to avoid.
+pub(crate) fn ctrl_slot(label: &str) -> Rect {
+    use std::ptr::addr_of_mut;
+    const PAD_X: f32 = 34.0;
+    static mut MEMO: Vec<(String, f32)> = Vec::new();
+    let memo = unsafe { &mut *addr_of_mut!(MEMO) };
+    let w = match memo.iter().find(|(l, _)| l == label) {
+        Some((_, w)) => *w,
+        None => {
+            let measured = CString::new(label)
+                .ok()
+                .map(|c| crate::text::text_width(c.as_ptr(), theme::size::BODY, 1) + 2.0 * PAD_X)
+                .unwrap_or(0.0)
+                .max(CTRL_PAIR_W);
+            // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
+            if measured > CTRL_PAIR_W {
+                memo.push((label.to_string(), measured));
+            }
+            measured
+        }
+    };
+    Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
+}
+
+/// What currently occupies the transport's right-hand control row.
+///
+/// This is the one concept the skip / Up Next feature introduces, and it exists as a TYPE because
+/// the alternative — re-deriving the three-way choice at each of the draw, the OK handler, the
+/// pointer handler, the LEFT/RIGHT pin and `icon_hit` — encodes its precedence in the order of five
+/// separate if-chains, with nothing to keep them agreeing and nothing to test.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ControlSlot {
+    /// the ordinary Subtitles + Audio pair
+    Discs,
+    /// a marker segment is under the playhead
+    Skip(crate::ui::skip_pill::Prompt),
+    /// …and the show has another episode queued, which outranks skipping the credits. Carries the
+    /// segment for the same reason `Skip` does — so the row has a stable IDENTITY.
+    UpNext(crate::metadata::Marker),
+}
+
+impl ControlSlot {
+    /// How many focusable items the row holds — what the LEFT/RIGHT clamp needs, as DATA instead of
+    /// a hand-written `btn = 0` pin beside a `clamp(0, 1)`.
+    pub(crate) fn items(self) -> c_int {
+        match self {
+            ControlSlot::Discs => 2,
+            _ => 1,
+        }
+    }
+    /// whether the Subtitles/Audio discs are the current occupant
+    pub(crate) fn is_discs(self) -> bool {
+        matches!(self, ControlSlot::Discs)
+    }
+    /// Which SEGMENT this row is offering, if any — the row's identity for "have I already offered
+    /// this?". Deliberately not the `ControlSlot` itself: `active_marker` is gated on `is_playing`,
+    /// so a momentary drop out of Playing mid-segment reads as "no segment" and flips the slot to
+    /// `Discs` and back. Keyed on the segment, that round trip is not a new offer; keyed on the
+    /// slot, it was — and every flicker re-raised the HUD over an intro the user was just watching.
+    pub(crate) fn offer(self) -> Option<(crate::metadata::MarkerKind, i64)> {
+        match self {
+            ControlSlot::Discs => None,
+            ControlSlot::Skip(pr) => Some((pr.marker.kind, pr.marker.start_ms)),
+            ControlSlot::UpNext(m) => Some((m.kind, m.start_ms)),
+        }
+    }
+    /// Pointer hit-test for whatever occupies the row — ONE entry point, so the click path can
+    /// never consult geometry belonging to a control that is not on screen.
+    pub(crate) fn hit(self, cx: f32, cy: f32) -> bool {
+        match self {
+            ControlSlot::UpNext(_) => crate::ui::up_next::hit(cx, cy),
+            ControlSlot::Skip(pr) => crate::ui::skip_pill::rect(pr).contains(cx, cy),
+            ControlSlot::Discs => false,
+        }
+    }
+}
+
+/// PURE precedence: given the segment under the playhead and whether the queue has a successor,
+/// which control owns the row. Host-testable, and the ONLY place the ordering is written down.
+///
+/// Up Next outranks Skip Credits deliberately: with somewhere to go, "next episode" is the better
+/// offer, and Skip Credits stays for the last episode of a show, where there is nowhere to go.
+pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) -> ControlSlot {
+    match marker {
+        Some(m) => {
+            let pr = crate::ui::skip_pill::prompt_for(m);
+            if has_next && m.kind == crate::metadata::MarkerKind::Credits {
+                ControlSlot::UpNext(m)
+            } else {
+                ControlSlot::Skip(pr)
+            }
+        }
+        None => ControlSlot::Discs,
+    }
+}
+
+/// Sample the live globals ONCE and resolve the row. Call this once per frame and pass the result
+/// around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
+/// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
+/// the same frame then declined to draw.
+pub(crate) fn slot() -> ControlSlot {
+    slot_for(crate::metadata::active_marker(), crate::route::up_next().is_some())
+}
+
 /// x of control button `idx` (0 = Subtitles on the left, 1 = Audio on the right)
 fn btn_x(idx: i32) -> f32 {
-    // 80px right margin — matches the track-menu panel (right:80) so their right edges line up
-    let audio_x = SCR_W - 80.0 - BTN_S;
+    let audio_x = CTRL_RIGHT - BTN_S;
     if idx == 0 {
         audio_x - BTN_S - BTN_GAP
     } else {
@@ -162,8 +283,11 @@ fn btn_x(idx: i32) -> f32 {
 
 /// which control button a pointer at (cx,cy) is over: 0 = Subtitles, 1 = Audio, or None.
 /// The single source of truth for the button rects, shared with draw_hud.
-pub(crate) fn icon_hit(cx: f32, cy: f32) -> Option<i32> {
-    if cy < BTN_Y || cy > BTN_Y + BTN_S {
+///
+/// `slot` is passed in rather than re-derived: while a stand-in owns the row the discs are not on
+/// screen, and a click in that band must not open a track menu the user cannot see.
+pub(crate) fn icon_hit(slot: ControlSlot, cx: f32, cy: f32) -> Option<i32> {
+    if !slot.is_discs() || cy < BTN_Y || cy > BTN_Y + BTN_S {
         return None;
     }
     (0..2).find(|&idx| {
@@ -202,11 +326,11 @@ fn draw_clock(p: Painter, text: &str, cx: f32, y: f32, sz: i32, col: [f32; 4], l
 }
 
 /// The transport HUD, composed from retui widgets through a root `Painter`.
-/// `focus`: 0 = scrubber, 1 = right buttons, 2 = bottom tabs. `btn` (0..1) / `tab` (0..1) are the
+/// `focus`: 0 = scrubber, 1 = the right control row, 2 = bottom tabs. `btn` (0..1) / `tab` (0..1) are the
 /// focused item within their row (only meaningful when `focus` selects that row). `now` drives the
 /// loading spinner's rotation. `transport`: draw the scrubber/title/buttons/clocks; pass false for
 /// Info mode, where only the scrim + bottom tabs render and the Info card fills the middle.
-pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool) {
+pub(crate) fn draw_hud(slot: ControlSlot, focus: i32, btn: i32, tab: i32, now: u32, transport: bool) {
     let p = Painter::root();
     let e = hud_env();
 
@@ -256,9 +380,16 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
         p.text(crate::route::title_cptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, white, 0, 1);
     }
 
-    // right control buttons: Subtitles, Audio
-    TransportButton::new(0, Rect::new(btn_x(0), BTN_Y, BTN_S, BTN_S)).focused(focus == 1 && btn == 0).draw(&e, p);
-    TransportButton::new(1, Rect::new(btn_x(1), BTN_Y, BTN_S, BTN_S)).focused(focus == 1 && btn == 1).draw(&e, p);
+    // The right control row, from the slot the CALLER resolved — so what is drawn and what a
+    // keypress activates are the same value, not two derivations of it.
+    match slot {
+        ControlSlot::UpNext(_) => crate::ui::up_next::draw(p, focus == 1, now),
+        ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(p, pr, focus == 1),
+        ControlSlot::Discs => {
+            TransportButton::new(0, Rect::new(btn_x(0), BTN_Y, BTN_S, BTN_S)).focused(focus == 1 && btn == 0).draw(&e, p);
+            TransportButton::new(1, Rect::new(btn_x(1), BTN_Y, BTN_S, BTN_S)).focused(focus == 1 && btn == 1).draw(&e, p);
+        }
+    }
 
     // scrubber
     let sx = SB_X;
@@ -351,5 +482,67 @@ pub(crate) fn draw_hud(focus: i32, btn: i32, tab: i32, now: u32, transport: bool
             TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph)).focused(on).draw(&e, p);
         }
         px += pw + 16.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::{Marker, MarkerKind};
+    use crate::ui::skip_pill::SkipAction;
+
+    fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
+        Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg }
+    }
+
+    /// The control row's precedence, which used to live in the ORDER of five separate if-chains
+    /// across `player_hud` and `app.rs` — the draw, the OK handler, the pointer handler, the
+    /// LEFT/RIGHT clamp and `icon_hit` — with nothing keeping them in step and nothing to test.
+    #[test]
+    fn the_control_row_picks_the_most_specific_occupant() {
+        // no segment under the playhead → the ordinary Subtitles + Audio pair
+        assert!(slot_for(None, false).is_discs());
+        assert!(slot_for(None, true).is_discs(), "a queued successor alone changes nothing");
+        assert_eq!(slot_for(None, true).items(), 2, "the disc pair is the only two-item row");
+
+        // an intro is always Skip, successor or not — "what's next" is an end-of-episode idea
+        for has_next in [false, true] {
+            let slot = slot_for(Some(marker(MarkerKind::Intro, false)), has_next);
+            assert!(matches!(slot, ControlSlot::Skip(p) if p.kind == MarkerKind::Intro));
+            assert_eq!(slot.items(), 1, "a stand-in is the row's only item");
+        }
+
+        // credits WITH somewhere to go → Up Next outranks Skip Credits…
+        assert!(matches!(slot_for(Some(marker(MarkerKind::Credits, true)), true), ControlSlot::UpNext(_)));
+        // …and WITHOUT (a show's last episode) it stays Skip Credits, which is the whole reason
+        // both still exist
+        assert!(matches!(
+            slot_for(Some(marker(MarkerKind::Credits, true)), false),
+            ControlSlot::Skip(p) if p.kind == MarkerKind::Credits
+        ));
+    }
+
+    /// A `final` credits segment runs to the end of the item, so skipping it FINISHES rather than
+    /// seeks — seeking to its stated end would race the decoder against its own last frames.
+    #[test]
+    fn only_a_final_credits_segment_finishes_the_item() {
+        let fin = match slot_for(Some(marker(MarkerKind::Credits, true)), false) {
+            ControlSlot::Skip(p) => p.action,
+            _ => unreachable!(),
+        };
+        assert_eq!(fin, SkipAction::Finish);
+
+        // a mid-item credits segment (a post-credits scene follows) seeks past it and plays on
+        let mid = match slot_for(Some(marker(MarkerKind::Credits, false)), false) {
+            ControlSlot::Skip(p) => p.action,
+            _ => unreachable!(),
+        };
+        assert_eq!(mid, SkipAction::Seek(2_000 * 1_000_000));
+        // …as does an intro, `final` flag or not (PMS only sets it on credits)
+        let intro = match slot_for(Some(marker(MarkerKind::Intro, true)), false) {
+            ControlSlot::Skip(p) => p.action,
+            _ => unreachable!(),
+        };
+        assert_eq!(intro, SkipAction::Seek(2_000 * 1_000_000));
     }
 }

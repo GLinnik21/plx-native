@@ -190,6 +190,20 @@ fn set_paused(v: bool) { crate::player::TX.paused.store(v, Relaxed) }
 fn hud_until() -> u32 { crate::player::TX.hud_until.load(Relaxed) }
 #[inline]
 fn set_hud(x: u32) { crate::player::TX.hud_until.store(x, Relaxed) }
+/// Raise the HUD to at least `now + ms`, never PULLING IN a deadline already further out.
+///
+/// `set_hud` stores an absolute instant, so an unconditional call SHORTENS whatever was there.
+/// The headless capture path pins the HUD for `HUD_HEADLESS_MS` (60 s), and the marker prompts
+/// below fire mid-playback — calling `set_hud` there cut that pin to the 4.5 s linger and the
+/// transport vanished out from under a live Skip button (seen on device, not in review).
+/// Comparison is plain `>`, matching `hud_shown`'s own non-wrapping `now < until`.
+#[inline]
+fn extend_hud(now: u32, ms: u32) {
+    let want = now.saturating_add(ms).max(1);
+    if want > hud_until() {
+        set_hud(want);
+    }
+}
 /// the transport HUD is shown while its timer is live OR playback is paused, unless the user
 /// explicitly dismissed it (UP from the top row) — the dismiss holds until the next key.
 #[inline]
@@ -518,6 +532,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             const HOME: HudNav = HudNav { focus: 0, btn: 0, tab: 0 };
         }
         let mut hud_nav = HudNav::HOME;
+        // Was the skip pill offering something last frame? Drives the claim-focus-once rule below;
+        // without the edge the pill would re-take focus every frame and pin it there.
+        // The last SEGMENT the control row offered. Sticky: it is never cleared back to None, so
+        // each segment raises the HUD exactly once per playback however often the row flickers.
+        let mut last_offer: Option<(crate::metadata::MarkerKind, i64)> = None;
+        let mut marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
         // UP-from-the-top explicitly dismisses the HUD even while paused; any other player input
         // clears it. Without this, paused() would force the HUD permanently visible.
         let mut hud_dismissed = false;
@@ -678,6 +698,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // `set_paused`/`set_hud` below it: the HUD that is about to be drawn belongs to THIS
             // attempt either way.
             *hud_nav = HudNav::HOME;
+            // Per-session: an auto-advance chain (episode → episode → …) re-enters here without
+            // ever passing through `exit_player`, so the finished episode's countdown state must
+            // not carry into the next one.
+            crate::ui::up_next::reset();
             set_paused(false);
             // Stamp the HUD deadline HERE, from NOW — not from the keypress. Callers used to pass
             // `last_input + HUD_LINGER_MS`, a timestamp taken BEFORE the blocking resolve above, so
@@ -687,6 +711,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             set_hud(unsafe { SDL_GetTicks() }.wrapping_add(hud_ms).max(1));
         }
 
+        /// Resume if a seek landed while paused — the twin of `commit_seek`, which is the
+        /// stay-paused variant. Written out four separate times in this file before it had a name.
+        fn resume_if_paused(mt: &crate::task::MainThread) {
+            if paused() {
+                set_paused(false);
+                crate::player::resume(mt);
+            }
+        }
+
         /// Leaving playback (Stop / BACK / EOS / Info's jump-to-detail): close every in-player
         /// overlay so no stale popover OPEN flag survives into the next session — the route flip
         /// alone hides them but leaves the module state set (the EOS path once forgot the menu).
@@ -694,6 +727,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::ui::track_menu::close();
             crate::ui::info_panel::close();
             crate::ui::chapters_panel::close();
+            crate::ui::up_next::cancel(); // disarm the auto-advance countdown
         }
 
         /// The ONE leave-playback ritual (Stop key, BACK, EOS): close the overlays, stop the
@@ -705,7 +739,109 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             close_player_overlays();
             crate::player::stop_bufferfeed(mt);
             *route = if played_from_detail { Route::Detail } else { Route::Home };
+            // Returning to a detail page after an EPISODE lands on its SHOW, not on the episode.
+            // The play paths load the played leaf's detail (that is where the HUD caption and Info
+            // card come from), so backing out used to strand the user on an episode hero page —
+            // even when they had started from the show page, and even after an auto-advance chain
+            // had moved them several episodes along. `detail_rk` is already the "Go to Show" target.
+            if played_from_detail {
+                if let Some((show_rk, season)) = crate::metadata::now_playing()
+                    .filter(|n| n.is_episode && !n.detail_rk.is_empty())
+                    .map(|n| (n.detail_rk.clone(), n.season))
+                {
+                    crate::ui::detail::open_show_at_episode(&show_rk, season, &crate::route::cur_rk());
+                }
+            }
             *refresh_hubs_at = unsafe { SDL_GetTicks() }.wrapping_add(800).max(1);
+        }
+
+        /// The episode is OVER — drained to EOS, or the user skipped a `final` credits marker.
+        /// Starts the queued episode when the show has one, else leaves the player exactly as
+        /// `exit_player` would. There is no interstitial: "always the next episode".
+        fn finish_playback(
+            mt: &crate::task::MainThread,
+            route: &mut Route,
+            played_from_detail: &mut bool,
+            refresh_hubs_at: &mut u32,
+            hud_nav: &mut HudNav,
+        ) {
+            if play_up_next(mt, HUD_LINGER_MS, route, played_from_detail, hud_nav) {
+                return;
+            }
+            exit_player(mt, route, *played_from_detail, refresh_hubs_at);
+            hud_nav.focus = 0;
+        }
+
+        /// Activate whatever occupies the control row. ONE dispatch for both the OK key and the
+        /// pointer — they used to hold byte-identical copies of this `match`, and had already
+        /// drifted (the key path cleared `held_sym`, the pointer path did not). Returns true when
+        /// the route flipped, which is the only thing the two callers still handle differently.
+        fn activate_ctrl_row(
+            mt: &crate::task::MainThread,
+            slot: crate::ui::player_hud::ControlSlot,
+            route: &mut Route,
+            played_from_detail: &mut bool,
+            refresh_hubs_at: &mut u32,
+            hud_nav: &mut HudNav,
+        ) -> bool {
+            use crate::ui::player_hud::ControlSlot;
+            use crate::ui::skip_pill::SkipAction;
+            match slot {
+                ControlSlot::UpNext(_) => {
+                    play_up_next(mt, HUD_LINGER_MS, route, played_from_detail, hud_nav);
+                    true
+                }
+                ControlSlot::Skip(pr) => match pr.action {
+                    SkipAction::Seek(ns) => {
+                        // Retire the segment FIRST: the seek lands on the preceding keyframe, which
+                        // is usually still inside it, so without this the button comes straight back
+                        // (see `metadata::mark_skipped`).
+                        crate::metadata::mark_skipped(pr.marker);
+                        request_seek(ns);
+                        resume_if_paused(mt);
+                        false
+                    }
+                    // a `final` credits segment: skipping it IS finishing the item
+                    SkipAction::Finish => {
+                        finish_playback(mt, route, played_from_detail, refresh_hubs_at, hud_nav);
+                        true
+                    }
+                },
+                ControlSlot::Discs => false,
+            }
+        }
+
+        /// Start the queued episode. Returns false when there is nothing queued (a movie, or the
+        /// last episode), which is the caller's cue to leave the player.
+        ///
+        /// It stops the outgoing session ITSELF rather than trusting each call site to: three
+        /// paths reach here (EOS, Skip Credits on a `final` marker, and OK on the HUD tile while
+        /// the credits are still rolling) and in all three an Engine is live — `start_bufferfeed`
+        /// no-ops while one is, so skipping the stop would silently fail to advance. The stop is
+        /// also what posts the `state=stopped` timeline that commits the watched state, and it
+        /// must happen BEFORE `request_play_up_next`: teardown reads the outgoing item's session
+        /// ids and clears the URL, both of which the new plan is about to overwrite.
+        fn play_up_next(
+            mt: &crate::task::MainThread,
+            hud_ms: u32,
+            route: &mut Route,
+            played_from_detail: &mut bool,
+            hud_nav: &mut HudNav,
+        ) -> bool {
+            // clone off the `&'static` store BEFORE anything can replace it (see up_next::take)
+            let Some(u) = crate::ui::up_next::take() else { return false };
+            log(&format!("up next: S{}E{} rk={} '{}'", u.season, u.index, u.rk, u.ep_title));
+            let (rk, resume) = (u.rk.clone(), crate::metadata::resume_ns(u.resume_ms, u.dur_ms));
+            close_player_overlays();
+            crate::player::stop_bufferfeed(mt);
+            crate::route::request_play_up_next(u);
+            // Same ritual as `play_item_now`: retire the finished episode's descriptor so the HUD
+            // caption and Info card don't label the new playback with the old one's title for the
+            // whole pre-roll, and fetch the new leaf off the loop.
+            crate::metadata::retire_playing();
+            crate::metadata::request_detail(&rk);
+            start_playback(mt, resume, *played_from_detail, hud_ms, route, played_from_detail, hud_nav);
+            true
         }
 
         /// Direct-play a LEAF catalog item (movie or episode) — the hero-pill / Continue-Watching
@@ -867,6 +1003,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // by the ONE real key handler (see crate::remote / tools/stream-screen.py).
         let mut remote = crate::remote::Remote::open();
         while running {
+            // Resolve the control row ONCE per iteration, before the event pump, and pass this
+            // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
+            // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
+            // call site let a keypress activate a control this same frame then declined to draw.
+            let ctrl = crate::ui::player_hud::slot();
             crate::system::ls2_pump();
             if let Some(r) = remote.as_mut() {
                 r.drain(|tok| {
@@ -1079,11 +1220,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             held_sym = sym;
                             held_since = last_input;
                             last_rep = last_input;
-                            set_hud(last_input + HUD_MENU_MS);
+                            extend_hud(last_input, HUD_MENU_MS);
                         } else if is_ok(sym) {
                             crate::ui::track_menu::on_ok();
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         } else if is_back(sym, wcode) {
                             crate::ui::track_menu::close();
                             route = Route::Player { overlay: Overlay::None };
@@ -1097,13 +1238,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::info_panel::close();
                             route = Route::Player { overlay: Overlay::None };
                             hud_nav.focus = 2;
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         } else if sym == SDLK_UP || sym == SDLK_DOWN {
                             crate::ui::info_panel::move_focus(sym as c_int);
                             held_sym = sym; // holding repeats via the client-side timer
                             held_since = last_input;
                             last_rep = last_input;
-                            set_hud(last_input + HUD_MENU_MS);
+                            extend_hud(last_input, HUD_MENU_MS);
                         } else if is_ok(sym) {
                             match crate::ui::info_panel::on_ok() {
                                 crate::ui::info_panel::InfoAction::FromBeginning => {
@@ -1139,11 +1280,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if matches!(route, Route::Player { .. }) {
                                 route = Route::Player { overlay: Overlay::None };
                             }
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         } else if is_back(sym, wcode) {
                             crate::ui::info_panel::close();
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         }
                         continue;
                     }
@@ -1161,7 +1302,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 held_since = last_input;
                                 last_rep = last_input;
                             }
-                            set_hud(last_input + HUD_MENU_MS);
+                            extend_hud(last_input, HUD_MENU_MS);
                         } else if is_ok(sym) {
                             let ns = crate::ui::chapters_panel::on_ok();
                             if ns >= 0 {
@@ -1172,17 +1313,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         } else if sym == SDLK_DOWN {
                             // drop focus back onto the tabs below the strip
                             crate::ui::chapters_panel::close();
                             route = Route::Player { overlay: Overlay::None };
                             hud_nav.focus = 2;
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         } else if is_back(sym, wcode) {
                             crate::ui::chapters_panel::close();
                             route = Route::Player { overlay: Overlay::None };
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         }
                         continue;
                     }
@@ -1195,11 +1336,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if !vis {
                             hud_nav.focus = 0; // reveal, on the scrubber
                         } else if sym == SDLK_UP {
+                            // vertical stack, top → bottom: control row, scrubber, tabs. Both
+                            // marker stand-ins live IN the control row, so the ring is unchanged.
                             match hud_nav.focus {
-                                0 => hud_nav.focus = 1, // scrubber → buttons
+                                0 => hud_nav.focus = 1, // scrubber → control row
                                 2 => hud_nav.focus = 0, // tabs → scrubber
                                 _ => {
-                                    hide = true; // buttons: nothing above → hide the HUD
+                                    hide = true; // control row: nothing above → hide the HUD
                                     hud_nav.focus = 0;
                                 }
                             }
@@ -1221,7 +1364,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if hide {
                             hud_dismissed = true; // stays hidden even while paused, until the next key
                         } else {
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         }
                         continue;
                     }
@@ -1258,7 +1401,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else if is_ok(sym) {
                         if matches!(route, Route::Player { .. }) {
                             let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
-                            if vis && hud_nav.focus == 1 {
+                            // A stand-in owns row 1 — activate it. Same value the draw used.
+                            if vis && hud_nav.focus == 1 && !ctrl.is_discs() {
+                                if activate_ctrl_row(mt, ctrl, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud_nav) {
+                                    held_sym = 0; // async route flip: don't repeat a held key into the next screen
+                                }
+                            } else if vis && hud_nav.focus == 1 {
+                            } else if vis && hud_nav.focus == 1 {
                                 // OK on a control button opens its panel (Subtitles / Audio)
                                 crate::ui::track_menu::open_tab(if hud_nav.btn == 0 { 1 } else { 0 });
                                 route = Route::Player { overlay: Overlay::Menu };
@@ -1279,7 +1428,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     crate::player::resume(mt);
                                 }
                             }
-                            set_hud(last_input + HUD_LINGER_MS);
+                            extend_hud(last_input, HUD_LINGER_MS);
                         } else if matches!(route, Route::Library) {
                             // OK on a browse-grid card → the same tvOS press as home's grid;
                             // tabs / toolbar / menus commit immediately inside the screen.
@@ -1336,7 +1485,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             set_paused(true);
                             crate::player::pause(mt);
                         }
-                        set_hud(last_input + HUD_LINGER_MS);
+                        extend_hud(last_input, HUD_LINGER_MS);
                     } else if wcode == WCODE_PLAY || sym == 19 || wcode == 19 || sym == 402 || wcode == 402 {
                         // PLAY
                         if !matches!(route, Route::Player { .. }) {
@@ -1357,7 +1506,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             set_paused(false);
                             crate::player::resume(mt);
                         }
-                        set_hud(last_input + HUD_LINGER_MS);
+                        extend_hud(last_input, HUD_LINGER_MS);
                     } else if matches!(route, Route::Player { .. }) && (sym == WCODE_STOP || wcode == WCODE_STOP) {
                         // Stop
                         exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at);
@@ -1374,12 +1523,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         let fwd = sym == SDLK_RIGHT || sym == 417 || wcode == 417;
                         let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
-                        set_hud(last_input + HUD_LINGER_MS);
+                        extend_hud(last_input, HUD_LINGER_MS);
                         if !vis {
                             hud_nav.focus = 0; // first LEFT/RIGHT reveals the HUD on the scrubber
                         }
                         if hud_nav.focus == 1 {
-                            hud_nav.btn = (hud_nav.btn + if fwd { 1 } else { -1 }).clamp(0, 1);
+                            // the row's occupant says how many items it has — no magic pin
+                            hud_nav.btn = (hud_nav.btn + if fwd { 1 } else { -1 }).clamp(0, ctrl.items() - 1);
                         } else if hud_nav.focus == 2 {
                             let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
                             hud_nav.tab = (hud_nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
@@ -1457,7 +1607,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     prev_my = my;
                     if matches!(route, Route::Player { .. }) {
                         hud_dismissed = false;
-                        set_hud(last_input + HUD_LINGER_MS);
+                        extend_hud(last_input, HUD_LINGER_MS);
                         if ptr_drag && dur() > 0 {
                             let frac = crate::ui::player_hud::scrub_frac_x(mx) as f64;
                             set_scrub((frac * dur() as f64) as i64);
@@ -1518,10 +1668,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::ui::chapters_panel::close();
                                 route = Route::Player { overlay: Overlay::None };
                             }
+                            // The stand-ins are HUD furniture, so both are gated on the transport
+                            // actually being on screen — `hud_vis` is sampled before the click
+                            // re-arms it, exactly like the rects below. One shared dispatch with
+                            // the key path, from the same resolved slot.
+                            _ if hud_vis && !ctrl.is_discs() && ctrl.hit(cx, cy) => {
+                                activate_ctrl_row(mt, ctrl, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud_nav);
+                            }
                             _ => {
                                 // shared HUD geometry: player_hud owns the button rects + scrub
                                 // band — consulted only while that geometry is on screen
-                                let icon = if hud_vis { crate::ui::player_hud::icon_hit(cx, cy) } else { None };
+                                let icon = if hud_vis { crate::ui::player_hud::icon_hit(ctrl, cx, cy) } else { None };
                                 let on_scrub =
                                     if hud_vis && dur() > 0 { crate::ui::player_hud::scrub_hit(cx, cy) } else { None };
                                 if let Some(idx) = icon {
@@ -1548,7 +1705,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                         }
-                        set_hud(last_input + HUD_LINGER_MS);
+                        extend_hud(last_input, HUD_LINGER_MS);
                     } else if matches!(route, Route::Home) {
                         let cx = rd_i32(&ev, 20) as f32;
                         let cy = rd_i32(&ev, 24) as f32;
@@ -1629,7 +1786,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if scrub() >= 0 {
                             commit_seek(scrub(), &mut bg_pos);
                         }
-                        set_hud(last_input + HUD_LINGER_MS);
+                        extend_hud(last_input, HUD_LINGER_MS);
                     }
                 } else if et == SDL_MOUSEWHEEL {
                     last_input = SDL_GetTicks();
@@ -1891,15 +2048,55 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::track_menu::on_ok();
                 }
             }
+            // dev: /tmp/plxnative-marker[=intro|credits] (default credits) seeks to 5s before that
+            // marker's start, so the skip pill — and, on a `final` credits marker, the whole
+            // finish → Up Next → auto-advance chain — is reachable in seconds instead of after 50
+            // minutes of episode. Retried until the markers land (the playing-item store is
+            // installed by the resolve, a beat after the first frames); a missing file settles it
+            // once so the read isn't repeated every frame for the rest of the session.
+            if !marker_tried && matches!(route, Route::Player { .. }) && crate::player::is_playing() {
+                match std::fs::read_to_string("/tmp/plxnative-marker") {
+                    Ok(s) => {
+                        let want = if s.trim().eq_ignore_ascii_case("intro") {
+                            crate::metadata::MarkerKind::Intro
+                        } else {
+                            crate::metadata::MarkerKind::Credits
+                        };
+                        // Latch on the STORE landing, not on a match: an item that carries no
+                        // marker of the requested kind (credits-only items are common) otherwise
+                        // left this re-reading the file every frame for the whole session.
+                        let markers = crate::metadata::playing_markers();
+                        if !markers.is_empty() {
+                            marker_tried = true;
+                            if let Some(m) = markers.iter().find(|m| m.kind == want) {
+                                let t = (m.start_ms - 5_000).max(0) * 1_000_000;
+                                log(&format!("marker trigger: seek to {}s (5s before {:?})", t / 1_000_000_000, want));
+                                request_seek(t);
+                            } else {
+                                log(&format!("marker trigger: item has no {want:?} marker"));
+                            }
+                        }
+                    }
+                    Err(_) => marker_tried = true,
+                }
+            }
             if is_started() {
                 crate::player::pump(mt, now);
             }
-            // end-of-stream: the pipeline drained at the credits → leave the player (back to the
-            // detail page or home, whichever is behind), instead of freezing on the last frame.
+            // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
+            // show has another episode queued, else leave the player (back to the detail page or
+            // home, whichever is behind), instead of freezing on the last frame.
             if matches!(route, Route::Player { .. }) && crate::player::ended() {
-                exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at);
-                hud_nav.focus = 0;
+                finish_playback(mt, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud_nav);
                 held_sym = 0; // async route flip: don't repeat a still-held key into detail/home
+            }
+            // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
+            // handoff so the whole auto-advance chain reads in one place.
+            if matches!(route, Route::Player { .. }) && crate::ui::up_next::expired(now) {
+                if !play_up_next(mt, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut hud_nav) {
+                    crate::ui::up_next::cancel(); // nothing queued after all — don't re-fire
+                }
+                held_sym = 0;
             }
             // post-playback home refresh (armed by every exit_player): refetch the hubs so
             // Continue Watching shows the new resume point / next episode; the small delay lets
@@ -1944,22 +2141,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
                     Route::Player { overlay: Overlay::Menu } => {
                         crate::ui::track_menu::move_focus(held_sym as c_int);
-                        set_hud(now + HUD_MENU_MS);
+                        extend_hud(now, HUD_MENU_MS);
                     }
                     Route::Player { overlay: Overlay::Info } => {
                         crate::ui::info_panel::move_focus(held_sym as c_int);
-                        set_hud(now + HUD_MENU_MS);
+                        extend_hud(now, HUD_MENU_MS);
                     }
                     Route::Player { overlay: Overlay::Chapters } => {
                         crate::ui::chapters_panel::move_focus(held_sym as c_int);
-                        set_hud(now + HUD_MENU_MS);
+                        extend_hud(now, HUD_MENU_MS);
                     }
                     _ => {}
                 }
             }
             // keep the HUD alive while the track menu / Info card / Chapters strip is open
             if matches!(route, Route::Player { overlay } if overlay != Overlay::None) {
-                set_hud(now + HUD_LINGER_MS);
+                extend_hud(now, HUD_LINGER_MS);
             }
             // scrub: continuous accelerating advance while a key is held (scrub_hold set by 0x101).
             if scrub_dir != 0 && scrub_hold && scrub() >= 0 && !ptr_drag {
@@ -1978,7 +2175,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     s = cap;
                 }
                 set_scrub(s);
-                set_hud(now + HUD_LINGER_MS);
+                extend_hud(now, HUD_LINGER_MS);
                 scrub_t = now;
                 // lost-keyup safety: commit if the 0x101 repeats stop without a keyup
                 if now.wrapping_sub(scrub_alive) > SCRUB_LOST_MS {
@@ -1998,6 +2195,55 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 scrub_dir = 0;
                 scrub_hold = false;
                 scrub_commit_at = 0;
+            }
+            // Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
+            // rather than a "was something shown" bool, because the two edges have different jobs
+            // and the previous bool implemented neither of the ones its comment promised.
+            if matches!(route, Route::Player { overlay: Overlay::None }) {
+                // Keyed on the SEGMENT, not the slot, and `last_offer` is only ever advanced to a
+                // real offer — never cleared back to None. `active_marker` is gated on `is_playing`,
+                // so a momentary drop out of Playing mid-segment reads as "no segment" and flips the
+                // row to the discs and back; keyed on the slot that round trip looked like a new
+                // offer and re-raised the HUD over an intro the user was simply watching.
+                let offer = ctrl.offer();
+                let fresh = offer.is_some() && offer != last_offer;
+                if offer.is_some() {
+                    last_offer = offer;
+                }
+                if fresh {
+                    // One line per SEGMENT offered — the on-device suite grades this feature from
+                    // the event log like everything else, and "the control row offered a skip" had
+                    // no observable signal at all before it.
+                    if let Some((kind, start)) = offer {
+                        log(&format!("marker offer: {kind:?} at {}s", start / 1000));
+                    }
+                    // A segment beginning raises the HUD and offers the row, so a bare OK acts on it
+                    // in one press instead of raise-HUD → navigate → OK. Only from the RESTING
+                    // position though: a user who deliberately walked to the Subtitles button or the
+                    // Info tab keeps their spot. (The previous version claimed this in a comment and
+                    // then claimed focus unconditionally.)
+                    extend_hud(now, HUD_LINGER_MS);
+                    if hud_nav.focus == 0 {
+                        hud_nav.focus = 1;
+                        hud_nav.btn = 0;
+                    }
+                } else if ctrl.is_discs() && hud_nav.focus == 1 {
+                    // The stand-in went away under the focus ring. Without this the row swaps back
+                    // to the discs with focus still on it and `btn` still 0, so the next OK opened
+                    // the SUBTITLES menu instead of toggling pause — exactly the bug class HudNav's
+                    // own doc says it exists to kill.
+                    hud_nav = HudNav::HOME;
+                }
+                // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to
+                // the next episode out of nowhere. And if focus has moved off the row, the user is
+                // driving the transport: cancel rather than yank them into the next episode.
+                if crate::ui::up_next::armed() {
+                    if hud_nav.focus == 1 {
+                        extend_hud(now, HUD_LINGER_MS);
+                    } else {
+                        crate::ui::up_next::cancel();
+                    }
+                }
             }
             // when the HUD auto-hides, park focus back on the scrubber so the next reveal is clean
             if matches!(route, Route::Player { .. }) && !hud_shown(now, hud_until(), paused(), hud_dismissed) {
@@ -2136,6 +2382,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
                 crate::ui::chapters_panel::update(dt);
             }
+            // Stepped for the WHOLE player route, not per-overlay like the panels above: the
+            // countdown must keep running whichever overlay state the route reports.
+            // Arm the Up Next countdown the frame it takes the control row. Nothing to step: both
+            // stand-ins are drawn by `draw_hud`, so they inherit the transport's visibility rather
+            // than owning any motion of their own.
+            if matches!(route, Route::Player { .. }) {
+                crate::ui::up_next::tick(ctrl, now);
+            }
             let fd_pc0 = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             // Async play resolve: install the worker's plan and start the engine. Route-
             // unconditional — a landing must never depend on which screen is mounted.
@@ -2184,7 +2438,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::player_hud::draw_subtitles(hud_up || matches!(route, Route::Player { overlay: Overlay::Menu }));
                     if hud_up || !matches!(route, Route::Player { overlay: Overlay::None }) {
                         // hide the transport middle behind the Info card / Chapters strip
-                        crate::ui::player_hud::draw_hud(hud_nav.focus, hud_nav.btn, hud_nav.tab, now, !matches!(route, Route::Player { overlay: Overlay::Info | Overlay::Chapters }));
+                        crate::ui::player_hud::draw_hud(ctrl, hud_nav.focus, hud_nav.btn, hud_nav.tab, now, !matches!(route, Route::Player { overlay: Overlay::Info | Overlay::Chapters }));
                     }
                     if matches!(route, Route::Player { overlay: Overlay::Menu }) {
                         crate::ui::track_menu::draw();

@@ -46,3 +46,11 @@ pub(crate) fn clock(ms: i64) -> String {
         format!("{m}:{sec:02}")
     }
 }
+
+/// The episode kicker — `"S2, E3 · Laura"`. ONE formatter, because this string is drawn by the
+/// transport HUD (the now-playing item), the route's pre-roll ctx line and the Up Next caption, and
+/// the whole point of the last two is that they read identically to the first. It was three
+/// separate literals before, with nothing keeping them in step.
+pub(crate) fn episode_kicker(season: i64, index: i64, title: &str) -> String {
+    format!("S{season}, E{index} \u{b7} {title}")
+}
