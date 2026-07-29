@@ -121,11 +121,29 @@ pub(crate) struct Related {
     pub(crate) thumb: String,
 }
 
+/// Clone because the playing-item store keeps the played leaf's OWN chapters (see [`PlayingItem`]) —
+/// on the detail-page play path they are cloned from the already-loaded `Detail` rather than refetched.
+#[derive(Clone)]
 pub(crate) struct Chapter {
     pub(crate) index: i64,    // 1-based chapter number
     pub(crate) start_ms: i64, // startTimeOffset — the seek target + timestamp label
     pub(crate) title: String, // Chapter.tag; empty → UI shows "Chapter {index}"
     pub(crate) thumb: String, // server image path → resolve_tex (empty if no chapter thumbs)
+}
+
+/// Parse an item's `Chapter[]` into the app's model — the ONE `plex::Chapter` → [`Chapter`] mapping,
+/// shared by the detail parse and the playing-item store (which must agree: the Chapters strip seeks
+/// with these offsets, so two mappings is two chances to disagree about which item they describe).
+fn convert_chapters(chapters: &[crate::plex::Chapter]) -> Vec<Chapter> {
+    chapters
+        .iter()
+        .map(|c| Chapter {
+            index: c.index,
+            start_ms: c.start_time_offset,
+            title: c.tag.clone(),
+            thumb: c.thumb.clone(),
+        })
+        .collect()
 }
 
 /// Which timeline segment a [`Marker`] describes. Only the two the player acts on are modelled —
@@ -383,16 +401,7 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         episodes: Vec::new(),
         cur_season: 0,
         related: Vec::new(),
-        chapters: it
-            .chapter
-            .iter()
-            .map(|c| Chapter {
-                index: c.index,
-                start_ms: c.start_time_offset,
-                title: c.tag.clone(),
-                thumb: c.thumb.clone(),
-            })
-            .collect(),
+        chapters: convert_chapters(&it.chapter),
         markers: convert_markers(&it.marker),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
@@ -452,7 +461,10 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
 // played leaf's OWN data. The track menu and the route's audio pick read its streams; feeding a
 // menu built from episode 1's streams to a playback of episode 5 was a real track-identity bug.
 // `markers` is here for exactly that reason and not on `Detail`: skipping episode 1's intro
-// timing during episode 5 is the same bug wearing a different hat.
+// timing during episode 5 is the same bug wearing a different hat. `chapters` rides along for the
+// third instance of it: the Chapters tab and strip used to read `current()`, so an episode played
+// from a SHOW page found a show container (which carries no Chapter[]) and the tab silently
+// vanished — while a `current()` holding some OTHER leaf would have seeked with its offsets.
 
 #[derive(Clone)]
 pub(crate) struct PlayingItem {
@@ -461,6 +473,7 @@ pub(crate) struct PlayingItem {
     pub(crate) subs: Vec<Stream>,
     pub(crate) video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
     pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
+    pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the Chapters tab/strip + rail ticks
 }
 static mut PLAYING: Option<PlayingItem> = None;
 
@@ -474,6 +487,14 @@ pub(crate) fn playing() -> Option<&'static PlayingItem> {
 /// reads, so no call site has to know the store can be absent mid-resolve.
 pub(crate) fn playing_markers() -> &'static [Marker] {
     playing().map(|p| p.markers.as_slice()).unwrap_or(&[])
+}
+
+/// The playing leaf's chapters, or an empty slice — the ONE accessor the Chapters strip and the
+/// scrubber's chapter ticks read. Deliberately NOT `current()`: during a show-page episode play
+/// `current()` is the SHOW (no `Chapter[]` at all), which is why the tab never appeared on that
+/// path, and a `current()` holding a different leaf would seek with another item's offsets.
+pub(crate) fn playing_chapters() -> &'static [Chapter] {
+    playing().map(|p| p.chapters.as_slice()).unwrap_or(&[])
 }
 
 /// Load the playing-item track store for `rk` at play time (route::build_stream). Reuses the
@@ -495,6 +516,7 @@ pub(crate) fn cached_playing(rk: &str) -> Option<PlayingItem> {
         subs: d.subs.clone(),
         video_fps: d.video_fps,
         markers: d.markers.clone(),
+        chapters: d.chapters.clone(),
     })
 }
 
@@ -503,14 +525,17 @@ pub(crate) fn fetch_playing_item(rk: &str) -> Option<PlayingItem> {
         return None;
     }
     let it = crate::plex::client_opt().and_then(|c| c.metadata(rk));
-    // Markers hang off the ITEM, streams off its first Part — so a part-less response still
-    // yields usable markers instead of discarding both.
+    // Markers and chapters hang off the ITEM, streams off its first Part — so a part-less response
+    // still yields both of those instead of discarding all three. `Client::metadata` already sends
+    // `includeChapters=1` (plex/library.rs), so the Chapter[] is on the wire either way: taking it
+    // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
     let markers = it.as_ref().map(|it| convert_markers(&it.marker)).unwrap_or_default();
+    let chapters = it.as_ref().map(|it| convert_chapters(&it.chapter)).unwrap_or_default();
     let (audio, subs, video_fps) = it
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
-    Some(PlayingItem { rk: rk.to_string(), audio, subs, video_fps, markers })
+    Some(PlayingItem { rk: rk.to_string(), audio, subs, video_fps, markers, chapters })
 }
 
 /// Retire BOTH descriptions of the item that was playing, together.
@@ -524,6 +549,19 @@ pub(crate) fn fetch_playing_item(rk: &str) -> Option<PlayingItem> {
 /// makes it a contract instead.
 pub(crate) fn retire_playing() {
     set_now_playing(None);
+    retire_playing_item();
+}
+
+/// Retire ONLY the track/marker/chapter store, leaving the `NowPlaying` caption alone — what a NEW
+/// play REQUEST does at its start ([`crate::route::request_play`]), beside the same retirement of
+/// `UP_NEXT`.
+///
+/// The caption cannot be retired there because `detail::play_episode_at` sets it just BEFORE
+/// requesting the play. The store must be, though: it is the PREVIOUS leaf's for the whole resolve
+/// window (0.5-3 s, longer through a `/decision` handshake) and the HUD is up for all of it. With
+/// chapters in here that became user-reachable — the transport advertised a Chapters tab whose OK
+/// seeked the NEW episode to some other item's offset.
+pub(crate) fn retire_playing_item() {
     unsafe {
         *addr_of_mut!(PLAYING) = None;
         (*addr_of_mut!(SKIPPED)).clear();
@@ -535,8 +573,8 @@ pub(crate) fn install_playing(pt: Option<PlayingItem>) {
     unsafe { (*addr_of_mut!(SKIPPED)).clear() }; // a different leaf's markers, so a fresh slate
     if let Some(pt) = &pt {
         crate::player::log(&format!(
-            "playing item: rk={} audio={} subs={} markers={}",
-            pt.rk, pt.audio.len(), pt.subs.len(), pt.markers.len()));
+            "playing item: rk={} audio={} subs={} markers={} chapters={}",
+            pt.rk, pt.audio.len(), pt.subs.len(), pt.markers.len(), pt.chapters.len()));
     }
     unsafe { *addr_of_mut!(PLAYING) = pt };
 }
