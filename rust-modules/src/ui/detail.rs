@@ -217,7 +217,12 @@ fn tab_pill_rect(lay: &TabLay, top: f32) -> Rect {
 }
 
 /// The content-space left edge of strip index `i` at horizontal pitch `pitch` — the ONE x formula
-/// the episode filmstrip and the Related/Cast shelves (`draw_strip`) advance by.
+/// the episode filmstrip and the Related/Cast shelves (`card_row::strip`) advance by.
+///
+/// It MUST stay the formula `card_row::strip` uses (`sty.margin_x + i * pitch`); the hit-test
+/// `strip_at` is its inverse, so a divergence puts every shelf click on the wrong tile. Every
+/// `RowStyle` sets `margin_x: MARGIN_X` today, which is what makes the two agree — the test
+/// `strip_x_matches_the_shared_shelf_formula` pins that rather than leaving it a coincidence.
 #[inline]
 fn strip_x(i: usize, pitch: f32) -> f32 {
     MARGIN_X + i as f32 * pitch
@@ -1392,55 +1397,6 @@ fn draw_episodes(p: Painter) {
     }
 }
 
-/// The ONE two-pass strip loop for detail's CardRow shelves (Related, Cast): non-focused tiles
-/// first (off-axis culled), the focused tile LAST for its z-order (the in-row focused-last rule —
-/// a lone strip has no cross-row neighbour). `art` supplies each tile's Art; `title` the focused
-/// tile's under-title (Related; None for cast); `extra` any per-tile caption drawn for EVERY tile
-/// (cast names/roles; a no-op for Related). `axis_span` widens the cull band where captions
-/// should survive slightly off-screen.
-#[allow(clippy::too_many_arguments)]
-fn draw_strip<'a>(
-    p: Painter,
-    row: &CardRow,
-    n: usize,
-    focus_col: c_int,
-    row_y: f32,
-    size: (f32, f32),
-    pitch: f32,
-    sty: &RowStyle,
-    axis_span: f32,
-    art: impl Fn(usize) -> Art<'a>,
-    title: impl Fn(usize) -> Option<CString>,
-    extra: impl Fn(Painter, usize, f32, bool),
-) {
-    let sx = row.scroll_x();
-    let pr = p.translate(-sx, 0.0);
-    for i in 0..n {
-        if i as c_int == focus_col {
-            continue; // focused tile drawn last
-        }
-        let x = strip_x(i, pitch);
-        if !on_axis(x - sx, size.0, axis_span, 0.0) {
-            continue;
-        }
-        let s = row.scale(i);
-        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
-        card_row::draw_tile(pr, art(i), rect, s, sty, None);
-        extra(pr, i, x, false);
-    }
-    if focus_col >= 0 && (focus_col as usize) < n {
-        let i = focus_col as usize;
-        let x = strip_x(i, pitch);
-        // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
-        let s = row.scale(i) * crate::ui::press::scale();
-        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
-        let tc = title(i); // kept alive across the draw call
-        let tp = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-        card_row::draw_focused(pr, art(i), rect, s, sty, None, tp, std::ptr::null(), false);
-        extra(pr, i, x, true);
-    }
-}
-
 /// "Related" — a horizontal row of portrait poster cards from the related hub. A real instance of
 /// the home shelf: view().related owns the animated per-card scale springs + scroll spring
 /// (RowStyle::HOME), so it pops + glides + rings + titles exactly like a home shelf.
@@ -1456,7 +1412,7 @@ fn draw_related(p: Painter) {
     let focus_col = if view().section == 3 { view().col } else { -1 };
     let lift = view().related.lift();
     p.text(c"Related".as_ptr(), MARGIN_X, related_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
-    draw_strip(
+    card_row::strip(
         p,
         &view().related,
         d.related.len(),
@@ -1467,6 +1423,7 @@ fn draw_related(p: Painter) {
         &RowStyle::HOME,
         SCR_W,
         |i| Art::Thumb { key: &d.related[i].thumb, res: (250, 375) },
+        |_| None,
         |i| CString::new(d.related[i].title.clone()).ok(),
         |_, _, _, _| {},
     );
@@ -1495,7 +1452,7 @@ fn draw_cast(p: Painter) {
     let lift = view().cast.lift();
     p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
     let row_y = cast_y + CAST_LABEL_H;
-    draw_strip(
+    card_row::strip(
         p,
         &view().cast,
         n,
@@ -1510,7 +1467,8 @@ fn draw_cast(p: Painter) {
         // "broken image". The absolute metadata-static.plex.tv URL rides the SAME server-side
         // /photo/:/transcode fetch the actor headshots already use.
         |i| Art::Person { key: d.credit(i).map_or("", |c| c.thumb.as_str()), res: (300, 300) },
-        |_| None,
+        |_| None, // resume: a person is not an item with a playhead
+        |_| None, // title: every credit is captioned by `extra`, focused or not
         |pc, i, x, focused| {
             if let Some(c) = d.credit(i) {
                 cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, focused);
@@ -1643,8 +1601,36 @@ pub(crate) fn on_ok() -> bool {
             }
             false
         }
-        _ => false, // cast (4): headshots are not actionable
+        4 => {
+            // Credits: OK opens that person's page — **cast AND crew alike**. The row indexes the
+            // combined credit space (`credit(i)` walks every actor then every crew member), so
+            // this MUST resolve through `credit`, not `cast[i]`: a director's tile is at an index
+            // past the actors, and reading `cast[i]` there would either open the wrong actor or
+            // find nothing. A director is a person with a `tagKey` like any other, `crew_credits`
+            // carries the id/guid through, and `/library/people/{id}/media` answers for them the
+            // same way — so the tile that shows a director opens the director.
+            //
+            // The page needs nothing this row doesn't already hold: the tag carries the name, the
+            // headshot AND the personId, so it mounts on that header and only its shelves are
+            // fetched. A row PMS sent with neither id form is simply not actionable
+            // (`person_key` empty) and raises no request, so app.rs leaves the route here.
+            if let Some(c) = metadata::current().and_then(|d| d.credit(col.max(0) as usize)) {
+                let key = c.person_key();
+                if !key.is_empty() {
+                    crate::ui::person::open(&key, &c.tag, &c.thumb);
+                }
+            }
+            false
+        }
+        _ => false,
     }
+}
+
+/// The rk the person page must come BACK to — the detail item currently mounted here. Read by
+/// app.rs when it routes into the person page, so the page owns its own return target instead of
+/// app.rs having to reconstruct one after an intervening navigation.
+pub(crate) fn mounted_rk() -> String {
+    metadata::current().map(|d| d.rk.clone()).unwrap_or_else(|| view().mounted_rk.clone())
 }
 
 /// Re-resolve the selected catalog row after a hub refetch rebuilt the catalog underneath an open
@@ -2038,8 +2024,19 @@ mod tests {
             ..Default::default()
         }
     }
+    /// A credit with a real `personId` — crew rows carry one on the wire exactly like actors, and
+    /// it is what makes the tile open a person page.
     fn credit(name: &str, job: &str) -> metadata::Cast {
-        metadata::Cast { tag: name.to_string(), role: job.to_string(), thumb: String::new() }
+        credit_id(name, job, 0)
+    }
+    fn credit_id(name: &str, job: &str, id: i64) -> metadata::Cast {
+        metadata::Cast {
+            tag: name.to_string(),
+            role: job.to_string(),
+            thumb: String::new(),
+            id,
+            tag_key: String::new(),
+        }
     }
 
     /// `hero_chain` is the ONE y-chain the hero's paint and the below-hero scroll flow share
@@ -2078,6 +2075,40 @@ mod tests {
 
         metadata::install_for_test(None);
         assert!(!sections().0[..sections().1].contains(&4), "with nothing loaded there is no shelf");
+    }
+
+    /// OK on the credits shelf must resolve through the COMBINED index space, not `cast[i]`.
+    ///
+    /// This is a rebase hazard, not a hypothetical: the person-page arm was written against a
+    /// shelf that held actors only, and the crew fold later made `credit(i)` run every actor and
+    /// THEN every crew member. Indexing `cast[i]` at a crew tile silently opens the wrong actor
+    /// (or, past the end, nobody) while the tile under the focus ring shows a director. Crew rows
+    /// carry a `personId` like any other tag, so the correct behaviour is that a director's tile
+    /// opens the director.
+    #[test]
+    fn ok_on_a_crew_tile_opens_that_crew_members_page_not_an_actor_at_the_same_index() {
+        let _serial = crate::testlock::serial();
+        let mut d = item(&[]);
+        d.cast = vec![credit_id("Anne Actor", "Herself", 11), credit_id("Ben Actor", "Himself", 12)];
+        d.crew = vec![credit_id("Dana Director", "Director", 99)];
+        mount(Some(d), 0);
+
+        // index 2 is PAST both actors — it is the crew member
+        let v = view();
+        v.section = 4;
+        v.col = 2;
+        assert!(!on_ok(), "a credit tile never starts playback");
+        let p = crate::person::current().expect("the person store opened");
+        assert_eq!(p.key, "99", "the crew tile opened the actor at cast[2] (or nothing) instead");
+        assert_eq!(p.name, "Dana Director");
+
+        // and an ordinary actor index still resolves to that actor
+        view().col = 1;
+        assert!(!on_ok());
+        assert_eq!(crate::person::current().unwrap().key, "12");
+
+        crate::person::close();
+        mount(None, 0);
     }
 
     use crate::metadata::{Detail, Episode};
@@ -2242,6 +2273,17 @@ mod tests {
     // Detail's twins of home's "the pointer hit column matches the drawn card at every snap phase".
 
     /// The pointer's inverse must land on the tile the painter drew — for detail's three horizontal
+    /// `strip_x` and the shared `card_row::strip` compute a tile's left edge independently —
+    /// detail's off `MARGIN_X`, the component's off `sty.margin_x`. They agree only because every
+    /// `RowStyle` sets `margin_x: MARGIN_X`; if one ever stops, the shelves would DRAW at one x and
+    /// HIT-TEST at another, which is silent and looks like a focus bug rather than a layout one.
+    #[test]
+    fn strip_x_matches_the_shared_shelf_formula() {
+        for sty in [&RowStyle::HOME, &RowStyle::CAST] {
+            assert_eq!(sty.margin_x, MARGIN_X, "a RowStyle margin drifted from detail's strip_x");
+        }
+    }
+
     /// strips. Both sides go through `strip_x`, so this pins the round trip at every horizontal
     /// scroll phase, including the gutter, which belongs to no tile at all.
     #[test]

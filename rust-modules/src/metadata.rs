@@ -42,6 +42,25 @@ pub(crate) struct Cast {
     pub(crate) tag: String,   // person's name
     pub(crate) role: String,  // character (an actor) — or the job, "Director"/"Writer" (crew)
     pub(crate) thumb: String, // headshot (often an external metadata-static.plex.tv URL)
+    /// The person's numeric library id (`Role[].id`), 0 when absent.
+    pub(crate) id: i64,
+    /// The person's global Plex guid (`Role[].tagKey`) — the id's stand-in when the server
+    /// omits the numeric one.
+    pub(crate) tag_key: String,
+}
+
+impl Cast {
+    /// The `personId` for `/library/people/{personId}/media` — the numeric id when the server
+    /// sent one, else the global guid (PMS accepts EITHER; both verified live 2026-07-29).
+    /// Empty when the row carries neither, which is the "this headshot opens nothing" case the
+    /// cast row's OK arm gates on.
+    pub(crate) fn person_key(&self) -> String {
+        if self.id > 0 {
+            self.id.to_string()
+        } else {
+            self.tag_key.clone()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -567,7 +586,13 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         cast: it
             .role
             .iter()
-            .map(|r| Cast { tag: r.tag.clone(), role: r.role.clone(), thumb: r.thumb.clone() })
+            .map(|r| Cast {
+                tag: r.tag.clone(),
+                role: r.role.clone(),
+                thumb: r.thumb.clone(),
+                id: r.id,
+                tag_key: r.tag_key.clone(),
+            })
             .collect(),
         // deduped like the shelf below it: a repeated Director[] row would otherwise read
         // "Directed by Jane Doe, Jane Doe"
@@ -623,7 +648,15 @@ fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
                     c.role.push_str(job);
                 }
                 Some(_) => {}
-                None => out.push(Cast { tag: t.tag.clone(), role: job.to_string(), thumb: t.thumb.clone() }),
+                // the id/guid ride along exactly as they do for an actor: a director is a person
+                // with a `tagKey`, so a crew tile opens the same person page a cast tile does
+                None => out.push(Cast {
+                    tag: t.tag.clone(),
+                    role: job.to_string(),
+                    thumb: t.thumb.clone(),
+                    id: t.id,
+                    tag_key: t.tag_key.clone(),
+                }),
             }
         }
     }
@@ -1759,7 +1792,13 @@ mod tests {
     /// the focus column outlives the item it was set on (a Related jump reloads underneath it).
     #[test]
     fn the_credit_index_space_runs_every_actor_then_every_crew_member() {
-        let person = |t: &str, r: &str| Cast { tag: t.to_string(), role: r.to_string(), thumb: String::new() };
+        let person = |t: &str, r: &str| Cast {
+            tag: t.to_string(),
+            role: r.to_string(),
+            thumb: String::new(),
+            id: 0,
+            tag_key: String::new(),
+        };
         let d = Detail {
             cast: vec![person("Actor A", "Hero"), person("Actor B", "Villain")],
             crew: vec![person("Jane Doe", "Director")],

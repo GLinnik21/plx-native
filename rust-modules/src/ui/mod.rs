@@ -23,6 +23,7 @@ pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Wat
 pub mod label;
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
