@@ -450,6 +450,32 @@ enum TabStyle {
     Segment { selected: bool },
 }
 
+/// The quiet annotation a [`TabPill`] can carry after its label — the detail page's season tabs use
+/// it for "how many episodes are in here" and "you have watched them all". It is deliberately
+/// subordinate to the label: one type rung down, never bold, and a step of alpha under the label's
+/// own ink, so a tab still reads as its label first and its count second.
+#[derive(Clone, Copy, Default)]
+pub enum TabNote {
+    #[default]
+    None,
+    /// a small count after the label. Non-owning, exactly like [`TabPill::label`] — keep the
+    /// `CString` alive for the whole draw frame.
+    Count(*const c_char),
+    /// everything behind this tab is watched — a tick takes the count's place.
+    Done,
+}
+
+/// Type rung of a tab's trailing note: one below the label, still at the couch legibility floor.
+const NOTE_SZ: c_int = theme::size::CAPTION;
+/// Label → note air inside the pill.
+const NOTE_GAP: f32 = theme::space::SM;
+/// The watched tick stands as tall as the note's own rung, so a count and a tick take the same band.
+const NOTE_TICK_D: f32 = NOTE_SZ as f32;
+/// The note's ink is the pill's own ink one alpha step down — de-emphasis without a second colour
+/// role, so it stays legible in every one of [`TabStyle`]'s ink states (including the already-dim
+/// unselected segment) while never competing with the label.
+const NOTE_INK_A: f32 = 0.75;
+
 // ---- TabPill: a rounded pill with a centered label, in one of two state models (TabStyle). ----
 pub struct TabPill {
     pub frame: Rect,
@@ -457,6 +483,7 @@ pub struct TabPill {
     pub sz: c_int,
     pub focused: bool,
     style: TabStyle,
+    note: TabNote,
 }
 impl TabPill {
     /// pill width for a `chars`-long label at `sz` (label advance + horizontal padding)
@@ -464,7 +491,7 @@ impl TabPill {
         chars as f32 * sz as f32 * 0.56 + 44.0
     }
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, focused: false, style: TabStyle::Button }
+        Self { frame, label, sz, focused: false, style: TabStyle::Button, note: TabNote::None }
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
@@ -474,6 +501,21 @@ impl TabPill {
     pub fn segment(mut self, selected: bool) -> Self {
         self.style = TabStyle::Segment { selected };
         self
+    }
+    /// attach a trailing [`TabNote`] (a count, or the watched tick).
+    pub fn note(mut self, note: TabNote) -> Self {
+        self.note = note;
+        self
+    }
+    /// What the note adds to a pill's CONTENT width, gap included (0 for [`TabNote::None`]). The
+    /// caller lays its tab strip out with this, so pill widths, the strip's x-advance and the note
+    /// itself can never disagree about how wide a tab is.
+    pub fn note_w(note: TabNote) -> f32 {
+        match note {
+            TabNote::None => 0.0,
+            TabNote::Count(t) => NOTE_GAP + crate::text::text_width(t, NOTE_SZ, 0),
+            TabNote::Done => NOTE_GAP + NOTE_TICK_D,
+        }
     }
 }
 impl View for TabPill {
@@ -498,7 +540,29 @@ impl View for TabPill {
         if bold {
             lab = lab.bold();
         }
-        lab.draw(p, r);
+        // The label centres in the pill MINUS the note group, so a tab carrying a note keeps
+        // label+note centred as one unit rather than shoving the label off-centre. The note then
+        // hugs the label's own right edge (its painted width, back from `Label::draw`), which is
+        // why this needs no knowledge of the caller's pill padding.
+        let nw = Self::note_w(self.note);
+        let lw = lab.draw(p, Rect::new(r.x, r.y, r.w - nw, r.h));
+        let nx = r.x + (r.w - nw) * 0.5 + lw * 0.5 + NOTE_GAP;
+        let note_ink = theme::with_a(ink, NOTE_INK_A);
+        match self.note {
+            TabNote::None => {}
+            TabNote::Count(t) => {
+                Label::new(t, NOTE_SZ, note_ink).draw(p, Rect::new(nx, r.y, 0.0, r.h));
+            }
+            TabNote::Done => {
+                let d = NOTE_TICK_D;
+                crate::ui::icons::draw(
+                    p,
+                    crate::ui::icons::Icon::Check,
+                    Rect::new(nx, r.y + (r.h - d) * 0.5, d, d),
+                    note_ink,
+                );
+            }
+        }
     }
 }
 

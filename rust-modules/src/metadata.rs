@@ -77,10 +77,26 @@ pub(crate) struct Episode {
     pub(crate) acodec: String, // Media[0].audioCodec
 }
 
+#[derive(Default)]
 pub(crate) struct Season {
     pub(crate) rk: String,
     pub(crate) index: i64,
     pub(crate) title: String,
+    /// episodes in this season (`leafCount`); 0 when the server sent no count
+    pub(crate) leaf_count: i64,
+    /// how many of those are watched (`viewedLeafCount`)
+    pub(crate) viewed_leaf_count: i64,
+}
+
+impl Season {
+    /// Every episode of this season is watched — the season-scope form of the container rule
+    /// `fetch_detail` applies to a show (`viewed >= leaf && leaf > 0`). It lives here, on the data,
+    /// so the season tab's tick and the coming "Mark Season Watched" row read ONE truth instead of
+    /// each re-deriving the comparison at its own site. The `leaf_count > 0` half is load-bearing:
+    /// a season the server sent no counts for is `0 >= 0`, which would otherwise read as watched.
+    pub(crate) fn watched(&self) -> bool {
+        self.leaf_count > 0 && self.viewed_leaf_count >= self.leaf_count
+    }
 }
 
 pub(crate) struct Related {
@@ -558,6 +574,8 @@ fn fetch_seasons(rk: &str) -> Vec<Season> {
             rk: x.rating_key.clone(),
             index: x.index,
             title: x.title.clone(),
+            leaf_count: x.leaf_count,
+            viewed_leaf_count: x.viewed_leaf_count,
         })
         .collect()
 }
@@ -1076,8 +1094,8 @@ mod tests {
                 rk: rk.to_string(),
                 is_show: true,
                 seasons: vec![
-                    Season { rk: "sk1".to_string(), index: 1, title: "Season 1".to_string() },
-                    Season { rk: "sk2".to_string(), index: 2, title: "Season 2".to_string() },
+                    Season { rk: "sk1".to_string(), index: 1, title: "Season 1".to_string(), ..Default::default() },
+                    Season { rk: "sk2".to_string(), index: 2, title: "Season 2".to_string(), ..Default::default() },
                 ],
                 episodes: eps.iter().map(|e| episode(e)).collect(),
                 cur_season: cur,
@@ -1179,5 +1197,28 @@ mod tests {
         assert!(!season_loading(), "but it still settles the spinner");
 
         clear();
+    }
+
+    /// The season-scope watched rule. Pure (no crate global, so no `testlock` here) and worth its
+    /// own test because two very different call sites depend on it — the season tab draws a tick
+    /// off it, and "Mark Season Watched" will decide which way to scrobble off it. The counts are
+    /// the ones a live `/library/metadata/{show}/children` returned: `idx=1 leaves=10 viewed=10`
+    /// and `idx=2 leaves=10 viewed=1`.
+    #[test]
+    fn a_season_is_watched_only_when_the_server_counted_episodes_and_all_of_them_are_seen() {
+        let season = |leaf: i64, viewed: i64| Season {
+            leaf_count: leaf,
+            viewed_leaf_count: viewed,
+            ..Default::default()
+        };
+        assert!(season(10, 10).watched(), "every episode seen");
+        assert!(!season(10, 1).watched(), "one episode in is not watched");
+        assert!(!season(10, 0).watched(), "never started");
+        // A season the server sent no counts for is 0 >= 0 — the `leaf_count > 0` half of the rule
+        // is the only thing keeping "we don't know" from reporting as "fully watched".
+        assert!(!season(0, 0).watched(), "no counts is not a watched season");
+        // viewedLeafCount can lead leafCount right after a scrobble of a season being re-indexed;
+        // more-watched-than-exists is still watched, never a negative remainder.
+        assert!(season(10, 11).watched(), "an over-count is still watched");
     }
 }
