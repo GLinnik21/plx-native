@@ -1,1 +1,7 @@
-<svg viewBox="0 0 24 24" fill="#ffffff"><path d="M12.04 6.46 L21.5 13.7 L19.0 20.0 L7.16 18.74 Z"/><circle cx="8.4" cy="7.6" r="2.8"/><circle cx="4.2" cy="4.4" r="2.5"/><circle cx="3.0" cy="9.6" r="1.8"/><circle cx="11.8" cy="2.9" r="1.7"/></svg>
+<!-- Rotten Tomatoes spilled (`…image.rating.spilled`) — the same tub past its balance point,
+     mouth bowed open and empty, contents out. The tip and the spill must agree: a tub
+     leaning one way with kernels thrown the other reads as a rhombus beside some dots.
+     ONE path, every subpath clockwise: see ui/icons.rs for why that is the rule. -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <path d="M 4.26 14.78 C 8.65 14.99 14.5 11.05 15.95 6.89 L 17.21 8.76 L 15.57 9.87 C 17.03 13.2 18.72 16.55 19.74 18.4 C 18.57 20.03 15.45 22.13 13.51 22.6 C 12.18 20.96 9.7 18.14 7.16 15.54 L 5.52 16.65 Z M 13.17 6.96 C 12.96 7.64 12.17 8.49 11.48 8.68 C 10.78 8.86 9.53 8.6 9 8.06 C 8.46 7.53 8.05 6.14 8.29 5.46 C 8.52 4.78 9.65 4.13 10.39 3.98 C 11.13 3.83 12.27 4.09 12.73 4.58 C 13.19 5.08 13.38 6.27 13.17 6.96 Z M 17.88 4.59 C 17.53 5.11 16.59 5.65 16.03 5.59 C 15.48 5.53 14.85 4.82 14.55 4.25 C 14.25 3.67 13.92 2.59 14.21 2.12 C 14.51 1.65 15.68 1.34 16.33 1.41 C 16.98 1.47 17.85 1.98 18.11 2.51 C 18.37 3.04 18.23 4.08 17.88 4.59 Z M 7.4 11.11 C 6.96 11.47 5.99 11.69 5.52 11.49 C 5.04 11.29 4.63 10.45 4.56 9.91 C 4.49 9.38 4.72 8.62 5.11 8.28 C 5.5 7.94 6.39 7.72 6.89 7.9 C 7.4 8.07 8.08 8.81 8.16 9.34 C 8.25 9.88 7.85 10.76 7.4 11.11 Z"/>
+</svg>

@@ -1,0 +1,6 @@
+<!-- The Movie Database (`themoviedb://image.rating`) — its score dial, as a filled annulus.
+     Its own, not the Unwatched chip's ring: see ui/icons.rs for why they were split.
+     ONE path, every subpath clockwise: see ui/icons.rs for why that is the rule. -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <path d="M 21.6 12 C 21.6 17.3 17.3 21.6 12 21.6 C 6.7 21.6 2.4 17.3 2.4 12 C 2.4 6.7 6.7 2.4 12 2.4 C 17.3 2.4 21.6 6.7 21.6 12 Z M 17.59 12 C 17.59 8.92 15.08 6.41 12 6.41 C 8.92 6.41 6.41 8.92 6.41 12 C 6.41 15.08 8.92 17.59 12 17.59 C 15.08 17.59 17.59 15.08 17.59 12 Z"/>
+</svg>
