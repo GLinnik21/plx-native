@@ -127,6 +127,20 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
 - `tools/capture-screen.sh` — pull the TV screen (incl. video plane) to a local image.
+- `tools/netcond.py` — **network-conditioning TCP proxy** (host-side), for the failures a healthy LAN
+  cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400`; the PMS
+  runs on the dev Mac) and makes the server misbehave on demand via `/tmp/netcond.mode`:
+  `pass` / `stall` (accept, hold open, answer nothing — the case that turns a join into a parked
+  frame loop) / `blackhole` / `reject` / `delay:<ms>`. Any mode scopes to matching requests —
+  `stall@/:/timeline` freezes the progress reporter while video keeps streaming, which is what makes
+  a clean experiment possible. Modes apply to connections ALREADY OPEN, so a POST can be frozen
+  mid-flight. Point the app at it by editing `PMS_PORT` in the gitignored `src/config.local.h` and
+  `make deploy` (host/port are compiled into `main.c`). **Pick a port Plex is not already on** — it
+  binds `127.0.0.1:32401` itself, and the more specific bind wins, so the proxy is silently bypassed.
+  Measured with it 2026-07-29: teardown's join of the `/:/timeline` reporter parked the main loop
+  **6974 ms**; after moving that join onto the scrobble worker, BACK→teardown is **0.5 s**. NB a
+  request occasionally fails through the proxy that succeeds direct (seen once on `POST /playQueues`)
+  — confirm any new failure against a direct run before believing it.
 - `tools/sockprobe.c` — standalone ARM diagnostic (`make sockprobe`, scp, run, delete) for socket
   semantics **the host suite cannot answer**: `cargo test` runs on Darwin, the app on Linux, and
   they disagree. Measured 2026-07-28: on this kernel `shutdown(2)` **does** abort a `connect(2)`
