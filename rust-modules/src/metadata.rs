@@ -58,6 +58,15 @@ pub(crate) struct Stream {
     /// external/sidecar stream (downloaded .srt etc. — NOT inside the container). The client
     /// renderer can't reach it on direct-play; only a server transcode can burn it.
     pub(crate) external: bool,
+    /// PMS `Stream.selected` — the server's CURRENT pick for this part, i.e. the track a user
+    /// chose on ANY Plex client (phone, web, another TV) and the one `select_streams` writes.
+    /// `route`'s selection ladder prefers it over its own defaults, which is what makes a pick
+    /// made elsewhere survive here instead of being silently overwritten. NB for AUDIO the server
+    /// marks a selected stream on essentially every part — for an untouched one that is just the
+    /// container `default` echoed back — so `route::pick_dp_audio` only treats it as a choice when
+    /// it names a DIFFERENT stream, and never as a reason to transcode. Read its doc before using
+    /// this flag anywhere else.
+    pub(crate) selected: bool,
 }
 
 #[derive(Default)]
@@ -412,6 +421,8 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
             title: s.title.clone(),
             // embedded container streams carry no delivery key; sidecars do
             external: s.stream_type == 3 && !s.key.is_empty(),
+            // the server's current pick for this part (a track chosen on another client)
+            selected: s.selected != 0,
         };
         match s.stream_type {
             1 => fps = s.frame_rate, // e.g. 23.976 — for the Load esInfo
