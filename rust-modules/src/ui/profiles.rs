@@ -142,9 +142,13 @@ fn row_geom(n: usize) -> (f32, f32) {
 }
 
 pub fn draw() {
+    // The clear IS the app surface — `theme::CLEAR_RGB` and `theme::SURFACE_APP` are the same
+    // #2C2C2E (44,44,46), and SURFACE_APP is opaque — so the full-screen SURFACE_APP rect that
+    // used to sit here painted 1920x1080 = 2.07M provably identical blended fragments over an
+    // already-correct framebuffer, every frame of the picker. If a screen ever needs a base that
+    // is NOT the clear color, paint that token, not this one.
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let p = Painter::root();
-    p.rect(Rect::FULL, 0.0, theme::SURFACE_APP, theme::SURFACE_APP, 0.0);
     let s = scene();
     let users = auth::users();
     let env = Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: s.fc, sp: 0.0, hero_a: 0.0 };
@@ -424,6 +428,15 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         pad_key(s, sym, wcode);
         return;
     }
+    if is_back(sym, wcode) {
+        // BACK leaves the picker exactly the way choosing the ALREADY-ACTIVE profile does:
+        // `auth::cancel` re-arms the resolved-credentials handoff with the persisted session, the
+        // main loop installs it and routes Home. It reports false — and we swallow the key — when
+        // there is no usable session behind the picker (the roster shown straight after a sign-out,
+        // where the picker really is a dead end you must choose your way out of).
+        auth::cancel();
+        return;
+    }
     let n = auth::users().len() as c_int;
     if sym == SDLK_DOWN {
         s.footer = true; // Sign out pill (reachable even while the roster is empty/loading)
@@ -442,7 +455,6 @@ pub fn key(sym: c_uint, wcode: c_uint) {
             select(s, s.fc as usize);
         }
     }
-    // BACK on the picker does nothing — you must choose a profile (or Sign out).
 }
 
 /// Remote number key → keypad digit: SDL gives printable keys their ASCII sym and the webOS

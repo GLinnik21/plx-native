@@ -33,8 +33,14 @@ pub fn init() {
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
-    // a retry mints a new pin (hence a new QR) — drop the cached texture so it re-uploads.
-    if auth::phase() == Phase::Creating {
+    // A retry mints a new pin (hence a new QR) — release the cached texture so it re-uploads.
+    // The GL texture has to be DELETED, not merely forgotten: `ensure_qr_tex` allocates a fresh id
+    // on every miss (`img_upload_rgba` never reuses the old one), so zeroing the handle alone
+    // orphaned a full 400x400-ish RGBA QR bitmap per sign-in retry, with nothing left holding its
+    // id to free it later. `gfx::delete_tex` no-ops on 0, and `update` is main-thread (the app
+    // loop's Route::Login arm), which is where GL deletes must happen.
+    if auth::phase() == Phase::Creating && s.qr_tex != 0 {
+        crate::gfx::delete_tex(s.qr_tex);
         s.qr_tex = 0;
     }
 }
@@ -57,9 +63,13 @@ fn ensure_qr_tex(s: &mut Scene) {
 }
 
 pub fn draw() {
+    // The clear IS the app surface — `theme::CLEAR_RGB` and `theme::SURFACE_APP` are the same
+    // #2C2C2E (44,44,46), and SURFACE_APP is opaque — so the full-screen SURFACE_APP rect that
+    // used to sit here painted 1920x1080 = 2.07M provably identical blended fragments over an
+    // already-correct framebuffer, every frame of the sign-in screen. If a screen ever needs a
+    // base that is NOT the clear color, paint that token, not this one.
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let p = Painter::root();
-    p.rect(Rect::FULL, 0.0, theme::SURFACE_APP, theme::SURFACE_APP, 0.0);
     let s = scene();
     let env = Env::inert();
 
@@ -140,9 +150,19 @@ fn draw_status(p: Painter, env: &Env, s: &Scene, msg: &str, error: bool) {
     }
 }
 
-pub fn key(sym: c_uint, _wcode: c_uint) {
+pub fn key(sym: c_uint, wcode: c_uint) {
     if auth::phase() == Phase::Error && is_ok(sym) {
         auth::retry();
+        return;
     }
-    // otherwise the login screen just waits — no exit until sign-in completes.
+    // BACK backs out of the sign-in — but only when there is somewhere to back out TO. This screen
+    // is reached two ways: a first-ever boot with no session (nothing behind it — the QR screen is
+    // the whole app) and the Home account menu's "Sign in" (a working session is still on disk).
+    // `auth::cancel` is the one that knows which, so it decides: it resumes the stored session and
+    // the main loop routes Home, or reports false and we swallow the key, preserving the
+    // long-standing "no exit until sign-in completes" behaviour exactly where it belongs.
+    if is_back(sym, wcode) {
+        auth::cancel();
+    }
+    // otherwise the login screen just waits — the pin poll drives the phase from a worker thread.
 }

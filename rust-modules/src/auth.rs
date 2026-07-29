@@ -150,9 +150,32 @@ pub fn retry() {
     start_login();
 }
 
-/// Cancel the flow (BACK on the login screen) → back to [`Phase::Idle`].
-pub fn cancel() {
-    with_ctl(|c| *c = Ctl::default());
+/// Back out of the flow (BACK on the Login or Profiles screen) → **resume the stored session** and
+/// let the main loop take us Home. Returns whether there was anything to back out to.
+///
+/// It deliberately does NOT drop to [`Phase::Idle`]. Nothing routes on Idle: `app.rs`'s
+/// phase→route follower runs every frame while the route is Login/Profiles and maps every phase it
+/// doesn't recognise back to `Route::Login`, so an Idle cancel would park the user on the sign-in
+/// screen showing "Connecting to Plex…" forever — strictly worse than no escape hatch at all.
+///
+/// Instead it re-arms the resolved-credentials handoff with the session already on disk, which is
+/// bit-for-bit the state [`switch_thread`]'s "already-active profile" fast path produces:
+/// [`take_ready`] picks it up on the next frame, installs the stored server + token on the main
+/// thread and enters Home. So BACK means "carry on as the profile I'm already signed in as" —
+/// identical to picking your own tile in the picker, which is the only sensible thing behind these
+/// two screens.
+///
+/// **False (and no state change) when there is no usable stored session** — a first-ever sign-in,
+/// or the picker straight after a sign-out. There is genuinely nothing behind those, so the callers
+/// swallow BACK rather than stranding the user on a screen with no server.
+pub fn cancel() -> bool {
+    let sess = session::load();
+    if !sess.can_go_local() {
+        return false;
+    }
+    log("auth: flow cancelled — resuming the stored session");
+    with_ctl(|c| *c = Ctl { phase: Phase::Ready, session: sess, apply_pending: true, ..Ctl::default() });
+    true
 }
 
 /// Choose a profile with no PIN (or after the keypad, via [`submit_pin`]).
@@ -271,11 +294,22 @@ fn login_thread() {
     };
     log("auth: authorized — discovering server");
 
-    // 3) discover the LAN server
-    with_ctl(|c| {
+    // 3) discover the LAN server. GUARDED, because [`cancel`] is just a phase flip and the
+    // `poll_pin` above is a network round trip: a BACK pressed while that request was in flight
+    // would otherwise be undone a second later, and — far worse — the `plex::install` below would
+    // swap the PMS client out from under the Home the user had already gone back to. Anything but
+    // Waiting means this worker is no longer the live flow, so it drops its token and exits.
+    let still_ours = with_ctl(|c| {
+        if c.phase != Phase::Waiting {
+            return false;
+        }
         c.session.account_token = token.clone();
         c.phase = Phase::Discovering;
+        true
     });
+    if !still_ours {
+        return log("auth: sign-in was cancelled while the pin poll was in flight — token dropped");
+    }
     let ac = AccountClient::new(&cid, Some(&token));
     if !discover_and_store(&ac) {
         return set_error("No local Plex server found on this network.");
