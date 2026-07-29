@@ -74,9 +74,16 @@ pub(crate) fn current() -> Option<&'static Person> {
 /// discarded by [`pump`], so a slow fetch for the actor you just left can never repopulate the
 /// one you are looking at now.
 static GEN: AtomicU32 = AtomicU32::new(0);
-/// One `/media` fetch in flight at a time. Cleared ONLY inside a successful mailbox take, so
-/// anything that drops the mailbox ([`supersede`]) must clear it too — otherwise the fetch stays
-/// latched and the page spins forever. Same latch `browse.rs` documents on its `IN_FLIGHT` array.
+/// The claim that a `/media` fetch is out. Cleared ONLY by a mailbox take, so anything that drops
+/// the mailbox ([`supersede`]) must clear it too — otherwise the fetch stays latched and the page
+/// spins forever. Same latch `browse.rs` documents on its `IN_FLIGHT` array.
+///
+/// It bounds spawns per *pump*, which is what matters; it is NOT a hard one-worker-at-a-time
+/// interlock, and claiming otherwise would be wrong. Two ways a second worker can briefly exist:
+/// [`supersede`] releases the claim while the old worker is still running, and a take releases it
+/// before the generation check (so a stale landing can free a NEWER fetch's claim, costing one
+/// duplicate request). Neither can wedge or corrupt — [`land`] is monotone on the generation and
+/// [`pump`] discards anything stale — and `browse.rs` has the identical shape.
 static FETCHING: AtomicBool = AtomicBool::new(false);
 /// Every single-flight flag, in one place — add a new one HERE and [`supersede`] picks it up.
 const IN_FLIGHT: [&AtomicBool; 1] = [&FETCHING];
