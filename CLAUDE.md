@@ -34,9 +34,16 @@ full one-time setup + troubleshooting.
 - `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
 - `make run` — close any running instance, wipe `/tmp/plxnative-events.log`, launch, keep alive
   `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
-- `make check` — the **host** unit suite (`cargo test --lib`, ~0.3s, no TV). Not a
-  prerequisite of `all` — the cross-build must never depend on a host toolchain run. See the
-  testing section for what it does and does not cover.
+- `make check` — the **host** unit suite (`cargo test --lib`, ~0.3s, no TV), preceded by `make
+  lint`. Not a prerequisite of `all` — the cross-build must never depend on a host toolchain run.
+  See the testing section for what it does and does not cover.
+- `make lint` — three **named** clippy lints (`ifs_same_cond`, `same_functions_in_if_condition`,
+  `if_same_then_else`) over the whole crate, `-A clippy::all` first so nothing else can *fail* the
+  gate (rustc's own warnings still print). It exists for one bug class the unit suite cannot reach:
+  a **shadowed branch**. A duplicated `else if` with an empty body once hid the arm that opens the
+  player's track menu — rustc does not warn on a repeated condition, and the dispatch is inside the
+  SDL event loop where no host test can see it. Needs the **clippy component on nightly** (rustup's
+  default profile ships it; a `--profile minimal` nightly does not).
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - `make ipk` — repackage the installable `pkg/com.beb.plxnative_0.1.0_arm.ipk`.
@@ -209,13 +216,14 @@ There **is** a host unit suite, and it is not the real gate — both halves matt
 them is how this section used to be wrong in three files at once.
 
 **Tier 1 — `make check` (host, sub-second).** `cd rust-modules && cargo test --lib` runs the whole
-host suite in **~0.3s** on the dev Mac, no TV involved (48 tests as of 2026-07-29 — re-derive with
+host suite in **~0.3s** on the dev Mac, no TV involved (59 tests as of 2026-07-29 — re-derive with
 `cargo test --lib -- --list | grep -c ': test'` rather than trusting this or the per-module counts
 below; the first version of this section was stale within one commit because two agents added tests
-to the same batch that documented it). `make check` is that command; it is deliberately **not**
-a prerequisite of `all`, so an ordinary `make` still cross-compiles without ever invoking a host
-toolchain run. Run it before `make test` — it is free by comparison, and it is the only signal you
-get without waking a television. What it covers today, by module:
+to the same batch that documented it). `make check` is that command **plus `make lint`** (three
+named clippy lints, see the build section — the shadowed-branch gate, ~1s warm); it is deliberately
+**not** a prerequisite of `all`, so an ordinary `make` still cross-compiles without ever invoking a
+host toolchain run. Run it before `make test` — it is free by comparison, and it is the only signal
+you get without waking a television. What it covers today, by module:
 
   - `stream.rs` (10) — **socket semantics against real loopback sockets, plus response-header
     parsing**: `connect(2)` giving up on its deadline (RFC 5737 TEST-NET black hole), a refused

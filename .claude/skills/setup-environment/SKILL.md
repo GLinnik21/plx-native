@@ -44,6 +44,7 @@ Then make sure the Rust side is ready (safe to re-run — no-ops if already done
 ```bash
 rustup toolchain install nightly
 rustup component add rust-src --toolchain nightly
+rustup component add clippy   --toolchain nightly   # `make check` runs `make lint` first
 brew install sshpass      # deploy/run only; skip if you won't touch the TV
 ```
 
@@ -149,6 +150,7 @@ create=1`, and rising FPS with no `SIGILL` / `undefined symbol`. See the main
 | Paths inside the SDK point at `/Users/runner/...` | You skipped/failed `relocate-sdk.sh`. Re-run it from the SDK root. |
 | `cannot find -lSDL2 / -lplayerAPIs / -lpf-1.0` | Wrong/incomplete sysroot (partial download, or `WEBOS_SDK` points somewhere stale). Re-extract; verify `find $SYSROOT -name 'libplayerAPIs.so*'`. |
 | `error: "-Z build-std" ... rust-src` or `cargo +nightly` fails | Missing nightly or rust-src: `rustup toolchain install nightly && rustup component add rust-src --toolchain nightly`. |
+| `make check` dies at `make lint` with `no such command: clippy` | The nightly was installed with `--profile minimal`, which omits clippy (the default profile ships it): `rustup component add clippy --toolchain nightly`. `make check` runs `lint` first; the cross-build itself never needs clippy. |
 | Binary is `Tag_CPU_arch: v6`, or SIGILLs on the TV at first atomic | `RUSTFLAGS_TV` got dropped, or std wasn't rebuilt. Ensure `-C target-cpu=cortex-a9` and `-Z build-std` are intact; `rm` the stale `libplxnative_modules.a` and rebuild. |
 | `relocation R_ARM_MOVW_ABS_NC ... recompile with -fPIC` when building a stub | A stub needs PIC. Stubs already use `-fPIC` in `STUBFLAGS`; if you added a bespoke stub rule, add `-fPIC`. |
 | Deploy/run steps fail with `sshpass: command not found` | `brew install sshpass`. The TV must be on and reachable (`make TV=<ip> ...`). |
