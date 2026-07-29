@@ -159,6 +159,17 @@ pub const RAIL_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
 pub const RAIL_BUFFERED: [f32; 4] = [1.0, 1.0, 1.0, 0.28];
 /// Played/filled portion of a rail.
 pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
+/// An intro/credits SEGMENT on the player scrubber — a band lit a step above the track, drawn
+/// between the track and the fill so the played part of a segment reads as played. Stays inside the
+/// rail's monochrome language on purpose: a hue here would compete with the amber resume fill for
+/// "this bit is special", and the rail sits straight over moving video.
+pub const RAIL_MARKER: [f32; 4] = [1.0, 1.0, 1.0, 0.42];
+/// A chapter boundary tick on the UNPLAYED part of a rail — bright, because the track under it is
+/// nearly transparent over the video.
+pub const RAIL_TICK: [f32; 4] = [1.0, 1.0, 1.0, 0.72];
+/// The same tick on the PLAYED part: a notch cut out of the bright fill. One tick colour cannot
+/// serve both — white vanishes into the fill, dark vanishes into the track.
+pub const RAIL_TICK_PLAYED: [f32; 4] = scrim_black(0.55);
 /// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent). `#fab82e`.
 pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
 /// Unfilled track behind the Continue-Watching resume bar — the full-bleed card-bottom rail. A
