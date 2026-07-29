@@ -37,5 +37,10 @@ pub use client::{client, client_opt, install, Client, StreamUrl};
 pub use models::*;
 #[allow(unused_imports)]
 pub use params::*;
+// The projected play-queue row + the identity rule that locates one: op-file items rather than
+// wire DTOs, so they are re-exported by name (route.rs names the row in `Plan`/`QueueInfo` — the
+// rest of `timeline` is reached through `Client`'s methods and needs none).
+#[allow(unused_imports)]
+pub use timeline::{queue_index_of, QueueRow};
 #[allow(unused_imports)]
 pub use transcoder::is_dp_audio;
