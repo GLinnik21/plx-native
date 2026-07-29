@@ -39,6 +39,63 @@ pub mod widgets;
 /// Canonical values now live in [`theme`]; re-exported so existing `crate::ui::ACCENT` sites hold.
 pub use theme::{ACCENT, ACCENT_INK};
 
+// ---- The UI panic barrier -------------------------------------------------------------------
+
+/// Set once the first guarded panic has been reported, so a screen that panics EVERY frame does
+/// not write a line per frame. See the rationale in [`guard`].
+static GUARD_RECOVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run one UI entry point (a screen's `draw`/`update`/key handler) behind a panic barrier: a panic
+/// inside `f` unwinds only as far as this call, and the frame is abandoned instead of the process.
+///
+/// **Why this exists — it is not defensive programming, it is an FFI requirement.** `plex_run` is
+/// `#[no_mangle] pub extern "C"` (the C boot shim in `src/main.c` calls it), and a panic that
+/// unwinds *out of* an `extern "C"` frame is undefined behaviour; the toolchain lowers it to an
+/// immediate `abort()`. Every UI draw runs inside that `extern "C"` frame, so on this device a
+/// stray index-out-of-bounds in a screen is not "one bad frame" — it is SIGABRT, a dead app, a
+/// live Starfish buffer-feed session torn down mid-`Feed()`, and the TV back at the launcher, with
+/// no debugger attached to say why. Wrapping the DISPATCH (see `app.rs`, where the whole
+/// route→screen draw is one guarded block) rather than each screen means a screen added later is
+/// covered by construction instead of by its author remembering.
+///
+/// The `Err` arm **must** release the GL scissor. [`Painter::clip`] is global GL state that its
+/// user pairs with a [`Painter::clip_clear`] at the end of the same draw (`TableView::draw` is the
+/// one user today) — a panic between the two skips the clear, and every subsequent frame in the
+/// process would then be silently scissored to whatever rect the dying screen last set, with
+/// nothing downstream able to tell why the UI went partly blank. This unwind is the only place
+/// that can see it happened, so this is the only place that can repair it.
+///
+/// **What this does NOT protect** (do not over-trust it):
+/// - A panic on a **worker thread** — demux, load, timeline, poster/metadata/browse fetches. That
+///   thread dies and its work silently stops; those bodies carry their own `catch_unwind`
+///   (`metadata.rs`, `browse.rs`, `pms.rs`, `img.rs`, `player/mod.rs`).
+/// - An **abort**, which `catch_unwind` cannot catch by construction: allocation failure, a double
+///   panic (a second panic raised by a `Drop` running during *this* unwind), or a panic crossing
+///   one of the OTHER `extern "C"` seams we hand to C — the libavformat AVIO callbacks in `ff.rs`
+///   and the Starfish/ACB event callbacks. Those still kill the process.
+/// - **Consistent state.** The guarded body ran halfway and whatever it mutated before panicking
+///   stays mutated — `AssertUnwindSafe` is precisely the assertion that we accept that. The next
+///   frame redraws from the same state, so a screen that panics once normally panics every frame;
+///   this keeps the app alive and navigable, it does not fix the screen.
+///
+/// Main-thread only, and free on the happy path: `catch_unwind`'s landing pad is cold, so guarding
+/// the per-frame draw dispatch is not a hot-path cost on the A53.
+#[inline]
+pub fn guard(f: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
+        crate::gfx::clip_clear();
+        // Log the FIRST recovery only. `app::install_panic_logger` already writes the panic's
+        // message + source location to BOTH the event log and the persistent crash log for every
+        // panic, so the only news here is "the frame was dropped and the GL clip was released" —
+        // and the thing that panics in a draw panics 60x/sec, so repeating this line would double
+        // an already-flooding stream while telling nobody anything new. One line marks that the
+        // barrier is what is keeping the app alive; the hook's lines say what is wrong.
+        if !GUARD_RECOVERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Rect {
     pub x: f32,
