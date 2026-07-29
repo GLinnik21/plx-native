@@ -200,6 +200,23 @@ clean:
 
 test: deploy run
 
+# `make check` — the HOST unit suite (~0.3s), the only correctness signal available
+# without a television. Deliberately NOT a prerequisite of `all`: the normal build is a cross
+# compile for the TV and must not be made to depend on a host toolchain run succeeding (a host
+# cargo failure has nothing to do with whether the ARM staticlib is buildable, and `make deploy`
+# on a machine mid-toolchain-churn should not be blocked by it). Run it before `make test`.
+#
+# No --target and no RUST_ENV here on purpose. Those flags exist to stop the ARM build SIGILL-ing
+# on this TV's A53 (see the codegen comment above); pointed at the aarch64 host they are wrong at
+# best. A bare `cargo test` builds for the host triple, which is exactly what we want — and it is
+# also why this suite cannot cover anything that links the TV's own libraries: ff.rs gates its four
+# `#[link]` directives out of cfg(test) so the crate's pure logic stays host-testable, and a test
+# that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crate's own
+# `#[cfg(test)] mod tests` blocks (there are no integration tests in tests/ — that directory is the
+# on-device Python harness, a different thing entirely).
+check:
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo test --lib
+
 # ipk assembly: deb-style ar archive; the NDK ar emits GNU format (macOS ar is BSD)
 ipk: pkg/plxnative
 	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative
@@ -224,4 +241,4 @@ threadprobe: tools/threadprobe.c
 sockprobe: tools/sockprobe.c
 	$(CC) $(CFLAGS) -o pkg/sockprobe tools/sockprobe.c -lpthread
 
-.PHONY: all setup-env deploy run run-stream kill test ipk clean threadprobe sockprobe
+.PHONY: all setup-env deploy run run-stream kill check test ipk clean threadprobe sockprobe
