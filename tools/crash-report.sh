@@ -68,10 +68,42 @@ else
 fi
 
 # ---- 2. codegen sanity (the SIGILL branch) ----------------------------------
-if [ -f "$BIN" ] && [ -x "$OBJDUMP" ]; then
-  cp15=$("$OBJDUMP" -d "$BIN" 2>/dev/null | grep -c 'mcr.*15.*c7, c10' || true)
-  arch=$("$READELF" -A "$BIN" 2>/dev/null | sed -n 's/.*Tag_CPU_arch: *//p' | head -1)
-  echo "  CPU arch tag: ${arch:-?}   ARMv6 CP15 barriers: $cp15 (must be 0 — nonzero SIGILLs on this SoC)"
+# The legacy ARMv6 CP15 memory barriers — `mcr p15, 0, Rd, c7, c10, {4,5}` (DSB/DMB) and
+# `c7, c5, {4}` (ISB) — are UNDEFINED on this TV's ARMv8 A53 and SIGILL on the first one
+# executed. The Makefile's `-C target-cpu=cortex-a9` (and the unpinned -mcpu on the C side)
+# exist solely to make the compilers emit the dedicated `dmb`/`isb` instead; see the long
+# note in the Makefile. This count is the ONLY automated guard on that, so it must never
+# answer a quiet "0" when it did not actually look — hence the loud CANNOT CHECK branches.
+#
+# The pattern must match objdump's REAL spelling. GNU objdump prints the coprocessor
+# registers as `cr7, cr10` and braces the opc2:
+#     ee070fba 	mcr	15, 0, r0, cr7, cr10, {5}
+# This used to grep for `c7, c10`, which the `r` in `cr7` makes unmatchable — so for the
+# whole life of the check it reported "0 found" on every build, present bug or not
+# (verified 2026-07-29 by assembling the three barriers and disassembling them). `cr?`
+# also accepts the bare-`c7` spelling other binutils versions print.
+CP15_RE='mcr[[:space:]].*[[:space:]]cr?7, (cr?10|cr?5, [{]4[}])'
+echo "== codegen sanity (the SIGILL branch)"
+if [ ! -f "$BIN" ]; then
+  echo "  *** CANNOT CHECK — no local pkg/plxnative. Run make, then re-run this. ***"
+elif [ ! -x "$OBJDUMP" ]; then
+  echo "  *** CANNOT CHECK — no NDK objdump at $OBJDUMP (see the setup-environment skill). ***"
+else
+  dis="$("$OBJDUMP" -d "$BIN" 2>/dev/null)"
+  if [ -z "$dis" ]; then
+    echo "  *** CANNOT CHECK — objdump produced no disassembly for $BIN. ***"
+  else
+    cp15=$(printf '%s\n' "$dis" | grep -cE "$CP15_RE" || true)
+    arch=$("$READELF" -A "$BIN" 2>/dev/null | sed -n 's/.*Tag_CPU_arch: *//p' | head -1)
+    echo "  CPU arch tag: ${arch:-?}"
+    if [ "${cp15:-0}" -eq 0 ]; then
+      echo "  ARMv6 CP15 barriers: 0 — clean (this build cannot SIGILL on that)"
+    else
+      echo "  *** ARMv6 CP15 barriers: $cp15 — this binary WILL SIGILL on the A53. ***"
+      echo "      Something dropped -C target-cpu=cortex-a9 (RUST_ENV) or pinned an ARMv6 -mcpu."
+      printf '%s\n' "$dis" | grep -E "$CP15_RE" | head -3 | sed 's/^/      /'
+    fi
+  fi
 fi
 
 hr

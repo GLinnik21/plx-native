@@ -51,6 +51,11 @@ extern "C" {
     fn TTF_Init() -> c_int;
     fn TTF_OpenFont(file: *const c_char, ptsize: c_int) -> *mut TtfFont;
     fn TTF_RenderUTF8_Blended(font: *mut TtfFont, text: *const c_char, fg: SdlColor) -> *mut SdlSurface;
+    /// Metrics-only sizing — the same numbers `TTF_RenderUTF8_Blended` would produce, with no
+    /// rasterization and no surface. Present in the TV's own `libSDL2_ttf-2.0.so.0.14.0` (verified
+    /// on device 2026-07-29 by dumping its dynamic symbols), and in the NDK sysroot copy we link
+    /// against, so this resolves for real at link time like every other TTF symbol here.
+    fn TTF_SizeUTF8(font: *mut TtfFont, text: *const c_char, w: *mut c_int, h: *mut c_int) -> c_int;
     fn TTF_SetFontStyle(font: *mut TtfFont, style: c_int);
     fn TTF_SetFontHinting(font: *mut TtfFont, hinting: c_int);
     fn SDL_FreeSurface(surf: *mut SdlSurface);
@@ -312,20 +317,36 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
     (tex, sw, sh, ink_t, ink_b)
 }
 
-/// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
-/// pixel width of `s` at `sz`/`bold` without drawing (renders+caches the glyph texture, like
-/// draw_text, then returns just its width). Used for eliding long labels to a budget.
+/// Pixel width of `s` at `sz`/`bold` **without rasterizing anything** — pure font metrics.
+///
+/// This used to go through `text_tex`, i.e. it ran `TTF_RenderUTF8_Blended` (a full glyph-run
+/// rasterization), scanned the resulting surface for its ink rows, uploaded a GL texture and then
+/// threw all of it away to return one integer. `TTF_SizeUTF8` answers the same integer from the
+/// font's glyph metrics: in SDL_ttf the blended renderer *sizes its surface with that very call*,
+/// so the two widths are equal by construction, not by approximation. It also means the glyph
+/// cache is no longer churned by pure measurement — the elide binary search, `TextView`'s
+/// per-word wrap sweep and the HUD's template widths were each evicting real, about-to-be-drawn
+/// entries out of the 160 slots to store strings nobody paints.
+///
+/// No caller depends on the old rasterize-as-a-side-effect: every one of them uses the number for
+/// layout, and the ones that also draw the string get their texture from `draw_text` on the same
+/// frame (a cache miss there, but the identical single render the measure used to do — so the
+/// per-frame render count never rises, and for measure-only strings it falls to zero).
 pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     unsafe {
-        if TEXT_OK == 0 || s.is_null() {
+        if TEXT_OK == 0 || s.is_null() || *s == 0 {
             return 0.0;
         }
-        let cs = CStr::from_ptr(s);
-        let b = cs.to_bytes();
-        if b.is_empty() {
+        let f = font_at(sz, bold);
+        if f.is_null() {
             return 0.0;
         }
-        let (_tex, w, _h, _it, _ib) = text_tex(b, s, sz, bold);
+        // both out-params are real locals: SDL_ttf guards NULLs, but a height we throw away costs
+        // nothing and keeps this independent of that guard surviving in the TV's 2.0.14 fork.
+        let (mut w, mut h): (c_int, c_int) = (0, 0);
+        if TTF_SizeUTF8(f, s, &mut w, &mut h) != 0 {
+            return 0.0; // same "unmeasurable → 0" contract the null-surface path had
+        }
         w as f32
     }
 }
@@ -417,6 +438,7 @@ pub(crate) fn text_vcenter_y(sz: c_int, bold: c_int, cy: f32) -> f32 {
     cy - (ct + cb) * 0.5
 }
 
+/// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
 pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
     unsafe {
         if TEXT_OK == 0 || s.is_null() {

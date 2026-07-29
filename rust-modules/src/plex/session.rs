@@ -123,9 +123,28 @@ pub fn load() -> Session {
 }
 
 /// Persist the session (best-effort; a write failure is non-fatal — we just re-login next boot).
+///
+/// **Credentials at rest: 0600, set in `open(2)`'s own mode argument — never create-then-chmod.**
+/// This file holds the plex.tv account token, every per-user PMS access token and the Plex Home
+/// roster, and it lives on a ROOTED TV whose `/media/developer` is world-readable — the same box
+/// where `/tmp` is a dumping ground for dev triggers. `fs::write` creates with `0666 & !umask`
+/// (0644 here), so the tokens were readable by every other uid on the device from the instant they
+/// hit the disk. Passing the mode through `OpenOptionsExt` means the file never *exists* in a
+/// permissive mode, which a chmod after the write cannot promise: the window between create and
+/// chmod is exactly when the secret is already on disk.
+///
+/// `truncate(true)` keeps a shorter re-save from leaving the tail of the previous one behind, and
+/// it also empties any pre-existing file *before* the `set_permissions` below — so tightening a
+/// legacy 0644 session written by an older build (the mode above only applies on creation) can
+/// never expose content either: at that moment the file is zero bytes.
 pub fn save(s: &Session) {
-    if let Ok(json) = serde_json::to_vec_pretty(s) {
-        let _ = std::fs::write(AUTH_PATH, json);
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let Ok(json) = serde_json::to_vec_pretty(s) else { return };
+    let opened = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(AUTH_PATH);
+    if let Ok(mut f) = opened {
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        let _ = f.write_all(&json);
     }
 }
 
