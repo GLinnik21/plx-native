@@ -133,6 +133,17 @@ impl Rect {
     pub fn inset(&self, d: f32) -> Rect {
         Rect::new(self.x + d, self.y + d, self.w - 2.0 * d, self.h - 2.0 * d)
     }
+    /// The overlap of two rects — the part of `self` that `o` lets through. A miss returns a
+    /// ZERO-SIZE rect (never a negative one), so `w > 0` is a clean "any of this is visible?"
+    /// test. This is how a scissor-clipped strip records what it actually drew: hit-testing the
+    /// clipped rect instead of the laid-out one is what stops an off-screen item staying
+    /// clickable at coordinates it no longer occupies.
+    #[inline]
+    pub fn intersect(&self, o: Rect) -> Rect {
+        let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
+        let (x1, y1) = ((self.x + self.w).min(o.x + o.w), (self.y + self.h).min(o.y + o.h));
+        Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+    }
 }
 
 #[derive(Clone, Copy, Default)]
