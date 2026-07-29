@@ -377,6 +377,9 @@ pub struct Spinner {
     pub dot_r: f32,
 }
 impl Spinner {
+    /// One full revolution, in ms. Public because a caller that accumulates its own phase clock
+    /// can only wrap it losslessly on a whole period (see `home.rs`'s `status_ms`).
+    pub const PERIOD_MS: u32 = 760;
     pub fn new(cx: f32, cy: f32, r: f32) -> Self {
         // dot size scales WITH the ring radius (0.28·r ≈ the HUD spinner's original 3.4 at r=12),
         // so a big spinner reads as a bigger spinner, not the same tiny dots on a wider circle.
@@ -393,8 +396,7 @@ impl Spinner {
 }
 impl View for Spinner {
     fn draw(&self, _e: &Env, p: Painter) {
-        const PERIOD: u32 = 760;
-        let t = (self.phase % PERIOD) as f32 / PERIOD as f32;
+        let t = (self.phase % Self::PERIOD_MS) as f32 / Self::PERIOD_MS as f32;
         for i in 0..self.dots {
             let ang = i as f32 / self.dots as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
             let lead = (t - i as f32 / self.dots as f32).rem_euclid(1.0);
@@ -412,12 +414,17 @@ impl View for Spinner {
 // `player::state()` while the pipeline is Connecting/Buffering/Seeking, and for the Error state,
 // which is what a black screen used to be. `kind` picks the treatment, not the words: the caller
 // supplies the caption so the state machine stays the single source of that string. ----
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StatusKind {
     /// in flight — spinner + secondary copy
     Working,
     /// terminal failure — no spinner, danger-tinted copy
     Failed,
+    /// nothing to show, and that is the server's honest ANSWER rather than a fault — no spinner,
+    /// de-emphasized copy. Distinct from `Failed` on purpose: an empty library is not an error and
+    /// must not wear the danger tint (Home's empty state; the Library grid's "nothing matches" is
+    /// the same read-out, still hand-rolled as a bare Label).
+    Empty,
 }
 pub struct StatusOverlay {
     pub frame: Rect,
@@ -444,6 +451,7 @@ impl View for StatusOverlay {
         let (tint, working) = match self.kind {
             StatusKind::Working => (theme::TEXT_SECONDARY, true),
             StatusKind::Failed => (theme::DANGER, false),
+            StatusKind::Empty => (theme::TEXT_TERTIARY, false),
         };
         // Both branches centre the caption the same way — by Label's cap band (VAlign::Middle,
         // the default). Working straddles the frame centre with the spinner above it; Failed owns
@@ -505,7 +513,8 @@ impl View for TransportButton {
 }
 
 // ---- TabPill: a rounded pill with a centered label. Focused = light pill + dark ink; idle =
-// faint fill + dim ink. `pill_w(label, sz)` sizes it to fit. ----
+// faint fill + dim ink. `TabPill::width(chars, sz)` sizes it to fit — NOT `Button::pill_w`, which
+// budgets a Button's icon box and air. ----
 /// How a `TabPill` reads. The player Info/Chapters tabs are always-filled buttons; the detail season
 /// tabs are a segmented control with two *independent* states — a **selected** segment (the active
 /// one, whose content shows) and a **highlighted** one (where the remote focus is).
@@ -903,23 +912,12 @@ pub struct Button {
     pub progress: Option<f32>,
 }
 /// [`Button`]'s icon box, as a multiple of its type size, and the icon→label gap. Named because
-/// `pill_w` measures the same run the renderer lays out — a literal in each would let the two drift.
+/// [`Button::pill_w`] measures the same run `Button::draw` lays out — a literal in each would let
+/// the two drift.
 const BTN_ICON_RATIO: f32 = 1.15;
 const BTN_ICON_GAP: f32 = 12.0;
-/// Total horizontal air a hero action pill carries around its icon+label run.
+/// Total horizontal air a pill carries around its icon+label run.
 const BTN_PILL_AIR: f32 = 68.0;
-
-/// The width a hero action pill wants for `label` at type size `sz`: the [`Button`] content run
-/// (icon box + gap + label) plus one fixed air budget. ONE formula, because both hero rows relabel
-/// their pill from the item's state — home's "Play"/"Continue", detail's "Play"/"Resume" — and a
-/// fixed frame that fits the short word crams the long one against its own capsule ends.
-///
-/// Assumes the pill CARRIES an icon (both hero pills do); an icon-less button measured through this
-/// gets an icon box of air it will not fill. Size that one from `text::text_width` directly.
-pub(crate) fn pill_w(label: *const c_char, sz: c_int) -> f32 {
-    let isz = sz as f32 * BTN_ICON_RATIO;
-    isz + BTN_ICON_GAP + crate::text::text_width(label, sz, 1) + BTN_PILL_AIR
-}
 
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
@@ -937,6 +935,24 @@ impl Button {
         self.style = s;
         self
     }
+
+    /// The width this button wants for `label` at type size `sz`: its own content run (icon box +
+    /// gap + label, per [`BTN_ICON_RATIO`]/[`BTN_ICON_GAP`]) plus one air budget. The LAYOUT
+    /// companion to `draw`, which only ever centres that same run in the frame it is handed — so
+    /// the two read the same constants and cannot drift.
+    ///
+    /// ONE formula for every pill in the product, because they all relabel from state and a fixed
+    /// frame that fits the short word crams the long one against its own capsule ends: both hero
+    /// rows ("Play"/"Continue", "Play"/"Resume") pass `icon: true`, and Home's status-screen Retry
+    /// control passes `false`. That flag is the whole reason this takes one — an icon-less pill
+    /// measured with an icon box gets a slug of air it never fills, which is why the earlier
+    /// icon-only version had to send such callers off to `text::text_width` on their own. A second
+    /// sizing path is exactly the drift this file exists to prevent.
+    pub fn pill_w(label: *const c_char, sz: c_int, icon: bool) -> f32 {
+        let (isz, gap) = if icon { (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
+        isz + gap + crate::text::text_width(label, sz, 1) + BTN_PILL_AIR
+    }
+
     /// Turn the pill into its own countdown: `frac` of its width is filled with
     /// [`theme::CONTROL_SPENT_FILL`], the rest with the button's normal face, so time reads as a
     /// sweep across the control itself instead of a separate rail beside it.

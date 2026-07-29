@@ -97,7 +97,7 @@ fn view() -> &'static mut DetailView {
 // The set is DYNAMIC, so nothing may hard-code the watched index: see `hero_btns`/`btn_watched`.
 const BTN_PLAY: c_int = 0;
 const BTN_RESTART: c_int = 1;
-// Play pill MINIMUM width. The drawn width is `widgets::pill_w`, measured from the label, and for
+// Play pill MINIMUM width. The drawn width is `Button::pill_w`, measured from the label, and for
 // "Play" that lands ~2px above this — so the detail Play pill is now pixel-identical to home's
 // rather than approximating it with a constant. The floor only guards a pathologically short label.
 const PW: f32 = 168.0;
@@ -1111,10 +1111,10 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // The pill says what the press will DO. Home's hero says "Continue" — that row belongs to the
     // Continue Watching shelf, and the word is the shelf's. On an item page the control has a
     // sibling: "Resume" and the ↺ disc beside it are a PAIR, read together, the way every reference
-    // client words it. The pill's width follows its label (widgets::pill_w, the one hero-pill
+    // client words it. The pill's width follows its label (`Button::pill_w`, the ONE pill width
     // formula) so the longer word gets its own air instead of being crammed into "Play"'s frame.
     let plabel = if restart { c"Resume" } else { c"Play" };
-    let pw = crate::ui::widgets::pill_w(plabel.as_ptr(), theme::size::BODY).max(PW);
+    let pw = Button::pill_w(plabel.as_ptr(), theme::size::BODY, true).max(PW);
     let mut cx = tx + pw + CGAP;
 
     Button::new(plabel.as_ptr(), theme::size::BODY, Rect::new(tx, y, pw, CD))
