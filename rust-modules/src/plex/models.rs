@@ -354,6 +354,19 @@ pub struct Tag {
     pub count: i64,
 }
 
+impl Tag {
+    /// Is this tag the person addressed by `id` (a local `personId`) or `guid` (a `tagKey`)?
+    ///
+    /// **Both, because the two id spaces are not interchangeable and a caller rarely has only one.**
+    /// A credit row may carry no numeric [`Tag::id`], in which case whatever addressed the person is
+    /// their `tagKey` — so an id-only comparison silently never matches (a 24-char hex guid never
+    /// equals a decimal id string). `id == 0` means "the server sent none" and must never match a
+    /// caller's literal `"0"`; an empty `guid` must never match a tag whose `tagKey` is also empty.
+    pub fn is_person(&self, id: &str, guid: &str) -> bool {
+        (self.id != 0 && self.id.to_string() == id) || (!guid.is_empty() && self.tag_key == guid)
+    }
+}
+
 /// Plex `Chapter[]` on a leaf item (movies/episodes with chapter data). Sibling of `Media[]`,
 /// present only with `?includeChapters=1`. `tag` is the title (often empty → synthesize
 /// "Chapter N"); `thumb` is a server image path for the poster pipeline (empty if the server

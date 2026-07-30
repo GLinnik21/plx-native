@@ -7,8 +7,8 @@
 //! reads all frame, so the main thread stays its only writer (the same soundness rule
 //! `metadata.rs`'s `CURRENT` carries).
 //!
-//! **Two requests per page, to two different services**, both spawned by [`pump`] and landing
-//! through their own mailbox:
+//! **Three requests per page, to two different services**, each spawned by [`pump`] and landing
+//! through its own mailbox:
 //!
 //! * **the shelves**, from the LOCAL server — `GET /library/people/{personId}/media` returns
 //!   everything the person appears in across EVERY library section at once, no per-section
@@ -18,6 +18,13 @@
 //! * **the biography**, from plex.tv — `GET discover.provider.plex.tv/library/people/{tagKey}`
 //!   over the TLS+DNS `net.rs` path (see `plex/discover.rs` for the wire facts). This is the fetch
 //!   that fills a header the local server cannot: the roles line, the born/died dates and the bio.
+//! * **the character names**, from the LOCAL server — one batched
+//!   `GET /library/metadata/{every shelf key}` ([`crate::plex::Client::metadata_many`]). It exists
+//!   because the shelf listing above does NOT carry them: its rows have a `Role[]` whose entries
+//!   hold only `tag`, so "which part did they play in this one" is a second read. It is therefore
+//!   the ONE fetch here that DEPENDS on another: it can only be addressed once the shelves have
+//!   landed, and [`maybe_spawn`] expresses that by keying it on the shelf keys, which are empty
+//!   until then.
 //!
 //! **The header still MOUNTS on what it was handed.** `Role[]` already carries the name and the
 //! headshot (`plex::Tag`), so the page draws instantly and the plex.tv fields fade in under the
@@ -48,6 +55,28 @@ const SHELF_MAX: usize = crate::ui::card_row::MAX_ROW_ITEMS;
 /// ARE the ones worth naming.
 const MAX_ROLES: usize = 3;
 
+/// One shelf of a person's page. The three fields move together and must never be updated apart:
+/// the captions describe THESE items by index, and the total is the number to print rather than
+/// `items.len()`.
+#[derive(Default)]
+pub(crate) struct Shelf {
+    /// the tiles, capped at [`SHELF_MAX`]
+    pub(crate) items: Vec<PmsMovie>,
+    /// How many items of this kind the `/media` response REALLY held. Distinct from `items.len()`,
+    /// which is capped at [`SHELF_MAX`] (a `CardRow` spring-array limit): a prolific actor has 60
+    /// movies in the library, and a heading that read "24" would be the cap masquerading as a fact
+    /// about the person.
+    pub(crate) total: usize,
+    /// The character each tile is this person's credit for (`"Wallace (voice)"`), PARALLEL to
+    /// `items` — index `i` captions tile `i`, `""` where the server named no part. A parallel vector
+    /// rather than a field on `PmsMovie`, because a character name is a fact about a *person's
+    /// credit in* an item, not about the item: the same movie on a home shelf has no role.
+    pub(crate) roles: Vec<String>,
+}
+
+/// The shelves a person's page has, in flow order. `ui/person.rs` indexes everything by this.
+pub(crate) const NSHELF: usize = 2;
+
 /// One person's page: the header handed in by the cast row, the plex.tv biography fields, and the
 /// two shelves fetched from `/library/people/{key}/media`.
 pub(crate) struct Person {
@@ -71,8 +100,9 @@ pub(crate) struct Person {
     pub(crate) born: String,
     pub(crate) died: String,
     pub(crate) birthplace: String,
-    pub(crate) movies: Vec<PmsMovie>,
-    pub(crate) shows: Vec<PmsMovie>,
+    /// The two shelves, indexed by KIND (0 = Movies, 1 = Shows) — the same index the screen's focus
+    /// model, headings and hit-test use, so "which shelf" is spelled one way everywhere.
+    pub(crate) shelves: [Shelf; NSHELF],
     /// the `/media` fetch has landed successfully at least once. The `browse.rs` `total < 0`
     /// sentinel in bool form: it is what separates "still loading" from "this person genuinely
     /// has nothing here", and what stops [`maybe_spawn`] re-fetching forever.
@@ -82,16 +112,38 @@ pub(crate) struct Person {
     /// never renders a "loading" state for the header, because a header that is complete without a
     /// biography must not flicker a spinner into a space it will never fill.
     pub(crate) profiled: bool,
+    /// the batched character-name read has ANSWERED for the CURRENT shelves. Cleared by every media
+    /// landing (the keys it was addressed to are gone), which is what re-asks for the new list.
+    pub(crate) roled: bool,
 }
 
 impl Person {
-    /// The shelf for `kind` (0 = Movies, 1 = Shows) — the ONE place the shelf index maps to a
-    /// list, so the focus model, the draw and the hit-test cannot disagree.
+    /// The tiles of shelf `kind`.
     pub(crate) fn shelf(&self, kind: usize) -> &[PmsMovie] {
-        match kind {
-            0 => &self.movies,
-            _ => &self.shows,
-        }
+        &self.shelves[kind].items
+    }
+    /// The character tile `i` of shelf `kind` credits this person as — `""` until the batched read
+    /// lands, and `""` forever for a credit the server names no part for (every CREW credit, since
+    /// a director appears in the item's `Director[]`, not its `Role[]`). Bounds-checked rather than
+    /// indexed: the roles vector is filled a frame or more after the shelf it captions.
+    pub(crate) fn role(&self, kind: usize, i: usize) -> &str {
+        self.shelves[kind].roles.get(i).map(String::as_str).unwrap_or("")
+    }
+    /// How many items of kind `kind` the server really had — what a heading prints (see
+    /// [`Shelf::total`]).
+    pub(crate) fn total(&self, kind: usize) -> usize {
+        self.shelves[kind].total
+    }
+    /// Every shelf key, in flow order — and the roles fetch's cache key: empty until the shelves
+    /// land (so nothing is asked too early) and it CHANGES with them (so a re-landing re-asks). At
+    /// most `NSHELF * SHELF_MAX` keys.
+    fn shelf_keys(&self) -> Vec<&str> {
+        self.shelves
+            .iter()
+            .flat_map(|s| s.items.iter())
+            .map(|m| m.rk.as_str())
+            .filter(|rk| !rk.is_empty())
+            .collect()
     }
 }
 
@@ -110,12 +162,14 @@ pub(crate) fn current() -> Option<&'static Person> {
 /// one you are looking at now.
 static GEN: AtomicU32 = AtomicU32::new(0);
 
-/// The page's two fetches, in ONE index space — the single-flight flags, the retry countdowns and
-/// the mailboxes are all arrays keyed by these, so adding a third is a constant plus one arm in
-/// [`maybe_spawn`]/[`apply`], and [`supersede`] picks it up with no edit at all.
+/// The page's three fetches, in ONE index space — the single-flight flags, the retry countdowns and
+/// the mailboxes are all arrays keyed by these, so adding one is a constant plus one arm in
+/// [`maybe_spawn`]/[`apply`], and [`supersede`] picks it up with no edit at all (the roles fetch
+/// was exactly that).
 const F_MEDIA: usize = 0;
 const F_PROFILE: usize = 1;
-const NFETCH: usize = 2;
+const F_ROLES: usize = 2;
+const NFETCH: usize = 3;
 
 /// The claim that fetch `i` is out. Cleared ONLY by a mailbox take, so anything that drops the
 /// mailbox ([`supersede`]) must clear it too — otherwise the fetch stays latched and the page
@@ -127,7 +181,8 @@ const NFETCH: usize = 2;
 /// before the generation check (so a stale landing can free a NEWER fetch's claim, costing one
 /// duplicate request). Neither can wedge or corrupt — [`land`] is monotone on the generation and
 /// [`pump`] discards anything stale — and `browse.rs` has the identical shape.
-static IN_FLIGHT: [AtomicBool; NFETCH] = [AtomicBool::new(false), AtomicBool::new(false)];
+static IN_FLIGHT: [AtomicBool; NFETCH] =
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false)];
 /// Frames left before fetch `i` may spawn again after a FAILED attempt (main-thread; [`pump`]
 /// decrements). Stops a fast-failing network from spawning a worker every frame. PER-FETCH on
 /// purpose: a plex.tv biography that cannot be reached (the TV is on a LAN with no internet — the
@@ -144,8 +199,18 @@ const RETRY_FRAMES: u32 = 120;
 /// its `total < 0` sentinel for, and the profile has the same trap in a subtler form (plex.tv
 /// answers 200 with an empty container for a person it has never heard of, which is an ANSWER).
 enum Landing {
-    Media(Option<(Vec<PmsMovie>, Vec<PmsMovie>)>),
+    Media(Option<[Shelf; NSHELF]>),
     Profile(Option<crate::plex::discover::PersonProfile>),
+    Roles(Option<RolesLanding>),
+}
+
+/// A finished character-name batch. `keys` is the shelf-key list it was ADDRESSED to, which rides
+/// along because [`apply`] must refuse a landing for a shelf list that has since been replaced
+/// (see there). `pairs` is already filtered to THIS person's credit per item — the worker walks the
+/// batched response so ~30 KB of tag arrays never crosses the mailbox.
+pub(crate) struct RolesLanding {
+    keys: Vec<String>,
+    pairs: Vec<(String, String)>,
 }
 
 struct Mail {
@@ -153,7 +218,7 @@ struct Mail {
     what: Landing,
 }
 /// One mailbox per fetch, same index space as [`IN_FLIGHT`].
-static SLOT: [Mutex<Option<Mail>>; NFETCH] = [Mutex::new(None), Mutex::new(None)];
+static SLOT: [Mutex<Option<Mail>>; NFETCH] = [Mutex::new(None), Mutex::new(None), Mutex::new(None)];
 
 /// Post a finished fetch to its mailbox. MONOTONE: an older fetch landing late must never clobber
 /// a newer result the pump has not consumed yet. Named (not inlined in the worker closure) for the
@@ -197,10 +262,10 @@ pub(crate) fn open(key: &str, guid: &str, name: &str, thumb: &str) {
             born: String::new(),
             died: String::new(),
             birthplace: String::new(),
-            movies: Vec::new(),
-            shows: Vec::new(),
+            shelves: Default::default(),
             landed: false,
             profiled: false,
+            roled: false,
         });
     }
 }
@@ -260,18 +325,50 @@ fn apply(i: usize, what: Landing) -> bool {
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return false };
     match what {
         // FAILED: leave the store exactly as it was and back off before retrying
-        Landing::Media(None) | Landing::Profile(None) => {
+        Landing::Media(None) | Landing::Profile(None) | Landing::Roles(None) => {
             unsafe { RETRY_CD[i] = RETRY_FRAMES };
             false
         }
-        Landing::Media(Some((movies, shows))) => {
+        Landing::Media(Some(shelves)) => {
             crate::log(&format!(
-                "person: key={} '{}' movies={} shows={}",
-                p.key, p.name, movies.len(), shows.len()
+                "person: key={} '{}' movies={}/{} shows={}/{}",
+                p.key, p.name,
+                shelves[0].items.len(), shelves[0].total,
+                shelves[1].items.len(), shelves[1].total
             ));
-            p.movies = movies;
-            p.shows = shows;
+            // Assigning the whole array is what carries the invariant: the captions described the OLD
+            // items, so they go WITH them (a `Shelf` lands with `roles` empty) and `roled` re-asks.
+            // As three loose fields this was three things to remember.
+            p.shelves = shelves;
             p.landed = true;
+            p.roled = false;
+            true
+        }
+        Landing::Roles(Some(RolesLanding { keys, pairs })) => {
+            // A landing addressed to a shelf list that has since been REPLACED must not settle the
+            // current one: the IN_FLIGHT doc allows a brief duplicate same-generation media worker,
+            // so a second media landing can swap the shelves while a roles batch for the first list
+            // is in flight. Refusing it (without arming the failure backoff — nothing failed) leaves
+            // `roled` false, and `maybe_spawn` simply re-asks with the keys that are now true.
+            if keys != p.shelf_keys() {
+                return false;
+            }
+            // match by ratingKey, never by index: the pairs arrive in the batched response's order,
+            // which the server does keep, but nothing about THIS store should depend on it
+            for sh in p.shelves.iter_mut() {
+                sh.roles = sh
+                    .items
+                    .iter()
+                    .map(|m| {
+                        pairs
+                            .iter()
+                            .find(|(rk, _)| *rk == m.rk)
+                            .map(|(_, role)| role.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+            }
+            p.roled = true;
             true
         }
         Landing::Profile(Some(prof)) => {
@@ -323,6 +420,29 @@ pub(crate) fn roles_line(prof: &crate::plex::discover::PersonProfile) -> String 
         .join(", ")
 }
 
+/// What fetch `i` should be addressed to right now, or `None` when it wants nothing — the ONE place
+/// each fetch's precondition and its key live together, so a fetch cannot be gated on one thing and
+/// keyed off another.
+///
+/// `None` covers both "already answered" and **"not actionable"**: a person with no `tagKey` never
+/// asks plex.tv anything, which is not a failure and must not spin a worker every frame. The roles
+/// fetch keys on the SHELF list — empty until the media landing — which is what sequences it after
+/// `F_MEDIA` with no explicit ordering machinery, and re-asks when the shelves change.
+///
+/// Called every frame for the page's whole life, so it allocates only when it will actually spawn.
+fn address(i: usize, p: &Person) -> Option<Vec<String>> {
+    let one = |s: &String| (!s.is_empty()).then(|| vec![s.clone()]);
+    match i {
+        F_MEDIA if !p.landed => one(&p.key),
+        F_PROFILE if !p.profiled => one(&p.guid),
+        F_ROLES if p.landed && !p.roled => {
+            let keys = p.shelf_keys();
+            (!keys.is_empty()).then(|| keys.into_iter().map(str::to_string).collect())
+        }
+        _ => None,
+    }
+}
+
 /// One fetch of kind `i` at a time, and only while the open person still wants it. Re-entered every
 /// frame by [`pump`], which is what makes the failure path self-healing: a refused `spawn_small`
 /// (the device's thread ceiling) or a transient network error simply retries after the backoff
@@ -332,32 +452,34 @@ fn maybe_spawn(i: usize) {
         return;
     }
     let Some(p) = current() else { return };
-    // What each fetch needs to exist at all, and what says it is already done. A person with no
-    // `tagKey` simply never asks plex.tv anything — that is the "not actionable" case, not a
-    // failure, so it must not spin a worker every frame either.
-    let (want, key) = match i {
-        F_MEDIA => (!p.landed && !p.key.is_empty(), p.key.clone()),
-        F_PROFILE => (!p.profiled && !p.guid.is_empty(), p.guid.clone()),
-        _ => return, // `pump` only ever passes 0..NFETCH
-    };
-    if !want {
-        return;
-    }
+    let Some(key) = address(i, p) else { return };
+    // the person's two ids ride along for the roles worker, which filters the batched response down
+    // to their own credit per row — either id can be the one the response's tags actually carry
+    let (id, guid) = (p.key.clone(), p.guid.clone());
     let gen = GEN.load(Ordering::SeqCst);
     IN_FLIGHT[i].store(true, Ordering::SeqCst);
     let spawned = crate::task::spawn_small("person", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
-        // (None), not as an empty filmography / an empty biography
-        let what = if i == F_MEDIA {
-            Landing::Media(
+        // (None), not as an empty filmography / an empty biography / a page with no captions
+        let what = match i {
+            F_MEDIA => Landing::Media(
                 catch_unwind(|| {
-                    let mc = crate::plex::client_opt()?.person_media(&key)?;
+                    let mc = crate::plex::client_opt()?.person_media(&key[0])?;
                     Some(split_by_type(&mc))
                 })
                 .unwrap_or(None),
-            )
-        } else {
-            Landing::Profile(catch_unwind(|| fetch_profile(&key)).unwrap_or(None))
+            ),
+            F_PROFILE => Landing::Profile(catch_unwind(|| fetch_profile(&key[0])).unwrap_or(None)),
+            F_ROLES => Landing::Roles(
+                catch_unwind(|| {
+                    let keys: Vec<&str> = key.iter().map(String::as_str).collect();
+                    let mc = crate::plex::client_opt()?.metadata_many(&keys)?;
+                    let pairs = roles_from(&mc, &id, &guid);
+                    Some(RolesLanding { keys: key.clone(), pairs })
+                })
+                .unwrap_or(None),
+            ),
+            _ => return, // `pump` only ever passes 0..NFETCH
         };
         land(i, gen, what);
     });
@@ -393,27 +515,52 @@ fn fetch_profile(_guid: &str) -> Option<crate::plex::discover::PersonProfile> {
     None
 }
 
+/// `(ratingKey, character)` for every row of a batched `/library/metadata/{csv}` response, keeping
+/// only THIS person's credit in each — the full record's `Role[]` names every cast member, and the
+/// page wants one line, "what did *this* person play in it".
+///
+/// Which tag IS this person is [`crate::plex::Tag::is_person`]'s job — both id spaces, because
+/// [`Person::key`] is the `tagKey` guid whenever the credit row carried no number. Rows with **no
+/// part for them** (every CREW credit — a director appears in `Director[]`, not `Role[]`) are simply
+/// absent from the result rather than carried as empty pairs, and `apply` reads a missing key as
+/// `""`. Naming their department instead would need the crew arrays this batch excludes, for a line
+/// the mockup does not ask for.
+pub(crate) fn roles_from(
+    mc: &crate::plex::MediaContainer,
+    id: &str,
+    guid: &str,
+) -> Vec<(String, String)> {
+    mc.metadata
+        .iter()
+        .filter_map(|it| {
+            let r = it.role.iter().find(|r| r.is_person(id, guid))?;
+            (!r.role.is_empty()).then(|| (it.rating_key.clone(), r.role.clone()))
+        })
+        .collect()
+}
+
 /// Split a `/library/people/{id}/media` container into the Movies and Shows shelves **by each
-/// row's own `type`**.
+/// row's own `type`**, counting the REAL totals past the [`SHELF_MAX`] tile cap.
 ///
 /// The container's `viewGroup` cannot be used for this and is the whole reason this function is
 /// named and tested: verified live 2026-07-29, person 6059's response carries `viewGroup:"movie"`
 /// over five movies AND one show. Anything that is neither a `movie` nor a `show` is dropped —
 /// the page has exactly two shelves and they are labelled, so silently filing an episode under
 /// "Shows" would put a landscape still in a portrait poster slot.
-pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer) -> (Vec<PmsMovie>, Vec<PmsMovie>) {
-    let (mut movies, mut shows) = (Vec::new(), Vec::new());
+pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer) -> [Shelf; NSHELF] {
+    let mut out: [Shelf; NSHELF] = Default::default();
     for it in &mc.metadata {
-        let dst = match it.kind.as_str() {
-            "movie" => &mut movies,
-            "show" => &mut shows,
+        let sh = match it.kind.as_str() {
+            "movie" => &mut out[0],
+            "show" => &mut out[1],
             _ => continue,
         };
-        if dst.len() < SHELF_MAX {
-            dst.push(parse_item(it));
+        sh.total += 1;
+        if sh.items.len() < SHELF_MAX {
+            sh.items.push(parse_item(it));
         }
     }
-    (movies, shows)
+    out
 }
 
 /// TEST ONLY: publish shelves onto the open person exactly as a successful landing would, so the
@@ -421,9 +568,9 @@ pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer) -> (Vec<PmsMovie>,
 #[cfg(test)]
 pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
     if let Some(p) = unsafe { (*addr_of_mut!(CURRENT)).as_mut() } {
-        p.movies = movies;
-        p.shows = shows;
+        p.shelves = [movies, shows].map(|items| Shelf { total: items.len(), items, roles: Vec::new() });
         p.landed = true;
+        p.roled = false;
     }
 }
 
@@ -432,6 +579,15 @@ pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
 mod tests {
     use super::*;
     use crate::plex::{MediaContainer, Metadata};
+
+
+    /// A [`Landing::Media`] payload the way a worker builds one — totals = lens, i.e. an uncapped
+    /// response.
+    fn media(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) -> Landing {
+        Landing::Media(Some(
+            [movies, shows].map(|items| Shelf { total: items.len(), items, roles: Vec::new() }),
+        ))
+    }
 
     fn row(kind: &str, rk: &str, title: &str) -> Metadata {
         Metadata {
@@ -453,9 +609,10 @@ mod tests {
             row("show", "1975", "Cracking Contraptions"),
             row("movie", "2", "Frozen II"),
         ];
-        let (movies, shows) = split_by_type(&mc);
-        assert_eq!(movies.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1", "2"]);
-        assert_eq!(shows.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1975"]);
+        let s = split_by_type(&mc);
+        assert_eq!(s[0].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1", "2"]);
+        assert_eq!(s[1].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1975"]);
+        assert_eq!((s[0].total, s[1].total), (2, 1));
     }
 
     /// Neither shelf may exceed a `CardRow`'s spring count: past it `scale(i)` clamps to the last
@@ -469,9 +626,10 @@ mod tests {
         }
         mc.metadata.push(row("episode", "e1", "an episode"));
         mc.metadata.push(row("season", "s1", "a season"));
-        let (movies, shows) = split_by_type(&mc);
-        assert_eq!(movies.len(), SHELF_MAX);
-        assert!(shows.is_empty(), "an episode/season is not a Show shelf tile");
+        let s = split_by_type(&mc);
+        assert_eq!(s[0].items.len(), SHELF_MAX);
+        assert_eq!(s[0].total, SHELF_MAX + 5, "the count is the RESPONSE's total, not the tile cap");
+        assert!(s[1].items.is_empty(), "an episode/season is not a Show shelf tile");
     }
 
     /// Park BOTH fetches, so a take's RELEASE of a single-flight flag is observable rather than
@@ -504,12 +662,12 @@ mod tests {
 
         IN_FLIGHT[F_MEDIA].store(true, Ordering::SeqCst);
         hold_off();
-        land(F_MEDIA, stale, Landing::Media(Some((vec![PmsMovie::default()], Vec::new()))));
+        land(F_MEDIA, stale, media(vec![PmsMovie::default()], Vec::new()));
         assert!(!pump(), "a superseded landing must not publish");
 
         let p = current().expect("the new person stays open");
         assert_eq!(p.key, "465");
-        assert!(p.movies.is_empty(), "the previous actor's filmography leaked in");
+        assert!(p.shelf(0).is_empty(), "the previous actor's filmography leaked in");
         assert!(!p.landed, "a discarded landing must not settle the spinner");
         assert!(!IN_FLIGHT[F_MEDIA].load(Ordering::SeqCst), "the take must release the single-flight even for a landing it drops");
         close();
@@ -523,15 +681,15 @@ mod tests {
         open("161", "5d776", "Idina Menzel", "");
         let gen = GEN.load(Ordering::SeqCst);
         // seed a populated, landed page the honest way (through the pump)
-        land(F_MEDIA, gen, Landing::Media(Some((vec![PmsMovie::default()], Vec::new()))));
+        land(F_MEDIA, gen, media(vec![PmsMovie::default()], Vec::new()));
         hold_off();
         assert!(pump());
-        assert_eq!(current().unwrap().movies.len(), 1);
+        assert_eq!(current().unwrap().shelf(0).len(), 1);
 
         land(F_MEDIA, gen, Landing::Media(None)); // the retry fails
         hold_off();
         assert!(!pump(), "a failure publishes nothing");
-        assert_eq!(current().unwrap().movies.len(), 1, "the failure wiped a populated shelf");
+        assert_eq!(current().unwrap().shelf(0).len(), 1, "the failure wiped a populated shelf");
         assert_eq!(unsafe { RETRY_CD[F_MEDIA] }, RETRY_FRAMES, "a failure must back off before retrying");
         close();
     }
@@ -564,7 +722,7 @@ mod tests {
         let _serial = crate::testlock::serial();
         open("6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
         let gen = GEN.load(Ordering::SeqCst);
-        land(F_MEDIA, gen, Landing::Media(Some((vec![PmsMovie::default()], Vec::new()))));
+        land(F_MEDIA, gen, media(vec![PmsMovie::default()], Vec::new()));
         hold_off();
         assert!(pump());
 
@@ -576,7 +734,7 @@ mod tests {
         assert_eq!(p.born, "1921-02-01");
         assert_eq!(p.died, "2017-06-02", "a deceased person's Died line has to survive the landing");
         assert!(p.profiled);
-        assert_eq!(p.movies.len(), 1, "the biography landing wiped the shelves");
+        assert_eq!(p.shelf(0).len(), 1, "the biography landing wiped the shelves");
         close();
     }
 
@@ -602,6 +760,95 @@ mod tests {
         hold_off();
         assert!(!pump());
         assert_eq!(unsafe { RETRY_CD[F_PROFILE] }, RETRY_FRAMES, "a failure must back off before retrying");
+        close();
+    }
+
+    /// `roles_from` keeps exactly THIS person's credit per row — matched by the tag's numeric id
+    /// OR its `tagKey` guid, because [`Person::key`] is the guid whenever the credit row carried no
+    /// number, and an id-only match then blanked every caption while still paying for the batch. A
+    /// row where the person is crew only (no `Role[]` entry of theirs) yields `""`, never a
+    /// neighbour's character.
+    #[test]
+    fn roles_from_matches_by_id_or_tag_key_and_leaves_crew_rows_blank() {
+        let tag = |name: &str, role: &str, id: i64, guid: &str| crate::plex::Tag {
+            tag: name.into(),
+            role: role.into(),
+            id,
+            tag_key: guid.into(),
+            ..Default::default()
+        };
+        let mut mc = MediaContainer::default();
+        let mut with_cast = row("movie", "1971", "A Close Shave");
+        with_cast.role = vec![
+            tag("Peter Sallis", "Wallace (voice)", 6059, "5d7768268718ba001e311be6"),
+            tag("Anne Reid", "Wendolene (voice)", 7001, "5d776828a091de001f2e63e6"),
+        ];
+        let mut crew_only = row("movie", "2005", "The Curse of the Were-Rabbit");
+        crew_only.role = vec![tag("Helena Bonham Carter", "Lady Tottington", 7002, "")];
+        mc.metadata = vec![with_cast, crew_only];
+
+        // ONLY the row this person has a part in — the crew-only row is absent rather than carried as
+        // an empty pair, and `apply` reads a missing key as "" anyway
+        let want = vec![("1971".to_string(), "Wallace (voice)".to_string())];
+        assert_eq!(roles_from(&mc, "6059", "5d7768268718ba001e311be6"), want);
+        // a person OPENED BY GUID (no numeric id on the credit row) must match through the tagKey —
+        // this is the case an id-only match silently reduced to a wasted fetch and blank captions
+        assert_eq!(roles_from(&mc, "5d7768268718ba001e311be6", "5d7768268718ba001e311be6"), want);
+        // an id of 0 means "the server sent none" — it must never match a page opened for key "0",
+        // and an EMPTY guid must never match a tag whose tagKey is also empty
+        assert!(roles_from(&mc, "0", "").is_empty());
+    }
+
+    /// A roles landing captions the shelves BY KEY (order-independent), and the NEXT media landing
+    /// clears both vectors with the shelves they described — a caption must never outlive the list
+    /// it was addressed to, and the cleared `roled` is what re-asks for the new one.
+    #[test]
+    fn a_roles_landing_captions_by_key_and_a_media_landing_resets_it() {
+        let _serial = crate::testlock::serial();
+        open("6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
+        let gen = GEN.load(Ordering::SeqCst);
+        let movie = |rk: &str| PmsMovie { rk: rk.to_string(), ..Default::default() };
+        land(F_MEDIA, gen, media(vec![movie("1971"), movie("2005")], vec![movie("1975")]));
+        hold_off();
+        assert!(pump());
+        assert!(!current().unwrap().roled, "captions cannot predate the read that fetches them");
+
+        // a landing addressed to keys the store no longer holds must be REFUSED — and without the
+        // failure backoff: it is stale, not broken, and the re-ask must be free to go at once. The
+        // sentinel countdown still parks the spawn (see `hold_off`), but is small enough that a
+        // wrongly-armed RETRY_FRAMES would overwrite it visibly.
+        let stale = RolesLanding { keys: vec!["9999".to_string()], pairs: vec![("9999".to_string(), "Nobody".to_string())] };
+        land(F_ROLES, gen, Landing::Roles(Some(stale)));
+        hold_off();
+        unsafe { RETRY_CD[F_ROLES] = 5 };
+        assert!(!pump(), "a mis-addressed caption landing published");
+        assert!(!current().unwrap().roled, "a stale landing settled the CURRENT list's captions");
+        assert_eq!(unsafe { RETRY_CD[F_ROLES] }, 4, "staleness is not a failure — no backoff armed (the sentinel just ticked)");
+
+        // pairs arrive REVERSED relative to the shelves — the match is by rk, so it must not matter
+        let keys = current().unwrap().shelf_keys().iter().map(|k| k.to_string()).collect();
+        let pairs = vec![
+            ("1975".to_string(), "Wallace".to_string()),
+            ("2005".to_string(), "Wallace / Hutch (voice)".to_string()),
+            ("1971".to_string(), "Wallace (voice)".to_string()),
+        ];
+        land(F_ROLES, gen, Landing::Roles(Some(RolesLanding { keys, pairs })));
+        hold_off();
+        assert!(pump(), "a caption landing is a change the screen must see");
+        let p = current().unwrap();
+        assert_eq!(p.role(0, 0), "Wallace (voice)");
+        assert_eq!(p.role(0, 1), "Wallace / Hutch (voice)");
+        assert_eq!(p.role(1, 0), "Wallace");
+        assert_eq!(p.role(0, 99), "", "past-the-end reads are blank, not a panic");
+        assert!(p.roled);
+
+        // a fresh media landing (same person) replaces the shelves — the captions go WITH them
+        land(F_MEDIA, gen, media(vec![movie("2005")], Vec::new()));
+        hold_off();
+        assert!(pump());
+        let p = current().unwrap();
+        assert_eq!(p.role(0, 0), "", "a caption survived the list it was addressed to");
+        assert!(!p.roled, "the reset is what re-asks for the new list's captions");
         close();
     }
 

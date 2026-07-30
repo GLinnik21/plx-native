@@ -71,9 +71,33 @@ impl Client {
         self.get_json(&path)?.metadata.into_iter().next()
     }
 
-    /// GET /library/metadata/{csv} — batch (spec `ids` is a CSV array); `.metadata[]`.
+    /// GET /library/metadata/{csv} — the FULL records of MANY items in ONE request. The answer
+    /// carries one `.metadata[]` row per key, in request order; the CSV is joined HERE, because
+    /// assembling path syntax is this layer's job (`plex/CLAUDE.md`: every PMS query is built here).
+    ///
+    /// **This is the only way to get what a LISTING response strips.** Verified live 2026-07-30
+    /// against PMS 1.43.3 while building the person page's role captions:
+    /// `/library/people/{id}/media` does return a `Role[]` on every row, but each entry carries
+    /// **nothing except `tag`** — no `id`, and no `role` (the character name). `?includeRole=1`
+    /// changes nothing. The full item carries both, so one batched read of the shelf's keys is the
+    /// cheap way to caption a whole filmography.
+    ///
+    /// The response is **trimmed to the tag arrays**, which is the whole point of batching it: nobody
+    /// wants 48 items' `Media`/`Genre`/`Director`/summary just to read a credit. Measured on four
+    /// movies, the untrimmed response is **32.8 KB** against 12.9 KB trimmed. The trim is a property
+    /// of this operation, not of the caller, so it lives here rather than as query fragments a store
+    /// module passes in. (The server silently KEEPS `Image`, `UltraBlurColors` and `Field` whatever
+    /// you ask, so they are not listed — naming them would just read as if they went.)
+    ///
+    /// Absent from `docs/plex-openapi.json`, which documents only the single-key form.
     pub fn metadata_many(&self, rating_keys: &[&str]) -> Option<MediaContainer> {
-        self.get_json(&format!("/library/metadata/{}", rating_keys.join(",")))
+        const EXCLUDE_ELEMENTS: &str =
+            "Media,Genre,Country,Collection,Director,Writer,Producer,Similar,Chapter,Marker,Guid,Rating,Review,Extras";
+        let path = QueryBuilder::new(format!("/library/metadata/{}", rating_keys.join(",")))
+            .str("excludeElements", EXCLUDE_ELEMENTS)
+            .str("excludeFields", "summary,tagline")
+            .build();
+        self.get_json(&path)
     }
 
     /// GET /library/metadata/{rating_key}/children (D-5 undocumented but real) → `.metadata[]`.
