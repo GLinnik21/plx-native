@@ -880,12 +880,14 @@ pub(crate) fn draw() {
             let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
             let rect = Rect::new(x, y, CARD_W, CARD_H).scaled(s);
             let m = crate::browse::item(focused_i);
-            let title_c = m.and_then(|mm| CString::new(mm.title.as_str()).ok());
-            let title = title_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-            let caption = m.and_then(|mm| (mm.year > 0).then(|| CString::new(mm.year.to_string()).ok()).flatten());
-            let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+            let label = m
+                .map(|mm| match mm.year {
+                    y if y > 0 => card_row::TileLabel::titled(&mm.title, &y.to_string()),
+                    _ => card_row::TileLabel::title(&mm.title),
+                })
+                .unwrap_or_default();
             let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr, false);
+            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
         }
     }
 

@@ -390,6 +390,9 @@ pub struct ScrollColumn {
 /// `Painter` is pre-translated to the child's origin, so the child draws from y=0).
 pub trait Column {
     fn len(&self) -> usize;
+    /// Child `i`'s height. Queried per frame, so it MAY BE ANIMATED — `child_top`, `content_h`, the
+    /// scroll target and every pointer hit-test read it, so a springed height makes the whole flow
+    /// below it follow for free (the person page's condensing header band is the first user).
     fn height(&self, i: usize) -> f32;
     fn gap_before(&self, i: usize) -> f32;
     fn focus_child(&self) -> Option<usize>;

@@ -429,6 +429,15 @@ pub(crate) fn text_cap_band(sz: c_int, bold: c_int) -> (f32, f32) {
     }
 }
 
+/// The layout HEIGHT of one line of `sz`/`bold` text — its cap band, cap-top to baseline. Layout ≠
+/// paint: descenders hang below this and are deliberately not measured (see `ui::label`'s module
+/// docs for the rule). The one place this subtraction lives, because every screen that stacks text
+/// needs it and three of them had written it out by hand.
+pub(crate) fn cap_h(sz: c_int, bold: c_int) -> f32 {
+    let (top, base) = text_cap_band(sz, bold);
+    base - top
+}
+
 /// The draw-`y` (texture top) at which text of `sz`/`bold` centres its **cap band** on `cy`. Centres
 /// on the font's cap-top→baseline band rather than the specific string's ink, so a label with
 /// descenders ("From Beginning") and one without ("Go to Movie") land identically — descenders hang

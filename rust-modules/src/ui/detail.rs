@@ -1820,7 +1820,7 @@ fn draw_related(p: Painter) {
         SCR_W,
         |i| Art::Thumb { key: &d.related[i].thumb, res: (250, 375) },
         |_| None,
-        |i| CString::new(d.related[i].title.clone()).ok(),
+        |i| card_row::TileLabel::title(&d.related[i].title),
         |_, _, _, _| {},
     );
 }
@@ -1864,7 +1864,8 @@ fn draw_cast(p: Painter) {
         // /photo/:/transcode fetch the actor headshots already use.
         |i| Art::Person { key: d.credit(i).map_or("", |c| c.thumb.as_str()), res: (300, 300) },
         |_| None, // resume: a person is not an item with a playhead
-        |_| None, // title: every credit is captioned by `extra`, focused or not
+        // every credit is captioned by `extra`, focused or not — so no TileLabel
+        |_| card_row::TileLabel::default(),
         |pc, i, x, focused| {
             if let Some(c) = d.credit(i) {
                 cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, focused);

@@ -596,12 +596,19 @@ impl View for Grid {
             let m = movie_at(r as c_int, c as c_int);
             let cw = crate::pms::hub_is_continue(r); // Continue Watching: amber ▶ + "show · X min left"
             // keep the CStrings alive through the draw
-            let title_c = m.and_then(|mm| CString::new(mm.title.as_str()).ok());
-            let title = title_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-            let caption = m.and_then(|mm| if cw { cw_caption(mm) } else { focused_caption(mm) });
-            let cap_ptr = caption.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+            let label = m
+                .map(|mm| {
+                    let mut l = if cw {
+                        card_row::TileLabel::played(&mm.title)
+                    } else {
+                        card_row::TileLabel::title(&mm.title)
+                    };
+                    l.caption = if cw { cw_caption(mm) } else { focused_caption(mm) };
+                    l
+                })
+                .unwrap_or_default();
             let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, title, cap_ptr, cw);
+            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
         }
     }
 }

@@ -35,6 +35,12 @@ pub(crate) struct RowStyle {
     /// Circular tiles (cast headshots, who's-watching avatars) vs rounded-rect posters. A circle is
     /// just a tile drawn at `radius = width/2`; the shared springs/scroll/ring are identical.
     pub circular: bool,
+    /// How many lines the focused tile's under-TITLE may wrap to before it elides. `1` is the
+    /// original single elided run every shelf drew; `2` word-wraps instead, which is what a shelf of
+    /// real Plex titles needs — "Wallace & Gromit: The Curse of the Were-Rabbit" under a 250px card
+    /// loses two thirds of itself to a one-line elide. Raising it is safe because
+    /// [`TileLabel::height`] derives the band a screen must reserve from this very field.
+    pub title_lines: usize,
 }
 impl RowStyle {
     /// The home shelf's portrait-poster row: 1.09 focus pop (matches `Home Screen.dc.html`), the big
@@ -50,6 +56,7 @@ impl RowStyle {
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: false,
+        title_lines: 1,
     };
     /// Detail "Cast & Crew": circular headshots, a gentle pop, the tight strip ring. Same motion as
     /// HOME (spring magnification + scroll), so cast animates like the poster shelves.
@@ -63,6 +70,7 @@ impl RowStyle {
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
+        title_lines: 1,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -82,6 +90,7 @@ impl RowStyle {
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
+        title_lines: 1,
     };
     /// ring focus scalar denominator — `(s-1)/ring_denom` maps scale∈[1, focus_scale] to [0, 1].
     #[inline]
@@ -238,10 +247,53 @@ pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle
     }
 }
 
+/// The metadata block under a FOCUSED tile: a centred title, optionally a second caption line
+/// ("S1 • E8", a year, a character name), optionally led by the Continue-Watching play glyph. Only
+/// the focused tile carries it, so a row builds exactly one of these per frame.
+///
+/// It is a type rather than three parameters because the block's height is a fact the SCREEN needs:
+/// every shelf must reserve room for it in its own flow, and `reveal`/`scroll_into_view` only keep
+/// air under the block a screen *declares*. Before this, five call sites hand-authored that number
+/// from constants they could not see ([`RowStyle::title_lines`] even had to warn about it in a doc
+/// comment) — [`TileLabel::height`] is the answer they were restating.
+#[derive(Default)]
+pub(crate) struct TileLabel {
+    pub title: Option<std::ffi::CString>,
+    pub caption: Option<std::ffi::CString>,
+    /// lead the title with the amber play triangle (Continue Watching's tile has no play disc)
+    pub glyph: bool,
+}
+
+impl TileLabel {
+    /// Title only — the plain poster shelf.
+    pub(crate) fn title(t: &str) -> Self {
+        TileLabel { title: std::ffi::CString::new(t).ok(), ..Default::default() }
+    }
+    /// Title + a caption line; an empty caption is simply absent (never a blank row).
+    pub(crate) fn titled(t: &str, caption: &str) -> Self {
+        TileLabel { caption: std::ffi::CString::new(caption).ok().filter(|_| !caption.is_empty()), ..Self::title(t) }
+    }
+    /// Title led by the amber play triangle — Continue Watching's focused primary line.
+    pub(crate) fn played(t: &str) -> Self {
+        TileLabel { glyph: true, ..Self::title(t) }
+    }
+    /// THE height a screen must reserve under the poster row for this block, at `sty`. Derived from
+    /// the same three constants [`draw_focused`] lays it out with, so a screen's declared band and
+    /// the block on screen cannot drift — which is the whole reason raising
+    /// [`RowStyle::title_lines`] is now safe.
+    pub(crate) fn height(sty: &RowStyle, caption: bool) -> f32 {
+        UNDER_DROP
+            + sty.title_lines as f32 * UNDER_LINE_H
+            + if caption { UNDER_LINE_GAP + UNDER_CAPTION_H } else { 0.0 }
+    }
+    /// [`TileLabel::height`] for a block that has whatever THIS one has.
+    fn own_height(&self, sty: &RowStyle) -> f32 {
+        Self::height(sty, self.caption.is_some())
+    }
+}
+
 /// The focused cell body — the caller draws this LAST for its z-order: the art tile, the big glow
-/// ring, an optional resume bar, then the metadata beneath: the centered title plus an optional
-/// caption line ("S1 • E8" / a year — only the FOCUSED item carries metadata). Null `title`/
-/// `caption` skip their line. (The home grid's focused-last cell, verbatim.)
+/// ring, an optional resume bar, then its [`TileLabel`]. (The home grid's focused-last cell.)
 pub(crate) fn draw_focused(
     p: Painter,
     art: Art,
@@ -249,9 +301,7 @@ pub(crate) fn draw_focused(
     s: f32,
     sty: &RowStyle,
     resume: Option<f32>,
-    title: *const c_char,
-    caption: *const c_char,
-    play_glyph: bool,
+    label: &TileLabel,
 ) {
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
@@ -265,19 +315,23 @@ pub(crate) fn draw_focused(
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
     // the label into the next shelf's title.
-    let mut ty = rect.y + rect.h * 0.5 + (rect.h / s) * 0.5 + 30.0;
-    if !title.is_null() {
+    let mut ty = rect.y + rect.h * 0.5 + (rect.h / s) * 0.5 + UNDER_DROP;
+    if let Some(t) = &label.title {
         // Continue-Watching's focused primary line leads with an amber play glyph (the tile has no
-        // play disc); every other shelf keeps the plain centred title.
-        if play_glyph {
-            play_label(p, rect, sty, title, ty);
+        // play disc); every other shelf keeps the plain centred title, wrapped when the style asks.
+        let drawn = if label.glyph {
+            play_label(p, rect, sty, t.as_ptr(), ty);
+            UNDER_LINE_H
+        } else if sty.title_lines > 1 {
+            wrapped_title(p, rect, sty, t.as_ptr(), ty)
         } else {
-            under_label(p, rect, sty, title, ty, theme::size::LABEL, 1, theme::TEXT_PRIMARY);
-        }
-        ty += 34.0;
+            under_label(p, rect, sty, t.as_ptr(), ty, theme::size::LABEL, 1, theme::TEXT_PRIMARY);
+            UNDER_LINE_H
+        };
+        ty += drawn + UNDER_LINE_GAP;
     }
-    if !caption.is_null() {
-        under_label(p, rect, sty, caption, ty, theme::size::CAPTION, 0, theme::TEXT_SECONDARY);
+    if let Some(c) = &label.caption {
+        under_label(p, rect, sty, c.as_ptr(), ty, theme::size::CAPTION, 0, theme::TEXT_SECONDARY);
     }
 }
 
@@ -293,10 +347,10 @@ pub(crate) fn draw_focused(
 /// hand-rolled per-screen copy of this loop keeps getting wrong.
 ///
 /// The caller supplies the per-index content as closures: `art` the tile's [`Art`], `resume` its
-/// amber progress fraction (`None` = not in progress), `title` the FOCUSED tile's under-title
-/// (`None` for a row that captions every tile instead), and `extra` any per-tile caption drawn
-/// for EVERY tile (cast names/roles). `axis_span` widens the cull band where captions should
-/// survive slightly off-screen.
+/// amber progress fraction (`None` = not in progress), `label` the FOCUSED tile's [`TileLabel`]
+/// (`TileLabel::default()` for a row that captions every tile through `extra` instead), and `extra`
+/// any per-tile caption drawn for EVERY tile (cast names/roles). `label` is invoked for the focused
+/// index only. `axis_span` widens the cull band where captions should survive slightly off-screen.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn strip<'a>(
     p: Painter,
@@ -310,7 +364,7 @@ pub(crate) fn strip<'a>(
     axis_span: f32,
     art: impl Fn(usize) -> Art<'a>,
     resume: impl Fn(usize) -> Option<f32>,
-    title: impl Fn(usize) -> Option<std::ffi::CString>,
+    label: impl Fn(usize) -> TileLabel,
     extra: impl Fn(Painter, usize, f32, bool),
 ) {
     let sx = row.scroll_x();
@@ -334,12 +388,65 @@ pub(crate) fn strip<'a>(
         // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
         let s = row.scale(i) * crate::ui::press::scale();
         let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
-        let tc = title(i); // kept alive across the draw call
-        let tp = tc.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
-        draw_focused(pr, art(i), rect, s, sty, resume(i), tp, std::ptr::null(), false);
+        draw_focused(pr, art(i), rect, s, sty, resume(i), &label(i));
         extra(pr, i, x, true);
     }
 }
+
+// The under-tile metadata block's four metrics — the ONLY authority on its geometry, which
+// [`TileLabel::height`] hands back to the screens that must reserve room for it.
+/// poster bottom → the title block's first line.
+const UNDER_DROP: f32 = 30.0;
+/// one title line's pitch (`Person Screen v2.dc.html`'s `line-height: 30px`).
+const UNDER_LINE_H: f32 = 30.0;
+/// title block → caption (the mock's `margin-top: 4px`).
+const UNDER_LINE_GAP: f32 = 4.0;
+/// the caption's own line box. `UNDER_DROP + UNDER_LINE_H + UNDER_LINE_GAP + this` = 92, which is
+/// exactly the band `detail.rs` hand-authored for its one-line-title-plus-role cast tiles — the
+/// coincidence that confirms the decomposition.
+const UNDER_CAPTION_H: f32 = 28.0;
+
+/// The focused tile's title WORD-WRAPPED to `sty.title_lines`, centred under the tile — for rows
+/// whose items have real titles rather than short ones ([`RowStyle::title_lines`]). Returns the
+/// lines actually drawn, so the caller advances the caption by the block's true height instead of
+/// leaving a hole under a one-line title.
+///
+/// Built on the shared [`TextView`](crate::ui::text_view::TextView) (pixel wrap + its own ellipsis
+/// + a wrap cache), NOT a second hand-rolled wrapper. Its frame is the tile-plus-gaps budget
+/// [`under_label`] uses, clamped to the screen so an edge tile's block cannot run off the panel.
+fn wrapped_title(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32) -> f32 {
+    let (sz, bold) = (theme::size::LABEL, 1);
+    let budget = under_budget(sty);
+    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+    let x = (rect.cx() - budget * 0.5).clamp(EDGE_PAD, SCR_W - budget - EDGE_PAD);
+    // `y` is [`under_label`]'s raw glyph-texture top (it hands it straight to `Painter::text`),
+    // while `TextView` positions line 0 by its CAP BAND — so the one-line and wrapped blocks only
+    // start on the same row if the cap offset is added back here.
+    let (cap_top, _) = crate::text::text_cap_band(sz, bold);
+    // the DRAWN height, not a second measure: one wrap, so the caption's offset and the block on
+    // screen cannot disagree about how many lines there were
+    crate::ui::text_view::TextView::new(&s, sz, theme::TEXT_PRIMARY)
+        .bold()
+        .h(crate::ui::label::HAlign::Center)
+        .leading(UNDER_LINE_H)
+        .max_lines(sty.title_lines)
+        .draw(p, Rect::new(x, y + cap_top, budget, 0.0))
+        .max(UNDER_LINE_H)
+}
+
+/// The under-tile text budget: the tile plus one gap either side, from the style's UNSCALED width.
+///
+/// **Unscaled is load-bearing, not tidiness.** `rect` is the focus-popped tile, so a budget taken
+/// from it sweeps ~310→332px across a pop — which re-keys `TextView`'s and `elide`'s width-keyed
+/// caches on *every frame of the animation*, and both clear wholesale at 512 entries, so one walk
+/// of a 24-tile shelf evicts every other screen's wrapped text. It also reflowed the title's line
+/// breaks mid-pop. The block's y anchor is already unscaled two lines up, for the same reason.
+#[inline]
+fn under_budget(sty: &RowStyle) -> f32 {
+    sty.w + 2.0 * sty.gap
+}
+/// Air kept between an edge tile's label block and the panel edge.
+const EDGE_PAD: f32 = 16.0;
 
 /// One centered metadata line under a focused tile: elided to the tile-plus-gaps budget and kept
 /// inside the screen edges — a long episode title under an edge tile used to run off the panel.
@@ -353,12 +460,12 @@ fn under_label(
     bold: std::os::raw::c_int,
     col: [f32; 4],
 ) {
-    let budget = rect.w + 2.0 * sty.gap;
+    let budget = under_budget(sty);
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
     let short = crate::text::elide(&s, budget, sz, bold, false);
     if let Ok(tc) = std::ffi::CString::new(short) {
         let half = crate::text::text_width(tc.as_ptr(), sz, bold) * 0.5;
-        let cx = rect.cx().clamp(half + 16.0, SCR_W - half - 16.0);
+        let cx = rect.cx().clamp(half + EDGE_PAD, SCR_W - half - EDGE_PAD);
         p.text(tc.as_ptr(), cx, y, sz, col, 1, bold);
     }
 }
@@ -371,13 +478,13 @@ fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f3
     let (sz, bold) = (theme::size::LABEL, 1);
     let isz = (sz as f32 * 0.72).round();
     let gap = 10.0f32;
-    let budget = rect.w + 2.0 * sty.gap - (isz + gap);
+    let budget = under_budget(sty) - (isz + gap);
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
     let short = crate::text::elide(&s, budget, sz, bold, false);
     let Ok(tc) = std::ffi::CString::new(short) else { return };
     let tw = crate::text::text_width(tc.as_ptr(), sz, bold);
     let gw = isz + gap + tw;
-    let cx = rect.cx().clamp(gw * 0.5 + 16.0, SCR_W - gw * 0.5 - 16.0);
+    let cx = rect.cx().clamp(gw * 0.5 + EDGE_PAD, SCR_W - gw * 0.5 - EDGE_PAD);
     let gl = cx - gw * 0.5;
     let (ct, cb) = crate::text::text_cap_band(sz, bold);
     let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band

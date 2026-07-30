@@ -45,6 +45,12 @@ pub const TEXT_TERTIARY: [f32; 4] = [0.58, 0.60, 0.64, 1.0];
 /// (light hinting in `text.rs::font_at`, pixel-snapped 1:1 quads via `gfx::snap`), so rung values
 /// are chosen for hierarchy and legibility ONLY — no rung needs to dodge px sizes that hint badly.
 /// After swapping fonts or touching hinting, re-verify with `tools/font-hint-audit.py`.
+///
+/// **A size cannot be animated — CROSSFADE two rungs instead.** Glyphs are cached per (size, bold)
+/// as rasterized textures, so tweening a point size would rasterize a fresh run every frame and
+/// churn that cache. A title that has to change size does it as two `Label` draws whose alphas run
+/// opposite on one 0..1 progress: `detail.rs`'s hero → compact title (HERO → TITLE, on the scroll)
+/// and `person.rs`'s band condense (the same pair, on focus) are both spelled that way.
 pub mod size {
     use std::os::raw::c_int;
     /// Full-bleed hero title — the home + detail hero headline.
@@ -152,6 +158,12 @@ pub const fn scrim_black(a: f32) -> [f32; 4] {
 pub const fn with_a(c: [f32; 4], a: f32) -> [f32; 4] {
     [c[0], c[1], c[2], a]
 }
+/// Blend `a` toward `b` by `t` (rgb only; keeps `a`'s alpha) — for a token that is a *mix* of two
+/// roles rather than one of them, e.g. an ambient wash sitting `t` of the way from [`SURFACE_APP`]
+/// to an item's artwork colour. A screen that lerps channels in a loop wants this instead.
+pub fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3]]
+}
 /// Scale a token's rgb by `k` toward black, keeping its alpha — e.g. folding a scroll-darken into a
 /// layer tint. Pair with [`with_a`] when the alpha also changes.
 pub const fn dim(c: [f32; 4], k: f32) -> [f32; 4] {
@@ -170,6 +182,12 @@ pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 /// rail's monochrome language on purpose: a hue here would compete with the amber resume fill for
 /// "this bit is special", and the rail sits straight over moving video.
 pub const RAIL_MARKER: [f32; 4] = [1.0, 1.0, 1.0, 0.42];
+/// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
+/// keying it (the person page's header state, `Person Screen v2.dc.html`'s
+/// `rgba(233,230,224,.10)`). Its own token rather than [`ACCENT`], which it is a hair from: ACCENT
+/// is a *focus fill* ("focused controls fill this"), and borrowing it here would mean retuning the
+/// focus colour silently restyles a page background — one value per role.
+pub const WASH_WARM: [f32; 4] = [0.914, 0.902, 0.878, 1.0];
 /// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent). `#fab82e`.
 pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
 /// Unfilled track behind the Continue-Watching resume bar — the full-bleed card-bottom rail. A

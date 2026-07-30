@@ -5,7 +5,7 @@
 use crate::pms::PmsMovie;
 use crate::ui::theme;
 use crate::ui::label::{HAlign, Label};
-use crate::ui::{Env, Painter, Rect, View};
+use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::os::raw::{c_char, c_int};
 
 /// build the transcode key on the stack and resolve it to a GL texture (0 until loaded).
@@ -226,8 +226,7 @@ pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4
         Err(_) => return 0.0,
     };
     let w = keyline_chip_w(text);
-    let (ct, cb) = crate::text::text_cap_band(theme::size::CAPTION, 0);
-    let h = (cb - ct) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band rather than a fixed band
+    let h = crate::text::cap_h(theme::size::CAPTION, 0) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band, not a fixed band
     let r = Rect::new(x, cy - h * 0.5, w, h);
     p.rrect(r, KEYLINE_RAD, KEYLINE_RAD, col);
     let b = KEYLINE_W;
@@ -553,6 +552,58 @@ impl View for Spinner {
             let d = self.dot_r;
             p.rect(Rect::new(dx - d, dy - d, 2.0 * d, 2.0 * d), d, c, c, 0.0);
         }
+    }
+}
+
+// ---- AmbientWash: the full-screen four-corner colour wash keyed to an item's artwork. ----
+
+/// The **ambient wash** — a page-wide bilinear gradient taken from an item's PMS `UltraBlurColors`
+/// corners, which is how home's backdrop, detail's below-hero ground and the person page all say
+/// "this screen is about *this* artwork" without paying for a full-bleed image.
+///
+/// It exists as a component because the non-obvious part is not the gradient, it is the FADE.
+/// [`Painter::ambient`](crate::ui::Painter::ambient) writes opaque pixels and deliberately ignores
+/// the painter's cascade alpha (its `dim` scales the corners toward BLACK, which is a different
+/// thing), so a wash cannot be cross-faded by alpha at all — the only way is to spring each corner
+/// channel toward its target and keep drawing at full strength. That is twelve springs, and a
+/// screen that hand-rolls them ends up doing index arithmetic over a flat array.
+///
+/// Blend the corners toward a base surface with [`theme::mix`] before handing them over: a wash
+/// keyed at full strength is a photograph, not a wash, and mixing toward [`theme::SURFACE_APP`]
+/// means "no artwork" is simply the app's own flat ground with no special case.
+#[derive(Clone, Copy)]
+pub(crate) struct AmbientWash {
+    /// corner-major, `Painter::ambient`'s order: top-left, top-right, bottom-right, bottom-left.
+    corners: [[Spring; 3]; 4],
+}
+
+impl AmbientWash {
+    /// A wash resting flat on one colour — what a page opens as before any item keys it.
+    pub(crate) fn flat(c: [f32; 4]) -> Self {
+        AmbientWash { corners: [[Spring::at(c[0]), Spring::at(c[1]), Spring::at(c[2])]; 4] }
+    }
+    /// Jump straight to `target` (no dissolve) — on mount, so the PREVIOUS item's colours never
+    /// dissolve across a page that has just changed subject.
+    pub(crate) fn jump(&mut self, target: [[f32; 4]; 4]) {
+        for (c, t) in self.corners.iter_mut().zip(target) {
+            for (sp, v) in c.iter_mut().zip(t) {
+                sp.jump(v);
+            }
+        }
+    }
+    /// Dissolve toward `target` at rate `k`. Every channel shares one rate, so the corners move as
+    /// one wash rather than twelve independent fades.
+    pub(crate) fn step(&mut self, target: [[f32; 4]; 4], k: f32, dt: f32) {
+        for (c, t) in self.corners.iter_mut().zip(target) {
+            for (sp, v) in c.iter_mut().zip(t) {
+                sp.step(v, k, dt);
+            }
+        }
+    }
+    /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
+    /// at the bottom of a screen's draw, standing in for the flat clear.
+    pub(crate) fn draw(&self, p: Painter, r: Rect) {
+        p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]));
     }
 }
 

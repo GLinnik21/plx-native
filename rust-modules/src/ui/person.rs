@@ -1,106 +1,139 @@
 //! The person / actor page — reached by pressing OK on a detail page's cast headshot.
 //!
-//! **The reference is Apple TV, not Plex.** Plex's own person page is a field list (left portrait,
-//! "Actor, Producer, Director", Born + age, social handles, a count-badged "Movies & Shows in
-//! Media Libraries", "Known For", "Featured Videos") — that is the feature checklist, not the
-//! mockup. This is the tvOS shape, one centred column: a **circular portrait**, the **name**, the
-//! **roles** line, a **Born / Died** line, a **3-line bio truncated with an inline `MORE`**, then
-//! plain **`Movies`** and **`Shows`** shelves of ordinary poster cards — the same [`CardRow`] tiles
-//! the home shelves, the Library grid and detail's Related row draw, so a poster looks and animates
-//! identically wherever it appears.
+//! **The reference is `Person Screen v2.dc.html`** (the owner's design project), whose shape is
+//! Apple TV's, not Plex's field list. One scroll flow, two states of one header:
 //!
-//! **Every header line is optional, and the page is composed so that missing ones read as
-//! finished rather than broken.** The name + portrait arrive with the page (the cast row already
-//! held them); the roles/dates/bio come from plex.tv (`crate::person`, `plex/discover.rs`) and may
-//! never come at all — a person the provider has no record of, or a TV on a LAN with no internet.
-//! There is therefore **no placeholder and no header spinner**: each line is drawn only when it has
-//! content, the block's height is MEASURED from what is present, and the shelves reflow under it.
-//! The degenerate case is exactly the shape this page shipped as: portrait, name, shelves.
+//! * an **asymmetric editorial band** across the top — a circular portrait on the left with a text
+//!   column beside it (name at HERO, a roles kicker, a Born/Died line, a 3-line bio with an inline
+//!   `MORE`), the two **centred on each other** — followed by plain **`Movies` / `Shows` shelves**
+//!   of ordinary poster cards on the shared [`CardRow`] strip, each heading carrying its count.
+//! * the band **CONDENSES once focus drops into the shelves** (portrait 320→160, the name steps
+//!   HERO→TITLE, every other header line fades out) and expands again when focus returns. The
+//!   condense is editorial, not load-bearing: v2's side-by-side packing already fits the first
+//!   shelf under the EXPANDED band (v1's stacked column did not — that is why the header became a
+//!   focus row in the first place), so shrinking it is about handing the room to the content the
+//!   user is now looking at, exactly as the mockup stages it.
 //!
-//! **Social handles are deliberately not drawn.** The provider sends `External[]` (facebook /
-//! instagram / twitter), and Plex's web page shows them, but on a TV they are dead ink: there is no
-//! browser to open them in, no keyboard to type them into and no way to hand one to a phone. They
-//! would cost a row of the one screen area this design spends on the portrait.
+//! **The band centres its two halves rather than top-aligning them** (owner call 2026-07-30, over
+//! the mock's `align-items: flex-start` and its `padding-top: 14px`). That pad was a CSS artifact
+//! anyway — a 72px line box carries leading above its caps, which our cap-band placement does not
+//! have (`ui::label`'s layout ≠ paint rule) — but the alignment itself is the deliberate change:
+//! against a 3-line bio, a top-aligned circle reads as floating beside a ragged column.
+//!
+//! Two rendering notes on the condense. The name cannot animate its POINT SIZE — every
+//! intermediate size would rasterize a fresh glyph run into the cache — so it is drawn as a
+//! crossfade between its two rung sizes while the geometry (portrait diameter, column x) rides
+//! the one `cond` spring. And the whole page sits on an **ambient wash** ([`Painter::ambient`])
+//! that is keyed to the focused poster's `UltraBlurColors` — the same corner data home's backdrop
+//! and detail's below-hero wash draw — fading to a faint warm `ACCENT` tint while the header holds
+//! focus; twelve small springs chase the corner channels so a focus change is a dissolve, not a cut.
+//!
+//! **Every header line below the name is optional, and the block reads as finished without them.**
+//! The name + portrait arrive with the page (the cast row already held them); the roles/dates/bio
+//! come from plex.tv (`crate::person`, `plex/discover.rs`) and may never come at all. Each line is
+//! drawn only when it has content and the measured flow centres what is present, so the degenerate
+//! page — portrait, name, shelves — is composed, not broken. No placeholder, no header spinner.
 //!
 //! Structure mirrors `detail.rs`: the page is a [`ScrollColumn`] whose children are **the header**
-//! and the PRESENT shelves, so the block flow, the off-screen cull and the scroll spring are the
-//! shared ones. The header is also a **focus row** — child 0, exactly as detail's hero is its
-//! section 0 — which is what makes the portrait reachable again once focus has gone down into the
-//! shelves (see [`move_focus`]). Perf discipline for the A53 + Mali: shelves are drawn through
-//! [`card_row::strip`], which culls with `on_axis` so only VISIBLE tiles ever call `resolve_tex`
-//! (the 64-slot poster LRU must not see off-screen requests), and `crate::person` caps each shelf
-//! at a `CardRow`'s spring count so the live spring population is bounded.
+//! and the PRESENT shelves. The header is still a **focus row** (child 0): reachability no longer
+//! forces it (see above), but it is what UP from the first shelf lands on, it is the page's top
+//! scroll position, and it is the state the condense keys off. Perf discipline for the A53 + Mali:
+//! shelves draw through [`card_row::strip`] (`on_axis`-culled, so only VISIBLE tiles touch
+//! `resolve_tex`), the header flow is measured once per store change (never per frame), and
+//! `crate::person` caps each shelf at a `CardRow`'s spring count.
 #![allow(non_upper_case_globals)]
 use crate::person::Person;
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
-use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{Art, Spinner};
-use crate::ui::{card_row::reveal, Column, Env, Painter, Rect, ScrollColumn, View};
+use crate::ui::widgets::{AmbientWash, Art, Spinner, StatusKind, StatusOverlay};
+use crate::ui::{card_row::reveal, Column, Env, Painter, Rect, ScrollColumn, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
 use std::ptr::addr_of_mut;
 
 // ---- geometry (a measured flow; every Y below is derived, none is authored) -------------------
 
-/// Shelves, in flow order. Kind 0 = Movies, 1 = Shows — the same order `crate::person`'s store
-/// uses, so an index means one thing across the store, the focus model and the hit-test.
-const NSHELF: usize = 2;
+/// Shelves, in flow order. Kind 0 = Movies, 1 = Shows — re-exported from the store, so an index
+/// means one thing across the store, this focus model, the headings and the hit-test.
+use crate::person::NSHELF;
 /// Headings as C-string LITERALS, not `&str` — they are drawn every frame, and `CString::new`
 /// per shelf per frame is a heap allocation the draw path does not need (the same reason
 /// `detail.rs` writes `c"Related"` / `c"Cast & Crew"`).
 const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
 
-/// Portrait diameter. Requested from the image transcoder at 300×300 — the SAME size the detail
-/// page's cast circles ask for, so arriving here from a headshot is a poster-cache HIT, not a
-/// fresh round trip through `/photo/:/transcode`.
-const PORTRAIT_D: f32 = 260.0;
+/// Portrait diameter, EXPANDED (the header holds focus) and CONDENSED (focus is in the shelves) —
+/// the v2 band's two states; the `cond` spring interpolates between them.
+const PORTRAIT_EXP: f32 = 320.0;
+const PORTRAIT_CON: f32 = 160.0;
+/// ...and expanded beside a header that is ONLY a name — the degenerate page (no internet, or a
+/// person plex.tv has never heard of). Smaller on purpose; see [`header_flow`].
+const PORTRAIT_BARE: f32 = 220.0;
+/// The condensed band is exactly the condensed portrait: nothing but the name shares it.
+const H_CON: f32 = PORTRAIT_CON;
+/// Requested from the image transcoder at 300×300 — the SAME size the detail page's cast circles
+/// ask for, so arriving here from a headshot is a poster-cache HIT, not a fresh round trip through
+/// `/photo/:/transcode` (a 320px draw of a 300px photo is invisible; a second cache slot is not).
 const PORTRAIT_RES: (c_int, c_int) = (300, 300);
-/// First child's pre-scroll top — the page's top air above the portrait.
+/// First child's pre-scroll top — the page's top air above the band (`Person Screen v2.dc.html`'s
+/// `margin-top: 96px`). It is also [`TOP_MARGIN`], as it is in the mock: the same number the page
+/// rests its top content at is the highest a focused shelf may lift to.
 const HEADER_TOP: f32 = 96.0;
-/// portrait → name: a major gap, because it separates two whole regions of the header block.
-const NAME_GAP: f32 = theme::space::XL;
-/// name → the roles kicker: the tight gap of a title and its subtitle, not a block break.
-const ROLES_GAP: f32 = theme::space::SM;
-/// roles → the life dates. The two are one meta stack, so this is the smallest rung.
-const LIFE_GAP: f32 = theme::space::XS;
-/// the meta stack → bio (a heading block and its body text).
-const BIO_GAP: f32 = theme::space::MD;
-/// Bio column width. Narrower than the shelves on purpose: a 3-line block set to the full
-/// 1740px content width would run ~14 words a line and read as a paragraph of legal text.
-const BIO_W: f32 = 1120.0;
+/// portrait → the text column: the band's one internal major gap (the mock's `gap: 64px`).
+const BAND_GAP: f32 = theme::space::XL;
+/// name → the roles kicker (the mock's `margin-top: 24px`).
+const META_GAP: f32 = theme::space::MD;
+/// the kicker → the Born/Died line. One meta stack, so the tight rung.
+const LIFE_GAP: f32 = theme::space::SM;
+/// the meta stack → bio: a whole block break, and the mock widened it to 40 with the count column
+/// gone — the bio is the band's bottom half now, not a footnote under the dates.
+const BIO_GAP: f32 = theme::space::LG;
+/// a shelf heading → its item count, inline.
+const SHELF_COUNT_GAP: f32 = theme::space::SM;
+/// Bio column width — the mock's `max-width: 1180px`, which is what the text column narrows to now
+/// that nothing sits to its right. The name and the two meta lines take the same budget, so the
+/// whole text column has ONE measure and a long birthplace cannot outrun the prose under it.
+const BIO_W: f32 = 1180.0;
 const BIO_LINES: usize = 3;
 const BIO_LEAD: f32 = 40.0;
-/// The meta lines (roles, Born/Died) elide at the bio column's width rather than running the full
-/// panel: they belong to the same centred column the bio does, and a birthplace like
-/// "Twickenham, England, UK" can otherwise push the line wider than the text under it.
-const META_W: f32 = BIO_W;
 /// Block gap between the header and a shelf, and between shelves — detail.rs's `SECTION_GAP`.
 const SHELF_GAP: f32 = theme::space::XL;
-/// Shelf heading → poster row, and poster row → block bottom (the focused tile's under-title
-/// band). Same two as detail's Related row, so a shelf is paced identically on both pages.
+/// Shelf heading → poster row. Matches detail's Related row, so a shelf is paced identically on
+/// both pages. (The band BELOW the row is not a constant here — see [`shelf_block_h`].)
 const SHELF_LABEL_H: f32 = 46.0;
-const SHELF_UNDER_H: f32 = 54.0;
-/// A focused shelf lifts no higher than this from the screen top.
-const TOP_MARGIN: f32 = 120.0;
+/// The shelves' own row style: [`RowStyle::HOME`]'s motion and geometry verbatim — one source, so a
+/// poster here animates exactly as it does on Home — plus the **two-line** title a shelf of real
+/// Plex names needs (one elided line loses two thirds of "Wallace & Gromit: The Curse of the
+/// Were-Rabbit").
+const SHELF_STYLE: RowStyle = RowStyle { title_lines: 2, ..RowStyle::HOME };
+/// A focused shelf lifts no higher than this from the screen top — [`HEADER_TOP`]'s twin.
+const TOP_MARGIN: f32 = HEADER_TOP;
 /// Air kept under the lowest visible content when a shelf is revealed by scrolling.
 const BOTTOM_PAD: f32 = theme::space::LG;
 
-/// Cap-band height of a run — the layout height of one line of text at `sz`. Layout ≠ paint:
-/// descenders hang below this and are never measured (see `ui::label`'s module docs).
-fn cap_h(sz: c_int, bold: c_int) -> f32 {
-    let (top, base) = crate::text::text_cap_band(sz, bold);
-    base - top
-}
+/// The condense spring's rate — the scroll rate, because the band's resize IS a scroll-scale
+/// motion (the mock gives both the same `.42s` curve).
+const K_COND: f32 = K_SCROLL;
+/// The ambient dissolve — deliberately slower than any focus spring (the mock's `.5s ease`): the
+/// wash is atmosphere, and snapping it with the focus pop would read as the SCREEN changing.
+const K_AMB: f32 = 80.0;
+/// Ambient corner weights (tl, tr, br, bl — [`Painter::ambient`]'s order), i.e. how far each
+/// corner leans from the app surface toward the source colour. Header state: a faint warm
+/// `ACCENT` wash, strongest top-left (the mock's `radial at 18% 0%`). Card state: the focused
+/// poster's UltraBlur corners, strong across the top and nearly gone by the bottom (the mock's
+/// `.30 → .07` stops, trimmed a step on-device because our wash is opaque, not additive).
+const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
+const AMB_CARD_W: [f32; 4] = [0.26, 0.26, 0.08, 0.08];
 
 // ---- screen state ----------------------------------------------------------------------------
 
 struct Scene {
     /// **The header holds focus** (flow child 0) rather than any shelf. It is the page's top
-    /// position, and it is what makes the portrait reachable: see [`move_focus`].
+    /// position, what UP from the first shelf returns to, and the state the band's condense keys
+    /// off — see [`move_focus`].
     on_header: bool,
     /// which shelf holds focus (a KIND, not a position — a shelf that empties must not silently
     /// hand its focus to the other one's contents). Meaningless while [`Scene::on_header`].
@@ -109,19 +142,30 @@ struct Scene {
     col: [c_int; NSHELF],
     shelves: [CardRow; NSHELF],
     column: ScrollColumn,
+    /// The band's state spring: 0 = expanded (header focused), 1 = condensed. ONE spring drives
+    /// the portrait diameter, the band height, the column x and every crossfade, so no two of
+    /// them can ever be mid-transition in different places.
+    cond: Spring,
+    /// The ambient wash, dissolving toward [`amb_target`] — what makes a focus change wash over the
+    /// page instead of cutting. The springs and the "a wash cannot be alpha-faded" reasoning live in
+    /// the shared [`AmbientWash`], not here.
+    amb: AmbientWash,
     spin_ms: f32,
     /// the detail page this page was opened from — BACK's target (see [`leave`])
     from_rk: String,
     /// a cast headshot was just activated; app.rs takes this and routes (see [`take_request`])
     requested: bool,
-    /// The header's text runs, NUL-terminated ONCE — at [`open`] for the name, and on every store
-    /// change for the two plex.tv lines (see [`refresh_header`]) — rather than per frame. `Label`
-    /// holds a non-owning pointer, so these must outlive the draw: a field does, a temporary would
-    /// not. Building them here also keeps the draw path allocation-free, which is the rule the
-    /// shelf tiles already follow.
+    /// The header's text runs, NUL-terminated ONCE per store change (see [`refresh_header`]) —
+    /// never per frame. `Label` holds a non-owning pointer, so these must outlive the draw: a
+    /// field does, a temporary would not. This keeps the HEADER's draw allocation-free; the strip
+    /// beneath it allocates exactly the focused tile's two lines per frame, which is the shared
+    /// `card_row::strip` contract every shelf in the app draws under.
     name_c: CString,
     roles_c: CString,
     life_c: CString,
+    /// the per-shelf heading counts — digits change only when a landing does, so they are baked
+    /// with the rest of the runs rather than formatted per frame
+    shelf_count_c: [CString; NSHELF],
     /// The measured header layout, and the flag that says it needs remeasuring. Rebuilt in
     /// [`update`] on the frame a store change lands, never in the draw — see [`HeaderFlow`].
     header: HeaderFlow,
@@ -136,15 +180,30 @@ impl Scene {
             col: [0; NSHELF],
             shelves: [CardRow::new(); NSHELF],
             column: ScrollColumn::new(HEADER_TOP, TOP_MARGIN),
+            cond: Spring::at(0.0),
+            amb: AmbientWash::flat(theme::SURFACE_APP),
             spin_ms: 0.0,
             from_rk: String::new(),
             requested: false,
             name_c: CString::default(),
             roles_c: CString::default(),
             life_c: CString::default(),
+            shelf_count_c: [CString::default(), CString::default()],
             header: HeaderFlow::default(),
             header_dirty: true,
         }
+    }
+    /// The band's CURRENT height — the expanded measured height eased toward [`H_CON`] by the
+    /// condense spring. This is `Column::height(0)`, so the shelf tops, the scroll targets and the
+    /// pointer hit-test all follow the resize for free.
+    fn band_h(&self) -> f32 {
+        let c = self.cond01();
+        self.header.exp_h + (H_CON - self.header.exp_h) * c
+    }
+    /// The condense scalar, clamped — 0 expanded, 1 condensed. Read through this, never off the
+    /// spring directly, so the band height and every crossfade provably share one number.
+    fn cond01(&self) -> f32 {
+        self.cond.pos.clamp(0.0, 1.0)
     }
 }
 
@@ -183,6 +242,16 @@ fn focus_pos(p: &Person, sc: &Scene) -> Option<usize> {
     kinds[..n].iter().position(|&k| k == sc.focus_kind)
 }
 
+/// The tile holding focus, WITHOUT touching the scene singleton — for callers that already hold
+/// `&Scene` (minting a second `&'static mut` through [`scene`] while one is live is aliasing UB;
+/// `update` carries the same note).
+fn focused_of<'a>(p: &'a Person, sc: &Scene) -> Option<&'a PmsMovie> {
+    if sc.on_header {
+        return None;
+    }
+    p.shelf(sc.focus_kind).get(sc.col[sc.focus_kind].max(0) as usize)
+}
+
 // ---- the scroll flow (ScrollColumn children: 0 = header, 1.. = present shelves) ---------------
 
 impl Column for Scene {
@@ -191,7 +260,7 @@ impl Column for Scene {
     }
     fn height(&self, i: usize) -> f32 {
         if i == 0 {
-            self.header.total
+            self.band_h()
         } else {
             shelf_block_h()
         }
@@ -218,80 +287,112 @@ impl Column for Scene {
     }
 }
 
-/// Where each header line sits inside the header block, and how tall the block is — the ONE place
+/// Where each header line sits inside the EXPANDED band, and how tall the band is — the ONE place
 /// the header flow is computed, so the measure and [`draw_header`] cannot disagree about where a
-/// line goes. Every entry after the portrait is `None` unless its content exists: a person with no
-/// roles line has no gap where one would have been, which is what makes a sparse header read as
-/// composed rather than as fields that failed to load.
+/// line goes. Every text entry is `None` unless its content exists: a person with no kicker has no
+/// gap where one would have been, which is what makes a sparse header read as composed rather than
+/// as fields that failed to load. The portrait and the text stack are EACH vertically centred in
+/// the band (`exp_h` = whichever is taller), which is also what centres the degenerate
+/// portrait-plus-name page with no special case.
 ///
 /// **Computed once per store change, not per frame** ([`Scene::header`]). It is the only thing on
 /// this page that measures text, and it is reached from `Column::height(0)` — which `child_top`,
-/// `content_h`, `scroll_target` and the pointer hit-test all call, several times a frame each. A
-/// per-frame `HeaderFlow` would re-hash the whole biography (~3 KB of prose) on every one of those,
-/// which is exactly the cost `tile_at` already hoists its `row_y` out of the tile loop to avoid.
+/// `content_h`, `scroll_target` and the pointer hit-test all call, several times a frame each.
 #[derive(Clone, Copy, Default)]
 struct HeaderFlow {
+    /// the expanded band height — `max(exp_d, text stack)`
+    exp_h: f32,
+    /// the EXPANDED portrait diameter: [`PORTRAIT_EXP`] normally, the smaller [`PORTRAIT_BARE`] when
+    /// the header is nothing but a name. Recorded here rather than re-derived in the draw, so the
+    /// measured band height and the drawn circle can never disagree about which one it is.
+    exp_d: f32,
+    /// y offsets FROM THE BAND TOP of each present line's cap-top (expanded state)
     name_y: f32,
-    roles_y: Option<f32>,
+    meta_y: Option<f32>,
     life_y: Option<f32>,
     bio_y: Option<f32>,
-    total: f32,
 }
 
 fn header_flow(sc: &Scene) -> HeaderFlow {
-    let name_y = PORTRAIT_D + NAME_GAP;
-    let mut y = name_y + cap_h(theme::size::HERO, 1);
-    let mut f = HeaderFlow { name_y, ..HeaderFlow::default() };
+    let mut f = HeaderFlow::default();
+    let mut y = crate::text::cap_h(theme::size::HERO, 1); // the name; everything below stacks from its bottom
     if !sc.roles_c.as_bytes().is_empty() {
-        y += ROLES_GAP;
-        f.roles_y = Some(y);
-        y += cap_h(theme::size::LABEL, 0);
+        y += META_GAP;
+        f.meta_y = Some(y);
+        y += crate::text::cap_h(theme::size::LABEL, 0);
     }
     if !sc.life_c.as_bytes().is_empty() {
-        // the life line hugs the roles line above it, but takes the roles GAP when it is the first
-        // meta line — the gap belongs to the stack's top edge, not to a particular line
-        y += if f.roles_y.is_some() { LIFE_GAP } else { ROLES_GAP };
+        // the life line hugs the kicker above it, but takes the kicker's own gap when it is the
+        // first meta line — the gap belongs to the stack's top edge, not to a particular line
+        y += if f.meta_y.is_some() { LIFE_GAP } else { META_GAP };
         f.life_y = Some(y);
-        y += cap_h(theme::size::LABEL, 0);
+        y += crate::text::cap_h(theme::size::LABEL, 0);
     }
     let bio = crate::person::current().map(|p| p.bio.as_str()).unwrap_or("");
     if !bio.is_empty() {
         y += BIO_GAP;
         f.bio_y = Some(y);
-        y += bio_view(bio).measure_h(BIO_W);
+        y += bio_view(bio, 1.0).measure_h(BIO_W);
     }
-    f.total = y;
+    // A header that is nothing BUT a name wears the smaller portrait: 320px of headshot beside one
+    // line reads as a portrait with a caption.
+    let bare = f.meta_y.is_none() && f.life_y.is_none() && f.bio_y.is_none();
+    f.exp_d = if bare { PORTRAIT_BARE } else { PORTRAIT_EXP };
+    f.exp_h = y.max(f.exp_d);
+    // **The text block is CENTRED on the portrait** — owner call, 2026-07-30, over the mock's
+    // `align-items: flex-start`. Centring BOTH in the band is what makes their centres coincide,
+    // whichever is taller: the text block for a normal header (the 320 circle wins), the circle for
+    // a header with an unusually long bio. Top-alignment only looks deliberate when the text block
+    // ends near the portrait's bottom too, and a 3-line bio does not — it left the circle floating
+    // against a ragged column.
+    let ty = (f.exp_h - y) * 0.5;
+    f.name_y = ty;
+    for v in [&mut f.meta_y, &mut f.life_y, &mut f.bio_y].into_iter().flatten() {
+        *v += ty;
+    }
     f
 }
 
 /// The bio block, in ONE place so its measure and its draw cannot disagree: 3 lines of body text
 /// with the classic inline `… MORE` affordance, which `TextView` only paints when the cap actually
-/// hid words. The affordance is a truncation MARK, not a control — the same treatment detail's
-/// About card gives its synopsis; nothing on this page expands text in place.
-fn bio_view(bio: &str) -> TextView<'_> {
-    TextView::new(bio, theme::size::BODY, theme::TEXT_SECONDARY)
+/// hid words. The affordance is a truncation MARK, not a control — nothing on this page expands
+/// text in place. `a` fades it with the rest of the expanded header.
+fn bio_view(bio: &str, a: f32) -> TextView<'_> {
+    TextView::new(bio, theme::size::BODY, theme::with_a(theme::TEXT_SECONDARY, a))
         .leading(BIO_LEAD)
         .max_lines(BIO_LINES)
-        .trailing("MORE", theme::TEXT_PRIMARY)
+        .trailing("MORE", theme::with_a(theme::TEXT_PRIMARY, a))
 }
 
 /// Rebuild the header's cached text runs from the store — from [`update`], on the frame a store
-/// change lands. The two plex.tv lines are composed HERE, once, rather than in the draw: they are
-/// `format!`s over store fields, and doing that 60 times a second for a string that changes twice
-/// in a page's life is exactly the per-frame allocation the shelf tiles avoid.
+/// change lands. They are `format!`s over store fields, and doing that 60 times a second for
+/// strings that change twice in a page's life is exactly the per-frame allocation the shelf tiles
+/// avoid.
 ///
-/// **The life line is a stack of independent facts, joined only where both exist.** Born, the
-/// birthplace and Died each appear on their own terms — a living person simply has no Died clause,
-/// a person with a death date but no birth date reads "Died 2 Jun 2017", and someone plex.tv knows
-/// nothing about produces the empty string, which the flow then gives no room to at all. That is
-/// why this builds a LIST and joins it, rather than formatting one template with holes in it.
-fn refresh_header(sc: &mut Scene) {
+/// **The life line is a stack of independent facts, joined only where both exist**: a living person
+/// simply has no Died clause, a person with only a death date reads "Died 2 Jun 2017", and someone
+/// plex.tv knows nothing about produces empty strings, which the flow then gives no room to at all.
+/// That is why this builds a LIST and joins it rather than filling one template with holes.
+fn remeasure_header(sc: &mut Scene) {
+    refresh_runs(sc);
+    // the flow MEASURES the runs above, so it can only be computed after them — which is why the
+    // two live behind one entry point instead of two calls a caller must order correctly
+    sc.header = header_flow(sc);
+    sc.header_dirty = false;
+}
+
+fn refresh_runs(sc: &mut Scene) {
     let Some(p) = crate::person::current() else {
         sc.roles_c = CString::default();
         sc.life_c = CString::default();
+        sc.shelf_count_c = [CString::default(), CString::default()];
         return;
     };
-    sc.roles_c = cstr_elide(&p.roles, theme::size::LABEL);
+    // The name is rebuilt (and budgeted) HERE, not at `open` — it is the one header run every page
+    // has, and the only one that would otherwise draw unmeasured: a HERO-size "Daniel Michael Blake
+    // Day-Lewis" runs past 1300px. Same column budget as everything under it.
+    sc.name_c = cstr_elide(&p.name, BIO_W, theme::size::HERO, 1);
+    sc.roles_c = cstr_elide(&p.roles, BIO_W, theme::size::LABEL, 0);
 
     let mut life: Vec<String> = Vec::new();
     let born = crate::ui::fmt::pretty_date(&p.born, 0);
@@ -305,17 +406,29 @@ fn refresh_header(sc: &mut Scene) {
     if !died.is_empty() {
         life.push(format!("Died {died}"));
     }
-    sc.life_c = cstr_elide(&life.join(" \u{b7} "), theme::size::LABEL);
+    sc.life_c = cstr_elide(&life.join(" \u{b7} "), BIO_W, theme::size::LABEL, 0);
+
+    // Each heading's count prints the RESPONSE total, not the tile list's length: the shelves cap at
+    // a `CardRow`'s spring count, and "24" on a person with 60 movies would be the cap posing as a
+    // fact about the person.
+    for k in 0..NSHELF {
+        sc.shelf_count_c[k] = match p.total(k) {
+            0 => CString::default(),
+            n => CString::new(n.to_string()).unwrap_or_default(),
+        };
+    }
 }
 
-/// A header meta line, NUL-terminated and clipped to the centred column. `Painter` has no clip, so
-/// an over-long line (a birthplace with four commas in it) would otherwise paint out past the bio
-/// beneath it; `text::elide` is the shared measurer that cuts it at the same width.
-fn cstr_elide(s: &str, sz: c_int) -> CString {
+/// A header meta line, NUL-terminated and clipped to `w`. `Painter` has no clip, so an over-long
+/// line (a birthplace with four commas in it) would otherwise paint out past the bio beneath it;
+/// `text::elide` is the shared measurer that cuts it at the same width. `cont` is FALSE — that
+/// flag is `TextView`'s continued-line mode and marks the run with an ellipsis even when nothing
+/// was cut, which put a stray `…` on every kicker and every Born/Died line that simply fit.
+fn cstr_elide(s: &str, w: f32, sz: c_int, bold: c_int) -> CString {
     if s.is_empty() {
         return CString::default();
     }
-    CString::new(crate::text::elide(s, META_W, sz, 0, true)).unwrap_or_default()
+    CString::new(crate::text::elide(s, w, sz, bold, false)).unwrap_or_default()
 }
 
 /// Total flowed content height (last child's bottom + the bottom air).
@@ -325,20 +438,21 @@ fn content_h(sc: &Scene) -> f32 {
     col.child_top(sc, last) + sc.height(last) + BOTTOM_PAD
 }
 
-/// A shelf block's flowed height (heading + poster row + the focused tile's under-title band).
+/// A shelf block's flowed height: heading + poster row + the focused tile's label band.
+///
+/// The band is ASKED FOR, not restated — `card_row` lays that block out and
+/// [`card_row::TileLabel::height`] is its only authority on how tall it is. Getting it wrong is not
+/// cosmetic: [`reveal_block`] guarantees [`BOTTOM_PAD`] under the block a screen DECLARES, so a
+/// short declaration runs the character caption off the bottom of the panel — which is exactly what
+/// a hand-authored 112 did here, because it assumed the mock's 24px poster→title drop where the
+/// shared code uses 30.
 fn shelf_block_h() -> f32 {
-    SHELF_LABEL_H + CARD_H + SHELF_UNDER_H
+    SHELF_LABEL_H + CARD_H + card_row::TileLabel::height(&SHELF_STYLE, true)
 }
 
 /// The MINIMAL scroll that reveals the block `[top, top+h)` inside `content` px of flow — the
 /// shared [`reveal`] rule the shelves and the Library grid use, NOT a lift-to-margin pin: a block
 /// scrolls only as far as its own extent needs, and not at all when it already fits.
-///
-/// It is minimal in BOTH directions, which is the half that matters here. Coming back up to the
-/// first shelf it stops at that shelf's own top margin — short of the page top — so it can never
-/// bring the header back on its own. That is not a defect to patch out of this rule (a lift-to-
-/// margin pin would be worse: it would scroll the portrait away the instant the page mounted); it
-/// is why the header is a focus row of its own, whose reveal costs no scroll at all.
 ///
 /// Pure, and kept separate from [`scroll_target`] deliberately — the flow that feeds it is measured
 /// through the text stack, which the host suite cannot link, so this is the layer the geometry
@@ -355,38 +469,51 @@ fn scroll_target(sc: &Scene) -> f32 {
     reveal_block(col.scroll.pos, col.child_top(sc, fi), sc.height(fi), content_h(sc))
 }
 
+// ---- the ambient wash ------------------------------------------------------------------------
+
+/// The wash's target corners (tl, tr, br, bl), each mixed from the app surface toward a source
+/// colour: the focused poster's UltraBlur corners while a card holds focus, else the faint warm
+/// header tint. A tile whose art carried no blur envelope keeps the header tint too — a wash
+/// invented from nothing would flash grey on one poster in a row of colour.
+///
+/// Mixing FROM [`theme::SURFACE_APP`] is what makes "no artwork" the app's own flat ground with no
+/// special case, and it is why the corner weights below can be read as "how much of this poster
+/// shows through".
+fn amb_target(sc: &Scene) -> [[f32; 4]; 4] {
+    let card = crate::person::current().and_then(|p| focused_of(p, sc)).filter(|m| m.has_blur);
+    let (cols, w) = match card {
+        Some(m) => (m.blur.map(|c| [c[0], c[1], c[2], 1.0]), AMB_CARD_W),
+        None => ([theme::WASH_WARM; 4], AMB_HEADER_W),
+    };
+    std::array::from_fn(|i| theme::mix(theme::SURFACE_APP, cols[i], w[i]))
+}
+
 // ---- entry / exit ----------------------------------------------------------------------------
 
 /// Open the page for a cast member — called from `detail.rs`'s cast-row OK arm with everything
 /// `Role[]` already carries (`key` = the local personId, `guid` = the `tagKey` plex.tv answers to).
-/// Loads the store's header immediately, resets this screen's focus and scroll, remembers the
-/// detail page to come back to, and raises the flag app.rs routes on.
+/// Loads the store's header immediately, resets this screen's focus / scroll / band state,
+/// remembers the detail page to come back to, and raises the flag app.rs routes on.
 ///
-/// **The page opens on its HEADER, not on the first shelf**, which is the whole reason this shape
-/// works at all once there is a biography: the header is taller than the room a focused first shelf
-/// leaves, so a page that mounted with the shelf focused would arrive already scrolled with the top
-/// of the portrait cut off — the exact complaint [`move_focus`] fixes for the return trip. There is
-/// nothing focusable in the header (it is a scroll POSITION, see [`move_focus`]), and nothing to
-/// focus on the shelves yet either: they land a moment later, and DOWN goes to them.
-pub(crate) fn open(key: &str, guid: &str, name: &str, thumb: &str) {
-    crate::person::open(key, guid, name, thumb);
+/// **The page opens on its HEADER** — expanded, at scroll 0 — because the header is the page's
+/// subject until the user asks for the shelves. There is nothing focusable in it (it is a scroll
+/// POSITION, see [`move_focus`]), and nothing to focus on the shelves yet either: they land a
+/// moment later, and DOWN goes to them.
+pub(crate) fn open(key: &str, guid: &str, name: &str, _thumb: &str) {
+    crate::person::open(key, guid, name, _thumb);
     let sc = scene();
-    sc.on_header = true;
-    sc.focus_kind = 0;
-    sc.col = [0; NSHELF];
-    sc.shelves = [CardRow::new(); NSHELF]; // a fresh person starts its shelves at their left edge
-    sc.column.scroll.jump(0.0);
-    sc.spin_ms = 0.0;
+    // A WHOLESALE reset, not a field-by-field one: every default this page mounts with — focus on
+    // the header, scroll and condense at 0, shelves at their left edge, EMPTY text runs — is already
+    // spelled in `Scene::new`, and a field added there must not need remembering here too. The runs
+    // in particular must start empty so the previous person's dates cannot survive into this one for
+    // the length of a fetch; `header_dirty` then has `remeasure_header` build them on the next
+    // `update`, which keeps the page's only text measure off `detail::on_ok`'s input path.
+    *sc = Scene::new();
     sc.from_rk = crate::ui::detail::mounted_rk();
-    sc.name_c = CString::new(name).unwrap_or_default();
-    // The plex.tv lines start EMPTY and are built by `refresh_header` on the next `update` —
-    // there is nothing to compose from yet, and clearing them here is what stops the previous
-    // person's dates surviving into this one for the length of a fetch. The MEASURE is deferred to
-    // that same `update` rather than done here, because `open` is on the detail page's OK path and
-    // measuring text is the one thing on this page that is not free.
-    sc.roles_c = CString::default();
-    sc.life_c = CString::default();
-    sc.header_dirty = true;
+    // the wash starts AT the header tint — the previous person's poster colours must not dissolve
+    // across the new page's mount
+    let k = amb_target(sc);
+    sc.amb.jump(k);
     sc.requested = true;
 }
 
@@ -417,18 +544,15 @@ pub(crate) fn leave() {
 /// focus — it contains no control) — app.rs opens its detail page.
 pub(crate) fn focused_item() -> Option<&'static PmsMovie> {
     let sc = scene();
-    if sc.on_header {
-        return None;
-    }
     let p = crate::person::current()?;
-    p.shelf(sc.focus_kind).get(sc.col[sc.focus_kind].max(0) as usize)
+    focused_of(p, sc)
 }
 
 /// The only focusABLE thing on this page is a poster card, so OK always takes the tvOS press (dip
 /// on key-down, activate on the spring-back). Named to match the other screens' predicate so
 /// app.rs's press arm reads the same for all of them.
 ///
-/// False on the header row, which is what keeps app.rs unchanged by the header becoming a row: it
+/// False on the header row, which is what keeps app.rs unchanged by the header being a row: it
 /// arms no press and dispatches no activation, so OK there is simply inert — correct, because the
 /// header carries no control.
 pub(crate) fn focus_is_card() -> bool {
@@ -451,25 +575,28 @@ pub(crate) fn update(dt: f32) {
     // aliasing UB, not a lint. (`detail.rs::update` carries the same note for the same reason.)
     if crate::person::pump() {
         clamp_focus();
-        scene().header_dirty = true; // a profile landing changes the meta runs AND the flow
+        scene().header_dirty = true; // a landing changes the header runs AND the flow
     }
     let sc = scene();
     // Remeasure BEFORE anything reads the flow this frame: `scroll_target` below, and every draw
     // after it, go through `Column::height(0)`, which is now a plain field read.
     if sc.header_dirty {
-        refresh_header(sc);
-        sc.header = header_flow(sc);
-        sc.header_dirty = false;
+        remeasure_header(sc);
     }
     sc.spin_ms += dt * 1000.0;
+    // the band: expanded while the header holds focus, condensed the moment it leaves
+    sc.cond.step(if sc.on_header { 0.0 } else { 1.0 }, K_COND, dt);
+    // the wash: dissolve toward whatever the page is about now
+    let k = amb_target(sc);
+    sc.amb.step(k, K_AMB, dt);
     let n_items = |k: usize| crate::person::current().map(|p| p.shelf(k).len()).unwrap_or(0);
     for k in 0..NSHELF {
         // a shelf that does not hold focus freezes its scroll (CardRow's `None` contract) — the
         // same behaviour a non-focused home shelf has. The header holding focus freezes them ALL,
         // which is what a page scrolled back to its top should do.
-        let focus =
-            (!sc.on_header && k == sc.focus_kind && n_items(k) > 0).then(|| sc.col[k].max(0) as usize);
-        sc.shelves[k].update(n_items(k), focus, &RowStyle::HOME, dt);
+        let n = n_items(k);
+        let focus = (!sc.on_header && k == sc.focus_kind && n > 0).then(|| sc.col[k].max(0) as usize);
+        sc.shelves[k].update(n, focus, &SHELF_STYLE, dt);
     }
     let want = scroll_target(sc);
     sc.column.scroll.step(want, K_SCROLL, dt);
@@ -503,16 +630,10 @@ fn clamp_focus() {
 // ---- input -----------------------------------------------------------------------------------
 
 /// D-pad. Rows are **the header, then the present shelves** — the same "hero is a row" model
-/// `detail.rs` uses (its section 0), and the reason for it here is a bug: with focus locked to the
-/// shelves, the page could never scroll back up far enough to show the portrait again. The minimal
-/// [`reveal`] rule pins a focused first shelf at [`TOP_MARGIN`] and stops, so once the header grew
-/// past the room that leaves — which is exactly what a biography does to it — everything above that
-/// pin was unreachable for the rest of the page's life. It is not a scroll bug: there was no row to
-/// scroll TO. The header is that row, and [`scroll_target`] then puts the page back at 0 because
-/// revealing child 0 costs no scroll at all.
-///
-/// The header holds no control (see the module docs), so UP into it is a scroll, not a selection:
-/// nothing draws a focus ring, and DOWN returns to the shelf that had it.
+/// `detail.rs` uses (its section 0). The header row predates the v2 band (it was what made the
+/// portrait reachable at all when the v1 header outgrew the fold) and the condense gives it its
+/// second job: it is the state the band expands for. UP into it is a scroll + expand, not a
+/// selection — nothing draws a focus ring, and DOWN returns to the shelf that had it.
 pub(crate) fn move_focus(sym: c_uint) {
     let sc = scene();
     let Some(p) = crate::person::current() else { return };
@@ -555,9 +676,9 @@ fn shelf_row_y(sc: &Scene, pos: usize) -> f32 {
 /// O(VISIBLE), deliberately — the same discipline `library.rs::cell_at` documents. Two things
 /// make it that: the per-shelf `row_y` is computed ONCE outside the column loop (calling it per
 /// tile walks the whole `child_top` flow ~48 times per pointer motion), and the column is derived
-/// arithmetically from x instead of being searched for. The flow walk is now cheap in itself —
-/// `Column::height(0)` reads the cached [`HeaderFlow`] rather than measuring text — but the hoist
-/// stays: it is the part that keeps this O(VISIBLE) instead of O(tiles).
+/// arithmetically from x instead of being searched for. The flow walk is cheap in itself —
+/// `Column::height(0)` reads the cached [`HeaderFlow`] through [`Scene::band_h`] rather than
+/// measuring text — but the hoist stays: it is the part that keeps this O(VISIBLE).
 fn tile_at(mx: f32, my: f32) -> Option<(usize, usize)> {
     let sc = scene();
     let p = crate::person::current()?;
@@ -618,68 +739,115 @@ pub(crate) fn draw() {
     if crate::person::current().is_none() {
         return;
     }
+    // the ambient wash under everything — opaque, so it stands in for the clear
+    sc.amb.draw(p, Rect::FULL);
     let col = sc.column;
     col.draw(sc, &env, p);
     draw_shelf_state(p, &env, sc);
 }
 
-/// The header: centred circular portrait, the name, and whichever of the plex.tv lines exist —
-/// roles, Born/Died, the 3-line bio. Drawn from the child's local origin (the `ScrollColumn` has
-/// already translated to the block top) and from the SAME [`header_flow`] that measured it, so a
-/// line can never draw where the flow did not reserve room for it.
+/// The header band: the circular portrait and, centred on it, the text column (name, the roles
+/// kicker, Born/Died, the 3-line bio). Drawn from the child's local
+/// origin (the `ScrollColumn` has already translated to the block top) and from the SAME
+/// [`header_flow`] that measured it, so a line can never draw where the flow reserved no room.
+///
+/// The condense: geometry (portrait diameter, band height, column x) reads the `cond` spring
+/// directly; the name crossfades between its HERO and TITLE runs (a point size cannot animate —
+/// every intermediate size would rasterize a new glyph run); every other expanded line simply
+/// fades with `1 - cond`, exactly the mock's `bioOpacity`.
 fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     let flow = sc.header;
-    let portrait = Rect::new((SCR_W - PORTRAIT_D) * 0.5, 0.0, PORTRAIT_D, PORTRAIT_D);
+    let c = sc.cond01();
+    let ea = 1.0 - c; // the expanded content's alpha
+    let band_h = sc.band_h();
+    let d = flow.exp_d + (PORTRAIT_CON - flow.exp_d) * c;
     // `Art::Person`, not `Thumb` — the SAME art case the credits shelf this page was opened from
     // draws, so a person with no headshot wears the person glyph here exactly as their circle did
-    // there. It also draws that glyph only for an EMPTY key, never for a texture still resolving,
-    // which is the distinction a hand-rolled `thumb.is_empty()` branch here got wrong: it would
-    // have flashed "no photo" on every portrait for the length of its fetch.
+    // there; and it draws that glyph only for an EMPTY key, never for a texture still resolving.
     // NEVER pixel-snapped: this is scaled art, and snapping it would fight the transcoder's
     // resampling exactly the way snapping a poster does.
+    // centred in the band, which is what puts it on the text block's centre line (see `header_flow`);
+    // at full condense the band IS the portrait, so this is 0 there.
+    let portrait = Rect::new(MARGIN_X, (band_h - d) * 0.5, d, d);
     crate::ui::widgets::card(
         p,
         portrait,
         Art::Person { key: &person.thumb, res: PORTRAIT_RES },
-        PORTRAIT_D * 0.5,
+        d * 0.5,
         false,
         1.0,
         0.0,
     );
 
-    Label::new(sc.name_c.as_ptr(), theme::size::HERO, theme::TEXT_PRIMARY)
-        .bold()
-        .h(HAlign::Center)
-        .v(VAlign::CapTop)
-        .draw(p, Rect::new(0.0, flow.name_y, SCR_W, 0.0));
-    // The two meta lines: the roles kicker reads as content (SECONDARY), the life dates as a
-    // footnote to it (TERTIARY). Both are pre-built + pre-elided runs — see `refresh_header`.
-    let meta = [(flow.roles_y, &sc.roles_c, theme::TEXT_SECONDARY), (flow.life_y, &sc.life_c, theme::TEXT_TERTIARY)];
-    for (y, run, col) in meta {
-        if let Some(y) = y {
-            Label::new(run.as_ptr(), theme::size::LABEL, col)
-                .h(HAlign::Center)
+    let col_x = MARGIN_X + d + BAND_GAP;
+    // The NAME, as the two rungs of a crossfade — a point size cannot be tweened (see theme.rs's
+    // rasterization contract), so the expanded HERO run in the measured flow and the condensed TITLE
+    // run centred on the small portrait each fade as the other rises. A table, so the pair cannot
+    // drift into two different labels.
+    let ny = (band_h - crate::text::cap_h(theme::size::TITLE, 1)) * 0.5;
+    for (sz, y, a) in [(theme::size::HERO, flow.name_y, ea), (theme::size::TITLE, ny, c)] {
+        if a > 0.01 {
+            Label::new(sc.name_c.as_ptr(), sz, theme::with_a(theme::TEXT_PRIMARY, a))
+                .bold()
                 .v(VAlign::CapTop)
-                .draw(p, Rect::new(0.0, y, SCR_W, 0.0));
+                .draw(p, Rect::new(col_x, y, 0.0, 0.0));
+        }
+    }
+    if ea <= 0.01 {
+        return; // fully condensed: nothing below the name exists
+    }
+    // The two meta lines: the roles kicker reads as content (SECONDARY), the Born/Died line as a
+    // footnote to it (TERTIARY). Both are pre-built + pre-elided runs — see `refresh_header`; the
+    // mock dropped the years run from the kicker, so the life line carries every date.
+    for (y, run, col) in [
+        (flow.meta_y, &sc.roles_c, theme::TEXT_SECONDARY),
+        (flow.life_y, &sc.life_c, theme::TEXT_TERTIARY),
+    ] {
+        if let Some(y) = y {
+            Label::new(run.as_ptr(), theme::size::LABEL, theme::with_a(col, ea))
+                .v(VAlign::CapTop)
+                .draw(p, Rect::new(col_x, y, 0.0, 0.0));
         }
     }
     if let Some(by) = flow.bio_y {
-        bio_view(&person.bio).draw(p, Rect::new((SCR_W - BIO_W) * 0.5, by, BIO_W, 0.0));
+        // `BIO_W` flat, NOT a width derived from the live column x: the wrap must be the one
+        // `header_flow` measured (same cache entry), and a width that moved with the condense would
+        // re-wrap ~3 KB of prose on every frame of the animation. The column has room for it at
+        // every portrait diameter — see `BIO_W`.
+        bio_view(&person.bio, ea).draw(p, Rect::new(col_x, by, BIO_W, 0.0));
     }
 }
 
-/// One `Movies` / `Shows` shelf: the heading, then the shared strip of poster cards. Identical
-/// composition to detail's Related row — same `RowStyle::HOME` geometry, same springs, same
-/// progress language on the tiles (the unwatched corner angle rides `Art::Poster`, the amber
-/// resume bar rides `PmsMovie::resume_frac`).
+
+/// One `Movies` / `Shows` shelf: the heading with its item count, then the shared strip of poster
+/// cards. Identical composition to detail's Related row — same `RowStyle::HOME` geometry, same
+/// springs, same progress language on the tiles — plus the focused tile's SECOND line: the
+/// character this person played in it ([`Person::role`]), the caption `card_row::strip` now
+/// threads through.
 fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
     let items = person.shelf(kind);
     let row = &sc.shelves[kind];
-    let focus_col = if sc.focus_kind == kind { sc.col[kind] } else { -1 };
-    Label::new(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING)
+    // `-1` while the HEADER holds focus, not just while another shelf does: a shelf whose kind
+    // happens to match still owns no focus then, and `strip` captions whatever column it is given.
+    // Without the `on_header` term the page mounted with tile 0 already wearing its title and
+    // character line — a card that reads as selected while the portrait is what the user is on.
+    // (`update` already freezes these rows' springs in that state, so the pop was correctly absent,
+    // which is exactly what made the stray labels look deliberate.)
+    let focus_col = if !sc.on_header && sc.focus_kind == kind { sc.col[kind] } else { -1 };
+    let hy = -row.lift();
+    #[allow(unused_variables)] // `tw` is used only when the count run exists
+    let tw = Label::new(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING)
         .bold()
         .v(VAlign::CapTop)
-        .draw(p, Rect::new(MARGIN_X, -row.lift(), SCR_W, 0.0));
+        .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
+    if !sc.shelf_count_c[kind].as_bytes().is_empty() {
+        // the count sits ON THE HEADING'S BASELINE — two sizes cap-top-aligned would leave the
+        // smaller run floating above the line the eye reads
+        let tw = crate::text::text_width(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, 1);
+        Label::new(sc.shelf_count_c[kind].as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .v(VAlign::Baseline)
+            .draw(p, Rect::new(MARGIN_X + tw + SHELF_COUNT_GAP, hy, 0.0, crate::text::cap_h(theme::size::HEADLINE, 1)));
+    }
     card_row::strip(
         p,
         row,
@@ -688,11 +856,16 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
         SHELF_LABEL_H,
         (CARD_W, CARD_H),
         CARD_W + GAP,
-        &RowStyle::HOME,
+        &SHELF_STYLE,
         SCR_W,
         |i| Art::Poster(items.get(i)),
         |i| items.get(i).and_then(|m| m.resume_frac()),
-        |i| items.get(i).and_then(|m| CString::new(m.title.clone()).ok()),
+        // the focused tile's two lines: the title (wrapped to two, per SHELF_STYLE) over the
+        // character this person played in it
+        |i| match items.get(i) {
+            Some(m) => card_row::TileLabel::titled(&m.title, person.role(kind, i)),
+            None => card_row::TileLabel::default(),
+        },
         |_, _, _, _| {},
     );
 }
@@ -704,18 +877,24 @@ fn draw_shelf_state(p: Painter, env: &Env, sc: &Scene) {
     if crate::person::current().map(|pp| present(pp).1 > 0).unwrap_or(true) {
         return;
     }
-    let y = HEADER_TOP + sc.header.total + SHELF_GAP - sc.column.scroll.pos;
+    // the SAME flow the first shelf would occupy — child_top(1), not a restated sum, so nothing
+    // jumps when the shelves arrive and a flow change cannot leave this anchor behind
+    let y = sc.column.child_top(sc, 1) - sc.column.scroll.pos;
+    let band = Rect::new(0.0, y, SCR_W, CARD_H);
     if crate::person::loading() {
-        Spinner::new(SCR_W * 0.5, y + CARD_H * 0.5, 26.0)
+        // A BARE spinner, not `StatusKind::Working` — that treatment stacks a caption under the
+        // dots, and there is nothing honest to write here: the header above is already complete and
+        // the shelves are the only thing outstanding. Deliberate, per `StatusOverlay`'s own note
+        // that the caller owns the words.
+        Spinner::new(band.cx(), band.cy(), 26.0)
             .phase(sc.spin_ms as u32)
             .tint(theme::TEXT_SECONDARY)
             .draw(env, p);
         return;
     }
-    Label::new(c"Nothing from this person is in your libraries".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
-        .h(HAlign::Center)
-        .v(VAlign::CapTop)
-        .draw(p, Rect::new(0.0, y + CARD_H * 0.5, SCR_W, 0.0));
+    // ...but the settled answer IS the shared Empty read-out — a library with nothing in it is an
+    // answer, not a fault, which is the distinction `StatusKind::Empty` exists to keep.
+    StatusOverlay::new(band, c"Nothing from this person is in your libraries", StatusKind::Empty).draw(env, p);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -728,7 +907,7 @@ mod tests {
     }
 
     /// Seed the store the way a landing does, without a server — and step off the header, because
-    /// the page now MOUNTS there (see [`open`]) and every shelf-focus assertion below starts from
+    /// the page MOUNTS there (see [`open`]) and every shelf-focus assertion below starts from
     /// the first shelf.
     fn seed(movies: usize, shows: usize) {
         seed_at_header(movies, shows);
@@ -767,10 +946,9 @@ mod tests {
         crate::person::close();
     }
 
-    /// **The reported bug**: once focus was down in the shelves the page could never get back to
-    /// the portrait. UP from the FIRST shelf must reach the header — and from there the page's
-    /// resting scroll is 0, i.e. the whole header on screen — while UP from a LOWER shelf still
-    /// walks one shelf at a time and never teleports past them.
+    /// UP from the FIRST shelf must reach the header — the page's top row and the state the band
+    /// expands for — while UP from a LOWER shelf still walks one shelf at a time and never
+    /// teleports past them.
     #[test]
     fn up_from_the_first_shelf_returns_to_the_header_and_scrolls_the_portrait_back() {
         let _serial = crate::testlock::serial();
@@ -783,7 +961,7 @@ mod tests {
         assert_eq!(scene().focus_kind, 0);
 
         move_focus(SDLK_UP);
-        assert!(scene().on_header, "UP from the first shelf left the portrait unreachable");
+        assert!(scene().on_header, "UP from the first shelf must reach the header");
         assert!(focused_item().is_none(), "the header holds no card — OK there must do nothing");
         assert_eq!(Column::focus_child(scene()), Some(0), "the header is flow child 0");
 
@@ -855,45 +1033,54 @@ mod tests {
         assert!(crate::person::current().is_none());
     }
 
-    // The header's own height needs the text stack (the name's cap band, the bio's pixel wrap),
+    // The band's real heights need the text stack (the name's cap band, the bio's pixel wrap),
     // which the host suite cannot link — so the geometry tests below feed `reveal_block`, which is
-    // pure, with BOUNDS on that height instead of measuring it.
+    // pure, with BOUNDS on those heights instead of measuring them.
     //
-    /// A bio-less header: portrait + name, the name bounded by its full point size.
-    const BARE_HEADER_H: f32 = PORTRAIT_D + NAME_GAP + theme::size::HERO as f32;
-    const FIRST_SHELF_TOP: f32 = HEADER_TOP + BARE_HEADER_H + SHELF_GAP;
-    /// A FULL header — roles + Born/Died + a 3-line bio, each line bounded by its point size. This
-    /// is the shape the plex.tv fetch produces, i.e. the normal one, and the reason the header had
-    /// to become a focus row: it no longer fits above a focused first shelf.
-    const FULL_HEADER_H: f32 = BARE_HEADER_H
-        + ROLES_GAP
+    /// The FULL text stack, bounded above by giving every line its whole point size (the real flow
+    /// measures cap bands, which are shorter) — 72+24+26+16+26+40+120 = 324.
+    const STACK_BOUND: f32 = theme::size::HERO as f32
+        + META_GAP
         + theme::size::LABEL as f32
         + LIFE_GAP
         + theme::size::LABEL as f32
         + BIO_GAP
         + BIO_LINES as f32 * BIO_LEAD;
+    /// The expanded band, bounded above: whichever of the portrait and that stack is taller. `f32::max`
+    /// is not const, hence the comparison. This is v2's packing dividend in one number — the text rides
+    /// BESIDE the portrait now, so a header with a full biography is ~324px instead of the ~580 v1's
+    /// stacked column reached.
+    const EXP_HEADER_H: f32 = if STACK_BOUND > PORTRAIT_EXP { STACK_BOUND } else { PORTRAIT_EXP };
 
-    /// A bio-less page opens showing its WHOLE header: revealing the first shelf costs no scroll at
-    /// all. This is why the target is the shared minimal `reveal` and not a lift-to-margin pin — a
-    /// pin would slide the portrait off the top the moment the page mounted.
+    /// **The v2 packing dividend, as geometry.** The first shelf fits on screen with NO scroll
+    /// under BOTH band states — even the EXPANDED one, and even against the pessimistic point-size
+    /// bound above. (Under v1's stacked header a full biography pushed the first shelf below the
+    /// fold, which is the bug that made the header a focus row; the row stays, but for navigation
+    /// and the condense, not reachability.) So this is the test that fails if a future band, gap or
+    /// under-title band grows past the room the page actually has.
     #[test]
-    fn a_bare_header_needs_no_scroll_to_reveal_the_first_shelf() {
+    fn the_first_shelf_fits_at_rest_under_either_band_state() {
         let h = shelf_block_h();
-        let content = FIRST_SHELF_TOP + h + BOTTOM_PAD;
-        assert_eq!(
-            reveal_block(0.0, FIRST_SHELF_TOP, h, content),
-            0.0,
-            "focusing the first shelf scrolled the header away (block bottom {})",
-            FIRST_SHELF_TOP + h
-        );
+        for band in [H_CON, EXP_HEADER_H] {
+            let top = HEADER_TOP + band + SHELF_GAP;
+            let content = top + h + BOTTOM_PAD;
+            assert_eq!(
+                reveal_block(0.0, top, h, content),
+                0.0,
+                "band {band}: focusing the first shelf scrolled the page (block bottom {}, floor {})",
+                top + h,
+                SCR_H - BOTTOM_PAD
+            );
+        }
     }
 
     /// ...and a SECOND shelf, which cannot fit alongside the first, does scroll — by exactly
-    /// enough to put its own block bottom on screen, never further.
+    /// enough to put its own block bottom on screen, never further. Graded at the CONDENSED band
+    /// height, which is the state the page is actually in once focus is down at shelf two.
     #[test]
     fn reaching_the_second_shelf_scrolls_it_fully_into_view_and_no_further() {
         let h = shelf_block_h();
-        let top = FIRST_SHELF_TOP + h + SHELF_GAP;
+        let top = HEADER_TOP + H_CON + SHELF_GAP + h + SHELF_GAP;
         let content = top + h + BOTTOM_PAD;
         let want = reveal_block(0.0, top, h, content);
         assert!(want > 0.0, "the second shelf must scroll into view");
@@ -901,44 +1088,18 @@ mod tests {
         assert!(top - want >= TOP_MARGIN, "it scrolled past the minimum — the shelf overshot upward");
     }
 
-    /// **The bug, as geometry.** With a real header the first shelf CANNOT be revealed without
-    /// scrolling, and `reveal` is MINIMAL in both directions — arriving from below it stops the
-    /// moment the shelf's own block is on screen, which is still well short of the top. So while
-    /// the shelves were the only focusable rows, that resting offset was a floor the page could
-    /// never rise above and the portrait was gone for good. This test states the precondition, so
-    /// that if the header ever shrinks back under the fold the next reader can tell that the header
-    /// row stopped being load-bearing.
-    #[test]
-    fn a_full_header_cannot_share_the_screen_with_a_focused_first_shelf() {
-        let h = shelf_block_h();
-        let top = HEADER_TOP + FULL_HEADER_H + SHELF_GAP;
-        // both content lengths matter: with ONE shelf the flow's own end clamps the scroll, with
-        // TWO it is the shelf's lift-to-margin edge — the header stays off screen either way
-        for content in [top + h + BOTTOM_PAD, top + 2.0 * h + SHELF_GAP + BOTTOM_PAD] {
-            let want = reveal_block(0.0, top, h, content);
-            assert!(want > 0.0, "the first shelf now fits under a full header — see the doc comment");
-            assert!(HEADER_TOP - want < 0.0, "the header's top is off screen once the shelf is revealed");
-            // and coming back from further down does not undo it — `reveal` is minimal from that
-            // side too, so it stops at the shelf's lift-to-margin edge, still short of the top
-            let back = reveal_block(content, top, h, content);
-            assert!(back > 0.0, "focusing the first shelf from below reached the top by itself");
-            assert!(HEADER_TOP - back < 0.0, "the header would have been on screen without a header row");
-        }
-    }
-
-    /// **The fix.** Focusing the header — flow child 0, at [`HEADER_TOP`] — rests the page at 0 for
-    /// ANY header height the page can produce, which is what puts the portrait back on screen. It
-    /// holds from wherever the scroll happens to be, so returning from deep in the shelves lands at
-    /// the top rather than part-way.
+    /// Focusing the header — flow child 0, at [`HEADER_TOP`] — rests the page at 0 for ANY band
+    /// height the page can produce, from wherever the scroll happens to be: returning from deep in
+    /// the shelves lands at the top (where the band then expands), never part-way.
     #[test]
     fn focusing_the_header_rests_the_page_at_the_top_from_any_scroll() {
-        for h in [BARE_HEADER_H, FULL_HEADER_H, FULL_HEADER_H * 1.5] {
+        for h in [H_CON, EXP_HEADER_H, EXP_HEADER_H * 1.5] {
             let content = HEADER_TOP + h + SHELF_GAP + 2.0 * (shelf_block_h() + SHELF_GAP) + BOTTOM_PAD;
             for cur in [0.0, 200.0, content] {
                 assert_eq!(
                     reveal_block(cur, HEADER_TOP, h, content),
                     0.0,
-                    "header h={h} did not rest the page at the top from scroll {cur}"
+                    "band h={h} did not rest the page at the top from scroll {cur}"
                 );
             }
         }
