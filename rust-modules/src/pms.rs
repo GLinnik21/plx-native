@@ -253,55 +253,59 @@ type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<usize>);
 /// (transport, HTTP, or parse), which is NOT the same as a server with no hubs (`Some` with an
 /// empty build). Shared verbatim by the blocking boot fetch and the off-thread retry.
 fn fetch_build() -> Option<HubBuild> {
-    let mc = crate::plex::client_opt()?.home_hubs(12)?;
-    Some(build_hubs(&mc))
+    let c = crate::plex::client_opt()?;
+    let mc = c.home_hubs(12)?;
+    // The Continue Watching shelf comes from the DEDICATED hub, not from `/hubs`'s
+    // `home.continue` + `home.ondeck` pair — see `build_hubs`. Its failure fails the whole fetch
+    // (`?`), which is the module's existing contract: nothing commits, the three statics keep their
+    // last consistent values, and `pump` retries on a backoff. Losing the most important shelf to a
+    // transient error would be worse than briefly showing the previous one.
+    let cw = c.continue_watching(12)?;
+    Some(build_hubs(&mc, &cw))
 }
 
 /// Project a /hubs response into the catalog/hubs/pool triple. Pure — no statics, no I/O.
-fn build_hubs(mc: &crate::plex::MediaContainer) -> HubBuild {
+fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer) -> HubBuild {
     let mut new_cat: Vec<PmsMovie> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
     let mut new_pool: Vec<usize> = Vec::new();
     const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
 
-    // Build the display shelves as ordered lists of item refs. Continue Watching
-    // (home.continue) and On Deck (home.ondeck) are merged into one "Continue
-    // Watching" shelf — the official-app behaviour: in-progress items unified with
-    // next-up episodes, deduped by ratingKey (the same episode carries one rk in
-    // both hubs; a next-up episode has its own). The merged shelf is then sorted by
-    // lastViewedAt desc so "most recently played" leads, interleaving resume points
-    // and next-up by recency rather than by which hub they came from.
+    // Build the display shelves as ordered lists of item refs.
+    //
+    // Continue Watching comes from the **dedicated** `/hubs/continueWatching` hub, and `/hubs`'s own
+    // `home.continue` / `home.ondeck` pair is skipped entirely. It used to merge that pair by hand
+    // (in-progress items unified with next-up episodes, deduped by ratingKey) to reproduce the
+    // official-app row — the dedicated hub already IS that row, so the merge was reimplementing a
+    // server-side answer.
+    //
+    // The reason it has to be the dedicated one, though, is `removeFromContinueWatching`: measured on
+    // PMS 1.43.3, that action hides an item from `/hubs/continueWatching` and from `home.ondeck` but
+    // **NOT** from `home.continue` (see `plex::Client::remove_from_continue_watching`). Built from the
+    // pair, this shelf would keep drawing a card the server had been told to hide, and the context
+    // menu's Remove row would look broken while the server had done exactly as asked.
     let mut shelves: Vec<(String, String, Vec<&crate::plex::Metadata>)> = Vec::new(); // (title, hubIdentifier, items)
-    let mut cw_idx: Option<usize> = None; // shelves slot of the merged Continue Watching
-    let mut cw_seen: Vec<&str> = Vec::new(); // ratingKeys already merged in
+    let mut cw_idx: Option<usize> = None; // shelves slot of Continue Watching
+    for hub in cw.hub.iter() {
+        let items: Vec<&crate::plex::Metadata> =
+            hub.metadata.iter().filter(|m| !SKIP.contains(&m.kind.as_str())).collect();
+        if items.is_empty() {
+            continue;
+        }
+        // keep the hub id the rest of the module already matches on (hero-pool eligibility,
+        // `hub_plays_directly`), rather than the dedicated hub's own "continueWatching"
+        shelves.push(("Continue Watching".to_string(), "home.continue".to_string(), items));
+        cw_idx = Some(shelves.len() - 1);
+        break;
+    }
     for hub in &mc.hub {
         if SKIP.contains(&hub.kind.as_str()) || hub.metadata.is_empty() {
             continue;
         }
         if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
-            if cw_idx.is_none() {
-                // synthetic id: the merged shelf spans home.continue + home.ondeck; tag it with
-                // the former so the hero-pool eligibility can recognize it locale-independently.
-                shelves.push(("Continue Watching".to_string(), "home.continue".to_string(), Vec::new()));
-                cw_idx = Some(shelves.len() - 1);
-            }
-            let si = cw_idx.unwrap();
-            for item in &hub.metadata {
-                if SKIP.contains(&item.kind.as_str()) {
-                    continue;
-                }
-                let rk = item.rating_key.as_str();
-                if !rk.is_empty() && cw_seen.contains(&rk) {
-                    continue;
-                }
-                if !rk.is_empty() {
-                    cw_seen.push(rk);
-                }
-                shelves[si].2.push(item);
-            }
-        } else {
-            shelves.push((hub.title.clone(), hub.hub_identifier.clone(), hub.metadata.iter().collect()));
+            continue; // superseded by the dedicated hub above
         }
+        shelves.push((hub.title.clone(), hub.hub_identifier.clone(), hub.metadata.iter().collect()));
     }
     if let Some(si) = cw_idx {
         // stable sort: most recently played first; equal timestamps keep hub order.

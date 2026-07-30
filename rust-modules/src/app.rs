@@ -1068,7 +1068,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if !crate::ui::item_menu::has_actions(m) {
                 return false;
             }
-            crate::ui::item_menu::open(m, crate::ui::home::focused_card_rect());
+            // the Remove-from-deck row only exists on a Continue Watching card — nothing else has a
+            // deck to be removed from (see `item_menu::build`)
+            let from_deck = crate::pms::hub_is_continue(crate::ui::home::row() as usize);
+            crate::ui::item_menu::open(m, from_deck, crate::ui::home::focused_card_rect());
             *route = Route::ItemMenu { over: MenuHost::Home };
             true
         }
@@ -1114,7 +1117,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // nothing and land on a blank page. `build` already refuses to offer such a row — this
             // is the belt to that braces, since the menu is data-driven off the hub rows.
             let rk_of = |a: &Action| match a {
-                Action::GoToItem(rk) | Action::MarkWatched(rk, _) | Action::PlayFromStart(rk) => rk.clone(),
+                Action::GoToItem(rk)
+                | Action::MarkWatched(rk, _)
+                | Action::PlayFromStart(rk)
+                | Action::RemoveFromDeck(rk) => rk.clone(),
                 Action::GoToShow(rk, _) => rk.clone(),
                 Action::None => String::new(),
             };
@@ -1161,6 +1167,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     let n = crate::pms::refetch_hubs_reconcile();
                     log(&format!("item menu: rk={rk} watched={} → hubs refreshed ({n} items)", !watched as i32));
+                }
+                Action::RemoveFromDeck(rk) => {
+                    // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
+                    // the shelf while the resume point survives and playing it again picks up where it
+                    // left off. That is why this is NOT `unscrobble`, which would throw the position
+                    // away. See `plex::Client::remove_from_continue_watching`.
+                    //
+                    // Then the same blocking refetch the watched toggle does, for the same reason: the
+                    // card sits under the user's cursor and must not still be there after they removed
+                    // it. The shelf is sourced from `/hubs/continueWatching`, which is the hub this
+                    // action actually affects — built from `/hubs`'s `home.continue` it would come back
+                    // still listing the item (see `pms::build_hubs`).
+                    let ok = crate::plex::client().remove_from_continue_watching(&rk);
+                    let n = crate::pms::refetch_hubs_reconcile();
+                    log(&format!("item menu: rk={rk} removed from deck ok={ok} → hubs refreshed ({n} items)"));
                 }
                 Action::PlayFromStart(rk) => {
                     // On the detail page the target is an episode of the LOADED SEASON, which the hub

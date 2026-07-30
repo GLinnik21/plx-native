@@ -45,6 +45,10 @@ pub(crate) enum Action {
     MarkWatched(String, bool),
     /// play this leaf ignoring its resume point
     PlayFromStart(String),
+    /// hide this item from the Continue Watching deck — the server-side `removeFromContinueWatching`.
+    /// **Keeps the resume point**: it is a hide, not a reset, so playing the item again picks up
+    /// where it left off (see `plex::Client::remove_from_continue_watching`).
+    RemoveFromDeck(String),
 }
 
 /// The panel's fixed width. Wide enough for "Mark as Unwatched" at the table's compact BODY size
@@ -92,8 +96,8 @@ pub(crate) fn has_actions(m: &PmsMovie) -> bool {
 
 /// Open the menu for `m`, anchored beside `anchor` (the focused card's drawn rect; `None` centres
 /// it, which is only reachable from the headless trigger).
-pub(crate) fn open(m: &PmsMovie, anchor: Option<Rect>) {
-    present(build(m), anchor);
+pub(crate) fn open(m: &PmsMovie, from_deck: bool, anchor: Option<Rect>) {
+    present(build(m, from_deck), anchor);
 }
 
 /// Open the menu for the DETAIL page's focused episode still — the owner-reported gap (a long press
@@ -124,7 +128,7 @@ pub(crate) fn close() {
 /// navigation (`Go to Episode` · `Go to Show`) — separator — state (`Mark as Watched` ·
 /// `Play from Start`), adapted per item kind (`PmsMovie::kind`: 0 movie / 1 show / 2 season /
 /// 3 episode).
-fn build(m: &PmsMovie) -> (Section, Vec<Option<Action>>) {
+fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     let mut sec = Section::new(""); // no header: the card behind the panel IS the title
     let mut acts: Vec<Option<Action>> = Vec::new();
     let leaf = m.kind == 0 || m.kind == 3;
@@ -168,7 +172,24 @@ fn build(m: &PmsMovie) -> (Section, Vec<Option<Action>>) {
     // cannot distinguish part-watched from fully-watched — so those keep the one-way "Mark as
     // Watched" rather than claim a toggle they can't compute. (Follow-up: carry viewedLeafCount /
     // leafCount on the catalog row and this becomes a toggle everywhere.)
-    let sec = state_rows(sec, &mut acts, &m.rk, leaf && !m.unwatched, leaf);
+    let mut sec = state_rows(sec, &mut acts, &m.rk, leaf && !m.unwatched, leaf);
+
+    // ---- and, only on a Continue Watching card, the row that takes it off the deck ----
+    // Gated on the SHELF, not on the item: the action is meaningless anywhere else (nothing to
+    // remove it from), and offering it on a Recently Added card would be a row that silently did
+    // nothing. `pms::hub_is_continue` is what the caller passes in.
+    //
+    // Last, after the watched toggle, because it is the only row here that removes something from
+    // view — the destructive-ish end of the group, where a mis-hit is least likely.
+    if from_deck {
+        // "Remove from Deck", not "Remove from Continue Watching": the longer label elides inside
+        // `PANEL_W` at the table's compact BODY size, and widening the panel would push it across the
+        // neighbouring card it is anchored beside. It is also the more accurate of the two — the server
+        // action hides the item from the DECK and leaves its resume point intact, so "remove from
+        // continue watching" over-promises a reset it does not perform.
+        sec = sec.row(Row::new("Remove from Deck").licon(Icon::Close));
+        acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
+    }
     (sec, acts)
 }
 
@@ -306,7 +327,7 @@ mod tests {
 
     #[test]
     fn an_episode_offers_the_pinned_row_set_in_order() {
-        let (sec, acts) = build(&item(3, true));
+        let (sec, acts) = build(&item(3, true), false);
         assert_eq!(
             labels(&sec),
             ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start"]
@@ -323,7 +344,7 @@ mod tests {
 
     #[test]
     fn a_watched_leaf_offers_the_reverse_toggle() {
-        let (sec, acts) = build(&item(0, false)); // movie, viewCount >= 1
+        let (sec, acts) = build(&item(0, false), false); // movie, viewCount >= 1
         assert_eq!(labels(&sec), ["Go to Movie", "—", "Mark as Unwatched", "Play from Start"]);
         match acts[2].as_ref().unwrap() {
             Action::MarkWatched(_, watched) => assert!(*watched),
@@ -337,7 +358,7 @@ mod tests {
     fn a_show_has_no_play_from_start_and_never_claims_a_toggle() {
         // `unwatched == false` on a show only means "some leaf was watched" — not fully watched,
         // so the row must stay the one-way "Mark as Watched".
-        let (sec, acts) = build(&item(1, false));
+        let (sec, acts) = build(&item(1, false), false);
         assert_eq!(labels(&sec), ["Go to Show", "—", "Mark as Watched"]);
         match acts[2].as_ref().unwrap() {
             Action::MarkWatched(_, watched) => assert!(!*watched),
@@ -351,15 +372,46 @@ mod tests {
         // would resolve to an empty rk, i.e. a blocking fetch for nothing and a blank page
         let mut m = item(3, true);
         m.show_rk.clear();
-        let (sec, acts) = build(&m);
+        let (sec, acts) = build(&m, false);
         assert_eq!(labels(&sec), ["Go to Episode", "—", "Mark as Watched", "Play from Start"]);
         assert!(acts.iter().flatten().all(|a| !matches!(a, Action::GoToShow(..))));
         // and a SEASON with no parent has no navigation at all — so no leading separator either,
         // which would otherwise open the menu with a rule above its first row
         let mut s = item(2, true);
         s.show_rk.clear();
-        let (sec, _) = build(&s);
+        let (sec, _) = build(&s, false);
         assert_eq!(labels(&sec), ["Mark as Watched"]);
+    }
+
+    /// **Remove from Continue Watching** is gated on the SHELF, not on the item: only a card that came
+    /// from the deck has a deck to leave. Offered anywhere else it would be a row that appeared to work
+    /// and silently changed nothing, since the server-side action only affects that hub.
+    ///
+    /// Pinned last in the group on purpose — it is the one row here that takes something out of view,
+    /// so it sits where a mis-press is least likely, and the assertion below is what keeps a later row
+    /// from being appended after it.
+    #[test]
+    fn the_remove_from_deck_row_exists_only_on_a_continue_watching_card() {
+        // same card, both shelves — the ONLY difference is where it was focused
+        let (off_deck, acts_off) = build(&item(3, true), false);
+        assert_eq!(labels(&off_deck), ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start"]);
+        assert!(
+            !acts_off.iter().flatten().any(|a| matches!(a, Action::RemoveFromDeck(_))),
+            "a card off the deck must not offer to remove it from one"
+        );
+
+        let (on_deck, acts_on) = build(&item(3, true), true);
+        assert_eq!(
+            labels(&on_deck),
+            ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start", "Remove from Deck"],
+            "…and on the deck it is the LAST row, after the watched toggle"
+        );
+        match acts_on.last().expect("a trailing action").as_ref().expect("not a separator") {
+            Action::RemoveFromDeck(rk) => assert_eq!(rk, "42", "…carrying the card's own ratingKey"),
+            _ => panic!("the last row must be the deck removal"),
+        }
+        // it is an ADDITION to the group, not a replacement — the watched toggle is still there
+        assert!(acts_on.iter().flatten().any(|a| matches!(a, Action::MarkWatched(..))));
     }
 
     /// The detail page's filmstrip menu: the state rows, no navigation group, and therefore no
@@ -372,7 +424,7 @@ mod tests {
         assert_eq!(labels(&sec), ["Mark as Watched", "Play from Start"]);
         assert!(acts.iter().all(|a| a.is_some()), "no separator, so every row acts");
         // the shelf menu's episode rows END with exactly these two, in this order
-        let (shelf, _) = build(&item(3, true));
+        let (shelf, _) = build(&item(3, true), false);
         assert_eq!(labels(&sec), labels(&shelf)[shelf.rows.len() - 2..]);
 
         // a watched episode gets the reverse toggle, carrying its OWN rk (the menu captured its
@@ -395,7 +447,7 @@ mod tests {
     #[test]
     fn the_focus_walk_steps_over_the_separator_and_stops_at_the_ends() {
         let mut t = TableView::new();
-        let (sec, _) = build(&item(3, true));
+        let (sec, _) = build(&item(3, true), false);
         t.set_sections(vec![sec], 0, false);
         assert_eq!(t.sel, 0); // Go to Episode
         t.move_sel(1);
@@ -418,7 +470,7 @@ mod tests {
     #[test]
     fn a_selection_landed_on_the_separator_settles_onto_a_real_row() {
         let mut t = TableView::new();
-        let (sec, _) = build(&item(3, true));
+        let (sec, _) = build(&item(3, true), false);
         t.set_sections(vec![sec], 2, false); // index 2 IS the separator
         assert_eq!(t.sel, 3);
     }
