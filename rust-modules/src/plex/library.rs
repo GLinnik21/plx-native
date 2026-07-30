@@ -56,10 +56,17 @@ impl Client {
     /// `includeChapters=1` / `includeMarkers=1` — PMS omits BOTH the `Chapter[]` and `Marker[]`
     /// arrays from the default response. Markers drive the in-player Skip Intro / Skip Credits
     /// prompt, so they ride the detail fetch rather than costing a second round trip.
+    ///
+    /// `includeOnDeck=1` adds, for a SHOW, the one episode the server considers next to watch —
+    /// `OnDeck.Metadata`, a whole episode record (thumb, summary, `Media`, `viewOffset`). It is the
+    /// only show-level answer to "what's next": the client otherwise holds ONE season's episodes at a
+    /// time, so anything it computed itself would change with the selected season tab. Verified live
+    /// 2026-07-30 on rk 437 → S2E2 at 635510/3130720 while season 1 was the loaded tab.
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
         let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
             .int("includeChapters", 1)
             .int("includeMarkers", 1)
+            .int("includeOnDeck", 1)
             .build();
         self.get_json(&path)?.metadata.into_iter().next()
     }

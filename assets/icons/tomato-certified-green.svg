@@ -1,0 +1,9 @@
+<!-- Rotten Tomatoes Certified Fresh — the GREEN LAYER: the calyx crowning the box, and the ribbon
+     banner sweeping under the seal. Both in one `<path>` per ui/icons.rs's authoring contract; they
+     do not overlap each other (calyx at the top, banner at the bottom), so their winding directions
+     are free — the all-clockwise rule only bites where subpaths OVERLAP, where a reversed one would
+     punch a hole.
+     Front-most of three layers: seal → box → green. -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <path d="M12 7.2 7.9 4.5l4.3.7-2.6-3.6 3 2.6.8-3.2.9 3.2 2.6-2.2-2 3.2 4.1-.7z M1.2 20.6C6.6 16.3 17.4 16.3 22.8 20.6l0 2.4C17.4 19 6.6 19 1.2 23z"/>
+</svg>

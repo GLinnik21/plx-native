@@ -60,12 +60,17 @@ pub struct TextView<'a> {
     align: HAlign,
     max_lines: usize,                       // 0 = unlimited
     trailing: Option<(&'a str, [f32; 4])>,  // inline run after the last line when truncated (e.g. "MORE")
+    /// Inline BOLD run before the first word (e.g. the detail hero's `S2, E3 · Laura:` episode
+    /// prefix). The mirror of [`TextView::trailing`], and it has to be part of the view rather than a
+    /// separately-drawn label because the wrap has to know about it: line 0's available width is
+    /// reduced by the run, every later line gets the full column. Drawn bold in its own colour.
+    lead: Option<(&'a str, [f32; 4])>,
     fade_last: f32, // px reserved at the wrap width's right edge; >0 fades a truncated last line out before it
 }
 
 impl<'a> TextView<'a> {
     pub fn new(text: &'a str, sz: c_int, col: [f32; 4]) -> Self {
-        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None, fade_last: 0.0 }
+        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None, lead: None, fade_last: 0.0 }
     }
     pub fn bold(mut self) -> Self {
         self.bold = 1;
@@ -91,6 +96,20 @@ impl<'a> TextView<'a> {
     pub fn trailing(mut self, run: &'a str, col: [f32; 4]) -> Self {
         self.trailing = Some((run, col));
         self
+    }
+    /// Inline BOLD run before the first word, in its own colour — see [`TextView::lead`] the field.
+    /// Left-aligned blocks only (it is positioned at the column's left edge).
+    pub fn lead(mut self, run: &'a str, col: [f32; 4]) -> Self {
+        self.lead = Some((run, col));
+        self
+    }
+    /// The bold lead run's pixel width plus the space after it, or 0 with no lead. Line 0 wraps into
+    /// `width - this`; every later line gets the whole column.
+    fn lead_w(&self) -> f32 {
+        self.lead
+            .and_then(|(r, _)| CString::new(r).ok())
+            .map(|c| crate::text::text_width(c.as_ptr(), self.sz, 1) + self.measure(" "))
+            .unwrap_or(0.0)
     }
     /// Reserve `px` at the wrap width's right edge for an OUT-OF-FLOW affordance sitting on the last
     /// line (the About card's right-pinned MORE): when the text was truncated by `max_lines` AND the
@@ -126,6 +145,8 @@ impl<'a> TextView<'a> {
         self.bold.hash(&mut h);
         (width as i32).hash(&mut h);
         self.max_lines.hash(&mut h);
+        // the lead run narrows line 0, so two views differing only in it wrap differently
+        self.lead.map(|(r, _)| r).unwrap_or("").hash(&mut h);
         wrap_memo(h.finish(), || self.wrap_uncached(width))
     }
 
@@ -135,9 +156,13 @@ impl<'a> TextView<'a> {
         let mut lines: Vec<String> = Vec::new();
         let mut cur = String::new();
         let mut i = 0;
+        // line 0 shares its row with the bold lead run, so it wraps into the column MINUS that run;
+        // every later line gets the whole column back
+        let lead_w = self.lead_w();
+        let avail = |line: usize| if line == 0 { (width - lead_w).max(0.0) } else { width };
         while i < words.len() {
             let trial = if cur.is_empty() { words[i].to_string() } else { format!("{cur} {}", words[i]) };
-            if !cur.is_empty() && self.measure(&trial) > width {
+            if !cur.is_empty() && self.measure(&trial) > avail(lines.len()) {
                 lines.push(std::mem::take(&mut cur));
                 if self.max_lines > 0 && lines.len() == self.max_lines {
                     break; // out of line budget; `i` still points at unplaced words → truncated
@@ -155,17 +180,20 @@ impl<'a> TextView<'a> {
         let truncated = i < words.len(); // unplaced words remain → the block was cut off
         if truncated {
             // more text than fits — ellipsize the last placed line to width
+            let li = lines.len().saturating_sub(1);
+            let w = if li == 0 { (width - lead_w).max(0.0) } else { width };
             if let Some(last) = lines.last_mut() {
-                *last = crate::text::elide(last, width, self.sz, self.bold, true);
+                *last = crate::text::elide(last, w, self.sz, self.bold, true);
             }
         }
         // safety: a lone token wider than the column can't be word-broken (a long URL/compound word,
         // or a space-less script that yields one "word") — ellipsize any over-wide line so it never
         // paints past the column (Painter has no clip). Also covers the whole-text-is-one-token case
         // that slips past the truncation gate above.
-        for ln in lines.iter_mut() {
-            if self.measure(ln) > width {
-                *ln = crate::text::elide(ln, width, self.sz, self.bold, true);
+        for (li, ln) in lines.iter_mut().enumerate() {
+            let w = if li == 0 { (width - lead_w).max(0.0) } else { width };
+            if self.measure(ln) > w {
+                *ln = crate::text::elide(ln, w, self.sz, self.bold, true);
             }
         }
         // NUL-terminate once, here — every later frame draws these by pointer (interior NULs
@@ -205,8 +233,20 @@ impl<'a> TextView<'a> {
         const FADE_BAND: f32 = 150.0;
         let fade_to = frame.w - self.fade_last;
         let fade_from = fade_to - FADE_BAND;
+        // the bold lead run sits at the column's left edge on line 0; line 0's text starts after it
+        let lead_w = self.lead_w();
+        if let Some((r, lc)) = self.lead {
+            if let Ok(cs) = CString::new(r) {
+                Label::new(cs.as_ptr(), self.sz, lc)
+                    .bold()
+                    .h(HAlign::Left)
+                    .v(VAlign::CapTop)
+                    .draw(p, Rect::new(frame.x, frame.y, frame.w, 0.0));
+            }
+        }
         for (i, ln) in lines.iter().enumerate() {
             let is_last = i + 1 == n;
+            let dx = if i == 0 { lead_w } else { 0.0 };
             // Clip the last line short of a reserved trailing run — RARE (a trailing affordance
             // on a truncated block, e.g. the About card) and the one owned CString on this path;
             // every ordinary line draws the CACHED CString by pointer, zero alloc.
@@ -217,7 +257,7 @@ impl<'a> TextView<'a> {
                 None
             };
             let tc: &CString = clipped.as_ref().unwrap_or(ln);
-            let row = Rect::new(frame.x, frame.y + i as f32 * lh, frame.w, 0.0);
+            let row = Rect::new(frame.x + dx, frame.y + i as f32 * lh, frame.w - dx, 0.0);
             // a truncated last line with a fade_last reservation dissolves into the affordance zone
             // instead of colliding with it (only when it actually reaches that far)
             if is_last && wrapped.truncated && self.fade_last > 0.0 && self.measure_c(tc) > fade_from {

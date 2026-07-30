@@ -188,6 +188,14 @@ pub struct Metadata {
     /// score's provider identity. Present on `/library/metadata/{rk}`; **absent from a section
     /// listing**, which sends only the flat pair below (verified live 2026-07-29), so both forms
     /// are parsed and `metadata::convert_ratings` prefers this one.
+    /// `OnDeck` (SHOWS only, and only with `includeOnDeck=1`) — the one episode the server says is
+    /// next to watch, as a whole episode record: thumb, summary, `Media`, `viewOffset`, the lot.
+    ///
+    /// It is the only SHOW-LEVEL answer to "what's next". The client holds one season's episodes at a
+    /// time, so anything it worked out itself would change with the selected season tab — which is
+    /// exactly the bug this field exists to fix.
+    #[serde(rename = "OnDeck", default)]
+    pub on_deck: Option<OnDeckHub>,
     #[serde(rename = "Rating", default)]
     pub ratings: Vec<Rating>,
     /// The flat critic score (0–10) and the provider/state `image` that goes with it — the legacy
@@ -434,6 +442,31 @@ impl From<String> for HexColor {
 
 /// Lenient f64: a JSON number, a numeric string, or null → 0.0 (matches the old `jfloat`
 /// scrape). Called only when the field is present; a missing field uses `default` (0.0).
+/// `OnDeck`'s envelope. Its `Metadata` is a single **object**, not the array every other nested hub
+/// in this file uses — precisely the shape inconsistency `plex/CLAUDE.md` warns about, and a strict
+/// field here would fail the WHOLE `MediaContainer` parse (an empty detail page), not just drop the
+/// value. So [`de_on_deck`] accepts either form.
+#[derive(Deserialize, Default)]
+pub struct OnDeckHub {
+    #[serde(rename = "Metadata", default, deserialize_with = "de_on_deck")]
+    pub metadata: Option<Box<Metadata>>,
+}
+
+/// Accept `OnDeck.Metadata` as an object OR a one-element array, taking the first either way.
+fn de_on_deck<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Box<Metadata>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Box<Metadata>),
+        Many(Vec<Metadata>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(d)? {
+        Some(OneOrMany::One(m)) => Some(m),
+        Some(OneOrMany::Many(v)) => v.into_iter().next().map(Box::new),
+        None => None,
+    })
+}
+
 fn de_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]

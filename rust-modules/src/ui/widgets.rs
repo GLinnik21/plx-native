@@ -127,36 +127,183 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
     card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
 }
 
-/// Diameter of the [`watched_badge`] disc and its inset from the still's corner — the same 12px
-/// the episode filmstrip's resume bar insets by, so the two states sit on one margin. Both are
-/// CONSTANT through the focus pop (like that bar's height): the check is a 1:1-texel mask, and a
-/// size riding the scale spring would rasterize + upload a fresh texture every animating frame.
-const WATCHED_BADGE_D: f32 = 34.0;
-const WATCHED_BADGE_INSET: f32 = 12.0;
-
-/// The **watched** mark for a landscape still: a dark disc with the amber check, pinned to the
-/// tile's top-right corner. Wears exactly the pair the detail page's watched toggle already does
-/// (`CONTROL_IDLE_FILL` face + `RESUME_FILL` ink), so "this is watched" reads the same as a button
-/// and as a badge, and stays inside the app's one watched-state hue.
+/// The **watched** mark: an amber disc with the check knocked out of it in dark ink, drawn to fill
+/// `r`. The **done** state of the tile progress vocabulary (see [`card`]) — a filled disc rather than
+/// a dark one with an amber tick, because `Details Screen.dc.html` sets it INLINE at the head of the
+/// episode still's state line, at ~20px, where a dark disc reads as a hole in the artwork and the
+/// amber tick inside it is two shapes' worth of detail the size cannot carry. Filled, it is one
+/// confident amber dot that resolves at couch distance.
 ///
-/// The **done** state of [`card`]'s progress vocabulary (amber corner ANGLE = never started, amber
-/// resume BAR = in progress). Mutual exclusion is the CALLER's rule — PMS keeps a resume point on a
-/// re-started episode, so the wire says both — exactly as the poster's `resume_ms == 0` gate does.
-/// NB the episode filmstrip, its only caller today, draws the bar and this but **not** the angle:
-/// on a still, never-started is still the absence of a mark. Pass the rect actually drawn — the
-/// SCALED one while the card is popped — and the badge rides the pop without resizing.
-pub(crate) fn watched_badge(p: Painter, r: Rect) {
-    let d = WATCHED_BADGE_D;
-    let disc = Rect::new(r.x + r.w - WATCHED_BADGE_INSET - d, r.y + WATCHED_BADGE_INSET, d, d);
-    p.rect(disc, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL, 0.0);
+/// Mutual exclusion is the CALLER's rule — PMS keeps a resume point on a re-started episode, so the
+/// wire says both watched AND in-progress; see `ui::detail::ep_state`, which resolves the three
+/// states into one mark.
+pub(crate) fn watched_disc(p: Painter, r: Rect) {
+    p.rect(r, r.w * 0.5, theme::RESUME_FILL, theme::RESUME_FILL, 0.0);
     // glyph on the shared round-control ratio, so the check sits in the disc like every other one
-    let i = (d * DISC_ICON_RATIO).round();
+    let i = (r.w * DISC_ICON_RATIO).round();
     crate::ui::icons::draw(
         p,
         crate::ui::icons::Icon::Check,
-        Rect::new(disc.cx() - i * 0.5, disc.cy() - i * 0.5, i, i),
-        theme::RESUME_FILL,
+        Rect::new(r.cx() - i * 0.5, r.cy() - i * 0.5, i, i),
+        theme::INK_ON_RESUME,
     );
+}
+
+/// How many flat bands [`art_scrim`] uses for its corner region — see there for why they exist. 3 is
+/// enough that the step between them is ~0.03 alpha, well under a visible edge.
+const SCRIM_CORNER_BANDS: usize = 3;
+
+/// **THE progress bar** — the app's one "how far into this am I" mark, on every tile shape: the bottom
+/// band of the artwork itself, full-bleed edge to edge, square-ended fill, clipped to the card's own
+/// rounded silhouette so the amber visibly wraps the bottom corner arcs (the mock draws two square
+/// strips under a `overflow:hidden`, which is what that clip reproduces).
+///
+/// One function for the Continue Watching poster and the episode still, because it is meant to be the
+/// SAME bar: the still used to draw an inset rounded capsule 16px up while a CW card drew this, so
+/// "how far in am I" was two different objects on two screens of one app.
+///
+/// Two details are load-bearing, both learned on the panel:
+///
+/// * **The band is snapped to whole composited pixels.** `gfx::clip_set` truncates its scissor to
+///   integer rows while the fill is antialiased at fractional coordinates, so an unsnapped band leaves
+///   a hairline of either unscrimmed artwork or double-darkened scrim (see [`art_scrim`], same cause).
+/// * **Track and fill never share a pixel.** They used to be drawn as full-width track, then fill over
+///   it — two translucent fills (α .22 and α .95), each with its own antialiased edge, compositing on
+///   the same pixels where the card's SDF coverage is partial. Along the bottom-LEFT corner arc that
+///   sum came out brighter than either one alone: a 1–2px light fleck at the corner, which pulsed as
+///   the focus pop moved the geometry. Splitting the band at the played fraction removes the overlap
+///   rather than trying to tune around it.
+pub(crate) fn progress_bar(p: Painter, card: Rect, rad: f32, h: f32, frac: f32) {
+    let snap = |y: f32| crate::gfx::snap(y + p.dy) - p.dy;
+    let bottom = card.y + card.h;
+    let top = snap(bottom - h.min(card.h));
+    if bottom <= top {
+        return;
+    }
+    let right = card.x + card.w;
+    // the split is a whole pixel too, so the fill's square end is a clean edge rather than a column
+    // of half-covered amber
+    let split = (card.x + card.w * frac.clamp(0.0, 1.0)).round().clamp(card.x, right);
+    if split > card.x {
+        p.clip(Rect::new(card.x, top, split - card.x, bottom - top));
+        p.rrect(card, rad, rad, theme::RESUME_FILL);
+    }
+    if split < right {
+        p.clip(Rect::new(split, top, right - split, bottom - top));
+        p.rrect(card, rad, rad, theme::RESUME_TRACK);
+    }
+    p.clip_clear();
+}
+
+// ---- Keyline chip: the FINE-PRINT outlined chip — a hairline box round a very short label, sized to
+// hug it. Its one job is the content rating beside an episode's air date (`18+` / `TV-MA`).
+//
+// Deliberately NOT `badge` + `BadgeStyle::Outlined`, which is the same shape two rungs up: that chip
+// is built on `BADGE_H` (34) with 12px padding, a 2px keyline and a BOLD `CAPTION` label, because it
+// exists to sit in a row of metadata chips and hold its own. Down here it has to sit beside a 22px
+// air date as the dimmest thing on the tile, and at badge's weight it outweighed the episode TITLE
+// above it. `BADGE_H` stays one band for every `BadgeStyle`, as documented — this is a different leaf,
+// not a resized one.
+const KEYLINE_PAD_X: f32 = 7.0;
+const KEYLINE_PAD_Y: f32 = 6.0;
+const KEYLINE_RAD: f32 = 5.0;
+const KEYLINE_W: f32 = 1.5;
+
+/// The width [`keyline_chip`] will occupy for `text` — the measure-first companion.
+pub(crate) fn keyline_chip_w(text: &str) -> f32 {
+    std::ffi::CString::new(text)
+        .ok()
+        .map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 0) + 2.0 * KEYLINE_PAD_X)
+        .unwrap_or(0.0)
+}
+
+/// Draw a fine-print keyline chip with its LEFT edge at `x`, centred on `cy`; returns its width.
+/// `bg` must be the surface actually BEHIND the chip: the SDF has no stroke-only mode, so the outline
+/// is a knockout (keyline colour, then the interior inset by it) rather than a hollow ring.
+pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], bg: [f32; 4]) -> f32 {
+    let lc = match std::ffi::CString::new(text) {
+        Ok(c) => c,
+        Err(_) => return 0.0,
+    };
+    let w = keyline_chip_w(text);
+    let (ct, cb) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+    let h = (cb - ct) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band rather than a fixed band
+    let r = Rect::new(x, cy - h * 0.5, w, h);
+    p.rrect(r, KEYLINE_RAD, KEYLINE_RAD, col);
+    let b = KEYLINE_W;
+    p.rrect(
+        Rect::new(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b),
+        (KEYLINE_RAD - b).max(0.0),
+        (KEYLINE_RAD - b).max(0.0),
+        bg,
+    );
+    p.text(lc.as_ptr(), r.x + KEYLINE_PAD_X, crate::text::text_vcenter_y(theme::size::CAPTION, 0, cy), theme::size::CAPTION, col, 0, 0);
+    w
+}
+
+/// The **bottom scrim** on a piece of artwork: `h` px of near-black fading upward to nothing, clipped
+/// to the card's own rounded silhouette. This is what lets text sit directly ON a still with no chip
+/// or capsule behind it (`Details Screen.dc.html`'s episode tiles) — a plain label over an arbitrary
+/// video frame is a coin flip for legibility, and a capsule per label was the alternative the design
+/// deliberately drops.
+///
+/// Two parts, because `Painter::rect`'s gradient is the only one we have and it would round all four
+/// corners of a band: the straight-sided majority is one gradient quad, and the last `rad` px — the
+/// only rows where the card's corner arcs bite — are flat bands scissored to the card silhouette
+/// (`card_row::resume_bar`'s corner-wrapping trick). Set/clear are paired inside the call, per
+/// `ui/CLAUDE.md`'s clip contract.
+pub(crate) fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
+    let h = h.min(card.h);
+    if h <= 0.0 {
+        return;
+    }
+    // Snap every internal boundary to a whole COMPOSITED pixel (fold the painter translate, snap,
+    // unfold — the same contract text and icon masks use, see `gfx::snap`).
+    //
+    // This is load-bearing, not tidiness. The gradient quad below is a HARD fill edge — `gfx::draw_rect`
+    // takes its no-AA fast path at radius 0, deliberately, so scrims stay exactly their bounds — while
+    // `gfx::clip_set` TRUNCATES its scissor box to integer rows. At a fractional seam those two
+    // disagree by up to a pixel, and the row between them is covered by neither the gradient nor the
+    // first band: the artwork shows through it as a bright hairline across the whole tile. It only
+    // appears once the strip's scroll spring settles somewhere fractional, which is nearly always.
+    let snap = |y: f32| crate::gfx::snap(y + p.dy) - p.dy;
+    let bottom = card.y + card.h;
+    let top = snap(bottom - h);
+    let seam = snap(bottom - rad).max(top);
+    if seam > top {
+        p.rect(
+            Rect::new(card.x, top, card.w, seam - top),
+            0.0,
+            theme::scrim(0.0),
+            theme::scrim(a * (seam - top) / h),
+            0.0,
+        );
+    }
+    let end = snap(bottom);
+    if end <= seam {
+        return;
+    }
+    // Internal boundaries ABUT EXACTLY — every edge above is snapped, so `clip_set`'s integer
+    // truncation tiles the boxes with neither gap nor overlap. Both failure modes are visible as a
+    // hairline across the whole tile and they look nothing alike: a gap leaves one row of unscrimmed
+    // artwork (BRIGHT), while an overlap makes two translucent scrims composite on one row —
+    // 1-(1-.7)(1-.7) ≈ .91 against ~.7 either side — which is a BLACK one. Do not add slop here.
+    let bh = (end - seam) / SCRIM_CORNER_BANDS as f32;
+    for i in 0..SCRIM_CORNER_BANDS {
+        let y0 = if i == 0 { seam } else { snap(seam + i as f32 * bh) };
+        let y1 = if i + 1 == SCRIM_CORNER_BANDS { end } else { snap(seam + (i + 1) as f32 * bh) };
+        if y1 <= y0 {
+            continue;
+        }
+        let t = ((y0 + y1) * 0.5 - top) / h;
+        // …with ONE exception: the last band runs a pixel past the card's own edge. The rounded rect
+        // it fills ends there regardless, so it costs nothing, and it guarantees the final row is
+        // covered even though the card's true bottom is fractional.
+        let tail = if i + 1 == SCRIM_CORNER_BANDS { 1.0 } else { 0.0 };
+        p.clip(Rect::new(card.x, y0, card.w, y1 - y0 + tail));
+        p.rrect(card, rad, rad, theme::scrim(a * t));
+    }
+    p.clip_clear();
 }
 
 /// The profile chip's diameter: ONE control height with the tab pills and the circle-button
@@ -566,6 +713,8 @@ pub struct TabPill {
     pub focused: bool,
     style: TabStyle,
     note: TabNote,
+    /// see [`TabPill::plated`]
+    plated: bool,
 }
 impl TabPill {
     /// pill width for a `chars`-long label at `sz` (label advance + horizontal padding). Covers
@@ -575,13 +724,22 @@ impl TabPill {
         chars as f32 * sz as f32 * 0.56 + 44.0
     }
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, focused: false, style: TabStyle::Button, note: TabNote::None }
+        Self { frame, label, sz, focused: false, style: TabStyle::Button, note: TabNote::None, plated: false }
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
         self
     }
     /// switch to the segmented-control look (detail season tabs); `selected` = the active segment.
+    /// Give every segment its own faint plate, and the selected one a stronger plate
+    /// (`Details Screen.dc.html`'s season tabs). **Opt-in**, because the TOP tab row draws its segments
+    /// inside the tab-bar TRACK — that track already is the ground, and plating there would stack two.
+    /// The detail page's season tabs have no track, so without this an unselected season was bare text
+    /// with no indication it could be pressed.
+    pub fn plated(mut self) -> Self {
+        self.plated = true;
+        self
+    }
     pub fn segment(mut self, selected: bool) -> Self {
         self.style = TabStyle::Segment { selected };
         self
@@ -612,6 +770,8 @@ impl View for TabPill {
             TabStyle::Button if self.focused => (Some(crate::ui::ACCENT), crate::ui::ACCENT_INK, true),
             TabStyle::Button => (Some(theme::CONTROL_IDLE_FILL), theme::CONTROL_IDLE_INK, true),
             TabStyle::Segment { .. } if self.focused => (Some(crate::ui::ACCENT), crate::ui::ACCENT_INK, true),
+            TabStyle::Segment { selected: true } if self.plated => (Some(theme::TAB_PLATE_SELECTED), theme::TEXT_PRIMARY, true),
+            TabStyle::Segment { .. } if self.plated => (Some(theme::TAB_PLATE_IDLE), theme::TEXT_TERTIARY, false),
             TabStyle::Segment { selected: true } => (Some(theme::OVERLAY_FOCUS_PILL), theme::TEXT_PRIMARY, true),
             TabStyle::Segment { .. } => (None, theme::TEXT_TERTIARY, false),
         };
@@ -1099,47 +1259,218 @@ pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, icon: Option<crate:
 }
 
 // ---------------------------------------------------------------------------------------
-// ---- Rating badge: one review score behind its provider's brand mark (Rotten Tomatoes' tomato /
-// popcorn, IMDb's star, TMDB's score ring). Deliberately NOT a [`badge`] chip: a chip's border
-// boxes in art that is already a distinct silhouette, and four boxed chips in a row shout over the
-// hero. The mark is an icon MASK tinted the brand colour, the score is ordinary primary ink, and
-// the pair reads as part of the metadata line it flows after. Returns the drawn width so a row can
-// flow badges inline, with [`rating_badge_w`] as the measure-first companion (same contract as
-// `badge`/`badge_w`). ----
-/// Mark box (px). A little over the meta line's cap height so a 24-unit silhouette still resolves
-/// at couch distance — the marks carry the state (fresh vs rotten), so they have to be legible.
-const RATING_MARK: f32 = 34.0;
-/// Mark → score gap. They are one unit, so the tightest rung.
-const RATING_GAP: f32 = theme::space::XS;
+// ---- Rating badge: one review score behind its provider's brand mark. Deliberately NOT a [`badge`]
+// chip: a chip's border boxes in art that is already a distinct silhouette, and four boxed chips in a
+// row shout over the hero. The score is ordinary primary ink and the pair reads as part of the
+// metadata block it sits in. Returns the drawn width so a row can flow badges inline, with
+// [`rating_badge_w`] as the measure-first companion (same contract as `badge`/`badge_w`).
+//
+// A provider's mark takes ONE of two forms, and which one is a property of the brand, not a style
+// choice (`Details Screen.dc.html` draws all four):
+//
+//   * [`RatingMark::Glyph`] — Rotten Tomatoes, whose marks ARE silhouettes (a tomato, a tub) and
+//     whose *state* is the drawing. Two stacked masks, base + accent, so the tomato keeps its green
+//     leaf and the tub its gold popcorn; see `ui/icons.rs`.
+//   * [`RatingMark::Wordmark`] — IMDb and TMDB, whose brands are LOGOTYPES. Their old silhouettes (a
+//     generic star, a generic ring) named no provider: a five-point star says "a rating", not "IMDb".
+//     A gold `IMDb` chip and a teal `TMDB` chip are unmistakable, and cost nothing but a rect.
+// ----
+/// Mark box (px) for a [`RatingMark::Glyph`]. A little over the meta line's cap height so a 24-unit
+/// silhouette still resolves at couch distance — these marks carry the VERDICT (fresh vs rotten), so
+/// legibility here is not cosmetic.
+const RATING_MARK_D: f32 = 30.0;
+/// Glyph mark → score gap. They are one unit, so it stays tight.
+const RATING_GAP: f32 = 10.0;
+/// Wordmark chip → score gap — one step wider than a glyph's. The chip carries its own side padding,
+/// so at an equal geometric gap its INK sits further from the score than a glyph's does; this is the
+/// optical correction, and it is why the two are separate constants rather than one shared rung.
+const CHIP_SCORE_GAP: f32 = 12.0;
+/// The wordmark chip's height — the SAME band as [`BADGE_H`], so a logotype chip and a metadata chip
+/// laid on one line agree. (28 first, which set the logotypes two rungs under the score beside them and
+/// read as a footnote rather than a brand.)
+const CHIP_H: f32 = BADGE_H;
+/// Strips a [`Wordmark::face_to`] sweep is banded into. 16 across a ~62px chip is ~4px a band, which
+/// is under the eye's threshold for these two stops; the reason it is banded at all is that the
+/// painter's only gradient runs VERTICALLY (`Painter::rect`), and this sweep runs left→right.
+const SWEEP_BANDS: usize = 16;
 
-/// pixel width [`rating_badge`] will occupy for `value` — measure before drawing so a row can stop
-/// at a margin instead of running a badge off the panel.
-pub(crate) fn rating_badge_w(value: &str) -> f32 {
+/// One provider's logotype, in its own brand colours — the data half of [`RatingMark::Wordmark`].
+/// A `static` per provider (see [`WORDMARK_IMDB`]/[`WORDMARK_TMDB`]) rather than fields threaded
+/// through the draw call, so a brand's colours are spelled once and the row cannot mix them up.
+pub(crate) struct Wordmark {
+    /// The brand's name, exactly as the brand sets it (`IMDb`, not `IMDB`).
+    pub(crate) text: &'static std::ffi::CStr,
+    /// Type size for the logotype. Per-brand, not one shared rung: a longer word needs a step down to
+    /// keep its chip from outgrowing its neighbours (`TMDB` is set under `IMDb` for exactly that).
+    pub(crate) sz: std::os::raw::c_int,
+    /// Face fill, or the START stop when [`Wordmark::face_to`] is set.
+    pub(crate) face: [f32; 4],
+    /// `Some(stop)` = a left→right two-stop sweep from [`Wordmark::face`] to `stop`; `None` = flat.
+    pub(crate) face_to: Option<[f32; 4]>,
+    /// Ink over the face.
+    pub(crate) ink: [f32; 4],
+    /// Corner radius, or `0.0` for a full pill (radius = height/2).
+    pub(crate) radius: f32,
+    /// Face padding either side of the logotype.
+    pub(crate) pad: f32,
+    /// Inset border width in the ink colour; `0.0` = none.
+    pub(crate) border: f32,
+}
+
+/// IMDb: black-bordered gold box. The border is part of the logo, not a chip convention — IMDb sets
+/// its wordmark in a keyline box and it looks wrong without one.
+pub(crate) static WORDMARK_IMDB: Wordmark = Wordmark {
+    text: c"IMDb",
+    sz: theme::size::CAPTION,
+    face: theme::RATING_IMDB,
+    face_to: None,
+    ink: theme::RATING_IMDB_INK,
+    radius: 6.0,
+    pad: 10.0,
+    border: 2.5,
+};
+/// TMDB: a pill carrying its green→blue brand sweep, no keyline.
+pub(crate) static WORDMARK_TMDB: Wordmark = Wordmark {
+    text: c"TMDB",
+    sz: theme::size::MICRO,
+    face: theme::RATING_TMDB_LO,
+    face_to: Some(theme::RATING_TMDB),
+    ink: theme::RATING_TMDB_INK,
+    radius: 0.0,
+    pad: 12.0,
+    border: 0.0,
+};
+
+/// One colour layer of a [`RatingMark::Glyph`] — a mask and the tint it is painted in.
+pub(crate) type MarkLayer = (crate::ui::icons::Icon, [f32; 4]);
+
+/// How one provider draws its mark — see the block comment above for why the two forms exist.
+pub(crate) enum RatingMark {
+    /// Tinted masks painted back-to-front at the SAME rect, one per colour. A slice rather than a
+    /// base-plus-accent pair because Certified Fresh needs three (a gold seal, a red box, and green
+    /// calyx-and-banner over both) and a plain tomato needs two — and because the ORDER is the
+    /// drawing: the layers overlap, so back-to-front is load-bearing, not incidental.
+    ///
+    /// Each layer must be a single `<path>` (or a single primitive element); `ui/icons.rs`'s
+    /// authoring contract explains why — two elements inside ONE layer alpha-composite and leave a
+    /// visible crease where their antialiased edges meet. Across layers that compositing is exactly
+    /// what draws the mark.
+    Glyph(&'static [MarkLayer]),
+    /// The provider's logotype in its own chip.
+    Wordmark(&'static Wordmark),
+}
+
+impl RatingMark {
+    /// The mark's own width — everything left of the score's gap.
+    fn width(&self) -> f32 {
+        match self {
+            RatingMark::Glyph(_) => RATING_MARK_D,
+            RatingMark::Wordmark(w) => wordmark_chip_w(w),
+        }
+    }
+    /// Mark → score gap, which differs by form (see [`CHIP_SCORE_GAP`]).
+    fn gap(&self) -> f32 {
+        match self {
+            RatingMark::Glyph(_) => RATING_GAP,
+            RatingMark::Wordmark(_) => CHIP_SCORE_GAP,
+        }
+    }
+}
+
+/// The chip's drawn width for `w`'s logotype — the layout companion to [`wordmark_chip`].
+pub(crate) fn wordmark_chip_w(w: &Wordmark) -> f32 {
+    crate::text::text_width(w.text.as_ptr(), w.sz, 1) + 2.0 * w.pad
+}
+
+/// Draw one provider's logotype chip with its LEFT edge at `x`, centred on `cy`; returns its width.
+/// Public because it is a brand mark, not a rating-row internal — anything that needs to say "IMDb"
+/// should say it this way rather than re-styling a [`badge`].
+pub(crate) fn wordmark_chip(p: Painter, x: f32, cy: f32, w: &Wordmark) -> f32 {
+    let cw = wordmark_chip_w(w);
+    let r = Rect::new(x, cy - CHIP_H * 0.5, cw, CHIP_H);
+    let rad = if w.radius > 0.0 { w.radius } else { CHIP_H * 0.5 };
+    match w.face_to {
+        // A left→right sweep, banded: clip to a vertical slice and fill the WHOLE chip-shaped
+        // rounded rect in that band's colour, so every band inherits the chip's silhouette and the
+        // corner arcs survive. Same scissor trick as `card_row::resume_bar`'s corner-wrapping fill.
+        Some(to) => {
+            let bw = r.w / SWEEP_BANDS as f32;
+            for i in 0..SWEEP_BANDS {
+                let t = (i as f32 + 0.5) / SWEEP_BANDS as f32;
+                let c = [
+                    w.face[0] + (to[0] - w.face[0]) * t,
+                    w.face[1] + (to[1] - w.face[1]) * t,
+                    w.face[2] + (to[2] - w.face[2]) * t,
+                    w.face[3] + (to[3] - w.face[3]) * t,
+                ];
+                // +1px of overlap: the scissor is integer, so abutting bands can leave a seam.
+                p.clip(Rect::new(r.x + i as f32 * bw, r.y, bw + 1.0, r.h));
+                p.rrect(r, rad, rad, c);
+            }
+            p.clip_clear();
+        }
+        None => p.rrect(r, rad, rad, w.face),
+    }
+    if w.border > 0.0 {
+        // knockout: the keyline in ink, then the face inset by it — the same two-call shape
+        // `BadgeStyle::Outlined` uses, in the opposite order (ink outside, face inside).
+        p.rrect(r, rad, rad, w.ink);
+        let b = w.border;
+        p.rrect(
+            Rect::new(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b),
+            (rad - b).max(0.0),
+            (rad - b).max(0.0),
+            w.face,
+        );
+    }
+    let ty = crate::text::text_vcenter_y(w.sz, 1, cy);
+    p.text(w.text.as_ptr(), r.x + w.pad, ty, w.sz, w.ink, 0, 1);
+    cw
+}
+
+/// pixel width [`rating_badge`] will occupy — measure before drawing so a row can stop at a margin
+/// instead of running a badge off the panel.
+pub(crate) fn rating_badge_w(mark: &RatingMark, value: &str) -> f32 {
     std::ffi::CString::new(value)
         .ok()
-        .map(|c| RATING_MARK + RATING_GAP + crate::text::text_width(c.as_ptr(), theme::size::LABEL, 1))
+        .map(|c| {
+            mark.width() + mark.gap() + crate::text::text_width(c.as_ptr(), theme::size::LABEL, 1)
+        })
         .unwrap_or(0.0)
 }
 
 /// Draw one rating badge with its LEFT edge at `x`, centred on `cy`; returns its width.
-pub(crate) fn rating_badge(
-    p: Painter,
-    x: f32,
-    cy: f32,
-    mark: crate::ui::icons::Icon,
-    tint: [f32; 4],
-    value: &str,
-) -> f32 {
+pub(crate) fn rating_badge(p: Painter, x: f32, cy: f32, mark: &RatingMark, value: &str) -> f32 {
     let vc = match std::ffi::CString::new(value) {
         Ok(c) => c,
         Err(_) => return 0.0,
     };
-    crate::ui::icons::draw(p, mark, Rect::new(x, cy - RATING_MARK * 0.5, RATING_MARK, RATING_MARK), tint);
+    match mark {
+        RatingMark::Glyph(layers) => {
+            // every layer rides the SAME rect, so all of them rasterize at one size from one 24×24
+            // viewBox and register exactly — see `ui/icons.rs`'s note on the layered marks
+            let r = Rect::new(x, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
+            for (mask, tint) in layers.iter() {
+                crate::ui::icons::draw(p, *mask, r, *tint);
+            }
+        }
+        RatingMark::Wordmark(w) => {
+            wordmark_chip(p, x, cy, w);
+        }
+    }
     let ty = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy);
-    p.text(vc.as_ptr(), x + RATING_MARK + RATING_GAP, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 0, 1);
+    p.text(
+        vc.as_ptr(),
+        x + mark.width() + mark.gap(),
+        ty,
+        theme::size::LABEL,
+        theme::TEXT_PRIMARY,
+        0,
+        1,
+    );
     // the MEASURED width, not what `text` reports it rasterized — `badge` calls `badge_w` for the
     // same reason: a draw and its measurer that can disagree will eventually be caught disagreeing
-    rating_badge_w(value)
+    rating_badge_w(mark, value)
 }
 
 

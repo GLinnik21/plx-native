@@ -1,0 +1,9 @@
+<!-- An X — "remove this" (the item-menu's Remove from Continue Watching row). Two bars as TWO
+     SUBPATHS of one path, both wound the same way: they overlap at the centre, and under nonzero fill
+     a reversed second subpath would punch a diamond-shaped HOLE through the crossing. Signed area of
+     each is +110.88, i.e. identical handedness — see ui/icons.rs's authoring contract.
+     Corners are square: at the 26px this draws at, a rounded cap is under half a pixel of difference
+     and costs two more curves per bar. -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <path d="M 5.99 4.01 L 19.99 18.01 L 18.01 19.99 L 4.01 5.99 Z M 19.99 5.99 L 5.99 19.99 L 4.01 18.01 L 18.01 4.01 Z"/>
+</svg>

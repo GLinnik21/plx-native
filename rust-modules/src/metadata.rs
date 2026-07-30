@@ -324,15 +324,22 @@ impl RatingArt {
         }
     }
 
-    /// Display order of the badge row — Rotten Tomatoes' critic tomato, then its audience popcorn,
-    /// then IMDb, then TMDB. Fixed here (rather than left as wire order) so the row reads the same
-    /// on every item; PMS returns the array alphabetically by provider. All three tomato states
-    /// share rank 0 because they are one SLOT — the critic verdict — in three moods.
+    /// Display order of the badge row — **IMDb, then Rotten Tomatoes' critic tomato, then its
+    /// audience popcorn, then TMDB** (`Details Screen.dc.html`). Fixed here (rather than left as wire
+    /// order) so the row reads the same on every item; PMS returns the array alphabetically by
+    /// provider. All three tomato states share one rank because they are one SLOT — the critic
+    /// verdict — in three moods.
+    ///
+    /// IMDb leads because it is the score most viewers hold a reference for: an 8.1 out of 10 needs
+    /// no calibration, where a tomato percentage is only meaningful once you know which side of RT's
+    /// cutoff it fell. It also puts the row's two /10-vs-% unit changes at the ends rather than
+    /// adjacent in the middle. Reordering this reorders the hero on every item, so it belongs in one
+    /// place: here, not at the draw site.
     fn rank(self) -> u8 {
         match self {
-            RatingArt::TomatoFresh | RatingArt::TomatoCertified | RatingArt::TomatoRotten => 0,
-            RatingArt::PopcornUpright | RatingArt::PopcornSpilled => 1,
-            RatingArt::Imdb => 2,
+            RatingArt::Imdb => 0,
+            RatingArt::TomatoFresh | RatingArt::TomatoCertified | RatingArt::TomatoRotten => 1,
+            RatingArt::PopcornUpright | RatingArt::PopcornSpilled => 2,
             RatingArt::Tmdb => 3,
         }
     }
@@ -440,6 +447,12 @@ pub(crate) struct Detail {
     pub(crate) subs: Vec<Stream>,
     pub(crate) seasons: Vec<Season>,   // shows only
     pub(crate) episodes: Vec<Episode>, // the currently-selected season
+    /// SHOWS: the episode the SERVER says is next to watch (`OnDeck`, one request, no extra round
+    /// trip). Show-level and therefore **independent of the selected season tab**, which is the whole
+    /// reason it is here: `episodes` above holds one season, so a next-episode the client worked out
+    /// itself changed every time you browsed to another tab. `None` for a movie, for a show with
+    /// nothing on deck (never started, or finished), and on any server that omitted the hub.
+    pub(crate) on_deck: Option<Episode>,
     pub(crate) cur_season: usize,
     pub(crate) related: Vec<Related>,
     pub(crate) chapters: Vec<Chapter>,
@@ -615,6 +628,7 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         subs: Vec::new(),
         seasons: Vec::new(),
         episodes: Vec::new(),
+        on_deck: it.on_deck.as_ref().and_then(|h| h.metadata.as_deref()).map(convert_episode),
         cur_season: 0,
         related: Vec::new(),
         chapters: convert_chapters(&it.chapter),
@@ -1528,10 +1542,11 @@ mod rating_tests {
         };
         let got = convert_ratings(&it);
         use RatingArt::*;
-        assert_eq!(arts(&got), [TomatoFresh, PopcornUpright, Imdb, Tmdb]);
-        assert_eq!(got[0].value, 9.1);
-        assert!(got[0].critic, "the tomato is the critic score");
-        assert!(!got[2].critic, "IMDb arrives as an audience score, not a critic one");
+        // IMDb leads, then RT's critic tomato, its audience popcorn, and TMDB — see `RatingArt::rank`
+        assert_eq!(arts(&got), [Imdb, TomatoFresh, PopcornUpright, Tmdb]);
+        assert_eq!(got[0].value, 7.4, "IMDb's score, on its own /10 scale");
+        assert!(got[1].critic, "the tomato is the critic score");
+        assert!(!got[0].critic, "IMDb arrives as an audience score, not a critic one");
     }
 
     /// The flat pair is the fallback for the OTHER response shape — a section listing carries it

@@ -11,7 +11,7 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, ControlStyle, TabNote, TabPill};
+use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, ControlStyle, TabPill};
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -108,6 +108,40 @@ const CD: f32 = 60.0; // circle button diameter
 /// the right-aligned "Starring" line.
 const HERO_TEXT_W: f32 = 900.0;
 
+// ---- the hero text column's y-chain (`hero_chain`), pitch by pitch, from `Details Screen.dc.html`.
+// These are the GAPS between line tops, not absolute ys: two of the bands are conditional and the
+// synopsis is measured, so only the pitches are constant. ----
+/// The title block's baseline band — its bottom edge, which the clearLogo art and the text title
+/// both sit on, and the anchor the whole chain hangs from.
+const TITLE_BOTTOM: f32 = 566.0;
+const META_DY: f32 = 30.0; // title bottom → "TV Show · Drama · TV-MA"
+const RATINGS_DY: f32 = 50.0; // meta line → the review-score row
+const SYN_DY: f32 = 54.0; // last line above → synopsis
+const FACTS_DY: f32 = theme::space::MD; // synopsis bottom → date/counts line
+const BTN_DY: f32 = 50.0; // last fine-print line → the action row
+/// Synopsis line pitch, and the floor its measured height is clamped up to so a one-line blurb (or a
+/// missing one) still leaves the facts line where a two-line blurb puts it.
+const SYN_LEAD: f32 = 36.0;
+const SYN_MIN_H: f32 = 34.0;
+/// Lines of blurb before it elides — the mock's own band. Past this the flow walks the Play pill down.
+const SYN_MAXLINES: usize = 3;
+// ---- the "Starring" block: a right-aligned wrapping caption in its own column beside the action row.
+/// Its column. Narrow on purpose — it must not reach the hero text column on its left, and wrapping to
+/// two lines inside 560px is what keeps three long names off the Play pill.
+const STARRING_W: f32 = 560.0;
+const STARRING_LEAD: f32 = 32.0;
+/// Its cap top relative to the action row's own top — a few px down, so the two read as level rather
+/// than as one hanging off the other.
+const STARRING_DY: f32 = 6.0;
+/// Share of the hero text column the blurb's bold `S2, E3 · Laura:` prefix may claim before the
+/// episode title inside it starts eliding. It shares line 1 with the start of the blurb, so it cannot
+/// have the whole width — see `hero_blurb`.
+const LEAD_BUDGET: f32 = 0.55;
+/// Gap between two review-score badges. Deliberately its own value rather than a `space` rung: `MD`
+/// (24) let four marks in four different silhouettes crowd into one texture, and `LG` (40) broke the
+/// row into four unrelated islands. 32 is the mock's, and it reads as one row of four things.
+const RATING_ROW_GAP: f32 = 32.0;
+
 // Below-the-hero content is ONE vertical scroll of stacked blocks, driven by the shared retui
 // `ScrollColumn` (`impl Column for DetailView`): its `child_top` COMPUTES each block's pre-scroll top
 // by stacking the *present* blocks' heights (`block_h`, via `Column::height`) from CONTENT_TOP with a
@@ -126,40 +160,68 @@ const HERO_HIT_MIN_A: f32 = 0.5; // a hero control must be at least this opaque 
 
 // Season tabs (header for the episode row)
 const TAB_ROW_H: f32 = CD; // tab pills stand as tall as the hero buttons (one control height)
-const TAB_PAD: f32 = 18.0; // season-tab pill padding either side of its label
-const TAB_ADVANCE: f32 = 52.0; // per-tab horizontal advance past the label width
+/// Season-tab pill padding either side of its label (`Details Screen.dc.html`'s `padding: 0 26px`,
+/// up from 18). A 60px-tall pill wrapped on 18 read as a tall thin lozenge; at 26 the pill is the
+/// capsule the mock draws, and it matches the Play pill's own label inset beside it.
+const TAB_PAD: f32 = 26.0;
+/// Air BETWEEN two tab pills.
+const TAB_GAP: f32 = theme::space::SM;
+/// Per-tab horizontal advance past the label width — derived from the two above rather than spelled,
+/// so a change to the padding can't silently change the gap (which is what 52 vs 18 used to hide).
+const TAB_ADVANCE: f32 = 2.0 * TAB_PAD + TAB_GAP;
 const SEASON_SETTLE: f32 = 0.2; // hold a season tab this long (s) before its episodes are fetched
 // Episodes: landscape stills + under-card metadata
 const EP_ANIM_MAX: usize = 40; // per-episode pop-spring count (episodes past this don't animate the pop)
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
 const EP_GAP: f32 = 28.0;
-// ---- marks ON the still. All four constants are CONSTANT through the focus pop (they ride the
-// scaled rect without resizing) for the same reason `widgets::watched_badge`'s disc is: they are
-// 1:1-texel content, and a size on the scale spring would rasterize + upload a fresh mask every
-// animating frame.
-/// The margin every mark on a still sits on — the resume bar's side inset, the duration pill's left
-/// edge, and the same inset `widgets::watched_badge` gives its corner disc. One value, so the marks
-/// line up with each other and with the neighbouring tile's.
-const EP_MARK_INSET: f32 = 12.0;
-/// The resume bar: its height, and how far its TOP edge sits above the still's bottom.
+// ---- marks ON the still (`Details Screen.dc.html`). Every one of these is CONSTANT through the
+// focus pop — they ride the scaled rect without resizing — because they are 1:1-texel content and a
+// size on the scale spring would rasterize + upload a fresh mask every animating frame.
+//
+// The still carries exactly TWO things: a bottom scrim with one state line on it, and a full-bleed
+// progress bar. There is no capsule behind the line and no badge in any corner; see `ep_state`.
+/// Left inset of the state line, and the margin every mark on a still shares.
+const EP_MARK_INSET: f32 = 16.0;
+/// The progress bar's height. It is **full-bleed at the very bottom edge** — the same bar, in the
+/// same place, that a Continue Watching card wears (`card_row::resume_bar`), which is the whole point:
+/// this strip used to draw an inset rounded capsule 16px up, so "how far in am I" was two different
+/// objects on two screens of one app.
 const EP_BAR_H: f32 = 5.0;
-const EP_BAR_TOP: f32 = 16.0;
-/// The duration pill's bottom inset. Deliberately CONSTANT rather than "12 unless there's a bar":
-/// it clears the resume bar's band by one XS rung, so the pills across a filmstrip sit on one line
-/// whether or not each tile happens to carry a bar. A pill that moved with the bar would make a row
-/// of stills read as ragged.
-const EP_PILL_BOT: f32 = EP_BAR_TOP + theme::space::XS;
-// Under-still metadata: kicker → title → summary → date. The (fine-print) air date sits at the
+/// The bottom scrim under the state line: its height and its darkest alpha at the card's edge.
+/// Without it a white label sits on an arbitrary video frame and its legibility is a coin flip.
+const EP_SCRIM_H: f32 = 88.0;
+const EP_SCRIM_A: f32 = 0.78;
+/// The state line's BASELINE inset from the still's bottom edge. The mock spells this as a CSS
+/// `bottom:11px` on the line's flex box, which is its box bottom, not its baseline — with a 24px font
+/// on `line-height:normal` the descender band under that baseline is ~6px, so the equivalent baseline
+/// inset is ~17. Reading the 11 literally sat the label 6px lower than the design and that much closer
+/// to the bar.
+const EP_LINE_BOT: f32 = 17.0;
+/// The state glyph's box, and its gap to the label. ONE box for both glyphs (the play triangle and
+/// the watched disc) so the label starts at the same x whichever state a tile is in — the mock sizes
+/// them 18 and 20 and lets the label shift, which makes a row of stills read as ragged.
+const EP_GLYPH_D: f32 = 20.0;
+const EP_LINE_GAP: f32 = 10.0;
+// Under-still metadata: kicker → title → summary → date row. The (fine-print) air date sits at the
 // BOTTOM of the block, under the summary; offsets are from the meta top (EP_H + EP_META_TOP below
-// the still) and the block height is derived from the tallest episode summary (see `ep_meta_h`)
-// so the dynamic below-hero flow reflows to fit.
+// the still) and the block height is derived from the tallest episode summary (see `ep_meta_h`) so
+// the dynamic below-hero flow reflows to fit.
+//
+// The mock RESERVES the blurb's band instead (`min-height:102px`, which would make this whole block a
+// fixed height and retire `ep_meta_h`'s measure sweep). Deliberately not adopted — owner call: the
+// block stays content-derived, so a short blurb takes short space. Only the mock's TYPE changes land
+// here: the title steps up a rung, and both leadings open to 34.
+// The three gaps below are all measured last-line INK (baseline) → next block's cap top, and the mock
+// spells the same rhythm as CSS margins between 34px line boxes (10/12/12). Converted, its optical
+// gaps come out near-UNIFORM at ~23/27/26; ours used to TIGHTEN down the block (20/18/16), which read
+// as the blurb crowding the date. One rung — `space::MD` — for the two that carry prose.
 const EP_META_TOP: f32 = 30.0; // still bottom → kicker
-const EP_TITLE_DY: f32 = 42.0; // kicker → title
-const EP_TITLE_LEAD: f32 = 30.0; // title line pitch (title wraps to at most 2 lines)
-const EP_TITLE_SUMMARY_GAP: f32 = 18.0; // title last-line BASELINE → summary cap top (cap-band derived)
-const EP_SUMMARY_DATE_GAP: f32 = 16.0; // summary last-line baseline → date cap top
-const EP_SUMMARY_LEAD: f32 = 30.0;
+const EP_TITLE_DY: f32 = 46.0; // kicker BASELINE → title cap top (≈24 of ink gap)
+const EP_TITLE_LEAD: f32 = 34.0; // title line pitch (title wraps to at most 2 lines)
+const EP_TITLE_SUMMARY_GAP: f32 = theme::space::MD; // title last-line baseline → summary cap top
+const EP_SUMMARY_DATE_GAP: f32 = theme::space::MD; // summary last-line baseline → date cap top
+const EP_SUMMARY_LEAD: f32 = 34.0;
 const EP_SUMMARY_MAXLINES: usize = 8; // bounds the pathological case; ordinary episode blurbs fit fully
 const EP_META_BOT_PAD: f32 = 24.0;
 // Related row (portrait posters) reuses the home shelf poster geometry (consts::CARD_*) so a poster
@@ -264,18 +326,46 @@ fn selected() -> Option<&'static PmsMovie> {
 }
 
 /// The resume position (ns) the hero's Play control would ACTUALLY apply — i.e. exactly what
-/// `on_ok`'s play arm hands `app.rs`. A movie resumes from its own `viewOffset`; a show page's Play
-/// starts `episodes[0]` of the selected season (see `play_episode_at`), so it reads that leaf's.
+/// `on_ok`'s play arm hands `app.rs`. A movie resumes from its own `viewOffset`; a show resumes its
+/// ON-DECK episode (see [`hero_episode`]), so it reads that leaf's — and reads nothing at all on a show
+/// the hero is presenting as a series, where Play starts from 0.
 ///
 /// Both go through `metadata::resume_ns`, the same Plex rule the action applies, deliberately: keyed
 /// on a raw `resume_ms > 0` instead (as the home hero is), a 4-second offset or one past the 95%
 /// end-of-item mark would label the pill "Resume" for a play that starts at 0, and hang a restart
 /// disc beside it that does nothing. The label and the control set have to promise what the press
 /// delivers.
+/// Has this show been started AT ALL? The server puts `S1E1 off=0` on deck for a show nobody has
+/// touched (verified across six shows, 2026-07-30), so "there is something on deck" is NOT the same
+/// question as "this show is underway", and only the second one decides whether the hero is about an
+/// episode.
+fn show_started(d: &metadata::Detail) -> bool {
+    d.on_deck.as_ref().map(|e| e.resume_ms > 0).unwrap_or(false)
+        || d.seasons.iter().any(|s| s.viewed_leaf_count > 0)
+}
+
+/// The episode a show's hero is ABOUT — its backdrop still, its blurb, its facts line, its Resume
+/// label and the episode Play starts. `None` means the hero presents the SERIES instead.
+///
+/// It is the SERVER's on-deck episode (`Detail::on_deck`), not a search of the loaded season, and that
+/// is the entire point: the client holds one season at a time, so the previous client-side search made
+/// the hero's subject change every time you browsed to a different season tab. On this library the
+/// server answers S2E2 for The Morning Show while season 1 is the tab you are looking at.
+///
+/// Two states have no episode to be about, and the server only covers one of them:
+/// * **finished** — PMS returns no `OnDeck` at all, so `?` here handles it for free.
+/// * **unplayed** — PMS *does* offer `S1E1`, so [`show_started`] is what rejects it. A show you have
+///   never opened leads with its own key art and premise, which is what a first visit needs.
+fn hero_episode() -> Option<&'static metadata::Episode> {
+    let d = metadata::current()?;
+    let ep = d.on_deck.as_ref()?;
+    show_started(d).then_some(ep)
+}
+
 fn hero_resume_ns() -> i64 {
     let Some(d) = metadata::current() else { return 0 };
     if d.is_show {
-        d.episodes.first().map(|e| metadata::resume_ns(e.resume_ms, e.dur_ms)).unwrap_or(0)
+        hero_episode().map(|e| metadata::resume_ns(e.resume_ms, e.dur_ms)).unwrap_or(0)
     } else {
         metadata::resume_ns(d.resume_ms, d.dur_ms)
     }
@@ -431,12 +521,12 @@ fn block_h(section: c_int) -> f32 {
 /// draw-y; the cap offsets translate ink-space gaps into it.) measure_h is wrap-cached, so this is
 /// cheap after the first frame.
 fn ep_meta_layout(title: &str, has_date: bool, summary: &str) -> (f32, f32, f32) {
-    let title_h = TextView::new(title, theme::size::LABEL, theme::TEXT_PRIMARY)
+    let title_h = TextView::new(title, theme::size::BODY, theme::TEXT_PRIMARY)
         .bold()
         .leading(EP_TITLE_LEAD)
         .max_lines(2)
         .measure_h(EP_W);
-    let (lt, lb) = crate::text::text_cap_band(theme::size::LABEL, 1); // title cap-top/baseline offsets
+    let (lt, lb) = crate::text::text_cap_band(theme::size::BODY, 1); // title cap-top/baseline offsets
     let title_base = EP_TITLE_DY + (title_h - EP_TITLE_LEAD) + (lb - lt); // last-line baseline below ty
     // summary: a TextView anchors its cap band at the draw-y, so the ink gap needs no correction
     let summary_y = title_base + EP_TITLE_SUMMARY_GAP;
@@ -661,33 +751,17 @@ struct TabLay {
     x: f32,
     w: f32,
     label: CString,
-    /// every episode of the season is watched → the tab wears a tick
-    done: bool,
-}
-impl TabLay {
-    /// This tab's trailing note — a tick on a finished season, nothing otherwise.
-    fn note(&self) -> TabNote {
-        if self.done {
-            TabNote::Done
-        } else {
-            TabNote::None
-        }
-    }
 }
 
 /// ONE source of truth for the season-tab strip's layout — the draw pass and the focus/scroll
 /// geometry both walk this, so their x-advance can't drift. A label that can't be a CString
 /// (interior NUL — never in practice) is skipped entirely (not drawn, no advance).
 ///
-/// Each tab carries at most ONE quiet fact past its name: a tick once every episode behind it is
-/// watched (`metadata::Season::watched` is the ONE rule for that, shared with the item-level
-/// watched state). Nothing otherwise — a part-watched or untouched season is simply its name.
-///
-/// It used to show an episode COUNT on every unfinished season, and deliberately no longer does
-/// (owner call, 2026-07-29): the count is filing data the episode row right underneath already
-/// answers by existing, and it widened every tab in the strip for a number nobody reads. What a
-/// tab strip can say that its content cannot is *which seasons are behind you*, so that is all it
-/// says now. See [`TabNote`].
+/// **A tab is its name and nothing else.** It carried an episode COUNT until 2026-07-29 and a
+/// finished-season TICK until 2026-07-30, both removed by owner call and both for the same reason: a
+/// tab strip is navigation, and hanging status off it widened every pill in the row for a fact the
+/// content underneath already shows. The episode tiles carry their own watched marks (`ep_state`), so
+/// a finished season is visible by scanning it — the tab does not need to summarise that.
 ///
 /// COST: this is uncached and runs on the draw path (and again per frame while the tab row holds
 /// focus, through `tab_focus_geom`), so it is one `CString` + one `text_width` per season per call.
@@ -701,8 +775,8 @@ fn tabs_layout(d: &crate::metadata::Detail) -> Vec<TabLay> {
     for (i, s) in d.seasons.iter().enumerate() {
         let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
         if let Ok(lc) = CString::new(label) {
-            let mut lay = TabLay { i, x, w: 0.0, label: lc, done: s.watched() };
-            lay.w = crate::text::text_width(lay.label.as_ptr(), theme::size::BODY, 1) + TabPill::note_w(lay.note());
+            let mut lay = TabLay { i, x, w: 0.0, label: lc };
+            lay.w = crate::text::text_width(lay.label.as_ptr(), theme::size::BODY, 1);
             x += lay.w + TAB_ADVANCE;
             out.push(lay);
         }
@@ -755,8 +829,61 @@ fn ep_hscroll_target() -> f32 {
 
 /// The ONE hero-synopsis TextView (rung / leading / line cap live here once) — shared by the
 /// flow measure (hero_layout) and the paint (draw_hero) so they cannot diverge.
-fn hero_synopsis(summary: &str) -> TextView<'_> {
-    TextView::new(summary, theme::size::MICRO, theme::TEXT_SECONDARY).leading(29.0).max_lines(4)
+///
+/// `LABEL`/36, not `MICRO`/29: the blurb is the longest run of prose on the page and it sits over the
+/// backdrop scrim, where the fine-print rung read as a caption someone had shrunk by mistake
+/// (`Details Screen.dc.html`, and its `github.md` note — *"lifted to LABEL 26/36, it read too small
+/// on-device at MICRO 22"*). [`theme::TEXT_READING`] goes with the size for the same reason. The
+/// 3-line cap is the mock's own band; past that the flow would walk the Play pill down the screen.
+fn hero_synopsis<'a>(summary: &'a str, lead: &'a str) -> TextView<'a> {
+    let v = TextView::new(summary, theme::size::LABEL, theme::TEXT_READING)
+        .leading(SYN_LEAD)
+        .max_lines(SYN_MAXLINES);
+    if lead.is_empty() {
+        v
+    } else {
+        v.lead(lead, theme::TEXT_PRIMARY)
+    }
+}
+
+/// The hero's blurb, as `(lead, body)`.
+///
+/// For a **show** this is the [`hero_episode`]'s OWN summary behind a bold `S2, E3 · Laura:` prefix —
+/// not the series premise. The premise is static and you read it once; what the page owes you on
+/// every later visit is what happens next, and the prefix is what stops that from reading as the
+/// show's description. For a movie — or a show whose episodes have not landed yet, since the season
+/// fetch is async and the hero must render meanwhile — it is the item's own summary and no prefix.
+///
+/// Owned rather than borrowed because the prefix is formatted: two short allocations a frame (this
+/// runs once in the flow measure and once in the paint), against the 40-a-frame the episode strip
+/// used to do before its lines were cached.
+fn hero_blurb(m: Option<&PmsMovie>) -> (String, String) {
+    let d = metadata::current();
+    if let Some(ep) = hero_episode() {
+        if !ep.summary.is_empty() {
+            // The prefix shares line 1 with the start of the blurb, so it gets a BUDGET and the title
+            // inside it elides to fit. Without this a long episode title ("In the Dark Night of the
+            // Soul It's Always 3:30 in the Morning") consumed the whole column, leaving the blurb's
+            // first word a few px to wrap into — which came out as a line reading `A…`. The title is
+            // on its own tile in the filmstrip below, so eliding it here loses nothing.
+            let title = if ep.title.is_empty() {
+                String::new()
+            } else {
+                let head = format!("S{}, E{} \u{b7} ", ep.season, ep.index);
+                let room = HERO_TEXT_W * LEAD_BUDGET
+                    - crate::text::text_width(
+                        CString::new(head.as_str()).unwrap_or_default().as_ptr(),
+                        theme::size::LABEL,
+                        1,
+                    )
+                    - crate::text::text_width(c":".as_ptr(), theme::size::LABEL, 1);
+                format!(" \u{b7} {}", crate::text::elide(&ep.title, room.max(0.0), theme::size::LABEL, 1, false))
+            };
+            return (format!("S{}, E{}{}:", ep.season, ep.index, title), ep.summary.clone());
+        }
+    }
+    let own = d.map(|d| d.summary.clone()).unwrap_or_else(|| m.map(|m| m.summary.clone()).unwrap_or_default());
+    (String::new(), own)
 }
 
 /// The loaded item's director credits, or None when the server sent no `Director[]` — the ONE
@@ -767,38 +894,60 @@ fn directors() -> Option<&'static [String]> {
     metadata::current().map(|d| d.directors.as_slice()).filter(|v| !v.is_empty())
 }
 
-/// The hero text column's y-chain — title bottom (566) → meta (+36) → synopsis (+46, MEASURED) →
-/// date (+20) → "Directed by" (+`space::LG`, only when there is one) → buttons (+46) — computed
-/// ONCE for both the painter (draw_hero) and the flow (update()'s column.top), so the pixels and
-/// the scroll math cannot desync. A 4-line synopsis used to push the Play pill to within 2px of
-/// the season tabs; the flow now keeps one standardized gap (`BTN_CONTENT_GAP`) under the buttons
-/// for every title.
-/// Returns (meta_y, syn_y, date_y, btn_y, dir_y) — `dir_y` is APPENDED rather than slotted into
-/// flow order so the existing element indices keep their meaning (`update()` reads `.3` for the
-/// button row), and it is only meaningful when [`directors`] is Some.
-fn hero_layout(m: Option<&PmsMovie>) -> (f32, f32, f32, f32, f32) {
-    let d = metadata::current();
-    let owned = if d.is_none() { m.map(|m| m.summary.clone()).unwrap_or_default() } else { String::new() };
-    let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&owned);
-    let syn_h = if summary.is_empty() { 0.0 } else { hero_synopsis(summary).measure_h(HERO_TEXT_W) };
-    hero_chain(syn_h, directors().is_some())
+/// Whether the loaded item has any review score to badge — the ONE rule for whether the hero
+/// reserves the ratings band. Paired with [`directors`]: both are conditional bands, and both are
+/// answered from the same place the paint reads so the flow and the pixels agree.
+fn has_ratings() -> bool {
+    metadata::current().map(|d| !d.ratings.is_empty()).unwrap_or(false)
+}
+
+/// The hero text column's y-chain, computed ONCE per frame for BOTH the painter ([`draw_hero`]) and
+/// the below-hero scroll flow ([`update`]'s `column.top`), so the pixels and the scroll math cannot
+/// desync. A 4-line synopsis used to push the Play pill to within 2px of the season tabs; the flow
+/// keeps one standardized gap ([`BTN_CONTENT_GAP`]) under the buttons for every title.
+///
+/// A struct rather than the tuple this used to be: it grew a sixth element (the ratings row) and two
+/// of the six are CONDITIONAL, which is exactly the shape where positional access starts naming the
+/// wrong band silently.
+struct HeroChain {
+    /// "TV Show · Drama · TV-MA".
+    meta_y: f32,
+    /// The review-score row. Only meaningful, and only given a band, when [`has_ratings`].
+    ratings_y: f32,
+    syn_y: f32,
+    /// The one fine-print line: air date · extent-or-runtime · media chips · the "Directed by" credit,
+    /// all of it — plus, right-aligned on the same line, the "Starring" credit.
+    facts_y: f32,
+    btn_y: f32,
+}
+
+fn hero_layout(m: Option<&PmsMovie>) -> HeroChain {
+    let (lead, body) = hero_blurb(m);
+    let syn_h = if body.is_empty() { 0.0 } else { hero_synopsis(&body, &lead).measure_h(HERO_TEXT_W) };
+    hero_chain(syn_h, has_ratings())
 }
 
 /// The pure arithmetic half of [`hero_layout`] — everything except the synopsis measurement, which
 /// is the one part that needs a font. Split out so the flow-vs-paint contract this chain exists to
-/// hold (above all the CONDITIONAL "Directed by" band) is host-testable; measuring is not, since
-/// the host suite opens no SDL_ttf.
-fn hero_chain(syn_h: f32, has_director: bool) -> (f32, f32, f32, f32, f32) {
-    let meta_y = 566.0 + 36.0;
-    let syn_y = meta_y + 46.0;
-    let date_y = syn_y + syn_h.max(34.0) + 20.0;
-    // The credit line sits one air rung under the date/runtime line — a PITCH like its siblings
-    // above (these ys are line tops, so a `space::LG` step leaves ~10px of ink gap at CAPTION,
-    // which is the "two separate fine-print statements" reading, not a paragraph). It takes NO
-    // space at all on an item without directors — the button row keeps its old y there.
-    let dir_y = date_y + theme::space::LG;
-    let last_y = if has_director { dir_y } else { date_y };
-    (meta_y, syn_y, date_y, last_y + 46.0, dir_y)
+/// hold (above all the two CONDITIONAL bands) is host-testable; measuring is not, since the host
+/// suite opens no SDL_ttf.
+///
+/// The pitches reproduce `Details Screen.dc.html`'s chain on a two-line blurb — title bottom 566 →
+/// meta 596 → ratings 646 → synopsis 700 → facts ~800 → buttons ~850 — while staying MEASURED rather
+/// than fixed, because a real library's synopses are one to three lines and two of these bands come
+/// and go with the metadata.
+fn hero_chain(syn_h: f32, has_ratings: bool) -> HeroChain {
+    let meta_y = TITLE_BOTTOM + META_DY;
+    let ratings_y = meta_y + RATINGS_DY;
+    // the synopsis hangs off whichever line is actually above it, so an item with no scores closes
+    // the gap instead of leaving the band empty
+    let syn_y = if has_ratings { ratings_y } else { meta_y } + SYN_DY;
+    let facts_y = syn_y + syn_h.max(SYN_MIN_H) + FACTS_DY;
+    // The "Directed by" credit used to claim a BAND of its own here, one air rung under the facts line
+    // and reserved only when the item had directors. It is now the tail of the facts line itself
+    // (`Details Screen.dc.html` runs date · extent · chips · credit as ONE row), so the chain has one
+    // fewer conditional band and the button row hangs off the facts line for every item.
+    HeroChain { meta_y, ratings_y, syn_y, facts_y, btn_y: facts_y + BTN_DY }
 }
 
 pub(crate) fn update(dt: f32) {
@@ -821,7 +970,7 @@ pub(crate) fn update(dt: f32) {
     pump_reveal(); // after pump_season: a landing season resets the episode focus this restores
     view().spin_ms += dt * 1000.0;
     // the flow top rides the measured hero: buttons bottom + one standardized gap (hero_layout)
-    view().column.top = hero_layout(selected()).3 + CD + BTN_CONTENT_GAP;
+    view().column.top = hero_layout(selected()).btn_y + CD + BTN_CONTENT_GAP;
     // targets read view() internally — compute them before borrowing v for the springs
     let sct = scroll_target();
     let hst = ep_hscroll_target();
@@ -988,8 +1137,15 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
     // (the hero's fill-rate cost; mirrors home's Backdrop which draws art OR ambient, never both).
     let art_a = 1.0 - sf;
     let art_tex = if art_a > 0.01 {
-        m.filter(|m| !m.art.is_empty())
-            .map(|m| m.art.clone())
+        // A SHOW's backdrop is the NEXT EPISODE's still, not the series art (`Details Screen.dc.html`,
+        // and Apple's own show page). It is the frame belonging to the thing Play would start and the
+        // blurb underneath describes, so the whole hero is about one episode; it also means the page
+        // visibly changes as you work through a season, where series art never does. Falls back to the
+        // series art whenever there is no episode yet (the season fetch is async) or it has no thumb.
+        hero_episode()
+            .map(|e| e.thumb.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| m.filter(|m| !m.art.is_empty()).map(|m| m.art.clone()))
             .or_else(|| metadata::current().map(|d| d.art.clone()).filter(|s| !s.is_empty()))
             .map(|art| resolve_tex(&art, 1920, 1080, 0))
             .unwrap_or(0)
@@ -1040,19 +1196,18 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     // ---- title: clearLogo (transparent PNG) if loaded, else bold text. Borrow from the loaded
     // Detail (the common case) — cloning rk/title/summary every frame was pure churn; the catalog
     // fallback (`m`, pre-load frames only) clones from the catalog row. ----
-    let title_bottom = 566.0f32;
     let rk_owned = if d.is_none() { m.map(|m| m.rk.clone()).unwrap_or_default() } else { String::new() };
     let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
     let mut drew_logo = false;
     if let Some((lt, ww, hh)) = crate::posters::logo_tex(rk, 680.0, 120.0) {
-        p.tex(lt, Rect::new(tx, title_bottom - hh, ww, hh), 0.0, w_a);
+        p.tex(lt, Rect::new(tx, TITLE_BOTTOM - hh, ww, hh), 0.0, w_a);
         drew_logo = true;
     }
     if !drew_logo {
         let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
         let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
         if let Ok(t) = CString::new(title) {
-            p.text(t.as_ptr(), tx, title_bottom - 68.0, theme::size::HERO, w_a, 0, 1);
+            p.text(t.as_ptr(), tx, TITLE_BOTTOM - 68.0, theme::size::HERO, w_a, 0, 1);
         }
     }
 
@@ -1068,73 +1223,120 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         }
     }
     // the whole y-chain below comes from the ONE shared layout (also feeds the scroll flow)
-    let (meta_y, syn_y, date_y, btn_y, dir_y) = hero_layout(m);
-    let mut meta_w = 0.0f32;
+    let ch = hero_layout(m);
     if let Ok(mc) = CString::new(parts.join("   \u{b7}   ")) {
-        meta_w = p.text(mc.as_ptr(), tx, meta_y, theme::size::BODY, d_a, 0, 0);
+        p.text(mc.as_ptr(), tx, ch.meta_y, theme::size::BODY, d_a, 0, 0);
     }
 
-    // ---- review scores, flowed on after the meta line (same row, same optical centre) ----
-    draw_ratings(p, tx + meta_w + theme::space::LG, meta_y);
+    // ---- review scores, on their own line under the meta row (see `draw_ratings`) ----
+    draw_ratings(p, tx, ch.ratings_y);
 
-    // ---- synopsis: the shared fine-print TextView (hero_synopsis — one size app-wide, matches
-    // the home hero); its measured height is already folded into date_y/btn_y by hero_layout ----
-    let summary_owned = if d.is_none() { m.map(|m| m.summary.clone()).unwrap_or_default() } else { String::new() };
-    let summary: &str = d.map(|d| d.summary.as_str()).unwrap_or(&summary_owned);
-    if !summary.is_empty() {
-        hero_synopsis(summary).draw(p, Rect::new(tx, syn_y, HERO_TEXT_W, 0.0));
+    // ---- blurb: for a show the NEXT EPISODE's summary behind its bold `S2, E3 · Laura:` prefix (see
+    // `hero_blurb`); its measured height is already folded into facts_y/btn_y by hero_layout ----
+    let (lead, body) = hero_blurb(m);
+    if !body.is_empty() {
+        hero_synopsis(&body, &lead).draw(p, Rect::new(tx, ch.syn_y, HERO_TEXT_W, 0.0));
     }
 
-    // ---- date · runtime · media badges ----
+    // ---- air date · season/episode counts (a show) or runtime (a movie) · media chips ----
     if let Some(d) = d {
-        let mut info = pretty_date(&d.aired, d.year);
-        if d.dur_ms >= 60_000 {
+        let (mut info, extent) = hero_facts(d);
+        if let Some(extent) = extent {
             if !info.is_empty() {
                 info.push_str("    \u{b7}    ");
             }
-            info.push_str(&crate::ui::fmt::dur_long(d.dur_ms));
+            info.push_str(&extent);
         }
         let mut bx = tx;
         if let Ok(ic) = CString::new(info) {
-            let w = p.text(ic.as_ptr(), tx, date_y, theme::size::CAPTION, dim, 0, 0);
+            let w = p.text(ic.as_ptr(), tx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
             if w > 0.0 {
                 bx += w + theme::space::MD;
             }
         }
-        draw_media_badges(p, d, bx, date_y);
-    }
-
-    // ---- "Directed by …" — the crew credit the reference puts in the metadata block. A step
-    // brighter than the date/runtime fine print above it (these are names, not filing data), and
-    // elided to the hero text column so a five-director title can't run under the Starring line.
-    // Its band is reserved by hero_layout, so an item without directors moves nothing. ----
-    if let Some(names) = directors() {
-        let line = crate::text::elide(
-            &format!("Directed by {}", names.join(", ")),
-            HERO_TEXT_W,
-            theme::size::CAPTION,
-            0,
-            false,
-        );
-        if let Ok(dc) = CString::new(line) {
-            p.text(dc.as_ptr(), tx, dir_y, theme::size::CAPTION, d_a, 0, 0);
+        bx += draw_media_badges(p, d, bx, ch.facts_y);
+        // …and the crew credit closes the row. Inline rather than on a line of its own: it is the same
+        // KIND of fine print as everything left of it, and a second row of it under the first read as a
+        // stray sentence. Elided to whatever the right-aligned Starring column leaves.
+        if let Some(names) = directors() {
+            let budget = SCR_W - MARGIN_X - STARRING_W - theme::space::LG - bx;
+            let line = crate::text::elide(
+                &format!("    \u{b7}    Directed by {}", names.join(", ")),
+                budget.max(0.0),
+                theme::size::CAPTION,
+                0,
+                false,
+            );
+            if let Ok(dc) = CString::new(line) {
+                p.text(dc.as_ptr(), bx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
+            }
         }
     }
 
     // ---- buttons (btn_y from hero_layout) ----
-    draw_buttons(p, env, btn_y);
+    draw_buttons(p, env, ch.btn_y);
 
-    // ---- "Starring …" right-aligned near the bottom-right ----
+    // ---- "Starring …" — a right-aligned WRAPPING block in its own column, level with the action row.
+    // It reads as a caption to the hero rather than a control because the word "Starring" is a rung
+    // dimmer than the names it introduces, which is the mock's own device for keeping a full-size line
+    // of type from competing with the Play pill beside it. ----
     if let Some(d) = d {
         if !d.cast.is_empty() {
             let names: Vec<String> = d.cast.iter().take(3).map(|c| c.tag.clone()).collect();
-            if let Ok(sc) = CString::new(format!("Starring {}", names.join(", "))) {
-                // right-aligned against the right margin (measured directly, no invisible fake-draw)
-                let w = crate::text::text_width(sc.as_ptr(), theme::size::LABEL, 1);
-                p.text(sc.as_ptr(), SCR_W - MARGIN_X - w, btn_y + 16.0, theme::size::LABEL, d_a, 0, 1);
-            }
+            // One colour for the whole run: the mock sets the word "Starring" a rung dimmer than the
+            // names, which needs a RIGHT-aligned lead run, and `TextView::lead` is left-aligned only
+            // (it anchors at the column's left edge, which on a right-aligned block would strand the
+            // word far from the names it introduces).
+            let line = format!("Starring {}", names.join(", "));
+            TextView::new(&line, theme::size::CAPTION, theme::TEXT_TERTIARY)
+                .leading(STARRING_LEAD)
+                .max_lines(2)
+                .h(crate::ui::label::HAlign::Right)
+                .draw(p, Rect::new(SCR_W - MARGIN_X - STARRING_W, ch.btn_y + STARRING_DY, STARRING_W, 0.0));
         }
     }
+}
+
+/// The hero facts line's `(date, middle clause)` — and it describes **whatever the hero is about**,
+/// which is the same switch [`hero_episode`] makes for the backdrop and the blurb.
+///
+/// * Hero is about an EPISODE (a started show) → *that episode's* air date and runtime.
+/// * Hero is about the SERIES (an unplayed show) → the series' first-aired date and its extent,
+///   `2 seasons, 20 episodes`.
+/// * A movie → its own date and runtime.
+///
+/// One subject per hero state, top to bottom. The series extent used to sit here unconditionally, so
+/// on a started show the block changed subject twice in three lines — an episode blurb, then a series
+/// fact, then a button acting on the episode again. A show's extent is series information and belongs
+/// with the series; the season tabs directly below already say how many there are.
+///
+/// A show record's own `duration` is deliberately never used: PMS reports one EPISODE's runtime there
+/// (when it sends it at all), which on a series reads as though the whole show ran 53 minutes. The
+/// extent instead comes from the season list we already hold, so this needs no extra request — and an
+/// episode total of 0 means no season carried a `leafCount` (PMS omits the key rather than sending 0),
+/// so the clause degrades to the season count rather than claiming "0 episodes".
+fn hero_facts(d: &metadata::Detail) -> (String, Option<String>) {
+    if let Some(ep) = hero_episode() {
+        let runtime = (ep.dur_ms >= 60_000).then(|| crate::ui::fmt::dur_long(ep.dur_ms));
+        return (pretty_date(&ep.aired, 0), runtime);
+    }
+    let date = pretty_date(&d.aired, d.year);
+    if d.is_show {
+        let seasons = d.seasons.len();
+        if seasons == 0 {
+            return (date, None);
+        }
+        let eps: i64 = d.seasons.iter().map(|s| s.leaf_count).sum();
+        let s_word = if seasons == 1 { "season" } else { "seasons" };
+        let extent = if eps > 0 {
+            let e_word = if eps == 1 { "episode" } else { "episodes" };
+            format!("{seasons} {s_word}, {eps} {e_word}")
+        } else {
+            format!("{seasons} {s_word}")
+        };
+        return (date, Some(extent));
+    }
+    (date, (d.dur_ms >= 60_000).then(|| crate::ui::fmt::dur_long(d.dur_ms)))
 }
 
 /// The hero's media chips, flowed left→right from `x` and cap-band-centred on the text line drawn
@@ -1147,19 +1349,38 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 /// same `badge` leaf and belong here when they land.
 fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f32 {
     let mut bx = x;
-    // one Option per chip — the audio/subtitle chips the reference client shows beside the
-    // resolution join this list (and nothing else changes) when they land
-    let chips = [crate::ui::fmt::resolution(&d.video_resolution, d.width, d.height)];
-    for text in chips.into_iter().flatten() {
+    // cap-band centre of the line drawn at `text_y` (the inverse of text::text_vcenter_y), computed
+    // once — every chip below sits on it
+    let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+    let cy = text_y + (cap_top + baseline) * 0.5;
+    // the FILLED chip: what the picture IS (its resolution class)
+    for text in [crate::ui::fmt::resolution(&d.video_resolution, d.width, d.height)].into_iter().flatten() {
         // the gap separates chips, so it is never left dangling after the last one
         if bx > x {
             bx += theme::space::XS;
         }
-        // cap-band centre of the line drawn at `text_y` (the inverse of text::text_vcenter_y),
-        // computed here rather than up front so an empty row touches no glyph cache
-        let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
-        let cy = text_y + (cap_top + baseline) * 0.5;
         bx += crate::ui::widgets::badge(p, bx, cy, &text, None, crate::ui::widgets::BadgeStyle::Filled);
+    }
+    // …then the ACCESSIBILITY group, as keyline chips (`Details Screen.dc.html`): what the item
+    // OFFERS, which is a different kind of claim from what it is, and the two chip styles are how the
+    // row says so without a separator. Derived from the streams we already parsed. For a SHOW these
+    // come from the episode `Detail` borrows its media from (see the struct's note), i.e. they describe
+    // an episode's file rather than the series.
+    //
+    // **No `CC` chip** (owner call): the mock has one, but "has subtitles at all" is true of very
+    // nearly every item in a library, so the chip was on constantly and told a viewer nothing. `SDH`
+    // (a track flagged hearing-impaired) and `AD` (audio description) are rare and are the ones that
+    // actually answer "is this watchable for me".
+    let sdh = d.subs.iter().any(|s| s.sdh);
+    let ad = d.audio.iter().any(|s| s.ad);
+    for (on, label) in [(sdh, "SDH"), (ad, "AD")] {
+        if !on {
+            continue;
+        }
+        if bx > x {
+            bx += theme::space::XS;
+        }
+        bx += crate::ui::widgets::keyline_chip(p, bx, cy, label, theme::TEXT_SECONDARY, theme::SURFACE_APP);
     }
     bx - x
 }
@@ -1167,43 +1388,75 @@ fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f
 /// `RatingArt` → the mask and brand tint that draw it. The mapping lives here, in the UI layer, so
 /// `metadata::RatingArt` (which is parsed out of the server's `Rating.image` string) stays free of
 /// `Icon`/colour — and so the *state* the server named is what picks the art, end to end.
-fn rating_mark(art: metadata::RatingArt) -> (crate::ui::icons::Icon, [f32; 4]) {
+fn rating_mark(art: metadata::RatingArt) -> crate::ui::widgets::RatingMark {
     use crate::ui::icons::Icon;
+    use crate::ui::widgets::{MarkLayer, RatingMark, WORDMARK_IMDB, WORDMARK_TMDB};
     use metadata::RatingArt as A;
+
+    // Each mark's colour layers, BACK TO FRONT — the order is the drawing, since they overlap.
+    // `static` so the slices outlive the call; see `widgets::RatingMark::Glyph` for the one-path-per-
+    // layer contract these obey.
+    /// Ripe: red body, green calyx over it.
+    static FRESH: &[MarkLayer] =
+        &[(Icon::Tomato, theme::RATING_FRESH), (Icon::TomatoCalyx, theme::RATING_LEAF)];
+    /// Certified Fresh: RT's SEAL — gold disc, red box, then the green calyx and banner. Not a
+    /// variant of the fruit, which is why it shares no layer with [`FRESH`].
+    static CERTIFIED: &[MarkLayer] = &[
+        (Icon::TomatoCertifiedSeal, theme::RATING_SEAL),
+        (Icon::TomatoCertifiedBox, theme::RATING_FRESH),
+        (Icon::TomatoCertifiedGreen, theme::RATING_LEAF),
+    ];
+    /// Rotten: one layer. A splat is one substance, and a second hue on it reads as two splats.
+    static ROTTEN: &[MarkLayer] = &[(Icon::TomatoRotten, theme::RATING_ROTTEN)];
+    /// Upright tub: the audience score's POSITIVE art, so the tub shares the fresh red; gold corn.
+    static UPRIGHT: &[MarkLayer] =
+        &[(Icon::Popcorn, theme::RATING_FRESH), (Icon::PopcornKernels, theme::RATING_KERNEL)];
+    /// Spilled tub: the rotten green, gold corn thrown clear of it.
+    static SPILLED: &[MarkLayer] = &[
+        (Icon::PopcornSpilled, theme::RATING_ROTTEN),
+        (Icon::PopcornSpilledKernels, theme::RATING_KERNEL),
+    ];
+
     match art {
-        A::TomatoFresh => (Icon::Tomato, theme::RATING_FRESH),
-        // Certified Fresh is still fresh, so it keeps the red — the LAUREL is what distinguishes it
-        A::TomatoCertified => (Icon::TomatoCertified, theme::RATING_FRESH),
-        A::TomatoRotten => (Icon::TomatoRotten, theme::RATING_ROTTEN),
-        // the upright bucket is the audience score's POSITIVE art, so it shares the fresh red
-        A::PopcornUpright => (Icon::Popcorn, theme::RATING_FRESH),
-        A::PopcornSpilled => (Icon::PopcornSpilled, theme::RATING_ROTTEN),
-        A::Imdb => (Icon::Star, theme::RATING_IMDB),
-        A::Tmdb => (Icon::Tmdb, theme::RATING_TMDB),
+        A::TomatoFresh => RatingMark::Glyph(FRESH),
+        A::TomatoCertified => RatingMark::Glyph(CERTIFIED),
+        A::TomatoRotten => RatingMark::Glyph(ROTTEN),
+        A::PopcornUpright => RatingMark::Glyph(UPRIGHT),
+        A::PopcornSpilled => RatingMark::Glyph(SPILLED),
+        // …and the two logotype brands, whose marks are their NAMES (see `widgets::RatingMark`)
+        A::Imdb => RatingMark::Wordmark(&WORDMARK_IMDB),
+        A::Tmdb => RatingMark::Wordmark(&WORDMARK_TMDB),
     }
 }
 
-/// The review-score row: one [`widgets::rating_badge`] per parsed rating, flowed left→right from
-/// `x` and centred on the meta line's own cap band (so it sits on that line rather than at a
-/// guessed y). A badge that would cross the right margin is dropped, and the flow stops there — a
-/// long genre list must not push a tomato off the panel edge.
-fn draw_ratings(p: Painter, x: f32, meta_y: f32) {
+/// The review-score row — **its own line under the meta line**, flowed left→right from the text
+/// margin and centred on the band a [`theme::size::LABEL`] score occupies (so the row sits on a real
+/// text line rather than at a guessed y). A badge that would cross the right margin is dropped and
+/// the flow stops there.
+///
+/// It used to trail the genre line inline, which put a tomato at a different x on every item and
+/// gave the row whatever width the genres left over — on a three-genre show the fourth score fell off
+/// the panel. `Details Screen.dc.html` gives it a line, and a line is what it needs: four marks in
+/// four different shapes are a block to scan, not a clause. The band is only reserved when there is
+/// at least one score (see [`hero_chain`]), so a title the agents found no reviews for closes the gap
+/// instead of leaving a hole.
+fn draw_ratings(p: Painter, x: f32, row_y: f32) {
     let ratings = match metadata::current() {
         Some(d) if !d.ratings.is_empty() => &d.ratings,
         _ => return,
     };
-    let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
-    let cy = meta_y + (cap_top + baseline) * 0.5;
+    let (cap_top, baseline) = crate::text::text_cap_band(theme::size::LABEL, 1);
+    let cy = row_y + (cap_top + baseline) * 0.5;
     let mut bx = x;
     for r in ratings.iter() {
-        let (icon, tint) = rating_mark(r.art);
+        let mark = rating_mark(r.art);
         let score = crate::ui::fmt::rating_score(r.art, r.value);
-        let w = crate::ui::widgets::rating_badge_w(&score);
+        let w = crate::ui::widgets::rating_badge_w(&mark, &score);
         if w <= 0.0 || bx + w > SCR_W - MARGIN_X {
             break;
         }
-        crate::ui::widgets::rating_badge(p, bx, cy, icon, tint, &score);
-        bx += w + theme::space::MD;
+        crate::ui::widgets::rating_badge(p, bx, cy, &mark, &score);
+        bx += w + RATING_ROW_GAP;
     }
 }
 
@@ -1320,8 +1573,8 @@ fn draw_tabs(p: Painter) {
         if on_axis(pill.x - sx, pill.w, SCR_W, 0.0) {
             TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
                 .segment(selected)
+                .plated() // no tab-bar track under these — the pills are their own ground
                 .focused(focused)
-                .note(lay.note())
                 .draw(&e, pt);
         }
     }
@@ -1369,111 +1622,175 @@ fn draw_episodes(p: Painter) {
         let card = Rect::new(x, ep_y, EP_W, EP_H);
         // episode still + focus ring + scale-pop (shared with the chapters strip)
         crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, popped, sc);
-        // Playback STATE on the still — ONE state mark at a time, resolved in the same order the
-        // posters resolve theirs in `widgets::card`: a resume point wins (a part-watched re-run is
-        // what the viewer is in the middle of), otherwise a finished episode carries the watched
-        // check. Without this, a fully-watched episode looked exactly like one never started. Both
-        // marks track the scaled card while it's popped.
+        // Marks ON the still: the scrim, ONE state line on it, and the full-bleed progress bar. All
+        // three track the SCALED card while it is popped.
         let cr = if popped { card.scaled(sc) } else { card };
-        let resuming = ep.resume_ms > 0 && ep.dur_ms > 0;
-        if resuming {
-            let frac = (ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0);
-            let bar = Rect::new(
-                cr.x + EP_MARK_INSET,
-                cr.y + cr.h - EP_BAR_TOP,
-                cr.w - 2.0 * EP_MARK_INSET,
-                EP_BAR_H,
-            );
-            // the CARD-BOTTOM resume pair, which is what these two tokens are documented for —
-            // not the player scrubber's `RAIL_*`, which this strip used to borrow. Amber is the
-            // app's one watched-state hue (the poster shelves' resume bar and unwatched angle, the
-            // watched toggle's check, the badge above), so a white bar here left this tile the only
-            // place in the product speaking a second one.
-            let rad = EP_BAR_H * 0.5;
-            pe.rrect(bar, rad, rad, theme::RESUME_TRACK);
-            pe.rrect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), rad, rad, theme::RESUME_FILL);
-        } else if ep.watched {
-            crate::ui::widgets::watched_badge(pe, cr);
+        let st = ep_state(ep);
+        // the scrim first, so the line reads over any frame; then the line; then the bar, which is the
+        // one mark that belongs to the card's own bottom edge rather than to the scrim above it
+        crate::ui::widgets::art_scrim(pe, cr, 12.0, EP_SCRIM_H, EP_SCRIM_A);
+        ep_state_line(pe, cr, &st);
+        if let Some(frac) = st.progress {
+            // the SHARED bar — literally the same call a Continue Watching card makes
+            crate::ui::widgets::progress_bar(pe, cr, 12.0, EP_BAR_H, frac);
         }
-        // …and the DURATION, which is not a state mark and therefore rides alongside whichever one
-        // is up (see `ep_duration_pill`).
-        ep_duration_pill(pe, cr, ep, resuming);
-        // under-card metadata: kicker → title → full summary → air date. The summary flows off the
-        // ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title doesn't leave
-        // a gap — and the fine-print date (MICRO) closes the block at the bottom. The block height
-        // tracks the tallest episode via ep_meta_h.
+        // under-card metadata: kicker → title → full summary → air date + content rating. The summary
+        // flows off the ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title
+        // doesn't leave a gap — and the fine-print date closes the block at the bottom. The block
+        // height tracks the tallest episode via ep_meta_h.
         let ty = ep_y + EP_H + EP_META_TOP;
         let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+        // the blurb steps a rung brighter on the focused tile, as the title does — the mock moves both
+        let sumc = if focused { theme::TEXT_SECONDARY } else { dimc };
         let date = pretty_date(&ep.aired, 0); // formatted once — feeds both the layout and the draw
         let (date_y, summary_y, _) = ep_meta_layout(&ep.title, !date.is_empty(), &ep.summary);
         if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
             pe.text(ec.as_ptr(), x, ty, theme::size::CAPTION, dimc, 0, 1);
         }
         // title wraps to at most 2 lines (elided past that) — long titles used to run into the next card
-        TextView::new(&ep.title, theme::size::LABEL, titc)
+        TextView::new(&ep.title, theme::size::BODY, titc)
             .bold()
             .leading(EP_TITLE_LEAD)
             .max_lines(2)
             .draw(pe, Rect::new(x, ty + EP_TITLE_DY, EP_W, 0.0));
         if !ep.summary.is_empty() {
-            TextView::new(&ep.summary, theme::size::CAPTION, dimc)
+            TextView::new(&ep.summary, theme::size::CAPTION, sumc)
                 .leading(EP_SUMMARY_LEAD)
                 .max_lines(EP_SUMMARY_MAXLINES)
                 .draw(pe, Rect::new(x, ty + summary_y, EP_W, 0.0));
         }
         if !date.is_empty() {
             if let Ok(dc) = CString::new(date) {
-                pe.text(dc.as_ptr(), x, ty + date_y, theme::size::MICRO, dimc, 0, 0);
+                let w = pe.text(dc.as_ptr(), x, ty + date_y, theme::size::MICRO, dimc, 0, 0);
+                // the episode's own content rating, as a fine-print keyline chip after the date — the
+                // mock's `18+`. `keyline_chip`, not `badge`: this has to be the dimmest thing on the
+                // tile, and at badge's band and weight it outweighed the episode title above it. `bg`
+                // is the surface actually behind it, since the outline is a knockout.
+                if !ep.rating.is_empty() {
+                    let (ct, cb) = crate::text::text_cap_band(theme::size::MICRO, 0);
+                    crate::ui::widgets::keyline_chip(
+                        pe,
+                        x + w + theme::space::SM,
+                        ty + date_y + (ct + cb) * 0.5,
+                        &ep.rating,
+                        dimc,
+                        theme::SURFACE_APP,
+                    );
+                }
             }
         }
     }
 }
 
-/// The episode still's **duration pill** — the bottom-left chip the reference (Apple TV's episode
-/// grid) puts on every tile: a play triangle and the FULL runtime on an episode you have not
-/// started, the restart glyph and what is LEFT of one you are part-way through.
-///
-/// **It is not a state mark, and that is what lets it coexist with one.** `ui/CLAUDE.md`'s rule is
-/// one watched-state vocabulary in one hue — amber corner angle / resume bar / check, never two at
-/// once — and this pill is outside it by construction: it is neutral (`BadgeStyle::OverArt`'s idle
-/// control pair, no amber), it lives in the opposite corner from the check, and what it states is a
-/// DURATION. Its glyph says what OK will do with that duration — ▶ start it, ↺ pick it back up —
-/// which is the same distinction the amber marks make about state, said about the action instead.
-/// So a finished episode shows the amber check AND `▶ 48 min`: the check is the state, the pill is
-/// how long it runs and that pressing OK would start it over. Both are true, neither is the other's
-/// second opinion. (Suppressing the pill on watched tiles was the alternative; it makes the one
-/// row of tiles a viewer scans for "how long is this" the one row that sometimes won't say.)
-///
-/// Both strings come from `ui::fmt`, and from the same FAMILY of it — `dur_long`'s "48 min" and
-/// `time_left`'s "12 min left" spell their units identically, where `dur_short`'s "48m" beside a
-/// neighbouring "12 min left" would put two spellings of a minute in one filmstrip.
-fn ep_duration_pill(p: Painter, card: Rect, ep: &metadata::Episode, resuming: bool) {
-    let Some((icon, text)) = ep_duration_note(ep, resuming) else { return };
-    // pinned to the still's bottom-left; `cy` is the chip's centre line, so its height comes from
-    // the widget rather than being guessed here
-    let cy = card.y + card.h - EP_PILL_BOT - crate::ui::widgets::BADGE_H * 0.5;
-    crate::ui::widgets::badge(
-        p,
-        card.x + EP_MARK_INSET,
-        cy,
-        &text,
-        Some(icon),
-        crate::ui::widgets::BadgeStyle::OverArt,
-    );
+/// The glyph at the head of an episode still's state line — or none at all.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+enum EpGlyph {
+    /// Never started: the amber play triangle. OK will start it from 00:00.
+    Play,
+    /// Finished: the amber watched disc. OK will play it again from 00:00.
+    Watched,
+    /// In progress: NO glyph. The bar underneath already says both where you are and that OK resumes,
+    /// and the mock leaves the slot empty rather than adding a third mark that repeats it.
+    None,
 }
 
-/// [`ep_duration_pill`]'s pure half — the glyph and the string, or `None` for an episode the server
-/// sent no runtime for (a pill with nothing to say is not a pill). Split out because it is the part
-/// worth pinning: the *choice* is the behaviour, while drawing it needs a font and a GL context.
-fn ep_duration_note(ep: &metadata::Episode, resuming: bool) -> Option<(crate::ui::icons::Icon, String)> {
-    if ep.dur_ms <= 0 {
-        return None;
+/// Everything an episode still says about its own playback state: one glyph, one label, and the
+/// progress fraction for the bar (`None` = draw no bar).
+struct EpState {
+    glyph: EpGlyph,
+    /// Runtime (`48 min`) normally; what is LEFT (`12 min left`) while in progress. Empty when the
+    /// server sent no runtime — the line then draws its glyph alone rather than "0 min".
+    label: String,
+    progress: Option<f32>,
+}
+
+/// Resolve an episode's three playback states into ONE mark — the pure half of the still's state
+/// line, split out because the *choice* is the behaviour while drawing it needs a font and a GL
+/// context.
+///
+/// This is the whole progress vocabulary for a still, and it replaced two overlapping ones: an amber
+/// bar or a corner check disc for STATE, plus a neutral duration capsule for the ACTION, which meant a
+/// finished episode wore an amber check in one corner and `▶ 48 min` in the other and a Continue
+/// Watching card wore neither of those things. `Details Screen.dc.html` folds all of it into one line:
+///
+/// | state | glyph | label | bar |
+/// |---|---|---|---|
+/// | never started | `▶` | runtime | — |
+/// | in progress | — | time left | yes |
+/// | watched | `✓` | runtime | — |
+///
+/// **In progress wins over watched**, and the precedence matters because PMS reports both: it keeps a
+/// resume point on an episode that was finished and then re-started, so `watched` and a live
+/// `viewOffset` coexist on the wire. Being part-way through a re-watch is what the viewer is actually
+/// doing, so that is what the tile says. `resume_ms >= dur_ms` is NOT in progress — that is a finished
+/// episode whose offset was never cleared, and treating it as in-progress drew a 100%-full bar that
+/// looked like a rendering bug.
+///
+/// Both strings come from the same `ui::fmt` FAMILY — `dur_long`'s "48 min" and `time_left`'s "12 min
+/// left" spell their units identically, where `dur_short`'s "48m" beside a neighbouring "12 min left"
+/// would put two spellings of a minute in one filmstrip.
+fn ep_state(ep: &metadata::Episode) -> EpState {
+    let has_dur = ep.dur_ms > 0;
+    let in_progress = has_dur && ep.resume_ms > 0 && ep.resume_ms < ep.dur_ms;
+    if in_progress {
+        return EpState {
+            glyph: EpGlyph::None,
+            label: crate::ui::fmt::time_left(ep.dur_ms - ep.resume_ms),
+            progress: Some((ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0)),
+        };
     }
-    Some(if resuming {
-        (crate::ui::icons::Icon::Restart, crate::ui::fmt::time_left(ep.dur_ms - ep.resume_ms))
-    } else {
-        (crate::ui::icons::Icon::Play, crate::ui::fmt::dur_long(ep.dur_ms))
-    })
+    EpState {
+        glyph: if ep.watched { EpGlyph::Watched } else { EpGlyph::Play },
+        label: if has_dur { crate::ui::fmt::dur_long(ep.dur_ms) } else { String::new() },
+        progress: None,
+    }
+}
+
+/// Draw [`ep_state`]'s glyph-and-label line at the still's bottom-left, directly on the artwork —
+/// **no capsule behind it**; `widgets::art_scrim` (drawn first by the caller) is what makes that safe.
+/// `card` is the rect actually drawn, i.e. the SCALED one while the tile is popped, so the line rides
+/// the focus pop without resizing.
+fn ep_state_line(p: Painter, card: Rect, st: &EpState) {
+    let sz = theme::size::CAPTION;
+    // the label's cap band sits on the line's baseline inset, so the glyph can centre on it
+    let (ct, cb) = crate::text::text_cap_band(sz, 0);
+    let ty = card.y + card.h - EP_LINE_BOT - cb;
+    let mut lx = card.x + EP_MARK_INSET;
+    let icon = match st.glyph {
+        EpGlyph::Play => Some(crate::ui::icons::Icon::Play),
+        EpGlyph::Watched => None, // a filled disc, not a mask — drawn below
+        EpGlyph::None => None,
+    };
+    let cy = ty + (ct + cb) * 0.5;
+    match st.glyph {
+        EpGlyph::Watched => {
+            crate::ui::widgets::watched_disc(
+                p,
+                Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D),
+            );
+            lx += EP_GLYPH_D + EP_LINE_GAP;
+        }
+        _ => {
+            if let Some(icon) = icon {
+                crate::ui::icons::draw(
+                    p,
+                    icon,
+                    Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D),
+                    theme::RESUME_FILL,
+                );
+                lx += EP_GLYPH_D + EP_LINE_GAP;
+            }
+        }
+    }
+    if st.label.is_empty() {
+        return;
+    }
+    // a watched episode's runtime steps back a rung: the disc beside it is the statement, and at full
+    // primary the two competed
+    let col = if st.glyph == EpGlyph::Watched { theme::TEXT_SECONDARY } else { theme::TEXT_PRIMARY };
+    if let Ok(lc) = CString::new(st.label.as_str()) {
+        p.text(lc.as_ptr(), lx, ty, sz, col, 0, 0);
+    }
 }
 
 /// "Related" — a horizontal row of portrait poster cards from the related hub. A real instance of
@@ -1635,7 +1952,14 @@ pub(crate) fn on_ok() -> bool {
                 return false; // watched handled above; everything else inert
             }
             let started = if is_show() {
-                play_episode_at(0)
+                // The episode the HERO is about — BY VALUE, not by index: it comes from the server's
+                // on-deck hub and may live in a season the strip has not loaded, so there is no index
+                // into `d.episodes` that names it. A show presenting itself (unplayed/finished) has
+                // none, and there Play starts the loaded season's first episode.
+                match hero_episode() {
+                    Some(ep) => metadata::current().is_some_and(|d| play_episode(d, ep)),
+                    None => play_episode_at(0),
+                }
             } else {
                 if let Some(m) = selected() {
                     crate::route::request_play_movie(m);
@@ -1980,6 +2304,12 @@ fn play_episode_at(i: c_int) -> bool {
         Some(e) => e,
         None => return false,
     };
+    play_episode(d, ep)
+}
+
+/// Start `ep` — the by-value half of [`play_episode_at`], so an episode that is NOT in the loaded
+/// season's list (the hero's on-deck one) can still be played.
+fn play_episode(d: &metadata::Detail, ep: &metadata::Episode) -> bool {
     let show = d.title.clone();
     let hud_title = if ep.title.is_empty() { show.clone() } else { ep.title.clone() };
     let hud_ctx = format!("{}  \u{b7}  S{} E{}", show, ep.season, ep.index);
@@ -2237,24 +2567,133 @@ mod tests {
         }
     }
 
-    /// `hero_chain` is the ONE y-chain the hero's paint and the below-hero scroll flow share
-    /// (`update()` reads `.3` for the button row). The "Directed by" line therefore has to reserve
-    /// its band in the chain itself: drawing it without doing so would put a credit line under the
-    /// Play pill, and reserving it unconditionally would leave a 40px hole on every item PMS sent
-    /// no `Director[]` for — which is most TV shows.
+    /// The crew credit takes **no vertical space**: it is the tail of the facts line, not a band of its
+    /// own, so the action row hangs off the facts line for every item whether or not PMS sent
+    /// `Director[]`. It used to claim a reserved 40px band, which is what put "Directed by" on a line
+    /// by itself on the movie page — the mock runs date · extent · chips · credit as ONE row.
     #[test]
-    fn the_directed_by_band_is_reserved_when_there_is_a_line_and_never_otherwise() {
-        // driven at both a short and a tall synopsis: the band must be the ONLY difference
-        for syn_h in [0.0f32, 116.0] {
-            let (_, _, date_y, btn_y, _) = hero_chain(syn_h, false);
-            assert_eq!(btn_y, date_y + 46.0, "no directors: the button row keeps the y it always had");
-
-            let (_, _, date2, btn2, dir_y) = hero_chain(syn_h, true);
-            assert_eq!(date2, date_y, "nothing ABOVE the credit line moves");
-            assert_eq!(dir_y, date_y + theme::space::LG, "the credit sits one air rung under the date line");
-            assert_eq!(btn2, dir_y + 46.0, "and the buttons clear the line that is now there");
-            assert!(btn2 > btn_y, "the reserved band is real space, not an overlap");
+    fn the_crew_credit_costs_the_chain_no_vertical_space() {
+        for syn_h in [0.0f32, 108.0] {
+            for ratings in [false, true] {
+                let ch = hero_chain(syn_h, ratings);
+                assert_eq!(
+                    ch.btn_y,
+                    ch.facts_y + BTN_DY,
+                    "the action row hangs off the facts line, credit or no credit"
+                );
+            }
         }
+    }
+
+    /// What a show's hero is ABOUT, which is one decision every part of it reads — backdrop still,
+    /// blurb, facts line, Resume label, Play target. It comes from the SERVER's on-deck episode rather
+    /// than a search of the loaded season, and that is the bug this replaced: the client holds one
+    /// season at a time, so a client-side "next episode" changed subject every time you browsed to a
+    /// different season TAB.
+    ///
+    /// Two states have no next episode, and the server only covers one of them — verified live across
+    /// six shows (2026-07-30): a FINISHED show gets no `OnDeck` at all, but an UNPLAYED one is offered
+    /// `S1E1 off=0`, so "something is on deck" is not the same question as "this show is underway".
+    #[test]
+    fn a_shows_hero_is_about_the_servers_on_deck_episode_or_the_series() {
+        let _serial = crate::testlock::serial();
+        let season = |viewed: i64| metadata::Season {
+            rk: String::new(),
+            index: 1,
+            title: String::new(),
+            leaf_count: 10,
+            viewed_leaf_count: viewed,
+        };
+        let ep = |season_no: i64, index: i64, resume_ms: i64| metadata::Episode {
+            index,
+            season: season_no,
+            resume_ms,
+            dur_ms: 60 * 60_000,
+            summary: format!("S{season_no}E{index} blurb"),
+            thumb: format!("/thumb/s{season_no}e{index}"),
+            ..Default::default()
+        };
+        let show = |seasons: Vec<metadata::Season>, on_deck, loaded: Vec<metadata::Episode>| {
+            let mut d = item(&[]);
+            d.is_show = true;
+            d.summary = "the series premise".to_string();
+            d.seasons = seasons;
+            d.on_deck = on_deck;
+            d.episodes = loaded;
+            d
+        };
+
+        // The case that drove the change: on deck is S2E2, and the LOADED season is 1 — the hero must
+        // still be about S2E2, because browsing tabs is navigation, not a change of subject.
+        metadata::install_for_test(Some(show(
+            vec![season(10), season(1)],
+            Some(ep(2, 2, 10 * 60_000)),
+            vec![ep(1, 1, 0), ep(1, 2, 0)],
+        )));
+        let shown = hero_episode().expect("a started show is about its on-deck episode");
+        assert_eq!(shown.season, 2, "the on-deck season, NOT the tab being browsed");
+        assert_eq!(shown.index, 2);
+        assert_eq!(shown.thumb, "/thumb/s2e2", "…which is also the backdrop the hero draws");
+        assert_eq!(hero_resume_ns(), metadata::resume_ns(10 * 60_000, 60 * 60_000), "and Resume reads ITS offset");
+
+        // FINISHED: the server sends no OnDeck, so the hero presents the series for free
+        metadata::install_for_test(Some(show(vec![season(10)], None, vec![ep(1, 1, 0)])));
+        assert!(hero_episode().is_none(), "a finished show presents itself");
+        assert_eq!(hero_resume_ns(), 0, "…and its Play starts from 0, so no restart disc");
+
+        // UNPLAYED: the server DOES offer S1E1, and `show_started` is what rejects it
+        metadata::install_for_test(Some(show(vec![season(0)], Some(ep(1, 1, 0)), vec![ep(1, 1, 0)])));
+        assert!(hero_episode().is_none(), "an unplayed show presents itself, on-deck offer notwithstanding");
+
+        // …and a live offset alone makes it underway, with no watched leaf anywhere
+        metadata::install_for_test(Some(show(vec![season(0)], Some(ep(1, 1, 90_000)), vec![ep(1, 1, 90_000)])));
+        assert!(hero_episode().is_some(), "a part-watched episode means the show is started");
+
+        metadata::install_for_test(None);
+    }
+
+    /// The ratings row is the chain's OTHER conditional band, and it has the same failure modes as
+    /// the credit line in the opposite direction: unreserved, four brand marks would print over the
+    /// synopsis; always reserved, every title the metadata agents found no reviews for wears a 50px
+    /// hole between its genres and its blurb. Everything BELOW it moves as one, and everything above
+    /// it stays put.
+    #[test]
+    fn the_ratings_band_is_reserved_when_there_are_scores_and_never_otherwise() {
+        for syn_h in [0.0f32, 108.0] {
+            let none = hero_chain(syn_h, false);
+            let some = hero_chain(syn_h, true);
+
+            assert_eq!(some.meta_y, none.meta_y, "the meta line is above the band; it cannot move");
+            assert_eq!(
+                none.syn_y,
+                none.meta_y + SYN_DY,
+                "no scores: the synopsis hangs straight off the meta line"
+            );
+            assert_eq!(
+                some.syn_y,
+                some.ratings_y + SYN_DY,
+                "with scores it hangs off the ratings row instead"
+            );
+            // the whole lower block travels together, by exactly the band's height
+            let shift = some.syn_y - none.syn_y;
+            assert_eq!(shift, RATINGS_DY, "the band is worth one RATINGS_DY and nothing else");
+            assert_eq!(some.facts_y - none.facts_y, shift, "the facts line travels with it");
+            assert_eq!(some.btn_y - none.btn_y, shift, "so does the action row");
+        }
+    }
+
+    /// The chain reproduces the mock's absolute ys on the blurb length the mock was drawn at (two
+    /// lines at `SYN_LEAD`). Pinned as ABSOLUTES on purpose: every pitch above is individually
+    /// asserted elsewhere, but only their sum says whether the page still looks like the design, and
+    /// that sum is the thing a later "just nudge one gap" quietly breaks.
+    #[test]
+    fn a_two_line_blurb_lands_the_chain_on_the_mockups_own_ys() {
+        let ch = hero_chain(2.0 * SYN_LEAD, true);
+        assert_eq!(ch.meta_y, 596.0, "meta line");
+        assert_eq!(ch.ratings_y, 646.0, "review scores");
+        assert_eq!(ch.syn_y, 700.0, "synopsis");
+        assert_eq!(ch.facts_y, 796.0, "date/counts line (the mock's 800, on our measured blurb)");
+        assert_eq!(ch.btn_y, 846.0, "action row (the mock's 850)");
     }
 
     /// The shelf is the whole credit list, so an item with crew but no actors still gets one — the
@@ -2327,11 +2766,25 @@ mod tests {
     fn movie(resume_ms: i64, dur_ms: i64) -> Detail {
         Detail { rk: "m1".into(), dur_ms, resume_ms, ..Default::default() }
     }
+    /// A show whose ON-DECK episode carries `ep_resume_ms`. The hero's resume comes from the server's
+    /// on-deck hub, not from the loaded season's first episode (see `hero_episode`), so a fixture that
+    /// only fills `episodes` describes a show the hero would present as a SERIES.
     fn show(ep_resume_ms: i64, dur_ms: i64) -> Detail {
+        let ep = || Episode { rk: "e1".into(), dur_ms, resume_ms: ep_resume_ms, ..Default::default() };
         Detail {
             rk: "s1".into(),
             is_show: true,
-            episodes: vec![Episode { rk: "e1".into(), dur_ms, resume_ms: ep_resume_ms, ..Default::default() }],
+            episodes: vec![ep()],
+            on_deck: Some(ep()),
+            // any watched leaf makes it a STARTED show, which is what lets the hero be about an
+            // episode at all — an untouched show presents itself however deep its on-deck offset
+            seasons: vec![metadata::Season {
+                rk: String::new(),
+                index: 1,
+                title: String::new(),
+                leaf_count: 10,
+                viewed_leaf_count: 1,
+            }],
             ..Default::default()
         }
     }
@@ -2361,11 +2814,11 @@ mod tests {
         mount(Some(movie(7_100_000, 7_200_000)), 0);
         assert_eq!(hero_btns(), 2, "past the 95% mark the item plays from the start");
 
-        // a show page's Play starts episodes[0] of the selected season, so the row reads THAT leaf
+        // a show page's Play starts its ON-DECK episode, so the row reads THAT leaf
         mount(Some(show(0, 2_700_000)), 0);
-        assert_eq!(hero_btns(), 2, "show whose first episode has not been started");
+        assert_eq!(hero_btns(), 2, "show whose on-deck episode has not been started");
         mount(Some(show(600_000, 2_700_000)), 0);
-        assert_eq!(hero_btns(), 3, "show whose first episode is part-watched");
+        assert_eq!(hero_btns(), 3, "show whose on-deck episode is part-watched");
         view().section = 1;
         assert_eq!(focus(), -1, "focus() still reports -1 off the hero section");
 
@@ -2600,72 +3053,86 @@ mod tests {
         mount(None, 0);
     }
 
-    /// The duration pill says the runtime on a tile you have not started and the REMAINDER on one
-    /// you are part-way through, and its glyph names the press each of those implies (▶ start it /
-    /// ↺ pick it back up). Pinned because both halves are easy to get subtly wrong: a resuming tile
-    /// showing the full runtime is a lie about what is left, and an episode the server sent no
-    /// duration for must draw no pill at all rather than "0 min".
+    /// `ep_state` is the still's WHOLE progress vocabulary — one glyph, one label, one optional bar
+    /// per episode — and it replaced two overlapping ones. Every row of the table in its doc comment
+    /// is pinned here, because each is a different way to lie about the same episode: a resuming tile
+    /// showing the full runtime misstates what is left, a finished one showing ▶ claims it is new, and
+    /// an episode the server sent no duration for must not say "0 min".
     #[test]
-    fn the_duration_pill_states_runtime_before_you_start_and_the_remainder_after() {
-        use crate::ui::icons::Icon;
+    fn an_episode_still_resolves_its_three_states_into_one_mark() {
         let ep = |dur_ms, resume_ms| Episode { dur_ms, resume_ms, ..Default::default() };
 
-        // never started: the play glyph and the whole runtime
-        let (icon, text) = ep_duration_note(&ep(48 * 60_000, 0), false).expect("a runtime is a pill");
-        assert!(icon == Icon::Play, "an unstarted episode's pill leads with ▶");
-        assert_eq!(text, "48 min");
+        // never started: the play glyph, the whole runtime, no bar
+        let st = ep_state(&ep(48 * 60_000, 0));
+        assert_eq!(st.glyph, EpGlyph::Play, "an unstarted episode leads with ▶");
+        assert_eq!(st.label, "48 min");
+        assert!(st.progress.is_none(), "nothing to show progress of");
 
-        // part-watched: the restart glyph and what is LEFT, not the runtime
-        let (icon, text) = ep_duration_note(&ep(60 * 60_000, 60_000), true).expect("still a pill");
-        assert!(icon == Icon::Restart, "a resumable episode's pill leads with ↺");
-        assert_eq!(text, "59 min left", "the remainder, not the runtime");
+        // in progress: NO glyph (the bar says it), what is LEFT rather than the runtime, and the bar
+        let st = ep_state(&ep(60 * 60_000, 15 * 60_000));
+        assert_eq!(st.glyph, EpGlyph::None, "the bar is the mark; a glyph would repeat it");
+        assert_eq!(st.label, "45 min left", "the remainder, not the runtime");
+        assert_eq!(st.progress, Some(0.25), "a quarter in");
 
-        // the two strings must spell a minute the SAME way — they sit on neighbouring tiles of one
-        // filmstrip, and `dur_short`'s "48m" beside `time_left`'s "59 min left" is the exact drift
+        // the two labels must spell a minute the SAME way — they sit on neighbouring tiles of one
+        // filmstrip, and `dur_short`'s "48m" beside `time_left`'s "45 min left" is the exact drift
         // `ui::fmt` exists to prevent
-        assert!(text.contains(" min"), "{text}");
+        assert!(st.label.contains(" min"), "{}", st.label);
 
-        // a WATCHED episode still gets one (the check badge is the state; this is the duration),
-        // and PMS clears the resume point when it scrobbles, so it reads as startable
+        // watched: the disc, the runtime (it is startable again), no bar
         let mut done = ep(48 * 60_000, 0);
         done.watched = true;
-        let (icon, text) = ep_duration_note(&done, false).expect("a watched tile still states its runtime");
-        assert!(icon == Icon::Play);
-        assert_eq!(text, "48 min");
+        let st = ep_state(&done);
+        assert_eq!(st.glyph, EpGlyph::Watched, "a finished episode leads with the check disc");
+        assert_eq!(st.label, "48 min", "and still states how long it runs");
+        assert!(st.progress.is_none());
 
-        // nothing to say → no pill
-        assert!(ep_duration_note(&ep(0, 0), false).is_none(), "no runtime on the wire, no pill");
+        // PRECEDENCE: PMS keeps a resume point on an episode that was finished and re-started, so the
+        // wire says watched AND in-progress. Being part-way through the re-watch is what the viewer is
+        // doing, so in-progress wins.
+        let mut rewatch = ep(60 * 60_000, 6 * 60_000);
+        rewatch.watched = true;
+        let st = ep_state(&rewatch);
+        assert_eq!(st.glyph, EpGlyph::None, "a re-started watched episode reads as in progress");
+        assert_eq!(st.progress, Some(0.1));
+
+        // …but an offset AT or PAST the runtime is a finished episode whose viewOffset was never
+        // cleared, not a 100%-complete in-progress one (which drew a full bar that looked like a bug)
+        let mut stale = ep(60 * 60_000, 60 * 60_000);
+        stale.watched = true;
+        assert_eq!(ep_state(&stale).glyph, EpGlyph::Watched, "resume == duration is finished");
+        assert!(ep_state(&stale).progress.is_none(), "and draws no bar");
+
+        // no runtime on the wire: the glyph still states the state, the label says nothing
+        let st = ep_state(&ep(0, 0));
+        assert_eq!(st.glyph, EpGlyph::Play);
+        assert!(st.label.is_empty(), "no runtime, no claim about one");
+        assert!(st.progress.is_none(), "and no bar to divide by a zero duration");
     }
 
-    /// The pill and the resume bar are the two things pinned to a still's bottom edge, so the pill's
-    /// band is placed off the BAR's rather than at its own guessed inset — and it must hold at every
-    /// phase of the focus pop, since both marks ride the scaled rect.
+    /// The state line and the progress bar are the two things pinned to a still's BOTTOM edge, and
+    /// they must not touch at any phase of the focus pop (both ride the scaled rect). The bar is now
+    /// full-bleed against that edge, so the line's clearance is the whole guard.
     #[test]
-    fn the_duration_pill_clears_the_resume_bar_at_every_pop_phase() {
+    fn the_state_line_clears_the_full_bleed_bar_at_every_pop_phase() {
+        assert!(
+            EP_LINE_BOT > EP_BAR_H,
+            "the line's baseline inset ({EP_LINE_BOT}) must clear the bar's band ({EP_BAR_H})"
+        );
         for sc in [1.0f32, 1.03, crate::ui::widgets::CARD_FOCUS_SCALE] {
             let cr = Rect::new(300.0, 480.0, EP_W, EP_H).scaled(sc);
-            let bar_top = cr.y + cr.h - EP_BAR_TOP;
-            let pill_bot = cr.y + cr.h - EP_PILL_BOT;
-            assert!(pill_bot <= bar_top, "the pill's bottom ({pill_bot}) sits in the bar ({bar_top})");
-            // …and the whole chip stays on the still rather than hanging off its top edge
-            assert!(pill_bot - crate::ui::widgets::BADGE_H > cr.y, "the pill overhangs the still's top");
+            // the bar spans the card's full width — the point of the change, and what makes it the
+            // same bar a Continue Watching card wears
+            let bar = Rect::new(cr.x, cr.y + cr.h - EP_BAR_H, cr.w, EP_BAR_H);
+            assert_eq!(bar.x, cr.x, "full-bleed: no side inset");
+            assert_eq!(bar.w, cr.w, "full-bleed: the whole card width");
+            assert!(bar.y + bar.h <= cr.y + cr.h + 0.01, "and it sits ON the bottom edge");
+            // the scrim the line reads over covers the line's band and stays inside the still
+            assert!(EP_SCRIM_H < cr.h, "the scrim must not swallow the whole still");
+            assert!(EP_SCRIM_H > EP_LINE_BOT + EP_GLYPH_D, "…but must cover the line it exists for");
         }
-        // the inset is the one the shared watched badge uses, so all three marks sit on one margin
-        assert_eq!(EP_MARK_INSET, 12.0, "the still's marks share `watched_badge`'s corner inset");
     }
 
-    /// The season tab's note is a TICK or nothing — never a count (owner call, 2026-07-29: the
-    /// strip should mark what you have finished, not file how many episodes each season holds).
-    /// Pinned because one value feeds three things: `TabPill::note_w` sizes the pill, the strip's
-    /// x-advance and the pointer's click target, so a note can never come back in only one of them.
-    #[test]
-    fn a_season_tab_notes_only_that_it_is_finished() {
-        let lay = |done| TabLay { i: 0, x: MARGIN_X, w: 0.0, label: CString::default(), done };
-        assert!(matches!(lay(true).note(), TabNote::Done), "a finished season wears the tick");
-        assert!(matches!(lay(false).note(), TabNote::None), "every other season says nothing");
-        assert_eq!(TabPill::note_w(TabNote::None), 0.0, "…and costs its label no extra width");
-        assert!(TabPill::note_w(TabNote::Done) > 0.0, "the tick reserves a band of its own");
-    }
 
     /// A season tab's pill covers its whole CONTENT — the label plus the trailing tick a finished
     /// season wears — and never overlaps its neighbour at the layout's own advance. `TabLay::w`
@@ -2684,7 +3151,6 @@ mod tests {
                 x,
                 w: lw + nw, // exactly what tabs_layout stores: label width + TabPill::note_w
                 label: CString::default(),
-                done: false,
             };
             let r = tab_pill_rect(&lay, top);
             assert!(r.contains(x, mid), "the pill must cover its label's left edge");
@@ -2732,7 +3198,7 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
     // start playback. Only reachable mid-transition anyway (the scroll rests at 0 or well past the
     // fade), which is exactly when a stray click is least intended.
     if hero_alpha(scroll, HERO_FADE) > HERO_HIT_MIN_A {
-        let y = hero_layout(selected()).3 - scroll;
+        let y = hero_layout(selected()).btn_y - scroll;
         // the LIVE control set, not a constant: `hero_btns()` is 3 only while the restart disc is
         // up, and `hero_btn_rect` slides the watched toggle to match
         for b in 0..hero_btns() {

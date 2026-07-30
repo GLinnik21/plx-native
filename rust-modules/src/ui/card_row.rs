@@ -390,25 +390,16 @@ fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f3
     p.text(tc.as_ptr(), gl + isz + gap, y, sz, theme::TEXT_PRIMARY, 0, bold);
 }
 
-/// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). The mock draws
-/// two square-ended edge-to-edge strips clipped by the card's rounded rect (CSS overflow:hidden),
-/// so the strip ends FOLLOW the bottom-corner arcs — the amber fill visibly wraps the corner.
-/// Reproduced with the GL scissor: clip to the bottom band, then fill the card-shaped rounded rect
-/// in the bar colors. `frac` is the played fraction 0..1; `rad` is the card's corner radius.
+/// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). Delegates to
+/// [`crate::ui::widgets::progress_bar`], which is the ONE bar the whole app draws — a poster shelf and
+/// the detail page's episode filmstrip now make the identical call, and its doc carries the two
+/// pixel-level rules (snapped band, disjoint track/fill) that a hand-rolled copy here kept getting
+/// subtly wrong. Only the HEIGHT is local, because it is poster-relative.
 fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
-    // 5px at rest (rides the focus pop): the band's bottom ~1.5px are the card edge's own SDF AA
-    // ramp, so a 4px band reads ~2.5px — 5px leaves the mock's ~4px of solid color.
+    // 5px on a resting poster (and it rides the focus pop): the band's bottom ~1.5px are the card
+    // edge's own SDF AA ramp, so a 4px band reads ~2.5px — 5px leaves the mock's ~4px of solid color.
     let bh = (r.h * 5.0 / 375.0).max(4.0);
-    let band = Rect::new(r.x, r.y + r.h - bh, r.w, bh);
-    p.clip(band);
-    p.rect(r, rad, theme::RESUME_TRACK, theme::RESUME_TRACK, 0.0);
-    if frac * r.w >= 1.0 {
-        // the fill: same card-shaped fill, scissored to the played fraction (a subset of the band,
-        // so the second clip simply replaces the first) — square progress edge, corner-arc left end
-        p.clip(Rect::new(band.x, band.y, band.w * frac, bh));
-        p.rect(r, rad, theme::RESUME_FILL, theme::RESUME_FILL, 0.0);
-    }
-    p.clip_clear();
+    crate::ui::widgets::progress_bar(p, r, rad, bh, frac);
 }
 
 // ---------------------------------------------------------------------------------------

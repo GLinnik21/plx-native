@@ -1,0 +1,8 @@
+<!-- Rotten Tomatoes Certified Fresh — the BOX LAYER: the red rounded panel on the gold seal, which
+     is what carries the fruit's colour in this badge (the tomato itself is not drawn; the box and the
+     calyx above it are the tomato, RT-style).
+     Middle of three layers: seal → box → green.
+     One element, so nothing composites inside this layer. -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <rect x="5.2" y="6.6" width="13.6" height="11.8" rx="3.8"/>
+</svg>

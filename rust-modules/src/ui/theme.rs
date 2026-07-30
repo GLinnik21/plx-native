@@ -16,8 +16,14 @@
 pub const TEXT_PRIMARY: [f32; 4] = [0.97, 0.98, 0.99, 1.0];
 /// Section headings ("Related", "Cast & Crew", About headings) — a touch below primary.
 pub const TEXT_HEADING: [f32; 4] = [0.92, 0.94, 0.97, 1.0];
-/// Secondary text: metadata lines, synopsis, idle row titles.
+/// Secondary text: metadata lines, idle row titles.
 pub const TEXT_SECONDARY: [f32; 4] = [0.72, 0.75, 0.80, 1.0];
+/// **Reading copy** — a multi-line paragraph someone actually reads through, one step brighter than
+/// the label grey above it (`#cdd3dd`, `Details Screen.dc.html`). Its one job today is the detail
+/// hero's synopsis, which is the longest run of text on the page and sits over the backdrop scrim;
+/// at [`TEXT_SECONDARY`] it read as fine print rather than as the blurb. A one-line metadata VALUE
+/// stays secondary — the distinction is paragraph-vs-label, not importance.
+pub const TEXT_READING: [f32; 4] = [0.804, 0.827, 0.867, 1.0];
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
 pub const TEXT_TERTIARY: [f32; 4] = [0.58, 0.60, 0.64, 1.0];
 
@@ -169,6 +175,11 @@ pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
 /// Unfilled track behind the Continue-Watching resume bar — the full-bleed card-bottom rail. A
 /// hair lighter than the player scrubber's so the amber reads against a bright poster.
 pub const RESUME_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.22];
+/// Ink over [`RESUME_FILL`] when the amber is a SURFACE rather than a mark — the dark check knocked
+/// out of the episode still's watched disc (`Details Screen.dc.html`'s `#141416`). Distinct from
+/// [`ACCENT_INK`]: that one is tuned against the near-white [`ACCENT`], and at that value it
+/// disappeared into the amber rather than reading as a knockout.
+pub const INK_ON_RESUME: [f32; 4] = [0.078, 0.078, 0.086, 1.0];
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = [0.92, 0.32, 0.29, 1.0];
@@ -176,6 +187,13 @@ pub const DANGER: [f32; 4] = [0.92, 0.32, 0.29, 1.0];
 pub const HAIRLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.10];
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).
 pub const OVERLAY_FOCUS_PILL: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
+/// A PLATED tab segment's fill — the detail page's season tabs, which sit bare on the backdrop rather
+/// than inside the top bar's track and so provide their own ground
+/// ([`crate::ui::widgets::TabPill::plated`], `Details Screen.dc.html`). The selected one is a step up
+/// from [`OVERLAY_FOCUS_PILL`]: at .14 against a plated neighbour at .08 the two read as the same pill.
+pub const TAB_PLATE_SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
+/// An unselected plated segment — present, but only just: it says "this is a control" and nothing more.
+pub const TAB_PLATE_IDLE: [f32; 4] = [1.0, 1.0, 1.0, 0.08];
 /// Softer selection panel.
 pub const OVERLAY_FOCUS_SOFT: [f32; 4] = [1.0, 1.0, 1.0, 0.07];
 /// Outlined-badge / meta-badge border.
@@ -199,10 +217,35 @@ pub const RATING_FRESH: [f32; 4] = [0.961, 0.204, 0.102, 1.0];
 /// lightened from their darker splat green. The counter-intuitive polarity (red = good, green =
 /// bad) is Rotten Tomatoes' own; don't "fix" it.
 pub const RATING_ROTTEN: [f32; 4] = [0.243, 0.788, 0.420, 1.0];
-/// IMDb gold `#f5c518` (exact) — the IMDb star.
+/// IMDb gold `#f5c518` (exact) — the IMDb wordmark chip's face, and the popcorn tub's kernels,
+/// which are the same yellow.
 pub const RATING_IMDB: [f32; 4] = [0.961, 0.773, 0.094, 1.0];
-/// The Movie Database's teal `#01b4e4` (exact) — its score dial.
+/// The Movie Database's teal `#01b4e4` (exact) — the END stop of its wordmark chip's gradient.
 pub const RATING_TMDB: [f32; 4] = [0.004, 0.706, 0.894, 1.0];
+/// TMDB's gradient START stop `#90cea1` — the pale green its brand sweep runs from. The chip is a
+/// two-stop LEFT-to-RIGHT sweep (`Details Screen.dc.html`'s `linear-gradient(100deg, …)`), which is
+/// why this is a stop and not a fill: see [`crate::ui::widgets::wordmark_chip`].
+pub const RATING_TMDB_LO: [f32; 4] = [0.565, 0.808, 0.631, 1.0];
+/// The **Certified Fresh seal's** gold `#ffc426` — the disc RT stamps that badge on. Its own value
+/// rather than [`RATING_IMDB`]'s near-identical gold: they are two brands' colours that happen to
+/// land close, and folding them would make an IMDb tweak silently restyle a Rotten Tomatoes award.
+pub const RATING_SEAL: [f32; 4] = [1.0, 0.769, 0.149, 1.0];
+/// The **calyx** green — the ripe tomato's leaf-and-stem, and the spilled tub's lid and stripes.
+/// `#2fae5b`, and deliberately NOT [`RATING_ROTTEN`]: this one is a leaf on a mark whose verdict is
+/// *good*, so sharing the rotten green would put the failure hue on a fresh tomato. It exists
+/// because these marks are drawn as LAYERED masks — one per colour — rather than tinted flat.
+pub const RATING_LEAF: [f32; 4] = [0.184, 0.682, 0.357, 1.0];
+/// The popcorn tub's paper white `#f4f7f5` — the spilled bucket's body, under its green lid.
+pub const RATING_TUB: [f32; 4] = [0.957, 0.969, 0.961, 1.0];
+/// Popped-corn gold — the kernel layer on both popcorn tubs. The SAME value as [`RATING_IMDB`], and
+/// an alias rather than a second constant so they can never drift apart; it exists because
+/// `RATING_IMDB` on a Rotten Tomatoes kernel reads at the call site as the wrong brand.
+pub const RATING_KERNEL: [f32; 4] = RATING_IMDB;
+/// Ink over the IMDb chip's gold `#0b0b0c`.
+pub const RATING_IMDB_INK: [f32; 4] = [0.043, 0.043, 0.047, 1.0];
+/// Ink over the TMDB chip's teal sweep `#062a33` — a dark teal, not the IMDb chip's neutral black,
+/// because it sits on a green→blue face.
+pub const RATING_TMDB_INK: [f32; 4] = [0.024, 0.165, 0.200, 1.0];
 
 // ── Card-glow geometry (the glow *color* is shader-baked in gfx.rs's FS_SRC/FS_IMG; only geometry
 // is tunable). The hero-grid card's wide glow pad is `consts::GLOW_PAD` (shared with off-screen

@@ -1,0 +1,10 @@
+<!-- Rotten Tomatoes ripe — the CALYX LAYER: stem + two sepals, exactly the subpaths `tomato.svg`
+     draws in its own silhouette, lifted out so they can be painted green over the red body
+     (`Details Screen.dc.html` draws the fresh tomato two-tone; a flat-red tomato loses the leaf and
+     reads as a plain red blob at 30px).
+     Drawn OVER `Icon::Tomato`, same rect, same size — the two rasterize from the same 24×24 viewBox
+     so they register exactly. See `ui::detail::rating_mark` for the pairing.
+     ONE path, every subpath clockwise: see ui/icons.rs for why that is the rule. -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <path d="M 10.86 8.14 C 10.86 1.29 13.14 1.29 13.14 8.14 Z M 12.38 9.51 C 12.68 6.54 15.12 4.45 18.24 4.03 C 17.61 7.12 15.36 9.41 12.38 9.51 Z M 11.62 9.51 C 8.64 9.41 6.39 7.12 5.76 4.03 C 8.88 4.45 11.32 6.54 11.62 9.51 Z"/>
+</svg>
