@@ -89,11 +89,32 @@ hunting that found the hero / cast+about / info-panel regressions.
 ./tests/run.py --list          # scenes print as `fps:<name>`
 ```
 
-- **Metric:** after skipping `warmup_s` samples (one-time texture-upload / scroll-in transients), the
-  gate is the **2nd-lowest** sample vs `floor` — tolerates one transient dip, but a *sustained* drop
-  (every sample low) fails. Reports `robust_min / min / median / n`.
-- **Floors have margin** (50 for the steady home scenes, 45 for the transition/player scenes) because
-  the panel GPU thermally throttles; a real regression drops well below, normal 55–60 jitter passes.
+- **Three assertions, and picking the wrong one is how a frozen animation ships.** Since the present
+  gate (`ui::idle`) landed, `FPS=` counts **loop iterations**, not swaps — a skipped frame is a 16 ms
+  sleep, so the loop reads ~60 whether or not anything reached the panel:
+  - `floor` grades `FPS=`. It proves the **app is alive**. It cannot see a stopped animation, and on
+    a settled screen it grades nothing at all (three scenes carry an `_idle_gate_note` saying so).
+  - `present_floor` grades `pres=` on the **median** — "is this screen still animating, at rate".
+    The median and not the 2nd-lowest, because a present rate is now intermittent *by design*: on a
+    scene that bounces rather than animates continuously, a 1 s window can land wholly inside the
+    settled gap and read 0 with a perfectly healthy animation (measured: `home-detail-nav` min=0,
+    median=15). A frozen animator reads ~1/s — the keepalive alone — so the two are far apart.
+  - `present_ceiling` grades `pres=` on the **2nd-highest** — "does this screen actually STOP".
+    This is the only guard on over-reporting, which silently gives back the whole ~38-points-of-a-
+    core saving while every floor in the suite still passes.
+- **`drift`** (last-third minus first-third mean) is reported on every scene and asserted on none.
+  `fps_stats` used to sort and discard sample ORDER, so a monotone 60→53 decay and a flat 53
+  produced byte-identical output. 18–36 s is far too short to gate a thermal ramp on; this is a
+  breadcrumb pointing at when a real soak is worth running.
+- **Floors have margin** (50 for the steady home scenes, 45 for the transition/player scenes) so
+  normal 55–60 jitter passes while a real regression drops well below. **This margin used to be
+  justified here by "the panel GPU thermally throttles" — that is an unmeasured hypothesis, not a
+  finding**, and it is the only place in the repo the claim appears. Nothing has ever measured a
+  temperature on this device (no `thermal_zone`, no `cpufreq`, Mali runtime-PM reports
+  `unsupported`), the observed slow scenes are exactly the two with the most full-screen passes,
+  and 50 fps is also precisely the European panel refresh on this SKU. Discriminate with a soak
+  (same scene cold vs hot vs recovered), never from one sample. See
+  `docs/perf-view-buffers-and-thermal.md`.
 - **False-negative guard:** a scene with <5 post-warmup samples for its route FAILs (it never reached
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
   pass. `detail-transition`'s `rk` must be an **in-home-catalog (recently-added / on-deck) movie**.

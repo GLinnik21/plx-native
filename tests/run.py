@@ -1055,13 +1055,44 @@ def parse_fps(lines, route, overlay):
     return out
 
 
+# `pres=<n>` — frames actually SWAPPED in that second, which is what `ui::idle`'s present gate
+# moves. Deliberately a SECOND regex rather than a group on FPS_RE: the field is newer than the
+# heartbeat, and a scene graded on a log from a build without it must fail as "no samples" rather
+# than silently match zero and read as a spectacular pass.
+PRES_RE = re.compile(r"\bFPS=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bpres=(\d+)")
+
+
+def parse_pres(lines, route, overlay):
+    """The per-second PRESENT counts whose route (+overlay) match."""
+    out = []
+    for ln in lines:
+        m = PRES_RE.search(ln)
+        if not m or m.group(1) != route:
+            continue
+        if overlay and (m.group(2) or "none") != overlay:
+            continue
+        out.append(int(m.group(3)))
+    return out
+
+
 def fps_stats(vals):
     s = sorted(vals)
     n = len(s)
     # The gate is the 2nd-lowest sample: it tolerates ONE transient dip (a mid-run texture upload or
     # GC pause) while a *sustained* regression — every sample low — still fails.
     robust_min = s[1] if n >= 2 else (s[0] if s else 0)
-    return {"n": n, "min": s[0] if s else 0, "median": s[n // 2] if n else 0, "robust_min": robust_min}
+    # DRIFT — the one thing sorting destroys, and the only signature a thermal ramp has.
+    # `s = sorted(vals)` above throws sample ORDER away, so before this a monotone 60->53 decay and
+    # a flat 53 produced byte-identical output: a screen that is simply expensive and a SoC that is
+    # heating up were indistinguishable in every run this harness has ever done. `drift` is
+    # (last third mean - first third mean); it is REPORTED, never asserted, because a single
+    # 18-36s scene is far too short to gate on — see tests/README.md on the thermal hypothesis.
+    # A real thermal soak needs one scene held for tens of minutes.
+    third = max(1, n // 3)
+    head = sum(vals[:third]) / float(third) if n else 0.0
+    tail = sum(vals[-third:]) / float(third) if n else 0.0
+    return {"n": n, "min": s[0] if s else 0, "median": s[n // 2] if n else 0,
+            "robust_min": robust_min, "head": head, "tail": tail, "drift": tail - head}
 
 
 def run_fps_scene(scene, cfg, token):
@@ -1116,6 +1147,58 @@ def run_fps_scene(scene, cfg, token):
 
     ok = st["robust_min"] >= floor
     detail = f"robust_min={st['robust_min']}fps (min={st['min']}, median={st['median']}, n={st['n']}) vs floor {floor}"
+    # Reported, not asserted — a decaying series is the thermal signature, and a scene this short
+    # cannot gate it. A drift more negative than a couple of fps is worth a real soak.
+    detail += f" | drift={st['drift']:+.1f}fps ({st['head']:.0f}->{st['tail']:.0f})"
+
+    # `present_floor`: for a scene whose whole point is that an ANIMATION keeps running. Graded on
+    # `pres=` because `FPS=` counts loop iterations and cannot see a frozen animator — the trap that
+    # let a frozen route dip and a stopped spinner both ship.
+    #
+    # Graded on the MEDIAN, deliberately NOT on the 2nd-lowest the way `floor` and
+    # `present_ceiling` are. Under the present gate a present rate is intermittent BY DESIGN — that
+    # is the whole feature — so on a scene that bounces rather than animates continuously (the
+    # `*-nav` pair reverse every 1400ms, of which only ~210ms is fading) a 1-second heartbeat window
+    # can land entirely inside the settled gap and legitimately read 0. Measured: home-detail-nav
+    # ran min=0, median=15 with a perfectly healthy fade, and even the oscillator scenes are bursty
+    # now that the settle predicate lets them idle between steps (home-grid min=11, median=41).
+    # The median answers the question actually being asked — "is this screen animating at all, at
+    # rate" — while a FROZEN animator reads ~0.5/s, the keepalive alone, which no threshold in this
+    # range can confuse with a healthy one. Fill-rate regressions are `floor`'s job, not this one.
+    p_floor = scene.get("present_floor")
+    if p_floor is not None:
+        presf = parse_pres(lines, route, overlay)[warmup:]
+        if len(presf) < 5:
+            msg = (f"only {len(presf)} post-warmup pres= samples for route={tag} (need >= 5) — a "
+                   f"build without the pres= field, or the scene never reached this screen")
+            print(f"    [FAIL] {msg}")
+            return False, msg
+        sf = sorted(presf)
+        med = sf[len(sf) // 2]
+        ok = ok and med >= p_floor
+        detail += (f" | median={med} pres/s (min={sf[0]}, max={sf[-1]}, n={len(presf)}) "
+                   f"vs present_floor {p_floor}")
+
+    # `present_ceiling`: the INVERSE assertion — this scene wants the app to stop presenting.
+    # `floor` still guards FPS= (loop liveness) so a wedged loop cannot pass by presenting nothing;
+    # this adds the ceiling on pres= (actual swaps). Graded on the 2nd-HIGHEST sample, the mirror
+    # of robust_min's 2nd-lowest, so one late poster landing waking the gate is tolerated while a
+    # sustained repaint still fails.
+    ceiling = scene.get("present_ceiling")
+    if ceiling is not None:
+        pres = parse_pres(lines, route, overlay)[warmup:]
+        if len(pres) < 5:
+            msg = (f"only {len(pres)} post-warmup pres= samples for route={tag} (need >= 5) — a "
+                   f"build without the pres= field, or the scene never reached this screen")
+            print(f"    [FAIL] {msg}")
+            return False, msg
+        sp = sorted(pres, reverse=True)
+        robust_max = sp[1]
+        ok_c = robust_max <= ceiling
+        detail += (f" | robust_max={robust_max} pres/s (max={sp[0]}, median={sorted(pres)[len(pres)//2]}, "
+                   f"n={len(pres)}) vs ceiling {ceiling}")
+        ok = ok and ok_c
+
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
 
