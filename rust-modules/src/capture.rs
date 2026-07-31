@@ -57,6 +57,14 @@ use crate::log;
 const TRIGGER: &str = "/tmp/plxnative-capture";
 const DEFAULT_PORT: u16 = 8910;
 const MIN_GAP_MS: u32 = 33; // ~30fps capture cadence cap
+/// Idle wait before the encoder synthesises a keepalive from the LAST captured frame.
+///
+/// A still screen must never be re-rendered just to feed a dev stream — that is the entire cost
+/// the present gate removes. So when nothing new arrives, capture re-encodes the picture it
+/// already has. 1 s is chosen to stay under the 1500 ms gap that forces an mpeg encoder rebuild:
+/// at the gate's 0.5 presents/s an idle screen would otherwise rebuild the encoder on EVERY frame
+/// (sequence header + I-frame each time), which is both expensive and visibly stuttery.
+const IDLE_MS: u64 = 1000;
 
 pub(crate) struct Frame {
     seq: u32,
@@ -142,31 +150,6 @@ pub(crate) fn shutdown() {
 /// Per-frame hook (GL thread, after the last UI draw, before the swap). One atomic
 /// load when idle; captures at most every MIN_GAP_MS and only when the encoder has
 /// consumed the previous frame (mailbox empty) — never blocks, never queues.
-/// Would [`tick`] take a frame right now? The frame gate asks this, and turns a `true` into a
-/// repaint.
-///
-/// **Why the gate needs it at all:** the grab in [`tick`] can only copy a FINISHED frame, so it
-/// runs inside the present gate — which on a settled screen means it fires at `ui::idle`'s 2 s
-/// keepalive. Measured 0.1 fps, which a browser reads as a dead connection rather than a still
-/// picture. Someone watching remotely is a genuine reason to keep drawing.
-///
-/// **Why it mirrors [`tick`]'s cadence rather than just answering "is anyone attached":** capture
-/// caps itself at [`MIN_GAP_MS`], so an is-anyone-attached test made the loop render every frame
-/// and throw ~12 a second away — each one paying a full present, ours and the compositor's. Gated
-/// here, an otherwise-idle streaming screen renders at exactly the rate the stream consumes. A
-/// genuinely animating screen is unaffected: its springs already report at panel rate and the
-/// stream just samples that.
-///
-/// Deliberately does NOT replicate `tick`'s third guard (the encoder still holding the previous
-/// frame). That one needs a `try_lock`, which has no business on the frame gate's path, and its
-/// only cost is a few extra presents while the encoder is saturated — a state that self-corrects.
-#[inline]
-pub(crate) fn wants_frame(now: u32) -> bool {
-    ENABLED.load(Ordering::Relaxed)
-        && (FD_JPEG.load(Ordering::Relaxed) >= 0 || FD_MPEG.load(Ordering::Relaxed) >= 0)
-        && now.wrapping_sub(LAST_MS.load(Ordering::Relaxed)) >= MIN_GAP_MS
-}
-
 pub(crate) fn tick(now: u32) {
     if !ENABLED.load(Ordering::Relaxed)
         || (FD_JPEG.load(Ordering::Relaxed) < 0 && FD_MPEG.load(Ordering::Relaxed) < 0)
@@ -452,6 +435,12 @@ fn capenc() {
     let mut rgb: Vec<u8> = Vec::new();
     let mut jpg: Vec<u8> = Vec::new(); // fallback-path encode target
     let mut last_pkt: Vec<u8> = Vec::new(); // last sent header+JPEG, for the jpeg keepalive resend
+    // The newest frame's pixels, kept by SWAP with the pool rather than copied, so the idle
+    // keepalive below can re-encode the picture we ALREADY have instead of asking the UI to
+    // render an identical one. Re-rendering a still screen to feed a dev stream would hand back
+    // exactly the cost `ui::idle` exists to remove.
+    let mut last_rgba: Vec<u8> = Vec::new();
+    let mut last_flip = false;
 
     // rolling stats, logged every ~5s while frames flow
     let (mut st_t0, mut st_n, mut st_bytes) = (Instant::now(), 0u32, 0u64);
@@ -474,7 +463,7 @@ fn capenc() {
                 if let Some(f) = slot.take() {
                     break Some(f);
                 }
-                let (s, t) = CV.wait_timeout(slot, std::time::Duration::from_secs(5)).unwrap();
+                let (s, t) = CV.wait_timeout(slot, std::time::Duration::from_millis(IDLE_MS)).unwrap();
                 slot = s;
                 if t.timed_out() {
                     break None;
@@ -585,7 +574,13 @@ fn capenc() {
                     }
                 }
 
-                POOL.lock().unwrap().push(f.rgba);
+                // retain THIS frame's pixels for the idle keepalive and recycle the previous
+                // one — a swap, so holding a spare costs no copy per frame.
+                last_flip = f.flip;
+                let prev = std::mem::replace(&mut last_rgba, f.rgba);
+                if !prev.is_empty() {
+                    POOL.lock().unwrap().push(prev);
+                }
 
                 let dt = st_t0.elapsed().as_secs_f32();
                 if dt >= 5.0 && st_n > 0 {
@@ -621,6 +616,23 @@ fn capenc() {
                 if my_jfd >= 0 && last_pkt.len() > 16 {
                     if !send_all(my_jfd, &last_pkt) {
                         disconnect_slot(&mut my_jfd, &FD_JPEG, "jpeg");
+                    }
+                }
+                // MPEG slot: the old bytes cannot be replayed (stale continuity counters, rewound
+                // PTS — see above), but the same PICTURE can be re-encoded, which yields valid TS
+                // with fresh timing. That is what keeps a still screen's live view alive WITHOUT
+                // re-rendering it: one encode per IDLE_MS instead of a full render+present+
+                // composite per frame. It also holds the inter-frame gap under the 1500ms
+                // threshold that would otherwise rebuild the encoder on every frame once the
+                // present gate has an idle screen down to 0.5 presents/s.
+                if my_mfd >= 0 && !last_rgba.is_empty() {
+                    match venc.as_mut().map(|v| v.encode(&last_rgba, my_mfd, last_flip)) {
+                        Some(true) => last_mpeg_ticks = last_mpeg_ticks.wrapping_add(IDLE_MS as u32),
+                        Some(false) => {
+                            venc = None;
+                            disconnect_slot(&mut my_mfd, &FD_MPEG, "mpeg");
+                        }
+                        None => {}
                     }
                 }
             }
