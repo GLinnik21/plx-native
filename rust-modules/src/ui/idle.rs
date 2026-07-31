@@ -131,7 +131,7 @@ thread_local! {
 static DIRTY: AtomicBool = AtomicBool::new(true);
 /// `SDL_GetTicks` of the last present, for the [`KEEPALIVE_MS`] backstop.
 static LAST_PRESENT: AtomicU32 = AtomicU32::new(0);
-/// Presents since the last [`take_presents`] — the heartbeat's `pres=` field.
+/// Presents since the last [`take_presents`] — the heartbeat's `fps=` field.
 static PRESENTS: AtomicU32 = AtomicU32::new(0);
 /// Kill switch (`/tmp/plxnative-noidle`), so a device A/B is one file apart and a bad frame on the
 /// panel is one `rm` from being ruled out as this feature's fault.
@@ -230,11 +230,13 @@ pub(crate) fn note_present(now: u32) {
     PRESENTS.fetch_add(1, Relaxed);
 }
 
-/// Presents since the last call — drained once a second into the `FPS=` heartbeat as `pres=`.
+/// Presents since the last call — drained once a second into the heartbeat as `fps=`, which is the
+/// only field there that is a frame rate.
 ///
-/// `FPS=` itself deliberately keeps counting LOOP iterations: it is the app's liveness signal and
+/// Its neighbour `loop=` deliberately counts LOOP iterations: it is the app's liveness signal and
 /// `tests/run.py` anchors `pos=` to it, so it must not read 0 on a screen that is merely idle.
-/// `pres=` is the number this module actually moves.
+/// `fps=` is the number this module actually moves, and `fps=0` beside a healthy `loop=` is this
+/// module working, not a fault.
 pub(crate) fn take_presents() -> u32 {
     PRESENTS.swap(0, Relaxed)
 }

@@ -1,5 +1,12 @@
 # View buffers, and whether the 50 is heat
 
+> **Field names in this document predate 2026-08-01 and the old name was REUSED.** Where it says
+> `FPS=`, today's heartbeat says **`loop=`** (loop iterations); where it says `pres=`, today's says
+> **`fps=`** (frames actually presented). The manifest gates moved too: `floor`→`loop_floor`,
+> `present_floor`→`fps_floor`, `present_ceiling`→`fps_ceiling`, and `fps_stats`→`rate_stats`. The
+> text below is left as written, with the line numbers of its day, because it is a dated record of
+> an investigation rather than live guidance — see `CLAUDE.md` for the current names.
+
 **Q1 — view buffers: no, and not marginally.** On this stack a cached-quad composite *is* the most expensive fragment path we already have (`fs_img.frag:32`, one `texture2D` + a tint multiply), while the passes it would replace — full-screen scrims, washes, backdrops — are the *cheapest* one (`fs_src.frag:35-38`, a single `mix()` with zero memory traffic), so the trade runs the wrong way before you add the FBO round trip or the Midgard tile flush the tree already documents at `gfx.rs:851-852`. **Q2 — the drop is probably neither heat nor fill as stated, because the number quoted no longer means what it used to:** since the gate landed, `FPS=` counts *loop iterations*, not swaps (`app.rs:252-260`, `idle.rs:173-180`), and a settled screen reports the ~62 Hz idle-poll rate, so a post-gate "50" has to be re-read off `pres=` before any hypothesis is entertained. The existing 10-scene ranking supports **fill, weakly** (the two scenes below cap are exactly the two with the most full-screen passes, and their suite *position* is 4th and 8th, so nothing is ordered by elapsed time), but it cannot support or refute thermal at all, because no scene runs longer than 36 s and `fps_stats` sorts the samples and throws the order away (`tests/run.py:1078-1084`). And the honest headline: **the present gate already took most of the thermal win that exists here** — it changed the duty cycle from 60 presents/s to 0.5, which is a change in *joules per hour*, and no per-frame optimisation can repeat that.
 
 ---

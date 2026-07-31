@@ -1,5 +1,12 @@
 # UI View-Tree Migration Plan (retui Steps 5–7)
 
+> **Field names in this document predate 2026-08-01 and the old name was REUSED.** Where it says
+> `FPS=`, today's heartbeat says **`loop=`** (loop iterations); where it says `pres=`, today's says
+> **`fps=`** (frames actually presented). The manifest gates moved too: `floor`→`loop_floor`,
+> `present_floor`→`fps_floor`, `present_ceiling`→`fps_ceiling`, and `fps_stats`→`rate_stats`. The
+> text below is left as written, with the line numbers of its day, because it is a dated record of
+> an investigation rather than live guidance — see `CLAUDE.md` for the current names.
+
 Branch `player-ux`. This plan finishes the retained-view-tree migration begun in
 `docs/ui-system-migration.md`. It is **refined against the current working tree** (home.rs is
 already a `SCENE`-rooted tree; detail.rs is still loose statics; app.rs still flat route bools).

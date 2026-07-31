@@ -269,9 +269,10 @@ def filter_log(raw):
 RE_DECISION = re.compile(r"decision: part=.* -> (DIRECT PLAY|TRANSCODE)")
 RE_CODEC = re.compile(r"ff: v=#0 codec_id=(\d+)\s+(\d+)x(\d+)")
 RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
-# the 1Hz media position carried on the render heartbeat (app.rs). Anchored to FPS= so it can
-# never pick up a `pos=` that some other line grows later.
-RE_POS = re.compile(r"FPS=\d+ .*?\bpos=(\d+)s")
+# the 1Hz media position carried on the render heartbeat (app.rs). Anchored to loop= so it can
+# never pick up a `pos=` that some other line grows later. loop= and NOT fps=, because `pos=` sits
+# between them on the line and because a paused-but-alive player still emits loop=.
+RE_POS = re.compile(r"loop=\d+ .*?\bpos=(\d+)s")
 # requests a single applied seek MERGED (pump.rs take_coalesced). Present on BOTH paths that
 # apply a coalesced target — the normal `seek(in-place)` and the stuck-watchdog `retry reopen` —
 # which is exactly why op_seek_rapid keys on it instead of on either line. See that docstring.
@@ -1034,19 +1035,31 @@ def do_build(tv):
 
 # ---------------------------------------------------------------------------
 # FPS regression suite (UI perf gate — separate from the playback cases above).
-# The app logs a once/sec `FPS=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]`
-# heartbeat. Each scene sets its plxnative-* triggers, runs the app profiler-OFF, then asserts the steady
-# framerate for that screen stays above a floor. This is the automated form of the by-hand FPS
-# hunting that found the hero / cast+about / info-panel regressions.
+# The app logs a once/sec `loop=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]
+# fps=<n>` heartbeat, carrying TWO rates that must never be confused:
+#
+#   loop=  LOOP ITERATIONS per second. Liveness only. A settled screen still reports ~62 while
+#          swapping nothing, so this CANNOT see a frozen animation. Graded by `loop_floor`.
+#   fps=   FRAMES actually swapped per second — the real frame rate, moved by `ui::idle`'s present
+#          gate. Graded by `fps_floor` (it must keep animating) and `fps_ceiling` (it must stop).
+#
+# RENAMED 2026-08-01 and the old name was REUSED: what these fields are called today is the reverse
+# of what a pre-rename log says. `FPS=` in an old log is this `loop=`; old `pres=` is this `fps=`.
+# Both regexes below therefore fail to match an old log outright, which is the intended loud
+# failure — a scene must never grade a loop rate as if it were a frame rate.
+#
+# Each scene sets its plxnative-* triggers, runs the app profiler-OFF, then asserts its gates. This
+# is the automated form of the by-hand FPS hunting that found the hero / cast+about / info-panel
+# regressions.
 # ---------------------------------------------------------------------------
-FPS_RE = re.compile(r"FPS=(\d+) route=(\w+)(?: overlay=(\w+))?")
+LOOP_RE = re.compile(r"loop=(\d+) route=(\w+)(?: overlay=(\w+))?")
 
 
-def parse_fps(lines, route, overlay):
-    """The FPS heartbeat samples (ints) whose route (+overlay, if the scene pins one) match."""
+def parse_loop(lines, route, overlay):
+    """The per-second LOOP-ITERATION counts whose route (+overlay, if the scene pins one) match."""
     out = []
     for ln in lines:
-        m = FPS_RE.search(ln)
+        m = LOOP_RE.search(ln)
         if not m or m.group(2) != route:
             continue
         if overlay and (m.group(3) or "none") != overlay:
@@ -1055,18 +1068,18 @@ def parse_fps(lines, route, overlay):
     return out
 
 
-# `pres=<n>` — frames actually SWAPPED in that second, which is what `ui::idle`'s present gate
-# moves. Deliberately a SECOND regex rather than a group on FPS_RE: the field is newer than the
-# heartbeat, and a scene graded on a log from a build without it must fail as "no samples" rather
-# than silently match zero and read as a spectacular pass.
-PRES_RE = re.compile(r"\bFPS=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bpres=(\d+)")
+# `fps=<n>` — frames actually SWAPPED in that second, which is what `ui::idle`'s present gate moves.
+# Deliberately a SECOND regex rather than a group on LOOP_RE: the field is newer than the heartbeat,
+# and a scene graded on a log from a build without it must fail as "no samples" rather than silently
+# match zero and read as a spectacular pass.
+FPS_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bfps=(\d+)")
 
 
-def parse_pres(lines, route, overlay):
-    """The per-second PRESENT counts whose route (+overlay) match."""
+def parse_fps(lines, route, overlay):
+    """The per-second PRESENTED-FRAME counts whose route (+overlay) match."""
     out = []
     for ln in lines:
-        m = PRES_RE.search(ln)
+        m = FPS_RE.search(ln)
         if not m or m.group(1) != route:
             continue
         if overlay and (m.group(2) or "none") != overlay:
@@ -1075,7 +1088,7 @@ def parse_pres(lines, route, overlay):
     return out
 
 
-def fps_stats(vals):
+def rate_stats(vals):
     s = sorted(vals)
     n = len(s)
     # The gate is the 2nd-lowest sample: it tolerates ONE transient dip (a mid-run texture upload or
@@ -1100,12 +1113,12 @@ def run_fps_scene(scene, cfg, token):
     tv = cfg["tv"]
     route = scene["route"]
     overlay = scene.get("overlay")  # None for home/detail
-    floor = scene["floor"]
+    loop_floor = scene["loop_floor"]
     warmup = scene.get("warmup_s", 5)
     run_secs = scene.get("run_secs", 18)
     is_player = scene.get("tier", "ui") == "player"
     tag = route + (f"/{overlay}" if overlay else "")
-    print(f"\n=== fps:{name}  (route={tag}, floor {floor}fps) ===")
+    print(f"\n=== fps:{name}  (route={tag}, loop_floor {loop_floor}/s) ===")
 
     make(["kill", f"TV={tv}"], timeout=40)
     files = []
@@ -1132,71 +1145,72 @@ def run_fps_scene(scene, cfg, token):
         return False, "make run timed out"
     lines = filter_log(proc.stdout + "\n" + proc.stderr)
 
-    alls = parse_fps(lines, route, overlay)
+    alls = parse_loop(lines, route, overlay)
     samples = alls[warmup:]  # heartbeat is ~1/sec, so drop the first `warmup` matching samples
-    st = fps_stats(samples)
+    st = rate_stats(samples)
 
     # False-negative guard: too few post-warmup samples means the scene never really reached this
     # screen (app crash, or a detail/play trigger that didn't open — e.g. an rk not in the home
     # catalog). That is a FAIL, never a vacuous pass.
     if st["n"] < 5:
-        msg = (f"only {st['n']} post-warmup FPS samples for route={tag} (need >= 5) — scene never "
+        msg = (f"only {st['n']} post-warmup loop= samples for route={tag} (need >= 5) — scene never "
                f"entered this screen? ({len(alls)} total matched before warmup)")
         print(f"    [FAIL] {msg}")
         return False, msg
 
-    ok = st["robust_min"] >= floor
-    detail = f"robust_min={st['robust_min']}fps (min={st['min']}, median={st['median']}, n={st['n']}) vs floor {floor}"
+    ok = st["robust_min"] >= loop_floor
+    detail = (f"robust_min={st['robust_min']} loop/s (min={st['min']}, median={st['median']}, "
+              f"n={st['n']}) vs loop_floor {loop_floor}")
     # Reported, not asserted — a decaying series is the thermal signature, and a scene this short
-    # cannot gate it. A drift more negative than a couple of fps is worth a real soak.
-    detail += f" | drift={st['drift']:+.1f}fps ({st['head']:.0f}->{st['tail']:.0f})"
+    # cannot gate it. A drift more negative than a couple per second is worth a real soak.
+    detail += f" | drift={st['drift']:+.1f} ({st['head']:.0f}->{st['tail']:.0f})"
 
-    # `present_floor`: for a scene whose whole point is that an ANIMATION keeps running. Graded on
-    # `pres=` because `FPS=` counts loop iterations and cannot see a frozen animator — the trap that
+    # `fps_floor`: for a scene whose whole point is that an ANIMATION keeps running. Graded on
+    # `fps=` because `loop=` counts loop iterations and cannot see a frozen animator — the trap that
     # let a frozen route dip and a stopped spinner both ship.
     #
-    # Graded on the MEDIAN, deliberately NOT on the 2nd-lowest the way `floor` and
-    # `present_ceiling` are. Under the present gate a present rate is intermittent BY DESIGN — that
-    # is the whole feature — so on a scene that bounces rather than animates continuously (the
-    # `*-nav` pair reverse every 1400ms, of which only ~210ms is fading) a 1-second heartbeat window
-    # can land entirely inside the settled gap and legitimately read 0. Measured: home-detail-nav
-    # ran min=0, median=15 with a perfectly healthy fade, and even the oscillator scenes are bursty
-    # now that the settle predicate lets them idle between steps (home-grid min=11, median=41).
+    # Graded on the MEDIAN, deliberately NOT on the 2nd-lowest the way `loop_floor` and
+    # `fps_ceiling` are. Under the present gate a frame rate is intermittent BY DESIGN — that is the
+    # whole feature — so on a scene that bounces rather than animates continuously (the `*-nav` pair
+    # reverse every 1400ms, of which only ~210ms is fading) a 1-second heartbeat window can land
+    # entirely inside the settled gap and legitimately read 0. Measured: home-detail-nav ran min=0,
+    # median=15 with a perfectly healthy fade, and even the oscillator scenes are bursty now that
+    # the settle predicate lets them idle between steps (home-grid min=11, median=41).
     # The median answers the question actually being asked — "is this screen animating at all, at
     # rate" — while a FROZEN animator reads ~0.5/s, the keepalive alone, which no threshold in this
-    # range can confuse with a healthy one. Fill-rate regressions are `floor`'s job, not this one.
-    p_floor = scene.get("present_floor")
-    if p_floor is not None:
-        presf = parse_pres(lines, route, overlay)[warmup:]
+    # range can confuse with a healthy one. Fill-rate regressions are `loop_floor`'s job, not this.
+    f_floor = scene.get("fps_floor")
+    if f_floor is not None:
+        presf = parse_fps(lines, route, overlay)[warmup:]
         if len(presf) < 5:
-            msg = (f"only {len(presf)} post-warmup pres= samples for route={tag} (need >= 5) — a "
-                   f"build without the pres= field, or the scene never reached this screen")
+            msg = (f"only {len(presf)} post-warmup fps= samples for route={tag} (need >= 5) — a "
+                   f"build without the fps= field, or the scene never reached this screen")
             print(f"    [FAIL] {msg}")
             return False, msg
         sf = sorted(presf)
         med = sf[len(sf) // 2]
-        ok = ok and med >= p_floor
-        detail += (f" | median={med} pres/s (min={sf[0]}, max={sf[-1]}, n={len(presf)}) "
-                   f"vs present_floor {p_floor}")
+        ok = ok and med >= f_floor
+        detail += (f" | median={med} fps (min={sf[0]}, max={sf[-1]}, n={len(presf)}) "
+                   f"vs fps_floor {f_floor}")
 
-    # `present_ceiling`: the INVERSE assertion — this scene wants the app to stop presenting.
-    # `floor` still guards FPS= (loop liveness) so a wedged loop cannot pass by presenting nothing;
-    # this adds the ceiling on pres= (actual swaps). Graded on the 2nd-HIGHEST sample, the mirror
+    # `fps_ceiling`: the INVERSE assertion — this scene wants the app to stop presenting.
+    # `loop_floor` still guards loop liveness so a wedged loop cannot pass by presenting nothing;
+    # this adds the ceiling on `fps=` (actual swaps). Graded on the 2nd-HIGHEST sample, the mirror
     # of robust_min's 2nd-lowest, so one late poster landing waking the gate is tolerated while a
     # sustained repaint still fails.
-    ceiling = scene.get("present_ceiling")
+    ceiling = scene.get("fps_ceiling")
     if ceiling is not None:
-        pres = parse_pres(lines, route, overlay)[warmup:]
+        pres = parse_fps(lines, route, overlay)[warmup:]
         if len(pres) < 5:
-            msg = (f"only {len(pres)} post-warmup pres= samples for route={tag} (need >= 5) — a "
-                   f"build without the pres= field, or the scene never reached this screen")
+            msg = (f"only {len(pres)} post-warmup fps= samples for route={tag} (need >= 5) — a "
+                   f"build without the fps= field, or the scene never reached this screen")
             print(f"    [FAIL] {msg}")
             return False, msg
         sp = sorted(pres, reverse=True)
         robust_max = sp[1]
         ok_c = robust_max <= ceiling
-        detail += (f" | robust_max={robust_max} pres/s (max={sp[0]}, median={sorted(pres)[len(pres)//2]}, "
-                   f"n={len(pres)}) vs ceiling {ceiling}")
+        detail += (f" | robust_max={robust_max} fps (max={sp[0]}, median={sorted(pres)[len(pres)//2]}, "
+                   f"n={len(pres)}) vs fps_ceiling {ceiling}")
         ok = ok and ok_c
 
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
@@ -1291,7 +1305,12 @@ def main():
                   f"{', '.join(c.get('covers', []))}")
         for s in manifest.get("fps_scenes", []):
             tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
-            print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} floor={s['floor']}")
+            gates = f"loop_floor={s['loop_floor']}"
+            if s.get("fps_floor") is not None:
+                gates += f" fps_floor={s['fps_floor']}"
+            if s.get("fps_ceiling") is not None:
+                gates += f" fps_ceiling={s['fps_ceiling']}"
+            print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}")
         return 0
 
     # FPS regression suite — a separate path from the playback cases. UI-tier scenes need no video

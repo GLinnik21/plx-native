@@ -142,7 +142,7 @@ pub(crate) fn seek_display_ns() -> i64 { SHARED.seek_display_ns.load(Relaxed) }
 ///
 /// Use it at every reader that means "where the user is". Keep the raw `playpos_ns` only where the
 /// PUBLISHED position is the point: the re-pause gate (already behind `seek_pending() < 0`) and the
-/// FPS heartbeat's `pos=`, which `tests/run.py` grades real playback progress from — feeding it an
+/// heartbeat's `pos=`, which `tests/run.py` grades real playback progress from — feeding it an
 /// intended position would let a seek that never lands read as playback that climbed.
 ///
 /// `ui/player_hud.rs` deliberately does NOT call this: it needs the same outer two rungs with the

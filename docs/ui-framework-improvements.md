@@ -1,5 +1,12 @@
 # retui — framework improvements
 
+> **Field names in this document predate 2026-08-01 and the old name was REUSED.** Where it says
+> `FPS=`, today's heartbeat says **`loop=`** (loop iterations); where it says `pres=`, today's says
+> **`fps=`** (frames actually presented). The manifest gates moved too: `floor`→`loop_floor`,
+> `present_floor`→`fps_floor`, `present_ceiling`→`fps_ceiling`, and `fps_stats`→`rate_stats`. The
+> text below is left as written, with the line numbers of its day, because it is a dated record of
+> an investigation rather than live guidance — see `CLAUDE.md` for the current names.
+
 Audit of `rust-modules/src/ui/` (10 dimensions, adversarially verified: 53 findings confirmed of 106
 raised; 3 competing layering designs scored by a 3-lens judge panel; a completeness critic over the
 result). This is the corrected merge — the critic's fixes are folded in, not appended.

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/plxnative-* triggers (see README) and asserts on /tmp/plxnative-events.log. rks are real PMS items (192.168.0.3:32400). The runner (run.py) reads the X-Plex-Token from src/config.local.h at runtime \u2014 it is NEVER stored here. Cases are derived from the library survey; see library_gaps for combos no real item can cover.",
+  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/plxnative-* triggers (see README) and asserts on /tmp/plxnative-events.log. rks are real PMS items (192.168.0.3:32400). The runner (run.py) reads the X-Plex-Token from src/config.local.h at runtime — it is NEVER stored here. Cases are derived from the library survey; see library_gaps for combos no real item can cover.",
   "pms": {
     "host": "192.168.0.3",
     "port": 32400
@@ -11,25 +11,25 @@
     "title": "Guest"
   },
   "tv": "192.168.0.114",
-  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the FPS= heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest steady FPS >= floor. rk fields are library-specific like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger \u2014 that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
+  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the once/sec `loop=<n> route=<r> fps=<n>` heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest loop= >= loop_floor plus whichever of fps_floor / fps_ceiling the scene declares. loop= counts LOOP ITERATIONS (liveness only — a settled screen reads ~62 while swapping nothing); fps= counts FRAMES ACTUALLY SWAPPED and is the only real frame rate here. RENAMED 2026-08-01 with the old name REUSED: a pre-rename log's FPS= is this loop=, and its pres= is this fps=. rk fields are library-specific like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
   "fps_scenes": [
     {
       "name": "home-hero",
       "tier": "ui",
       "route": "home",
-      "floor": 50,
+      "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 5,
       "triggers": {
         "plxnative-heroidx": 0
       },
-      "_idle_gate_note": "STALE GATE since ui::idle landed (2026-07-31): this scene's screen SETTLES, so for most of the window the app presents ~0 frames and `FPS=` \u2014 which counts LOOP iterations, not swaps \u2014 grades loop liveness rather than this screen's fill rate. The floor still catches a wedged loop, but it can no longer catch a fill-rate regression. Fix by giving the scene continuous motion (as home-grid now does with plxnative-homeosc) or by grading it on `worstframe=` over the frames it DOES present. Do not simply lower the floor."
+      "_idle_gate_note": "STALE GATE since ui::idle landed (2026-07-31): this scene's screen SETTLES, so for most of the window the app presents ~0 frames and `loop=` — which counts LOOP iterations, not swaps — grades loop liveness rather than this screen's fill rate. The loop_floor still catches a wedged loop, but it can no longer catch a fill-rate regression. Fix by giving the scene continuous motion (as home-grid now does with plxnative-homeosc) or by grading it on `worstframe=` over the frames it DOES present. Do not simply lower the floor."
     },
     {
       "name": "home-grid",
       "tier": "ui",
       "route": "home",
-      "floor": 50,
+      "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 5,
       "triggers": {
@@ -37,40 +37,40 @@
         "plxnative-homeosc": true
       },
       "_floor_note": "homeosc is load-bearing since ui::idle landed: a STILL grid now presents ~0 frames/s by design, so an fps floor taken on one would grade the idle gate, not the grid's fill rate. Sweeping focus keeps the shelf rendering, which is what this scene is for. The still case is gated by fps:home-idle instead.",
-      "present_floor": 20,
-      "_present_floor_note": "Measured healthy median 41 pres/s on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle \u2014 the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 20 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `floor`, which grades FPS= and falls with the render rate while presenting."
+      "fps_floor": 20,
+      "_fps_floor_note": "Measured healthy median 41 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 20 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
     },
     {
       "name": "home-idle",
       "tier": "ui",
       "route": "home",
-      "floor": 30,
-      "present_ceiling": 3,
+      "loop_floor": 30,
+      "fps_ceiling": 3,
       "run_secs": 22,
       "warmup_s": 8,
       "triggers": {
         "plxnative-grid": true
       },
-      "comment": "The inverse of every other fps scene: it asserts the app STOPS presenting. A settled Home grid must fall to at most present_ceiling swaps/sec (ui::idle's KEEPALIVE_MS backstop is 2s, i.e. 0.5/s, so 3 leaves room for a late poster landing without letting a regression through). `floor` still applies to FPS=, which counts LOOP iterations, not presents: the loop must stay alive and responsive at >=30Hz while presenting nothing. A regression that re-armed the 60Hz repaint would blow the ceiling; one that wedged the loop would blow the floor. warmup_s is 8, longer than the others, because the grid keeps presenting until the last poster has landed and its reveal spring has settled."
+      "comment": "The inverse of every other fps scene: it asserts the app STOPS presenting. A settled Home grid must fall to at most fps_ceiling swaps/sec (ui::idle's KEEPALIVE_MS backstop is 2s, i.e. 0.5/s, so 3 leaves room for a late poster landing without letting a regression through). `loop_floor` still applies to loop=, which counts LOOP iterations, not presents: the loop must stay alive and responsive at >=30Hz while presenting nothing. A regression that re-armed the 60Hz repaint would blow the ceiling; one that wedged the loop would blow the loop_floor. warmup_s is 8, longer than the others, because the grid keeps presenting until the last poster has landed and its reveal spring has settled."
     },
     {
       "name": "login-spinner",
       "tier": "ui",
       "route": "login",
-      "floor": 30,
-      "present_floor": 30,
+      "loop_floor": 30,
+      "fps_floor": 30,
       "run_secs": 20,
       "warmup_s": 6,
       "triggers": {
         "plxnative-login": true
       },
-      "comment": "The purest animator test the app has. login.rs's entire Scene is {spin_ms, qr_tex} and the module contains ZERO springs, so every pixel is static except a phase-driven spinner that ui::idle cannot see structurally \u2014 before Spinner::draw was made to report, this screen drew a STOPPED spinner at 0.5 presents/s. present_floor 30 asserts it still animates; floor 30 on FPS= asserts the loop is alive. plxnative-login is not in the DIAG list (app.rs), so it suppresses the boot picker on its own and no token is needed \u2014 this screen is where a user with no session lands."
+      "comment": "The purest animator test the app has. login.rs's entire Scene is {spin_ms, qr_tex} and the module contains ZERO springs, so every pixel is static except a phase-driven spinner that ui::idle cannot see structurally — before Spinner::draw was made to report, this screen drew a STOPPED spinner at 0.5 presents/s. fps_floor 30 asserts it still animates; loop_floor 30 asserts the loop is alive. plxnative-login is not in the DIAG list (app.rs), so it suppresses the boot picker on its own and no token is needed — this screen is where a user with no session lands."
     },
     {
       "name": "detail-transition",
       "tier": "ui",
       "route": "detail",
-      "floor": 45,
+      "loop_floor": 45,
       "run_secs": 22,
       "warmup_s": 6,
       "rk": "2012",
@@ -78,28 +78,28 @@
         "plxnative-detail": "$rk",
         "plxnative-detailosc": true
       },
-      "present_floor": 45,
-      "_present_floor_note": "The scene's oscillator drives motion every frame, so presents should track the panel. This \u2014 not `floor` \u2014 is what a fill-rate regression now shows up in: `floor` grades FPS=, which counts loop iterations and reads ~60 even with every present skipped."
+      "fps_floor": 45,
+      "_fps_floor_note": "The scene's oscillator drives motion every frame, so presents should track the panel. This — not `loop_floor` — is what a fill-rate regression now shows up in: `loop_floor` grades loop=, which counts loop iterations and reads ~60 even with every present skipped."
     },
     {
       "name": "item-menu",
       "tier": "ui",
       "route": "itemmenu",
       "_floor_note": "45 like the other scrim'd-popover scenes (track-menu, library-switch): this one draws a full-screen scrim plus a panel OVER the live home grid, which is strictly more fill than home-grid's 50.",
-      "floor": 45,
+      "loop_floor": 45,
       "run_secs": 18,
       "warmup_s": 6,
       "triggers": {
         "plxnative-itemmenu": true
       },
-      "present_ceiling": 5,
-      "_present_ceiling_note": "This screen SETTLES, so once its appear/condense springs are done it must fall to the keepalive (0.5/s). 5 leaves room for a late poster landing. Guards the over-reporting direction: an animator that reports when it should not costs the whole feature and trips no floor anywhere."
+      "fps_ceiling": 5,
+      "_fps_ceiling_note": "This screen SETTLES, so once its appear/condense springs are done it must fall to the keepalive (0.5/s). 5 leaves room for a late poster landing. Guards the over-reporting direction: an animator that reports when it should not costs the whole feature and trips no floor anywhere."
     },
     {
       "name": "person-page",
       "tier": "ui",
       "route": "person",
-      "floor": 50,
+      "loop_floor": 50,
       "run_secs": 20,
       "warmup_s": 6,
       "rk": "2005",
@@ -109,76 +109,76 @@
         "plxnative-detailsec": 1,
         "plxnative-detailok": true
       },
-      "present_ceiling": 5,
-      "_present_ceiling_note": "This screen SETTLES, so once its appear/condense springs are done it must fall to the keepalive (0.5/s). 5 leaves room for a late poster landing. Guards the over-reporting direction: an animator that reports when it should not costs the whole feature and trips no floor anywhere."
+      "fps_ceiling": 5,
+      "_fps_ceiling_note": "This screen SETTLES, so once its appear/condense springs are done it must fall to the keepalive (0.5/s). 5 leaves room for a late poster landing. Guards the over-reporting direction: an animator that reports when it should not costs the whole feature and trips no floor anywhere."
     },
     {
       "name": "library-scroll",
       "tier": "ui",
       "route": "library",
-      "floor": 50,
+      "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 5,
       "triggers": {
         "plxnative-library": true,
         "plxnative-libosc": true
       },
-      "present_floor": 25,
-      "_present_floor_note": "Measured healthy median 49 pres/s on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle \u2014 the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 25 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `floor`, which grades FPS= and falls with the render rate while presenting."
+      "fps_floor": 25,
+      "_fps_floor_note": "Measured healthy median 49 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 25 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
     },
     {
       "name": "library-switch",
       "tier": "ui",
       "route": "library",
-      "floor": 45,
+      "loop_floor": 45,
       "run_secs": 22,
       "warmup_s": 6,
       "triggers": {
         "plxnative-library": true,
         "plxnative-libswitch": true
       },
-      "present_floor": 8,
-      "_present_floor_note": "Measured healthy median 18 pres/s on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle \u2014 the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 8 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `floor`, which grades FPS= and falls with the render rate while presenting."
+      "fps_floor": 8,
+      "_fps_floor_note": "Measured healthy median 18 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 8 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
     },
     {
       "name": "home-library-nav",
       "tier": "ui",
       "route": "home",
-      "_floor_note": "45 like library-switch: this is that scene's machinery one altitude up \u2014 a whole-screen cascade alpha over Home's backdrop+hero+grid for ~225ms per bounce, plus the same Xfade underneath. No new pass and no new blending (Painter::c already multiplies every colour), so 45 is the popover/re-query tier, not a new one.",
-      "floor": 45,
+      "_floor_note": "45 like library-switch: this is that scene's machinery one altitude up — a whole-screen cascade alpha over Home's backdrop+hero+grid for ~225ms per bounce, plus the same Xfade underneath. No new pass and no new blending (Painter::c already multiplies every colour), so 45 is the popover/re-query tier, not a new one.",
+      "loop_floor": 45,
       "run_secs": 36,
       "warmup_s": 6,
-      "_run_secs_note": "36, not the 22 every single-route scene uses, because a ROUTE-CHANGING scene splits its samples. The FPS heartbeat is once/sec and navosc bounces every 1400ms, so each route sees only about HALF the post-warmup samples \u2014 22s gave route=home 4, one under the harness' >=5 minimum, and the scene failed for want of evidence rather than for want of frames. 36s leaves ~30 post-warmup seconds, ~15 per route: margin enough that an uneven bounce phase cannot starve either side. Any future two-route scene needs this same doubling.",
+      "_run_secs_note": "36, not the 22 every single-route scene uses, because a ROUTE-CHANGING scene splits its samples. The FPS heartbeat is once/sec and navosc bounces every 1400ms, so each route sees only about HALF the post-warmup samples — 22s gave route=home 4, one under the harness' >=5 minimum, and the scene failed for want of evidence rather than for want of frames. 36s leaves ~30 post-warmup seconds, ~15 per route: margin enough that an uneven bounce phase cannot starve either side. Any future two-route scene needs this same doubling.",
       "comment": "One of the two scenes that change ROUTE. navosc bounces Home<->the first library section every 1400ms through the real nav_to path, so the page cross-fade (ui::nav) is perf-gated. route=home samples the settled hero, the fade-OUT and the fade-IN on the way back; the Library half is covered by library-scroll/library-switch.",
       "triggers": {
         "plxnative-navosc": true
       },
-      "present_floor": 8,
-      "_present_floor_note": "Graded on the MEDIAN, not the min: navosc reverses every 1400ms of which only the 70+140ms dip is motion, so a 1s heartbeat window can land wholly inside the settled gap and read 0 with a perfectly healthy fade (measured: min=0, median=15). A FROZEN fade reads ~1/s \u2014 the keepalive alone \u2014 so 8 separates them by a wide margin. This is the scene that proves ui/xfade.rs reports at all: navosc calls nav_open/nav_back DIRECTLY, with no SDL event and no press spring to accidentally cover the ramp."
+      "fps_floor": 8,
+      "_fps_floor_note": "Graded on the MEDIAN, not the min: navosc reverses every 1400ms of which only the 70+140ms dip is motion, so a 1s heartbeat window can land wholly inside the settled gap and read 0 with a perfectly healthy fade (measured: min=0, median=15). A FROZEN fade reads ~1/s — the keepalive alone — so 8 separates them by a wide margin. This is the scene that proves ui/xfade.rs reports at all: navosc calls nav_open/nav_back DIRECTLY, with no SDL event and no press spring to accidentally cover the ramp."
     },
     {
       "name": "home-detail-nav",
       "tier": "ui",
       "route": "detail",
-      "_floor_note": "45, the detail tier: this is detail-transition's screen with a whole-screen cascade alpha over it for ~225ms per bounce, and the detail page is the heaviest thing the dip has to carry (full-bleed hero art + the AmbientWash ground + the below-hero flow). No new pass and no new blending \u2014 Painter::c already multiplies every colour and the wash mixes toward SURFACE_APP under the same alpha \u2014 so it stays that tier rather than opening a new one.",
-      "floor": 45,
+      "_floor_note": "45, the detail tier: this is detail-transition's screen with a whole-screen cascade alpha over it for ~225ms per bounce, and the detail page is the heaviest thing the dip has to carry (full-bleed hero art + the AmbientWash ground + the below-hero flow). No new pass and no new blending — Painter::c already multiplies every colour and the wash mixes toward SURFACE_APP under the same alpha — so it stays that tier rather than opening a new one.",
+      "loop_floor": 45,
       "run_secs": 36,
       "warmup_s": 6,
-      "_run_secs_note": "36 for the same reason as home-library-nav: a route-CHANGING scene splits its once/sec samples between two routes. This one scraped through at 22s with exactly 6 post-warmup samples against a minimum of 5 \u2014 passing on one sample of margin is not a gate, it is a coin flip.",
+      "_run_secs_note": "36 for the same reason as home-library-nav: a route-CHANGING scene splits its once/sec samples between two routes. This one scraped through at 22s with exactly 6 post-warmup samples against a minimum of 5 — passing on one sample of margin is not a gate, it is a coin flip.",
       "rk": "2012",
       "comment": "The Home<->DETAIL arm of the route transition (phase 2), the half home-library-nav cannot reach: no shared tab bar (so the top band fades WITH the page instead of holding still), a hero backdrop and an ambient ground on the far side, and a real teardown at the fade floor. navosc with a ratingKey bounces nav_open out and nav_back home every 1400ms through the same calls a grid-card OK and the BACK key raise. route=detail samples the arrival ramp, the settled page and the fade-OUT; the Home side is covered by home-hero/home-grid/home-library-nav.",
       "triggers": {
         "plxnative-navosc": "$rk"
       },
-      "present_floor": 8,
-      "_present_floor_note": "Graded on the MEDIAN, not the min: navosc reverses every 1400ms of which only the 70+140ms dip is motion, so a 1s heartbeat window can land wholly inside the settled gap and read 0 with a perfectly healthy fade (measured: min=0, median=15). A FROZEN fade reads ~1/s \u2014 the keepalive alone \u2014 so 8 separates them by a wide margin. This is the scene that proves ui/xfade.rs reports at all: navosc calls nav_open/nav_back DIRECTLY, with no SDL event and no press spring to accidentally cover the ramp."
+      "fps_floor": 8,
+      "_fps_floor_note": "Graded on the MEDIAN, not the min: navosc reverses every 1400ms of which only the 70+140ms dip is motion, so a 1s heartbeat window can land wholly inside the settled gap and read 0 with a perfectly healthy fade (measured: min=0, median=15). A FROZEN fade reads ~1/s — the keepalive alone — so 8 separates them by a wide margin. This is the scene that proves ui/xfade.rs reports at all: navosc calls nav_open/nav_back DIRECTLY, with no SDL event and no press spring to accidentally cover the ramp."
     },
     {
       "name": "info-panel",
       "tier": "player",
       "route": "player",
       "overlay": "info",
-      "floor": 45,
+      "loop_floor": 45,
       "run_secs": 26,
       "warmup_s": 9,
       "rk": "1926",
@@ -192,7 +192,7 @@
       "tier": "player",
       "route": "player",
       "overlay": "menu",
-      "floor": 45,
+      "loop_floor": 45,
       "run_secs": 26,
       "warmup_s": 9,
       "rk": "1926",

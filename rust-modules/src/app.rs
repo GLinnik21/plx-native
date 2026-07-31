@@ -241,22 +241,27 @@ fn playpos() -> i64 { crate::player::playpos_ns() }
 /// restore replayed from there — and teardown clears the pending target, so nothing self-corrected.
 /// Use this at every reader that means "where the user is"; keep the raw `playpos()` only where the
 /// PUBLISHED position is the point (the re-pause gate, which is already behind `seek_pending() < 0`,
-/// and the FPS heartbeat's `pos=`, which the harness grades real playback progress from).
+/// and the heartbeat's `pos=`, which the harness grades real playback progress from).
 #[inline]
 fn intended_pos() -> i64 { crate::player::intended_pos_ns() }
 #[inline]
 fn frames() -> i32 { crate::player::frames() }
-/// Advance the once-per-second FPS window: bump `frames_ct` and, when a full second has elapsed,
-/// recompute `fps_shown`, reset the window, and return `true` so the caller logs the heartbeat with
-/// its own route/overlay tag. Shared by the player and home/detail draw paths.
-fn fps_tick(frames_ct: &mut i32, fps_t: &mut u32, fps_shown: &mut i32, now: u32) -> bool {
-    *frames_ct += 1;
-    if now.wrapping_sub(*fps_t) < 1000 {
+/// Advance the once-per-second LOOP-RATE window: bump `iters_ct` and, when a full second has
+/// elapsed, recompute `loop_shown`, reset the window, and return `true` so the caller logs the
+/// heartbeat with its own route/overlay tag. Shared by the player and home/detail draw paths.
+///
+/// This counts **loop iterations, not frames**. Since the present gate (`ui::idle`) landed the two
+/// are different numbers, and conflating them is the single most reliable way to misread this app:
+/// a settled screen runs the loop at the `IDLE_POLL_MS` rate while swapping nothing. The frame
+/// count lives beside it in the heartbeat as `fps=`, from `ui::idle::take_presents`.
+fn loop_tick(iters_ct: &mut i32, loop_t: &mut u32, loop_shown: &mut i32, now: u32) -> bool {
+    *iters_ct += 1;
+    if now.wrapping_sub(*loop_t) < 1000 {
         return false;
     }
-    *fps_shown = (*frames_ct as f32 * 1000.0 / now.wrapping_sub(*fps_t) as f32 + 0.5) as i32;
-    *frames_ct = 0;
-    *fps_t = now;
+    *loop_shown = (*iters_ct as f32 * 1000.0 / now.wrapping_sub(*loop_t) as f32 + 0.5) as i32;
+    *iters_ct = 0;
+    *loop_t = now;
     true
 }
 #[inline]
@@ -543,9 +548,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
         let mut last_input = SDL_GetTicks();
         let t0 = last_input;
-        let mut fps_t = t0;
-        let mut frames_ct = 0i32;
-        let mut fps_shown = 0i32;
+        let mut loop_t = t0;
+        let mut iters_ct = 0i32;
+        let mut loop_shown = 0i32;
         let mut running = true;
 
         let mut held_sym = 0u32;
@@ -3526,9 +3531,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if matches!(route, Route::ItemMenu { .. }) {
                             crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
                         }
-                        // the on-screen FPS counter stays off the player route (chrome over video)
-                        let fps_col = [0.4f32, 1.0, 0.55, 1.0];
-                        crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
+                        // The on-screen counter, off the player route (chrome over video). It draws
+                        // `loop_shown` — LOOP ITERATIONS, the same number the heartbeat logs as
+                        // `loop=`, NOT the frame rate. It also necessarily FREEZES on a settled
+                        // screen: it is drawn, so it can only update on a frame that presents.
+                        let loop_col = [0.4f32, 1.0, 0.55, 1.0];
+                        crate::gfx::draw_number(loop_shown, SCR_W as f32 - 70.0, 64.0, 46.0, loop_col.as_ptr());
                     }
                     crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
                 });
@@ -3574,7 +3582,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // `continue` threw them away).
             // `present` gates this too: a frame the idle gate skipped drew nothing, so grading it
             // would drag `worstframe` toward zero and read as a perf WIN. A skipped frame is not a
-            // fast frame — it is an absent one, and `pres=` on the heartbeat is where it shows up.
+            // fast frame — it is an absent one, and `fps=` on the heartbeat is where it shows up.
             if framedrop_on && present {
                 let pump = perf_ms(fd_pc_pump.wrapping_sub(fd_pc0));
                 let draw = perf_ms(fd_pc_draw.wrapping_sub(fd_pc_pump));
@@ -3593,10 +3601,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     ));
                 }
             }
-            if fps_tick(&mut frames_ct, &mut fps_t, &mut fps_shown, now) {
+            if loop_tick(&mut iters_ct, &mut loop_t, &mut loop_shown, now) {
                 // once/sec render heartbeat — greppable without reading the on-screen counter.
-                // The harness parses `FPS=(\d+) route=(\w+)(?: overlay=(\w+))?` (tests/run.py), so
+                // The harness parses `loop=(\d+) route=(\w+)(?: overlay=(\w+))?` (tests/run.py), so
                 // the player's overlay tag stays right after route= and worstframe= stays LAST.
+                //
+                // RENAMED 2026-08-01, and the old name was REUSED, so a log predating this reads
+                // as the opposite of what it says: the field that used to be `FPS=` is now `loop=`,
+                // and `fps=` now means what it always should have — frames actually presented,
+                // previously `pres=`. An old `FPS=60` is a LOOP rate and says nothing about frames.
                 let ov = match route {
                     Route::Player { overlay: Overlay::Info } => " overlay=info",
                     Route::Player { overlay: Overlay::Chapters } => " overlay=chapters",
@@ -3616,17 +3629,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else {
                     String::new()
                 };
-                // `pres=<n>` — frames actually SWAPPED this second, which is what `ui::idle`
-                // moves. `FPS=` deliberately keeps counting LOOP iterations: it is the app's
-                // liveness signal and `pos=` is anchored to it, so it must not read 0 on a screen
-                // that is merely idle. The pair is the diagnostic — `FPS=60 pres=0` is a settled
-                // screen doing its job; `FPS=0` is an app in trouble.
+                // `fps=<n>` — frames actually SWAPPED this second, which is what `ui::idle` moves,
+                // and the only field here that is a frame rate. `loop=` counts LOOP iterations: it
+                // is the app's liveness signal and `pos=` is anchored to it, so it must not read 0
+                // on a screen that is merely idle. The pair is the diagnostic — `loop=62 fps=0` is
+                // a settled screen doing its job, `loop=0` is an app in trouble, and `fps=0` on its
+                // own is not a fault at all. Note the on-screen counter still draws `loop=`.
                 let pres = crate::ui::idle::take_presents();
                 if framedrop_on {
-                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos} pres={pres} worstframe={fd_worst:.1}ms"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres} worstframe={fd_worst:.1}ms"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos} pres={pres}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}"));
                 }
             }
         }

@@ -316,21 +316,31 @@ the perf gates), and `make test` = `deploy` + `run`.
   it arrives invisibly until the next keypress. **So must anything that animates from a CLOCK
   rather than a spring** — a millisecond ramp, a phase, a countdown — since `note_spring` cannot see
   it: `Xfade::tick` (every route dip) and `Spinner::draw` (every loading read-out) both shipped
-  FROZEN before they were made to report, and no fps scene caught it because those grade `FPS=`.
+  FROZEN before they were made to report, and no fps scene caught it because those grade `loop=`.
   The rest test is visibility — magnitude-relative, capped under a quarter pixel, velocity judged
   as `vel*dt` (the travel this frame) — not a bare epsilon.
   Measured 2026-07-31 on a still Home grid: **39.6%
   → 1.67% of one core** (ours 15.4→1.05, `surface-manager` 24.2→0.62). Consequences for anyone
-  reading a log: the heartbeat now carries **`pres=<n>`** (frames actually swapped that second)
-  while **`FPS=` still counts LOOP iterations** — `FPS=62 pres=0` is a healthy settled screen,
-  `FPS=0` is an app in trouble; the on-screen FPS counter FREEZES when idle (it is drawn, so it can
+  reading a log: the heartbeat carries **two different rates and they are easy to swap** —
+  **`fps=<n>`** is frames actually swapped that second (the real frame rate, what this gate moves)
+  while **`loop=<n>` counts LOOP iterations** — so `loop=62 fps=0` is a healthy settled screen,
+  `loop=0` is an app in trouble, and `fps=0` on its own is not a fault at all; the on-screen
+  counter draws `loop=` and FREEZES when idle (it is drawn, so it can
   only update on a present) and that is expected, not a hang; and **an fps floor taken on a static
   screen now grades nothing**, which is why `fps:home-grid` arms `plxnative-homeosc` and the still
-  case is gated by `fps:home-idle`'s `present_ceiling` instead. `/tmp/plxnative-noidle` turns the
+  case is gated by `fps:home-idle`'s `fps_ceiling` instead. `/tmp/plxnative-noidle` turns the
   gate off (DIAG-exempt, so an A/B does not also change which screen you boot to). The **player
   route is deliberately excluded** — `system.rs` documents the video plane as *slaved* to our
   surface, and playback already draws 0 draw calls with the HUD hidden.
-- **The once/sec `FPS=` heartbeat carries `pos=<s>` while frames are presenting** — the same
+- **The heartbeat fields were RENAMED 2026-08-01 and the old name was REUSED**, so a log or doc
+  predating that reads as the opposite of what it says. Old `FPS=` is today's **`loop=`** (loop
+  iterations); old `pres=` is today's **`fps=`** (frames presented). An old `FPS=60` says nothing
+  about frames at all. The manifest gates moved with them: `floor`→`loop_floor`,
+  `present_floor`→`fps_floor`, `present_ceiling`→`fps_ceiling`. Both harness regexes were made to
+  match the NEW names only, so an old log fails loudly as "no samples" rather than silently grading
+  a loop rate as a frame rate. Analysis docs under `docs/` still quote the old names against the
+  line numbers of their day and carry a mapping banner instead of being rewritten.
+- **The once/sec `loop=` heartbeat carries `pos=<s>` while frames are presenting** — the same
   `SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
   costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
@@ -350,13 +360,13 @@ the perf gates), and `make test` = `deploy` + `run`.
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
-- **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (floors per scene in
-  `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec `FPS=`
-  heartbeat. **Three assertions now, and picking the wrong one is how a frozen animation ships:**
-  `floor` grades `FPS=`, which counts LOOP iterations — it proves the app is alive, and cannot see a
-  stopped animation at all; `present_floor` grades `pres=` and is what proves an animation still
-  RUNS (`login-spinner`, the two `*-nav` scenes); `present_ceiling` grades `pres=` from the other
-  side and proves a still screen stops (`home-idle`). A scene with no motion and only a `floor`
+- **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (gates per scene in
+  `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec
+  heartbeat. **Three assertions, and picking the wrong one is how a frozen animation ships:**
+  `loop_floor` grades `loop=`, which counts LOOP iterations — it proves the app is alive, and cannot
+  see a stopped animation at all; `fps_floor` grades `fps=` and is what proves an animation still
+  RUNS (`login-spinner`, the two `*-nav` scenes); `fps_ceiling` grades `fps=` from the other
+  side and proves a still screen stops (`home-idle`). A scene with no motion and only a `loop_floor`
   gates nothing — three carry an `_idle_gate_note` saying exactly that. Every run also reports
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —

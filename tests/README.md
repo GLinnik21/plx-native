@@ -72,10 +72,17 @@ Add `--verbose` to print evidence for passing assertions too.
 ## FPS regression suite (`--fps`)
 
 A separate mode that guards **UI framerate**, not playback correctness. The app logs a once/sec
-`FPS=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]` heartbeat; each *scene* in
-the manifest's `fps_scenes` sets its `plxnative-*` triggers (profiler **off**), runs, and asserts the
-steady framerate for that screen stays above a floor. This is the automated form of the by-hand FPS
-hunting that found the hero / cast+about / info-panel regressions.
+`loop=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>] fps=<n>` heartbeat; each
+*scene* in the manifest's `fps_scenes` sets its `plxnative-*` triggers (profiler **off**), runs, and
+asserts its gates. This is the automated form of the by-hand FPS hunting that found the hero /
+cast+about / info-panel regressions.
+
+> **The heartbeat carries two rates and they are not interchangeable.** `loop=` counts **loop
+> iterations** — liveness only; a settled screen reports ~62 while swapping nothing. `fps=` counts
+> **frames actually swapped** and is the only real frame rate. They were **renamed 2026-08-01 and
+> the old name was reused**: a pre-rename log's `FPS=` is today's `loop=`, and its `pres=` is
+> today's `fps=`. Both regexes match the new names only, so an old log fails loudly as "no samples"
+> instead of grading a loop rate as a frame rate.
 
 ```bash
 # UI tier only — home hero, home grid, detail scroll transition. No video, no PMS token needed.
@@ -90,23 +97,23 @@ hunting that found the hero / cast+about / info-panel regressions.
 ```
 
 - **Three assertions, and picking the wrong one is how a frozen animation ships.** Since the present
-  gate (`ui::idle`) landed, `FPS=` counts **loop iterations**, not swaps — a skipped frame is a 16 ms
-  sleep, so the loop reads ~60 whether or not anything reached the panel:
-  - `floor` grades `FPS=`. It proves the **app is alive**. It cannot see a stopped animation, and on
-    a settled screen it grades nothing at all (three scenes carry an `_idle_gate_note` saying so).
-  - `present_floor` grades `pres=` on the **median** — "is this screen still animating, at rate".
-    The median and not the 2nd-lowest, because a present rate is now intermittent *by design*: on a
+  gate (`ui::idle`) landed, a skipped frame is a 16 ms sleep, so `loop=` reads ~60 whether or not
+  anything reached the panel:
+  - `loop_floor` grades `loop=`. It proves the **app is alive**. It cannot see a stopped animation,
+    and on a settled screen it grades nothing at all (three scenes carry an `_idle_gate_note`).
+  - `fps_floor` grades `fps=` on the **median** — "is this screen still animating, at rate".
+    The median and not the 2nd-lowest, because a frame rate is now intermittent *by design*: on a
     scene that bounces rather than animates continuously, a 1 s window can land wholly inside the
     settled gap and read 0 with a perfectly healthy animation (measured: `home-detail-nav` min=0,
     median=15). A frozen animator reads ~1/s — the keepalive alone — so the two are far apart.
-  - `present_ceiling` grades `pres=` on the **2nd-highest** — "does this screen actually STOP".
+  - `fps_ceiling` grades `fps=` on the **2nd-highest** — "does this screen actually STOP".
     This is the only guard on over-reporting, which silently gives back the whole ~38-points-of-a-
     core saving while every floor in the suite still passes.
 - **`drift`** (last-third minus first-third mean) is reported on every scene and asserted on none.
-  `fps_stats` used to sort and discard sample ORDER, so a monotone 60→53 decay and a flat 53
+  `rate_stats` used to sort and discard sample ORDER, so a monotone 60→53 decay and a flat 53
   produced byte-identical output. 18–36 s is far too short to gate a thermal ramp on; this is a
   breadcrumb pointing at when a real soak is worth running.
-- **Floors have margin** (50 for the steady home scenes, 45 for the transition/player scenes) so
+- **`loop_floor`s have margin** (50 for the steady home scenes, 45 for the transition/player) so
   normal 55–60 jitter passes while a real regression drops well below. **This margin used to be
   justified here by "the panel GPU thermally throttles" — that is an unmeasured hypothesis, not a
   finding**, and it is the only place in the repo the claim appears. Nothing has ever measured a

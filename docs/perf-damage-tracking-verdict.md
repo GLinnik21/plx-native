@@ -1,5 +1,12 @@
 # Verdict: no per-region damage tracking
 
+> **Field names in this document predate 2026-08-01 and the old name was REUSED.** Where it says
+> `FPS=`, today's heartbeat says **`loop=`** (loop iterations); where it says `pres=`, today's says
+> **`fps=`** (frames actually presented). The manifest gates moved too: `floor`→`loop_floor`,
+> `present_floor`→`fps_floor`, `present_ceiling`→`fps_ceiling`, and `fps_stats`→`rate_stats`. The
+> text below is left as written, with the line numbers of its day, because it is a dated record of
+> an investigation rather than live guidance — see `CLAUDE.md` for the current names.
+
 **No — and not because immediate mode forbids it.** Every number we have is CPU (`/proc` jiffy deltas, `idle.rs:13-19`), and per-region damage removes GPU fragments, which appear in none of them; on the axis we measured, its ceiling is bounded by the 0.37 ms swap, and an honest hour-integration puts the whole prize under **0.25% of one core** — smaller than the 2 s keepalive we deliberately spend on insurance (`idle.rs:75`). The premise ("we're changing this anyway") is false in a specific, checkable way: the motion capability's coverage claim is *"there is nowhere else to get a time-varying value from — not anything keeping a list"* (`retui-invalidation-design.md:290`), and a damage rect is exactly a list, attached at a site (a scalar `Spring`) that structurally does not know its own geometry. What survives is one compositor-side piece of work that is not damage tracking at all: **we have declared our surface fully non-opaque for the app's entire lifetime, on six screens with nothing behind them** (`system.rs:77`).
 
 ---
