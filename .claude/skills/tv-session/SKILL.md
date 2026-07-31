@@ -5,8 +5,12 @@ description: >
   and hand the TV back. Use whenever a change must be seen or verified on the device:
   "show me the home screen", "screenshot the library grid", "does this UI change look
   right", "reproduce it on device", "click through the detail page", "give me a live view
-  of the TV", "run it and show me the log", "I want the TV back". Covers the
-  /tmp/plxnative-* boot triggers (which screen each reaches, and why a stale one silently
+  of the TV", "run it and show me the log", "I want the TV back". ALSO covers watching and
+  driving the TV from OFF-NETWORK — "let me test it from my phone", "I'm not at home",
+  "open it in Safari", "can you forward a port / open a port on the router", "improve the
+  streaming fps" — via `up --remote`, which publishes an authenticated D-pad-only page over
+  an HTTPS tunnel (and explains why a router port forward is the wrong answer here). Covers
+  the /tmp/plxnative-* boot triggers (which screen each reaches, and why a stale one silently
   changes what you are looking at), token/picker boot gating, the remote FIFO for live key
   and click injection, and which capture source can actually see the video plane. Use this
   instead of generic run/verify patterns — this is a cross-compiled ARM TV binary with no
@@ -26,7 +30,7 @@ read from the gitignored `src/config.local.h` at runtime and never printed.
 ## The driver
 
 ```bash
-tools/tv-session.sh up [--screen <name>] [--stream[=PORT]] [--no-token]
+tools/tv-session.sh up [--screen <name>] [--stream[=PORT]] [--remote[=PORT]] [--no-token]
 tools/tv-session.sh status              # re-assert without disturbing the session
 tools/tv-session.sh key down down ok    # key tokens through the real handlers
 tools/tv-session.sh click 960 540       # authored 1920x1080 coords
@@ -106,6 +110,65 @@ as a decode health check.
 
 Often the **event log is the real evidence** and the picture is a nicety — `tv-session.sh
 log <regex>` is usually faster than looking.
+
+## Watching from off-network (a phone, another house)
+
+```bash
+tools/tv-session.sh up --screen home --remote     # prints an https:// URL + a generated password
+tools/tv-session.sh status                        # re-prints them; says the URL is LIVE
+tools/tv-session.sh down                          # revokes the URL, discards the password
+```
+
+`--remote` implies `--stream`, then puts an authenticated **D-pad-only** page
+(`tools/remote-dpad.py`) in front of it and publishes that through a cloudflared tunnel.
+Needs `brew install cloudflared`; it is entirely opt-in, so an ordinary `up`/`--stream`
+session is unchanged and costs nothing.
+
+**Why a tunnel and never a router port forward.** The obvious ask is "forward a port"
+(a torrent client does it via UPnP), and it is the wrong tool here twice over. The page
+uses HTTP Basic auth, so a plain forward puts the password on the wire **in cleartext,
+several times a second**, while the tunnel is TLS end-to-end. And a forward aimed at the
+TV itself would expose `root`/`alpine` — the published webosbrew default, sitting in this
+repo's own Makefile — which is compromised by automated scanners in minutes. The tunnel
+also needs no router change at all and works behind CGNAT.
+
+**What a remote viewer can and cannot do.** The limit lives in the proxy, not the network,
+so it holds even for someone who has both the URL and the password: six D-pad tokens
+(`up/down/left/right/back` plus `okdown`/`okup`, which is what makes a press-and-**hold**
+context menu reachable). `ck:X,Y` pointer clicks and the transport keys are refused with
+403 — aiming at coordinates on a picture you may be seeing seconds late is not worth it.
+`up` asserts the 401 before opening the tunnel.
+
+**FPS: the transport is the lever, then the TV's CPU.** Measured this way, end to end:
+
+| transport | fps | bitrate |
+|---|---|---|
+| JPEG pull (`/frame.jpg?after=`) over the tunnel | 7.0–7.6 | ~2 Mbit/s |
+| **MPEG1 over the WebSocket, 480x270** | **23.6** | 0.6 Mbit/s |
+| MPEG1 over the WebSocket, 960x540 (default) | 17.4 | 2.0 Mbit/s |
+
+A JPEG pull costs one HTTPS round trip **per frame**, and the tunnel's RTT was 511 ms —
+so it cannot be fixed by pipelining (1, 4 and 8 concurrent pollers all measured ~12.2 fps
+locally; the JPEG path itself caps there). A WebSocket makes RTT a latency cost instead of
+a throughput cost, and MPEG1 has inter-frame compression where JPEG resends every pixel.
+
+Past that it is the TV's ARM CPU, not the network: readback → colour-convert → **software**
+encode, and encode time scales with pixel count (`venc:` in the event log reports it —
+53.5 ms/frame at 960x540). **1080p is therefore not viable**: ~4× that, ≈4.7 fps, i.e.
+worse than the problem you started with. `STREAM_RES=480x270` is the fps setting; the
+960x540 default is the readable one, which is usually what a UI review wants.
+
+**The trap that costs an hour.** The app serves one capture client per connection and does
+**not** hang up on a dead peer. Restart the streamer without closing the old one and a stale
+client is left on the app: the encoder keeps running and the event log keeps printing
+`venc: N frm ...` while the new streamer reads **zero bytes**. Everything looks healthy and
+nothing arrives. `up` now stops all local viewers *before* the relaunch for exactly this
+reason — if you are driving `stream-screen.py` by hand, do the same, and treat
+"`/version` says `jpeg` when you asked for `mpeg`" as the symptom (that field only flips to
+`mpeg` once TS has actually flowed).
+
+**Handback etiquette applies double.** A published URL outlives the terminal, so `down`
+prints that it revoked it, and `status` prints that it is live. Do not leave one up.
 
 ## Handback etiquette
 

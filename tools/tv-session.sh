@@ -16,6 +16,11 @@
 #   --guest           run as the managed test user rather than the owner (default: owner)
 #   --stream[=PORT]   also start tools/stream-screen.py for a live browser view (default 8909)
 #                     STREAM_RES=480x270 makes mpeg encode ~4x cheaper (see the skill)
+#   --remote[=PORT]   like --stream, but ALSO publish an authenticated, D-pad-only page over an
+#                     HTTPS tunnel so the TV can be watched and driven from a PHONE, off-network
+#                     (default dpad port 8908). Prints a URL + generated password; `down` revokes
+#                     both. Needs cloudflared (brew install cloudflared). See the skill for why
+#                     this is a tunnel and never a router port forward.
 #   --no-token        boot with no injected token (exercises the QR sign-in flow)
 #   --keep            do not clear existing triggers first (rarely what you want)
 #
@@ -35,6 +40,31 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPDIR=/media/developer/apps/usr/palm/applications/com.beb.plxnative
 APPID=com.beb.plxnative
 STREAM_PID_FILE="$REPO/.tv-stream.pid"
+# --remote's three extra processes. Each gets a pid file so `down` revokes the published URL and
+# the password even if this shell is long gone — a tunnel that outlives the session it was opened
+# for is the one failure mode here that is silent AND outward-facing.
+DPAD_PID_FILE="$REPO/.tv-dpad.pid"
+TUNNEL_PID_FILE="$REPO/.tv-tunnel.pid"
+REMOTE_URL_FILE="$REPO/.tv-remote-url"
+DPAD_PASS_FILE="$REPO/.tv-dpad-pass"
+
+# Stop everything on THIS machine that holds a socket to the app's capture stream.
+#
+# Order matters and it is the trap that costs an hour: the app serves one capture client per
+# connection and does NOT hang up on a dead peer, so a streamer left running across a relaunch
+# leaves a stale client on the app. The encoder keeps running (the event log keeps printing
+# `venc: N frm ...`), the TS goes to the dead socket, and the new streamer sees ZERO bytes while
+# every log line says the pipeline is healthy. So this runs BEFORE the relaunch, not after.
+stop_viewers() {
+  for f in "$TUNNEL_PID_FILE" "$DPAD_PID_FILE" "$STREAM_PID_FILE"; do
+    [ -f "$f" ] && { kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; }
+  done
+  pkill -f 'stream-screen.py --port' 2>/dev/null
+  pkill -f 'remote-dpad.py --port'   2>/dev/null
+  pkill -f 'cloudflared tunnel --url' 2>/dev/null
+  rm -f "$REMOTE_URL_FILE" "$DPAD_PASS_FILE"
+  return 0
+}
 
 tv_host() {
   [ -n "${TV:-}" ] && { echo "$TV"; return; }
@@ -131,7 +161,7 @@ assert_route() {
 
 # ------------------------------------------------------------ commands -------
 cmd_up() {
-  local screen=home guest=0 stream="" no_token=0 keep=0
+  local screen=home guest=0 stream="" no_token=0 keep=0 remote=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --screen) screen="$2"; shift 2 ;;
@@ -139,11 +169,23 @@ cmd_up() {
       --guest) guest=1; shift ;;
       --stream) stream=8909; shift ;;
       --stream=*) stream="${1#*=}"; shift ;;
+      --remote) remote=8908; shift ;;
+      --remote=*) remote="${1#*=}"; shift ;;
       --no-token) no_token=1; shift ;;
       --keep) keep=1; shift ;;
       *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
   done
+  # --remote is --stream plus a front door: there is nothing to publish without a stream, so it
+  # turns one on rather than making the caller remember to pass both.
+  if [ -n "$remote" ]; then
+    [ -z "$stream" ] && stream=8909
+    if ! command -v cloudflared >/dev/null 2>&1; then
+      bad "--remote needs cloudflared (brew install cloudflared)"; exit 1
+    fi
+  fi
+  # Before the relaunch, never after — see stop_viewers.
+  stop_viewers
 
   echo "== bringing up the TV session ($screen)"
   ensure_awake  || exit 1
@@ -212,16 +254,49 @@ cmd_up() {
   assert_route "$want_route" || true
 
   if [ -n "$stream" ]; then
-    pkill -f "stream-screen.py --port $stream" 2>/dev/null
-    sleep 1
     # fully detach: without </dev/null the child keeps the caller's stdout pipe open and
-    # an interactive shell appears to hang long after this script has finished
+    # an interactive shell appears to hang long after this script has finished.
+    # `--source app` rather than the default `auto`: auto silently falls back to the ~3fps luna
+    # service capture, which over a tunnel reads as "the app is broken" rather than "the source
+    # changed". Better to fail loudly on the fast path than succeed slowly on the slow one.
     (cd "$REPO" && nohup python3 -u tools/stream-screen.py --port "$stream" --res "${STREAM_RES:-960x540}" \
-        > "$REPO/.tv-stream.log" 2>&1 </dev/null & echo $! > "$STREAM_PID_FILE") ; disown 2>/dev/null || true
+        --source app > "$REPO/.tv-stream.log" 2>&1 </dev/null & echo $! > "$STREAM_PID_FILE") ; disown 2>/dev/null || true
     sleep 8
     local ver; ver=$(curl -s -m 3 "http://127.0.0.1:$stream/version" 2>/dev/null)
+    # "<ver> <mode>"; mode is `jpeg` until TS has actually flowed (stream-screen's _mode has a 6s
+    # window), so a `mpeg` here is the real end-to-end proof that the encoder reached us.
     if [ -n "$ver" ]; then ok "live view: http://127.0.0.1:$stream/  ($ver)"
     else bad "streamer did not answer on :$stream (see .tv-stream.log)"; fi
+  fi
+
+  if [ -n "$remote" ]; then
+    local pw; pw=$(python3 -c 'import secrets;print(secrets.token_urlsafe(12))')
+    printf '%s' "$pw" > "$DPAD_PASS_FILE"; chmod 600 "$DPAD_PASS_FILE"
+    (cd "$REPO" && nohup python3 -u tools/remote-dpad.py --port "$remote" --upstream "$stream" \
+        --user tv --password "$pw" > "$REPO/.tv-dpad.log" 2>&1 </dev/null & echo $! > "$DPAD_PID_FILE") ; disown 2>/dev/null || true
+    sleep 2
+    if ! curl -s -m 3 -o /dev/null "http://127.0.0.1:$remote/"; then
+      bad "d-pad front end did not answer on :$remote (see .tv-dpad.log)"; return 1
+    fi
+    # 401 unauthenticated is the assertion that matters: the tunnel is about to make this
+    # reachable from the internet, so "it serves the page" is not the thing to check.
+    local code; code=$(curl -s -o /dev/null -w '%{http_code}' -m 3 "http://127.0.0.1:$remote/")
+    [ "$code" = "401" ] && ok "d-pad front end up, unauthenticated requests refused (401)" \
+                        || bad "front end answered $code unauthenticated — expected 401"
+    (cd "$REPO" && nohup cloudflared tunnel --url "http://127.0.0.1:$remote" --no-autoupdate \
+        > "$REPO/.tv-tunnel.log" 2>&1 </dev/null & echo $! > "$TUNNEL_PID_FILE") ; disown 2>/dev/null || true
+    local url="" i=0
+    while [ $i -lt 30 ] && [ -z "$url" ]; do
+      url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$REPO/.tv-tunnel.log" 2>/dev/null | head -1)
+      [ -z "$url" ] && { sleep 1; i=$((i+1)); }
+    done
+    if [ -z "$url" ]; then bad "tunnel did not publish a URL (see .tv-tunnel.log)"; return 1; fi
+    printf '%s' "$url" > "$REMOTE_URL_FILE"
+    ok "remote view: $url"
+    echo "     user: tv"
+    echo "     pass: $pw"
+    echo "     d-pad only; pointer clicks and transport keys are refused at the proxy."
+    echo "     \`tv-session.sh down\` revokes this URL."
   fi
 
   # prove the control path end-to-end rather than assuming it
@@ -244,6 +319,13 @@ cmd_status() {
   local ver
   ver=$(curl -s -m 2 "http://127.0.0.1:8909/version" 2>/dev/null)
   [ -n "$ver" ] && ok "live view up on :8909 ($ver)"
+  # A published URL must be discoverable from a cold shell — otherwise the only way to learn the
+  # TV is on the internet is to remember opening it.
+  if [ -f "$REMOTE_URL_FILE" ]; then
+    ok "remote view PUBLISHED: $(cat "$REMOTE_URL_FILE")"
+    [ -f "$DPAD_PASS_FILE" ] && info "user tv / pass $(cat "$DPAD_PASS_FILE")"
+    info "reachable from outside this network until \`tv-session.sh down\`"
+  fi
 }
 
 cmd_key() {
@@ -274,11 +356,12 @@ cmd_log() {
 
 cmd_down() {
   echo "== handing the TV back"
-  if [ -f "$STREAM_PID_FILE" ]; then
-    kill "$(cat "$STREAM_PID_FILE")" 2>/dev/null && ok "streamer stopped"
-    rm -f "$STREAM_PID_FILE"
-  fi
-  pkill -f 'stream-screen.py --port' 2>/dev/null
+  local had_url=0; [ -f "$REMOTE_URL_FILE" ] && had_url=1
+  stop_viewers
+  ok "streamer stopped"
+  # Say it out loud. A published URL is the one thing here that outlives the terminal, so
+  # "it is gone now" has to be visible in the handback and not merely true.
+  [ "$had_url" = 1 ] && ok "remote URL revoked (tunnel closed, password discarded)"
   ensure_awake || exit 1
   clear_triggers                      # strips token/autoplay/capture/everything
   relaunch                            # a real interactive boot: picker or QR, as a user gets
