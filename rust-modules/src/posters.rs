@@ -406,6 +406,12 @@ pub(crate) fn poster_pump(budget: c_int) {
         };
         if stale != 0 {
             gl_delete(stale);
+        } else {
+            // A texture just landed on a screen that may have gone idle waiting for it. No spring
+            // reports this — the reveal spring is only armed once the tile SEES a texture — so the
+            // present gate has to be told, or the poster arrives invisibly and the shelf stays
+            // grey until the next keypress. (`ui::idle::invalidate` — see its call-site list.)
+            crate::ui::idle::invalidate();
         }
     }
 }

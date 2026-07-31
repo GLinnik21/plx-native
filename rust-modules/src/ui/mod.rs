@@ -19,6 +19,7 @@ pub mod fmt; // shared duration/clock display formatters
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod home;
 pub mod icons;
+pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod info_panel;
 pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
 pub mod label;
@@ -203,8 +204,16 @@ impl Spring {
     pub fn step_zeta(&mut self, target: f32, k: f32, zeta: f32, dt: f32) {
         crate::gfx::spring_zeta(&mut self.pos, &mut self.vel, target, k, zeta, dt);
     }
+    /// Teleport, with no motion in between. Reports to [`ui::idle`](crate::ui::idle) — a jump
+    /// changes the drawn value without ever reaching a spring integrator, so nothing else would
+    /// hear it.
+    ///
+    /// **Change-guarded, and that guard is mandatory rather than tidy:** `home.rs` calls
+    /// `snap.jump(0.0)` on EVERY frame while the hub list is empty, so an unconditional report
+    /// would pin the loop at 60 fps on precisely the screen the present gate exists for.
     #[inline]
     pub fn jump(&mut self, v: f32) {
+        crate::ui::idle::note_jump(self.pos != v || self.vel != 0.0);
         self.pos = v;
         self.vel = 0.0;
     }

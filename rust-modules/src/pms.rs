@@ -507,6 +507,9 @@ pub(crate) fn pump(dt: f32) {
     // still locked (and changes meaning again under 2024)
     let landed = HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(landing) = landed {
+        // A refetch landing rewrites the shelves under a Home screen that may have gone idle
+        // (the failure state repaints too — a retry that fails changes the status caption).
+        crate::ui::idle::invalidate();
         HUBS_FETCHING.store(false, Ordering::SeqCst);
         let cur = HUB_GEN.load(Ordering::SeqCst);
         match landing {

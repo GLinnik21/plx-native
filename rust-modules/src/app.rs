@@ -51,6 +51,7 @@ extern "C" {
     fn SDL_GL_CreateContext(win: *mut c_void) -> *mut c_void;
     fn SDL_GL_SetSwapInterval(interval: c_int) -> c_int;
     fn SDL_GetTicks() -> u32;
+    fn SDL_Delay(ms: u32);
     fn SDL_GetPerformanceCounter() -> u64;
     fn SDL_GetPerformanceFrequency() -> u64;
     fn SDL_PollEvent(event: *mut c_void) -> c_int;
@@ -289,6 +290,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     let mt = &main_thread;
     unsafe {
         SDL_SetMainReady();
+        // DEAD END, measured 2026-07-31 — do not re-try this. The obvious answer to "a parked TV
+        // should blank itself" is to stop inhibiting the platform screensaver here (and re-allow it
+        // per route, since webOS BACKGROUNDS the app to run one and `0x103` suspends the
+        // buffer-feed, so it could never be on during playback). It does not work, for a reason
+        // upstream of this app: the TV's SDL 2.0.4 fork carries the
+        // `SDL_VIDEO_ALLOW_SCREENSAVER` hint STRING but implements no wayland idle-inhibit
+        // (`strings libSDL2-2.0.so.0` finds no `idle_inhibit`/`suspend_screensaver` symbol), so
+        // this call and `SDL_EnableScreenSaver` are both no-ops. Soaked 34 min on Home with the
+        // TV's own `screenSaverEnabled: on`: no screensaver, no `LIFECYCLE: background`, CPU flat,
+        // our UI still at full brightness on the panel. webOS does not blank a foreground native
+        // app, and nothing reachable from SDL changes that. The line stays because it costs
+        // nothing and states the intent; it is not what keeps the screensaver away.
         SDL_SetHint(c"SDL_VIDEO_ALLOW_SCREENSAVER".as_ptr(), c"0".as_ptr());
         if SDL_Init(SDL_INIT_VIDEO) != 0 {
             log("SDL_Init failed");
@@ -382,7 +395,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // so the boot who's-watching picker is skipped. Pure diagnostics (the logs, the profiler,
         // the anim overlay) don't count as automation.
         let automated_boot = || {
-            const DIAG: [&str; 7] = ["plxnative-events.log", "plxnative-stderr.log", "plxnative-crash.log", "plxnative-profile", "plxnative-anim", "plxnative-remote", "plxnative-capture"];
+            const DIAG: [&str; 8] = ["plxnative-events.log", "plxnative-stderr.log", "plxnative-crash.log", "plxnative-profile", "plxnative-anim", "plxnative-remote", "plxnative-capture", "plxnative-noidle"];
             std::fs::read_dir("/tmp")
                 .ok()
                 .map(|rd| {
@@ -468,6 +481,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // ms/frame per draw phase to the event log (GPU-synced, so absolute FPS drops while it's on).
         if std::path::Path::new("/tmp/plxnative-profile").exists() {
             crate::ui::profile::set_enabled(true);
+        }
+        // dev: /tmp/plxnative-noidle turns the whole-frame present gate (ui::idle) OFF, so a still
+        // screen goes back to repainting at panel rate. It is a DIAG trigger (see the list above)
+        // precisely so an A/B costs one file and does not also change which screen you boot to —
+        // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
+        // `rm` rather than a redeploy.
+        if std::path::Path::new("/tmp/plxnative-noidle").exists() {
+            crate::ui::idle::set_enabled(false);
+            log("idle: present gate DISABLED by /tmp/plxnative-noidle");
         }
         // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
         // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
@@ -1583,6 +1605,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::system::ls2_pump();
             if let Some(r) = remote.as_mut() {
                 r.drain(|tok| {
+                    crate::ui::idle::invalidate(); // an injected key is input like any other
                     // pointer click token "ck:X,Y" — authored 1920x1080 coords
                     if let Some(rest) = tok.strip_prefix("ck:") {
                         if let Some((xs, ys)) = rest.split_once(',') {
@@ -1604,6 +1627,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 });
             }
             while SDL_PollEvent(ev.as_mut_ptr() as *mut c_void) != 0 {
+                // ANY event is a reason to repaint (`ui::idle`): a key changes focus or a label,
+                // a lifecycle event changes the whole screen. Marked here — once, for every event
+                // kind — rather than in each of the ~30 arms below, where the next one added would
+                // silently draw nothing.
+                crate::ui::idle::invalidate();
                 let et = rd_u32(&ev, 0);
                 if et == SDL_KEYDOWN || et == SDL_KEYUP {
                     let mut hex = String::with_capacity(64);
@@ -3054,6 +3082,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 d
             };
             prev = now;
+            // Whole-frame present gate (`ui::idle`): forget last frame's motion BEFORE the update
+            // phase below re-steps every spring, so the flag it leaves describes THIS frame, and
+            // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
+            // a bare units-per-second. The decision itself is taken just above `glViewport`.
+            crate::ui::idle::frame_begin(dt);
 
             // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
             // commits (the spring-back bounce has played), run it for whichever CARD view armed the
@@ -3371,6 +3404,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // Async play resolve: install the worker's plan and start the engine. Route-
             // unconditional — a landing must never depend on which screen is mounted.
             if crate::route::pump_play() {
+                crate::ui::idle::invalidate();
                 let r = PENDING_RESUME_NS.swap(0, Relaxed);
                 if r > 0 {
                     crate::player::resume_at(r);
@@ -3387,102 +3421,141 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // Async detail load: install the worker's item into CURRENT. Route-unconditional for
             // the same reason as pump_play — play_item_now requests a detail from Home and flips
             // straight to the player, so a Detail-gated pump would never land it.
-            crate::metadata::pump_detail();
-            crate::posters::poster_pump(3);
+            if crate::metadata::pump_detail() {
+                crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
+            }
+            crate::posters::poster_pump(3); // invalidates from inside, per texture installed
             let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 
-            glViewport(0, 0, SCR_W, SCR_H);
             let player = matches!(route, Route::Player { .. });
-            // EVERY screen draws inside ONE panic barrier. `plex_run` is `extern "C"` (main.c calls
-            // it), so a panic unwinding out of a screen's draw is UB the toolchain turns into
-            // abort() — the app dies and a live Starfish session is torn down mid-Feed(), on a
-            // device with no debugger. Guarding HERE, at the route→screen dispatch, is what makes
-            // that structural: a screen added later is covered without its author remembering,
-            // which is exactly how every module but home.rs ended up unguarded. The barrier wraps
-            // the WHOLE dispatch rather than each `::draw()` so draw ORDER and z-stacking are
-            // untouched — a panic in the HUD abandons the rest of the frame instead of stacking the
-            // overlays onto a half-built one — and so `ui::guard`'s scissor repair runs once, after
-            // the last screen that could have left a clip armed. See `ui::guard` for what this does
-            // NOT cover (worker-thread panics, aborts, half-mutated state). Everything inside is a
-            // read of loop state, so the closure only borrows; nothing is moved out of the loop.
-            crate::ui::guard(|| {
-                if player {
-                    crate::system::clear_opaque_region();
-                    glClearColor(0.0, 0.0, 0.0, 0.0);
-                    glClear(GL_COLOR_BUFFER_BIT);
-                    let hud_up = hud_shown(now, hud_until(), paused(), hud_dismissed) || crate::player::loading();
-                    // ONE resolve of which surface owns the "pipeline is working" signal, handed to
-                    // both draws, so the centred read-out and the transport's inline spinner can
-                    // never both light in the same frame. Resolved HERE (not beside `ctrl` at the
-                    // top of the iteration) because `player::pump` republishes the state
-                    // mid-iteration and this must be the post-pump value.
-                    let busy = crate::ui::player_hud::busy();
-                    // Both subtitle paths lift clear of the transport for the same reason and by
-                    // the same test — an open track menu counts, since that is exactly when the
-                    // user is reading the bottom of the screen.
-                    let subs_lift = hud_up || matches!(route, Route::Player { overlay: Overlay::Menu });
-                    crate::ui::player_hud::draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-                    crate::ui::player_hud::draw_subtitles(subs_lift);
-                    if hud_up || !matches!(route, Route::Player { overlay: Overlay::None }) {
-                        // hide the transport middle behind the Info card / Chapters strip
-                        crate::ui::player_hud::draw_hud(ctrl, busy, hud_nav.focus, hud_nav.btn, hud_nav.tab, now, !matches!(route, Route::Player { overlay: Overlay::Info | Overlay::Chapters }));
-                    }
-                    // The read-out is NOT transport chrome — it is drawn whether or not the HUD is
-                    // up, so a terminal `Error` (which is not `is_busy()`, so it does not pin the
-                    // HUD) keeps its message instead of vanishing with the 4.5 s linger. AFTER the
-                    // transport, so it is never dimmed by the scrim; BEFORE the overlay panels
-                    // below, so an open Info card / Chapters strip still covers it.
-                    crate::ui::player_hud::draw_readout(busy, now);
-                    if matches!(route, Route::Player { overlay: Overlay::Menu }) {
-                        crate::ui::track_menu::draw();
-                    }
-                    if matches!(route, Route::Player { overlay: Overlay::Info }) {
-                        crate::ui::info_panel::draw();
-                    }
-                    if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
-                        crate::ui::chapters_panel::draw();
-                    }
-                } else {
-                    if matches!(route, Route::Login) {
-                        crate::ui::login::draw();
-                    } else if matches!(route, Route::Profiles) {
-                        crate::ui::profiles::draw();
-                    } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
-                        // the page stays live UNDER its context menu — the popover is anchored beside
-                        // the episode still it acts on, which has to still be there to be beside
-                        crate::ui::detail::draw();
-                    } else if matches!(route, Route::Person) {
-                        crate::ui::person::draw();
-                    } else if matches!(route, Route::Library) {
-                        crate::ui::library::draw();
+            // ---- whole-frame present gate (`ui::idle`) --------------------------------------
+            // A screen with nothing moving on it does not need to be re-sent to the panel. This
+            // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
+            // tracking, which `ui/mod.rs`'s renderer doc rejects: when this says yes, the frame
+            // below is byte-for-byte the immediate-mode frame it always was, clear and all.
+            //
+            // Measured cost of not doing this (2026-07-31): a still Home grid burns 16.0% of one
+            // A53 core here plus ~19.4 points inside `surface-manager`, which must blend our
+            // 1080p surface on every present — a charge that measured identical on three
+            // different screens, so it is per-PRESENT, not per-pixel. ~35 points of a core to
+            // re-send an unchanged picture, on a fan-less SoC that sits on Home for hours.
+            //
+            // The PLAYER route is deliberately excluded. `system.rs::clear_opaque_region`
+            // documents the hardware video plane as *slaved* to this wayland surface, and
+            // "we stop presenting while a plane is slaved to it" is a claim about this
+            // compositor that reading cannot settle. Home has no video plane active, which is
+            // what makes it the safe place to prove the mechanism. Playback also spends ~99% of
+            // its time with the HUD auto-hidden, where the frame is already 0 draw calls.
+            // `should_present` is on the LEFT so the short-circuit can never skip it: it
+            // takes-and-clears the discrete flag, and on the player route (which always presents)
+            // a skipped take would leave a stale flag to fire spuriously on the way back out.
+            let present = crate::ui::idle::should_present(now) || player;
+            // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
+            // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
+            let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) = (fd_pc_pump, fd_pc_pump, fd_pc_pump);
+            if present {
+                glViewport(0, 0, SCR_W, SCR_H);
+                // EVERY screen draws inside ONE panic barrier. `plex_run` is `extern "C"` (main.c calls
+                // it), so a panic unwinding out of a screen's draw is UB the toolchain turns into
+                // abort() — the app dies and a live Starfish session is torn down mid-Feed(), on a
+                // device with no debugger. Guarding HERE, at the route→screen dispatch, is what makes
+                // that structural: a screen added later is covered without its author remembering,
+                // which is exactly how every module but home.rs ended up unguarded. The barrier wraps
+                // the WHOLE dispatch rather than each `::draw()` so draw ORDER and z-stacking are
+                // untouched — a panic in the HUD abandons the rest of the frame instead of stacking the
+                // overlays onto a half-built one — and so `ui::guard`'s scissor repair runs once, after
+                // the last screen that could have left a clip armed. See `ui::guard` for what this does
+                // NOT cover (worker-thread panics, aborts, half-mutated state). Everything inside is a
+                // read of loop state, so the closure only borrows; nothing is moved out of the loop.
+                crate::ui::guard(|| {
+                    if player {
+                        crate::system::clear_opaque_region();
+                        glClearColor(0.0, 0.0, 0.0, 0.0);
+                        glClear(GL_COLOR_BUFFER_BIT);
+                        let hud_up = hud_shown(now, hud_until(), paused(), hud_dismissed) || crate::player::loading();
+                        // ONE resolve of which surface owns the "pipeline is working" signal, handed to
+                        // both draws, so the centred read-out and the transport's inline spinner can
+                        // never both light in the same frame. Resolved HERE (not beside `ctrl` at the
+                        // top of the iteration) because `player::pump` republishes the state
+                        // mid-iteration and this must be the post-pump value.
+                        let busy = crate::ui::player_hud::busy();
+                        // Both subtitle paths lift clear of the transport for the same reason and by
+                        // the same test — an open track menu counts, since that is exactly when the
+                        // user is reading the bottom of the screen.
+                        let subs_lift = hud_up || matches!(route, Route::Player { overlay: Overlay::Menu });
+                        crate::ui::player_hud::draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
+                        crate::ui::player_hud::draw_subtitles(subs_lift);
+                        if hud_up || !matches!(route, Route::Player { overlay: Overlay::None }) {
+                            // hide the transport middle behind the Info card / Chapters strip
+                            crate::ui::player_hud::draw_hud(ctrl, busy, hud_nav.focus, hud_nav.btn, hud_nav.tab, now, !matches!(route, Route::Player { overlay: Overlay::Info | Overlay::Chapters }));
+                        }
+                        // The read-out is NOT transport chrome — it is drawn whether or not the HUD is
+                        // up, so a terminal `Error` (which is not `is_busy()`, so it does not pin the
+                        // HUD) keeps its message instead of vanishing with the 4.5 s linger. AFTER the
+                        // transport, so it is never dimmed by the scrim; BEFORE the overlay panels
+                        // below, so an open Info card / Chapters strip still covers it.
+                        crate::ui::player_hud::draw_readout(busy, now);
+                        if matches!(route, Route::Player { overlay: Overlay::Menu }) {
+                            crate::ui::track_menu::draw();
+                        }
+                        if matches!(route, Route::Player { overlay: Overlay::Info }) {
+                            crate::ui::info_panel::draw();
+                        }
+                        if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
+                            crate::ui::chapters_panel::draw();
+                        }
                     } else {
-                        crate::ui::home::home_draw();
+                        if matches!(route, Route::Login) {
+                            crate::ui::login::draw();
+                        } else if matches!(route, Route::Profiles) {
+                            crate::ui::profiles::draw();
+                        } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
+                            // the page stays live UNDER its context menu — the popover is anchored beside
+                            // the episode still it acts on, which has to still be there to be beside
+                            crate::ui::detail::draw();
+                        } else if matches!(route, Route::Person) {
+                            crate::ui::person::draw();
+                        } else if matches!(route, Route::Library) {
+                            crate::ui::library::draw();
+                        } else {
+                            crate::ui::home::home_draw();
+                        }
+                        if matches!(route, Route::Account) {
+                            crate::ui::account_menu::draw(); // profile popover over Home
+                        }
+                        if matches!(route, Route::ItemMenu { .. }) {
+                            crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
+                        }
+                        // the on-screen FPS counter stays off the player route (chrome over video)
+                        let fps_col = [0.4f32, 1.0, 0.55, 1.0];
+                        crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
                     }
-                    if matches!(route, Route::Account) {
-                        crate::ui::account_menu::draw(); // profile popover over Home
-                    }
-                    if matches!(route, Route::ItemMenu { .. }) {
-                        crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
-                    }
-                    // the on-screen FPS counter stays off the player route (chrome over video)
-                    let fps_col = [0.4f32, 1.0, 0.55, 1.0];
-                    crate::gfx::draw_number(fps_shown, SCR_W as f32 - 70.0, 64.0, 46.0, fps_col.as_ptr());
+                    crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
+                });
+                fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
+                // dev capture stream: grab this finished frame before the swap (after the last draw,
+                // so the copy's pass-flush is work the swap would submit anyway). One atomic when idle.
+                // Deliberately NOT on the player route (the UI plane is transparent over video, so
+                // there is nothing to grab) — capture.rs's 5s keepalive resend covers the host's
+                // deadness timer while playback is up.
+                if !player {
+                    crate::capture::tick(now);
                 }
-                crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
-            });
-            let fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
-            // dev capture stream: grab this finished frame before the swap (after the last draw,
-            // so the copy's pass-flush is work the swap would submit anyway). One atomic when idle.
-            // Deliberately NOT on the player route (the UI plane is transparent over video, so
-            // there is nothing to grab) — capture.rs's 5s keepalive resend covers the host's
-            // deadness timer while playback is up.
-            if !player {
-                crate::capture::tick(now);
+                fd_pc_cap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
+                SDL_GL_SwapWindow(win);
+                fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
+                // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
+                // idle gate skipped would pace the profiler's once-per-N-frames log off frames
+                // that ran no phases at all.
+                crate::ui::profile::frame_end();
+                crate::ui::idle::note_present(now);
+            } else {
+                // The swap is this loop's ONLY blocking call — there is no SDL_Delay, nanosleep
+                // or frame budget anywhere else in it. Skipping the present without sleeping here
+                // would turn a 16%-of-a-core app into a 100% spinner: strictly worse than the
+                // problem. One frame period, so input latency is exactly what it is today.
+                SDL_Delay(crate::ui::idle::IDLE_POLL_MS);
             }
-            let fd_pc_cap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
-            SDL_GL_SwapWindow(win);
-            let fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
-            crate::ui::profile::frame_end();
             let rn = match route {
                 Route::Login => "login",
                 Route::Profiles => "profiles",
@@ -3499,7 +3572,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // ONE tail for every route — this used to live only on the non-player path, which left
             // /tmp/plxnative-framedrop dead during playback (the timings were collected, then a
             // `continue` threw them away).
-            if framedrop_on {
+            // `present` gates this too: a frame the idle gate skipped drew nothing, so grading it
+            // would drag `worstframe` toward zero and read as a perf WIN. A skipped frame is not a
+            // fast frame — it is an absent one, and `pres=` on the heartbeat is where it shows up.
+            if framedrop_on && present {
                 let pump = perf_ms(fd_pc_pump.wrapping_sub(fd_pc0));
                 let draw = perf_ms(fd_pc_draw.wrapping_sub(fd_pc_pump));
                 let cap = perf_ms(fd_pc_cap.wrapping_sub(fd_pc_draw));
@@ -3540,11 +3616,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else {
                     String::new()
                 };
+                // `pres=<n>` — frames actually SWAPPED this second, which is what `ui::idle`
+                // moves. `FPS=` deliberately keeps counting LOOP iterations: it is the app's
+                // liveness signal and `pos=` is anchored to it, so it must not read 0 on a screen
+                // that is merely idle. The pair is the diagnostic — `FPS=60 pres=0` is a settled
+                // screen doing its job; `FPS=0` is an app in trouble.
+                let pres = crate::ui::idle::take_presents();
                 if framedrop_on {
-                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos} worstframe={fd_worst:.1}ms"));
+                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos} pres={pres} worstframe={fd_worst:.1}ms"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos}"));
+                    log(&format!("FPS={fps_shown} route={rn}{ov}{pos} pres={pres}"));
                 }
             }
         }

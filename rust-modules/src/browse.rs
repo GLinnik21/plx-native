@@ -399,6 +399,8 @@ fn land_directory<T>(
     apply: impl FnOnce(&'static mut SecState, Vec<T>),
 ) {
     if let Some((sgen, sec, list)) = mail.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        // a menu's value list arriving repopulates an open Sort/Filter popover (`ui::idle`)
+        crate::ui::idle::invalidate();
         flag.store(false, Ordering::SeqCst);
         if sgen == sections_gen() {
             if let Some(st) = state_mut(sec) {
@@ -488,6 +490,9 @@ pub(crate) fn pump() -> bool {
     });
     // page landing
     if let Some(r) = PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        // a page landing fills the grid under a screen that may have gone idle waiting for it;
+        // the FAILED branch repaints too, since the retry back-off changes what the grid shows
+        crate::ui::idle::invalidate();
         FETCHING.store(false, Ordering::SeqCst);
         if r.total < 0 {
             // the fetch FAILED (network/parse) — leave the store exactly as it was and back

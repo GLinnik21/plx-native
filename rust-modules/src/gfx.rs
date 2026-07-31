@@ -492,6 +492,9 @@ pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32)
         let b = *vel + w * x;
         *pos = target + (x + b * dt) * e;
         *vel = (*vel - w * b * dt) * e;
+        // Every animation in the app lands here or in `spring_zeta`, which is what lets
+        // `ui::idle` know EXACTLY whether the screen is still moving without any screen opting in.
+        crate::ui::idle::note_spring(*pos, target, *vel);
     }
 }
 
@@ -517,6 +520,7 @@ pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zet
         let b = (v0 + z * w * x0) / wd;
         *pos = target + e * (a * c + b * s);
         *vel = e * ((b * wd - z * w * a) * c - (a * wd + z * w * b) * s);
+        crate::ui::idle::note_spring(*pos, target, *vel); // see the note in `spring`
     }
 }
 
