@@ -3446,6 +3446,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // compositor that reading cannot settle. Home has no video plane active, which is
             // what makes it the safe place to prove the mechanism. Playback also spends ~99% of
             // its time with the HUD auto-hidden, where the frame is already 0 draw calls.
+            // A remote viewer is watching the UI plane, so the UI must keep drawing for it — the
+            // grab lives INSIDE the gate (it needs a finished frame to copy), so without this the
+            // live view is starved to the 2 s keepalive at 0.1 fps, which a browser reads as a
+            // dead connection. Asks "would capture TAKE a frame now", not "is anyone attached", so
+            // an idle streaming screen renders at exactly the rate the stream consumes instead of
+            // ~12 frames a second into the bin. Costs nothing with no client, i.e. every real user.
+            if crate::capture::wants_frame(now) {
+                crate::ui::idle::invalidate();
+            }
             // `should_present` is on the LEFT so the short-circuit can never skip it: it
             // takes-and-clears the discrete flag, and on the player route (which always presents)
             // a skipped take would leave a stale flag to fire spuriously on the way back out.

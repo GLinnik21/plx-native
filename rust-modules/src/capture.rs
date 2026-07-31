@@ -142,6 +142,31 @@ pub(crate) fn shutdown() {
 /// Per-frame hook (GL thread, after the last UI draw, before the swap). One atomic
 /// load when idle; captures at most every MIN_GAP_MS and only when the encoder has
 /// consumed the previous frame (mailbox empty) — never blocks, never queues.
+/// Would [`tick`] take a frame right now? The frame gate asks this, and turns a `true` into a
+/// repaint.
+///
+/// **Why the gate needs it at all:** the grab in [`tick`] can only copy a FINISHED frame, so it
+/// runs inside the present gate — which on a settled screen means it fires at `ui::idle`'s 2 s
+/// keepalive. Measured 0.1 fps, which a browser reads as a dead connection rather than a still
+/// picture. Someone watching remotely is a genuine reason to keep drawing.
+///
+/// **Why it mirrors [`tick`]'s cadence rather than just answering "is anyone attached":** capture
+/// caps itself at [`MIN_GAP_MS`], so an is-anyone-attached test made the loop render every frame
+/// and throw ~12 a second away — each one paying a full present, ours and the compositor's. Gated
+/// here, an otherwise-idle streaming screen renders at exactly the rate the stream consumes. A
+/// genuinely animating screen is unaffected: its springs already report at panel rate and the
+/// stream just samples that.
+///
+/// Deliberately does NOT replicate `tick`'s third guard (the encoder still holding the previous
+/// frame). That one needs a `try_lock`, which has no business on the frame gate's path, and its
+/// only cost is a few extra presents while the encoder is saturated — a state that self-corrects.
+#[inline]
+pub(crate) fn wants_frame(now: u32) -> bool {
+    ENABLED.load(Ordering::Relaxed)
+        && (FD_JPEG.load(Ordering::Relaxed) >= 0 || FD_MPEG.load(Ordering::Relaxed) >= 0)
+        && now.wrapping_sub(LAST_MS.load(Ordering::Relaxed)) >= MIN_GAP_MS
+}
+
 pub(crate) fn tick(now: u32) {
     if !ENABLED.load(Ordering::Relaxed)
         || (FD_JPEG.load(Ordering::Relaxed) < 0 && FD_MPEG.load(Ordering::Relaxed) < 0)
