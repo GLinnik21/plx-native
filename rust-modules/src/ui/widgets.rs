@@ -744,6 +744,18 @@ impl Spinner {
 }
 impl View for Spinner {
     fn draw(&self, _e: &Env, p: Painter) {
+        // A spinner is driven by a CLOCK, not a spring, so `ui::idle`'s spring instrumentation
+        // cannot see it: before this line, a Home waiting on /hubs — the exact state the read-out
+        // exists for — drew a STOPPED spinner. Reported here, in `draw`, and that is deliberate:
+        // only a spinner actually ON SCREEN should hold the loop awake, whereas the six phase
+        // accumulators that feed it tick unconditionally at the top of their screens' update.
+        //
+        // Reporting from a draw is sound in exactly one direction — it can only latch the gate ON
+        // for the next frame, never off — and it self-sustains: the landing that started the load
+        // presents frame 1, whose draw reports and so buys frame 2, until nothing draws a spinner.
+        // It relies on `should_present` taking-and-clearing rather than `note_present` clearing
+        // after the draw, which would destroy this report on the frame it is raised.
+        crate::ui::idle::invalidate();
         let t = (self.phase % Self::PERIOD_MS) as f32 / Self::PERIOD_MS as f32;
         for i in 0..self.dots {
             let ang = i as f32 / self.dots as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
