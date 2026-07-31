@@ -16,6 +16,7 @@ pub mod chapters_panel;
 pub mod consts;
 pub mod detail;
 pub mod fmt; // shared duration/clock display formatters
+pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod home;
 pub mod icons;
 pub mod info_panel;
@@ -23,6 +24,7 @@ pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Wat
 pub mod label;
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
@@ -34,8 +36,10 @@ pub mod table;
 pub mod text_view;
 pub mod theme;
 pub mod track_menu;
+pub mod trail; // the BACK trail: which pages are behind the one on screen (app.rs pops it)
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
+pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
 
 /// Player HUD accent palette — the mockup's "Snow": a warm off-white focus fill with near-black
 /// ink/icons over it. The focused control (button, pill, menu row) fills ACCENT; its label/glyph
@@ -134,6 +138,29 @@ impl Rect {
     #[inline]
     pub fn inset(&self, d: f32) -> Rect {
         Rect::new(self.x + d, self.y + d, self.w - 2.0 * d, self.h - 2.0 * d)
+    }
+    /// This rect FILLED by a `tw × th` source with its aspect preserved and centred — the
+    /// `background-size: cover` rule, and the counterpart of the CONTAIN math
+    /// [`hero_logo::fit`](crate::ui::hero_logo::fit) does (that one keeps a logo INSIDE its column;
+    /// this one overflows a picture PAST its frame so the frame is never
+    /// letterboxed). Full-bleed artwork needs it because [`Painter::tex`] maps UV 0..1 across the
+    /// rect: a source that is not the frame's aspect is SQUASHED, and an episode still is a video
+    /// frame whose aspect we do not control.
+    ///
+    /// A degenerate source (either dimension ≤ 0 — i.e. the texture has not decoded yet, so
+    /// `widgets::resolve_tex_wh` answers 0) returns the frame UNCHANGED, so a caller drawing before
+    /// the size is known gets today's stretch rather than a zero-area quad that blanks the backdrop.
+    ///
+    /// The overflow costs no fill: GL rasterizes only inside the viewport, so the off-panel part of
+    /// the quad generates no fragments.
+    #[inline]
+    pub fn cover(&self, tw: f32, th: f32) -> Rect {
+        if tw <= 0.0 || th <= 0.0 {
+            return *self;
+        }
+        let s = (self.w / tw).max(self.h / th);
+        let (w, h) = (tw * s, th * s);
+        Rect::new(self.x + (self.w - w) * 0.5, self.y + (self.h - h) * 0.5, w, h)
     }
     /// The overlap of two rects — the part of `self` that `o` lets through. A miss returns a
     /// ZERO-SIZE rect (never a negative one), so `w > 0` is a clean "any of this is visible?"
@@ -310,10 +337,44 @@ impl Painter {
         crate::gfx::draw_tex_carded(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(),
             theme::CARD_SHEEN_W, self.sheen_rim().as_ptr(), pad, blur, shcol.as_ptr());
     }
-    /// bilinear 4-corner gradient (opaque; the cascade alpha is intentionally not applied)
+    /// Bilinear 4-corner gradient. The written pixels stay OPAQUE — this primitive REPLACES what is
+    /// under it (see [`AmbientWash`](crate::ui::widgets::AmbientWash)) — but it is no longer blind
+    /// to the cascade: an alpha below 1 mixes every corner toward [`theme::SURFACE_APP`] instead of
+    /// being ignored. That is the only reading of "fade this out" an opaque full-screen field HAS,
+    /// and it is the right one: the app's ground is what lies behind a page (`gfx::frame_clear` lays
+    /// down `theme::CLEAR_RGB`, the same colour), so at alpha 0 the wash IS the ground and
+    /// [`ui::nav`](crate::ui::nav)'s page dip has no seam where the framebuffer was cleared and the
+    /// next screen takes over.
+    ///
+    /// Alpha 1 is bit-for-bit the old call, which is every call outside a page transition; only the
+    /// corner RGB is touched, so the write stays opaque and no blending is added. This does NOT make
+    /// a wash cross-fadeable BETWEEN two items — dissolving one item's colours into another's is
+    /// still a spring per corner channel; see `AmbientWash`.
     pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {
+        let a = self.a.clamp(0.0, 1.0);
+        let g = theme::SURFACE_APP; // `theme::mix` is rgba; a wash corner is rgb
+        let k = if a >= 1.0 {
+            k
+        } else {
+            k.map(|c| std::array::from_fn(|i| g[i] + (c[i] - g[i]) * a))
+        };
         crate::gfx::draw_ambient(r.x + self.dx, r.y + self.dy, r.w, r.h, dim,
             k[0].as_ptr(), k[1].as_ptr(), k[2].as_ptr(), k[3].as_ptr());
+    }
+    /// Bilinear 4-corner gradient with real per-corner ALPHA, folded through the cascade — the
+    /// counterpart of [`ambient`](Self::ambient), which is opaque by contract and therefore cannot
+    /// sit OVER artwork. Corner order is the same: tl, tr, br, bl.
+    ///
+    /// It is the only two-dimensional gradient the renderer has ([`rect`](Self::rect)'s is vertical
+    /// only), which is why a corner-weighted scrim over a hero backdrop goes through here rather
+    /// than through N abutting strips — see `widgets::hero_scrim`. Straight (non-premultiplied) rgba
+    /// interpolates exactly only when the corners share an rgb, so give it ONE ink at four alphas,
+    /// not four hues.
+    pub fn grad4(self, r: Rect, k: [[f32; 4]; 4]) {
+        // bind the mapped array to a `let` first — pointers into a temporary would dangle
+        let c = k.map(|q| self.c(q));
+        crate::gfx::draw_grad4(r.x + self.dx, r.y + self.dy, r.w, r.h,
+            c[0].as_ptr(), c[1].as_ptr(), c[2].as_ptr(), c[3].as_ptr());
     }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(self, s: *const c_char, x: f32, y: f32, sz: c_int, col: [f32; 4], align: c_int, bold: c_int) -> f32 {
@@ -434,5 +495,70 @@ impl ScrollColumn {
             }
             y += h;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The retui core's pure geometry. Ordinary parallel tests — `Rect` carries no state and
+    //! reaches no crate global, so nothing here needs `testlock` or a module mutex.
+    use super::*;
+
+    /// Every field of `a` within `eps` of `b`'s.
+    fn near(a: Rect, b: Rect, eps: f32) -> bool {
+        (a.x - b.x).abs() <= eps && (a.y - b.y).abs() <= eps && (a.w - b.w).abs() <= eps && (a.h - b.h).abs() <= eps
+    }
+
+    /// The guarantee that lets `cover` be applied to EVERY backdrop at once: a source that is
+    /// already the frame's aspect comes back as the frame, whatever its pixel size. A normal 16:9
+    /// show backdrop is therefore pixel-identical to the stretch it replaces.
+    #[test]
+    fn cover_is_a_no_op_when_the_source_matches_the_frame() {
+        for (tw, th) in [(1920.0, 1080.0), (1280.0, 720.0), (640.0, 360.0), (3840.0, 2160.0)] {
+            let r = Rect::FULL.cover(tw, th);
+            assert!(near(r, Rect::FULL, 1e-3), "{tw}x{th} → {:?}", (r.x, r.y, r.w, r.h));
+        }
+    }
+
+    /// Cover, not contain: the frame is always fully painted, the source aspect always survives, and
+    /// the overflow is centred so the crop is even on both sides. Letterboxing here would read as a
+    /// broken backdrop, which is why the long axis is allowed to run off the panel.
+    #[test]
+    fn cover_overflows_the_long_axis_and_never_letterboxes() {
+        for (tw, th) in [(2592.0, 1080.0), (1440.0, 1080.0), (1000.0, 1000.0), (1000.0, 1500.0)] {
+            let r = Rect::FULL.cover(tw, th);
+            assert!(r.w >= Rect::FULL.w - 1e-3, "{tw}x{th}: frame not covered horizontally ({})", r.w);
+            assert!(r.h >= Rect::FULL.h - 1e-3, "{tw}x{th}: frame not covered vertically ({})", r.h);
+            assert!((r.w / r.h - tw / th).abs() < 1e-3, "{tw}x{th}: aspect {} not preserved", r.w / r.h);
+            assert!((r.cx() - Rect::FULL.cx()).abs() < 1e-3, "{tw}x{th}: not centred in x");
+            assert!((r.cy() - Rect::FULL.cy()).abs() < 1e-3, "{tw}x{th}: not centred in y");
+            // exactly one axis overflows (or neither, at the frame's own aspect)
+            assert!(r.w <= Rect::FULL.w + 1e-3 || r.h <= Rect::FULL.h + 1e-3, "{tw}x{th}: both axes overflow");
+        }
+    }
+
+    /// The window that exists on EVERY frame before a texture lands: the store answers 0 until the
+    /// slot is READY. A zero-area or negative rect there would blank the backdrop, so the frame must
+    /// come back untouched — the caller simply gets the old stretch for a few frames.
+    #[test]
+    fn cover_leaves_the_frame_alone_for_an_undecoded_source() {
+        let f = Rect::new(10.0, 20.0, 300.0, 400.0);
+        for (tw, th) in [(0.0, 0.0), (0.0, 720.0), (1280.0, 0.0), (-1.0, -1.0), (-1280.0, 720.0)] {
+            let r = f.cover(tw, th);
+            assert!(near(r, f, 0.0), "{tw}x{th} must return the frame unchanged");
+            assert!(r.w > 0.0 && r.h > 0.0, "{tw}x{th} produced a degenerate rect");
+        }
+    }
+
+    /// The centring is about the FRAME, not about the panel: home's backdrop layer is parallaxed to
+    /// a non-zero origin and slides horizontally, so a `cover` that centred on (0,0) would drift the
+    /// crop across the flip.
+    #[test]
+    fn cover_survives_a_non_origin_frame() {
+        let f = Rect::new(200.0, 100.0, 400.0, 200.0);
+        let r = f.cover(400.0, 400.0);
+        assert!((r.cx() - f.cx()).abs() < 1e-3 && (r.cy() - f.cy()).abs() < 1e-3, "crop must stay on the frame's centre");
+        assert!((r.w - 400.0).abs() < 1e-3 && (r.h - 400.0).abs() < 1e-3, "a square source covers a 2:1 frame by its width");
+        assert!(r.y < f.y && r.y + r.h > f.y + f.h, "the square must overflow the short axis both ways");
     }
 }

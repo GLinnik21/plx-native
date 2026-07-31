@@ -4,18 +4,97 @@
 //! from crate::metadata and the selected catalog row (backdrop art + blur) from the
 //! browse catalog. Mirrors the home screen's C-shaped entry points (open/update/
 //! draw/move_focus) driven by app.rs.
+//!
+//! The whole page sits on an ambient GROUND (`DetailView::amb`, keyed by `amb_blur`/`amb_target`):
+//! the item's own `UltraBlurColors`, mixed toward `theme::SURFACE_APP` and held under the wash's
+//! luminance ceiling, so the below-hero rows sit on the item's colours instead of the flat app grey.
+//! Its envelope comes from the LOADED item first and the catalog row only as a stand-in, because
+//! three of the four ways into this page (Library grid, Related tile, person page) are not in the
+//! home hub catalog at all.
+//!
+//! The page serves EPISODES too, not only movies and shows — the home shelf's context menu ("Go to
+//! Episode") and this page's own filmstrip both open `Route::Detail` on a leaf — so the backdrop
+//! ladder ([`hero_art_path`]) has a rung for a leaf's own still, and every full-bleed blit `COVER`s
+//! the panel rather than stretching to it (a still is a video frame whose aspect we do not control).
+//! The episode filmstrip is correspondingly TWO focus rows deep ([`EpRow`]): the still, which plays,
+//! and the metadata block under it, which opens that episode's page.
 #![allow(dead_code)]
 use crate::metadata;
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
+use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
+use crate::ui::label::HAlign;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{resolve_tex, Art, Button, CircleButton, ControlStyle, TabPill};
+use crate::ui::widgets::{
+    resolve_tex_wh, AmbientWash, Art, Button, CircleButton, ControlStyle, TabPill, TabStrip,
+    HERO_BASE_SCRIM_Y0,
+};
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
+
+/// Which of the episode filmstrip's TWO focus rows holds focus. Section 2 is one horizontal strip of
+/// cells, but a cell is two distinct targets stacked: the still, and the metadata block under it.
+///
+/// It is a sub-row rather than a second section id because the two share EVERYTHING that makes the
+/// strip a strip — the same `col`, the same `ep_hscroll`, the same per-cell pop springs, the same
+/// scroll anchor — and a second section would have had to mirror all of it (and would have had its own
+/// `saved_col`, so LEFT/RIGHT would silently mean a different episode on each row).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum EpRow {
+    /// The landscape still. OK plays the episode; a press-and-HOLD opens its context menu.
+    #[default]
+    Still,
+    /// The kicker / title / summary / air-date block beneath it. OK opens that episode's OWN page —
+    /// the same navigation the context menu's "Go to Episode" row performs.
+    Text,
+}
+
+/// Where a detail page was standing — enough to put it back when BACK returns to it, and nothing
+/// more. Carried by `ui::trail`'s `Node::Detail`, snapshotted by [`spot`] and applied by
+/// [`open_rk_at`].
+///
+/// A `Spot` names FOCUS, not pixels: the vertical scroll is derived from the focused section
+/// (`scroll_target`) and both h-scrolls from `col`, so recording them too would be two sources for
+/// one fact — and the second would be wrong the moment the item came back with a different-length
+/// list. `Default` is a page that has been entered and not left yet: hero, item 0.
+///
+/// `season` is the season NUMBER, not `cur_season`'s POSITION: a `/children` refetch can reorder or
+/// re-title the list, and the number is what the user actually saw on the tab. `None` for a movie —
+/// and that `None` is load-bearing, because it is what stops a movie's restore waiting for a season
+/// list that will never arrive (see [`spot_season_gate`]).
+#[derive(Clone, Default, PartialEq, Debug)]
+pub(crate) struct Spot {
+    /// section id (0 hero, 1 tabs, 2 episodes, 3 related, 4 cast, 5 about)
+    pub(crate) section: c_int,
+    /// focused item within that section
+    pub(crate) col: c_int,
+    /// the filmstrip's sub-row ([`EpRow`]) — a bool because `EpRow` is private to this module and a
+    /// trail node has no business naming it
+    pub(crate) ep_text: bool,
+    /// the per-section focus memory, so LEFT/RIGHT in a row the user never returned to still comes
+    /// back where they left it
+    pub(crate) saved_col: [c_int; 6],
+    /// the selected season's NUMBER, or `None` for an item with no seasons
+    pub(crate) season: Option<i64>,
+}
+
+/// Snapshot the page as it stands. Called at the moment a navigation off it is RAISED, not when the
+/// navigation is performed, so nothing that runs in between can move the focus under the snapshot.
+pub(crate) fn spot() -> Spot {
+    let season = metadata::current().and_then(|d| d.seasons.get(d.cur_season).map(|s| s.index));
+    let v = view();
+    Spot {
+        section: v.section,
+        col: v.col,
+        ep_text: v.ep_row == EpRow::Text,
+        saved_col: v.saved_col,
+        season,
+    }
+}
 
 // ---- retained view-tree migration (step 6.2): detail's mutable state lives in DetailView, reached
 // through the lazy view() accessor. The frozen pub(crate) fns (open/update/draw/move_focus/…) keep
@@ -43,7 +122,19 @@ struct DetailView {
     // Fixed cap; episodes past it (very long seasons) simply don't animate the pop.
     ep_scale: [Spring; EP_ANIM_MAX],
     ep_hscroll: Spring, // episode row horizontal scroll — glides instead of snapping
+    /// Which sub-row of the episode filmstrip holds focus (see [`EpRow`]). Only meaningful while
+    /// `section == 2`; every path that lands focus ON section 2 sets it explicitly, from the DIRECTION
+    /// of the move, so UP and DOWN stay exact inverses of each other across the block. Deliberately
+    /// NOT remembered in `saved_col`: coming back into the strip from below should land on the block
+    /// nearest the pointer/focus that left, which is a fact about the move, not about the strip.
+    ep_row: EpRow,
     tab_hscroll: Spring, // season-tab row horizontal scroll (many-season shows overflow the width)
+    /// The season strip's travelling capsules — the SAME component the shared top tab row uses
+    /// ([`TabStrip`]), because the owner directive recorded above `widgets::TAB_PILL_H` makes the two
+    /// rows one control, and one control has one motion. A value rather than a static: the top row
+    /// carries its capsule ACROSS a route flip on purpose, whereas a season strip belongs to its item
+    /// and must start clean on the next one (`reset_view_state`).
+    tabs: TabStrip,
     // season-tab load is DEBOUNCED: focusing a tab records the target here + resets the settle timer;
     // update() loads it only once focus has been stable (SEASON_SETTLE). Otherwise a held LEFT/RIGHT
     // through the tabs would fire a blocking PMS `/children` fetch every repeat tick.
@@ -62,6 +153,12 @@ struct DetailView {
     // snapping to its start whenever focus moves elsewhere. Indexed by section id.
     saved_col: [c_int; 6],
     spin_ms: f32, // spinner phase for the episode row's season-loading state
+    /// The page's ambient GROUND — the item's UltraBlur corners mixed toward the app surface,
+    /// dissolving when the page changes subject. Opaque (see [`AmbientWash`]), so it stands IN for
+    /// the clear rather than riding over it: it is what the below-hero rows sit on, which used to be
+    /// flat `SURFACE_APP` at every scroll position past the hero — the page paid for the wash and
+    /// then buried it under a grey rect.
+    amb: AmbientWash,
 }
 impl DetailView {
     fn new() -> Self {
@@ -74,7 +171,9 @@ impl DetailView {
             card_scale: Spring::at(1.0),
             ep_scale: [Spring::at(1.0); EP_ANIM_MAX],
             ep_hscroll: Spring::at(0.0),
+            ep_row: EpRow::Still,
             tab_hscroll: Spring::at(0.0),
+            tabs: TabStrip::new(),
             pending_season: -1,
             season_settle: 0.0,
             related: CardRow::new(),
@@ -83,6 +182,9 @@ impl DetailView {
             hero_had_restart: false,
             saved_col: [0; 6],
             spin_ms: 0.0,
+            // the app's own flat ground until an item keys it — byte-identical to the grey this page
+            // showed before it had a ground
+            amb: AmbientWash::flat(theme::SURFACE_APP),
         }
     }
 }
@@ -103,17 +205,21 @@ const BTN_RESTART: c_int = 1;
 const PW: f32 = 168.0;
 const CGAP: f32 = 20.0;
 const CD: f32 = 60.0; // circle button diameter
-/// The hero text column's width — the synopsis wrap AND every fine-print line under it (the
-/// date/runtime pair, the "Directed by" credit) share it, so nothing in the block can grow past
-/// the right-aligned "Starring" line.
-const HERO_TEXT_W: f32 = 900.0;
+/// The hero text column's width — the TITLE BAND, the synopsis wrap AND every fine-print line under
+/// it (the date/runtime pair, the "Directed by" credit) share it, so nothing in the block can grow
+/// past the right-aligned "Starring" line. The title band used to have its own narrower literal
+/// (680), which only ever bound a wordmark past ~7.5:1 and cost it the rung's height floor; one
+/// column for the whole block is the same rule the rest of the page already followed.
+pub(crate) const HERO_TEXT_W: f32 = 900.0;
 
 // ---- the hero text column's y-chain (`hero_chain`), pitch by pitch, from `Details Screen.dc.html`.
 // These are the GAPS between line tops, not absolute ys: two of the bands are conditional and the
 // synopsis is measured, so only the pitches are constant. ----
-/// The title block's baseline band — its bottom edge, which the clearLogo art and the text title
-/// both sit on, and the anchor the whole chain hangs from.
-const TITLE_BOTTOM: f32 = 566.0;
+/// The title block's baseline band — its bottom edge, which the clearLogo art's BOTTOM EDGE and the
+/// text title's BASELINE both sit on, and the anchor the whole chain hangs from. The band's height
+/// is `hero_logo::band_h(Hero)` (120), so its top is at 446; a squarer clearLogo spills upward out
+/// of it as paint (to y=298 for a 1:1 mark) without moving anything below.
+pub(crate) const TITLE_BOTTOM: f32 = 566.0;
 const META_DY: f32 = 30.0; // title bottom → "TV Show · Drama · TV-MA"
 const RATINGS_DY: f32 = 50.0; // meta line → the review-score row
 const SYN_DY: f32 = 54.0; // last line above → synopsis
@@ -128,11 +234,11 @@ const SYN_MAXLINES: usize = 3;
 // ---- the "Starring" block: a right-aligned wrapping caption in its own column beside the action row.
 /// Its column. Narrow on purpose — it must not reach the hero text column on its left, and wrapping to
 /// two lines inside 560px is what keeps three long names off the Play pill.
-const STARRING_W: f32 = 560.0;
+pub(crate) const STARRING_W: f32 = 560.0;
 const STARRING_LEAD: f32 = 32.0;
 /// Its cap top relative to the action row's own top — a few px down, so the two read as level rather
 /// than as one hanging off the other.
-const STARRING_DY: f32 = 6.0;
+pub(crate) const STARRING_DY: f32 = 6.0;
 /// Share of the hero text column the blurb's bold `S2, E3 · Laura:` prefix may claim before the
 /// episode title inside it starts eliding. It shares line 1 with the start of the blurb, so it cannot
 /// have the whole width — see `hero_blurb`.
@@ -150,6 +256,13 @@ const RATING_ROW_GAP: f32 = 32.0;
 // REL_H → the shared home poster size), so resizing one block reflows everything below it. The
 // container's scroll lifts the focused block's top to TOP_MARGIN under the compact title.
 const TOP_MARGIN: f32 = 120.0;
+/// The pinned compact title's top edge — the literal the old top-anchored logo draw used, now named.
+const COMPACT_TITLE_TOP: f32 = 40.0;
+/// …and its anchor line: the compact logo's BOTTOM EDGE and the text fallback's BASELINE both sit
+/// here. [`TOP_MARGIN`] (120) is where the first scrolled section lifts to, so this leaves 26px of
+/// air under it — and `theme::logo::COMPACT_H_MAX` (72) is set by exactly that clearance rather than
+/// by the area rule.
+const COMPACT_TITLE_BOT: f32 = COMPACT_TITLE_TOP + theme::logo::COMPACT_H_MIN; // 94
 const CONTENT_TOP: f32 = 920.0; // nominal flow top; update() re-derives it from the hero buttons
 const SECTION_GAP: f32 = theme::space::XL; // vertical padding between top-level blocks (64)
 const TAB_EP_GAP: f32 = theme::space::MD; // season tabs → their episode row (they read as one unit)
@@ -157,6 +270,16 @@ const SCROLLED: f32 = CONTENT_TOP - TOP_MARGIN; // backdrop-dim saturation refer
 const BTN_CONTENT_GAP: f32 = theme::space::XL; // hero button row → first below-hero block (64)
 const HERO_FADE: f32 = 400.0; // px of scroll over which the hero fades out (draw + pointer share it)
 const HERO_HIT_MIN_A: f32 = 0.5; // a hero control must be at least this opaque to be CLICKABLE
+/// The box the hero backdrop is transcoded into — the SAME for an episode still and a show/movie
+/// backdrop, so a page whose subject changes never re-fetches the same picture at a second size (a
+/// second size is a second slot in a 64-entry store).
+///
+/// Deliberately no `upscale=1`: without it PMS returns a source smaller than the box at its NATIVE
+/// size, so a 640×360 episode still costs a 640×360 texture whether we ask for 1280 or 1920 — while
+/// asking small would throw detail away on the shows whose agent did supply a 1920 still. The
+/// magnification a small still needs is free on the GPU (`Rect::cover` + `GL_LINEAR`); server-side it
+/// would be ~9× the bytes over the wire and ~9× the VRAM, at exactly the same softness.
+const HERO_ART: (c_int, c_int) = (1920, 1080);
 
 // Season tabs (header for the episode row)
 const TAB_ROW_H: f32 = CD; // tab pills stand as tall as the hero buttons (one control height)
@@ -224,6 +347,32 @@ const EP_SUMMARY_DATE_GAP: f32 = theme::space::MD; // summary last-line baseline
 const EP_SUMMARY_LEAD: f32 = 34.0;
 const EP_SUMMARY_MAXLINES: usize = 8; // bounds the pathological case; ordinary episode blurbs fit fully
 const EP_META_BOT_PAD: f32 = 24.0;
+// ---- the metadata block as a FOCUS TARGET ([`EpRow::Text`]): a translucent rounded panel under the
+// selected block, MEASURED to wrap that episode's own content. Modelled on the About footer's column
+// highlight, which is this app's existing idiom for a focusable block of text — same token, same
+// radius, same "hug the content rather than a fixed box" rule (a fixed panel would leave a 1-line
+// blurb sitting in a hole sized for an 8-line one, which is the defect About's own highlight was
+// rebuilt to fix).
+/// Air either side of the text column inside the panel. The narrowest rung, and the gutter is what
+/// picks it: two cells are `EP_GAP` (28) apart, so the pad is shared between two neighbouring panels
+/// and anything from 14 up would have them MEET. At `XS` they stay 12px apart — which is also why the
+/// horizontal pad is a rung tighter than the vertical one, rather than the About footer's roomier
+/// 26px inset. (The lit panel is never lit next to another one, but the geometry has to be honest
+/// whichever cell is focused.)
+const EP_TEXT_HL_PAD_X: f32 = theme::space::XS;
+/// Air above the kicker's line box and below the last line of ink. `SM`, and the vertical direction
+/// has the room for it: `EP_META_TOP` (30) is the gap from the still's bottom edge to that line box,
+/// so the panel starts 14px clear of the still (clear of the focus pop too, which grows it ~8px), and
+/// `EP_META_BOT_PAD` (24) at the foot leaves 8px under the panel of the TALLEST episode — so
+/// `block_h` needs NO allowance for the highlight and nothing in the flow below moves when one
+/// appears. Asserted by `the_episode_text_highlight_fits_the_block_the_flow_already_reserves`.
+///
+/// It also buys the corner back: 16px down a `EP_TEXT_HL_RAD` arc has retreated to within 0.2px of the
+/// panel's edge, so the rounding cannot bite into the kicker's first glyph the way it would have at
+/// the horizontal pad alone.
+const EP_TEXT_HL_PAD_Y: f32 = theme::space::SM;
+/// Its corner radius — the About footer's, because it is the same object doing the same job.
+const EP_TEXT_HL_RAD: f32 = 18.0;
 // Related row (portrait posters) reuses the home shelf poster geometry (consts::CARD_*) so a poster
 // is one size app-wide (its texture request was already 250×375 → now drawn 1:1 sharp).
 const REL_W: f32 = CARD_W; // 250
@@ -316,13 +465,17 @@ fn strip_at(mx: f32, sx: f32, n: usize, pitch: f32, w: f32) -> Option<usize> {
     })
 }
 
+/// Catalog row `idx`, or `None` for the -1 sentinel. Split from [`selected`] because it touches NO
+/// static state of this screen: `reset_view_state` runs while holding a `&mut DetailView` and must
+/// not reach through `view()` for a second one (minting a second `&'static mut` inside that borrow
+/// is aliasing UB — the same warning `person.rs`'s `update` carries).
+fn row_at(idx: c_int) -> Option<&'static PmsMovie> {
+    (idx >= 0).then(|| crate::pms::movie(idx as usize)).flatten()
+}
+
 /// the selected catalog row (backdrop art/blur), if any
 fn selected() -> Option<&'static PmsMovie> {
-    let idx = view().selected;
-    if idx < 0 {
-        return None;
-    }
-    crate::pms::movie(idx as usize)
+    row_at(view().selected)
 }
 
 /// The resume position (ns) the hero's Play control would ACTUALLY apply — i.e. exactly what
@@ -360,6 +513,60 @@ fn hero_episode() -> Option<&'static metadata::Episode> {
     let d = metadata::current()?;
     let ep = d.on_deck.as_ref()?;
     show_started(d).then_some(ep)
+}
+
+/// Is the loaded item a LEAF of a show — i.e. is this page an EPISODE's own page?
+///
+/// `Detail::kind` is the item's own PMS `type`, so this is not `!is_show`: a movie is not an episode
+/// either. It exists because an episode page is a real destination (the home shelf's context menu
+/// offers "Go to Episode", which routes `Route::Detail` at the leaf's ratingKey) and it inherits
+/// almost everything from its show — including, on the wire, `art`. What it does NOT inherit is
+/// `thumb`, which for a leaf is its OWN still: see [`hero_art_path`].
+fn is_episode(d: &metadata::Detail) -> bool {
+    d.kind == "episode"
+}
+
+/// Does the hero carry its right-aligned "Starring" block? ONE test, because two places have to
+/// agree about it: [`draw_hero`] draws the block only for an item the server sent a `Role[]` for,
+/// and [`draw_backdrop`] asks `widgets::hero_scrim` for its mirrored RIGHT wedge only when there is
+/// copy in that corner to darken for — that wedge exists for this block and for nothing else
+/// (`HERO_SCRIM_R_*`'s own doc says so). Unconditional it was 700×378 = 264,600 blended fragments a
+/// frame shading an empty corner on every item with no cast.
+fn has_starring(d: &metadata::Detail) -> bool {
+    !d.cast.is_empty()
+}
+
+/// The PMS image path the hero backdrop is keyed on — the ladder [`draw_backdrop`] resolves into a
+/// texture, split out of the draw so the CHOICE (which is the behaviour) is host-testable while the
+/// blit is not.
+///
+/// Rungs, in order:
+/// 1. **The episode a SHOW's hero is about** ([`hero_episode`]) — its own still, not the series art
+///    (`Details Screen.dc.html`, and Apple's own show page): the frame belonging to the thing Play
+///    would start and the blurb underneath describes, so the whole hero is about one episode. It also
+///    means the page visibly changes as you work through a season, where series art never does.
+/// 2. **An EPISODE page's own still** (`Detail::thumb`). A leaf has no `OnDeck`, so rung 1 is `None`
+///    here and the ladder used to fall straight through to `art` — which for an episode is the SHOW's
+///    inherited backdrop. That is the owner-reported defect: the episode page painted the series'
+///    picture. A leaf's `thumb` is its own still, which is exactly what this page is about.
+/// 3. …else the item's landscape ART: the catalog row's first (it is loaded before the fetch lands,
+///    which is what keeps the hero from flashing empty), then the loaded item's.
+///
+/// **Rung 2 has no catalog-row twin, deliberately.** A catalog row's `thumb` for an episode is the
+/// SHOW's PORTRAIT poster and not the still — `pms::parse_item` prefers `grandparentThumb` on purpose,
+/// so a landscape still does not fill a portrait card — so there is no episode still in the catalog to
+/// prefer, and covering a 2:3 poster across a 16:9 panel would crop it to an unrecognisable middle
+/// band. The row's `art` (rung 3) is the honest answer for the handful of frames before the leaf's own
+/// metadata lands, and rung 2 takes over the frame it does.
+fn hero_art_path(m: Option<&PmsMovie>) -> String {
+    let d = metadata::current();
+    hero_episode()
+        .map(|e| e.thumb.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| d.filter(|d| is_episode(d)).map(|d| d.thumb.clone()).filter(|s| !s.is_empty()))
+        .or_else(|| m.filter(|m| !m.art.is_empty()).map(|m| m.art.clone()))
+        .or_else(|| d.map(|d| d.art.clone()).filter(|s| !s.is_empty()))
+        .unwrap_or_default()
 }
 
 fn hero_resume_ns() -> i64 {
@@ -583,6 +790,40 @@ fn ep_meta_h() -> f32 {
     unsafe { *addr_of_mut!(CACHE) = (fp, h) }
     h
 }
+/// The focus panel behind [`EpRow::Text`] for the cell whose content-space left edge is `x`, drawn
+/// from the section's local origin `ep_y`, wrapping a metadata block measured `total_h` tall —
+/// `ep_meta_layout`'s third element, i.e. THAT episode's own height rather than the row's tallest, so
+/// a one-line blurb is not lit inside a hole sized for an eight-line one.
+///
+/// Pure, and the ONE place the panel's frame lives: the paint calls it, the pointer's split reads the
+/// same `EP_H` boundary it hangs off, and the test that grades it against `block_h(2)` calls it too.
+#[inline]
+fn ep_text_hl(x: f32, ep_y: f32, total_h: f32) -> Rect {
+    let ty = ep_y + EP_H + EP_META_TOP; // the kicker's cap top — where the block's ink starts
+    Rect::new(
+        x - EP_TEXT_HL_PAD_X,
+        ty - EP_TEXT_HL_PAD_Y,
+        EP_W + 2.0 * EP_TEXT_HL_PAD_X,
+        total_h + 2.0 * EP_TEXT_HL_PAD_Y,
+    )
+}
+
+/// Which of a filmstrip cell's two focus rows the point `dy` px below the section's top is in — the
+/// ONE split, shared by the pointer ([`hit_at`]) and asserted against what [`ep_text_hl`] draws.
+///
+/// The boundary is the still's own bottom edge, so the dead air between the still and the metadata
+/// block belongs to the still above it: there is no band the pointer can rest in that answers for
+/// neither row. (The focus pop makes a still ~8px taller than `EP_H`; the hit-test has always ignored
+/// the pop, since a target that grows when you reach it is worse than one that does not.)
+#[inline]
+fn ep_row_at(dy: f32) -> EpRow {
+    if dy <= EP_H {
+        EpRow::Still
+    } else {
+        EpRow::Text
+    }
+}
+
 /// scroll offset that lifts the focused section's top to TOP_MARGIN
 fn scroll_target() -> f32 {
     scroll_target_for(view().section)
@@ -626,9 +867,26 @@ fn reset_view_state(v: &mut DetailView) {
     v.saved_col = [0; 6];
     // a keep-focus latch belongs to the item that armed it — a new page must not inherit one
     unsafe { *addr_of_mut!(KEEP_EP) = None };
+    // …and so do both navigation latches. `OPEN_REQ` is drained once per frame by app.rs, so one
+    // that survives its page fires on an unrelated OK several screens later (the incident
+    // `person.rs`'s `requested` latch records). `PENDING` normally retires itself — `pump_pending`
+    // drops one whose rk is not the loaded item — but only once SOMETHING loads, so a mount whose
+    // fetch never lands would leave a placement armed for a page the user might come back to much
+    // later. Clearing here is safe because both arms set `PENDING` immediately AFTER the mount they
+    // belong to, so this can never eat the one just asked for.
+    unsafe {
+        *addr_of_mut!(OPEN_REQ) = None;
+        *addr_of_mut!(PENDING) = None;
+    }
+    v.ep_row = EpRow::Still; // a fresh page's filmstrip starts on its stills, like a fresh arrival
     v.column.scroll.jump(0.0);
     v.ep_hscroll.jump(0.0);
     v.tab_hscroll.jump(0.0);
+    // Retained MOTION state, exactly like the scrolls above: a fresh strip's capsules must not glide
+    // in from the season the previous item was parked on. Re-seating the whole component is the reset
+    // (`TabStrip::new()` is the same const value the constructor uses), and the capsules' own landing
+    // rule then places them on the first frame instead of flying them in.
+    v.tabs = TabStrip::new();
     // Related and Cast are `CardRow`s, and their scroll offset is retained state exactly like the
     // two h-scrolls above — it just isn't a field we can `jump`, because a CardRow's scroll/lift/
     // per-cell pop springs are private to card_row.rs. Left alone, opening a second item inherited
@@ -639,6 +897,12 @@ fn reset_view_state(v: &mut DetailView) {
     // by home's grid, never by detail (detail's rows sit at the ScrollColumn's local origin).
     v.related = CardRow::new();
     v.cast = CardRow::new();
+    // The ground JUMPS on a mount, never dissolves: the item we just left must not wash across a
+    // page that has already changed subject (`person.rs::open` states the same rule for the same
+    // reason). From the CATALOG ROW only — see [`row_blur`]; the loaded envelope is picked up by
+    // `update`'s dissolve the frame it lands, which is what makes a Library-opened page (no catalog
+    // row at all) fade INTO its colours out of the flat grey instead of snapping to them.
+    v.amb.jump(amb_target(row_blur(row_at(v.selected))));
 }
 
 /// Open the detail page for a catalog row. BLOCKING: its only caller is the headless
@@ -662,6 +926,12 @@ pub(crate) fn open(idx: c_int) {
 /// Leave the detail page (drop the loaded item).
 pub(crate) fn close() {
     metadata::clear();
+    // Both latches die with the page — `reset_view_state`'s rule restated for the exit that mounts
+    // nothing.
+    unsafe {
+        *addr_of_mut!(OPEN_REQ) = None;
+        *addr_of_mut!(PENDING) = None;
+    }
     let v = view();
     v.selected = -1;
     v.mounted_rk.clear(); // a closed page must not be reconciled by a late refetch
@@ -718,6 +988,24 @@ pub(crate) fn move_focus(sym: c_int) {
             }
             // UP from the card → fall through to leave the section
         }
+        // Episodes (2) is a 2D block for the same reason About is: a cell is a still with its own
+        // focusable metadata block under it ([`EpRow`]). DOWN descends from the still onto that block,
+        // UP climbs back — and ONLY DOWN-from-the-text and UP-from-the-still fall through to the
+        // generic section change below, which is what makes the two keys exact inverses across the
+        // whole block. No spring is jumped: the still's pop is the per-cell `ep_scale`, whose target
+        // follows `ep_row` (see `update`), so leaving the still animates the pop OUT instead of
+        // dropping it.
+        //
+        // Gated on the strip actually HAVING episodes, because `section` can outlive them: `open_rk`
+        // clears `current()` for the whole fetch, and a DOWN in that window must fall straight through
+        // to the generic escape rather than consume itself moving between two rows of nothing.
+        if sec == 2 && n_items(2) > 0 {
+            let want = if sym == SDLK_DOWN { EpRow::Text } else { EpRow::Still };
+            if v.ep_row != want {
+                v.ep_row = want;
+                return;
+            }
+        }
         let (secs, n) = sections();
         let avail = &secs[..n];
         let pos = avail.iter().position(|&s| s == sec).unwrap_or(0);
@@ -740,6 +1028,12 @@ pub(crate) fn move_focus(sym: c_int) {
                 _ => 0,
             };
             v.col = start;
+            // …and the filmstrip's sub-row follows the DIRECTION of the arrival: coming DOWN from the
+            // tabs lands on the still, coming UP from the shelf below lands on the metadata block that
+            // is nearest — the geometric rule, and the other half of the UP/DOWN inverse above.
+            if ns == 2 {
+                v.ep_row = if sym == SDLK_UP { EpRow::Text } else { EpRow::Still };
+            }
         }
     }
 }
@@ -763,25 +1057,63 @@ struct TabLay {
 /// content underneath already shows. The episode tiles carry their own watched marks (`ep_state`), so
 /// a finished season is visible by scanning it — the tab does not need to summarise that.
 ///
-/// COST: this is uncached and runs on the draw path (and again per frame while the tab row holds
-/// focus, through `tab_focus_geom`), so it is one `CString` + one `text_width` per season per call.
-/// Cheap now that `text::text_width` is a `TTF_SizeUTF8` metrics walk rather than a
-/// rasterize+upload, but a many-season strip (Top Gear) is the shape that would want the
-/// fingerprinted cache `ep_meta_h` uses, and no FPS scene covers it: `fps:detail-transition` is a
-/// MOVIE, which returns from `draw_tabs` before reaching here.
-fn tabs_layout(d: &crate::metadata::Detail) -> Vec<TabLay> {
-    let mut x = MARGIN_X;
-    let mut out = Vec::with_capacity(d.seasons.len());
-    for (i, s) in d.seasons.iter().enumerate() {
-        let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
-        if let Ok(lc) = CString::new(label) {
-            let mut lay = TabLay { i, x, w: 0.0, label: lc };
-            lay.w = crate::text::text_width(lay.label.as_ptr(), theme::size::BODY, 1);
-            x += lay.w + TAB_ADVANCE;
-            out.push(lay);
+/// CACHED per season set, the way `ep_meta_h` is, and for a sharper reason than it: this is asked
+/// for THREE times a frame now (the scroll target through `tab_focus_geom`, the capsule spans in
+/// `update`, and the draw), and each answer costs one `format!` + one `CString` + one `text_width`
+/// per season. Cheap per season — `text::text_width` is a `TTF_SizeUTF8` metrics walk, not a
+/// rasterize+upload — but a many-season strip (Top Gear) multiplies it by 20-odd, and **no FPS scene
+/// covers this row**: `fps:detail-transition` is a MOVIE, which returns from `draw_tabs` before
+/// reaching here. So the cost cannot be gated on device and must not be paid per frame. The
+/// fingerprint is the item + the season titles themselves, because a `/children` load can rewrite a
+/// title in place without changing the count.
+///
+/// Returns a `&'static` slice into the cache: the CStrings live as long as it does, which is what
+/// lets `draw_tabs` hand `lay.label.as_ptr()` to a `TabPill`. **Do not call this from inside a loop
+/// that is still reading a previous result** — a rebuild frees those CStrings (the same hazard
+/// `widgets::with_tab_metrics` scopes away with a closure; here the fingerprint cannot move
+/// mid-frame, since it is derived from `metadata::current()`, which only the pumps replace).
+fn tabs_layout(d: &crate::metadata::Detail) -> &'static [TabLay] {
+    static mut CACHE: (u64, Vec<TabLay>) = (0, Vec::new());
+    let fp = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        d.rk.hash(&mut h);
+        d.seasons.len().hash(&mut h);
+        for s in &d.seasons {
+            s.title.hash(&mut h);
+            s.index.hash(&mut h);
         }
+        h.finish().max(1) // 0 is the "never built" sentinel
+    };
+    unsafe {
+        let cache = &mut *addr_of_mut!(CACHE);
+        if cache.0 == fp {
+            return &cache.1;
+        }
+        let mut x = MARGIN_X;
+        let mut out = Vec::with_capacity(d.seasons.len());
+        for (i, s) in d.seasons.iter().enumerate() {
+            let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
+            if let Ok(lc) = CString::new(label) {
+                let mut lay = TabLay { i, x, w: 0.0, label: lc };
+                lay.w = crate::text::text_width(lay.label.as_ptr(), theme::size::BODY, 1);
+                x += lay.w + TAB_ADVANCE;
+                out.push(lay);
+            }
+        }
+        *cache = (fp, out);
+        &cache.1
     }
-    out
+}
+
+/// Content-space `(x, w)` of season tab `i`'s PILL — the frame [`tab_pill_rect`] draws, not the
+/// label inside it. The one span function [`TabStrip`] is placed from, so a capsule can only ever
+/// come to rest exactly on a pill.
+fn tab_span(lays: &[TabLay], i: usize) -> Option<(f32, f32)> {
+    lays.get(i).map(|l| {
+        let r = tab_pill_rect(l, 0.0);
+        (r.x, r.w)
+    })
 }
 
 /// content-space geometry (label x, label width) of the focused season tab.
@@ -909,16 +1241,20 @@ fn has_ratings() -> bool {
 /// A struct rather than the tuple this used to be: it grew a sixth element (the ratings row) and two
 /// of the six are CONDITIONAL, which is exactly the shape where positional access starts naming the
 /// wrong band silently.
-struct HeroChain {
+///
+/// `pub(crate)` for one reader outside this page: `widgets`' hero-scrim legibility table grades the
+/// contrast of each hero line at the y this chain puts it, rather than re-typing 596/646/700/800 —
+/// so moving a pitch here updates the contract instead of silently invalidating it.
+pub(crate) struct HeroChain {
     /// "TV Show · Drama · TV-MA".
-    meta_y: f32,
+    pub(crate) meta_y: f32,
     /// The review-score row. Only meaningful, and only given a band, when [`has_ratings`].
-    ratings_y: f32,
-    syn_y: f32,
+    pub(crate) ratings_y: f32,
+    pub(crate) syn_y: f32,
     /// The one fine-print line: air date · extent-or-runtime · media chips · the "Directed by" credit,
     /// all of it — plus, right-aligned on the same line, the "Starring" credit.
-    facts_y: f32,
-    btn_y: f32,
+    pub(crate) facts_y: f32,
+    pub(crate) btn_y: f32,
 }
 
 fn hero_layout(m: Option<&PmsMovie>) -> HeroChain {
@@ -936,7 +1272,7 @@ fn hero_layout(m: Option<&PmsMovie>) -> HeroChain {
 /// meta 596 → ratings 646 → synopsis 700 → facts ~800 → buttons ~850 — while staying MEASURED rather
 /// than fixed, because a real library's synopses are one to three lines and two of these bands come
 /// and go with the metadata.
-fn hero_chain(syn_h: f32, has_ratings: bool) -> HeroChain {
+pub(crate) fn hero_chain(syn_h: f32, has_ratings: bool) -> HeroChain {
     let meta_y = TITLE_BOTTOM + META_DY;
     let ratings_y = meta_y + RATINGS_DY;
     // the synopsis hangs off whichever line is actually above it, so an item with no scores closes
@@ -951,6 +1287,12 @@ fn hero_chain(syn_h: f32, has_ratings: bool) -> HeroChain {
 }
 
 pub(crate) fn update(dt: f32) {
+    // The flow top rides the measured hero: buttons bottom + one standardized gap (hero_layout).
+    // HOISTED ABOVE the pumps because a landed `Pending::Spot` JUMPS the scroll to `scroll_target`,
+    // which measures the flow down from this value — against last frame's hero it would land the
+    // restore at the wrong offset. Nothing the pumps write feeds `hero_layout` (it reads `selected`
+    // and `current()`), so for every other frame this is the same number in a different place.
+    view().column.top = hero_layout(selected()).btn_y + CD + BTN_CONTENT_GAP;
     // Apply a landed async season fetch: the episode row starts over on the new list (focus +
     // scroll to episode 0 — the remembered position belonged to the previous season). The ONE
     // exception is a refresh of the season already on screen (`KEEP_EP`), which lands the same list
@@ -967,23 +1309,34 @@ pub(crate) fn update(dt: f32) {
             v.card_scale.jump(1.0);
         }
     }
-    pump_reveal(); // after pump_season: a landing season resets the episode focus this restores
+    pump_pending(); // after pump_season: a landing season resets the episode focus this restores
     view().spin_ms += dt * 1000.0;
-    // the flow top rides the measured hero: buttons bottom + one standardized gap (hero_layout)
-    view().column.top = hero_layout(selected()).btn_y + CD + BTN_CONTENT_GAP;
     // targets read view() internally — compute them before borrowing v for the springs
     let sct = scroll_target();
     let hst = ep_hscroll_target();
     let tst = tab_hscroll_target();
+    let amb = amb_target(amb_blur()); // reaches view() via `selected` — same rule
+    // The season strip's pill spans, resolved BEFORE `view()` is borrowed (same rule as the targets
+    // above; `tabs_layout` is cached per season set, so this is a pointer, not a layout pass).
+    let tab_lays: &[TabLay] = metadata::current()
+        .filter(|d| !d.seasons.is_empty())
+        .map(|d| tabs_layout(d))
+        .unwrap_or(&[]);
+    let tab_sel = metadata::current().map(|d| d.cur_season as c_int).unwrap_or(-1);
     let v = view();
     v.column.scroll.step(sct, K_SCROLL, dt);
+    // the page ground dissolves toward the item's colours (the loaded envelope lands mid-visit, so
+    // this is the only path that picks it up); `AmbientWash::K` is the one rate every page wash shares
+    v.amb.step(amb, AmbientWash::K, dt);
     crate::ui::anim::probe("detail.scroll", v.column.scroll.pos, v.column.scroll.vel, sct, dt);
     v.card_scale.step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
     crate::ui::anim::probe("detail.card", v.card_scale.pos, v.card_scale.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
     // per-episode pop springs: focused cell → CARD_FOCUS_SCALE, all others ease back to 1.0 (so a
     // just-deselected episode animates its pop + lifted shadow out instead of snapping). Step every
     // spring each frame (cheap), same discipline as CardRow.
-    let ecol = if v.section == 2 { v.col.max(0) as usize } else { usize::MAX };
+    // …and only while the STILL sub-row holds focus: with focus on the metadata block the panel under
+    // it is the focus mark, so the still eases back down rather than wearing a second one.
+    let ecol = if v.section == 2 && v.ep_row == EpRow::Still { v.col.max(0) as usize } else { usize::MAX };
     let en = n_items(2).max(0) as usize;
     for (i, sp) in v.ep_scale.iter_mut().enumerate() {
         let t = if i == ecol && i < en { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 };
@@ -993,6 +1346,12 @@ pub(crate) fn update(dt: f32) {
     crate::ui::anim::probe("detail.epscroll", v.ep_hscroll.pos, v.ep_hscroll.vel, hst, dt);
     v.tab_hscroll.step(tst, 240.0, dt);
     crate::ui::anim::probe("detail.tabscroll", v.tab_hscroll.pos, v.tab_hscroll.vel, tst, dt);
+    // …and the capsules that ride inside that scroll, on the shared component's own stiffness (also
+    // 240 — the strip and the highlight in it must settle as one object). A season strip with no
+    // seasons hands both capsules an empty span table, i.e. "nothing to mark", so they fade out in
+    // place rather than holding a stale pill through a `/children` load that emptied the row.
+    let tab_foc = if v.section == 1 { v.col } else { -1 };
+    v.tabs.update(tab_sel, tab_foc, |i| tab_span(tab_lays, i), dt);
     // Related is the shared home-shelf component now: step its per-card scale springs + scroll spring
     // (focused only when the Related section holds focus, else the scales ease back and scroll freezes).
     let rfoc = (v.section == 3).then_some(v.col.max(0) as usize);
@@ -1020,14 +1379,27 @@ fn env_of(dt: f32) -> Env {
 }
 
 pub(crate) fn draw() {
-    let p = Painter::root();
-    // clear to the app's base gray (the backdrop art/ambient draw over it; below-hero rows reveal it)
+    // THE page transition, as ONE cascade-alpha push at the root of the tree (`ui::nav`, and
+    // `home_draw` for the same line one screen over). This page has NO continuous chrome — the
+    // shared top tab bar is not on it — so every pixel it draws is content the route change
+    // replaces, and there is no `chrome_alpha()` half to write here. The ambient ground rides it
+    // too: `Painter::ambient` mixes its corners toward `theme::SURFACE_APP` under a cascade alpha,
+    // which is the very colour `frame_clear` lays down below, so the whole page dips to the app
+    // ground with no seam and at no extra pass.
+    let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+    // Clear to the app's base gray. It is no longer what the page SHOWS below the hero — the ambient
+    // ground is (`draw_backdrop`) — but it stays for three reasons: a tiler's clear is a tile init,
+    // not a fill; it defines the one frame-shaped hole the ground deliberately skips (the hero, where
+    // opaque art covers every pixel); and it is the graceful floor if the ambient program ever fails
+    // to link (`gfx.rs` then binds program 0 and draws nothing), in which case the page falls back to
+    // looking exactly as it did before it had a ground.
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let env = env_of(0.0);
     let m = selected();
     let scroll = view().column.scroll.pos;
+    let amb = view().amb; // Copy, like `let col = view().column` below
     use crate::ui::profile::phase;
-    phase("dt.backdrop", || draw_backdrop(p, m, scroll));
+    phase("dt.backdrop", || draw_backdrop(p, m, scroll, amb));
     let hero_a = hero_alpha(scroll, HERO_FADE);
     let ps = p.translate(0.0, -scroll);
     // hero fades out as the page scrolls down into the rows (pinned but scrolled)
@@ -1124,99 +1496,197 @@ impl Column for DetailView {
     }
 }
 
-fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32) {
+/// The catalog row's UltraBlur envelope, if it has one. Split out because MOUNT may use only this
+/// one: `open_rk` calls `mount_rk` (and so `reset_view_state`) one statement BEFORE
+/// `metadata::clear()`, so for that statement `current()` still names the item we are LEAVING —
+/// jumping the ground to it would paint the previous page's colours across this one.
+fn row_blur(m: Option<&PmsMovie>) -> Option<[[f32; 3]; 4]> {
+    m.filter(|m| m.has_blur).map(|m| m.blur)
+}
+
+/// The envelope the ground is keyed to, in preference order: the LOADED item's own (authoritative,
+/// and the ONLY source for a page opened from the Library grid, a Related tile or the person page —
+/// none of those items are in the home hub catalog `pms::index_of_rk` searches), else the catalog
+/// row the page mounted on (which covers the 2-5 round trips `open_rk` deliberately spends with
+/// `current()` cleared). Detail FIRST so the ground cannot flicker back to grey when a hub refetch
+/// drops the row out from under `selected` — `reselect` re-points by rk, but a row that left the
+/// hub is gone.
+///
+/// A SHOW keys off the show, not its on-deck episode: the backdrop ART is the episode's still
+/// ([`hero_episode`]) because the hero is about that episode, but the GROUND is what the whole page
+/// is about, and it must not change colour when you browse to another season tab.
+fn amb_blur() -> Option<[[f32; 3]; 4]> {
+    metadata::current().filter(|d| d.has_blur).map(|d| d.blur).or_else(|| row_blur(selected()))
+}
+
+/// The ground's target corners. Pure — the host suite's hook into this whole feature.
+///
+/// Flat weights, deliberately: the detail page IS one item, so the ground should be the artwork's
+/// own corner arrangement rather than a second gradient laid over it (the person page tapers its
+/// bottom corners because its band is top-anchored and its shelves live below; nothing here is), and
+/// one weight means ONE legibility ceiling for the whole page instead of four.
+fn amb_target(blur: Option<[[f32; 3]; 4]>) -> [[f32; 4]; 4] {
+    match blur {
+        Some(b) => AmbientWash::keyed(b, [AmbientWash::GROUND_W; 4]),
+        // No artwork colours → the app's own flat ground, byte-identical to the grey this page
+        // showed before it had one. `AmbientWash::target` at w=0 is exactly `SURFACE_APP`, so this
+        // needs no branch in the draw.
+        None => [theme::SURFACE_APP; 4],
+    }
+}
+
+/// The hero's atmospheric ramp starts at the shared [`HERO_BASE_SCRIM_Y0`] and runs, in ONE linear
+/// stop, to [`BASE_SCRIM_FOOT_A`] at the foot of the panel — home's is a two-stop curve within 0.05
+/// alpha of it everywhere, and unifying the two CURVES is deliberately not done: retuning the
+/// atmospheric floor is a different decision from fixing the text corner, and only the panel can
+/// judge either. Only the origin is shared.
+///
+/// Its weight at the foot of the panel, for a fully visible hero.
+const BASE_SCRIM_FOOT_A: f32 = 0.95;
+
+/// The frame-wide atmospheric ramp's alpha at `y`, for a hero at `hero_vis` — the stop
+/// [`draw_backdrop`] paints, as one pure function so the paint and the legibility contract cannot
+/// read different numbers. It is the base the hero wedge composites over; `widgets`' anchor table
+/// grades `1 − (1 − base_scrim_a) · (1 − hero_scrim_a)` at this page's real text ys, which it reads
+/// from [`hero_chain`].
+pub(crate) fn base_scrim_a(y: f32, hero_vis: f32) -> f32 {
+    BASE_SCRIM_FOOT_A * hero_vis.clamp(0.0, 1.0) * ((y - HERO_BASE_SCRIM_Y0).max(0.0) / (SCR_H - HERO_BASE_SCRIM_Y0)).min(1.0)
+}
+
+fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash) {
     // 0 at the hero, 1 when scrolled down into the rows
     let sf = (scroll / SCROLLED).clamp(0.0, 1.0);
-    // Overall scroll-darkening for row-text legibility. Folded into the wash + art tints below
-    // instead of a separate full-screen dim pass — one fewer full-screen blit per scrolled frame.
+    // Scroll-darkening for the BACKDROP ART's tail, so the row text reads over the last of it.
+    // Folded into the art tint rather than a separate full-screen dim pass — one fewer full-screen
+    // blit per scrolled frame. The GROUND below needs none of it: it is mixed FROM `SURFACE_APP`
+    // under a luminance ceiling, so it is legible at every scroll position by construction — which
+    // is exactly what lets it BE the ground instead of a hero-only nicety that has to be hidden
+    // under grey once the rows arrive.
     let d = 1.0 - sf * 0.55;
-    // Backdrop art: prefer the catalog row's art, else the loaded detail's art. Fades out as the page
-    // scrolls into the rows so the episode/row text reads over a dark bg. Resolved FIRST (the texture
-    // is cached — this is a cheap lookup) so the ambient wash below can be skipped whenever the opaque
-    // full-screen art already covers it — drawing both is a wasted full-screen pass on the weak GPU
-    // (the hero's fill-rate cost; mirrors home's Backdrop which draws art OR ambient, never both).
+    // Backdrop art. Fades out as the page scrolls into the rows so the episode/row text reads over a
+    // dark bg. Resolved FIRST (the texture is cached — this is a cheap lookup) so the ambient wash
+    // below can be skipped whenever the opaque full-screen art already covers it — drawing both is a
+    // wasted full-screen pass on the weak GPU (the hero's fill-rate cost; mirrors home's Backdrop
+    // which draws art OR ambient, never both).
     let art_a = 1.0 - sf;
-    let art_tex = if art_a > 0.01 {
-        // A SHOW's backdrop is the NEXT EPISODE's still, not the series art (`Details Screen.dc.html`,
-        // and Apple's own show page). It is the frame belonging to the thing Play would start and the
-        // blurb underneath describes, so the whole hero is about one episode; it also means the page
-        // visibly changes as you work through a season, where series art never does. Falls back to the
-        // series art whenever there is no episode yet (the season fetch is async) or it has no thumb.
-        hero_episode()
-            .map(|e| e.thumb.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| m.filter(|m| !m.art.is_empty()).map(|m| m.art.clone()))
-            .or_else(|| metadata::current().map(|d| d.art.clone()).filter(|s| !s.is_empty()))
-            .map(|art| resolve_tex(&art, 1920, 1080, 0))
-            .unwrap_or(0)
+    // Which picture (`hero_art_path` owns the ladder and its rationale), and at what DECODED size —
+    // the size is what lets the blit COVER the panel instead of stretching to it.
+    let (art_tex, art_w, art_h) = if art_a > 0.01 {
+        resolve_tex_wh(&hero_art_path(m), HERO_ART.0, HERO_ART.1, 0)
     } else {
-        0
+        (0, 0.0, 0.0)
     };
-    // ambient wash from the item's UltraBlur corners, dimmed by the scroll (`d`), drawn ONLY when it
-    // will actually show: no art texture yet, or the art has faded on scroll enough to reveal it.
-    // Because black-over-at-alpha is a linear multiply, dimming each source layer by `d` is
-    // pixel-identical to the old separate full-screen dim overlay, one fewer full-screen pass.
-    if let Some(m) = m {
-        if m.has_blur && (art_tex == 0 || art_a < 0.99) {
-            p.ambient(Rect::FULL, 0.55 * d, m.blur);
-        }
+    // THE PAGE GROUND: the item's UltraBlur corners, opaque, standing in for the flat clear — what
+    // every below-hero row sits on, at every scroll position, instead of the app gray. No `has_blur`
+    // gate any more: with no envelope the target IS `SURFACE_APP` (`amb_target`), so the "no
+    // artwork" page is the old grey with no special case.
+    //
+    // TWO skips, the same pair `home::Backdrop::draw` applies, and both matter. Skipped while the
+    // opaque full-screen art covers every pixel of it — the one-full-screen-pass rule the wash was
+    // always drawn under, and one pass CHEAPER than before (scrolled down this used to draw the wash
+    // and then bury it under the grey fade-in that lived at the end of this function). And skipped
+    // once the wash has RESOLVED to the clear colour, which for an item PMS sent no UltraBlur
+    // envelope for is its resting state: `amb_target(None)` is exactly `[SURFACE_APP; 4]`, the
+    // colour `frame_clear` laid down one line earlier, so without this test such a page pays a
+    // ~2.07M-fragment opaque gradient every frame to write the pixels that are already there.
+    if (art_tex == 0 || art_a < 0.99) && !amb.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS) {
+        amb.draw(p, Rect::FULL);
     }
     if art_tex != 0 {
-        p.tex(art_tex, Rect::FULL, 0.0, theme::with_a(theme::dim(theme::TINT_WHITE, d), art_a)); // white dimmed by scroll `d`
+        // COVER, never stretch. `Painter::tex` maps UV 0..1 across the rect, so a source that is not
+        // the panel's 16:9 is SQUASHED — and now that an episode's own still can key this backdrop
+        // (`hero_art_path` rung 2) that is the routine case, not the exotic one: a still is a video
+        // frame whose aspect and resolution we do not control, and a squashed face is worse than a
+        // cropped one. `Rect::cover` is a no-op on a 16:9 source, so an ordinary show/movie backdrop
+        // is pixel-identical to before, and it returns the frame unchanged while the size is still 0
+        // (the pre-decode window). Not snapped: scaled content never is (root `CLAUDE.md`'s
+        // rasterization contract) and the cover rect is fractional by construction.
+        let frame = Rect::FULL.cover(art_w, art_h);
+        p.tex(art_tex, frame, 0.0, theme::with_a(theme::dim(theme::TINT_WHITE, d), art_a)); // white dimmed by scroll `d`
     }
-    // bottom scrim for the hero's lower-left content — tied to the hero's own fade (it serves that
-    // text), so it clears once the hero is gone rather than lingering the whole scroll (a wasted
-    // full-screen-width pass through the back half of the transition).
+    // The hero's TEXT SCRIM, in two parts — tied to the hero's own fade (they serve that text), so
+    // both clear once the hero is gone rather than lingering the whole scroll (a wasted
+    // full-screen pass through the back half of the transition).
+    //
+    // PART ONE: the frame-wide atmospheric ramp ([`base_scrim_a`]). Mood and depth, not legibility:
+    // the hero's title band tops out at y=446 and its HERO-72 text fallback's cap top — baselined on
+    // `TITLE_BOTTOM` — at y≈514, where this supplies only ~0.20, around 2:1 over bright artwork, and
+    // it cannot be raised there without flattening the picture across all 1920px on the same line.
+    // (A squarer clearLogo paints higher still, to y=298, where this ramp is nothing at all.)
     let hero_vis = hero_alpha(scroll, HERO_FADE);
     if hero_vis > 0.01 {
         p.rect(
-            Rect::new(0.0, SCR_H * 0.34, SCR_W, SCR_H * 0.66),
+            Rect::new(0.0, HERO_BASE_SCRIM_Y0, SCR_W, SCR_H - HERO_BASE_SCRIM_Y0),
             0.0,
             theme::scrim(0.0),
-            theme::scrim(0.95 * hero_vis),
+            theme::scrim(base_scrim_a(SCR_H, hero_vis)),
             0.0,
         );
+        // PART TWO: the corners the text is actually IN. `right` — this hero has TWO text corners,
+        // the column at `MARGIN_X` and the right-aligned "Starring" block at x 1270..1830
+        // (`draw_hero`'s last block), which the left wedge by definition cannot reach. Asked for on
+        // exactly the condition that block is DRAWN on ([`has_starring`]): the mirrored wedge exists
+        // for it alone, and an item PMS returned no cast for was paying a quarter of a million
+        // blended fragments a frame to darken an empty corner.
+        crate::ui::widgets::hero_scrim(p, hero_vis, metadata::current().map(has_starring).unwrap_or(false));
     }
-    // the shelf gray fades in as the page scrolls off the hero, so the below-hero rows sit on the
-    // app's base gray (their Related/Cast card shadows read) regardless of the item's backdrop art or
-    // UltraBlur wash. Fully transparent in the hero view, so no wasted fill there.
-    if sf > 0.001 {
-        let g = theme::with_a(theme::SURFACE_APP, sf);
-        p.rect(Rect::FULL, 0.0, g, g, 0.0);
-    }
+    // (Nothing follows. The shelf gray that used to fade in here — so the below-hero rows sat on the
+    // app's base gray whatever the item's artwork was — is the GROUND's job now: the wash above is
+    // opaque and already legible, and `AmbientWash::GROUND_W` bounds its darkest corner to ≈33/255,
+    // clear of the near-black 25/255 that `theme::SURFACE_APP`'s own doc rejects as too dark for a
+    // Related/Cast card shadow to read against.)
 }
 
 fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     let tx = MARGIN_X;
-    let w_a = theme::TEXT_PRIMARY;
     let d_a = theme::TEXT_SECONDARY;
     let dim = theme::TEXT_TERTIARY;
     let d = metadata::current();
 
-    // ---- title: clearLogo (transparent PNG) if loaded, else bold text. Borrow from the loaded
-    // Detail (the common case) — cloning rk/title/summary every frame was pure churn; the catalog
-    // fallback (`m`, pre-load frames only) clones from the catalog row. ----
+    // ---- title: clearLogo (transparent PNG) if loaded, else bold text — one shared band, sized by
+    // the constant-AREA rule and contained to the same `HERO_TEXT_W` column the synopsis and every
+    // fine-print line below already wrap to. Borrow from the loaded Detail (the common case) —
+    // cloning rk/title/summary every frame was pure churn; the catalog fallback (`m`, pre-load
+    // frames only) clones from the catalog row. ----
     let rk_owned = if d.is_none() { m.map(|m| m.rk.clone()).unwrap_or_default() } else { String::new() };
     let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
-    let mut drew_logo = false;
-    if let Some((lt, ww, hh)) = crate::posters::logo_tex(rk, 680.0, 120.0) {
-        p.tex(lt, Rect::new(tx, TITLE_BOTTOM - hh, ww, hh), 0.0, w_a);
-        drew_logo = true;
-    }
-    if !drew_logo {
-        let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
-        let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
-        if let Ok(t) = CString::new(title) {
-            p.text(t.as_ptr(), tx, TITLE_BOTTOM - 68.0, theme::size::HERO, w_a, 0, 1);
-        }
-    }
+    let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
+    let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
+    let band = hero_logo::band_h(LogoRung::Hero);
+    HeroLogo::new(rk, title, LogoRung::Hero).draw(p, Rect::new(tx, TITLE_BOTTOM - band, HERO_TEXT_W, band));
 
-    // ---- meta line: "TV Show · Sci-Fi · Adventure · 18+" ----
+    // ---- meta line: "TV Show · Sci-Fi · Adventure · 18+", or for an EPISODE's own page
+    // "Every Year After · S1, E1 · TV-MA". ----
+    //
+    // The leading part answers "what am I looking at", and for an episode the honest answer is the
+    // SHOW it belongs to, not its kind: the title band above already says the episode's name, so a
+    // bare noun would be the one line on the page that never names the series. It used to read
+    // "Movie" outright — `is_show` is false for an episode, and until the shelf context menu's
+    // "Go to Episode" made this page a real destination, nothing navigated here to notice.
+    //
+    // The season/episode ordinal is `fmt::episode_ordinal` — the shared spelling `fmt::episode_kicker`
+    // is built on, so an episode's address reads the same here, in the player HUD and in the Up Next
+    // caption. Only the title is dropped, because it IS the title band directly above this line.
+    let se = d
+        .filter(|d| is_episode(d) && d.season > 0 && d.index > 0)
+        .map(|d| crate::ui::fmt::episode_ordinal(d.season, d.index))
+        .unwrap_or_default();
     let mut parts: Vec<&str> = Vec::new();
     if let Some(d) = d {
-        parts.push(if d.is_show { "TV Show" } else { "Movie" });
-        for g in d.genres.iter().take(2) {
-            parts.push(g);
+        if is_episode(d) {
+            // an episode leads with its show, then where in it — genres are the SERIES' and say
+            // nothing this line does not already carry
+            if !d.show_title.is_empty() {
+                parts.push(&d.show_title);
+            }
+            if !se.is_empty() {
+                parts.push(&se);
+            }
+        } else {
+            parts.push(if d.is_show { "TV Show" } else { "Movie" });
+            for g in d.genres.iter().take(2) {
+                parts.push(g);
+            }
         }
         if !d.rating.is_empty() {
             parts.push(&d.rating);
@@ -1280,20 +1750,18 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     // It reads as a caption to the hero rather than a control because the word "Starring" is a rung
     // dimmer than the names it introduces, which is the mock's own device for keeping a full-size line
     // of type from competing with the Play pill beside it. ----
-    if let Some(d) = d {
-        if !d.cast.is_empty() {
-            let names: Vec<String> = d.cast.iter().take(3).map(|c| c.tag.clone()).collect();
-            // One colour for the whole run: the mock sets the word "Starring" a rung dimmer than the
-            // names, which needs a RIGHT-aligned lead run, and `TextView::lead` is left-aligned only
-            // (it anchors at the column's left edge, which on a right-aligned block would strand the
-            // word far from the names it introduces).
-            let line = format!("Starring {}", names.join(", "));
-            TextView::new(&line, theme::size::CAPTION, theme::TEXT_TERTIARY)
-                .leading(STARRING_LEAD)
-                .max_lines(2)
-                .h(crate::ui::label::HAlign::Right)
-                .draw(p, Rect::new(SCR_W - MARGIN_X - STARRING_W, ch.btn_y + STARRING_DY, STARRING_W, 0.0));
-        }
+    if let Some(d) = d.filter(|d| has_starring(d)) {
+        let names: Vec<String> = d.cast.iter().take(3).map(|c| c.tag.clone()).collect();
+        // One colour for the whole run: the mock sets the word "Starring" a rung dimmer than the
+        // names, which needs a RIGHT-aligned lead run, and `TextView::lead` is left-aligned only
+        // (it anchors at the column's left edge, which on a right-aligned block would strand the
+        // word far from the names it introduces).
+        let line = format!("Starring {}", names.join(", "));
+        TextView::new(&line, theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .leading(STARRING_LEAD)
+            .max_lines(2)
+            .h(crate::ui::label::HAlign::Right)
+            .draw(p, Rect::new(SCR_W - MARGIN_X - STARRING_W, ch.btn_y + STARRING_DY, STARRING_W, 0.0));
     }
 }
 
@@ -1525,24 +1993,23 @@ fn compact_title_vis(scroll: f32) -> f32 {
     ((hide_at - scroll) / 300.0).clamp(0.0, 1.0)
 }
 
-/// small centered clearLogo/title shown at the top once the page is scrolled
+/// small centered clearLogo/title shown at the top once the page is scrolled. The band spans the
+/// full content width rather than the old `f32::MAX` "no column at all", so a long show title elides
+/// instead of running off the panel; its centre is still exactly `SCR_W * 0.5`.
 fn draw_compact_title(p: Painter, m: Option<&PmsMovie>) {
     let d = metadata::current();
     let rk_owned = if d.is_none() { m.map(|m| m.rk.clone()).unwrap_or_default() } else { String::new() };
     let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
-    let cx = SCR_W * 0.5;
-    if let Some((lt, ww, hh)) = crate::posters::logo_tex(rk, f32::MAX, 54.0) {
-        p.tex(lt, Rect::new(cx - ww * 0.5, 40.0, ww, hh), 0.0, theme::TEXT_PRIMARY);
-        return;
-    }
     let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
     let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
-    if let Ok(t) = CString::new(title) {
-        p.text(t.as_ptr(), cx, 54.0, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
-    }
+    let band = hero_logo::band_h(LogoRung::Compact);
+    HeroLogo::new(rk, title, LogoRung::Compact)
+        .align(HAlign::Center)
+        .draw(p, Rect::new(MARGIN_X, COMPACT_TITLE_BOT - band, SCR_W - 2.0 * MARGIN_X, band));
 }
 
-/// season tab row: active season bright/bold, focused tab gets a highlight pill
+/// Season tab row: a plate under every season, a travelling capsule on the ACTIVE one and a brighter
+/// travelling capsule on the FOCUSED one, with each label's ink derived from how covered it is.
 fn draw_tabs(p: Painter) {
     let d = match metadata::current() {
         Some(d) => d,
@@ -1551,30 +2018,31 @@ fn draw_tabs(p: Painter) {
     if d.seasons.is_empty() {
         return;
     }
-    let sec = view().section;
-    let col = view().col;
     let tab_y = 0.0; // local origin — the ScrollColumn pre-translates the painter to this section's top
     // many-season shows (Top Gear) overflow the row width, so the whole strip scrolls horizontally to
     // keep the focused tab visible (spring target in `tab_hscroll_target`); off-screen tabs are culled.
     let sx = view().tab_hscroll.pos;
     let pt = p.translate(-sx, 0.0);
-    // segmented control: the *selected* season carries a subtle pill (bright ACCENT while the tab row
-    // is focused); non-selected seasons are plain dim text. (TabPill handles the state → look.)
+    // Segmented control, one motion: the selected season and the focused one are TRAVELLING capsules
+    // the strip owns (`TabStrip`, the same component and the same springs as the top tab row — the
+    // owner directive that keeps the two rows indistinguishable covers their motion). Drawn FIRST,
+    // because they are the pills' ground; each pill then paints only its own idle plate and its
+    // label, and takes its ink from how covered it is.
+    let tabs = view().tabs; // Copy, resolved once — like `amb` in `draw`
+    tabs.draw(pt, tab_y, TAB_ROW_H, true);
     let e = Env::inert();
     for lay in tabs_layout(d) {
-        let selected = lay.i == d.cur_season;
-        let focused = sec == 1 && col == lay.i as c_int;
         // pill sized to the (bold) label plus its trailing note — content sits at x, pill padded
         // ±TAB_PAD, tabs advance by that content width + TAB_ADVANCE (see tabs_layout). The pill
         // fills the block height (TAB_ROW_H == the hero-button CD), so tabs and buttons read as one
         // control family. `tab_pill_rect` is that frame, shared with the pointer hit-test — a tab
         // widened by its watched tick must stay clickable across the whole pill it draws.
-        let pill = tab_pill_rect(&lay, tab_y);
+        let pill = tab_pill_rect(lay, tab_y);
         if on_axis(pill.x - sx, pill.w, SCR_W, 0.0) {
+            let (fm, sm) = tabs.mixes((pill.x, pill.w));
             TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
-                .segment(selected)
                 .plated() // no tab-bar track under these — the pills are their own ground
-                .focused(focused)
+                .mix(fm, sm)
                 .draw(&e, pt);
         }
     }
@@ -1592,6 +2060,9 @@ fn draw_episodes(p: Painter) {
     let sec = view().section;
     let col = view().col;
     let focus_col = if sec == 2 { col } else { -1 };
+    // Which of the cell's two focus rows is lit ([`EpRow`]): the still wears the pop + ring, the
+    // metadata block wears a panel behind it. Exactly one of them, ever.
+    let erow = view().ep_row;
     // the ui::press click dip folds into the focused episode's per-cell pop below
     let press = crate::ui::press::scale();
     // keep the focused card on-screen (spring-scrolled so it glides to the 2nd slot instead of
@@ -1606,6 +2077,9 @@ fn draw_episodes(p: Painter) {
             continue; // off-screen
         }
         let focused = i as c_int == focus_col;
+        // …and whether it is the STILL that is focused. The metadata block below has its own mark, so
+        // the still keeps neither the pop nor the ring while focus is down there.
+        let still_focused = focused && erow == EpRow::Still;
         // per-cell pop: the focused episode springs up (press dip folded in); a just-deselected one
         // springs back down, so its scale + lifted shadow animate out instead of snapping. Episodes
         // past the spring cap snap to the focus scale (no per-cell animation) rather than losing the
@@ -1614,11 +2088,11 @@ fn draw_episodes(p: Painter) {
             .ep_scale
             .get(i)
             .map(|s| s.pos)
-            .unwrap_or(if focused { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 });
-        let sc = if focused { base * press } else { base };
+            .unwrap_or(if still_focused { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 });
+        let sc = if still_focused { base * press } else { base };
         // the focused cell is always "popped" so a press dip (sc < 1) still scales it (the dip would
         // otherwise be clamped away); a deselecting cell stays popped until its spring settles back.
-        let popped = focused || sc > 1.001;
+        let popped = still_focused || sc > 1.001;
         let card = Rect::new(x, ep_y, EP_W, EP_H);
         // episode still + focus ring + scale-pop (shared with the chapters strip)
         crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, popped, sc);
@@ -1643,7 +2117,14 @@ fn draw_episodes(p: Painter) {
         // the blurb steps a rung brighter on the focused tile, as the title does — the mock moves both
         let sumc = if focused { theme::TEXT_SECONDARY } else { dimc };
         let date = pretty_date(&ep.aired, 0); // formatted once — feeds both the layout and the draw
-        let (date_y, summary_y, _) = ep_meta_layout(&ep.title, !date.is_empty(), &ep.summary);
+        let (date_y, summary_y, meta_h) = ep_meta_layout(&ep.title, !date.is_empty(), &ep.summary);
+        // …and when it is the METADATA BLOCK that holds focus, its own translucent panel goes down
+        // first, wrapping this episode's measured content (`ep_text_hl`). Same token, radius and
+        // hug-the-content rule as the About footer's column highlight — one idiom for "this block of
+        // text is the thing you are on", which is what OK here acts upon (that episode's own page).
+        if focused && erow == EpRow::Text {
+            pe.rrect(ep_text_hl(x, ep_y, meta_h), EP_TEXT_HL_RAD, EP_TEXT_HL_RAD, theme::OVERLAY_FOCUS_SOFT);
+        }
         if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
             pe.text(ec.as_ptr(), x, ty, theme::size::CAPTION, dimc, 0, 1);
         }
@@ -1917,7 +2398,15 @@ fn commit_resume(from_start: bool) {
 /// tab, or an About row? Card focus gets the tvOS press — the OK dips it and the activation commits on
 /// release (app.rs); the non-card controls activate immediately.
 pub(crate) fn focus_is_card() -> bool {
-    matches!(view().section, 2 | 3 | 4)
+    // The episode filmstrip's METADATA block is not a card: it is a link into another page, so it
+    // commits at once like the Play pill, a season tab or an About row. Two consequences, both wanted.
+    // It gets no press dip — there is nothing to dip, the panel behind the text is the whole mark, and
+    // the page changing under the press is the feedback. And because the press-and-HOLD context menu is
+    // armed only where a press begins (`app.rs`), a hold on the text can never open the still's menu.
+    if view().section == 2 {
+        return view().ep_row == EpRow::Still;
+    }
+    matches!(view().section, 3 | 4)
 }
 
 pub(crate) fn on_ok() -> bool {
@@ -1990,12 +2479,24 @@ pub(crate) fn on_ok() -> bool {
             view().pending_season = -1; // explicit selection → cancel the debounced load
             false
         }
-        2 => play_episode_at(col),
+        2 => match view().ep_row {
+            EpRow::Still => play_episode_at(col),
+            // The metadata block is a LINK to that episode's own page — the same navigation the
+            // context menu's "Go to Episode" row performs, so there is one way into an item page and
+            // not two. It is also literally what the Related tile beside it does, which is why both
+            // raise the SAME request.
+            EpRow::Text => {
+                if let Some(rk) = ep_page_rk() {
+                    request_open(rk);
+                }
+                false
+            }
+        },
         3 => {
-            // Related: open that item's detail page in place
+            // Related: open that item's detail page ON TOP of this one
             let rk = metadata::current().and_then(|d| d.related.get(col.max(0) as usize)).map(|r| r.rk.clone());
-            if let Some(rk) = rk {
-                open_rk(&rk);
+            if let Some(rk) = rk.filter(|r| !r.is_empty()) {
+                request_open(rk);
             }
             false
         }
@@ -2028,6 +2529,33 @@ pub(crate) fn on_ok() -> bool {
     }
 }
 
+/// The ratingKey of a page this one wants opened ON TOP of it — raised by the filmstrip's text row
+/// and by the Related shelf, drained ONCE per frame by `app.rs`, which owns routing and the BACK
+/// trail.
+///
+/// These two arms used to call [`open_rk`] themselves, on the reasoning that "the route is already
+/// `Route::Detail`, so nothing above has to be told". That is exactly why BACK from an episode page
+/// landed on Home: the page had been replaced and the trail still described the one that was gone.
+/// The same shape as `person::take_request` for the same reason — a latch drained in one place
+/// cannot be forgotten by one of the four paths that reach `on_ok`.
+///
+/// **An rk and nothing else.** Where this page was standing is captured by `app.rs`'s own
+/// `leaving_spot`, from this module's [`spot`], on the frame the navigation is raised — and it has
+/// to be, because five other navigations off a detail page (BACK, a cast headshot, a context-menu
+/// row, the top tab bar…) never come through here at all. The latch used to carry a second copy,
+/// taken from the same function on the same frame, that the drain destructured away unread.
+static mut OPEN_REQ: Option<String> = None;
+
+/// Raise [`OPEN_REQ`] for `rk`.
+fn request_open(rk: String) {
+    unsafe { *addr_of_mut!(OPEN_REQ) = Some(rk) }
+}
+
+/// Drain the request — `None` unless one is pending. One-shot, like `person::take_request`.
+pub(crate) fn take_open_request() -> Option<String> {
+    unsafe { (*addr_of_mut!(OPEN_REQ)).take() }
+}
+
 // ---- the episode filmstrip's press-and-hold context menu (ui/item_menu.rs) -------------------
 // Three seams, because the menu is screen-agnostic by design: it only ever REPORTS an Action, and
 // `app.rs` performs it. detail.rs supplies the item, the rect to anchor beside, and the two
@@ -2049,8 +2577,33 @@ pub(crate) fn focused_episode() -> Option<(String, bool)> {
     if v.section != 2 {
         return None;
     }
+    // The menu belongs to the STILL. A hold on the metadata block cannot reach here anyway — that row
+    // is not `focus_is_card`, so no press is ever begun on it — but the menu's own precondition is
+    // stated here rather than left to a fact about another module.
+    if v.ep_row != EpRow::Still {
+        return None;
+    }
     let ep = metadata::current()?.episodes.get(v.col.max(0) as usize)?;
     Some((ep.rk.clone(), ep.watched))
+}
+
+/// The episode whose OWN page the filmstrip's [`EpRow::Text`] row opens — `None` unless that row
+/// actually holds focus, and `None` while a season fetch is in flight for the same reason
+/// [`focused_episode`] refuses then: the row is still drawing the PREVIOUS season's episodes under a
+/// spinner while `cur_season` already names the new one, so an index into it names the wrong episode.
+///
+/// Split out of [`on_ok`] so the navigation TARGET is host-testable — the act itself ([`open_rk`]) is
+/// a PMS round trip.
+fn ep_page_rk() -> Option<String> {
+    if metadata::season_loading() {
+        return None;
+    }
+    let v = view();
+    if v.section != 2 || v.ep_row != EpRow::Text {
+        return None;
+    }
+    let ep = metadata::current()?.episodes.get(v.col.max(0) as usize)?;
+    (!ep.rk.is_empty()).then(|| ep.rk.clone())
 }
 
 /// The focused episode still's DRAWN rect, in screen space — what the popover anchors BESIDE.
@@ -2148,9 +2701,14 @@ pub(crate) fn play_episode_rk_from_start(rk: &str) -> bool {
     started
 }
 
-/// The rk the person page must come BACK to — the detail item currently mounted here. Read by
-/// app.rs when it routes into the person page, so the page owns its own return target instead of
-/// app.rs having to reconstruct one after an intervening navigation.
+/// The item this page is currently pointed at — the LOADED item's rk while one is loaded, else the
+/// rk the page was mounted on (the whole 2-5 round-trip window `open_rk` deliberately keeps
+/// `current()` empty for).
+///
+/// Two consumers, both about the BACK trail (`ui::trail`): `Trail::ensure_detail`, which makes the
+/// trail agree with a page reached WITHOUT navigating (a player exit, the Info card's jump), and
+/// `app.rs`'s `enter_node`, whose "is the page behind me still the one loaded?" test is what keeps a
+/// trail pop free in the common case.
 pub(crate) fn mounted_rk() -> String {
     metadata::current().map(|d| d.rk.clone()).unwrap_or_else(|| view().mounted_rk.clone())
 }
@@ -2214,68 +2772,149 @@ pub(crate) fn open_rk_now(rk: &str) {
     metadata::load_detail_now(rk);
 }
 
-/// Open the SHOW detail page for `show_rk` with the season numbered `season_num` selected
-/// (a season entry point routes to the show page, not a standalone season page).
-/// A show page opened FROM playback, landing on the episode that was playing.
+/// A focus placement waiting for its data. Both variants are the same two-stage wait — the item,
+/// then the right season — and differ only in what they place when it lands and in how they got
+/// here.
 ///
-/// The seasons and the episode list arrive from separate fetches, neither of which has landed when
-/// the player exits, so the request is RECORDED and applied by [`pump_reveal`] as the data shows up.
-/// The alternative — the blocking `open_rk_season` the home path uses — would put 2-5 PMS round
-/// trips on the BACK keypress, on the same frame that is already tearing the pipeline down.
-static mut REVEAL: Option<(String, i64, String)> = None; // show rk, season index, episode rk
+/// The wait exists because the seasons and the episode list arrive from separate fetches, neither
+/// of which has landed at the moment the placement is asked for. The alternative — the blocking
+/// `open_rk_season` the home path uses — would put 2-5 PMS round trips on a keypress, and both of
+/// these are asked for on a frame that has other work (a player teardown, a BACK pop).
+#[derive(Clone)]
+enum Pending {
+    /// A show page opened FROM playback, landing on the episode that played
+    /// ([`open_show_at_episode`]). Show rk, season NUMBER, episode rk.
+    Episode { show_rk: String, season: i64, ep_rk: String },
+    /// A page BACK returned to, put back exactly as it was left ([`open_rk_at`]).
+    Spot { rk: String, spot: Spot },
+}
+static mut PENDING: Option<Pending> = None;
 
+/// Open the SHOW detail page for `show_rk` with the episode `ep_rk` (in the season numbered
+/// `season`) revealed once the data lands — a season entry point routes to the show page, not to a
+/// standalone season page.
 pub(crate) fn open_show_at_episode(show_rk: &str, season: i64, ep_rk: &str) {
     open_rk(show_rk);
-    unsafe { *addr_of_mut!(REVEAL) = Some((show_rk.to_string(), season, ep_rk.to_string())) }
+    unsafe {
+        *addr_of_mut!(PENDING) =
+            Some(Pending::Episode { show_rk: show_rk.to_string(), season, ep_rk: ep_rk.to_string() })
+    }
 }
 
-/// Apply a pending reveal once its data lands. Two stages, because the season tab and the episode
+/// [`open_rk`] plus a restore: mount the page and put the focus, season and scroll back where `spot`
+/// says once the fetch lands. The BACK twin of [`open_show_at_episode`], on the same pump — this is
+/// what makes a trail pop feel like a return rather than a fresh arrival.
+pub(crate) fn open_rk_at(rk: &str, spot: &Spot) {
+    open_rk(rk);
+    unsafe { *addr_of_mut!(PENDING) = Some(Pending::Spot { rk: rk.to_string(), spot: spot.clone() }) }
+}
+
+/// Does a [`Spot`] restore still have to wait on a season? `Some(pos)` = that season is not the one
+/// loaded, so ask for it and wait; `None` = place now.
+///
+/// The `Episode` variant's own gate cannot be shared, and this is the difference: it returns early
+/// while `d.seasons` is empty (the show fetch is still out), which for a MOVIE would spin forever.
+/// A spot with no season is a spot on an item that has none, and it places immediately.
+fn spot_season_gate(d: &metadata::Detail, spot: &Spot) -> Option<usize> {
+    let want = spot.season?;
+    let pos = d.seasons.iter().position(|s| s.index == want)?;
+    (pos != d.cur_season).then_some(pos)
+}
+
+/// Where a [`Spot`] actually lands on the item as it is NOW — `(section, col, ep_row)`.
+///
+/// Clamped, because the item may have come back shorter than it was left: a season with fewer
+/// episodes, a Related shelf the server no longer sends. A section that is not in the flow at all
+/// falls back to the hero rather than focusing a block nothing draws — and drops the column with it,
+/// because a column only means anything next to the section that produced it.
+fn spot_landing(spot: &Spot) -> (c_int, c_int, EpRow) {
+    let (secs, n) = sections();
+    let (sec, col) = if secs[..n].contains(&spot.section) {
+        (spot.section, spot.col.clamp(0, (n_items(spot.section) - 1).max(0)))
+    } else {
+        (0, 0)
+    };
+    let row = if spot.ep_text { EpRow::Text } else { EpRow::Still };
+    (sec, col, row)
+}
+
+/// Apply a pending placement once its data lands. Two stages, because the season tab and the episode
 /// row come from different fetches; runs AFTER `pump_season` so it wins the focus reset that a
 /// landing season performs.
-fn pump_reveal() {
-    let want = match unsafe { (*addr_of!(REVEAL)).clone() } {
+fn pump_pending() {
+    let want = match unsafe { (*addr_of!(PENDING)).clone() } {
         Some(w) => w,
         None => return,
     };
-    let (show_rk, season, ep_rk) = want;
-    // Everything is read out of `current()` BEFORE `load_season` is called: that write goes through
-    // the same static this borrow came from.
-    let state = metadata::current().map(|d| {
-        (
-            d.rk.clone(),
-            d.seasons.iter().position(|s| s.index == season),
-            d.seasons.is_empty(),
-            d.cur_season,
-            d.episodes.iter().position(|e| e.rk == ep_rk),
-            d.episodes.is_empty(),
-        )
-    });
-    let Some((rk, season_pos, no_seasons, cur_season, ep_pos, no_eps)) = state else { return };
-    if rk != show_rk {
-        unsafe { *addr_of_mut!(REVEAL) = None }; // the page moved on — not ours to steer
-        return;
-    }
-    if no_seasons {
-        return; // the show fetch is still in flight
-    }
-    if let Some(pos) = season_pos {
-        if cur_season != pos {
-            if !metadata::season_loading() {
-                metadata::load_season(pos);
+    let Some(d) = metadata::current() else { return };
+    match want {
+        Pending::Episode { show_rk, season, ep_rk } => {
+            // Everything is read out of `current()` BEFORE `load_season` is called: that write goes
+            // through the same static this borrow came from.
+            let (rk, season_pos, no_seasons, cur_season, ep_pos, no_eps) = (
+                d.rk.clone(),
+                d.seasons.iter().position(|s| s.index == season),
+                d.seasons.is_empty(),
+                d.cur_season,
+                d.episodes.iter().position(|e| e.rk == ep_rk),
+                d.episodes.is_empty(),
+            );
+            if rk != show_rk {
+                unsafe { *addr_of_mut!(PENDING) = None }; // the page moved on — not ours to steer
+                return;
             }
-            return; // that season's episodes aren't here yet
+            if no_seasons {
+                return; // the show fetch is still in flight
+            }
+            if let Some(pos) = season_pos {
+                if cur_season != pos {
+                    if !metadata::season_loading() {
+                        metadata::load_season(pos);
+                    }
+                    return; // that season's episodes aren't here yet
+                }
+            }
+            if let Some(i) = ep_pos {
+                let v = view();
+                v.section = 2; // the episode row
+                v.ep_row = EpRow::Still; // …on the STILL: the reveal points at the episode that played
+                v.col = i as c_int;
+                v.saved_col[2] = i as c_int;
+                v.card_scale.jump(1.0);
+                unsafe { *addr_of_mut!(PENDING) = None };
+            } else if !no_eps {
+                // the season landed and it isn't in there — stop trying rather than spin
+                unsafe { *addr_of_mut!(PENDING) = None };
+            }
         }
-    }
-    if let Some(i) = ep_pos {
-        let v = view();
-        v.section = 2; // the episode row
-        v.col = i as c_int;
-        v.saved_col[2] = i as c_int;
-        v.card_scale.jump(1.0);
-        unsafe { *addr_of_mut!(REVEAL) = None };
-    } else if !no_eps {
-        // the season landed and it isn't in there — stop trying rather than spin
-        unsafe { *addr_of_mut!(REVEAL) = None };
+        Pending::Spot { rk, spot } => {
+            // Same rule as above: resolve every read off `current()` before anything writes it.
+            let (same, gate) = (d.rk == rk, spot_season_gate(d, &spot));
+            if !same {
+                unsafe { *addr_of_mut!(PENDING) = None };
+                return;
+            }
+            if let Some(pos) = gate {
+                if !metadata::season_loading() {
+                    metadata::load_season(pos);
+                }
+                return; // that season's episodes aren't here yet
+            }
+            let (sec, col, row) = spot_landing(&spot);
+            // The scroll JUMPS, and only on this variant: coming back to a page you left must read
+            // as a restoration, whereas the `Episode` reveal is an ARRIVAL on a page you were not on
+            // and its glide down to the filmstrip is the wanted behaviour. Resolved before `view()`
+            // is borrowed, like every other target in this file.
+            let sct = scroll_target_for(sec);
+            unsafe { *addr_of_mut!(PENDING) = None };
+            let v = view();
+            v.saved_col = spot.saved_col;
+            v.section = sec;
+            v.col = col;
+            v.ep_row = row;
+            v.card_scale.jump(1.0);
+            v.column.scroll.jump(sct);
+        }
     }
 }
 
@@ -2568,6 +3207,54 @@ mod tests {
         }
     }
 
+    // ── the page GROUND (`amb_target`) ───────────────────────────────────────────────────────────
+    // Both are pure arithmetic over `amb_target`, but they take the module's serial lock like every
+    // other test here: `crate::testlock::serial()` is this module's convention because most of its
+    // fns reach `static mut VIEW`, and a reader must not have to work out which two are exempt.
+
+    /// The "no visible change where there is no data" guarantee: on an item PMS sent no
+    /// `UltraBlurColors` for — and on a server that sends none at all — the page is byte-identical
+    /// to the flat app grey it showed before it had a ground. That is what lets `draw_backdrop`
+    /// drop the old `has_blur` gate and draw the wash unconditionally.
+    #[test]
+    fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
+        let _serial = crate::testlock::serial();
+        assert_eq!(amb_target(None), [theme::SURFACE_APP; 4], "no envelope is the app's own ground");
+    }
+
+    /// The ground is the item's OWN corner arrangement, at ONE weight on all four corners — unlike
+    /// the person page, which tapers its bottom pair toward its shelves. Pins the flat-weight
+    /// decision (and the tl/tr/br/bl ring order surviving the mix) so a later "let's taper it like
+    /// person" is a deliberate edit rather than a drift.
+    ///
+    /// The four sources are deliberately DIM (every one is under `widgets::GROUND_LUMA`), so the
+    /// wash's luminance ceiling is the identity here and what is left is the weight alone —
+    /// `keyed`'s cap has its own test next to the constant it enforces.
+    #[test]
+    fn the_page_ground_is_the_items_own_corner_arrangement() {
+        let _serial = crate::testlock::serial();
+        let b = [[0.30, 0.05, 0.05], [0.05, 0.30, 0.05], [0.05, 0.05, 0.30], [0.25, 0.25, 0.05]];
+        let g = amb_target(Some(b));
+        for (i, corner) in g.iter().enumerate() {
+            for ch in 0..3 {
+                let s = theme::SURFACE_APP[ch];
+                let want = s + (b[i][ch] - s) * AmbientWash::GROUND_W;
+                assert!(
+                    (corner[ch] - want).abs() < 1e-6,
+                    "corner {i} channel {ch}: {} is not SURFACE_APP leaned GROUND_W toward the source ({want})",
+                    corner[ch]
+                );
+            }
+            assert_eq!(corner[3], 1.0, "the ground is opaque — it stands in for the clear");
+        }
+        // four distinguishable sources stay four distinguishable corners, in the order they came in
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                assert_ne!(g[i], g[j], "corners {i} and {j} collapsed — the ring order is lost");
+            }
+        }
+    }
+
     /// The crew credit takes **no vertical space**: it is the tail of the facts line, not a band of its
     /// own, so the action row hangs off the facts line for every item whether or not PMS sent
     /// `Director[]`. It used to claim a reserved 40px band, which is what put "Directed by" on a line
@@ -2761,6 +3448,8 @@ mod tests {
         let v = view();
         v.section = 0;
         v.col = col;
+        v.ep_row = EpRow::Still; // the filmstrip sub-row is retained state; no test may inherit one
+        v.tabs = TabStrip::new(); // …and so are the season strip's capsules
         v.last_resume_ns = 0;
         v.hero_had_restart = restart;
     }
@@ -3164,6 +3853,482 @@ mod tests {
             x += lay.w + TAB_ADVANCE; // tabs_layout's advance
         }
     }
+
+    // ── the episode page's hero art, and the filmstrip's second focus row ───────────────────────
+
+    /// An EPISODE has a page of its own — the home shelf's context menu offers "Go to Episode", and
+    /// the filmstrip's metadata block opens the same one — and that page must lead with the EPISODE's
+    /// still, not the show's backdrop.
+    ///
+    /// It painted the show's for one structural reason: an episode is a LEAF, so it has no `OnDeck`,
+    /// so the show rung is `None` and the ladder fell straight through to `art` — which PMS fills on an
+    /// episode with the SERIES' backdrop. The `thumb` beside it is the leaf's own still, and that is
+    /// the rung this pins.
+    #[test]
+    fn an_episode_page_leads_with_the_episodes_own_still() {
+        let _serial = crate::testlock::serial();
+        let episode_page = || Detail {
+            rk: "1859".into(),
+            kind: "episode".into(),
+            thumb: "/library/metadata/1859/thumb/178".into(), // the episode's own still
+            art: "/library/metadata/1801/art/177".into(),     // …inherited from its SHOW
+            ..Default::default()
+        };
+
+        mount(Some(episode_page()), 0);
+        assert_eq!(
+            hero_art_path(None),
+            "/library/metadata/1859/thumb/178",
+            "the episode page must lead with its own still, not the series backdrop it inherits"
+        );
+
+        // A CATALOG ROW does not override it, and could not help if it did: a row's `thumb` for an
+        // episode is the SHOW's portrait poster (`pms::parse_item` prefers `grandparentThumb` so a
+        // landscape still does not fill a portrait card), and its `art` is the show's backdrop.
+        let row = crate::pms::PmsMovie {
+            kind: 3,
+            art: "/row/show-art".into(),
+            thumb: "/row/show-poster".into(),
+            ..Default::default()
+        };
+        assert_eq!(hero_art_path(Some(&row)), "/library/metadata/1859/thumb/178");
+
+        // …but before the leaf's own metadata lands there is no still to prefer, and the row's ART is
+        // the honest stand-in — never its portrait poster.
+        mount(None, 0);
+        assert_eq!(hero_art_path(Some(&row)), "/row/show-art", "the row's ART, never its show poster");
+
+        // an episode whose agent supplied no still falls back the same way rather than drawing nothing
+        let mut no_still = episode_page();
+        no_still.thumb.clear();
+        mount(Some(no_still), 0);
+        assert_eq!(hero_art_path(None), "/library/metadata/1801/art/177");
+
+        // a MOVIE is not an episode: its `thumb` is a portrait poster, so the ladder must not reach it
+        let mut film = episode_page();
+        film.kind = "movie".into();
+        mount(Some(film), 0);
+        assert_eq!(hero_art_path(None), "/library/metadata/1801/art/177", "a movie leads with its art");
+
+        // and nothing at all is the EMPTY key, so `draw_backdrop` skips the layer instead of building
+        // a transcode request for ""
+        mount(Some(Detail { rk: "x".into(), ..Default::default() }), 0);
+        assert!(hero_art_path(None).is_empty());
+
+        mount(None, 0);
+    }
+
+    /// A SHOW's hero still outranks everything: it is about ONE episode (`hero_episode`), and the
+    /// episode rung added for the leaf page must not have quietly displaced it.
+    #[test]
+    fn a_shows_hero_still_outranks_every_other_art() {
+        let _serial = crate::testlock::serial();
+        let mut d = show(600_000, 2_700_000); // started: its on-deck episode is part-watched
+        d.art = "/show/art".into();
+        d.thumb = "/show/poster".into();
+        d.on_deck = Some(Episode { rk: "e1".into(), thumb: "/ep/still".into(), resume_ms: 600_000, ..Default::default() });
+        mount(Some(d), 0);
+        assert_eq!(hero_art_path(None), "/ep/still", "the show hero draws the episode it is about");
+        mount(None, 0);
+    }
+
+    /// A filmstrip cell is TWO focus stops — the still and the metadata block under it — and the pair
+    /// must be exact inverses under UP/DOWN, in both directions, or the strip becomes a place you can
+    /// walk into and not walk back out of the same way.
+    ///
+    /// The horizontal keys are the other half of the contract: LEFT/RIGHT stay on the row you are on
+    /// (they move `col`, which BOTH rows share, so the h-scroll follows focus for free) and never step
+    /// outside the episode array.
+    #[test]
+    fn the_filmstrips_still_and_its_text_pair_up_and_down() {
+        let _serial = crate::testlock::serial();
+        let ep = |n: i64| Episode { rk: format!("e{n}"), index: n, ..Default::default() };
+        let mut d = Detail {
+            rk: "s1".into(),
+            is_show: true,
+            episodes: vec![ep(1), ep(2), ep(3)],
+            ..Default::default()
+        };
+        d.seasons = vec![metadata::Season { rk: String::new(), index: 1, title: String::new(), leaf_count: 3, viewed_leaf_count: 0 }];
+        mount(Some(d), 0);
+        // the block below the filmstrip that DOWN must eventually reach (About is always present)
+        let (s, n) = sections();
+        assert_eq!(&s[..n], &[0, 1, 2, 5], "the fixture this test means to walk");
+
+        let at = || (view().section, view().col, view().ep_row);
+        view().section = 1; // the season tabs, one press above the strip
+
+        crate::ui::detail::move_focus(SDLK_DOWN as c_int);
+        assert_eq!(at(), (2, 0, EpRow::Still), "DOWN from the tabs lands on the still");
+        crate::ui::detail::move_focus(SDLK_DOWN as c_int);
+        assert_eq!(at(), (2, 0, EpRow::Text), "…and DOWN again on ITS text, not on the next section");
+        crate::ui::detail::move_focus(SDLK_DOWN as c_int);
+        assert_eq!(view().section, 5, "only DOWN from the text leaves the strip");
+
+        crate::ui::detail::move_focus(SDLK_UP as c_int);
+        assert_eq!(at(), (2, 0, EpRow::Text), "coming back UP lands on the block nearest — the text");
+        crate::ui::detail::move_focus(SDLK_UP as c_int);
+        assert_eq!(at(), (2, 0, EpRow::Still), "…then its still");
+        crate::ui::detail::move_focus(SDLK_UP as c_int);
+        assert_eq!(view().section, 1, "…then out to the tabs, which is where we came in");
+
+        // LEFT/RIGHT keep the sub-row and stay inside the array, from EITHER row
+        for row in [EpRow::Still, EpRow::Text] {
+            let v = view();
+            v.section = 2;
+            v.col = 0;
+            v.ep_row = row;
+            for _ in 0..6 {
+                crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
+            }
+            assert_eq!(at(), (2, 2, row), "RIGHT stops at the last episode and holds the row it is on");
+            for _ in 0..6 {
+                crate::ui::detail::move_focus(SDLK_LEFT as c_int);
+            }
+            assert_eq!(at(), (2, 0, row), "…and LEFT stops at the first");
+        }
+
+        mount(None, 0);
+    }
+
+    /// What OK means on each of the two rows: the still PLAYS, the metadata block NAVIGATES to that
+    /// episode's own page. The navigation half is graded on the rk it resolves — the act itself
+    /// (`open_rk`) is a PMS round trip — and on `focus_is_card`, which is what routes the press: a card
+    /// dips and commits on release AND can be held open into the context menu, while the text row
+    /// commits at once and can never reach that menu.
+    #[test]
+    fn the_filmstrips_text_row_opens_that_episodes_own_page() {
+        let _serial = crate::testlock::serial();
+        let ep = |n: i64| Episode { rk: format!("e{n}"), index: n, ..Default::default() };
+        mount(
+            Some(Detail {
+                rk: "s1".into(),
+                is_show: true,
+                episodes: vec![ep(1), ep(2), ep(3)],
+                ..Default::default()
+            }),
+            0,
+        );
+
+        let v = view();
+        v.section = 2;
+        v.col = 2;
+        v.ep_row = EpRow::Still;
+        assert_eq!(ep_page_rk(), None, "the still plays; it does not navigate");
+        assert!(focus_is_card(), "…and it is a card: press-dip, commit on release, hold for the menu");
+        assert!(focused_episode().is_some(), "which is exactly the row the context menu belongs to");
+
+        view().ep_row = EpRow::Text;
+        assert_eq!(ep_page_rk().as_deref(), Some("e3"), "the text row opens the FOCUSED episode's page");
+        assert!(!focus_is_card(), "…as a link: it commits at once, like a season tab or an About row");
+        assert_eq!(focused_episode(), None, "and a hold on it must not open the still's context menu");
+
+        // …and OK on it REPORTS rather than navigating. That is the fix for the owner's bug: the arm
+        // used to call `open_rk` itself, so `app.rs` never learned a page had been entered and BACK
+        // fell past the show page onto Home.
+        assert!(!on_ok(), "a link opens a page; it does not start playback");
+        assert_eq!(
+            take_open_request().as_deref(),
+            Some("e3"),
+            "the text row must raise an open request for the focused episode"
+        );
+        assert!(take_open_request().is_none(), "the latch is one-shot");
+        assert_eq!(
+            metadata::current().map(|d| d.rk.clone()),
+            Some("s1".to_string()),
+            "the page must still be the show until app.rs performs the navigation"
+        );
+
+        // it belongs to the filmstrip alone — no other section can be mistaken for it
+        for sec in [0, 1, 3, 4, 5] {
+            view().section = sec;
+            assert_eq!(ep_page_rk(), None, "section {sec} has no episode text row");
+        }
+        // an episode PMS sent no ratingKey for is not a destination (`open_rk("")` would fetch nothing
+        // and land on a blank page — the same belt `app.rs`'s item-menu dispatch wears)
+        let v = view();
+        v.section = 2;
+        v.ep_row = EpRow::Text;
+        v.col = 0;
+        metadata::set_current_for_test(Some(Detail {
+            rk: "s1".into(),
+            is_show: true,
+            episodes: vec![Episode::default()],
+            ..Default::default()
+        }));
+        assert_eq!(ep_page_rk(), None);
+
+        take_open_request(); // nothing above raised one; drain anyway so no test inherits a latch
+        mount(None, 0);
+    }
+
+    /// The Related shelf is the OTHER way a detail page opens a detail page, and it must go through
+    /// the SAME latch — one navigation into an item page, not two. (This is also the arm that makes
+    /// the trail more than one deep in practice: PMS's related hubs are near-symmetric, so A→B→A is
+    /// two presses.)
+    #[test]
+    fn the_related_shelf_raises_the_same_open_request() {
+        let _serial = crate::testlock::serial();
+        let rel =
+            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+        mount(
+            Some(Detail { rk: "m1".into(), related: vec![rel("r0"), rel("r1")], ..Default::default() }),
+            0,
+        );
+        let v = view();
+        v.section = 3;
+        v.col = 1;
+
+        assert!(!on_ok());
+        assert_eq!(take_open_request().as_deref(), Some("r1"), "Related must raise an open request");
+        assert!(take_open_request().is_none(), "one press, one request");
+
+        // a Related row PMS sent no ratingKey for is not a destination — the same belt the
+        // filmstrip's text row wears
+        metadata::set_current_for_test(Some(Detail {
+            rk: "m1".into(),
+            related: vec![rel("")],
+            ..Default::default()
+        }));
+        view().col = 0;
+        assert!(!on_ok());
+        assert!(take_open_request().is_none(), "an empty rk would fetch nothing and draw a blank page");
+
+        mount(None, 0);
+    }
+
+    /// A raised request belongs to the page that raised it. `app.rs` drains `OPEN_REQ` once a frame
+    /// whatever the route, so one that survives its page fires on an unrelated OK several screens
+    /// later — the incident `person.rs`'s `requested` latch records, ported to this one.
+    #[test]
+    fn an_open_request_does_not_outlive_its_page() {
+        let _serial = crate::testlock::serial();
+        let rel =
+            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+        mount(Some(Detail { rk: "m1".into(), related: vec![rel("r0")], ..Default::default() }), 0);
+
+        let v = view();
+        v.section = 3;
+        v.col = 0;
+        assert!(!on_ok());
+        close();
+        assert!(take_open_request().is_none(), "leaving the page must drop its un-consumed request");
+
+        // …and so must mounting a different one (`open_rk`'s reset), which is the path an ACCEPTED
+        // request itself takes a beat later
+        metadata::set_current_for_test(Some(Detail {
+            rk: "m1".into(),
+            related: vec![rel("r0")],
+            ..Default::default()
+        }));
+        let v = view();
+        v.section = 3;
+        v.col = 0;
+        assert!(!on_ok());
+        reset_view_state(view());
+        assert!(take_open_request().is_none(), "a new page must not inherit the old one's request");
+
+        mount(None, 0);
+    }
+
+    /// A `Spot` must round-trip through the page it describes: snapshot it, move the focus somewhere
+    /// else, and the landing puts it back — for every section the flow can hold and both filmstrip
+    /// sub-rows. Graded on `spot`/`spot_landing`, the pure halves; the scroll jump `pump_pending`
+    /// performs measures the flow through SDL_ttf, which the host suite cannot link.
+    #[test]
+    fn a_spot_round_trips_through_the_page_it_describes() {
+        let _serial = crate::testlock::serial();
+        let ep = |n: i64| Episode { rk: format!("e{n}"), index: n, ..Default::default() };
+        let rel =
+            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+        let season = |i: i64| crate::metadata::Season {
+            rk: format!("s{i}"),
+            index: i,
+            title: format!("Season {i}"),
+            leaf_count: 3,
+            viewed_leaf_count: 0,
+        };
+        let show = || Detail {
+            rk: "s1".into(),
+            is_show: true,
+            seasons: vec![season(1), season(2)],
+            cur_season: 1,
+            episodes: vec![ep(1), ep(2), ep(3)],
+            related: vec![rel("r0"), rel("r1")],
+            ..Default::default()
+        };
+        mount(Some(show()), 0);
+
+        for (sec, col) in [(0, 0), (1, 1), (2, 2), (3, 1), (5, 2)] {
+            for ep_text in [false, true] {
+                let v = view();
+                v.section = sec;
+                v.col = col;
+                v.ep_row = if ep_text { EpRow::Text } else { EpRow::Still };
+                v.saved_col = [0, 1, col, 1, 0, 2];
+                let s = spot();
+                assert_eq!(s.season, Some(2), "the season NUMBER, not `cur_season`'s position");
+                // The snapshot IS the page as it stands — the fact `app.rs`'s `leaving_spot` reads
+                // on the PRESS frame to fill a navigation's `NavReq::spot`. It used to be asserted
+                // from the filmstrip's and Related's own OK tests, which read a second copy the
+                // `OPEN_REQ` latch carried and production threw away; the latch is an rk alone now,
+                // so this is the one place the fact is graded, for every section rather than two.
+                assert_eq!(
+                    (s.section, s.col, s.ep_text),
+                    (sec, col, ep_text),
+                    "the snapshot must name the section, item and sub-row the page is on"
+                );
+
+                // move somewhere else entirely, then land the spot back
+                let v = view();
+                v.section = 0;
+                v.col = 0;
+                v.ep_row = EpRow::Still;
+                v.saved_col = [0; 6];
+                let (lsec, lcol, lrow) = spot_landing(&s);
+                let v = view();
+                v.saved_col = s.saved_col;
+                v.section = lsec;
+                v.col = lcol;
+                v.ep_row = lrow;
+                assert_eq!((v.section, v.col), (sec, col), "section {sec} col {col} must come back");
+                assert_eq!(v.ep_row == EpRow::Text, ep_text, "…and so must the filmstrip's sub-row");
+                assert_eq!(v.saved_col, [0, 1, col, 1, 0, 2], "…and the per-section focus memory");
+            }
+        }
+        mount(None, 0);
+    }
+
+    /// The item can come back SHORTER than it was left — a season with fewer episodes, a Related
+    /// shelf the server no longer sends. A restore must clamp onto what is there rather than focus a
+    /// slot nothing draws, and a section that has left the flow entirely falls back to the hero.
+    #[test]
+    fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
+        let _serial = crate::testlock::serial();
+        let rel =
+            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+        let s = Spot { section: 3, col: 5, ..Default::default() };
+
+        metadata::set_current_for_test(Some(Detail {
+            rk: "m1".into(),
+            related: vec![rel("r0"), rel("r1")],
+            ..Default::default()
+        }));
+        assert_eq!(spot_landing(&s), (3, 1, EpRow::Still), "col clamps to the last item present");
+
+        metadata::set_current_for_test(Some(Detail { rk: "m1".into(), ..Default::default() }));
+        assert_eq!(
+            spot_landing(&s),
+            (0, 0, EpRow::Still),
+            "with no Related shelf the section is not in the flow at all — fall back to the hero"
+        );
+
+        // and the degenerate case: nothing loaded at all, so the flow is the bare hero. The landing
+        // must still be a focus the page can hold — never negative, never past the row.
+        metadata::set_current_for_test(None);
+        let (sec, col, _) = spot_landing(&Spot { section: 0, col: 4, ..Default::default() });
+        assert_eq!(sec, 0);
+        assert!((0..n_items(0).max(1)).contains(&col), "a landing must be a focus the page can hold");
+        mount(None, 0);
+    }
+
+    /// The trap `Pending::Episode`'s `if seasons.is_empty() { return }` gate would spring if it were
+    /// shared: a MOVIE has no seasons and never will, so a restore keyed off that gate would wait
+    /// forever and the page would sit at the hero. A spot with no season places immediately; one
+    /// whose season is already loaded places immediately; one whose is not asks for it and waits.
+    #[test]
+    fn a_movie_spot_does_not_wait_for_a_season_that_will_never_land() {
+        let _serial = crate::testlock::serial();
+        let season = |i: i64| crate::metadata::Season {
+            rk: format!("s{i}"),
+            index: i,
+            title: String::new(),
+            leaf_count: 0,
+            viewed_leaf_count: 0,
+        };
+        let movie = Detail { rk: "m1".into(), ..Default::default() };
+        assert_eq!(
+            spot_season_gate(&movie, &Spot { section: 3, col: 0, ..Default::default() }),
+            None,
+            "a movie's restore must never wait on a season list"
+        );
+
+        let show = Detail {
+            rk: "s1".into(),
+            is_show: true,
+            seasons: vec![season(1), season(2), season(3)],
+            cur_season: 2,
+            ..Default::default()
+        };
+        assert_eq!(spot_season_gate(&show, &Spot { season: Some(3), ..Default::default() }), None, "already loaded");
+        assert_eq!(
+            spot_season_gate(&show, &Spot { season: Some(1), ..Default::default() }),
+            Some(0),
+            "a different season is asked for by POSITION, resolved from the number the user saw"
+        );
+        assert_eq!(
+            spot_season_gate(&show, &Spot { season: Some(9), ..Default::default() }),
+            None,
+            "a season the item no longer has must place, not spin"
+        );
+        mount(None, 0);
+    }
+
+    /// The text row's focus panel must fit INSIDE the band the flow already reserves for the block, or
+    /// `block_h(2)` would have to grow and every section below the filmstrip would move down when a
+    /// highlight appeared. It also must not collide with the still above it at any pop phase, and two
+    /// neighbouring cells' panels must not touch.
+    ///
+    /// Pure arithmetic on the constants: `block_h(2)`'s own measure sweep (`ep_meta_h`) wraps text
+    /// through SDL_ttf, which the host suite cannot link — so the block height is reconstructed here
+    /// from the same formula rather than called.
+    #[test]
+    fn the_episode_text_highlight_fits_the_block_the_flow_already_reserves() {
+        let ep_y = 0.0;
+        // the tallest episode's measured meta, and a short one sharing the block with it
+        for &maxh in &[120.0f32, 402.0] {
+            let block_h = EP_H + EP_META_TOP + maxh + EP_META_BOT_PAD; // == block_h(2)
+            for &total in &[40.0f32, maxh * 0.5, maxh] {
+                let hl = ep_text_hl(300.0, ep_y, total);
+                assert!(hl.y > ep_y + EP_H, "the panel must start clear of the still ({} vs {EP_H})", hl.y);
+                assert!(
+                    hl.y + hl.h <= ep_y + block_h + 0.01,
+                    "the panel ({}) must fit the block the flow reserves ({block_h}) — nothing below may move",
+                    hl.y + hl.h
+                );
+                // the still at full focus pop is still above it (it grows about its centre)
+                let popped = Rect::new(300.0, ep_y, EP_W, EP_H).scaled(crate::ui::widgets::CARD_FOCUS_SCALE);
+                assert!(popped.y + popped.h < hl.y, "a popped still must not reach into the panel");
+                // and the panel wraps THIS episode's ink, not the row's tallest
+                assert_eq!(hl.h, total + 2.0 * EP_TEXT_HL_PAD_Y, "it hugs the content it is lit for");
+            }
+            // neighbouring cells: one pitch apart, panels must not meet (the pad is SHARED between
+            // them, so the gutter buys `EP_GAP - 2 * pad` and anything from 14 up would collide)
+            let a = ep_text_hl(strip_x(0, EP_W + EP_GAP), ep_y, maxh);
+            let b = ep_text_hl(strip_x(1, EP_W + EP_GAP), ep_y, maxh);
+            assert!(a.x + a.w < b.x, "two lit panels would overlap at this horizontal pad");
+            assert!(a.x < strip_x(0, EP_W + EP_GAP), "…and the panel does wrap its text, not abut it");
+        }
+    }
+
+    /// The pointer's sub-row split must name the row the painter DREW at that y — the detail page's
+    /// standing rule that a control is never clicked somewhere other than where it is drawn.
+    #[test]
+    fn the_pointer_lands_on_the_filmstrip_row_that_is_drawn_at_that_y() {
+        // everything on the still, including its very bottom edge, is the still
+        for dy in [0.0f32, 1.0, EP_H * 0.5, EP_H] {
+            assert_eq!(ep_row_at(dy), EpRow::Still, "y={dy} is drawn inside the still");
+        }
+        // …and every y inside the panel the text row lights is the text row, at every content height
+        for &total in &[40.0f32, 402.0] {
+            let hl = ep_text_hl(0.0, 0.0, total);
+            for dy in [hl.y, hl.y + hl.h * 0.5, hl.y + hl.h] {
+                assert_eq!(ep_row_at(dy), EpRow::Text, "y={dy} is drawn inside the text panel");
+            }
+        }
+        // the dead air between them belongs to the still above it — no band answers for neither row
+        assert_eq!(ep_row_at(EP_H + 1.0), EpRow::Text);
+    }
 }
 
 // ---- pointer (the Magic Remote's primary input) ----------------------------------------------
@@ -3187,11 +4352,15 @@ fn section_screen_top(sec: c_int) -> Option<f32> {
     Some(col.child_top(v, pos - 1) - col.scroll.pos)
 }
 
-/// The (section, item) under the pointer, or `None` for a miss. Checked in draw order — the pinned
-/// hero first, then each present below-hero block against its own strip pitch. The About footer (5)
-/// is deliberately absent: its four "items" are a read-only card and three text columns whose
-/// activation is a no-op, so a click there is a miss rather than a focus jump into a dead end.
-fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
+/// The (section, item, filmstrip sub-row) under the pointer, or `None` for a miss. Checked in draw
+/// order — the pinned hero first, then each present below-hero block against its own strip pitch. The
+/// About footer (5) is deliberately absent: its four "items" are a read-only card and three text
+/// columns whose activation is a no-op, so a click there is a miss rather than a focus jump into a
+/// dead end.
+///
+/// The third element is only meaningful for section 2 (see [`EpRow`]); every other section answers
+/// [`EpRow::Still`], the value [`focus_to`] would leave the field at anyway.
+fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int, EpRow)> {
     let scroll = view().column.scroll.pos;
     // hero action row: it scrolls with the hero, and it stops answering while the hero fades out.
     // The threshold is FIRMER than the paint's `> 0.01` on purpose — a control faded to a percent
@@ -3204,7 +4373,7 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
         // up, and `hero_btn_rect` slides the watched toggle to match
         for b in 0..hero_btns() {
             if hero_btn_rect(b, y).contains(mx, my) {
-                return Some((0, b));
+                return Some((0, b, EpRow::Still));
             }
         }
     }
@@ -3221,17 +4390,22 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
             // rather than the rect out of it. A tab widened by its watched tick is therefore
             // clickable across the note too — that width is `TabLay::w`, which measures both.
             if tab_pill_rect(&lay, top).contains(mx + sx, my) {
-                return Some((1, lay.i as c_int));
+                return Some((1, lay.i as c_int, EpRow::Still));
             }
         }
     }
-    // episode filmstrip: the whole block (still + its under-card metadata) belongs to that episode,
-    // so clicking the title or the blurb picks the same one as clicking the still.
+    // Episode filmstrip: the whole block (still + its under-card metadata) belongs to that episode, so
+    // clicking the title or the blurb picks the same one as clicking the still — but WHICH of the cell's
+    // two focus rows it lands on now follows the y. The split is the still's own bottom edge, so the
+    // dead air between the still and the text block belongs to the still above it and there is no band
+    // the pointer can sit in that answers for neither. The horizontal span stays `EP_W` for both rows:
+    // that is the text COLUMN the metadata wraps to, and the focus panel's 16px bleed either side is
+    // air, not content (a click there would be a click on the neighbouring gutter).
     if let Some(top) = section_screen_top(2) {
         if my >= top && my <= top + block_h(2) {
             let n = n_items(2).max(0) as usize;
             if let Some(i) = strip_at(mx, view().ep_hscroll.pos, n, EP_W + EP_GAP, EP_W) {
-                return Some((2, i as c_int));
+                return Some((2, i as c_int, ep_row_at(my - top)));
             }
         }
     }
@@ -3241,7 +4415,7 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
         if my >= row_y && my <= row_y + REL_H {
             let n = n_items(3).max(0) as usize;
             if let Some(i) = strip_at(mx, view().related.scroll_x(), n, REL_W + REL_GAP, REL_W) {
-                return Some((3, i as c_int));
+                return Some((3, i as c_int, EpRow::Still));
             }
         }
     }
@@ -3250,20 +4424,24 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
         if my >= row_y && my <= row_y + CAST_D {
             let n = n_items(4).max(0) as usize;
             if let Some(i) = strip_at(mx, view().cast.scroll_x(), n, CAST_SLOT, CAST_D) {
-                return Some((4, i as c_int));
+                return Some((4, i as c_int, EpRow::Still));
             }
         }
     }
     None
 }
 
-/// Land focus on (`sec`, `col`) exactly the way [`move_focus`] would: remember the strip we are
+/// Land focus on (`sec`, `col`, `row`) exactly the way [`move_focus`] would: remember the strip we are
 /// leaving (so returning to it restores the item), re-pop the newly focused card, and queue a
 /// debounced season load when the focus lands on a tab. Reports whether focus actually MOVED — the
 /// caller aborts an armed click on a move, since the press belongs to the control it started on.
-fn focus_to(sec: c_int, col: c_int) -> bool {
+///
+/// `row` is the filmstrip sub-row [`hit_at`] resolved from the pointer's y; it is written
+/// unconditionally, so leaving section 2 leaves the field on the [`EpRow::Still`] every other section
+/// answers with, and the state is never a stale sub-row of a strip that no longer holds focus.
+fn focus_to(sec: c_int, col: c_int, row: EpRow) -> bool {
     let v = view();
-    if v.section == sec && v.col == col {
+    if v.section == sec && v.col == col && v.ep_row == row {
         return false; // already there — don't restart the pop, or re-arm the season debounce
     }
     if v.section != sec && matches!(v.section, 2 | 3 | 4) {
@@ -3279,6 +4457,7 @@ fn focus_to(sec: c_int, col: c_int) -> bool {
     }
     v.section = sec;
     v.col = col;
+    v.ep_row = row;
     v.card_scale.jump(1.0);
     if sec == 1 {
         v.pending_season = col;
@@ -3311,9 +4490,9 @@ fn hover_allows(sec: c_int) -> bool {
 pub(crate) fn pointer_focus(mx: f32, my: f32) -> bool {
     let mut moved = false;
     crate::ui::guard(|| {
-        if let Some((sec, col)) = hit_at(mx, my) {
+        if let Some((sec, col, row)) = hit_at(mx, my) {
             if hover_allows(sec) {
-                moved = focus_to(sec, col);
+                moved = focus_to(sec, col, row);
             }
         }
     });
@@ -3325,8 +4504,8 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) -> bool {
 pub(crate) fn click(mx: f32, my: f32) -> bool {
     let mut hit = false;
     crate::ui::guard(|| {
-        if let Some((sec, col)) = hit_at(mx, my) {
-            focus_to(sec, col);
+        if let Some((sec, col, row)) = hit_at(mx, my) {
+            focus_to(sec, col, row);
             hit = true;
         }
     });

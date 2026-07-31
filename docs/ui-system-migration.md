@@ -266,7 +266,8 @@ Pure literal→const substitution; byte-identical except the deliberate merges.
   `:104/:105`→`scrim(sa)`, `:140/:291/:310`→`TEXT_PRIMARY` (hub title keeps `env.sp` alpha via
   `with_a(TEXT_PRIMARY, env.sp)`), `:141`→`TEXT_SECONDARY`, `:428`→`CLEAR_RGB`. Keep
   Backdrop's per-element alphas (`:80-108`) **explicit** — do not fold into `p.alpha()`
-  (ambient is opaque by contract `mod.rs:156`; art/scrim fade on independent curves).
+  (ambient writes opaque pixels; art/scrim fade on independent curves. The cascade still reaches
+  the whole `Backdrop` from above — see the amended carve-out 1 below.)
   *Checkpoint:* `make` + on-TV capture (3 near-whites collapse to one — intended).
 - **2d detail** (`detail.rs`): reconcile the two fn-local palettes (`draw_buttons` `:409-412`,
   `draw_about` `:857-860`) + scattered runs onto `TEXT_PRIMARY/HEADING/SECONDARY/TERTIARY` +
@@ -368,9 +369,21 @@ Option<Home>` (`home.rs:398`). Finish the contract:
 Honest carve-outs — a `View` wrapper here breaks a load-bearing contract for no payoff (these are
 about a specific contract, NOT about "it's only a throwaway" — that is never the reason):
 
-1. **home `Backdrop`** (`home.rs:80-108`): four elements fade on independent curves and
-   `Painter::ambient` intentionally ignores the cascade alpha (`mod.rs:155`). Folding into an
-   alpha'd subtree visibly breaks the hero fade. Keep as a draw-only `View` owning its alphas.
+1. **home `Backdrop`**: four elements fade on independent curves and `Painter::ambient` intentionally
+   ignores the cascade alpha. Folding into an alpha'd subtree visibly breaks the hero fade — that
+   contract is intact and is *why* the component is shaped the way it is.
+   **AMENDED** — it is no longer *draw-only*. The per-element alphas are now **springs** (the two art
+   reveals that cross-fade a backdrop in when it decodes, plus a whole `AmbientWash` for the page
+   ground), and springs need a `View::update`, which `home_update` calls explicitly beside
+   `grid.update`. The carve-out that stands is the one about the cascade: those alphas are still
+   passed per element and must never be routed through `p.alpha()`, so the art and the wash keep
+   fading on their own curves. `update` is also where each layer's texture is resolved once, so the
+   draw cannot disagree with the springs about whether there is anything to reveal.
+   **AMENDED AGAIN (`ui::nav`)** — "a wash cannot be alpha-faded at all" was true only of fading one
+   ITEM's colours into ANOTHER'S, which is still twelve springs. Fading a wash toward the app's own
+   GROUND is now the cascade's job: `Painter::ambient` mixes its corners toward `theme::SURFACE_APP`
+   at an alpha below 1, which is what lets a whole page — `Backdrop` included — dip for the
+   route-level page transition. The pixels it writes are still opaque; only the corner rgb moves.
 2. ~~**detail absolute section layout**: keep the hard-coded Y table; no reflow engine.~~
    **SUPERSEDED** — detail is now a single computed vertical flow: `section_y()` stacks the present
    blocks' `block_h()` heights from `CONTENT_TOP` with one `SECTION_GAP` (tabs→episodes hug via

@@ -89,6 +89,13 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   (`setTimeToDecode` + `sendSegmentEvent`) — no reload/decoder re-init. A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`. The rebase machinery
   (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
+- **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `SHARED.frames` as
+  *part of applying* an in-place seek (it counts only post-seek frames, for the rebind + resume
+  re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true
+  for the whole of every seek. `SHARED.seen_frame` is the bit that answers that question: set beside
+  `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
+  busy indicators on it (`ui::player_hud::busy_surface`); anything else asking "has this session put
+  a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
 - **App-switch lifecycle** (handled in `app.rs`; details in the root `CLAUDE.md` gotchas): OS
   background suspends the buffer-feed preserving the session, foreground reloads and resumes with a
   single `Load`. Preserve the suspend/reload pairing if you touch playback.

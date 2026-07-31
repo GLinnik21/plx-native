@@ -9,7 +9,7 @@
 //! written to the event log by [`frame_end`]. Disabled, every hook is a single bool load + the inner
 //! closure (zero overhead), so the instrumentation can stay in the draw path permanently.
 //!
-//! Wrap phases where you draw:  `profile::phase("backdrop", || draw_backdrop(p, m, scroll));`
+//! Wrap phases where you draw:  `profile::phase("backdrop", || draw_backdrop(p, m, scroll, amb));`
 //! Main-thread only (like the rest of the immediate-mode draw path).
 use std::ptr::{addr_of, addr_of_mut};
 use std::time::Instant;

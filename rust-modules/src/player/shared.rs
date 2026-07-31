@@ -127,6 +127,14 @@ pub(crate) struct Shared {
     // decoder (feeding further overfills the 4K HEVC DPB/CPB and stalls the sink).
     pub pres_fed: AtomicI64,
     pub frames: AtomicI32,                    // bf_frames
+    /// **Has this SESSION ever put a picture on the panel?** Set by the frame-presented callback
+    /// beside `frames`, cleared ONLY by [`Shared::reset_session`] — so it survives a seek, which
+    /// `frames` deliberately does not: `pump` zeroes `frames` as *part of applying* a seek, which
+    /// makes "we have never shown a frame" and "we just seeked" indistinguishable through it. The
+    /// HUD's one rule for which surface owns the "pipeline is working" read-out keys on this bit;
+    /// see `ui::player_hud::busy_surface`. Monotone within a session (false→true only), which is
+    /// what lets two readers in one frame sample it independently without disagreeing.
+    pub seen_frame: AtomicBool,
     pub load_completed: AtomicBool,           // bf_loaded signal
     pub media_id: Mutex<Option<CString>>,     // bf_mediaId (captured once)
     pub source_info: Mutex<Option<Vec<u8>>>,  // sourceInfoRaw, VERBATIM incl NUL
@@ -198,6 +206,7 @@ impl Shared {
             playpos_ns: AtomicI64::new(0),
             pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
+            seen_frame: AtomicBool::new(false),
             load_completed: AtomicBool::new(false),
             media_id: Mutex::new(None),
             source_info: Mutex::new(None),
@@ -227,6 +236,10 @@ impl Shared {
         self.playpos_ns.store(0, Ordering::Relaxed);
         self.pres_fed.store(0, Ordering::Relaxed);
         self.frames.store(0, Ordering::Relaxed);
+        // a fresh session has shown nothing yet — keep this adjacent to `frames` in all three
+        // places (declaration, `new`, here): a reload that forgot the bit would silently suppress
+        // the centred read-out for the rest of the app's life.
+        self.seen_frame.store(false, Ordering::Relaxed);
         self.load_completed.store(false, Ordering::Relaxed);
         *self.media_id.lock().unwrap() = None;
         *self.source_info.lock().unwrap() = None;
@@ -301,4 +314,26 @@ pub(crate) enum Stage {
     Playing,
     Bound,
     Streaming,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one invariant that cannot be recovered from if it breaks, and breaks SILENTLY: a session
+    /// boundary must forget this session's picture. `seen_frame` is set once, off-thread, and is
+    /// never cleared anywhere else — so a `reset_session` that dropped it would leave it true for
+    /// the rest of the process's life, and every subsequent cold start would show only the 12px
+    /// transport mark instead of the centred read-out. Graded together with `frames`, because the
+    /// two are only meaningful as a pair (see `Shared::seen_frame`).
+    #[test]
+    fn reset_session_forgets_this_sessions_picture() {
+        let s = Shared::new();
+        assert!(!s.seen_frame.load(Ordering::Relaxed), "a fresh session has shown nothing");
+        s.seen_frame.store(true, Ordering::Relaxed);
+        s.frames.store(9, Ordering::Relaxed);
+        s.reset_session();
+        assert!(!s.seen_frame.load(Ordering::Relaxed), "a reload/stop blanks the plane — say so");
+        assert_eq!(s.frames.load(Ordering::Relaxed), 0, "and the two must be reset together");
+    }
 }

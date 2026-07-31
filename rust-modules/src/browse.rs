@@ -198,6 +198,15 @@ pub(crate) fn sections_gen() -> u32 {
     SECTIONS_GEN.load(Ordering::SeqCst)
 }
 
+/// The QUERY generation — the content epoch. [`bump_gen`] moves it from exactly three places
+/// ([`requery`], [`reset`], [`set_cur`]), i.e. precisely when the item set is REPLACED, and never
+/// on a scroll / letter jump / focus move / page landing. The Library screen watches it so a store
+/// wiped from underneath it (a profile switch calling [`reset`]) is cross-faded like any other
+/// reload instead of cut.
+pub(crate) fn query_gen() -> u32 {
+    GEN.load(Ordering::SeqCst)
+}
+
 /// Discover the movie/show sections (once; blocking — one small GET, same boot-fetch budget as
 /// `pms_fetch_hubs`). Safe to call every Library entry; later calls are free. Returns count.
 pub(crate) fn ensure_sections() -> usize {

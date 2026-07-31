@@ -117,16 +117,15 @@ const BOTTOM_PAD: f32 = theme::space::LG;
 /// The condense spring's rate — the scroll rate, because the band's resize IS a scroll-scale
 /// motion (the mock gives both the same `.42s` curve).
 const K_COND: f32 = K_SCROLL;
-/// The ambient dissolve — deliberately slower than any focus spring (the mock's `.5s ease`): the
-/// wash is atmosphere, and snapping it with the focus pop would read as the SCREEN changing.
-const K_AMB: f32 = 80.0;
 /// Ambient corner weights (tl, tr, br, bl — [`Painter::ambient`]'s order), i.e. how far each
 /// corner leans from the app surface toward the source colour. Header state: a faint warm
 /// `ACCENT` wash, strongest top-left (the mock's `radial at 18% 0%`). Card state: the focused
 /// poster's UltraBlur corners, strong across the top and nearly gone by the bottom (the mock's
-/// `.30 → .07` stops, trimmed a step on-device because our wash is opaque, not additive).
+/// `.30 → .07` stops, trimmed a step on-device because our wash is opaque, not additive) — the
+/// top pair is [`AmbientWash::GROUND_W`], the one strength every item-keyed wash in the app leans
+/// by, spelled as the shared constant rather than as its value so the two cannot drift apart.
 const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
-const AMB_CARD_W: [f32; 4] = [0.26, 0.26, 0.08, 0.08];
+const AMB_CARD_W: [f32; 4] = [AmbientWash::GROUND_W, AmbientWash::GROUND_W, 0.08, 0.08];
 
 // ---- screen state ----------------------------------------------------------------------------
 
@@ -151,8 +150,6 @@ struct Scene {
     /// the shared [`AmbientWash`], not here.
     amb: AmbientWash,
     spin_ms: f32,
-    /// the detail page this page was opened from — BACK's target (see [`leave`])
-    from_rk: String,
     /// a cast headshot was just activated; app.rs takes this and routes (see [`take_request`])
     requested: bool,
     /// The header's text runs, NUL-terminated ONCE per store change (see [`refresh_header`]) —
@@ -183,7 +180,6 @@ impl Scene {
             cond: Spring::at(0.0),
             amb: AmbientWash::flat(theme::SURFACE_APP),
             spin_ms: 0.0,
-            from_rk: String::new(),
             requested: false,
             name_c: CString::default(),
             roles_c: CString::default(),
@@ -478,29 +474,34 @@ fn scroll_target(sc: &Scene) -> f32 {
 ///
 /// Mixing FROM [`theme::SURFACE_APP`] is what makes "no artwork" the app's own flat ground with no
 /// special case, and it is why the corner weights below can be read as "how much of this poster
-/// shows through".
+/// shows through". That mix is [`AmbientWash::target`]'s contract now, not a loop written here.
+///
+/// The card corners go through [`AmbientWash::keyed`], so a white poster cannot outshine the role
+/// captions sitting on the ground under it — see `widgets::GROUND_LUMA`. The header tint is a
+/// palette token we chose, so it needs no cap.
 fn amb_target(sc: &Scene) -> [[f32; 4]; 4] {
-    let card = crate::person::current().and_then(|p| focused_of(p, sc)).filter(|m| m.has_blur);
-    let (cols, w) = match card {
-        Some(m) => (m.blur.map(|c| [c[0], c[1], c[2], 1.0]), AMB_CARD_W),
-        None => ([theme::WASH_WARM; 4], AMB_HEADER_W),
-    };
-    std::array::from_fn(|i| theme::mix(theme::SURFACE_APP, cols[i], w[i]))
+    match crate::person::current().and_then(|p| focused_of(p, sc)).filter(|m| m.has_blur) {
+        Some(m) => AmbientWash::keyed(m.blur, AMB_CARD_W),
+        None => AmbientWash::target([theme::WASH_WARM; 4], AMB_HEADER_W),
+    }
 }
 
 // ---- entry / exit ----------------------------------------------------------------------------
 
-/// Open the page for a cast member — called from `detail.rs`'s cast-row OK arm with everything
-/// `Role[]` already carries (`key` = the local personId, `guid` = the `tagKey` plex.tv answers to).
-/// Loads the store's header immediately, resets this screen's focus / scroll / band state,
-/// remembers the detail page to come back to, and raises the flag app.rs routes on.
+/// Mount the page for a cast member — everything `Role[]` already carries (`key` = the local
+/// personId, `guid` = the `tagKey` plex.tv answers to). Loads the store's header immediately and
+/// resets this screen's focus / scroll / band state, WITHOUT raising the routing latch.
+///
+/// The shared half of [`open`] and of the BACK trail's re-entry (`app.rs`'s `enter_node`), which
+/// must not raise the latch: it is already doing the routing, and a latch left set there would be
+/// drained on the same frame and push back the very node the pop just took off.
 ///
 /// **The page opens on its HEADER** — expanded, at scroll 0 — because the header is the page's
 /// subject until the user asks for the shelves. There is nothing focusable in it (it is a scroll
 /// POSITION, see [`move_focus`]), and nothing to focus on the shelves yet either: they land a
 /// moment later, and DOWN goes to them.
-pub(crate) fn open(key: &str, guid: &str, name: &str, _thumb: &str) {
-    crate::person::open(key, guid, name, _thumb);
+pub(crate) fn reopen(key: &str, guid: &str, name: &str, thumb: &str) {
+    crate::person::open(key, guid, name, thumb);
     let sc = scene();
     // A WHOLESALE reset, not a field-by-field one: every default this page mounts with — focus on
     // the header, scroll and condense at 0, shelves at their left edge, EMPTY text runs — is already
@@ -509,12 +510,17 @@ pub(crate) fn open(key: &str, guid: &str, name: &str, _thumb: &str) {
     // the length of a fetch; `header_dirty` then has `remeasure_header` build them on the next
     // `update`, which keeps the page's only text measure off `detail::on_ok`'s input path.
     *sc = Scene::new();
-    sc.from_rk = crate::ui::detail::mounted_rk();
     // the wash starts AT the header tint — the previous person's poster colours must not dissolve
     // across the new page's mount
     let k = amb_target(sc);
     sc.amb.jump(k);
-    sc.requested = true;
+}
+
+/// [`reopen`] plus the flag app.rs routes on — the INTERACTIVE entry, called from `detail.rs`'s
+/// cast-row OK arm.
+pub(crate) fn open(key: &str, guid: &str, name: &str, thumb: &str) {
+    reopen(key, guid, name, thumb);
+    scene().requested = true;
 }
 
 /// app.rs polls this right after a detail-page OK: true exactly once per [`open`]. Keeping the
@@ -525,18 +531,14 @@ pub(crate) fn take_request() -> bool {
     std::mem::replace(&mut sc.requested, false)
 }
 
-/// BACK: leave the page and put the detail page it came from back on screen. `current()` is still
-/// that item unless this page opened a DIFFERENT one in the meantime, in which case it is
-/// re-opened by rk (async — the page mounts on the catalog row this frame).
+/// BACK: leave the page. The page UNDERNEATH is put back by `app.rs`'s BACK trail (`ui::trail`),
+/// which knows the whole history — this used to re-open a single remembered `from_rk`, which was
+/// right for exactly one level and lost person → detail → person entirely (the second BACK went to
+/// Home rather than to the first actor).
 pub(crate) fn leave() {
-    let from = std::mem::take(&mut scene().from_rk);
-    // and drop any un-consumed request with it: `requested` is a LATCH, and one left set here
-    // would fire on some unrelated OK several screens later
+    // drop any un-consumed request: `requested` is a LATCH, and one left set here would fire on
+    // some unrelated OK several screens later
     scene().requested = false;
-    let same = crate::metadata::current().map(|d| d.rk == from).unwrap_or(false);
-    if !same && !from.is_empty() {
-        crate::ui::detail::open_rk(&from);
-    }
     crate::person::close();
 }
 
@@ -588,7 +590,7 @@ pub(crate) fn update(dt: f32) {
     sc.cond.step(if sc.on_header { 0.0 } else { 1.0 }, K_COND, dt);
     // the wash: dissolve toward whatever the page is about now
     let k = amb_target(sc);
-    sc.amb.step(k, K_AMB, dt);
+    sc.amb.step(k, AmbientWash::K, dt);
     let n_items = |k: usize| crate::person::current().map(|p| p.shelf(k).len()).unwrap_or(0);
     for k in 0..NSHELF {
         // a shelf that does not hold focus freezes its scroll (CardRow's `None` contract) — the
@@ -733,7 +735,12 @@ fn focus_tile(kind: usize, i: usize) {
 pub(crate) fn draw() {
     // The clear IS the app surface (see `profiles::draw` for why no SURFACE_APP rect follows it).
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
-    let p = Painter::root();
+    // THE page transition, as ONE cascade-alpha push at the root — the same line `detail::draw` and
+    // `home_draw` carry, and for the same reasons (see `ui::nav`). Like the detail page, this screen
+    // has no continuous chrome, so the whole tree rides the page alpha; the wash included, since
+    // `Painter::ambient` mixes toward `theme::SURFACE_APP` under the cascade and that is the colour
+    // the clear above just laid down.
+    let p = Painter::root().alpha(crate::ui::nav::page_alpha());
     let sc = scene();
     let env = Env::inert();
     if crate::person::current().is_none() {
@@ -1008,29 +1015,37 @@ mod tests {
         crate::person::close();
     }
 
-    /// `leave()` must drop the un-consumed request as well as the return rk. `requested` is a
-    /// LATCH — `detail::on_ok`'s cast arm raises it and only app.rs's per-frame drain lowers it —
-    /// so one left set here fires on an unrelated OK several screens later and teleports the user
-    /// onto an actor page they never asked for.
+    /// `leave()` must drop the un-consumed request. `requested` is a LATCH — `detail::on_ok`'s cast
+    /// arm raises it and only app.rs's per-frame drain lowers it — so one left set here fires on an
+    /// unrelated OK several screens later and teleports the user onto an actor page they never
+    /// asked for.
     #[test]
-    fn leaving_drops_the_un_consumed_request_and_the_return_rk() {
+    fn leaving_drops_the_un_consumed_request() {
         let _serial = crate::testlock::serial();
         seed(2, 0);
         scene().requested = true;
-        scene().from_rk = "2005".to_string();
-        // the detail page we came from is still loaded, which is `leave`'s common case AND keeps
-        // this test from spawning a re-open worker it has no use for (a stray background thread
-        // perturbs `stream.rs`'s process-wide fd count — see the note in that test)
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
-            rk: "2005".to_string(),
-            ..Default::default()
-        }));
 
         leave();
 
         assert!(!take_request(), "the request latched past the page it belonged to");
-        assert!(scene().from_rk.is_empty(), "a stale return rk survived the page");
         assert!(crate::person::current().is_none());
+    }
+
+    /// The invariant `app.rs`'s `enter_node` depends on: putting a person page back through a BACK
+    /// pop must NOT raise the routing latch. `open` raises it (it is the interactive entry, and
+    /// app.rs's drain is what routes); `reopen` must not, because the drain would then push the very
+    /// node the pop just took off — and the next BACK would appear to do nothing.
+    #[test]
+    fn reopen_mounts_the_page_without_asking_to_be_routed_to() {
+        let _serial = crate::testlock::serial();
+        reopen("77", "plex://person/77", "Peter Sallis", "/t.jpg");
+        assert!(!take_request(), "a trail re-entry must not ask app.rs to route again");
+        assert_eq!(crate::person::current().map(|p| p.key.clone()), Some("77".to_string()));
+        assert!(scene().on_header, "…and it is still a full mount: the page opens on its header");
+
+        open("78", "plex://person/78", "Nick Park", "/n.jpg");
+        assert!(take_request(), "the interactive entry is the one that raises the latch");
+        crate::person::close();
     }
 
     // The band's real heights need the text stack (the name's cap band, the bio's pixel wrap),

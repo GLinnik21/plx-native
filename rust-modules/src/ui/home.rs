@@ -8,9 +8,10 @@ use crate::pms::PmsMovie;
 use crate::ui::consts::*;
 use crate::ui::icons::Icon;
 use crate::ui::card_row::{self, CardRow, RowStyle};
+use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{Art, Button, CircleButton, PageDots};
+use crate::ui::widgets::{AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0};
 // `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
 // doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
 use crate::ui::{guard, hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
@@ -38,10 +39,17 @@ static mut hero_btns: [Rect; HERO_NBTN] = [Rect::new(0.0, 0.0, 0.0, 0.0); HERO_N
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0; // idle seconds between automatic hero flips
 const HERO_NBTN: usize = 3;
-/// The sliding text column's bottom-anchor line: the tallest stack (96px logo + kicker + 3-line
-/// synopsis) tops out at ~438 — the old top-down flow's start. The action row and page dots hang
-/// at fixed offsets below it, so the chrome never jumps between hero items.
-const HERO_TEXT_BOTTOM: f32 = 692.0;
+/// The sliding text column's bottom-anchor line. The stack is a FIXED height whatever artwork
+/// lands: the reserved title band (`hero_logo::band_h` = 120) + kicker + 3-line synopsis tops out at
+/// y≈408 for every item ([`hero_stack_top`]). A logo taller than the band (up to
+/// `theme::logo::HERO_H_MAX` = 268) spills upward as PAINT, reaching y=260 at worst — clear of the
+/// top-bar track's bottom edge (`widgets::TOP_BAR_BOTTOM` = 112). The action row and page dots hang
+/// at fixed offsets below this line, so the chrome never jumps between hero items.
+pub(crate) const HERO_TEXT_BOTTOM: f32 = 692.0;
+/// The hero text column's width — the wrap budget for the title/kicker/synopsis and the column a
+/// clearLogo is contained to, so its RIGHT END (`MARGIN_X + HERO_COL_W` = 750) is the worst point
+/// the hero scrim's legibility table has to hold.
+pub(crate) const HERO_COL_W: f32 = 660.0;
 /// The action row's top edge and control diameter. Module-level because the row SLIDES with its
 /// item while the page dots below it do NOT — two draw sites, one geometry, so they cannot drift.
 const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
@@ -52,6 +60,43 @@ const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid spr
 /// sat `0.005 * SCR_W ≈ 10px` short of home, so every flip ended on a visible teleport. The
 /// off-screen layers are culled per-frame, so carrying the spring to a true rest costs nothing.
 const HERO_SLIDE_REST_PX: f32 = 0.5;
+/// How many pool pages either side of the one on screen get their artwork warmed. ONE, and the
+/// number is a budget decision:
+///  * the carousel can only move one step at a time — the chevron, LEFT/RIGHT and the 8-second
+///    auto-flip all call [`hero_flip`]`(±1)` — so ±1 is COMPLETE coverage of "what can be on screen
+///    next"; depth 2 warms a page reachable only after another 8 s of sitting still, by which time
+///    depth 1 has already warmed it;
+///  * each page costs TWO of the store's 64 slots (the 1280×720 backdrop and the 600×240 clearLogo,
+///    which is claimed even for an item that has none — the 404 lands `P_FAILED` and holds the
+///    slot). Depth 1 = 4 slots on top of Home's ~29-slot peak; the whole `HERO_MAX` = 8 pool would
+///    be 16, for pages nobody is about to look at.
+///
+/// **Raising this is the one knob here that can hurt**, and not through eviction: `P_WANT`/
+/// `P_LOADING`/`P_DECODED` slots are never victims ([`crate::posters::store_idle`]'s doc and
+/// `posters::victim`), so enough in-flight warms make a `poster_get` for a poster the user is
+/// LOOKING AT fall through to "all visible: skip" and return 0 — a tile that is never even
+/// requested, which is worse than one that arrives late. The same paragraph is why
+/// [`prefetch_hero_neighbours`] issues at most one key per frame from an idle store; drop either
+/// guard and the depth stops being safe.
+const HERO_PREFETCH: usize = 1;
+/// Ambient corner weights (tl, tr, br, bl — [`Painter::ambient`]'s order): how far each corner of
+/// the billboard's ground leans from the app surface toward the item's UltraBlur colour. The top
+/// pair carries the old uniform `dim = 0.55`; the bottom pair is a step weaker because the hero text
+/// scrim already sits at 0.5–0.94 alpha down there and colour spent under it is colour thrown away.
+///
+/// Deliberately stronger than [`AmbientWash::GROUND_W`] (0.26) and that is not a drift: detail's and
+/// person's washes are a GROUND UNDER BODY TEXT, this one is a **stand-in for a missing photograph**
+/// filling the billboard. Both go through [`AmbientWash::keyed`], so both are held under the same
+/// luminance cap; only the strength differs, which is the part that is per-screen.
+const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
+/// The snap past which the hero's backdrop ART is neither drawn nor RESOLVED. Past it the layer is
+/// faded to under 0.004 by `backdrop_art`'s own `1 - sp` tint and slid nearly a panel-height off the
+/// top, so there is nothing to see — and resolving it anyway cost a key build plus a store probe
+/// (mutex + up to 64 key compares) on every frame of the whole grid scene, and stamped the slot
+/// `Touch::Draw`, which kept the hero's backdrop permanently evict-protected for as long as Home was
+/// up. Named because [`Backdrop`]'s update and draw must read the SAME number: one skips the probe,
+/// the other the blit, and a drift between them is a layer the springs believe in and nothing paints.
+const HERO_ART_CULL: f32 = 0.996;
 // top-left profile chip (avatar) rect, recorded each draw for pointer hit-testing (opens the
 // account menu). See draw_chip / profile_chip_click. `chip_expand` is its focus animation — the
 // widget takes the amount as a scalar, and springs belong to the screen, not to a leaf widget.
@@ -287,64 +332,345 @@ pub(crate) fn hero_pointer_focus(mx: f32, my: f32) {
 
 // (the resume-bar fraction rule lives on PmsMovie::resume_frac — shared with the Library grid)
 
-// ---- Backdrop: ambient wash + backdrop art (parallax/fade) + scrim. Uses
-// explicit per-element alphas (NOT the cascade) since each fades on its own curve.
-struct Backdrop;
+// ---- Backdrop: the page GROUND (one dissolving ambient wash) + the hero ART layers (which slide
+// with their item) + the text scrim. Still explicit per-element alphas, NOT the cascade — each
+// fades on its own curve, and a wash cannot be alpha-faded at all (see `AmbientWash`).
+struct Backdrop {
+    /// The page's ground: ONE wash for the whole panel, keyed to the CURRENT hero and dissolving
+    /// between pages on its own springs. It deliberately does NOT slide with a flip — two washes
+    /// sliding past each other put a hard vertical seam between two atmospheres across the panel,
+    /// and atmosphere is the one thing that should cross-fade rather than travel.
+    ///
+    /// It is HERO-SCOPED: [`wash_corners`]'s lean falls to zero as the snap dives, so in the grid it
+    /// resolves to exactly [`theme::SURFACE_APP`] and `is_flat` skips the pass entirely. The shelves
+    /// keep sitting on the flat clear the card shadows are tuned against — this is a billboard
+    /// ground, not a page tint.
+    wash: AmbientWash,
+    /// Art reveal 0→1 for the CURRENT layer and, during a flip, the OUTGOING one. THIS is the
+    /// cross-fade that covers a prefetch miss: a layer whose backdrop has not decoded yet sits at 0
+    /// and shows the wash, then dissolves the photograph in when it lands, replacing the hard
+    /// `if tex != 0` cut. A prefetch HIT skips the fade entirely — the re-seat in `update` starts the
+    /// incoming layer at 1.0 when its texture is already there, so the common case is a page that
+    /// slides in complete, not one that slides in and then fades up.
+    ///
+    /// Within one keying the reveal only ever runs UP. A texture evicted while Home is off screen
+    /// (the player and the library both push the store hard) must not make the billboard fade its
+    /// own photograph out and back in on the frame you return to it.
+    art_a: Spring,
+    art_out_a: Spring,
+    /// The two layers' resolved textures AND their decoded pixel sizes (`(tex, tw, th)` from
+    /// [`crate::ui::widgets::resolve_tex_wh`]), taken in `update` so `draw` cannot disagree with the
+    /// springs about whether there is anything to reveal — and so the request is issued in the
+    /// UPDATE phase, one step earlier than `backdrop_art`'s own cull used to allow. The size rides
+    /// along free (one store probe) and is what lets the layer `Rect::cover` its frame instead of
+    /// stretching a 16:9 source across whatever the panel happens to be.
+    tex: (u32, f32, f32),
+    tex_out: (u32, f32, f32),
+    /// The pool index the springs are keyed to. `update` compares it against the live one and
+    /// re-seats on a change, so the flip does not have to reach in from [`hero_flip`] (a free fn with
+    /// no scene handle) — and the `plxnative-heroidx` dev jump, which changes the index with no slide
+    /// at all, is covered by the same rule for free.
+    ///
+    /// This is the ONLY thing sequencing the springs to the page: an edit that moves the hero index
+    /// after `Backdrop::update` in the frame would dissolve the wash from the wrong page. `home_update`
+    /// runs the auto-flip (and the slide step) before it calls `bg.update` — keep that order.
+    keyed: c_int,
+}
 impl Backdrop {
     fn new() -> Self {
-        Backdrop
+        // Mounts flat on the app's own ground; `update` JUMPS it to the first hero's colours
+        // (keyed < 0) so Home does not fade up from grey on every boot.
+        Backdrop {
+            wash: AmbientWash::flat(theme::SURFACE_APP),
+            art_a: Spring::at(0.0),
+            art_out_a: Spring::at(0.0),
+            tex: (0, 0.0, 0.0),
+            tex_out: (0, 0.0, 0.0),
+            keyed: -1,
+        }
     }
 }
 impl View for Backdrop {
+    fn update(&mut self, env: &Env) {
+        // Resolved only while the hero band can still show them ([`HERO_ART_CULL`]) — the cull
+        // `backdrop_art`'s own `sp < HERO_ART_CULL` gate used to perform when the resolve lived in
+        // `draw`. Past the dive both layers read as "no texture", which is exactly what the rest of
+        // this component already means by a texture that has not arrived: `reveal` reports 0, the
+        // ground's skip test believes the texture rather than the spring, and `draw` paints nothing
+        // — so the struct's promise that draw cannot disagree with the springs still holds.
+        let art_of = |m: Option<&PmsMovie>| {
+            m.map(|m| crate::ui::widgets::resolve_tex_wh(&m.art, 1280, 720, 0)).unwrap_or((0, 0.0, 0.0))
+        };
+        let live = env.sp < HERO_ART_CULL;
+        self.tex = if live { art_of(hero_item()) } else { (0, 0.0, 0.0) };
+        self.tex_out =
+            if live { art_of(hero_slide_state().and_then(|(prev, _, _)| hero_item_at(prev))) } else { (0, 0.0, 0.0) };
+
+        let cur = hero_index() as c_int;
+        if cur != self.keyed {
+            self.art_out_a.jump(self.art_a.pos); // the leaving layer keeps the reveal it had
+            // prefetch HIT ⇒ no fade at all. Past the dive `tex` is the cull's 0 rather than an
+            // answer about the store, so a re-key down there (only a hub refetch can move the index
+            // while the grid is up — the auto-flip is gated on `snap.pos < 0.05` and a manual flip
+            // needs hero focus) starts the layer at 0 and DISSOLVES it in on the way back up. That
+            // is this component's own "the backdrop was not ready" behaviour, not a new one.
+            self.art_a.jump(if self.tex.0 != 0 { 1.0 } else { 0.0 });
+            if self.keyed < 0 {
+                self.wash.jump(wash_corners(hero_item(), env.sp)); // mount: no dissolve from grey
+            }
+            self.keyed = cur;
+        }
+        // the reveals run UP only (see the field doc); the re-seat above is the only thing that
+        // lowers one, and it does so exactly when the page it belonged to changed.
+        if self.tex.0 != 0 {
+            self.art_a.step(1.0, AmbientWash::K, env.dt);
+        }
+        if self.tex_out.0 != 0 {
+            self.art_out_a.step(1.0, AmbientWash::K, env.dt);
+        }
+        self.wash.step(wash_corners(hero_item(), env.sp), AmbientWash::K, env.dt);
+    }
     fn draw(&self, env: &Env, p: Painter) {
         let sp = env.sp;
-        // The flat dark-gray base (the shelves sit on this so card shadows read) is ALREADY laid down
-        // by `home_draw`'s frame_clear(CLEAR_RGB) — and CLEAR_RGB == SURFACE_APP (#2C2C2E). Painting a
-        // full-screen SURFACE_APP rect here was a redundant ~2M-fragment pass over that identical
-        // color, so it's dropped; the hero art below blends against the clear (same base).
-        // hero backdrop: art if present, else the ambient wash as a fallback — both confined to
-        // the hero view, fading out as the grid rises so the shelf area stays flat gray. During a
-        // flip the outgoing and incoming items' art slide side-by-side (same phase as the text).
-        if sp < 0.996 {
-            if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
-                backdrop_art(p, hero_item_at(prev), sp, dx_out);
-                backdrop_art(p, hero_item(), sp, dx_in);
+        let slide = hero_slide_state();
+        let (a_in, a_out) = (reveal(self.tex.0, &self.art_a), reveal(self.tex_out.0, &self.art_out_a));
+        // The GROUND, standing in for the flat dark-gray base `home_draw`'s frame_clear(CLEAR_RGB)
+        // already laid down (CLEAR_RGB == SURFACE_APP #2C2C2E — which is why the redundant
+        // full-screen SURFACE_APP rect that used to sit here was deleted for fill-rate). It is drawn
+        // only when something can actually see it: skipped when opaque art covers the panel, and
+        // skipped when it has resolved to the clear colour anyway. BOTH skips matter — without the
+        // first the hero view pays an extra ~2M-fragment pass it does not need, without the second
+        // the whole GRID does.
+        if !wash_hidden(sp, a_in, slide.map(|_| a_out))
+            && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
+        {
+            self.wash.draw(p, Rect::FULL);
+        }
+        // hero backdrop ART over it — confined to the hero view, fading out as the grid rises so the
+        // shelf area stays flat gray. During a flip the outgoing and incoming items' art slide
+        // side-by-side (same phase as the text), each at its own reveal.
+        if sp < HERO_ART_CULL {
+            if let Some((_, dx_out, dx_in)) = slide {
+                backdrop_art(p, self.tex_out, sp, dx_out, a_out);
+                backdrop_art(p, self.tex, sp, dx_in, a_in);
             } else {
-                backdrop_art(p, hero_item(), sp, 0.0);
+                backdrop_art(p, self.tex, sp, 0.0, a_in);
             }
         }
         if env.hero_a > 0.01 {
-            // The hero TEXT SCRIM CONTRACT (design review, two lenses HIGH): the meta/synopsis
-            // column must sit on protected ground regardless of art luminance — the old single
-            // ramp only reached real strength BELOW the text band, so bright posters (Toy
-            // Story 2's white/yellow) washed the copy out. Two stacked stops carry ~0.35–0.5
-            // alpha through the text band (y≈550–700) while keeping the same shelf-line depth.
-            let sa = 0.30 + 0.64 * env.hero_a;
-            let mid = sa * 0.55;
-            p.rect(Rect::new(0.0, SCR_H * 0.34, SCR_W, SCR_H * 0.31), 0.0,
+            // The hero TEXT SCRIM CONTRACT, in two parts, because one axis cannot do both jobs.
+            //
+            // PART ONE, here: the frame-wide atmospheric ramp ([`base_scrim_a`], two stacked
+            // stops). It sets the picture's mood and gives the shelf line its depth. It is NOT
+            // what makes the copy readable, and an earlier version of this comment claiming the
+            // text band was "y≈550–700" is what sent a tuning pass at the wrong band: the column
+            // is bottom-anchored on `HERO_TEXT_BOTTOM` 692 and grows UP, so the title band's top
+            // is at y≈408 (`hero_stack_top`) and the HERO-72 fallback's cap top — baselined on the
+            // band's bottom — at y≈479, where this ramp supplies only ~0.17, around 2:1 over
+            // bright art. It cannot be raised to fix that, because at any given y it is uniform
+            // across all 1920px: enough alpha up there to rescue the title would put most of a
+            // black frame over the whole picture on the title's line. (The clearLogo the band
+            // usually holds paints higher still — to y=260 for a square — where this ramp is
+            // nothing at all and only the wedge below is working.)
+            let sa = base_scrim_bottom_a(env.hero_a);
+            let mid = sa * BASE_SCRIM_MID_K;
+            // the two bands share ONE seam expression, so the pair is watertight and the paint
+            // cannot drift from `base_scrim_a`'s idea of where the stops are
+            p.rect(Rect::new(0.0, HERO_BASE_SCRIM_Y0, SCR_W, BASE_SCRIM_Y1 - HERO_BASE_SCRIM_Y0), 0.0,
                 theme::scrim(0.0), theme::scrim(mid), 0.0);
-            p.rect(Rect::new(0.0, SCR_H * 0.65, SCR_W, SCR_H * 0.35), 0.0,
+            p.rect(Rect::new(0.0, BASE_SCRIM_Y1, SCR_W, SCR_H - BASE_SCRIM_Y1), 0.0,
                 theme::scrim(mid), theme::scrim(sa), 0.0);
+            // PART TWO: the corner the text is actually IN, darkened along the axis the ramp has
+            // nothing to say about. `right: false` — home's hero is one left-aligned column.
+            crate::ui::widgets::hero_scrim(p, env.hero_a, false);
         }
     }
 }
 
-/// One hero item's backdrop layer at horizontal slide offset `dx`: the 1280×720 art (with the
-/// grid-rise parallax/fade) or the ambient wash while the art hasn't resolved. A layer the slide
-/// has already carried off the panel is culled — the outgoing art is gone for most of the
-/// transition, and skipping it keeps the two-layer flip from doubling a full-screen fill.
-fn backdrop_art(p: Painter, item: Option<&PmsMovie>, sp: f32, dx: f32) {
-    let Some(h) = item else {
-        return;
-    };
-    if !on_axis(dx, SCR_W, SCR_W, 0.0) {
+/// This ramp's own stop, as absolute y: it reaches [`BASE_SCRIM_MID_K`] of its full weight here (the
+/// two bands' shared seam) and runs to full at the foot of the panel. Named because `Backdrop::draw`
+/// and [`base_scrim_a`] must read the SAME numbers — the whole reason that function exists.
+///
+/// Where it STARTS is [`HERO_BASE_SCRIM_Y0`], shared with the detail page: the two screens declared
+/// that line verbatim under the same name in two files. Only the origin is shared — the CURVE below
+/// it is deliberately not (see that const).
+const BASE_SCRIM_Y1: f32 = 0.65 * SCR_H; // 702
+/// The midpoint weight, as a fraction of the foot's.
+const BASE_SCRIM_MID_K: f32 = 0.55;
+
+/// The atmospheric ramp's alpha at the FOOT of the panel, for a hero at `hero_a`. The 0.30 floor is
+/// pre-existing and slightly odd — `Backdrop::draw` gates the whole block at `hero_a > 0.01`, where
+/// this still reads 0.306, so there is a 0.3-alpha cliff at the frame's foot as the snap crosses
+/// the gate. Flagged rather than fixed: retuning the atmospheric floor is a different change from
+/// fixing the text corner, and only the panel can judge it.
+pub(crate) fn base_scrim_bottom_a(hero_a: f32) -> f32 {
+    0.30 + 0.64 * hero_a.clamp(0.0, 1.0)
+}
+
+/// The frame-wide atmospheric ramp's alpha at `y` — the two stops [`Backdrop`] paints, as one pure
+/// function so the paint and the legibility contract cannot read different numbers. It is the base
+/// the hero wedge composites over; `widgets`' anchor table grades
+/// `1 − (1 − base_scrim_a) · (1 − hero_scrim_a)` against the real text ys.
+pub(crate) fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
+    let sa = base_scrim_bottom_a(hero_a);
+    let mid = sa * BASE_SCRIM_MID_K;
+    if y <= HERO_BASE_SCRIM_Y0 {
+        0.0
+    } else if y < BASE_SCRIM_Y1 {
+        mid * (y - HERO_BASE_SCRIM_Y0) / (BASE_SCRIM_Y1 - HERO_BASE_SCRIM_Y0)
+    } else {
+        mid + (sa - mid) * ((y - BASE_SCRIM_Y1) / (SCR_H - BASE_SCRIM_Y1)).clamp(0.0, 1.0)
+    }
+}
+
+/// The wash's target corners: the current hero's UltraBlur envelope, each corner leaned from the
+/// app's own ground toward it by [`HERO_WASH_W`], the whole lean falling to zero as the snap dives
+/// into the grid.
+///
+/// Mixing FROM [`theme::SURFACE_APP`] (through [`AmbientWash::keyed`], which also holds an artwork
+/// corner under the shared luminance cap) — instead of scaling the corners with `Painter::ambient`'s
+/// `dim`, which is what this replaces — fixes two black screens at once. `dim` fades toward BLACK:
+/// at snap 0.9 the old code painted the whole panel opaque near-black BEHIND the grid and then
+/// snapped it to `#2C2C2E` at 0.996, taking the medium-grey base the card drop-shadows are tuned
+/// against with it. And an item with NO `UltraBlurColors` drew nothing at all, leaving the hero
+/// scrim (up to 0.94 alpha) sitting on the bare clear. With a floor at the app surface, "no artwork"
+/// IS the app's flat ground with no special case, and the grid end of the snap lands on exactly the
+/// colour `home_draw`'s `frame_clear` already laid down — which is also what keeps this wash
+/// hero-scoped rather than a tint over the shelves.
+fn wash_corners(m: Option<&PmsMovie>, sp: f32) -> [[f32; 4]; 4] {
+    let lean = (1.0 - sp).clamp(0.0, 1.0);
+    match m.filter(|m| m.has_blur) {
+        Some(m) => AmbientWash::keyed(m.blur, HERO_WASH_W.map(|w| w * lean)),
+        None => [theme::SURFACE_APP; 4],
+    }
+}
+
+/// Would every pixel of the ground be painted over anyway? Pure, and split out because the
+/// full-screen fill it skips is this component's whole fill-rate cost and is invisible on the host.
+/// Three ways something sees through: the snap has begun (which both fades the art by `1 - sp` and
+/// slides it up off the bottom of the panel by `sp * (SCR_H - 120)`), the current layer's reveal is
+/// unfinished, or a flip has a second layer on the panel that is unfinished. `art_out` is `None`
+/// when no flip is running.
+fn wash_hidden(sp: f32, art: f32, art_out: Option<f32>) -> bool {
+    sp <= 0.005 && art > 0.995 && art_out.map(|a| a > 0.995).unwrap_or(true)
+}
+
+/// A layer's EFFECTIVE reveal: its spring, or 0 when there is no texture behind it. The spring is
+/// monotone within one keying (see [`Backdrop::art_a`]), so it can be high while the texture is
+/// briefly gone — and the ground's skip test must believe the TEXTURE, not the spring, or the wash
+/// would be skipped over a layer drawing nothing.
+fn reveal(tex: u32, s: &Spring) -> f32 {
+    if tex != 0 {
+        s.pos
+    } else {
+        0.0
+    }
+}
+
+/// One hero page's backdrop ART layer at slide offset `dx` and reveal `a` (0 = the ground shows
+/// through, 1 = the photograph), from the `(tex, tw, th)` the [`Backdrop`] resolved this frame. Only
+/// the ART lives here now — the wash is ONE full-screen [`AmbientWash`] drawn under both layers by
+/// `Backdrop::draw`. A layer the slide has already carried off the panel is culled — the outgoing
+/// art is gone for most of the transition, and skipping it keeps the two-layer flip from doubling a
+/// full-screen fill.
+///
+/// The frame is `Rect::cover`ed onto the decoded source: the transcode preserves the source aspect
+/// inside the requested 1280×720 box, so an art asset that is not 16:9 would otherwise be SQUASHED
+/// across the full panel (`Painter::tex` maps UV 0..1 across the rect).
+fn backdrop_art(p: Painter, tex: (u32, f32, f32), sp: f32, dx: f32, a: f32) {
+    let (t, tw, th) = tex;
+    if t == 0 || a <= 0.01 || !on_axis(dx, SCR_W, SCR_W, 0.0) {
         return;
     }
-    let bt = crate::ui::widgets::resolve_tex(&h.art, 1280, 720, 0);
-    if bt != 0 {
-        p.tex(bt, Rect::new(dx, -sp * (SCR_H - 120.0), SCR_W, SCR_H), 0.0, [1.0, 1.0, 1.0, 1.0 - sp]);
-    } else if h.has_blur {
-        p.ambient(Rect::new(dx, 0.0, SCR_W, SCR_H), 0.55 * (1.0 - sp), h.blur);
+    p.tex(t, Rect::new(dx, -sp * (SCR_H - 120.0), SCR_W, SCR_H).cover(tw, th), 0.0,
+        theme::with_a(theme::TINT_WHITE, a * (1.0 - sp)));
+}
+
+/// The ratingKey whose clearLogo headlines a hero page: for an EPISODE the SHOW's (the hero
+/// headlines the series — [`hero_content`]'s rule), else the item's own. Its own fn because the
+/// prefetch must warm the same key the draw asks for; a warm on the episode's rk is a different slot
+/// and buys nothing.
+fn hero_logo_rk(m: &PmsMovie) -> &str {
+    if m.kind == 3 && !m.show_rk.is_empty() {
+        &m.show_rk
+    } else {
+        &m.rk
+    }
+}
+
+/// The pool pages a prefetch should warm around `cur`, nearest-and-FORWARD first (+1, −1, +2, −2 …),
+/// wrapped into a pool of `n`, with `cur` itself and duplicates dropped (a two-page pool makes +1
+/// and −1 the same page). Forward first because the chevron, RIGHT and the idle auto-flip all page
+/// forward, so with one key of budget per frame that is the page most likely to be seen next. Writes
+/// into `out`, returns how many it wrote — alloc-free on a per-frame path, and pure so the wrap and
+/// the de-dup are host-testable without a live pool.
+fn prefetch_order(cur: c_int, n: c_int, out: &mut [c_int; 2 * HERO_PREFETCH]) -> usize {
+    if n <= 1 {
+        return 0;
+    }
+    let cur = cur.rem_euclid(n);
+    let mut k = 0;
+    for d in 1..=HERO_PREFETCH as c_int {
+        for s in [d, -d] {
+            let i = (cur + s).rem_euclid(n);
+            if i != cur && !out[..k].contains(&i) {
+                out[k] = i;
+                k += 1;
+            }
+        }
+    }
+    k
+}
+
+/// The prefetch gate's SCREEN half, pure: warm only while the billboard is actually on screen, and
+/// not while a flip is running (the layer coming IN is the thing being waited on — the page after it
+/// can wait 400 ms). Split from [`prefetch_hero_neighbours`] so the rule is testable without a
+/// texture store or a live pool (the `status_takes` idiom).
+///
+/// The store's own "am I idle" half is deliberately NOT a parameter: Rust evaluates arguments
+/// eagerly, so passing it in meant `posters::store_idle` — a store-mutex lock and a 64-slot scan —
+/// ran on every Home frame including the whole grid scene, where `sp` alone had already settled the
+/// answer. The caller `&&`s the two, so the cheap test short-circuits the expensive one.
+fn prefetch_armed(sp: f32, sliding: bool) -> bool {
+    sp < 0.05 && !sliding
+}
+
+/// Warm the artwork of the hero pages either side of the one on screen, so a flip has its backdrop
+/// (and clearLogo) already decoded instead of starting the fetch on the first frame of the slide —
+/// which is what put a bare wash on the panel for the length of an image-transcode round trip every
+/// time the billboard turned over.
+///
+/// It issues at most ONE key per frame, from an otherwise idle store. Both halves are load-bearing:
+///  * the idle gate is the only way to stay off the critical path, because `poster_worker` has no
+///    priority — it claims the first `P_WANT` slot BY SLOT INDEX, and indices are handed out
+///    arbitrarily (see [`crate::posters::store_idle`]);
+///  * one key per frame caps the race that remains (a tile that misses the frame after a warm went
+///    out): the two workers hold at most one prefetch, so the worst a visible poster can queue behind
+///    is a single fetch, never a batch of four.
+///
+/// A depth-1 prefetch is therefore fully enqueued over ~4 idle frames — orders of magnitude inside
+/// the 8-second auto-flip. On a server slow enough that the store is never idle the prefetch simply
+/// never fires and the screen degrades to exactly the old behaviour, which is the right degradation.
+fn prefetch_hero_neighbours() {
+    use crate::posters::Warm;
+    // the screen's own gate FIRST, so the store probe behind `store_idle` (a lock plus a 64-slot
+    // scan) is only paid on the frames where the answer could still be yes
+    if !(prefetch_armed(snap_pos(), hero_slide_state().is_some()) && crate::posters::store_idle()) {
+        return;
+    }
+    let n = crate::pms::hero_pool_len() as c_int;
+    let mut order = [0 as c_int; 2 * HERO_PREFETCH];
+    let k = prefetch_order(hero_index() as c_int, n, &mut order);
+    for &i in &order[..k] {
+        let Some(m) = hero_item_at(i) else { continue };
+        // the backdrop first: it is the full-screen layer, and the one whose absence reads as a blank
+        // page. A missing logo only costs the title band a text→logotype swap.
+        if crate::ui::widgets::warm_tex(&m.art, 1280, 720, 0) == Warm::Claimed {
+            return;
+        }
+        if crate::posters::logo_warm(hero_logo_rk(m)) == Warm::Claimed {
+            return;
+        }
     }
 }
 
@@ -356,30 +682,44 @@ impl Hero {
         Hero
     }
 }
+/// The top of the hero's bottom-anchored text stack: the title band, the `space::MD` under it, the
+/// kicker and the synopsis block (`syn_h` already carries its own `space::SM` lead-in), all stacked
+/// UP from [`HERO_TEXT_BOTTOM`]. Pure and shared with the tests, because the one genuinely new
+/// behaviour on this page is that a clearLogo may paint ABOVE this line — up to
+/// `theme::logo::HERO_H_MAX - hero_logo::band_h` px of it — and the failure mode (a 268px logo
+/// colliding with the tab pills) is otherwise only observable by waking a television.
+///
+/// `pub(crate)` for one outside reader: `widgets`' hero-scrim anchor table, which grades this page's
+/// title where the draw actually puts it rather than re-typing the stack.
+pub(crate) fn hero_stack_top(title_h: f32, meta_h: f32, syn_h: f32) -> f32 {
+    HERO_TEXT_BOTTOM - (title_h + theme::space::MD + meta_h + syn_h)
+}
+
 /// One hero item's sliding content column: title band (clearLogo or text) → small meta/kicker →
 /// synopsis. For an EPISODE the show is the star: the show's clearLogo/title in the title band and
 /// a "S1 E4 · Episode title" kicker — the episode's own name never headlines. The column is
 /// **bottom-anchored** on `HERO_TEXT_BOTTOM`: heights are measured first and the stack grows UP,
 /// so the synopsis' last line — and with it the pinned action row + page dots below — sits at the
 /// same y for every item (top-down flow made the chrome jump on every flip). Every gap is a
-/// `theme::space` rung and every step advances by the *measured* height of the element just drawn.
+/// `theme::space` rung and every step advances by the *measured* height of the element just drawn —
+/// except the title band, whose height is the RESERVED `hero_logo::band_h` rather than the drawn
+/// logo's, so the stack cannot lurch the moment a texture lands (see `ui::hero_logo`).
 fn hero_content(hero: &PmsMovie, p: Painter, dx: f32) {
     let tx = MARGIN_X;
-    let col_w = 660.0f32; // hero text column
+    let col_w = HERO_COL_W;
     // a column the slide has carried off the panel costs a full text layout + glyph draws for
     // nothing (same rule as the backdrop layer's cull)
     if !on_axis(tx + dx, col_w, SCR_W, 0.0) {
         return;
     }
-    let w_a = theme::TEXT_PRIMARY; // cascade applies hero_a
     let d_a = theme::TEXT_SECONDARY;
 
     let is_ep = hero.kind == 3;
-    let logo_rk: &str = if is_ep && !hero.show_rk.is_empty() { &hero.show_rk } else { &hero.rk };
-    let logo = crate::posters::logo_tex(logo_rk, col_w, 96.0);
     let title: &str = if is_ep && !hero.show_title.is_empty() { &hero.show_title } else { &hero.title };
-    let title_tv = TextView::new(title, theme::size::HERO, w_a).bold().max_lines(1);
-    let title_h = logo.map(|(_, _, hh)| hh).unwrap_or_else(|| title_tv.measure_h(col_w));
+    // The title band is a FIXED layout height whatever the logo turns out to be
+    // ([`hero_logo::band_h`]): a squarer logo spills upward as paint, so nothing below moves when a
+    // texture lands and two pool pages with different logo aspects stay level through a flip.
+    let title_h = hero_logo::band_h(LogoRung::Hero);
 
     // meta/kicker line — episodes: "S1 E4 · Episode title"; else "Movie/Show · YEAR · RATING"
     let meta = if is_ep {
@@ -414,12 +754,8 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32) {
     let syn_h = syn.as_ref().map(|tv| theme::space::SM + tv.measure_h(col_w)).unwrap_or(0.0);
 
     // stack the measured blocks up from the anchor, then draw top-down
-    let mut y = HERO_TEXT_BOTTOM - (title_h + theme::space::MD + meta_h + syn_h);
-    if let Some((lt, ww, hh)) = logo {
-        p.tex(lt, Rect::new(tx, y, ww, hh), 0.0, w_a);
-    } else {
-        title_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
-    }
+    let mut y = hero_stack_top(title_h, meta_h, syn_h);
+    HeroLogo::new(hero_logo_rk(hero), title, LogoRung::Hero).draw(p, Rect::new(tx, y, col_w, title_h));
     y += title_h + theme::space::MD;
     meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
     y += meta_h;
@@ -867,7 +1203,14 @@ pub(crate) fn home_update(dt: f32) {
         // this screen's selected tab, so off the band the strip returns to the start.
         crate::ui::widgets::tab_row_update(0, hero_pill_index(hero_focus()).map(|i| i as c_int).unwrap_or(-1), dt);
         let env = h.env(dt);
+        // The backdrop's own springs (the wash dissolve + the two art reveals) — and, inside it, the
+        // frame's ONE resolve of each hero layer's texture. It runs AFTER the auto-flip and the slide
+        // step above, because its re-seat keys off the hero index having already moved.
+        h.bg.update(&env);
         h.grid.update(&env);
+        // Last, deliberately: the prefetch gate wants a store this frame has already finished
+        // disturbing, so it never issues a warm ahead of a texture something on screen is waiting on.
+        prefetch_hero_neighbours();
     });
 }
 
@@ -877,19 +1220,32 @@ pub(crate) fn home_draw() {
         let h = scene();
         let env = h.env(0.0);
         h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
-        h.draw(&env, Painter::root());
+        // THE page transition, as ONE cascade-alpha push at the root of the tree: the backdrop,
+        // hero, grid and read-out are what a route change REPLACES, so they dip to the app ground
+        // and back (`ui::nav`). Nothing per-element is needed — `Painter::alpha` is multiplicative
+        // and folded into every primitive by `Painter::c`, `Painter::ambient` included since it
+        // learned to mix toward `SURFACE_APP`, which is the same colour `frame_clear` just laid
+        // down. The shared top band below is deliberately NOT on it.
+        let pc = Painter::root().alpha(crate::ui::nav::page_alpha());
+        h.draw(&env, pc);
         // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands
         // in for the hero and grid above it), so the top chrome below still paints over it.
-        draw_status(&env, Painter::root());
+        draw_status(&env, pc);
         // the centered library tab pills (shared with the Library screen): Home is the selected
-        // tab here; a pill holds focus when the hero top band is on it.
-        let pf = hero_pill_index(hero_focus()).map(|i| i as c_int).unwrap_or(-1);
-        crate::ui::widgets::draw_tab_row(Painter::root(), 0, pf);
+        // tab here and a pill holds focus when the hero top band is on it, both of which the row's
+        // own travelling capsules already carry — `home_update` hands them down every frame.
+        //
+        // CONTINUOUS CHROME: this band is the SAME control the Library draws, so it holds still
+        // while the pages swap under it (`nav::chrome_alpha`). Fading it with the page would make a
+        // tab press read as the whole screen blinking — and the capsule travelling across a bar
+        // that stays put IS the transition the tab bar is supposed to show.
+        let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
+        crate::ui::widgets::draw_tab_row(pk);
         // the chip goes on TOP of the tab track, not under it. Its focused capsule unfurls the
         // profile name to its right, and with enough libraries the (centered) track now reaches
         // far enough left to meet it — under the track, the name was painted over by the track's
         // own scrim. Both are the same dark material, so an overlap reads as one band.
-        draw_chip(Painter::root());
+        draw_chip(pk);
     });
 }
 
@@ -1325,5 +1681,168 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── the hero backdrop: the ground, the reveal skip, and the prefetch policy ───────────────
+    //
+    // NONE of the five below takes the module's `FOCUS` mutex, and that is deliberate rather than
+    // an omission: the lock exists for `static mut fr`/`fc`, and every function under test here is
+    // pure — it takes its item, its snap and its pool size as ARGUMENTS. Do not add the lock "for
+    // safety"; it would serialize five tests against the focus suite for nothing.
+
+    /// A hero item carrying an UltraBlur envelope, and nothing else the wash looks at.
+    fn blurred(blur: [[f32; 3]; 4]) -> PmsMovie {
+        PmsMovie { has_blur: true, blur, ..Default::default() }
+    }
+
+    /// The black-frame regression, pinned at both ends of the snap.
+    ///
+    /// The old ground was `Painter::ambient`'s `dim` scaling the corners toward BLACK: at snap 0.9
+    /// that is `dim = 0.055` and at 0.99 `dim = 0.0055` — a full-screen OPAQUE near-black rect
+    /// behind the rising grid, which then snapped to `#2C2C2E` at 0.996. And an item with no
+    /// envelope drew nothing at all, leaving the hero scrim on the bare clear. Flooring the lean on
+    /// [`theme::SURFACE_APP`] fixes both, and this is the test that stops a later edit from
+    /// re-deriving the lean as a scale.
+    #[test]
+    fn the_wash_floors_on_the_app_surface_and_never_dims_toward_black() {
+        let flat = [theme::SURFACE_APP; 4];
+        // "no artwork" IS the app's own ground, with no special case
+        assert_eq!(wash_corners(None, 0.0), flat, "an empty pool is the app's ground");
+        assert_eq!(wash_corners(Some(&PmsMovie::default()), 0.0), flat, "…and so is an item with no envelope");
+        // the grid end of the snap lands on exactly the colour `frame_clear` already laid down —
+        // where the old `dim` ramp landed on black
+        let bright = blurred([[0.95, 0.93, 0.90], [1.0, 1.0, 1.0], [0.8, 0.75, 0.2], [0.1, 0.1, 0.12]]);
+        assert_eq!(wash_corners(Some(&bright), 1.0), flat, "the dive resolves to the app ground, not to black");
+        assert_eq!(wash_corners(Some(&bright), 1.5), flat, "…and an overshooting snap cannot push past it");
+
+        // The tail of the dive — the exact frames that used to be near-black — for a DARK envelope
+        // as much as a bright one. The bound is the one invariant that separates a WEIGHT scale
+        // from a brightness ramp: a corner can only travel as far from the app surface as the lean
+        // weight STILL IN PLAY allows it to, so the deviation is capped by that corner's own
+        // remaining weight times the furthest a mix could take it (toward white above the surface,
+        // toward black below it). Do not loosen this to a flat percentage — the whole point is that
+        // it tightens to nothing as `sp → 1`, which is what pins the grid end of the snap.
+        //
+        // For scale: at sp=0.9 this allows ±0.046 on the two top corners, and the old `dim` ramp
+        // put them at 0.010 — a deviation of 0.163, off by three and a half times the budget.
+        for m in [&bright, &blurred([[0.0; 3]; 4])] {
+            for &sp in &[0.9f32, 0.99, 0.996] {
+                for (c, w) in wash_corners(Some(m), sp).iter().zip(HERO_WASH_W) {
+                    let lean = w * (1.0 - sp);
+                    for (ch, s) in c.iter().zip(theme::SURFACE_APP) {
+                        let budget = lean * s.max(1.0 - s);
+                        assert!(
+                            (ch - s).abs() <= budget + 1e-6,
+                            "at sp={sp} the ground is {ch} against a {s} surface — that is {} off a \
+                             {budget} budget, so the old dim ramp is back",
+                            (ch - s).abs()
+                        );
+                    }
+                    assert_eq!(c[3], 1.0, "a wash corner is opaque");
+                }
+            }
+        }
+
+        // the lean is a WEIGHT SCALE on the shared mix, not a brightness scale over it. Re-deriving
+        // it as `dim(keyed(blur, W), lean)` would darken the surface itself and fails here.
+        assert_eq!(
+            wash_corners(Some(&bright), 0.5),
+            AmbientWash::keyed(bright.blur, HERO_WASH_W.map(|w| w * 0.5)),
+            "half-dived is half the lean toward the artwork, not half the brightness"
+        );
+        // …and the lean does go TOWARD the artwork: a bright envelope lifts the panel off the
+        // surface rather than sinking it.
+        let lit = wash_corners(Some(&bright), 0.0);
+        assert!(lit[1][0] > theme::SURFACE_APP[0], "a white corner must brighten the ground it keys");
+        assert!(lit[1][0] < 1.0, "…but never all the way: it is a wash, not the photograph");
+    }
+
+    /// The prefetch's index math: complete coverage of "what can be on screen next", never the page
+    /// already on it, and forward first — which one-key-per-frame makes load-bearing.
+    #[test]
+    fn prefetch_order_wraps_and_never_warms_the_page_on_screen() {
+        let mut out = [0 as c_int; 2 * HERO_PREFETCH];
+        assert_eq!(prefetch_order(0, 0, &mut out), 0, "an empty pool has no neighbours");
+        assert_eq!(prefetch_order(0, 1, &mut out), 0, "…and neither does a one-page pool");
+        assert_eq!(prefetch_order(0, 2, &mut out), 1, "in a two-page pool +1 and -1 are the same page");
+        assert_eq!(out[0], 1);
+
+        for n in 2..=8 as c_int {
+            for cur in 0..n {
+                let k = prefetch_order(cur, n, &mut out);
+                assert!(k <= 2 * HERO_PREFETCH, "wrote {k} entries into a {}-slot buffer", 2 * HERO_PREFETCH);
+                assert_eq!(out[0], (cur + 1).rem_euclid(n), "forward first (n={n}, cur={cur})");
+                for i in 0..k {
+                    assert!((0..n).contains(&out[i]), "page {} is outside a {n}-page pool", out[i]);
+                    assert_ne!(out[i], cur, "warmed the page already on screen (n={n}, cur={cur})");
+                    assert!(!out[..i].contains(&out[i]), "warmed page {} twice", out[i]);
+                }
+            }
+        }
+    }
+
+    /// The gate's screen half. Warming while a flip is running would put a key in front of the very
+    /// layer sliding on. (The store half — `posters::store_idle`, which keeps a warm from competing
+    /// with a texture the user is waiting on, since the poster workers claim by slot index and have
+    /// no priority to lose — is the caller's `&&`, deliberately outside this function so it is not
+    /// evaluated on frames this half already refused.)
+    #[test]
+    fn the_prefetch_is_armed_only_from_a_settled_hero() {
+        assert!(prefetch_armed(0.0, false), "billboard up, nothing moving");
+        assert!(!prefetch_armed(0.0, true), "mid-flip, the incoming layer IS the thing being waited on");
+        for &sp in &[0.05f32, 0.2, 1.0] {
+            assert!(!prefetch_armed(sp, false), "at sp={sp} the billboard is on its way out");
+        }
+    }
+
+    /// The ground's skip test — a full-screen fill whose failure is invisible on the host and is
+    /// either a blank panel or a fill-rate regression on the TV.
+    #[test]
+    fn the_ground_is_skipped_only_when_opaque_art_covers_it() {
+        assert!(wash_hidden(0.0, 1.0, None), "one fully revealed layer at rest covers the panel");
+        assert!(wash_hidden(0.0, 1.0, Some(1.0)), "…and so do two, mid-flip");
+        assert!(!wash_hidden(0.0, 0.7, None), "a layer still dissolving in shows the ground through");
+        assert!(!wash_hidden(0.0, 1.0, Some(0.7)), "…and so does the OTHER layer of a flip");
+        assert!(!wash_hidden(0.0, 0.0, None), "no art at all is exactly what the ground is for");
+        // the snap both fades the art by (1 - sp) and slides it up off the bottom of the panel, so
+        // full reveals do not mean coverage once the dive has begun
+        assert!(!wash_hidden(0.2, 1.0, Some(1.0)), "a diving hero uncovers the panel however revealed its art is");
+        assert!(!wash_hidden(1.0, 1.0, None), "the grid shows the ground (which by then is the flat surface)");
+    }
+
+    /// **The upward spill, bounded.** A hero clearLogo now overflows the TOP of its reserved band as
+    /// paint (`hero_logo`'s layout ≠ paint rule), which is the one genuinely new behaviour on this
+    /// page — and its failure mode, a 268px square emblem colliding with the tab pills, is otherwise
+    /// only observable by waking a television. The two text heights are the device font's, quoted
+    /// rather than measured (the host suite opens no SDL_ttf) — the same boundary `widgets`' anchor
+    /// table works within. Touches no focus state, so it deliberately does NOT take the `FOCUS`
+    /// mutex; do not add one.
+    #[test]
+    fn the_home_hero_logo_never_reaches_the_top_bar() {
+        const META_H: f32 = 28.0 * 1.32; // one line of `size::BODY` at TextView's leading
+        const SYN_H: f32 = 3.0 * 29.0; // three `size::MICRO` lines at the hero's 29px leading
+        let band = hero_logo::band_h(LogoRung::Hero);
+        // the worst case is the TALLEST text stack — it puts the band, and so the spill above it,
+        // highest on screen (a shorter summary only pushes the whole column back down)
+        let top = hero_stack_top(band, META_H, theme::space::SM + SYN_H);
+        let spill = theme::logo::HERO_H_MAX - band;
+        assert!(
+            top - spill > crate::ui::widgets::TOP_BAR_BOTTOM,
+            "a full-height logo tops out at {} — inside the top chrome ({})",
+            top - spill,
+            crate::ui::widgets::TOP_BAR_BOTTOM
+        );
+    }
+
+    /// The prefetch and the draw must name ONE clearLogo key, and this rule is the only place they
+    /// could drift: an episode's hero headlines the SERIES, so it is the show's logo, not its own.
+    #[test]
+    fn the_hero_logo_key_is_the_shows_for_an_episode() {
+        let ep = PmsMovie { kind: 3, rk: "42".into(), show_rk: "7".into(), ..Default::default() };
+        assert_eq!(hero_logo_rk(&ep), "7", "an episode's hero wears the show's logotype");
+        let orphan = PmsMovie { kind: 3, rk: "42".into(), ..Default::default() };
+        assert_eq!(hero_logo_rk(&orphan), "42", "…falling back to its own when the server sent no parent");
+        let movie = PmsMovie { kind: 0, rk: "42".into(), show_rk: "7".into(), ..Default::default() };
+        assert_eq!(hero_logo_rk(&movie), "42", "a movie is never keyed to a stray parent");
     }
 }

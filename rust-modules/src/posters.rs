@@ -30,6 +30,28 @@ const P_UPLOADING: c_int = 4;
 const P_READY: c_int = 5;
 const P_FAILED: c_int = 6;
 
+/// How a store lookup treats the slot it lands on. The difference IS the prefetch's safety story.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Touch {
+    /// A draw: bump the LRU clock and stamp the frame (evict-protect — a slot this frame asked for
+    /// must never be a victim, or a full screen of tiles would evict each other).
+    Draw,
+    /// A prefetch: neither. See [`poster_warm`].
+    Warm,
+}
+
+/// What a [`poster_warm`] did — which is what lets a caller spend exactly ONE key per frame: a
+/// prefetch loop walks its candidates and stops at the first `Claimed`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Warm {
+    /// the store already holds this key (ready, failed, or in flight) — nothing was enqueued
+    Known,
+    /// a slot was claimed and the fetch enqueued — this frame's one prefetch is spent
+    Claimed,
+    /// every slot is in flight or evict-protected; try again on a later frame
+    Full,
+}
+
 #[derive(Clone, Copy)]
 struct Pslot {
     // Full /photo/:/transcode request path = store key. NB set_key TRUNCATES to 255 bytes + NUL:
@@ -135,82 +157,140 @@ pub(crate) fn poster_key(dst: *mut c_char, cap: usize, src_path: *const c_char, 
     }
 }
 
-/// Resolve an item's clearLogo (transparent PNG) to a GL texture, aspect-fit into `max_w`×`max_h`.
-/// `Some((tex, w, h))` once loaded; `None` while pending or when the item has no logo. The ONE
-/// clearLogo resolve (home hero, detail hero, detail compact title all draw through it).
-pub(crate) fn logo_tex(rk: &str, max_w: f32, max_h: f32) -> Option<(c_uint, f32, f32)> {
+/// The clearLogo transcode request box (was two bare literals inside the old `logo_tex`).
+/// `minSize=1` means COVER, not fit, so a 1:1 source comes back ~600×600 and a 5:1 one ~1200×240 —
+/// both comfortably above anything [`crate::ui::hero_logo`] draws (900×268 worst case), so a hero
+/// logo is always a downscale. Mirrored in `img.rs`'s decode-budget table; change both together.
+const LOGO_REQ_W: c_int = 600;
+const LOGO_REQ_H: c_int = 240;
+
+/// The ONE clearLogo store key ([`LOGO_REQ_W`]×[`LOGO_REQ_H`] transparent PNG). Its own fn because
+/// the PREFETCH must warm the exact key the draw will later resolve — `(path, w, h, png)` IS the
+/// store key, so a warm at a different size is a different slot and buys nothing. `None` for an item
+/// with no ratingKey.
+fn logo_key(rk: &str) -> Option<[u8; 352]> {
     if rk.is_empty() {
         return None;
     }
     let lpath = std::ffi::CString::new(format!("/library/metadata/{rk}/clearLogo")).ok()?;
     let mut key = [0u8; 352];
-    poster_key(key.as_mut_ptr() as *mut c_char, key.len(), lpath.as_ptr(), 600, 240, 1);
-    let tex = poster_get(key.as_ptr() as *const c_char);
-    let (mut lw, mut lh) = (0i32, 0i32);
-    poster_wh(key.as_ptr() as *const c_char, &mut lw, &mut lh);
+    poster_key(key.as_mut_ptr() as *mut c_char, key.len(), lpath.as_ptr(), LOGO_REQ_W, LOGO_REQ_H, 1);
+    Some(key)
+}
+
+/// The prefetch twin of [`logo_src`] — starts the same fetch, takes no texture and no LRU
+/// protection. A hero page whose logo misses draws its title as HERO TEXT and then pops to the
+/// logotype the moment it lands; warming kills that pop the same way it kills the backdrop's.
+pub(crate) fn logo_warm(rk: &str) -> Warm {
+    logo_key(rk).map(|k| poster_warm(k.as_ptr() as *const c_char)).unwrap_or(Warm::Known)
+}
+
+/// Resolve an item's clearLogo (transparent PNG) to a GL texture plus its TRUE PIXEL SIZE.
+/// `Some((tex, px_w, px_h))` once loaded; `None` while pending OR when the item has no logo (the
+/// store cannot tell those two apart — which is why the text→logo swap is still a cut, see
+/// [`crate::ui::hero_logo`]).
+///
+/// The ONE clearLogo resolve (home hero, detail hero, detail compact title all draw through it).
+/// How big it is DRAWN is a UI decision and lives in [`crate::ui::hero_logo::fit`]: this layer used
+/// to take a `max_w`×`max_h` box and contain-fit into it, which is how the same mark ended up three
+/// sizes in one app — the store never owned layout policy, it only looked as if it did.
+///
+/// NB it claims a slot even for an item that HAS no logo — the 404 lands as `P_FAILED` and holds it
+/// — so every hero page costs two of the store's [`PT_CAP`] slots, backdrop plus logo.
+pub(crate) fn logo_src(rk: &str) -> Option<(c_uint, f32, f32)> {
+    let key = logo_key(rk)?;
+    let (tex, lw, lh) = poster_get_wh(key.as_ptr() as *const c_char);
     if tex == 0 || lw <= 0 || lh <= 0 {
         return None;
     }
-    let s = (max_h / lh as f32).min(max_w / lw as f32);
-    Some((tex, lw as f32 * s, lh as f32 * s))
+    Some((tex, lw as f32, lh as f32))
 }
 
-/// MAIN thread. READY texture for key, else 0 (claim a slot + enqueue fetch on miss).
-pub(crate) fn poster_get(key: *const c_char) -> c_uint {
-    if key.is_null() {
-        return 0;
+/// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
+/// the least-recently-used SETTLED (`P_READY`/`P_FAILED`) slot the current frame has not touched,
+/// else `None` — "everything is either in flight or on screen; skip this request".
+///
+/// Extracted from [`lookup`] because the PREFETCH's entire safety argument is a claim about this
+/// function — that a warmed slot (LRU age 0, no frame stamp) is always a more attractive victim than
+/// anything a draw touched — and the store around it is not host-testable: eviction frees a GL
+/// texture, and no test binary on this host links GL.
+///
+/// Note the second clause is what bounds a prefetch's depth, and it is sharper than eviction:
+/// `P_WANT`/`P_LOADING`/`P_DECODED` are never victims, so a batch of in-flight warms does not merely
+/// age the store out, it can make this return `None` for a poster the user is looking at — which is
+/// a tile that is never even REQUESTED, not one that arrives late.
+fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
+    if let Some(i) = (0..PT_CAP).find(|&i| slots[i].state == P_EMPTY) {
+        return Some(i);
     }
-    let key_s = unsafe { cstr(key) };
+    let mut oldest = c_uint::MAX;
+    let mut pick = None;
+    for i in 0..PT_CAP {
+        let s = &slots[i];
+        if (s.state == P_READY || s.state == P_FAILED) && s.frame != frame && s.use_ < oldest {
+            oldest = s.use_;
+            pick = Some(i);
+        }
+    }
+    pick
+}
+
+/// What one store probe found: the READY texture and its DECODED pixel size, or `(0, 0, 0)` while
+/// the slot is empty, in flight, or failed. One answer rather than two calls because the size is
+/// free once the slot is in hand — and this is a per-frame path walked once per visible tile, so a
+/// second lock + 64-slot key scan just to read two ints is pure waste.
+type Hit = (c_uint, c_int, c_int);
+
+/// MAIN thread. The one store lookup behind [`poster_get`], [`poster_get_wh`] and [`poster_warm`]:
+/// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
+/// difference between the paths, and it is entirely about the LRU bookkeeping.
+fn lookup(key_s: &str, touch: Touch) -> (Hit, Warm) {
     let mut g = store();
     // hit?
     for i in 0..PT_CAP {
         if g.slots[i].state != P_EMPTY && key_bytes(&g.slots[i]) == key_s.as_bytes() {
-            g.clock = g.clock.wrapping_add(1);
-            let (c, f) = (g.clock, g.frame);
-            g.slots[i].use_ = c;
-            g.slots[i].frame = f;
-            return if g.slots[i].state == P_READY { g.slots[i].tex } else { 0 };
+            if touch == Touch::Draw {
+                g.clock = g.clock.wrapping_add(1);
+                let (c, f) = (g.clock, g.frame);
+                g.slots[i].use_ = c;
+                g.slots[i].frame = f;
+            }
+            let s = &g.slots[i];
+            let hit = if s.state == P_READY { (s.tex, s.pw, s.ph) } else { (0, 0, 0) };
+            return (hit, Warm::Known);
         }
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
-    let mut slot = None;
-    for i in 0..PT_CAP {
-        if g.slots[i].state == P_EMPTY {
-            slot = Some(i);
-            break;
-        }
-    }
-    if slot.is_none() {
-        let mut oldest = c_uint::MAX;
-        for i in 0..PT_CAP {
-            let s = &g.slots[i];
-            if (s.state == P_READY || s.state == P_FAILED) && s.frame != g.frame && s.use_ < oldest {
-                oldest = s.use_;
-                slot = Some(i);
-            }
-        }
-    }
-    let idx = match slot {
+    let idx = match victim(&g.slots, g.frame) {
         Some(i) => i,
-        None => return 0, // all visible: skip
+        None => return ((0, 0, 0), Warm::Full), // all visible: skip
     };
     let (old_tex, old_px) = (g.slots[idx].tex, g.slots[idx].px);
-    g.clock = g.clock.wrapping_add(1);
-    let (c, f) = (g.clock, g.frame);
+    let (use_, frame) = match touch {
+        Touch::Draw => {
+            g.clock = g.clock.wrapping_add(1);
+            (g.clock, g.frame)
+        }
+        // age 0 = older than everything a draw has touched, so a warmed slot is always the FIRST
+        // victim of the next miss; frame-1 is by construction never the current frame, so it never
+        // carries evict-protection — and unlike a literal 0 it does not depend on `poster_pump`
+        // having bumped the frame counter yet (a screen's update runs BEFORE the pump).
+        Touch::Warm => (0, g.frame.wrapping_sub(1)),
+    };
     {
         let s = &mut g.slots[idx];
         s.tex = 0;
         s.px = 0;
         s.gen = s.gen.wrapping_add(1);
-        set_key(s, &key_s);
+        set_key(s, key_s);
         s.state = P_WANT;
-        s.use_ = c;
-        s.frame = f;
+        s.use_ = use_;
+        s.frame = frame;
         s.pw = 0;
         s.ph = 0;
     }
     drop(g);
-    // free the evicted resources off-lock (poster_get is the GL/main thread)
+    // free the evicted resources off-lock (this is the GL/main thread)
     if old_tex != 0 {
         gl_delete(old_tex);
     }
@@ -218,36 +298,68 @@ pub(crate) fn poster_get(key: *const c_char) -> c_uint {
         img::img_free(old_px as *mut c_uchar);
     }
     CV.notify_one();
-    0
+    ((0, 0, 0), Warm::Claimed)
 }
 
-/// pixel dims of a READY texture for key (0,0 if not ready). Does NOT trigger a fetch.
-pub(crate) fn poster_wh(key: *const c_char, w: *mut c_int, h: *mut c_int) {
-    unsafe {
-        if !w.is_null() {
-            *w = 0;
-        }
-        if !h.is_null() {
-            *h = 0;
-        }
-        if key.is_null() {
-            return;
-        }
-        let key_s = cstr(key);
-        let g = store();
-        for i in 0..PT_CAP {
-            if g.slots[i].state == P_READY && key_bytes(&g.slots[i]) == key_s.as_bytes() {
-                if !w.is_null() {
-                    *w = g.slots[i].pw;
-                }
-                if !h.is_null() {
-                    *h = g.slots[i].ph;
-                }
-                break;
-            }
-        }
-    }
+/// MAIN thread. READY texture for key, else 0 (claim a slot + enqueue fetch on miss).
+pub(crate) fn poster_get(key: *const c_char) -> c_uint {
+    poster_get_wh(key).0
 }
+
+/// [`poster_get`] plus the texture's DECODED pixel size — `(0, 0, 0)` until it is READY. Art that
+/// must be FIT or COVERED into its frame (a clearLogo, a hero backdrop) needs the source aspect, and
+/// the store is the only thing that knows it. Same one probe as `poster_get`: the size rides along.
+pub(crate) fn poster_get_wh(key: *const c_char) -> Hit {
+    if key.is_null() {
+        return (0, 0, 0);
+    }
+    let key_s = unsafe { cstr(key) };
+    lookup(&key_s, Touch::Draw).0
+}
+
+/// MAIN thread. Ensure `key` is being fetched WITHOUT drawing it — the prefetch path (the texture
+/// twin of `browse::want`). Returns what it did, never a texture, so no caller can accidentally draw
+/// a warmed slot and re-age it behind the store's back.
+///
+/// Two deliberate differences from [`poster_get`], and together they are why a prefetch can share a
+/// 64-slot store with everything on screen:
+///  * it never stamps `frame`, so a warmed slot carries NO evict-protection — a visible tile that
+///    misses on the very next frame takes the slot straight back;
+///  * it never bumps `use_`, so a warmed slot stays at LRU age 0, permanently the first victim.
+///
+/// Prefetched art is by construction the cheapest thing in the store to throw away.
+pub(crate) fn poster_warm(key: *const c_char) -> Warm {
+    if key.is_null() {
+        return Warm::Known;
+    }
+    let key_s = unsafe { cstr(key) };
+    lookup(&key_s, Touch::Warm).1
+}
+
+/// Pure half of [`store_idle`] — split so the gate is host-testable without mutating the store
+/// singleton.
+fn idle_of(slots: &[Pslot; PT_CAP]) -> bool {
+    !slots.iter().any(|s| matches!(s.state, P_WANT | P_LOADING | P_DECODED))
+}
+
+/// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? The prefetch
+/// gate, and the honest answer to "never compete with a texture the user is waiting on".
+///
+/// It has to be a GATE rather than a priority because [`poster_worker`] claims the first `P_WANT`
+/// slot **by slot index**, and indices come from "first EMPTY, else LRU victim" ([`victim`]) — i.e.
+/// arbitrarily. With two workers a prefetch in a low index is picked ahead of a visible poster in a
+/// high one. The way to stay off the critical path is not to rank requests, it is to only ISSUE one
+/// on a frame where nothing else is outstanding.
+///
+/// Cost: one 64-slot scan per frame under the mutex — the draw already does dozens.
+pub(crate) fn store_idle() -> bool {
+    idle_of(&store().slots)
+}
+
+// (The old standalone `poster_wh` — a second lock + 64-slot key scan to read two ints about a slot
+// the caller had just probed — is gone: `lookup` hands the size back with the texture, so a
+// cover-fitted tile now costs exactly what a stretched one does. Both of its callers, `logo_src` and
+// `ui::widgets::resolve_tex_wh`, go through `poster_get_wh`.)
 
 /// MAIN/GL thread, once per frame BEFORE drawing. Uploads up to `budget` decoded slots.
 pub(crate) fn poster_pump(budget: c_int) {
@@ -397,6 +509,92 @@ pub(crate) fn posters_shutdown() {
         }
         if px != 0 {
             img::img_free(px as *mut c_uchar);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The pure half of the store: which slot a miss claims, and whether the store is quiet.
+    //!
+    //! Ordinary parallel tests — every one of these drives a LOCAL `[Pslot; PT_CAP]` array rather
+    //! than the `STORE` singleton, deliberately: the singleton's eviction path frees a GL texture
+    //! and no test binary on this host links GL. That boundary is exactly why [`victim`] and
+    //! [`idle_of`] were split out of [`lookup`]/[`store_idle`] in the first place.
+    use super::*;
+
+    /// A settled, drawable slot: READY, last touched on frame `frame` with LRU age `use_`.
+    fn ready(use_: c_uint, frame: c_uint) -> Pslot {
+        Pslot { state: P_READY, use_, frame, ..Pslot::ZERO }
+    }
+
+    /// The LRU's two clauses, in order: an EMPTY slot is always preferred (a fresh store must fill
+    /// before it evicts anything), and only once there is none does the oldest SETTLED slot go.
+    #[test]
+    fn victim_prefers_empty_then_oldest_settled() {
+        let empty = [Pslot::ZERO; PT_CAP];
+        assert_eq!(victim(&empty, 7), Some(0), "an untouched store fills from the front");
+
+        let mut one_hole = [ready(100, 1); PT_CAP];
+        one_hole[40] = Pslot::ZERO;
+        assert_eq!(victim(&one_hole, 7), Some(40), "an empty slot beats every settled one");
+
+        let mut full = [ready(100, 1); PT_CAP];
+        full[17].use_ = 3; // the oldest
+        full[52].use_ = 9;
+        assert_eq!(victim(&full, 7), Some(17), "with nothing empty, the least recently used goes");
+
+        // FAILED is settled too — a 404 must not pin a slot forever.
+        let mut failed = [ready(100, 1); PT_CAP];
+        failed[8] = Pslot { state: P_FAILED, use_: 1, frame: 1, ..Pslot::ZERO };
+        assert_eq!(victim(&failed, 7), Some(8));
+    }
+
+    /// **The test the whole prefetch rests on.** `Touch::Warm` writes `use_ = 0` and a frame stamp
+    /// of `frame - 1`, so a warmed slot is simultaneously the oldest thing in the store and
+    /// unprotected — it must lose to every slot this frame drew. And when the frame really has
+    /// touched everything, the answer must be `None` ("all visible: skip"), never a slot in use.
+    #[test]
+    fn a_warmed_slot_is_evicted_before_anything_the_frame_drew() {
+        let f: c_uint = 42;
+        let mut slots = [ready(c_uint::MAX - 1, f); PT_CAP]; // 64 tiles this frame drew
+        slots[31] = ready(0, f.wrapping_sub(1)); // …and one warmed a moment ago
+        assert_eq!(victim(&slots, f), Some(31), "the prefetched slot is the cheapest to throw away");
+
+        let drawn = [ready(5, f); PT_CAP];
+        assert_eq!(victim(&drawn, f), None, "a frame that drew every slot claims nothing");
+
+        // frame counters wrap (`wrapping_add` in poster_pump), and a warm at frame 0 stamps
+        // c_uint::MAX — which must still read as "not this frame" rather than as protection.
+        let mut wrapped = [ready(c_uint::MAX - 1, 0); PT_CAP];
+        wrapped[2] = ready(0, 0u32.wrapping_sub(1));
+        assert_eq!(victim(&wrapped, 0), Some(2));
+    }
+
+    /// The sharp edge behind the depth budget: a slot that is fetching is never a victim, so enough
+    /// in-flight warms make a miss return `None` — a poster the user is looking at that is never
+    /// even REQUESTED, which is worse than one that arrives late. Pinned in code, not just in prose.
+    #[test]
+    fn an_in_flight_slot_is_never_evicted() {
+        for st in [P_WANT, P_LOADING, P_DECODED, P_UPLOADING] {
+            let slots = [Pslot { state: st, use_: 0, frame: 0, ..Pslot::ZERO }; PT_CAP];
+            assert_eq!(victim(&slots, 7), None, "state {st} must not be evictable");
+        }
+    }
+
+    /// The prefetch gate sees every stage of a fetch. If this ever loosens, the prefetch quietly
+    /// starts competing with the tiles on screen for the two workers.
+    #[test]
+    fn idle_of_sees_every_stage_of_a_fetch() {
+        assert!(idle_of(&[Pslot::ZERO; PT_CAP]), "an untouched store is idle");
+        for st in [P_READY, P_FAILED] {
+            let slots = [Pslot { state: st, ..Pslot::ZERO }; PT_CAP];
+            assert!(idle_of(&slots), "settled state {st} is not work in progress");
+        }
+        for st in [P_WANT, P_LOADING, P_DECODED] {
+            let mut slots = [Pslot { state: P_READY, ..Pslot::ZERO }; PT_CAP];
+            slots[63] = Pslot { state: st, ..Pslot::ZERO };
+            assert!(!idle_of(&slots), "one slot in state {st} is enough to hold the gate shut");
         }
     }
 }

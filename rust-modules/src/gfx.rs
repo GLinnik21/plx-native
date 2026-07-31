@@ -375,6 +375,10 @@ pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top
     }
 }
 
+/// The OPAQUE 4-corner gradient: rgb corners scaled by `dim`, alpha forced to 1.0. That literal
+/// `1.0` is **load-bearing**, not incidental — `fs_ambient.frag` now interpolates alpha with the
+/// colour (see [`draw_grad4`]), so this is what keeps every ambient wash a ground that REPLACES what
+/// is under it rather than a translucent film over it.
 pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
     unsafe {
         let c3 = |p: *const f32, i: usize| *p.add(i);
@@ -384,6 +388,25 @@ pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const 
         glUniform4f(AL_TR, c3(tr, 0) * dim, c3(tr, 1) * dim, c3(tr, 2) * dim, 1.0);
         glUniform4f(AL_BR, c3(br, 0) * dim, c3(br, 1) * dim, c3(br, 2) * dim, 1.0);
         glUniform4f(AL_BL, c3(bl, 0) * dim, c3(bl, 1) * dim, c3(bl, 2) * dim, 1.0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+}
+
+/// The 4-corner bilinear gradient with REAL per-corner ALPHA (rgba each) — the hero corner scrim's
+/// primitive, and the reason `fs_ambient.frag` mixes vec4 instead of vec3. [`draw_ambient`] is this
+/// with every corner forced opaque; the two share one program because they are one field.
+///
+/// Each pointer must address FOUR floats (rgba). Blending is the app-wide
+/// `GL_SRC_ALPHA`/`GL_ONE_MINUS_SRC_ALPHA` set at init, so this composites over whatever is already
+/// on the panel — which is the whole point of having it beside the opaque wash.
+pub(crate) fn draw_grad4(x: f32, y: f32, w: f32, h: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
+    unsafe {
+        use_prog(APROG); // AL_SCREEN is set once at init (uniforms are per-program state)
+        glUniform4f(AL_RECT, x, y, w, h);
+        glUniform4fv(AL_TL, 1, tl);
+        glUniform4fv(AL_TR, 1, tr);
+        glUniform4fv(AL_BR, 1, br);
+        glUniform4fv(AL_BL, 1, bl);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }

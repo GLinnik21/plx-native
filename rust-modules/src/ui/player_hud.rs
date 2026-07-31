@@ -369,6 +369,91 @@ pub(crate) fn standin_left_the_ring(was_standin: bool, now: ControlSlot, focused
     was_standin && now.is_discs() && focused
 }
 
+/// The bottom scrim's height — the transport's dark ground, transparent at its top edge and
+/// `theme::scrim_black(0.86)` at the panel bottom. Named because the read-out's placement is graded
+/// against it (see [`readout_frame`] and its test) rather than against a second hand-typed 470.
+const SCRIM_H: f32 = 470.0;
+
+/// Which surface owns the "the pipeline is working" signal. There is exactly ONE, ever.
+///
+/// Two of them used to fire together for the whole of every load and every seek: the centred
+/// [`StatusOverlay`] was gated on `is_busy() && frames() == 0`, but `pump` zeroes `frames` as part
+/// of APPLYING a seek — so the guard that was meant to say "we have never had a picture" was true
+/// for the entire seek, and the transport's own spinner (gated on plain `is_busy()`) was up beside
+/// it. Two indicators for one fact read as two facts, which is exactly how it was reported.
+///
+/// It carries the caption rather than letting each draw re-read `state().caption()`: `Resolving` is
+/// derived from `route::play_pending()`, an off-thread flag, so a second read could disagree with
+/// the kind this value was chosen for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Busy {
+    /// nobody — frames are on the panel, or there is no session
+    None,
+    /// the centred [`StatusOverlay`] at [`readout_frame`], carrying its treatment + its caption
+    Readout(StatusKind, &'static core::ffi::CStr),
+    /// the inline spinner beside the elapsed clock
+    Transport,
+}
+
+/// PURE: which surface owns the busy signal, given the playback state and whether this SESSION has
+/// ever presented a frame (`player::seen_frame` — NOT `frames() > 0`, see [`Busy`]).
+///
+/// **The rule: whichever surface owns the thing being waited for.** No picture yet → the wait is
+/// about the whole panel, so the whole panel says so. A picture is up and only the POSITION is in
+/// flight → the wait is about the playhead, so the mark goes on the playhead, which the HUD has
+/// already frozen at the seek target. `Error` → the centred read-out either way; there is no
+/// picture and no position, only a message.
+///
+/// It takes `seen_frame` rather than the state alone because `Buffering` is genuinely ambiguous —
+/// it is both the cold-start tail AND the 1-3 frame tail of every seek (between prime→Play, where
+/// `engine` clears `seeking`, and the first presented frame). Keyed on the state alone, one of
+/// those two flashes the wrong surface every time.
+pub(crate) fn busy_surface(st: crate::player::PlaybackState, seen_frame: bool) -> Busy {
+    use crate::player::PlaybackState;
+    match st {
+        PlaybackState::Error => Busy::Readout(StatusKind::Failed, st.caption()),
+        s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, st.caption()),
+        s if s.is_busy() => Busy::Transport,
+        _ => Busy::None,
+    }
+}
+
+/// Sample the live globals ONCE and resolve the owner. Call this once per frame and pass the result
+/// to both [`draw_hud`] and [`draw_readout`] — the same discipline [`slot`] keeps, and for the same
+/// reason: two independent derivations of one three-way choice is how the two indicators drifted
+/// apart in the first place.
+pub(crate) fn busy() -> Busy {
+    busy_surface(crate::player::state(), crate::player::seen_frame())
+}
+
+/// The read-out's frame: **the whole panel**, because the wait is about the whole picture.
+///
+/// It is deliberately NOT carved down to dodge the transport. The block [`StatusOverlay`] builds is
+/// only ~91 px tall, so centred on the panel it spans y≈482…573 — clear of the scrim's top edge at
+/// `SCR_H - SCRIM_H` (610) and of the transport's highest ink (the Up Next still at ≈597). The
+/// carve-out this replaces (`SCR_H - 340`) centred it at y=370, visibly high, and bought nothing:
+/// at 370 the block was already 200 px above a scrim that is fully TRANSPARENT at its top edge
+/// anyway. Every "sit above the transport" framing pushes it UP — the un-scrimmed band's own centre
+/// is 305 — which is the opposite of the fix the report asked for.
+fn readout_frame() -> Rect {
+    Rect::FULL
+}
+
+/// The load / seek / failure read-out. Drawn EVERY player frame, independent of the transport's
+/// auto-hide, because its visibility is the PLAYBACK STATE and not the HUD timer.
+///
+/// It used to live inside [`draw_hud`], and two things came of that. Historically: `PlaybackState`
+/// was published every frame and NOTHING read it, so the initial load drew a live-looking transport
+/// at 0:00 / -0:00 and a dead producer drew a fully black screen with no message and no hint that
+/// BACK is the way out. Then, once it did read it: in `Error` — which is deliberately not
+/// `is_busy()`, hence not covered by `app.rs`'s `|| player::loading()` HUD pin — "Playback failed"
+/// disappeared 4.5 s in with the HUD linger, leaving exactly the silent black screen the read-out
+/// exists to prevent. A read-out is not transport chrome.
+pub(crate) fn draw_readout(busy: Busy, now: u32) {
+    let Busy::Readout(kind, caption) = busy else { return };
+    StatusOverlay::new(readout_frame(), caption, kind).phase(now).draw(&hud_env(), Painter::root());
+}
+
 /// x of control button `idx` (0 = Subtitles on the left, 1 = Audio on the right)
 fn btn_x(idx: i32) -> f32 {
     let audio_x = CTRL_RIGHT - BTN_S;
@@ -474,46 +559,30 @@ fn draw_clock(p: Painter, text: &str, cx: f32, y: f32, sz: i32, col: [f32; 4], l
 /// focused item within their row (only meaningful when `focus` selects that row). `now` drives the
 /// loading spinner's rotation. `transport`: draw the scrubber/title/buttons/clocks; pass false for
 /// Info mode, where only the scrim + bottom tabs render and the Info card fills the middle.
-pub(crate) fn draw_hud(slot: ControlSlot, focus: i32, btn: i32, tab: i32, now: u32, transport: bool) {
+/// `busy`: the caller's single resolve of who owns the working signal — see [`busy_surface`]; the
+/// transport draws its inline spinner only when it is [`Busy::Transport`], and the centred read-out
+/// is [`draw_readout`]'s, drawn by the caller AFTER this.
+pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab: i32, now: u32, transport: bool) {
     let p = Painter::root();
     let e = hud_env();
 
     // bottom scrim: transparent -> dark
     let clr = theme::scrim_black(0.0);
     let drk = theme::scrim_black(0.86);
-    p.rect(Rect::new(0.0, SCR_H - 470.0, SCR_W, 470.0), 0.0, clr, drk, 0.0);
+    p.rect(Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H), 0.0, clr, drk, 0.0);
 
     let white = theme::TEXT_PRIMARY;
     let dim = theme::TEXT_SECONDARY;
     let track = theme::RAIL_TRACK;
 
-    // The load/seek/failure read-out, above the transport. Before this, `PlaybackState` was
-    // published every frame and NOTHING read it: the initial load drew a live-looking transport at
-    // 0:00 / -0:00, and a dead producer (`PlaybackState::Error`, which is deliberately not
-    // `is_busy()`) drew a fully black screen with no message and no hint that BACK is the way out.
-    {
-        let st = crate::player::state();
-        // A seek keeps its existing in-transport spinner (beside the elapsed clock): overlaying
-        // the centre of the screen for a sub-second reposition would be noisier than the bug.
-        let kind = match st {
-            crate::player::PlaybackState::Error => Some(StatusKind::Failed),
-            s if s.is_busy() && crate::player::frames() == 0 => Some(StatusKind::Working),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            // sits above the transport block, whose geometry is the documented SCR_H-offset carve-out
-            const OVERLAY_BOTTOM: f32 = 340.0;
-            StatusOverlay::new(Rect::new(0.0, 0.0, SCR_W, SCR_H - OVERLAY_BOTTOM), st.caption(), kind)
-                .phase(now)
-                .draw(&e, p);
-        }
-    }
-
     if transport {
     // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
     // SHOW title; for a movie, the route ctxline over the movie title. (Apple-TV layout.)
     if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_episode) {
-        if let Ok(cs) = CString::new(format!("S{}, E{} · {}", n.season, n.index, n.ep_title)) {
+        // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
+        // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
+        // caption already read it, and the whole point is that all three say the same thing).
+        if let Ok(cs) = CString::new(crate::ui::fmt::episode_kicker(n.season, n.index, &n.ep_title)) {
             p.text(cs.as_ptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, white, 0, 1);
         }
         if let Ok(cs) = CString::new(n.title.clone()) {
@@ -596,12 +665,15 @@ pub(crate) fn draw_hud(slot: ControlSlot, focus: i32, btn: i32, tab: i32, now: u
             p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
         }
     }
-    // transport state indicator just past the elapsed clock — a Pause glyph while paused, a loading
-    // spinner while a seek resolves, and NOTHING while playing (a state read-out, not an action
-    // toggle). Centered on the clock's line box; drops to the clock's LEFT when the right side is
+    // transport state indicator just past the elapsed clock — a Pause glyph while paused, a seek
+    // spinner while THIS surface owns the busy signal, and NOTHING while playing (a state read-out,
+    // not an action toggle). Gated on `busy`, not on `loading()`: with `loading()` the transport lit
+    // the same spinner the centred read-out was already showing, for the whole of every load AND
+    // every seek. Centered on the clock's line box; drops to the clock's LEFT when the right side is
     // against the remaining label / screen edge.
     let paused = crate::player::TX.paused.load(Relaxed);
-    if loading || paused {
+    let seeking = busy == Busy::Transport;
+    if seeking || paused {
         // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
         // matching the CAPTION clock's cap height so the glyph reads as the label's size.
         let isz = 30.0f32;
@@ -609,8 +681,8 @@ pub(crate) fn draw_hud(slot: ControlSlot, focus: i32, btn: i32, tab: i32, now: u
         let right_ok = el_r + 14.0 + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
         let gx = if right_ok { el_r + 14.0 } else { el_l - 14.0 - need };
         let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
-        if loading {
-            Spinner::new(gx + isz * 0.5, icy, 12.0).phase(now).tint(white).draw(&e, p);
+        if seeking {
+            Spinner::new(gx + isz * 0.5, icy, Spinner::R_INLINE).phase(now).tint(white).draw(&e, p);
         } else {
             crate::ui::icons::draw(p, crate::ui::icons::Icon::Pause, Rect::new(gx, icy - isz * 0.5, isz, isz), white);
         }
@@ -836,5 +908,100 @@ mod tests {
         assert!(close(two, 1010.0 - SUB_CEIL_Y), "measured over the group, not per rect");
         assert!(overhangs(l1) && overhangs(l2), "both take the same shift");
         assert!(close((l2.y - two) - (l1.y + l1.h - two), 10.0), "their 10px gap is preserved");
+    }
+
+    // ---- who owns the "the pipeline is working" signal -----------------------------------------
+
+    use crate::player::PlaybackState as S;
+
+    /// Every state the enum has, so a state added later cannot quietly escape the table below.
+    const ALL_STATES: [S; 7] =
+        [S::Idle, S::Resolving, S::Connecting, S::Buffering, S::Seeking, S::Playing, S::Error];
+
+    /// The whole point of routing both surfaces through one function: for any state, and either
+    /// answer to "has this session shown a picture", there is exactly ONE indicator — never two
+    /// (the reported bug) and never none while the pipeline is working.
+    ///
+    /// Driven off `is_busy()` itself rather than a hand-copied list, so a FUTURE busy state cannot
+    /// silently lose its indicator; the membership guard underneath pins what `is_busy()` means, so
+    /// the coverage claim can't be satisfied by quietly narrowing it.
+    #[test]
+    fn exactly_one_surface_owns_the_busy_signal() {
+        for st in ALL_STATES {
+            for seen in [false, true] {
+                let b = busy_surface(st, seen);
+                if st.is_busy() || st == S::Error {
+                    assert_ne!(b, Busy::None, "{st:?}/seen={seen} lost its indicator");
+                } else {
+                    assert_eq!(b, Busy::None, "{st:?}/seen={seen} must show nothing");
+                }
+            }
+        }
+        for st in ALL_STATES {
+            let want = matches!(st, S::Resolving | S::Connecting | S::Buffering | S::Seeking);
+            assert_eq!(st.is_busy(), want, "{st:?} changed sides of is_busy()");
+        }
+    }
+
+    /// The regression, named after the bug. The shipped guard was `is_busy() && frames() == 0`, and
+    /// `pump` zeroes `frames` as part of APPLYING a seek — so the centred read-out fired on every
+    /// seek, on top of the transport's own spinner. Keyed on the SESSION bit instead, a seek over a
+    /// live picture is the transport's alone.
+    #[test]
+    fn a_seek_over_a_live_picture_belongs_to_the_transport() {
+        assert_eq!(busy_surface(S::Seeking, true), Busy::Transport);
+        assert!(!matches!(busy_surface(S::Seeking, true), Busy::Readout(..)));
+    }
+
+    /// The 1-3 frame window between `engine`'s prime→Play clear of `seeking` and the first
+    /// presented frame, which the pump publishes as `Buffering`. Keyed on the state alone this
+    /// flashes the centred block at the END of every seek; it is precisely why the rule takes
+    /// `seen_frame`, and without the assertion someone will "simplify" it back.
+    #[test]
+    fn the_post_seek_buffering_tail_does_not_flash_the_centre_readout() {
+        assert_eq!(busy_surface(S::Buffering, true), Busy::Transport);
+        assert_eq!(busy_surface(S::Resolving, true), Busy::Transport, "auto-advance over a live picture");
+        assert_eq!(busy_surface(S::Connecting, true), Busy::Transport);
+    }
+
+    /// No picture yet → the wait is about the whole panel. With the captions, which locks the
+    /// kind↔caption pairing the enum carries (both are chosen once, by this function).
+    #[test]
+    fn a_cold_start_and_a_reload_both_own_the_whole_panel() {
+        assert_eq!(busy_surface(S::Resolving, false), Busy::Readout(StatusKind::Working, c"Preparing\u{2026}"));
+        assert_eq!(busy_surface(S::Connecting, false), Busy::Readout(StatusKind::Working, c"Connecting\u{2026}"));
+        assert_eq!(busy_surface(S::Buffering, false), Busy::Readout(StatusKind::Working, c"Buffering\u{2026}"));
+        // tapping RIGHT during pre-roll (or `/tmp/plxnative-autoseek`): no picture to mark up
+        assert_eq!(busy_surface(S::Seeking, false), Busy::Readout(StatusKind::Working, c"Seeking\u{2026}"));
+    }
+
+    /// A dead producer has no picture and no position, only a message — so it is the centred
+    /// read-out either way. And it is a FAULT, never `Empty`, which is the "this is an answer"
+    /// treatment.
+    #[test]
+    fn a_dead_producer_reads_out_whether_or_not_a_picture_was_up() {
+        for seen in [false, true] {
+            assert_eq!(busy_surface(S::Error, seen), Busy::Readout(StatusKind::Failed, c"Playback failed"));
+        }
+    }
+
+    /// The geometry regression, guarding against a new `OVERLAY_BOTTOM`: the read-out centres on
+    /// the PANEL, and doing so still clears the transport — the constraint the carve-out claimed to
+    /// be enforcing and was not.
+    ///
+    /// The spinner half of the block is pure geometry (the caption half needs `text_height`, which
+    /// the host suite cannot link) and is the LARGER half, so `above()` is a conservative stand-in
+    /// for the whole block. Numerically 540 + 58.16 = 598.16 < 610: deliberately tight, so it fails
+    /// if someone bumps `R_PAGE`, thickens the scrim, or re-carves the frame.
+    #[test]
+    fn the_readout_is_centred_and_still_clears_the_transport() {
+        let f = readout_frame();
+        assert_eq!(f.cy(), SCR_H * 0.5, "the wait is about the whole picture, so it centres on it");
+        assert_eq!(f.cx(), SCR_W * 0.5);
+        assert!(
+            f.cy() + StatusOverlay::above() < SCR_H - SCRIM_H,
+            "the read-out must not reach into the transport scrim"
+        );
+        assert!(f.cy() - StatusOverlay::above() > 0.0, "nor off the top of the panel");
     }
 }

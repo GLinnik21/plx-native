@@ -100,6 +100,35 @@
       }
     },
     {
+      "name": "home-library-nav",
+      "tier": "ui",
+      "route": "home",
+      "_floor_note": "45 like library-switch: this is that scene's machinery one altitude up \u2014 a whole-screen cascade alpha over Home's backdrop+hero+grid for ~225ms per bounce, plus the same Xfade underneath. No new pass and no new blending (Painter::c already multiplies every colour), so 45 is the popover/re-query tier, not a new one.",
+      "floor": 45,
+      "run_secs": 36,
+      "warmup_s": 6,
+      "_run_secs_note": "36, not the 22 every single-route scene uses, because a ROUTE-CHANGING scene splits its samples. The FPS heartbeat is once/sec and navosc bounces every 1400ms, so each route sees only about HALF the post-warmup samples — 22s gave route=home 4, one under the harness' >=5 minimum, and the scene failed for want of evidence rather than for want of frames. 36s leaves ~30 post-warmup seconds, ~15 per route: margin enough that an uneven bounce phase cannot starve either side. Any future two-route scene needs this same doubling.",
+      "comment": "One of the two scenes that change ROUTE. navosc bounces Home<->the first library section every 1400ms through the real nav_to path, so the page cross-fade (ui::nav) is perf-gated. route=home samples the settled hero, the fade-OUT and the fade-IN on the way back; the Library half is covered by library-scroll/library-switch.",
+      "triggers": {
+        "plxnative-navosc": true
+      }
+    },
+    {
+      "name": "home-detail-nav",
+      "tier": "ui",
+      "route": "detail",
+      "_floor_note": "45, the detail tier: this is detail-transition's screen with a whole-screen cascade alpha over it for ~225ms per bounce, and the detail page is the heaviest thing the dip has to carry (full-bleed hero art + the AmbientWash ground + the below-hero flow). No new pass and no new blending — Painter::c already multiplies every colour and the wash mixes toward SURFACE_APP under the same alpha — so it stays that tier rather than opening a new one.",
+      "floor": 45,
+      "run_secs": 36,
+      "warmup_s": 6,
+      "_run_secs_note": "36 for the same reason as home-library-nav: a route-CHANGING scene splits its once/sec samples between two routes. This one scraped through at 22s with exactly 6 post-warmup samples against a minimum of 5 — passing on one sample of margin is not a gate, it is a coin flip.",
+      "rk": "2012",
+      "comment": "The Home<->DETAIL arm of the route transition (phase 2), the half home-library-nav cannot reach: no shared tab bar (so the top band fades WITH the page instead of holding still), a hero backdrop and an ambient ground on the far side, and a real teardown at the fade floor. navosc with a ratingKey bounces nav_open out and nav_back home every 1400ms through the same calls a grid-card OK and the BACK key raise. route=detail samples the arrival ramp, the settled page and the fade-OUT; the Home side is covered by home-hero/home-grid/home-library-nav.",
+      "triggers": {
+        "plxnative-navosc": "$rk"
+      }
+    },
+    {
       "name": "info-panel",
       "tier": "player",
       "route": "player",

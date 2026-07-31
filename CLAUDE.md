@@ -349,7 +349,13 @@ the perf gates), and `make test` = `deploy` + `run`.
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
   minutes of episode first), and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
-  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and
+  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), plus
+  `/tmp/plxnative-navosc[=<ratingKey>]` (bounce the ROUTE every 1400 ms through the real press path —
+  the only scenes that change route, and so the only ones that sample the whole-screen page
+  cross-fade `ui::nav` draws. EMPTY = Home↔the first library section, the two pages that SHARE the
+  top tab bar (`fps:home-library-nav`); a ratingKey = Home↔that item's DETAIL page instead, which
+  has no shared chrome, a hero backdrop and ambient ground on the far side, and a real teardown at
+  the fade floor (`fps:home-detail-nav`). Both boot to Home), and
   `/tmp/plxnative-itemmenu` (snap into the grid, then open the **press-and-hold card context menu**
   on the focused card — `route=itemmenu`; the interactive path is a real ≥500 ms hold, which no boot
   trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release

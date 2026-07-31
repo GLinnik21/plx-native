@@ -93,6 +93,52 @@ pub mod space {
     pub const XL: f32 = 64.0;
 }
 
+/// The **logo presence ladder** — how big a clearLogo is DRAWN. The third size axis of the design
+/// system, beside [`size`] (type) and [`space`] (gaps), and it exists for the same reason: a logo
+/// used to be sized by a per-screen literal (96 on the home hero, 120 on the detail hero, 54 on the
+/// scrolled compact title), so the SAME mark was three sizes in one app.
+///
+/// **The rule is constant AREA, not constant height** ([`crate::ui::hero_logo::fit`]). A clearLogo's
+/// aspect runs from ~1:1 (an emblem) to ~10:1 (a long wordmark); under a height clamp the drawn area
+/// is LINEAR in aspect, so a 5:1 wordmark covered five times the ink of a 1:1 emblem — which is
+/// exactly why square logos read as an afterthought. Solving for a target AREA instead makes a
+/// square grow TALL and a wordmark grow WIDE, so both carry the same weight. The floor then stops a
+/// very wide mark thinning to a pinstripe, the ceiling stops a taller-than-wide asset swallowing the
+/// hero, and the caller's column contains the result last.
+pub mod logo {
+    /// HERO rung — the home hero's title band AND the detail hero's title band (one mark on two
+    /// screens, one value; the user directive is "mutual logic for logo size for all hero"). The
+    /// target ink in px², anchored on the shape this rule must NOT move: a 5:1 wordmark at the
+    /// height floor, i.e. 600×120 — the detail hero's on-device-tuned size today. Every other
+    /// aspect is solved from it, so the commonest logo shape is unchanged and only squarer ones grow.
+    pub const HERO_AREA: f32 = 72_000.0;
+    /// The shortest a hero logo is ever drawn, and the height everything ~5:1 and wider lands on.
+    /// The detail hero's tuned 120; home's old 96 is retired, because two heroes drawing the same
+    /// clearLogo must draw it the same size. Deliberately a step ABOVE one line of [`super::size::HERO`]
+    /// text (72 × 1.32 ≈ 95): the logo is the brand mark and outranks the text title it stands in
+    /// for. ALSO the LAYOUT height of the title band ([`crate::ui::hero_logo::band_h`]) — a taller
+    /// logo spills upward as paint, never as layout.
+    pub const HERO_H_MIN: f32 = 120.0;
+    /// The tallest. = √[`HERO_AREA`], i.e. precisely where the area rule lands a 1:1 logo — so the
+    /// ceiling never touches a real wordmark and bites only on a taller-than-wide asset. This is the
+    /// ONE knob to pull down (to ~200) if a device capture says a square emblem shouts or crowds the
+    /// detail page's compact title mid-scroll; do not reach for the area, which is what keeps
+    /// wordmarks where they are.
+    pub const HERO_H_MAX: f32 = 268.0;
+    /// COMPACT rung — the pinned title the detail page scrolls up to. The hero rung scaled by
+    /// ([`COMPACT_H_MIN`]/[`HERO_H_MIN`])² = 0.45², so the two rungs cannot drift apart: a 5:1
+    /// wordmark lands on the floor at BOTH rungs, by construction.
+    pub const COMPACT_AREA: f32 = 14_580.0;
+    /// One line of [`super::size::TITLE`] text (40 × 1.32 ≈ 53) — the compact title's own text
+    /// fallback, which is what this rung stands in for. Unchanged from the literal 54 it replaces,
+    /// so a wordmark in the pinned strip is pixel-identical to today.
+    pub const COMPACT_H_MIN: f32 = 54.0;
+    /// Set by the BAND, not by the area rule (which would want 121 here): the pinned strip has to
+    /// clear the screen top and stop short of `detail::TOP_MARGIN` (120), where the first scrolled
+    /// section lifts to. 72 leaves 22px of head room above the logo and 26px below it.
+    pub const COMPACT_H_MAX: f32 = 72.0;
+}
+
 // ── Accent / control ─────────────────────────────────────────────────────────
 /// The mockup's "Snow": warm off-white focus fill (#e9e6e0). Focused controls fill this.
 pub const ACCENT: [f32; 4] = [0.914, 0.902, 0.878, 1.0];
@@ -145,6 +191,23 @@ pub const SKELETON_BOT: [f32; 4] = [0.08, 0.09, 0.11, 1.0];
 pub const SCRIM_INK: [f32; 3] = [0.02, 0.02, 0.03];
 /// Pure-black scrim ink (HUD bottom, subtitle outline, modal); use via [`scrim_black`].
 pub const SCRIM_BLACK_INK: [f32; 3] = [0.0, 0.0, 0.0];
+
+/// The **text-legibility floor** for copy drawn straight onto ARTWORK: the scrim alpha at which
+/// [`TEXT_PRIMARY`]/[`TEXT_SECONDARY`] hold ≥4.5:1 over a bright backdrop (an encoded 0.85
+/// highlight, brighter than essentially any fanart pixel) and ≥3:1 over a blown-white one.
+///
+/// MEASURED, not chosen. The panel is plain 888 with no sRGB framebuffer anywhere in the tree, so a
+/// token value IS an sRGB code and GL's blend is a straight lerp in that space — which makes the
+/// whole derivation arithmetic. It lives on [`crate::ui::widgets::hero_scrim`] and is asserted by
+/// that component's anchor table, so brightening a text token and re-deriving this stay one edit.
+/// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
+/// ~0.29: it needs 0.655 total, so the wedge must carry ~0.51 there and rather more at the title.
+///
+/// The same weight `draw_tab_row`'s track capsule already uses for the same job over the same
+/// artwork — one value per role, arrived at independently twice. An alpha rather than a colour,
+/// like [`CARD_SHADOW_REST_A`]: the ink is [`SCRIM_INK`], only the weight is the decision. **This is
+/// the one knob** if the treatment reads heavy — 0.60 still clears 3:1 everywhere.
+pub const SCRIM_TEXT_A: f32 = 0.72;
 
 /// Near-black scrim at alpha `a` — hero/scroll dimming.
 pub const fn scrim(a: f32) -> [f32; 4] {
@@ -210,6 +273,17 @@ pub const OVERLAY_FOCUS_PILL: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
 /// ([`crate::ui::widgets::TabPill::plated`], `Details Screen.dc.html`). The selected one is a step up
 /// from [`OVERLAY_FOCUS_PILL`]: at .14 against a plated neighbour at .08 the two read as the same pill.
 pub const TAB_PLATE_SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
+/// The selected-segment plate as a **travelling capsule** over a plated strip
+/// ([`crate::ui::widgets::TabStrip`]). It is deliberately not [`TAB_PLATE_SELECTED`]: that value
+/// assumed the selected plate REPLACED the idle one, whereas a capsule *slides over* the idle plates
+/// that stay put underneath it — and .20 over .08 composites to .26, a selected season visibly
+/// heavier than it was. 0.13 over [`TAB_PLATE_IDLE`] lands back on .20 (`a + b − ab` = .1996), and
+/// because both layers are the same white that arithmetic is order-independent, so it holds whether
+/// the plate is painted under or over the capsule.
+///
+/// The top tab row needs no such value: its pills sit bare inside the tab-bar track (which already
+/// is their ground) and its selection capsule uses [`OVERLAY_FOCUS_PILL`] unchanged.
+pub const TAB_PLATE_SELECTED_OVER: [f32; 4] = [1.0, 1.0, 1.0, 0.13];
 /// An unselected plated segment — present, but only just: it says "this is a control" and nothing more.
 pub const TAB_PLATE_IDLE: [f32; 4] = [1.0, 1.0, 1.0, 0.08];
 /// Softer selection panel.

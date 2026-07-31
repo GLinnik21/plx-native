@@ -438,6 +438,20 @@ pub struct UltraBlurColors {
     pub bottom_left: HexColor,
 }
 
+impl UltraBlurColors {
+    /// The four corners in `Painter::ambient`'s order — top-left, top-**right**, bottom-**right**,
+    /// bottom-left (a RING, not the reading order the JSON field names suggest) — or `None` when the
+    /// envelope is empty. PMS sends the key on some items with every corner defaulted to black, and
+    /// a pure-black gradient is not a colour scheme: keyed as one it paints a page darker than the
+    /// app's own ground for no reason. TWO stores parse this field (the hub catalog in `pms.rs` and
+    /// the detail store in `metadata.rs`), so the shape and the guard live here rather than being
+    /// written twice.
+    pub fn corners(self) -> Option<[[f32; 3]; 4]> {
+        let c = [self.top_left.0, self.top_right.0, self.bottom_right.0, self.bottom_left.0];
+        c.iter().any(|x| *x != [0.0, 0.0, 0.0]).then_some(c)
+    }
+}
+
 /// "1a2b3c" (with/without '#') → linear [r,g,b] 0..1. Replaces pms::hex3.
 #[derive(Deserialize, Default, Clone, Copy)]
 #[serde(from = "String")]

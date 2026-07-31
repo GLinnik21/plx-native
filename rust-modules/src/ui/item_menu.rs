@@ -214,11 +214,13 @@ fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, watched: b
 /// Both navigation rows the shelf menu offers an episode are dead ends from here. "Go to Show" is
 /// the page you are standing on. "Go to Episode" is the judgement call, and it goes the same way:
 /// the episode's own page carries nothing the tile the popover is anchored to is not already
-/// showing — its still, title, full summary and air date are all right there — and reaching it
-/// would REPLACE this page rather than stack on it (`detail::open_rk` re-mounts in place, as the
-/// Related row does), so BACK would then land on Home instead of the season being browsed. A row
-/// that navigates away from a page to show less of what that page already shows, and loses your
-/// place doing it, is not an action.
+/// showing — its still, title, full summary and air date are all right there. A row that navigates
+/// away from a page to show less of what that page already shows is not an action.
+///
+/// It is worth saying what is NO LONGER a reason, because it used to be half of this argument:
+/// reaching that page cost you your place. It does not any more — the filmstrip's own metadata row
+/// is the way there, it raises `detail::take_open_request` instead of re-mounting in place, and
+/// `ui::trail` brings BACK to the season being browsed, on the episode it was opened from.
 ///
 /// `watched` is exact here — it comes off the episode's own `viewCount` in the loaded season — so
 /// the toggle is a true toggle, and with no nav group there is no separator either (`build`'s rule:

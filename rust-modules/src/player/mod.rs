@@ -93,6 +93,11 @@ fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
 pub(crate) fn is_started() -> bool { TX.started.load(Relaxed) }
 pub(crate) fn playpos_ns() -> i64 { SHARED.playpos_ns.load(Relaxed) }
 pub(crate) fn frames() -> i32 { SHARED.frames.load(Relaxed) }
+/// True once this SESSION has presented at least one frame. Deliberately NOT `frames() > 0`: the
+/// pump zeroes `frames` as part of applying a seek (`pump.rs`), so that expression reads "no
+/// picture" for the whole of every seek. Cleared only by `reset_session` — i.e. by a real stop or
+/// a reload, both of which do blank the video plane. See [`shared::Shared::seen_frame`].
+pub(crate) fn seen_frame() -> bool { SHARED.seen_frame.load(Relaxed) }
 pub(crate) fn duration_ns() -> i64 { SHARED.duration_ns.load(Relaxed) }
 pub(crate) fn seek_pending() -> i64 { TX.seek_to_ns.load(Relaxed) }
 /// true once the pipeline has drained to true end-of-stream (see pump's EOS check). app.rs polls
@@ -377,6 +382,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     if ty == 0 {
         // a frame was PRESENTED — map fed pts -> real content position
         SHARED.frames.fetch_add(1, Relaxed);
+        SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
         SHARED.playpos_ns
             .store(num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed), Relaxed);

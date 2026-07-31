@@ -47,12 +47,23 @@ pub(crate) fn clock(ms: i64) -> String {
     }
 }
 
-/// The episode kicker — `"S2, E3 · Laura"`. ONE formatter, because this string is drawn by the
-/// transport HUD (the now-playing item), the route's pre-roll ctx line and the Up Next caption, and
-/// the whole point of the last two is that they read identically to the first. It was three
-/// separate literals before, with nothing keeping them in step.
+/// An episode's ADDRESS inside its show — `"S2, E3"`, with no title. The detail page's hero meta
+/// line draws it bare (the title band above it already IS the episode's name, so repeating it there
+/// would be the one line on the page that says nothing new), and [`episode_kicker`] is this plus the
+/// title. It lives here rather than as a `format!` beside its one caller because the two spellings
+/// have to stay one vocabulary: a page that said "S2, E3" while the HUD said "S2E3" for the same
+/// leaf is exactly the drift this module exists to prevent, and nothing but shared code enforces it.
+pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
+    format!("S{season}, E{index}")
+}
+
+/// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
+/// it. ONE formatter, because this string is drawn by the transport HUD (the now-playing item), the
+/// route's pre-roll ctx line and the Up Next caption, and the whole point of the last two is that
+/// they read identically to the first. It was three separate literals before, with nothing keeping
+/// them in step.
 pub(crate) fn episode_kicker(season: i64, index: i64, title: &str) -> String {
-    format!("S{season}, E{index} \u{b7} {title}")
+    format!("{} \u{b7} {title}", episode_ordinal(season, index))
 }
 
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no

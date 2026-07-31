@@ -33,7 +33,7 @@ use crate::log;
 /// |---|---|
 /// | `ui/detail.rs` hero art | 1920×1080 |
 /// | `ui/home.rs` hero backdrop | 1280×720 |
-/// | `posters.rs` clearLogo (PNG) | 600×240 |
+/// | `posters.rs` clearLogo (PNG) | 600×240 (`posters::LOGO_REQ_W`/`LOGO_REQ_H`) |
 /// | `ui/info_panel.rs` episode still | 480×270 |
 /// | `ui/widgets.rs` catalog poster | 250×375 |
 ///

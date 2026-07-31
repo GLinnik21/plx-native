@@ -4,8 +4,11 @@
 //! own `static OPEN + APPEAR` pair, so any motion change was a four-file edit.
 use crate::ui::{theme, Painter, Rect, Spring};
 
-/// stiffness of the appear spring — the panels' shared open-motion constant.
-const K_APPEAR: f32 = 300.0;
+/// Stiffness of the appear spring — the panels' shared open-motion constant, and the stiffness every
+/// other fade-into-place in the UI matches (the tab capsules' alpha, [`crate::ui::widgets::TabStrip`]).
+/// `pub(crate)` for exactly that reason: a fade that is not a panel still belongs to the same family,
+/// and re-typing 300 somewhere else is how two "shared" motions drift apart.
+pub(crate) const K_APPEAR: f32 = 300.0;
 
 pub(crate) struct Popover {
     open: bool,
@@ -41,12 +44,20 @@ impl Popover {
     /// painter: faded by the appear state and sliding from `rise` px below (+, rises up into
     /// place) or above (−, drops down) to its rest position. The scrim draws on its OWN root
     /// painter so the full-screen dim doesn't compound with the content fade.
+    ///
+    /// Both roots ride [`nav::page_alpha`](crate::ui::nav::page_alpha), because a popover is drawn
+    /// ON a page and a route change replaces the page: when the screen underneath dips to the app
+    /// ground, a panel left sitting at full strength over it is the one thing on the panel that
+    /// says the transition is not happening. It is one multiply into a cascade every primitive
+    /// already goes through, and it is 1.0 whenever no route change is in flight — which is every
+    /// frame of the in-player panels, since playback has no page transition.
     pub(crate) fn painter(&self, scrim_a: f32, rise: f32) -> Painter {
         let a = self.appear();
+        let page = crate::ui::nav::page_alpha();
         if scrim_a > 0.0 {
-            let dim = theme::scrim_black(scrim_a * a);
+            let dim = theme::scrim_black(scrim_a * a * page);
             Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
         }
-        Painter::root().alpha(a).translate(0.0, rise * (1.0 - a))
+        Painter::root().alpha(a * page).translate(0.0, rise * (1.0 - a))
     }
 }

@@ -959,13 +959,13 @@ fn apply_plan(plan: Plan, rk: &str) {
         *addr_of_mut!(QUEUE) = plan.queue;
     }
     // Warm the next episode's still NOW rather than at first draw. The URL has been known since
-    // this plan resolved — tens of minutes before the credits — and `resolve_tex` is async, so
-    // touching it here costs nothing and spares the control a skeleton for one image-transcode
-    // round trip at exactly the moment it appears in front of the user.
+    // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
+    // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
+    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
+    // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
+    // evict-protection a draw takes (see `posters::poster_warm`).
     if let Some(u) = up_next() {
-        if !u.thumb.is_empty() {
-            crate::ui::widgets::resolve_tex(&u.thumb, 480, 270, 0);
-        }
+        crate::ui::widgets::warm_tex(&u.thumb, 480, 270, 0);
     }
     if !plan.vcodec.is_empty() {
         set_stream_codecs(&plan.vcodec, &plan.acodec); // the pair is only ever set together

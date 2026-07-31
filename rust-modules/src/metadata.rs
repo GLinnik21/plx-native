@@ -434,6 +434,14 @@ pub(crate) struct Detail {
     pub(crate) bitrate: i64,             // kbps, whole-stream
     pub(crate) art: String,
     pub(crate) thumb: String,
+    /// The item's own `UltraBlurColors` corners (tl, tr, br, bl — the ring order
+    /// [`plex::UltraBlurColors::corners`](crate::plex::UltraBlurColors::corners) owns) and whether
+    /// the server sent a usable envelope — what keys the detail page's ambient GROUND. It lives on
+    /// the LOADED item and not only on the catalog row because a page opened from the Library grid,
+    /// a Related tile or the person page is never in the home catalog (`pms::index_of_rk` searches
+    /// the hubs only), and those were exactly the pages sitting on flat grey with no wash at all.
+    pub(crate) blur: [[f32; 3]; 4],
+    pub(crate) has_blur: bool,
     pub(crate) genres: Vec<String>,
     pub(crate) countries: Vec<String>,
     pub(crate) cast: Vec<Cast>,
@@ -574,6 +582,8 @@ pub(crate) fn sync_now_playing() {
 fn fetch_detail(rk: &str) -> Option<Detail> {
     let it = crate::plex::client().metadata(rk)?;
     let media0 = it.primary_media();
+    // one read, both fields (see `Detail::blur`)
+    let blur = it.ultra_blur_colors.and_then(|u| u.corners());
     let mut d = Detail {
         rk: rk.to_string(),
         is_show: it.kind == "show",
@@ -607,6 +617,8 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         bitrate: 0,
         art: it.art.clone(),
         thumb: it.thumb.clone(),
+        blur: blur.unwrap_or_default(),
+        has_blur: blur.is_some(),
         genres: it.genre.iter().map(|t| t.tag.clone()).collect(),
         countries: it.country.iter().map(|t| t.tag.clone()).collect(),
         cast: it

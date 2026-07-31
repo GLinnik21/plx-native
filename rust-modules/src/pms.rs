@@ -140,17 +140,13 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
             m.part = clean(&p0.key);
         }
     }
-    // UltraBlurColors -> ambient gradient. The typed model (de_ultrablur) accepts BOTH the
-    // array and object shapes PMS returns; the old object-only read missed the array form
-    // (D-1), so blur now populates where it was previously blank. Guard against a
-    // malformed/empty envelope (corners defaulted to black) so we don't flag a pure-black
-    // gradient as present — the old code keyed this on topLeft being a present string.
-    if let Some(ub) = it.ultra_blur_colors {
-        let blur = [ub.top_left.0, ub.top_right.0, ub.bottom_right.0, ub.bottom_left.0];
-        if blur.iter().any(|c| *c != [0.0, 0.0, 0.0]) {
-            m.blur = blur;
-            m.has_blur = true;
-        }
+    // UltraBlurColors -> the ambient gradient. `UltraBlurColors::corners` owns the corner ORDER and
+    // the all-black-envelope guard (shared with the detail store, which keys the same wash off the
+    // LOADED item); `de_ultrablur` already accepted both the array and object shapes PMS returns
+    // (D-1), so blur populates where the old object-only read left it blank.
+    if let Some(blur) = it.ultra_blur_colors.and_then(|u| u.corners()) {
+        m.blur = blur;
+        m.has_blur = true;
     }
     m
 }

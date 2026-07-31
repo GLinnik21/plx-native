@@ -11,6 +11,13 @@
 //! grid/toolbar → tab bar → (app.rs) Home: the Netflix-2025 escape rule, so the nav is always
 //! one press away at any scroll depth. Focus/scroll per section persist in the browse store.
 //!
+//! Reload choreography: every path that REPLACES the item set (tab, sort, unwatched, genre, and a
+//! profile switch wiping the store from underneath) is deferred through [`Xfade`] — fade the
+//! outgoing wall out, swap at the floor, fade the new one in — because `browse::requery` empties
+//! the store synchronously on the key press, so there is nothing left to fade unless the animation
+//! SCHEDULES the swap. The queued action is the typed [`Pending`]; the top chrome reads it through
+//! the `view_*` resolvers so a chip relabels on the press frame while the grid is still dissolving.
+//!
 //! Perf discipline (32-bit A53 + Mali): the grid steps TWO scale springs total (focused +
 //! shrinking previous), culls rows with `on_axis`, and only visible cells call `resolve_tex`
 //! (the 64-slot poster LRU must never see off-screen requests).
@@ -24,6 +31,7 @@ use crate::ui::popover::Popover;
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
 use crate::ui::widgets::{Art, Spinner};
+use crate::ui::xfade::Xfade;
 use crate::ui::{on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
@@ -97,6 +105,136 @@ static mut TABLE: TableView = TableView::new();
 static mut MENU_BUILT: usize = 0;
 static mut PHASE_MS: f32 = 0.0; // spinner phase accumulator
 static mut TOOL_RECTS: [Rect; 3] = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+
+// ---- the grid's content cross-fade + its deferred reload -------------------------------------
+/// A grid reload the user has asked for but which has NOT been applied to the store yet: the
+/// fade-out is running and [`Xfade::tick`] will hand it back on the floor frame. Typed and `Copy`
+/// rather than a boxed closure — one value, zero alloc, and the newest request simply overwrites
+/// the one before it (a fast double tab-switch must commit ONCE, to the last section pressed;
+/// mixing two DIFFERENT switches inside one 70 ms fade drops the earlier one, which is the honest
+/// reading of "the user changed their mind mid-press").
+///
+/// Every variant that can be pressed twice while its menu stays open carries its TARGET, not a
+/// verb: [`Pending::Unwatched`]'s two presses inside one fade must cancel out, and a bare "toggle"
+/// marker cannot express that — the chip would relabel on the first press and then refuse to
+/// relabel back. `Sort` and `Genre` close their menu on the press, so they cannot be re-pressed
+/// inside the window and stay plain picks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pending {
+    None,
+    /// switch to section index i
+    Section(usize),
+    /// pick sort entry i (re-picking the ACTIVE one toggles direction — `browse::set_sort`)
+    Sort(usize),
+    /// set the unwatched filter to this value
+    Unwatched(bool),
+    /// pick genre index (None = All Genres)
+    Genre(Option<usize>),
+}
+static mut PENDING: Pending = Pending::None;
+/// The grid's content cross-fade. The grid, its focused label, the empty line, the item count and
+/// the A–Z rail all draw under its alpha; the top chrome (scrim, chip, pills, toolbar, spinner,
+/// menus) does NOT — it is what persists across the swap.
+static mut XF: Xfade = Xfade::new();
+/// Last `browse::query_gen()` we have accounted for — the watchdog that catches a store replaced
+/// by something OTHER than this screen (`browse::reset()` on a profile switch), so that is faded
+/// rather than cut and the fader can never be left parked at 0 by a swap it never scheduled.
+static mut EPOCH: u32 = 0;
+
+fn xf() -> &'static mut Xfade {
+    unsafe { &mut *addr_of_mut!(XF) }
+}
+fn pending() -> Pending {
+    unsafe { addr_of!(PENDING).read() }
+}
+
+/// Queue a reload and start the fade-out. The newest request WINS — see [`Pending`].
+fn request(p: Pending) {
+    unsafe { PENDING = p };
+    xf().reload();
+}
+
+/// Apply the queued reload. Called on exactly one frame — [`Xfade::tick`]'s commit frame — and by
+/// [`flush`]. Every scroll/focus teleport ([`grid_reset`], [`restore_view`]) happens HERE, at
+/// alpha 0, so the jump is never on screen.
+fn apply_pending() {
+    let p = pending();
+    unsafe { PENDING = Pending::None };
+    match p {
+        Pending::None => {}
+        Pending::Section(i) => apply_section(i),
+        Pending::Sort(i) => {
+            crate::browse::set_sort(i);
+            grid_reset();
+        }
+        Pending::Unwatched(v) => {
+            // the target, re-checked against the store: two presses inside one fade collapse to a
+            // no-op, and a no-op must NOT re-query (nor reset the scroll — nothing changed)
+            if crate::browse::unwatched() != v {
+                crate::browse::toggle_unwatched();
+                grid_reset();
+            }
+        }
+        Pending::Genre(g) => {
+            crate::browse::set_genre(g);
+            grid_reset();
+        }
+    }
+}
+
+/// Apply a queued reload NOW, without waiting for the fade — for the paths that LEAVE the screen
+/// mid-fade. Without this, a sort picked and then BACKed out of within 70 ms is silently dropped
+/// while the toolbar chip — which reads the queued intent, see [`view_sort_label`] — has already
+/// relabelled itself. The chrome lying about the listing is worse than the original no-fade cut.
+/// Re-mounts the fader so the (now different) content dissolves in rather than cutting.
+fn flush() {
+    if pending() != Pending::None {
+        apply_pending();
+        xf().mount();
+    }
+}
+
+// ---- what the CHROME shows while a reload is queued -------------------------------------------
+// The grid's data swap is deferred to the fade floor, but a CONTROL must acknowledge a press on
+// the frame it happens. So the pills/chips resolve through the queued [`Pending`] when there is
+// one and through the committed store otherwise. There is exactly ONE pending value, so the chip,
+// the pill and the menu checkmark can never disagree with each other — and none of them touches
+// `browse`'s query state, so the store stays coherent for the whole fade.
+//
+// Do NOT "fix" the 70 ms by committing the query state early and deferring only the store wipe:
+// `browse::maybe_spawn` scans the OLD listing for holes and `pump` splices the reply in at
+// `st.items[start + k]`, so flipping `st.unwatched` without clearing the store opens a window in
+// which a FILTERED page lands at UNFILTERED offsets.
+
+/// The section the chrome should read as current — the queued one while a tab switch is in flight.
+fn view_section() -> usize {
+    match pending() {
+        Pending::Section(i) => i,
+        _ => crate::browse::cur(),
+    }
+}
+/// The unwatched-filter state the chip and the Filter menu's checkmark should show.
+fn view_unwatched() -> bool {
+    match pending() {
+        Pending::Unwatched(v) => v,
+        _ => crate::browse::unwatched(),
+    }
+}
+/// The Sort chip's value token.
+fn view_sort_label() -> &'static str {
+    match pending() {
+        Pending::Sort(i) => crate::browse::sorts().get(i).map(|s| s.title.as_str()).unwrap_or("Title"),
+        _ => crate::browse::sort_label(),
+    }
+}
+/// The Filter chip's value token.
+fn view_filter_label() -> &'static str {
+    match pending() {
+        Pending::Genre(None) => "All",
+        Pending::Genre(Some(i)) => crate::browse::genres().get(i).map(|g| g.title.as_str()).unwrap_or("All"),
+        _ => crate::browse::filter_label(),
+    }
+}
 // ---- per-frame draw caches (rebuilt only when their source state changes; building CStrings
 // + re-measuring text every frame was a review-confirmed waste — same rationale as TAB_CACHE) --
 struct ChipStrs {
@@ -135,6 +273,15 @@ fn tab_focus() -> c_int {
     } else {
         -1
     }
+}
+
+/// The tab pill holding focus, as a plain index — what a route change LEAVING this screen carries
+/// to Home, so the pill the user is standing on is still the pill under focus on the other side.
+/// Without it the SELECTION capsule travels to Home while the FOCUS capsule snaps back to wherever
+/// Home was last left, which reads as two objects rather than one bar crossing a boundary. `None`
+/// whenever the tab row is not what holds focus (a menu, the grid, the toolbar, the rail).
+pub(crate) fn focused_pill() -> Option<usize> {
+    (tab_focus() >= 0).then(|| unsafe { addr_of!(TAB_F).read() })
 }
 
 // ---- derived grid facts ---------------------------------------------------------------------
@@ -183,9 +330,30 @@ pub(crate) fn menu_open() -> bool {
 
 // ---- enter / view persistence ---------------------------------------------------------------
 
+/// How the screen is being ARRIVED at — the one thing [`enter`] cannot infer, and the only
+/// difference between its two kinds of caller.
+pub(crate) enum Arrival {
+    /// A hard cut: the `/tmp/plxnative-library` boot, where there is nothing on screen to be
+    /// continuous with, so the shared strip LANDS on this section's pill instead of sliding to it.
+    Cut,
+    /// The page cross-fade (`ui::nav`). The tab bar is continuous chrome with a capsule crossing it
+    /// right now, and [`widgets::tab_row_reveal`](crate::ui::widgets::tab_row_reveal) JUMPS the
+    /// strip scroll — a jump under a travelling capsule teleports the pills out from under it. It
+    /// is also unnecessary here: `tab_row_update` has been targeting the pending pill since the
+    /// press frame (`nav::view_tab`), so the strip is already springing there, and a pressed pill
+    /// was visible by construction anyway (`tab_pill_at` matches CLIPPED rects, and D-pad focus
+    /// scrolls a pill into view before OK can reach it).
+    Faded,
+}
+
 /// Enter the Library on section `sec` (0-based). Discovers the sections on first use
 /// (blocking, one small GET) and restores the section's remembered focus/scroll.
-pub(crate) fn enter(sec: usize) {
+///
+/// Everything here TELEPORTS something the user can see — the store swap, the restored grid scroll,
+/// the focus band — so on the `Faded` arrival it is called from the page fade's floor, at alpha 0,
+/// rather than on the press frame.
+pub(crate) fn enter(sec: usize, arrival: Arrival) {
+    flush(); // a reload queued on the way out is applied, not dropped (see [`flush`])
     let n = crate::browse::ensure_sections();
     if n == 0 {
         return;
@@ -195,13 +363,22 @@ pub(crate) fn enter(sec: usize) {
     restore_view();
     // with more libraries than fit the row, a section past the visible pills would open with its
     // own tab off screen (the `/tmp/plxnative-library=N` boot, or a restored far-right section).
-    // Put it on screen once, here, rather than dragging the row every frame.
-    crate::ui::widgets::tab_row_reveal(crate::browse::cur() + 1);
+    // Put it on screen once, here, rather than dragging the row every frame — but only on a CUT;
+    // see `Arrival::Faded` for why a jump is both wrong and redundant under a travelling capsule.
+    if matches!(arrival, Arrival::Cut) {
+        crate::ui::widgets::tab_row_reveal(crate::browse::cur() + 1);
+    }
     unsafe {
         AREA = Area::Grid;
         MENU = Menu::None;
         TOOL_F = 0;
+        PENDING = Pending::None; // whatever was queued before we left has just been flushed
+        EPOCH = crate::browse::query_gen(); // AFTER `set_cur` above, so our own bump isn't foreign
     }
+    // Route entry has NO outgoing content: park at 0 and fade in once the listing exists (the very
+    // next frame for a section whose store is still resident). This is also the ONE recovery for a
+    // fader left mid-phase by leaving the screen — only this route steps it.
+    xf().mount();
 }
 
 fn restore_view() {
@@ -228,7 +405,18 @@ fn grid_reset() {
     }
 }
 
+/// Queue a tab switch. The STORE moves on the fade floor ([`apply_section`]); the PILL moves now
+/// (every chrome reader goes through [`view_section`]).
 fn switch_section(i: usize) {
+    if i >= crate::browse::section_count() || i == view_section() {
+        return;
+    }
+    request(Pending::Section(i));
+}
+
+/// The committed half of [`switch_section`] — runs at alpha 0. The guard is re-checked against
+/// the store because `cur()` may have moved between the request and the commit.
+fn apply_section(i: usize) {
     if i >= crate::browse::section_count() || i == crate::browse::cur() {
         return;
     }
@@ -278,6 +466,25 @@ fn rail_jump(i: usize) {
 
 pub(crate) fn update(dt: f32) {
     unsafe { PHASE_MS += dt * 1000.0 };
+
+    // ---- content cross-fade. FIRST, because the commit frame teleports SCROLL/GR/GC and the
+    // wanted window below must be computed from the POST-swap scroll (the same reason that window
+    // is computed before `pump`).
+    let ready = !crate::browse::loading_initial(); // the SAME `st.total` the draw loops read
+    if xf().tick(dt, ready) {
+        apply_pending();
+    }
+    // Watchdog: a store replaced by something other than this screen (`browse::reset()` on a
+    // profile switch) still gets a fade rather than a cut. Read AFTER the commit, so our own
+    // `bump_gen` is never mistaken for a foreign one.
+    let g = crate::browse::query_gen();
+    if g != unsafe { addr_of!(EPOCH).read() } {
+        unsafe { EPOCH = g };
+        if !xf().is_swapping() {
+            xf().mount();
+        }
+    }
+
     unsafe {
         // wanted window BEFORE pump (its maybe_spawn reads it — after a tab switch the first
         // fetch must target THIS section's restored scroll, not the previous frame's)
@@ -325,7 +532,9 @@ pub(crate) fn update(dt: f32) {
     // the shared tab strip's horizontal scroll — with more libraries than fit the row, this is
     // what reaches the far pills. Drawn from `.pos`; the draw pass runs at dt=0. Off the tab row
     // it tracks THIS section's pill, which `enter` already put on screen, so it holds still.
-    crate::ui::widgets::tab_row_update(crate::browse::cur() as c_int + 1, tab_focus(), dt);
+    // the VIEW section, so the strip travels to the pressed pill on the press frame while the grid
+    // dissolves under it
+    crate::ui::widgets::tab_row_update(view_section() as c_int + 1, tab_focus(), dt);
     if menu_open() {
         pop().update(dt);
         let ph = panel_rect().h;
@@ -374,7 +583,7 @@ pub(crate) fn move_focus(sym: c_uint) {
                     TOOL_F += 1;
                 } else if sym == SDLK_UP {
                     AREA = Area::Tabs;
-                    TAB_F = crate::browse::cur() + 1;
+                    TAB_F = view_section() + 1; // the pill the chrome is showing, not the store's
                 } else if sym == SDLK_DOWN && total() > 0 {
                     AREA = Area::Grid;
                 }
@@ -476,10 +685,7 @@ pub(crate) fn on_ok() -> Action {
             match unsafe { addr_of!(TOOL_F).read() } {
                 0 => open_sort_menu(),
                 1 => open_filter_menu(false),
-                _ => {
-                    crate::browse::toggle_unwatched();
-                    grid_reset();
-                }
+                _ => request(Pending::Unwatched(!view_unwatched())),
             }
             Action::None
         }
@@ -505,6 +711,10 @@ pub(crate) fn back() -> bool {
         }
         Menu::None => {}
     }
+    // No menu is being dismissed, so this BACK either walks out of the screen or up to the tab bar
+    // — either way the queued reload must land now rather than be dropped by a route change (and
+    // the tab-bar walk below reads `cur()`, which [`flush`] has just made agree with the chrome).
+    flush();
     if area() == Area::Rail {
         unsafe { AREA = Area::Grid };
         return true;
@@ -563,7 +773,7 @@ fn build_sort_menu(keep: bool) {
 /// `keep` = re-entered from the Genre level via BACK (slide the pill, don't restart the fade).
 fn open_filter_menu(keep: bool) {
     let sec = Section::new("Filter")
-        .row(Row::new("Unwatched only").checked(crate::browse::unwatched()))
+        .row(Row::new("Unwatched only").checked(view_unwatched()))
         .row(
             Row::new("Genre")
                 .detail(crate::browse::genre_sel().map(|g| g.title.clone()).unwrap_or_else(|| "All".into()))
@@ -611,16 +821,14 @@ fn menu_commit(sel: i32) {
             // "Loading…" row must be a no-op, never a hidden direction toggle
             let built = unsafe { addr_of!(MENU_BUILT).read() };
             if built > 0 && sel >= 0 && (sel as usize) < built {
-                crate::browse::set_sort(sel as usize);
-                grid_reset();
+                request(Pending::Sort(sel as usize));
             }
-            close_menu();
+            close_menu(); // the panel closes NOW; the grid dissolves under it
         }
         Menu::Filter => {
             if sel == 0 {
-                crate::browse::toggle_unwatched();
-                grid_reset();
-                open_filter_menu(true); // refresh the check, keep the menu up
+                request(Pending::Unwatched(!view_unwatched()));
+                open_filter_menu(true); // rebuilt from `view_unwatched()` — the check flips at once
                 table().sel = 0;
             } else if sel == 1 {
                 build_genre_menu(false);
@@ -629,12 +837,10 @@ fn menu_commit(sel: i32) {
         Menu::Genre => {
             let genres_n = crate::browse::genres().len();
             if sel == 0 {
-                crate::browse::set_genre(None);
-                grid_reset();
+                request(Pending::Genre(None));
                 close_menu();
             } else if !crate::browse::genres().is_empty() && (sel as usize) <= genres_n {
-                crate::browse::set_genre(Some(sel as usize - 1));
-                grid_reset();
+                request(Pending::Genre(Some(sel as usize - 1)));
                 close_menu();
             }
         }
@@ -762,9 +968,12 @@ const CHIP_ISZ: f32 = 22.0; // trailing-icon box
 
 /// The three toolbar chips' strings + measured widths, cached until the labels/section change.
 fn chip_strs() -> &'static [ChipStrs; 3] {
-    let sort = crate::browse::sort_label();
-    let filt = crate::browse::filter_label();
-    let sec = crate::browse::cur();
+    // the VIEW labels, not the committed ones: a chip must relabel on the press frame, not 70 ms
+    // later. The cache key is these same three values, so it invalidates on the QUEUE and then
+    // again on the commit only if the resolved label actually differs (by construction it doesn't).
+    let sort = view_sort_label();
+    let filt = view_filter_label();
+    let sec = view_section();
     let cache = unsafe { &mut *addr_of_mut!(CHIP_CACHE) };
     let stale = cache.as_ref().map(|(s, f, c, _)| s != sort || f != filt || *c != sec).unwrap_or(true);
     if stale {
@@ -820,7 +1029,25 @@ fn toolbar_chip(p: Painter, x: f32, cs: &ChipStrs, icon: Icon, focused: bool, to
 
 pub(crate) fn draw() {
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
-    let p = Painter::root();
+    // TWO nested fades, and the nesting is the whole design.
+    //
+    // `p` is the PAGE — everything this screen owns that Home does not: the grid, the top scrim,
+    // the toolbar chips, the count, the rail, the menus. It dips to the app ground and back when
+    // the ROUTE changes (`ui::nav`), which is what makes Home↔Library a transition rather than a
+    // cut. `pk` is the CONTINUOUS CHROME — the profile chip and the shared tab row, the same
+    // control Home draws — which holds still while the pages swap under it.
+    //
+    // `pg` adds the grid's OWN content cross-fade on top of `p`, multiplicatively and for free.
+    // Everything that is a FUNCTION OF THE LISTING draws through it: the tiles, the focused tile's
+    // label block, the empty line, the item count and the A–Z rail (which indexes the grid and is
+    // meaningless without it). Everything that PERSISTS ACROSS a re-query stays on `p`: the
+    // top-chrome scrim, the three toolbar chips, the loading spinner and the menus.
+    // `Painter::alpha` is multiplicative and folded into every primitive by `Painter::c` —
+    // including `tex_carded`'s tint and its folded drop shadow, `sheen_rim`, `Painter::text` and
+    // `icons::draw` — so no per-tile work is needed and nothing can escape either fade.
+    let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+    let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
+    let pg = p.alpha(xf().alpha());
     let sc = unsafe { addr_of!(SCROLL).read() }.pos;
     let focused_i = focus_idx();
     // the focused card draws LAST (pass 2) while the grid OR the rail owns focus — a rail
@@ -836,11 +1063,16 @@ pub(crate) fn draw() {
     } else if t == 0 {
         Label::new(c"Nothing here matches".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
             .h(crate::ui::label::HAlign::Center)
-            .draw(p, Rect::new(0.0, SCR_H * 0.5 - 20.0, SCR_W, 40.0));
+            .draw(pg, Rect::new(0.0, SCR_H * 0.5 - 20.0, SCR_W, 40.0));
     }
     // visible row RANGE by arithmetic, not an O(totalSize) walk (a 10k-item section must not
     // cost 1.7k iterations per frame); rows fully under the opaque top-chrome scrim are culled
-    // too — drawing the full card composite beneath it was pure fill-rate waste
+    // too — drawing the full card composite beneath it was pure fill-rate waste.
+    // Deliberately NO `if pg.alpha > 0` early-out around these loops: at the floor they already
+    // cost nothing (`n_rows()` is 0 while `total < 0`), and skipping them would stop `resolve_tex`
+    // being called for the incoming section's visible tiles until the fade-IN starts — delaying
+    // every poster fetch by the length of the fade. The 64-slot LRU must see the on-screen
+    // requests exactly as early as it does today.
     let r_lo = (((sc - CARD_H - GLOW_PAD) / PITCH).floor().max(0.0)) as usize; // loose; per-row cull is exact
     let r_hi = ((((sc + SCR_H - GRID_TOP) / PITCH).ceil()).max(0.0) as usize + 1).min(n_rows());
     for r in r_lo..r_hi {
@@ -862,7 +1094,7 @@ pub(crate) fn draw() {
             };
             let rect = Rect::new(x, y, CARD_W, CARD_H).scaled(s);
             let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_tile(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume);
+            card_row::draw_tile(pg, Art::Poster(m), rect, s, &RowStyle::HOME, resume);
         }
     }
 
@@ -887,7 +1119,7 @@ pub(crate) fn draw() {
                 })
                 .unwrap_or_default();
             let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
+            card_row::draw_focused(pg, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
         }
     }
 
@@ -910,11 +1142,11 @@ pub(crate) fn draw() {
     // the Library screen has no chip focus stop (its top-band focus is the tab row), so the chip
     // never unfurls here — expand 0.
     let cd = crate::ui::widgets::CHIP_D;
-    crate::ui::widgets::profile_chip(p, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
-    crate::ui::widgets::draw_tab_row(p, crate::browse::cur() as c_int + 1, tab_focus());
+    crate::ui::widgets::profile_chip(pk, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
+    crate::ui::widgets::draw_tab_row(pk);
 
     let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && unsafe { addr_of!(TOOL_F).read() } == i;
-    let unw = crate::browse::unwatched();
+    let unw = view_unwatched();
     let chips = chip_strs();
     let mut x = MARGIN_X;
     let r0 = toolbar_chip(p, x, &chips[0], Icon::ChevronDown, tool_focus(0), false);
@@ -935,13 +1167,24 @@ pub(crate) fn draw() {
         }
         let cs = &cache.as_ref().unwrap().2;
         let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, TOOL_Y + TOOL_H * 0.5);
-        p.text(cs.as_ptr(), SCR_W - MARGIN_X, ty, theme::size::CAPTION, theme::TEXT_TERTIARY, 2, 0);
+        pg.text(cs.as_ptr(), SCR_W - MARGIN_X, ty, theme::size::CAPTION, theme::TEXT_TERTIARY, 2, 0);
     }
 
     // ---- letter rail (right edge; only on the unfiltered ascending-title listing) ------------
-    draw_rail(p);
+    // faded WITH the grid it indexes. Its `RAIL_RECTS` stay live at α≈0 for the ~210 ms of a
+    // transition, so a pointer click there still jumps focus — judged harmless (the rail is
+    // conceptually still present), and the one hit-test/visibility divergence this fade has.
+    draw_rail(pg);
 
     // ---- menus over everything ---------------------------------------------------------------
+    // These build their own root painter (`Popover::painter` — its scrim must not compound with
+    // its own content fade), which used to mean an open menu sat at full strength over a dipping
+    // page. It doesn't any more: `Popover::painter` multiplies BOTH of its roots by
+    // `nav::page_alpha`, because a panel is drawn ON a page and a route change replaces the page.
+    // The path was already unreachable here — every input that could start a route change while a
+    // menu is up dismisses the menu instead, and `enter` clears `MENU` at the floor regardless —
+    // but the popovers Home and the detail page carry (the item context menu, the profile menu) are
+    // NOT, so the rule belongs in the shared component rather than in a note per screen.
     if menu_open() {
         let mp = pop().painter(0.45, 20.0);
         let r = panel_rect();
@@ -1026,10 +1269,9 @@ pub(crate) fn switch_step(k: u32) {
         4 => {
             let _ = back();
         }
-        5 | 6 => {
-            crate::browse::toggle_unwatched();
-            grid_reset();
-        }
+        // the scene fires every 1400 ms — far longer than the ~210 ms transition — so every
+        // switch still commits, and the scene now FPS-gates the cross-fade too
+        5 | 6 => request(Pending::Unwatched(!view_unwatched())),
         7 => open_filter_menu(false),
         8 => table().move_sel(1),
         9 => menu_commit(1), // → the Genre value list (fetches it the first time)
@@ -1039,5 +1281,95 @@ pub(crate) fn switch_step(k: u32) {
         12 => rail_jump(crate::browse::letters().len().saturating_sub(1)), // A→Z jump
         13 => rail_jump(0),                                               // and back to the top
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    //! The deferred-reload queue. `PENDING`/`XF` are screen-level `static mut`s, so every test
+    //! here holds the module's own [`PEND`] mutex for its whole body — the `home.rs` `FOCUS`
+    //! precedent, and the cost of screen-level singleton state; a test that works around it races
+    //! its siblings rather than the code.
+    //!
+    //! What is NOT here, deliberately: `apply_pending`'s effect on the STORE. `set_sort`/`set_genre`
+    //! index into `st.sorts`/`st.genres`, which only a live `includeMeta=1` response fills, and
+    //! nothing on this host draws a pixel — whether the dissolve READS right is a device capture.
+    use super::*;
+    use std::sync::Mutex;
+
+    static PEND: Mutex<()> = Mutex::new(());
+
+    /// Put the screen's queue + fader back the way a fresh boot has them, so ordering between
+    /// tests cannot matter.
+    fn clear() {
+        unsafe { PENDING = Pending::None };
+        *xf() = Xfade::new();
+    }
+
+    /// A fast double switch must commit ONCE, to the last thing pressed — the queue is one
+    /// overwritten value, not a backlog. Deliberately kept off `browse`'s statics: with an empty
+    /// section table `apply_section` early-returns, so this needs the module lock only.
+    #[test]
+    fn the_newest_queued_reload_supersedes_the_one_before_it() {
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        request(Pending::Sort(3));
+        request(Pending::Section(2));
+        assert_eq!(pending(), Pending::Section(2), "the newer request must replace the older one");
+        assert!(xf().is_swapping(), "a request arms the fade-out");
+        apply_pending();
+        assert_eq!(pending(), Pending::None, "the commit drains the queue — one press, one swap");
+        clear();
+    }
+
+    /// The whole point of the typed queue: the store is 70 ms behind, but a CONTROL must
+    /// acknowledge its press on the frame it happens, or the fade reads as dropped input. Reads
+    /// `browse::cur()`/`unwatched()`, so it takes `testlock::serial()` too — `browse`'s own tests
+    /// call `reset()`, which nulls `SECTIONS`/`STATES` underneath these.
+    #[test]
+    fn the_chrome_reads_the_queued_reload_not_the_committed_store() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let committed = crate::browse::unwatched();
+        request(Pending::Unwatched(!committed));
+        assert_eq!(view_unwatched(), !committed, "the chip flips on the press, not on the commit");
+        // a second press inside the same fade cancels the first: the chip must be able to say so
+        request(Pending::Unwatched(committed));
+        assert_eq!(view_unwatched(), committed);
+
+        request(Pending::Section(2));
+        assert_eq!(view_section(), 2, "the pill travels to the pressed tab immediately");
+        assert_eq!(view_unwatched(), crate::browse::unwatched(), "an unrelated chip falls back to the store");
+        clear();
+        assert_eq!(view_section(), crate::browse::cur(), "with nothing queued the chrome IS the store");
+    }
+
+    /// [`focused_pill`] feeds a focus assignment ACROSS a route boundary (`app.rs` hands it to
+    /// `home::set_hero_focus` at the page fade's floor), so a wrong answer parks Home's focus
+    /// somewhere the user never was. It must report the pill only while the tab row is genuinely
+    /// what holds focus — not the grid, not the toolbar, not the rail, and not under a menu, where
+    /// `TAB_F` is merely the value the row was last left on.
+    #[test]
+    fn the_pill_the_user_is_holding_is_what_leaves_the_screen() {
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let (area0, menu0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(MENU).read(), addr_of!(TAB_F).read()) };
+
+        unsafe { AREA = Area::Tabs; MENU = Menu::None; TAB_F = 3 };
+        assert_eq!(focused_pill(), Some(3), "the row holds focus — that pill crosses to Home");
+
+        unsafe { MENU = Menu::Sort };
+        assert_eq!(focused_pill(), None, "a menu owns the frame; the row underneath is not focused");
+        unsafe { MENU = Menu::None };
+
+        for a in [Area::Grid, Area::Toolbar, Area::Rail] {
+            unsafe { AREA = a };
+            assert_eq!(focused_pill(), None, "focus is not on the tab row");
+        }
+
+        unsafe { AREA = area0; MENU = menu0; TAB_F = tab0 };
+        clear();
     }
 }
