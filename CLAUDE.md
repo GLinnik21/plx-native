@@ -306,6 +306,30 @@ the perf gates), and `make test` = `deploy` + `run`.
   nothing (verified live; `time=1` too), which is exactly what makes this look already handled.
   Don't make the reset conditional again to save the pre-seed close: the wandering seek-tier
   failures were this, not the player.
+- **A settled non-player screen STOPS PRESENTING** (`ui::idle`, the whole-frame present gate). The
+  loop keeps running at full rate — input, pumps and every `*_update` are untouched, so key latency
+  and timers are unchanged — but `glViewport`…`SDL_GL_SwapWindow` is skipped while nothing is
+  moving, and a 2s keepalive bounds staleness. This is NOT the dirty-RECTANGLE tracking
+  `ui/mod.rs` rejects: when a frame does run it is the same immediate-mode full redraw it always
+  was. Motion is detected exactly (both `gfx::spring*` integrators report), and discrete changes
+  call `ui::idle::invalidate()` — **a new async landing that repaints must add a call there**, or
+  it arrives invisibly until the next keypress. **So must anything that animates from a CLOCK
+  rather than a spring** — a millisecond ramp, a phase, a countdown — since `note_spring` cannot see
+  it: `Xfade::tick` (every route dip) and `Spinner::draw` (every loading read-out) both shipped
+  FROZEN before they were made to report, and no fps scene caught it because those grade `FPS=`.
+  The rest test is visibility — magnitude-relative, capped under a quarter pixel, velocity judged
+  as `vel*dt` (the travel this frame) — not a bare epsilon.
+  Measured 2026-07-31 on a still Home grid: **39.6%
+  → 1.67% of one core** (ours 15.4→1.05, `surface-manager` 24.2→0.62). Consequences for anyone
+  reading a log: the heartbeat now carries **`pres=<n>`** (frames actually swapped that second)
+  while **`FPS=` still counts LOOP iterations** — `FPS=62 pres=0` is a healthy settled screen,
+  `FPS=0` is an app in trouble; the on-screen FPS counter FREEZES when idle (it is drawn, so it can
+  only update on a present) and that is expected, not a hang; and **an fps floor taken on a static
+  screen now grades nothing**, which is why `fps:home-grid` arms `plxnative-homeosc` and the still
+  case is gated by `fps:home-idle`'s `present_ceiling` instead. `/tmp/plxnative-noidle` turns the
+  gate off (DIAG-exempt, so an A/B does not also change which screen you boot to). The **player
+  route is deliberately excluded** — `system.rs` documents the video plane as *slaved* to our
+  surface, and playback already draws 0 draw calls with the HUD hidden.
 - **The once/sec `FPS=` heartbeat carries `pos=<s>` while frames are presenting** — the same
   `SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
@@ -328,7 +352,16 @@ the perf gates), and `make test` = `deploy` + `run`.
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
 - **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (floors per scene in
   `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec `FPS=`
-  heartbeat. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
+  heartbeat. **Three assertions now, and picking the wrong one is how a frozen animation ships:**
+  `floor` grades `FPS=`, which counts LOOP iterations — it proves the app is alive, and cannot see a
+  stopped animation at all; `present_floor` grades `pres=` and is what proves an animation still
+  RUNS (`login-spinner`, the two `*-nav` scenes); `present_ceiling` grades `pres=` from the other
+  side and proves a still screen stops (`home-idle`). A scene with no motion and only a `floor`
+  gates nothing — three carry an `_idle_gate_note` saying exactly that. Every run also reports
+  **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
+  monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
+  18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"
+  line in `tests/README.md` is an unmeasured hypothesis**, not a finding. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
   heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly.
@@ -380,7 +413,7 @@ the perf gates), and `make test` = `deploy` + `run`.
   colorspace path). `make deploy` also ships the NDK's NEON libjpeg-turbo next to the binary
   best-effort, which JPEG mode dlopen's).
   **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`/
-  `plxnative-remote`/`plxnative-capture`) marks the boot as
+  `plxnative-remote`/`plxnative-capture`/`plxnative-noidle`) marks the boot as
   automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
   stored session entirely — so headless runs always land on a deterministic Home.
   `/tmp/plxnative-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.
