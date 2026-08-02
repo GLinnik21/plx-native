@@ -226,8 +226,14 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 # ipk — the only artifact a non-developer ever receives — shipped WITHOUT the fonts, so a clean
 # install silently rendered the whole theme::size ladder in the system DroidSans, invalidating
 # the light-hinting/pixel-snapping contract that tools/font-hint-audit.py exists to guard.
+# Everything the .ipk installs. THIRD-PARTY-NOTICES.md and licenses/ are payload, not repo
+# decoration: LGPL-2.1 §6 requires the notice and the licence text to travel WITH the binary, so
+# a copy in the GitHub repo does not discharge it for someone who received only the package.
+# NB adding libturbojpeg.so.0 here would create IJG + BSD-3-Clause + Zlib obligations that the
+# current notices do NOT cover — it is deliberately dev-deploy-only (see capture.rs).
 APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png pkg/splash.png \
-            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt
+            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt THIRD-PARTY-NOTICES.md
+LICENSE_FILES = LICENSE $(wildcard licenses/*.txt)
 
 deploy: pkg/plxnative
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
@@ -338,8 +344,9 @@ IPK         := pkg/com.beb.plxnative_$(IPK_VERSION)_arm.ipk
 #   - `ar` gets D (deterministic): binutils' default embeds the builder's uid and a real mtime.
 ipk: pkg/plxnative
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
-	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative
+	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative/licenses
 	cp $(APP_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/
+	cp $(LICENSE_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/licenses/
 	rm -f pkg/com.beb.plxnative_*_arm.ipk
 	python3 ci/mkipk.py
 	$(SHA256SUM) $(IPK) | tee pkg/ipk.sha256

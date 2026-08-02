@@ -76,9 +76,11 @@ jobs:
             exit 1
           fi
       - name: Shipped fonts must be redistributable
-        # The single hard licensing blocker: pkg/appfont*.ttf are Monotype Arial today.
-        # check-package.py treats that as an XFAIL so CI can land before the swap; here it is
-        # a hard stop, because this job is what puts the fonts in front of the public.
+        # Was the single hard licensing blocker; cleared 2026-08-01 when Inter (OFL 1.1) replaced
+        # Monotype Arial, and `ci/check-package.py` now gates the family on every run rather than
+        # treating it as an XFAIL. This step stays because the failure mode it guards is a RELAPSE:
+        # the files are named appfont*.ttf, so nothing about a stale local copy being committed back
+        # would look wrong in a diff. This job is what puts them in front of the public.
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -175,9 +177,14 @@ jobs:
         # -r false: the app needs no root. Device-proven — it runs jailed as uid 6910 under LG's
         # stock jail_native_devmode profile. See docs/distribution.md §3.5.
         run: |
+          # icon160.png, NOT largeIcon.png: 130x130 is LG's launcher size, while the channel
+          # listing wants 160 (and 320 for the detail icon) — `tools/mkicons.py` cuts all four from
+          # one master for exactly this reason. The URL must return 200 or webosbrew's own
+          # `repogen.lintpkg` rejects the submission, which means the REPO MUST BE PUBLIC and the
+          # icon must be committed on the default branch before the first release.
           webosbrew-gen-manifest \
             -p "${{ steps.name.outputs.ipk }}" \
-            -i "https://raw.githubusercontent.com/${{ github.repository }}/main/pkg/largeIcon.png" \
+            -i "https://raw.githubusercontent.com/${{ github.repository }}/main/pkg/icon160.png" \
             -l "https://github.com/${{ github.repository }}" \
             -r false \
             -o pkg/com.beb.plxnative.manifest.json

@@ -109,10 +109,29 @@ for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf"):
 check((ROOT / "pkg/OFL.txt").exists(),
       "pkg/OFL.txt present — the OFL requires the licence to travel with the font")
 
+print("== compliance artifacts ==")
+# LGPL-2.1 §6 requires the notice AND the licence text to travel with the BINARY, so these are
+# payload rather than repo decoration — a copy on GitHub does not discharge it for someone who
+# received only the .ipk. release.yml's legal-gate refuses to publish without the first two.
+for f in ("LICENSE", "THIRD-PARTY-NOTICES.md"):
+    check((ROOT / f).exists(), f"{f} present")
+NEEDED_LICENCES = {
+    "LGPL-2.1.txt": "FFmpeg, GLib, glibc — dynamically linked, §6 notice duty",
+    "MIT.txt": "Feather/Heroicons and the MIT-elected Rust crates",
+    "Apache-2.0.txt": "Material Icons, moxcms, pxfm, compiler_builtins",
+    "LLVM-exception.txt": "compiler_builtins",
+    "Unicode-3.0.txt": "the Unicode tables inside Rust core",
+    "Zlib.txt": "nanosvg — vendored and compiled into the binary",
+}
+for name, why in NEEDED_LICENCES.items():
+    p = ROOT / "licenses" / name
+    check(p.exists() and p.stat().st_size > 200, f"licenses/{name} — {why}")
+
 print("== ipk payload ==")
 expected = {
     "plxnative", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
     "appfont.ttf", "appfont-bold.ttf", "OFL.txt",
+    "THIRD-PARTY-NOTICES.md", "LICENSE", *NEEDED_LICENCES,
 }
 data_tar = ROOT / "ipkroot/data.tar.gz"
 if data_tar.exists():

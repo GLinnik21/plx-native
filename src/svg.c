@@ -1,4 +1,9 @@
-// src/svg.c — runtime SVG rasterizer (nanosvg, vendored header-only, public domain).
+// src/svg.c — runtime SVG rasterizer (nanosvg, vendored header-only, zlib licence).
+//
+// NOT public domain, which this line said until 2026-08-02. nanosvg is zlib-licensed,
+// Copyright (c) 2013-14 Mikko Mononen — see vendor/nanosvg/nanosvg.h. It is compiled INTO the
+// shipped binary, so it is the one vendored C dependency that carries a real attribution
+// obligation, and a notices file generated from this comment would have omitted him entirely.
 //
 // Ships vector icon *assets* that rasterize to an RGBA mask at the exact pixel size we
 // draw them — the way iOS renders vector assets. Called from Rust (crate::svg) which
