@@ -344,9 +344,8 @@ struct TurboJpeg {
 
 fn tj_load() -> Option<TurboJpeg> {
     unsafe {
-        let exe = std::fs::read_link("/proc/self/exe").ok()?;
         let path = std::ffi::CString::new(
-            exe.parent()?.join("libturbojpeg.so.0").into_os_string().into_string().ok()?,
+            crate::paths::in_app_dir("libturbojpeg.so.0").into_os_string().into_string().ok()?,
         )
         .ok()?;
         let h = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);

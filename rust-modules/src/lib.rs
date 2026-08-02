@@ -16,6 +16,7 @@ mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — 
 mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
 mod player; // buffer-feed video engine (was playback.c) — step 5
 mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)
+mod paths; // where the app's own files live — /proc/self/exe, not a hardcoded install prefix
 mod pms;
 mod posters;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys

@@ -29,12 +29,19 @@ pub fn current_gen() -> u32 {
     CURRENT_GEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Session file — on the dev partition but OUTSIDE the app install dir: appinstalld replaces
+/// Session file locations, best first — see [`crate::paths::session_candidates`] for why this is a
+/// SEARCH ORDER rather than the single constant it used to be. The short version: webOS picks one
+/// of two jail profiles by install prefix, and they disagree about which directories are writable,
+/// so the one hardcoded path was correct under Developer Mode and did not exist under a Homebrew
+/// Channel install — where `save()` then dropped the error and the user re-did the QR sign-in on
+/// every boot, with a fresh `X-Plex-Client-Identifier` each time.
+///
+/// The first entry is still deliberately OUTSIDE the app install dir: appinstalld replaces
 /// `applications/com.beb.plxnative/` wholesale on every ipk (re)install, which silently signed the
-/// user out when the file lived there. `/media/developer/` itself survives reinstalls.
-const AUTH_PATH: &str = "/media/developer/com.beb.plxnative-auth.json";
-/// Pre-relocation path (inside the app dir) — read once as a migration fallback.
-const AUTH_PATH_OLD: &str = "/media/developer/apps/usr/palm/applications/com.beb.plxnative/auth.json";
+/// user out when the file lived there.
+fn auth_paths() -> Vec<std::path::PathBuf> {
+    crate::paths::session_candidates()
+}
 
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -113,10 +120,12 @@ impl Session {
 /// trade on the boot path, which must end up with an id; it is not one on a path a keypress can
 /// reach. Falls back to the pre-relocation path (migration), same as `load`.
 pub fn peek() -> Session {
-    std::fs::read(AUTH_PATH)
-        .ok()
-        .or_else(|| std::fs::read(AUTH_PATH_OLD).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
+    // First candidate that both EXISTS and PARSES wins. Parse is part of the test on purpose: a
+    // half-written file at a preferred location must not shadow a good one further down the list.
+    auth_paths()
+        .iter()
+        .filter_map(|p| std::fs::read(p).ok())
+        .find_map(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
 }
 
@@ -151,18 +160,34 @@ pub fn save(s: &Session) {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let Ok(json) = serde_json::to_vec_pretty(s) else { return };
-    let opened = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(AUTH_PATH);
-    if let Ok(mut f) = opened {
-        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
-        let _ = f.write_all(&json);
+    // Try each candidate; the first that accepts the write wins. A total failure is still
+    // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
+    // otherwise indistinguishable from a server-side auth problem and impossible to report.
+    for path in auth_paths() {
+        let opened = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path);
+        if let Ok(mut f) = opened {
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+            if f.write_all(&json).is_ok() {
+                return;
+            }
+        }
     }
+    crate::log("session: could not persist to ANY candidate path — login will not survive a reboot");
 }
 
 /// Clear the persisted session (sign-out) — removes the file; a fresh `client_id` is minted next
 /// load. The old-path copy goes too, or the migration fallback would resurrect the stale session.
 pub fn clear() {
-    let _ = std::fs::remove_file(AUTH_PATH);
-    let _ = std::fs::remove_file(AUTH_PATH_OLD);
+    // Every candidate, not just the one we happen to write today: leaving a copy at any other
+    // location would let `peek`'s search resurrect the stale session on the next boot.
+    for path in auth_paths() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv

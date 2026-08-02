@@ -12,9 +12,22 @@ use std::ptr::addr_of_mut;
 const SCR_W: f32 = 1920.0;
 const SCR_H: f32 = 1080.0;
 
-const APP_FONT: &CStr = c"/media/developer/apps/usr/palm/applications/com.beb.plxnative/appfont.ttf";
-const APP_FONT_BOLD: &CStr = c"/media/developer/apps/usr/palm/applications/com.beb.plxnative/appfont-bold.ttf";
+/// Last resort only. Reaching this is a DEFECT, not a graceful degradation — see `font_at`.
 const DROIDSANS: &CStr = c"/usr/share/fonts/DroidSans.ttf";
+
+/// The shipped fonts, addressed relative to wherever the ipk actually got installed
+/// (`crate::paths` explains why this cannot be a literal). Built once; `TTF_OpenFont` wants a
+/// `*const c_char` that outlives the call, so these are leaked `CString`s rather than temporaries.
+fn app_font(bold: bool) -> &'static CStr {
+    static REG: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
+    static BOLD: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
+    let slot = if bold { &BOLD } else { &REG };
+    slot.get_or_init(|| {
+        let name = if bold { "appfont-bold.ttf" } else { "appfont.ttf" };
+        CString::new(crate::paths::in_app_dir(name).into_os_string().into_encoded_bytes())
+            .unwrap_or_else(|_| CString::new("/nonexistent").expect("literal has no NUL"))
+    })
+}
 
 const VS_TEXT: &CStr = crate::gfx::glsl!("shaders/vs_text.vert");
 const FS_TEXT: &CStr = crate::gfx::glsl!("shaders/fs_text.frag");
@@ -134,15 +147,36 @@ static mut TCLOCK: c_uint = 0;
 
 use crate::log;
 
+/// One line per boot, not one per size — `font_at` is called for every rung of the size ladder,
+/// and 70-odd identical lines would bury the rest of the log.
+fn log_font_fallback_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        log(&format!(
+            "FONT FALLBACK: shipped fonts missing at {} — rendering in system DroidSans; \
+             the theme size ladder and the hinting contract are INVALID in this build",
+            crate::paths::app_dir().display()
+        ));
+    });
+}
+
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     let sz = sz.clamp(8, 79) as usize;
     let arr = if bold != 0 { &mut *addr_of_mut!(FONTS_B) } else { &mut *addr_of_mut!(FONTS) };
     if arr[sz].is_null() {
-        let path = if bold != 0 { APP_FONT_BOLD } else { APP_FONT };
-        arr[sz] = TTF_OpenFont(path.as_ptr(), sz as c_int);
+        arr[sz] = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
         if arr[sz].is_null() {
-            arr[sz] = TTF_OpenFont(APP_FONT.as_ptr(), sz as c_int);
+            arr[sz] = TTF_OpenFont(app_font(false).as_ptr(), sz as c_int);
             if arr[sz].is_null() {
+                // DroidSans is NOT an acceptable outcome, and it used to be an invisible one: the
+                // app booted looking plausible while every rung of the theme::size ladder rendered
+                // in a face the light-hinting/pixel-snapping contract was never tuned for — and
+                // with no bold companion, so each bold rung became synthetic emboldening applied
+                // AFTER grid-fitting. `init_text` still logged `ok=1`. Measured against the shipped
+                // face: -4.67% mean advance (-45.8% on `J`), +4.2% line box, 2792 -> 873 codepoints.
+                // tools/font-hint-audit.py reads HOST files, so it structurally cannot catch this.
+                // Say so once, loudly, so it is a reportable bug rather than a mystery.
+                log_font_fallback_once();
                 arr[sz] = TTF_OpenFont(DROIDSANS.as_ptr(), sz as c_int);
             }
             if !arr[sz].is_null() && bold != 0 {
