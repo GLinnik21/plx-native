@@ -46,7 +46,30 @@ full one-time setup + troubleshooting.
   default profile ships it; a `--profile minimal` nightly does not).
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
-- `make ipk` — repackage the installable `pkg/com.beb.plxnative_0.1.0_arm.ipk`.
+- `make ipk` — repackage the installable `pkg/com.beb.plxnative_<version>_arm.ipk`. The version
+  comes from `pkg/appinfo.json` (the single source; `ci/check-package.py` asserts the control
+  file agrees), and the archive is **reproducible** — `ci/mkipk.py` normalises tar identity and
+  the gzip header and writes the `ar` container itself. Two builds of one commit produce the same
+  sha256, which is what makes the manifest hash the TV verifies at install meaningful.
+  **Two things here are counter-intuitive and were both shipping broken until 2026-08-02** (found
+  the first time anyone actually installed an ipk — the dev loop is `make deploy`, which scp's into
+  an already-registered app dir and so never exercises the package). **(1)** webOS needs *two*
+  descriptors: `usr/palm/applications/<id>/appinfo.json` AND
+  `usr/palm/packages/<id>/packageinfo.json`. Without the second, `appinstalld` registers nothing.
+  **(2) GNU `ar` produces an ipk the TV rejects** — it suffixes short member names with `/`, and
+  `appinstalld` looks them up verbatim, failing the whole package with `error_code -5, "Failed to
+  extract package"`. So `mkipk.py` writes bare `debian-binary` / `control.tar.gz` / `data.tar.gz`
+  headers by hand. Neither bug is visible from the other's side: `webosbrew-ipk-verify` reads a
+  GNU-named archive fine, and the TV never gets far enough to miss a descriptor. `check-package.py`
+  now asserts both. Full account: `docs/distribution.md` §9.
+- **`RELEASE=1`** drops the `devtools` cargo feature — today the on-screen counter. It must be on
+  EVERY invocation that produces or ships the binary (`make RELEASE=1 deploy`, **not**
+  `make RELEASE=1 && make deploy`, which rebuilds as dev and ships that). `deploy`/`ipk` echo
+  which configuration they shipped. Switching configuration DELETES `pkg/plxnative` at Makefile
+  parse time — deliberately: make 3.81 on macOS compares mtimes at one-second granularity and
+  decides staleness from a stat taken before prerequisites run, so no stamp-mtime scheme works.
+  Each feature set also gets its own `--target-dir`, because cargo does not hash its output and
+  would otherwise report the dev build fresh while the release `.a` sat at that path.
 - Override the TV IP with `make TV=1.2.3.4 …`; the run duration with `make run RUN_SECS=30`.
 
 **Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
@@ -57,8 +80,10 @@ build-std --target arm-unknown-linux-gnueabi` (a staticlib needs no linker, so n
 cross-linker — but `-Z build-std` + `-C target-cpu=cortex-a9` is load-bearing: the default
 ARMv6 codegen emits the CP15 barrier that SIGILLs on the A53; see the Makefile comment). Headers
 come from `include/` (the TV's SDL2 2.0.4-fork headers, kept ahead of the sysroot's newer copies
-so we compile against the ABI the TV runs). The ipk uses the NDK's `ar` (GNU format; macOS BSD
-`ar` won't work). The old `zig cc` path is gone.
+so we compile against the ABI the TV runs). The ipk needs **no `ar` at all** — `ci/mkipk.py` writes
+the archive itself; this line used to say the opposite ("uses the NDK's `ar` (GNU format; macOS BSD
+`ar` won't work)") and had it exactly backwards, see the ipk bullet below. The old `zig cc` path is
+gone.
 
 ## The stub `.so` linking trick (now just FFmpeg + curl)
 
@@ -207,6 +232,15 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   is truncated each launch; **`/tmp/plxnative-crash.log` is append-only and survives the relaunch** — read it
   after a crash+restart. Note pmlog's wall clock is ~3h skewed on this TV, so correlate by **monotonic
   `SDL_GetTicks`** timestamps (and the SAM `exit_status`), not pmlog time.
+- **The app's own files are located at RUNTIME (`paths.rs`), never by literal.** webOS picks one
+  of two install prefixes — `/media/developer/apps/…` (Developer Mode) or `/media/cryptofs/apps/…`
+  (Homebrew Channel) — and the two jail profiles disagree about which directories are WRITABLE:
+  `jail_native_devmode.conf` mounts `/media/developer` rw and `/media/internal` ro, and
+  `jail_native.conf` does the opposite with no `/media/developer` at all. Resolve via
+  `read_link("/proc/self/exe")`, **not** `$HOME` (LG's conf sets HOME twice and which wins
+  differs by profile). The session file is a probed SEARCH ORDER for the same reason. Both
+  failures were silent before: fonts fell through to DroidSans while `init_text` still logged
+  `ok=1`, and the session write dropped ENOENT into a best-effort save. Both now log loudly.
 - Video track is always full-panel `1920x1080`; the UI is authored at a fixed `1920x1080`
   (`SCR_W`/`SCR_H`), no DPI scaling (panel is 1:1 at 1080p).
 
