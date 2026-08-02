@@ -20,13 +20,24 @@
 # make kill     — close the app on the TV
 # make ipk      — repackage pkg/com.beb.plxnative_<version>_arm.ipk (version from appinfo.json)
 #
-# RELEASE=1 drops the `devtools` cargo feature (today: the on-screen counter). It must be on
-# EVERY invocation that produces or ships the binary — `make RELEASE=1 deploy`, not
+# RELEASE=1 drops BOTH default cargo features: `devtools` (the on-screen counter) and
+# `devtriggers` (the /tmp trigger surface, the remote FIFO, the capture listener — see
+# rust-modules/src/dev.rs). It must be on EVERY invocation that produces or ships the
+# binary — `make RELEASE=1 deploy`, not
 # `make RELEASE=1 && make deploy`, which rebuilds as dev and deploys that. Both targets echo
 # which configuration they are shipping.
 
-TV       ?= 192.168.0.114
-SSH       = sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$(TV)
+# Which television. `make TV=1.2.3.4 …` overrides for one invocation; otherwise it comes from the
+# gitignored `.tv-host` (one line, an IP or hostname), so this repository carries nobody's home
+# network. `tools/` reads the same file via $TV_HOST. Absent, the targets that need a TV say so.
+TV       ?= $(strip $(shell cat .tv-host 2>/dev/null))
+# Expanded only inside a recipe, so `make`, `make check` and `make ipk` never need a TV at all —
+# but anything that talks to one fails with this sentence instead of dialling `root@`.
+# `alpine` is NOT a secret: it is webosbrew's published dev-mode root password, the same on every
+# rooted webOS TV. It stays in the clear because removing it would break the loop for everyone and
+# protect nothing. The ADDRESS is the part that identified one household, and that is now local.
+TV_OR_DIE = $(if $(TV),$(TV),$(error no TV configured — put its IP in .tv-host, or pass TV=<ip>))
+SSH       = sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$(TV_OR_DIE)
 SCP       = sshpass -p alpine scp -O -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 APPDIR    = /media/developer/apps/usr/palm/applications/com.beb.plxnative
 RUN_SECS ?= 18
@@ -56,11 +67,40 @@ CFLAGS       = --sysroot=$(SYSROOT) -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
 ifeq ($(DEBUG),1)
-CFLAGS      += -g
-# The RUSTFLAGS env var REPLACES rust-modules/.cargo/config.toml's list rather than appending,
-# so this must carry the SIGILL-critical flags too, not just -C debuginfo=2.
-RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon -C debuginfo=2"
+# -DPLX_DEBUG lets the C shim keep core dumps enabled for a post-mortem (src/main.c's
+# setrlimit(RLIMIT_CORE, 0) — a shipping build must not write 200 MB into the TV's app
+# partition). This is the only thing DEBUG=1 changes about behaviour rather than debuginfo.
+CFLAGS      += -g -DPLX_DEBUG
+RUST_DEBUGINFO = -C debuginfo=2
 endif
+
+# Rust codegen flags. rust-modules/.cargo/config.toml carries the SIGILL-critical pair for cargo
+# invoked ANOTHER way (an IDE, rust-analyzer, a hand-typed `cargo build --target …`); the Makefile
+# has to repeat them, because the RUSTFLAGS *environment variable* REPLACES that list wholesale
+# rather than appending to it. Anything added here must keep the full list intact — a partial
+# RUSTFLAGS silently drops target-cpu, and the ARMv6 CP15 barrier SIGILLs on the A53.
+#
+# --remap-path-prefix makes the binary independent of WHO built it. `-Z build-std` compiles std
+# from rust-src under $RUSTUP_HOME and every dependency from $CARGO_HOME, and rustc writes each
+# absolute path into .rodata as a panic location: 252 of them on this machine before this landed
+# (113 rustup + 139 registry), which is what ci/check-elf.sh's build-host section gates on.
+# It is NOT only a privacy fix. Those paths are why two developers at the same commit and the
+# same toolchain got DIFFERENT sha256s — so the reproducibility the ipk claims, and with it the
+# manifest hash a user's TV verifies at install, was untrue until the builder's $HOME stopped
+# being an input.
+#
+# ORDER IS LOAD-BEARING: rustc applies the LAST matching --remap-path-prefix, not the longest or
+# the first (measured — with $(HOME) listed last, $CARGO_HOME/registry came out as
+# /build/.cargo/registry rather than /cargo). So the broad $(HOME) catch-all goes FIRST and the
+# specific roots after it, which is also what makes CI work: a runner may put CARGO_HOME or
+# RUSTUP_HOME outside the home directory entirely (/usr/share/rust/.rustup), where the catch-all
+# cannot reach them and only the explicit remap does.
+CARGO_HOME  ?= $(HOME)/.cargo
+RUSTUP_HOME ?= $(HOME)/.rustup
+RUST_REMAP   = --remap-path-prefix=$(HOME)=/build \
+               --remap-path-prefix=$(CARGO_HOME)=/cargo \
+               --remap-path-prefix=$(RUSTUP_HOME)=/rustup
+RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon $(RUST_DEBUGINFO) $(RUST_REMAP)"
 # -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
 # the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
 
@@ -78,15 +118,17 @@ STUBS = stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libswscale
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
 # C++/ACB seam) + svg.c (nanosvg rasterizer).
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
-# RELEASE=1 drops the `devtools` cargo feature — today that is the on-screen seven-segment
-# counter (app.rs), which must not ship to users. See rust-modules/Cargo.toml's [features].
+# RELEASE=1 drops BOTH default cargo features — `devtools` (the on-screen seven-segment counter,
+# app.rs) and `devtriggers` (the whole /tmp surface, src/dev.rs). Neither may ship to users.
+# See rust-modules/Cargo.toml's [features].
 #
 # The stamp exists because of this project's classic stale-artifact trap: cargo fingerprints the
 # feature set and would rebuild, but MAKE would never invoke it — toggling RELEASE=1 touches no
 # file, so the recipe looks up to date and the PREVIOUS feature set's staticlib gets linked with
 # no comment. Depending on a stamp whose CONTENT is the flag makes the switch a real prerequisite.
-# RELEASE=1 drops the `devtools` cargo feature — today that is the on-screen seven-segment
-# counter (app.rs), which must not ship to users. See rust-modules/Cargo.toml's [features].
+# RELEASE=1 drops BOTH default cargo features — `devtools` (the on-screen seven-segment counter,
+# app.rs) and `devtriggers` (the whole /tmp surface, src/dev.rs). Neither may ship to users.
+# See rust-modules/Cargo.toml's [features].
 #
 # Each feature set gets its OWN target dir, and that is load-bearing rather than tidy. Cargo names
 # the staticlib by crate, so both builds would otherwise write the SAME libplxnative_modules.a —
@@ -347,6 +389,13 @@ ipk: pkg/plxnative
 	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative/licenses
 	cp $(APP_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/
 	cp $(LICENSE_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/licenses/
+	@# Strip the STAGED copy only, never pkg/plxnative. ~2.4 MB of .symtab+.strtab (30% of the
+	@# download, on a device whose app partition is 615 MB total and shared with every other app).
+	@# It must not be pkg/plxnative because tools/crash-report.sh symbolizes a crash PC against
+	@# that local binary AND md5-compares it to the on-TV copy to prove they are the same build —
+	@# stripping in place would break the identity check and lose function names from every
+	@# release crash report. Deploy ships the unstripped one by design; only the ipk is stripped.
+	$(TOOLPREFIX)strip --strip-unneeded ipkroot/data/usr/palm/applications/com.beb.plxnative/plxnative
 	rm -f pkg/com.beb.plxnative_*_arm.ipk
 	python3 ci/mkipk.py
 	$(SHA256SUM) $(IPK) | tee pkg/ipk.sha256

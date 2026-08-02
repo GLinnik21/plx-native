@@ -65,25 +65,40 @@ ok "$(wc -l < /tmp/dt-needed.actual | tr -d ' ') entries, unchanged"
 
 echo "== build-host identity =="
 # docs/distribution.md §4: a public build must not carry the developer's LAN or home directory.
-# A clean CI checkout has no src/config.local.h, so src/app.h's __has_include falls back to the
-# YOUR_PMS_HOST placeholder — which makes the CI-built binary the leak-free one by construction.
-# On a dev machine config.local.h is present BY DESIGN, so this section is informational there and
-# gating only where it can be satisfied: CI, which is the only thing that should build a release.
+# Those are TWO independent properties and this section used to conflate them, which is how the
+# one that gates everything went unverified for so long:
+#
+#   the LAN address comes from src/config.local.h, which is present on a dev machine BY DESIGN
+#   (src/app.h's __has_include falls back to YOUR_PMS_HOST only in a clean checkout) — so those
+#   assertions genuinely can only hold in CI;
+#
+#   the HOME DIRECTORY has nothing to do with config.local.h. It arrives through `-Z build-std`
+#   compiling std and every dependency from absolute paths under $RUSTUP_HOME/$CARGO_HOME, and
+#   it is fixed by the Makefile's --remap-path-prefix. That check can and should run everywhere.
+#
+# Skipping the whole section on a dev machine meant the host-path gate had never once executed
+# against a real build. It also cannot be left CI-only now: the remap is the thing that makes the
+# ipk's byte-for-byte reproducibility claim true, and a dev build is where it would be broken.
+if strings -a "$BIN" | grep -qE '(^|[^[:alnum:]/_.-])/(Users|home)/[a-z]'; then
+  strings -a "$BIN" | grep -oE '(^|[^[:alnum:]/_.-])/(Users|home)/[a-z][^ ]*' | sort -u | head
+  fail "build-host paths in the binary — the build must set --remap-path-prefix (see the Makefile's RUST_REMAP)"
+fi
+# The pattern is anchored to a path BOUNDARY rather than matching '/home/[a-z]' anywhere, because
+# the plex.tv endpoint '/api/v2/home/users' is a substring match and would fail every build.
+ok "no build-host paths"
+
 if [ -f src/config.local.h ] && [ "${CI:-}" != "true" ]; then
-  echo "  SKIP — src/config.local.h present: this is a dev build, not a release artifact."
-  echo "         (CI builds from a clean checkout, where this section gates.)"
-  echo "all ELF assertions passed (build-host section skipped)"
+  echo "  SKIP (private-IP + placeholder) — src/config.local.h present: a dev build, not a release."
+  echo "         (CI builds from a clean checkout, where these gate.)"
+  echo "all ELF assertions passed (config-dependent assertions skipped)"
   exit 0
 fi
 if strings -a "$BIN" | grep -qE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b'; then
   strings -a "$BIN" | grep -oE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b' | sort -u | head
   fail "private IP address baked into the binary — was this built with src/config.local.h present?"
 fi
-if strings -a "$BIN" | grep -qE '/Users/|/home/runner|/home/[a-z]'; then
-  fail "build-host paths in the binary — release builds need -C --remap-path-prefix (see RELEASE=1)"
-fi
 strings -a "$BIN" | grep -q YOUR_PMS_HOST \
   || fail "YOUR_PMS_HOST placeholder absent — a real PMS_HOST was compiled in"
-ok "no private IPs, no host paths, placeholder present"
+ok "no private IPs, placeholder present"
 
 echo "all ELF assertions passed"

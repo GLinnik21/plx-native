@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <sys/resource.h>
 
 FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by the
                        * crash handler here and by the starfish.c seam. Opened "w" each
@@ -96,6 +97,23 @@ static void install_crash_tracer(void) {
        SEGV/ABRT/BUS/ILL/TRAP. capture.rs already dodges this per-call with MSG_NOSIGNAL
        ("SIGPIPE would kill the app", capture.rs); this covers every other socket in one line. */
     signal(SIGPIPE, SIG_IGN);
+
+#ifndef PLX_DEBUG
+    /* No core dumps in a shipping build — this is the other half of the re-raise above, and
+       without it that design is actively hostile to the user's TV. The jail sets RLIMIT_CORE
+       to INFINITY and /proc/sys/kernel/core_pattern is the bare string "core", i.e. relative
+       to cwd = our own app directory. Measured on the dev TV: a 209,965,056-byte core from a
+       single crash, sitting on /dev/mmcblk0p53 — 615.6 MB TOTAL, SHARED with every app the
+       user has installed, and nothing on the device ever cleans it. Two crashes fill it.
+       webosbrew's repository rule 3 ("be considerate to users' TV") is squarely about this.
+
+       What this costs: the kernel's core file, and only that. The tracer above still writes the
+       faulting PC and its /proc/self/maps line to the append-only crash log, which is what
+       tools/crash-report.sh symbolizes and what every triage in this project has actually used;
+       the re-raise still gives SAM a real WIFSIGNALED exit. `make DEBUG=1` keeps cores (and
+       DWARF) for the rare case that wants a full post-mortem. */
+    setrlimit(RLIMIT_CORE, &(struct rlimit){ 0, 0 });
+#endif
 }
 
 int main(int argc, char **argv) {

@@ -13,8 +13,14 @@
 #                          path needs unstable intrinsics.
 #
 # CAUTION: the RUSTFLAGS *environment variable* replaces this list wholesale rather than
-# appending to it. The Makefile therefore sets RUSTFLAGS only for DEBUG=1, and repeats the
-# full list there. Do not add a partial RUSTFLAGS anywhere.
+# appending to it — and the Makefile now ALWAYS sets it, because --remap-path-prefix needs
+# $CARGO_HOME/$RUSTUP_HOME interpolated and a cargo config cannot expand an env var. So this
+# list is the fallback for cargo invoked another way, and the Makefile repeats it verbatim.
+# Do not add a partial RUSTFLAGS anywhere, and keep the two lists in step.
+#
+# Consequence worth knowing: a `make` build and a hand-typed `cargo build --target …` now
+# fingerprint differently, so they rebuild over each other if pointed at the same --target-dir.
+# The Makefile's own dirs (target/, target-release/) are unaffected.
 [target.arm-unknown-linux-gnueabi]
 rustflags = ["-C", "target-cpu=cortex-a9", "-C", "target-feature=-neon"]
 
