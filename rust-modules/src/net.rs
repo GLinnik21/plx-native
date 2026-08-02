@@ -98,7 +98,7 @@ fn perform(url: &str, headers: &[String], post_body: Option<&[u8]>) -> Option<Re
         curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1 as c_long);
         curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, 8 as c_long);
         curl_easy_setopt(h, CURLOPT_TIMEOUT, 25 as c_long);
-        let ua = CString::new("PlexForWebOS/1.0 (LG webOS)").ok()?;
+        let ua = CString::new(crate::plex::identity::user_agent()).ok()?;
         curl_easy_setopt(h, CURLOPT_USERAGENT, ua.as_ptr());
 
         // request headers — keep the CStrings alive until after perform.

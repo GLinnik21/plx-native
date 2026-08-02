@@ -19,7 +19,7 @@ const ACCEPT_JSON: &str = "Accept: application/json\r\n";
 /// the timeline reporter, the detail loader all read it). `host` is a numeric dotted-quad —
 /// the raw socket does no DNS.
 pub struct Client {
-    pub(super) host: String,      // "192.168.0.3" (numeric; passed straight to http_get/http_open)
+    pub(super) host: String,      // e.g. "192.0.2.10" (numeric; passed straight to http_get/http_open)
     pub(super) port: i32,         // 32400
     // X-Plex-Token value. Interior-mutable because the token changes at runtime after boot: it's
     // installed once we've logged in, and swapped when the user switches Plex Home profile (same
@@ -36,12 +36,9 @@ pub struct Client {
     pub(super) platform: String,  // "webOS"
 }
 
-/// The fixed device facts of the playback identity (the LG 49SM9000PLA this app ships on).
-const PLATFORM_VERSION: &str = "4.5";
-const DEVICE: &str = "webOS";
-const DEVICE_NAME: &str = "Living Room TV";
-const MODEL: &str = "49SM9000PLA";
-const PROVIDES: &str = "player";
+/// The device facts of the playback identity. Shared with the plex.tv transport — see
+/// [`identity`](super::identity) for why these stopped being literals in this file.
+use super::identity::{DEVICE, DEVICE_NAME, MODEL, PLATFORM_VERSION, PROVIDES};
 
 impl Client {
     pub fn new(host: &str, port: i32, token: &str) -> Client {
@@ -51,9 +48,9 @@ impl Client {
             token: RwLock::new(token.to_owned()),
             // one binary is one device to the server — never vary this per item/session
             client_id: "9b7d2f1a-4c63-4e18-a5d0-7f3b8c2e6a94".into(),
-            product: "PlxNative".into(),
-            version: "0.1.0".into(),
-            platform: "webOS".into(),
+            product: super::identity::PRODUCT.into(),
+            version: super::identity::VERSION.into(),
+            platform: super::identity::PLATFORM.into(),
         }
     }
 

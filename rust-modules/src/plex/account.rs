@@ -35,16 +35,20 @@ impl AccountClient {
     }
 
     /// The `X-Plex-*` identity headers every plex.tv request carries (+ the token when present).
-    /// These are also what plex.tv shows in the account's "authorized devices" list.
+    /// These are also what plex.tv shows in the account's "authorized devices" list — which is
+    /// why every value comes from [`identity`](super::identity) rather than a literal here: this
+    /// list and the PMS's query-parameter copy had drifted on five of seven fields, and one of
+    /// them ("Plex for webOS") read as an official Plex client in a stranger's account.
     fn headers(&self) -> Vec<String> {
+        use super::identity as id;
         let mut h = vec![
             "Accept: application/json".to_string(),
-            "X-Plex-Product: Plex for webOS".to_string(),
-            "X-Plex-Version: 1.0".to_string(),
-            "X-Plex-Platform: webOS".to_string(),
-            "X-Plex-Device: LG TV".to_string(),
-            "X-Plex-Device-Name: Plex (LG webOS)".to_string(),
-            "X-Plex-Model: LG webOS TV".to_string(),
+            format!("X-Plex-Product: {}", id::PRODUCT),
+            format!("X-Plex-Version: {}", id::VERSION),
+            format!("X-Plex-Platform: {}", id::PLATFORM),
+            format!("X-Plex-Device: {}", id::DEVICE),
+            format!("X-Plex-Device-Name: {}", id::DEVICE_NAME),
+            format!("X-Plex-Model: {}", id::MODEL),
             format!("X-Plex-Client-Identifier: {}", self.client_id),
         ];
         if let Some(t) = &self.token {
