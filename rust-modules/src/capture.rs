@@ -10,7 +10,7 @@
 //!
 //! Enabled by `/tmp/plxnative-capture` (content: optional port, default 8910), read
 //! once at boot like every dev trigger — and excluded from `automated_boot`'s DIAG
-//! list (app.rs) so attaching a live view to an interactive session doesn't suppress
+//! list (dev.rs) so attaching a live view to an interactive session doesn't suppress
 //! the who's-watching picker. With no client connected, `tick()` is one relaxed
 //! atomic load; GL resources are allocated lazily on the first captured frame.
 //!
@@ -54,7 +54,6 @@ use std::time::Instant;
 
 use crate::log;
 
-const TRIGGER: &str = "/tmp/plxnative-capture";
 const DEFAULT_PORT: u16 = 8910;
 const MIN_GAP_MS: u32 = 33; // ~30fps capture cadence cap
 /// Idle wait before the encoder synthesises a keepalive from the LAST captured frame.
@@ -100,11 +99,18 @@ static CYC_US: AtomicU32 = AtomicU32::new(0);
 static CYC_N: AtomicU32 = AtomicU32::new(0);
 
 /// Boot init (main thread, next to `posters_init`): no-op unless the trigger file exists.
+///
+/// In a release build it is a no-op UNCONDITIONALLY, and that matters more than it looks: this is
+/// the crate's only listener, it binds `INADDR_ANY` and its hello handshake carries no credential
+/// of any kind, so anyone on the LAN who reached it would be served the app's own framebuffer —
+/// the signed-in profile name, the user's library. Arming it took nothing but the ability to
+/// create a file in a world-writable `/tmp`. The gate is `dev::read` below being compile-time
+/// `None` without the `devtriggers` feature, which makes the two `spawn`s unreachable.
 pub(crate) fn init() {
-    let Ok(content) = std::fs::read_to_string(TRIGGER) else {
+    let Some(content) = crate::dev::read("capture") else {
         return;
     };
-    let port: u16 = content.trim().parse().unwrap_or(DEFAULT_PORT);
+    let port: u16 = content.parse().unwrap_or(DEFAULT_PORT);
     let mut hs = HANDLES.lock().unwrap();
     // Both halves are required — a listener with no encoder serves an empty stream — but whatever
     // did spawn still goes into HANDLES (Option is IntoIterator) so `shutdown` joins it either way.

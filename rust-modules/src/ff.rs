@@ -942,10 +942,9 @@ pub(crate) fn boot() {
     }
     // Phase A dev trigger: /tmp/plxnative-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
-    if let Ok(u) = std::fs::read_to_string("/tmp/plxnative-ffprobe") {
-        let u = u.trim();
+    if let Some(u) = crate::dev::read("ffprobe") {
         if !u.is_empty() {
-            probe(u);
+            probe(&u);
         }
     }
 }

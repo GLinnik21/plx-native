@@ -31,6 +31,19 @@ impl Remote {
     /// on our side so reads never hit EOF between host writes (the standard self-pipe
     /// trick). Returns `None` on any failure — the app then just runs without a remote.
     pub fn open() -> Option<Remote> {
+        // Gated HERE rather than at the call site, so there is exactly one door and the caller's
+        // `remote.as_mut()` type-checks unchanged in both feature sets.
+        //
+        // This is the surface that most needs to go. `/tmp` is mode 1777 in BOTH jail profiles,
+        // the `mkfifo` below deliberately ignores EEXIST, and `open()` then attaches to whatever
+        // object already sits at that path — so any co-resident process on an ordinary user's TV
+        // can create its own FIFO there first and drive the UI through the one real key and
+        // pointer handler. Not a theoretical hole: `ck:X,Y` clicks replay through the same path
+        // as a physical remote. It was ungated on every boot, before the event loop, with no
+        // trigger file required to arm it.
+        if !crate::dev::ENABLED {
+            return None;
+        }
         let path = std::ffi::CString::new(FIFO_PATH).ok()?;
         unsafe {
             // mkfifo; an existing FIFO (EEXIST) is fine, anything else and open() fails below.

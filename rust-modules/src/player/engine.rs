@@ -138,8 +138,8 @@ fn engine_take(_: &MainThread) -> Option<Engine> {
 /// Create + initialize the ACB (App Common Binding). We deliberately DON'T register
 /// our own com.webos.media client — it collides with the pipeline's uMS connection.
 pub(crate) fn acb_init(mt: &MainThread) {
-    if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-ptype") {
-        if let Ok(p) = s.trim().parse::<c_int>() {
+    if let Some(s) = crate::dev::read("ptype") {
+        if let Ok(p) = s.parse::<c_int>() {
             PTYPE.store(p, Ordering::Relaxed);
         }
     }
@@ -227,8 +227,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // resolve the URL: route (a selected movie) wins, then /tmp/plxnative-url, then a local sample.
     let mut url = crate::route::url();
     if url.is_empty() {
-        if let Ok(s) = std::fs::read_to_string("/tmp/plxnative-url") {
-            let t = s.trim().to_string();
+        if let Some(t) = crate::dev::read("url") {
             if !t.is_empty() {
                 url = t;
                 crate::route::set_url(&url);
@@ -238,14 +237,14 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     let mut sample: Option<Box<SampleBuf>> = None;
     let mut is_h265 = false;
     if url.is_empty() {
-        if let Ok(data) = std::fs::read("/tmp/sample.h264") {
+        if let Some(data) = crate::dev::read_bytes_at("/tmp/sample.h264") {
             let au = bf_split(&data, 0x09);
             log(&format!("bf_split h264: {} AUs in {} bytes", au.len(), data.len()));
             if au.len() < 2 {
                 return false;
             }
             sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
-        } else if let Ok(data) = std::fs::read("/tmp/sample.h265") {
+        } else if let Some(data) = crate::dev::read_bytes_at("/tmp/sample.h265") {
             // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
             let au = bf_split(&data, 0x46);
             log(&format!("bf_split h265: {} AUs in {} bytes", au.len(), data.len()));
@@ -267,7 +266,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // fixed payloads.)
     // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
-    let no_audio = std::path::Path::new("/tmp/plxnative-noaudio").exists();
+    let no_audio = crate::dev::flag("noaudio");
     crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
     let payload_str: &str = if stream {
