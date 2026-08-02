@@ -167,9 +167,21 @@ mod tests {
     /// The whole point of the module: a refused spawn is a return value, not a panic. Forced with
     /// an unsatisfiable stack size, since exhausting the real thread limit is not something a
     /// host test can arrange politely.
+    ///
+    /// **Not `usize::MAX`**, which is the obvious spelling of "unsatisfiable" and the one this
+    /// test used until 2026-08-02. `std`'s unix `Thread::new` rounds the requested stack up to a
+    /// page — `stack_size + page_size - 1` — and on `usize::MAX` that addition overflows, so a
+    /// debug-assertions build panics *inside std* before `pthread_create` is ever reached. The
+    /// test then fails claiming the very thing it exists to prove. It is toolchain-dependent
+    /// (green on 1.96 stable, red on 1.98-nightly) and this crate is nightly-only for
+    /// `-Z build-std`, so `make check` was the one that saw it.
+    ///
+    /// Half the address space is just as unsatisfiable — no allocator anywhere will find 8 EiB —
+    /// while leaving room for the page rounding to land, and it stays correct on the 32-bit
+    /// target, which a literal like `1 << 60` would not.
     #[test]
     fn a_refused_spawn_reports_instead_of_panicking() {
-        let h = super::spawn_with("unsatisfiable", Some(usize::MAX), || unreachable!());
+        let h = super::spawn_with("unsatisfiable", Some(usize::MAX / 2), || unreachable!());
         assert!(h.is_none(), "a spawn that cannot succeed must report, not hand back a handle");
     }
 
