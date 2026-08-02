@@ -657,7 +657,20 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     let ty = sy + 30.0;
     let (el_l, el_r) = draw_clock(p, &fmt_time(dispos, false), hx, ty, theme::size::CAPTION, white, sx, sx + sw);
     let rem = fmt_time(dur - dispos, true);
-    let rem_w = rem.chars().count() as f32 * theme::size::CAPTION as f32 * 0.52;
+    // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
+    // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
+    // clock can reach it — and it only ever worked because it over-estimated: under Arial it
+    // returned ~99.8px against a true ~85px. Under the shipped Inter that margin had already
+    // halved, and freezing tabular figures (which the clock's own template idiom requires, see
+    // `draw_clock`) widens numerals further, leaving about a pixel of slack. At that point the
+    // guard stops guarding and the two clocks can overlap near the end of a long item.
+    // Same '0'-template `draw_clock` uses, so the two agree by construction: with tabular figures
+    // the template's width IS the real string's width at every tick.
+    let rem_tmpl: String = rem.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
+    let rem_w = CString::new(rem_tmpl)
+        .ok()
+        .map(|t| crate::text::text_width(t.as_ptr(), theme::size::CAPTION, 1))
+        .unwrap_or(0.0);
     let rem_l = sx + sw - rem_w;
     let rem_shown = el_r + 20.0 < rem_l;
     if rem_shown {

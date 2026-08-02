@@ -210,7 +210,15 @@ const CD: f32 = 60.0; // circle button diameter
 /// past the right-aligned "Starring" line. The title band used to have its own narrower literal
 /// (680), which only ever bound a wordmark past ~7.5:1 and cost it the rung's height floor; one
 /// column for the whole block is the same rule the rest of the page already followed.
-pub(crate) const HERO_TEXT_W: f32 = 900.0;
+/// 900 -> 943 with the Arial->Inter swap (2026-08-01). Inter sets ~4.75% wider than Arial after
+/// kerning, and the synopsis is clamped to 3 lines, so the extra width came out of CONTENT rather
+/// than out of the wrap: the movie hero's blurb lost about five words and stopped mid-idiom
+/// ("...So, it's all for..."). The cause is horizontal, so the fix is horizontal — widening the
+/// column restores the tuned character count while keeping the block at 3 lines, which keeps its
+/// measured height and therefore leaves the facts row, the Play pill and the rest of the y-chain
+/// exactly where they were. (A 4th line would have walked the Play pill down every detail page.)
+/// Re-derive this if the font changes again: it is 900 x (Inter run width / Arial run width).
+pub(crate) const HERO_TEXT_W: f32 = 943.0;
 
 // ---- the hero text column's y-chain (`hero_chain`), pitch by pitch, from `Details Screen.dc.html`.
 // These are the GAPS between line tops, not absolute ys: two of the bands are conditional and the
