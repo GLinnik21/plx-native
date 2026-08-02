@@ -1,3 +1,8 @@
+//! PlxNative — an unofficial native Plex client for LG webOS.
+//! Copyright © 2026 Gleb Linnik. Licensed under the MIT Licence; see LICENSE at the repository
+//! root, and THIRD-PARTY-NOTICES.md for the components this links or redistributes.
+//! Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
+//!
 //! plxnative-modules — the Rust app core, built as a staticlib and linked into the C
 //! boot shim. The crate's C surface is tiny: C calls `plex_run` (app.rs) and forwards
 //! the two starfish callbacks (`sf_on_event`/`acb_on_event`, player/mod.rs); everything

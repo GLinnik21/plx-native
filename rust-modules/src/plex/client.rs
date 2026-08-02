@@ -26,10 +26,19 @@ pub struct Client {
     // server, different per-user token). Read in exactly one place (`with_token`).
     pub(super) token: RwLock<String>,
     // The §3b playback identity (X-Plex-* params on every playback request), so the server names
-    // + groups this client as ONE device and shows a proper Player in /status/sessions. NB this is
-    // a DIFFERENT identity from the plex.tv login device id (session::Session.client_id, a
-    // per-install UUID): PMS playback keys on this fixed one. Values moved verbatim from
-    // route::DEVICE_ID/identity_qs.
+    // + groups this client as ONE device and shows a proper Player in /status/sessions.
+    //
+    // This is the SAME id the plex.tv transport sends — `session::Session.client_id`, the v4 UUID
+    // minted from /dev/urandom on first boot and persisted. It used to be a hardcoded literal, and
+    // the comment here asserted the two identities were deliberately different because "PMS
+    // playback keys on this fixed one". That reasoning does not survive being published: PMS keys
+    // on whatever this client sends, and a constant compiled into the binary makes EVERY install
+    // on earth one device. Two households on one shared server would merge in /status/sessions,
+    // their PlayQueues and timelines would collide, and `GET /video/:/transcode/universal/stop`
+    // — which is keyed on exactly this value — could stop a stranger's transcode.
+    //
+    // What "fixed" was actually protecting is stability ACROSS RUNS, and the persisted UUID gives
+    // that too, per install rather than per binary.
     pub(super) client_id: String, // X-Plex-Client-Identifier — stable device id (NEVER per-item)
     pub(super) product: String,   // "PlxNative"
     pub(super) version: String,   // "0.1.0"
@@ -46,8 +55,11 @@ impl Client {
             host: host.to_owned(),
             port,
             token: RwLock::new(token.to_owned()),
-            // one binary is one device to the server — never vary this per item/session
-            client_id: "9b7d2f1a-4c63-4e18-a5d0-7f3b8c2e6a94".into(),
+            // Resolved HERE rather than passed in by each caller, so the three `install` sites
+            // cannot disagree and none of them has to know that the playback identity and the
+            // login identity are the same thing. `session::load` mints + persists on first boot,
+            // so this is never empty; it is one file read, once, behind the singleton.
+            client_id: super::session::load().client_id,
             product: super::identity::PRODUCT.into(),
             version: super::identity::VERSION.into(),
             platform: super::identity::PLATFORM.into(),

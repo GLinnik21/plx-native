@@ -1,4 +1,9 @@
-/* plxnative — native webOS Plex client. BOOT SHIM only: the app core is Rust
+/* PlxNative — an unofficial native Plex client for LG webOS.
+ * Copyright © 2026 Gleb Linnik. Licensed under the MIT Licence; see LICENSE at the repository
+ * root, and THIRD-PARTY-NOTICES.md for the components this links or redistributes.
+ * Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
+ *
+ * plxnative — native webOS Plex client. BOOT SHIM only: the app core is Rust
  * plex_run() (rust-modules). This file stays C for the genuinely low-level
  * bootstrap that must run before any Rust executes — the async-signal-safe crash
  * tracer, the event-log handle, stderr capture, and process bring-up. Everything

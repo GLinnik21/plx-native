@@ -25,10 +25,15 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MAC_CACHE="$REPO/.tv-mac"
 
-# Host: explicit env wins, else the Makefile is the single source of truth.
+# Host: explicit env wins, else the gitignored .tv-host — the same file the Makefile's TV and
+# tools/' TV_HOST fall back to, so there is one place to change and none of it is in the repo.
+# NB this used to scrape `TV = …` out of `make -pn`, which broke the moment TV stopped being a
+# literal: the scrape returned the unexpanded `$(shell cat .tv-host)` text and the wake failed
+# with a DNS error that read like the TV was gone.
 TV_HOST="${TV_HOST:-${TV:-}}"
-[ -n "$TV_HOST" ] || TV_HOST="$(make -C "$REPO" -pn 2>/dev/null | sed -n 's/^TV *= *//p' | head -1)"
-[ -n "$TV_HOST" ] || { echo "ERROR: no TV host (set TV_HOST, or TV= in the Makefile)." >&2; exit 2; }
+[ -n "$TV_HOST" ] || TV_HOST="$(cat "$REPO/.tv-host" 2>/dev/null || true)"
+[ -n "$TV_HOST" ] || TV_HOST="$(make -C "$REPO" -pn 2>/dev/null | sed -n 's/^TV *= *//p' | grep -v '[$()]' | head -1)"
+[ -n "$TV_HOST" ] || { echo "ERROR: no TV host — put its IP in .tv-host, or set TV_HOST=<ip>." >&2; exit 2; }
 
 TV_USER="${TV_USER:-root}"
 WAKE_TIMEOUT="${WAKE_TIMEOUT:-180}"
