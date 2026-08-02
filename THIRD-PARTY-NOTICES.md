@@ -259,14 +259,21 @@ decline to guess one:
   No licence statement was found in the NDK tree or in the archive itself.
 
 **Non-affiliation.** PlxNative is an independent, unofficial application. It is not affiliated
-with, endorsed by, or sponsored by LG Electronics or by Plex GmbH. "webOS", "LG", "Plex" and all
-other trademarks are the property of their respective owners.
+with, endorsed by, or sponsored by LG Electronics, Plex GmbH, Fandango Media (Rotten Tomatoes),
+IMDb.com, or The Movie Database. "webOS", "LG", "Plex", "Rotten Tomatoes", "IMDb", "TMDB" and all
+other trademarks are the property of their respective owners. Where those names appear in the
+application, they identify whose review score is being shown and nothing more.
 
-**Trademarks in shipped artwork (not a licence matter).** Several original icons drawn for this
-application depict third-party brand marks — Rotten Tomatoes / Fandango (the tomato and popcorn
-marks), The Movie Database, and IMDb (reproduced as name-and-brand-colour chips, not as logos). The drawings are
-original geometry, so no third-party copyright licence applies and nothing is owed under any
-licence in this file; the underlying trademark questions are separate and are not resolved here.
+**Third-party brands in the interface (not a licence matter).** Review scores fetched from the
+user's own Plex Media Server are labelled with the name of the service that published them, set
+as ordinary text. No third-party logo, wordmark or brand colour is reproduced: the only glyphs
+beside a score are two original drawings — a tomato and a group of people — that indicate the
+verdict, not the vendor. Nothing here is owed under any licence in this file.
+
+*This paragraph previously described a set of shipped icons depicting the Rotten Tomatoes fruit
+and popcorn marks, and IMDb/TMDB rendered as name-and-brand-colour chips. Those eleven assets were
+removed in favour of the above; the notice is kept accurate rather than deleted, because a stale
+disclosure that over-states what a package contains is its own problem.*
 
 ---
 

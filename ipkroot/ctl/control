@@ -4,5 +4,7 @@ Section: misc
 Priority: optional
 Architecture: arm
 Installed-Size: 10117
-Maintainer: beb <glinnik21@gmail.com>
+Maintainer: Gleb Linnik <23104281+GLinnik21@users.noreply.github.com>
+Homepage: https://github.com/GLinnik21/plex-native
+License: MIT
 Description: PlxNative — unofficial native Plex client for LG webOS (not affiliated with Plex)

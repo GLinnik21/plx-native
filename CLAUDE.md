@@ -18,8 +18,13 @@ signal-safe crash tracer, the event-log handle, stderr capture, process bring-up
 the Rust `plex_run()` — and `src/starfish.c`, the **StarfishMediaAPIs C++/ACB seam** (`src/svg.c`
 is the third C file, the nanosvg rasterizer).
 
-Target device (per `Makefile`/memory): LG 49SM9000PLA, webOS 4.5, rooted, `root@192.168.0.114`
-(ssh password `alpine`, already committed in the Makefile). App id `com.beb.plxnative`.
+Target device: LG 49SM9000PLA, webOS 4.5, rooted, reached as `root` over ssh. **Its address is NOT
+in the repo** — it comes from the gitignored **`.tv-host`** (one line, an IP or hostname), which the
+Makefile's `TV` and `tools/`' `TV_HOST` both fall back to; `make TV=1.2.3.4 …` overrides for one
+invocation, and a target that needs a TV with neither set fails saying so. The ssh password
+`alpine` IS still in the Makefile and that is deliberate — it is webosbrew's *published* dev-mode
+root password, identical on every rooted webOS TV, so it identifies nobody and removing it would
+break the loop for everyone. App id `com.beb.plxnative`.
 
 ## Build / deploy / run
 
@@ -62,7 +67,9 @@ full one-time setup + troubleshooting.
   headers by hand. Neither bug is visible from the other's side: `webosbrew-ipk-verify` reads a
   GNU-named archive fine, and the TV never gets far enough to miss a descriptor. `check-package.py`
   now asserts both. Full account: `docs/distribution.md` §9.
-- **`RELEASE=1`** drops the `devtools` cargo feature — today the on-screen counter. It must be on
+- **`RELEASE=1`** drops **both** default cargo features: `devtools` (the on-screen counter — the
+  feature is contracted to be draw-only) and `devtriggers` (the whole `/tmp` surface, the remote
+  FIFO and the capture listener — see `rust-modules/src/dev.rs`). It must be on
   EVERY invocation that produces or ships the binary (`make RELEASE=1 deploy`, **not**
   `make RELEASE=1 && make deploy`, which rebuilds as dev and ships that). `deploy`/`ipk` echo
   which configuration they shipped. Switching configuration DELETES `pkg/plxnative` at Makefile
@@ -313,7 +320,13 @@ draws a pixel, decodes a frame, or talks to Starfish/ACB, so playback and UI cor
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
 fails as "no line found", which reads exactly like a total regression. The **`tv-session` skill** is
 the bring-up/observe/drive loop; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
-FFI into the TV's own libraries. The full on-device suite is `./tests/run.py` (18 cases; `--fps` for
+FFI into the TV's own libraries. **`./tests/run.py` needs a gitignored `tests/manifest.local.json`**
+— `manifest.json` holds only the installation-INDEPENDENT case definitions, and each case names the
+SHAPE of item it needs (`item: "movie_h264_ac3_1080p"`); the overlay maps that to a ratingKey on
+this server and supplies the PMS host, TV address and test user. Copy
+`tests/manifest.local.json.example` and fill it in; the runner refuses to start without it and names
+any key it cannot resolve. Resolution happens once at load and writes `rk` back, so everything
+downstream still reads `case["rk"]`. The full on-device suite is `./tests/run.py` (21 cases; `--fps` for
 the perf gates), and `make test` = `deploy` + `run`.
 
 - **Event log:** the app writes `/tmp/plxnative-events.log` on the TV (LS2/ACB/Starfish replies, feed
@@ -416,7 +429,17 @@ the perf gates), and `make test` = `deploy` + `run`.
   scroll judder headlessly.
 - **Dev trigger files (read once at boot, on the TV).** There are ~40; this lists the ones worth
   knowing by name. **The catalog is the source, not this list** — get the real one with
-  `grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sort -u`. Two behaviours bite:
+  `grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sort -u` (the literals live in
+  comments now, so this still finds all of them).
+  **Every read goes through `rust-modules/src/dev.rs`, gated on the `devtriggers` cargo feature —
+  read that module's doc before adding a trigger, and never open a `/tmp` path directly.** Default
+  builds are unchanged; `RELEASE=1` drops the feature, and then `dev::flag` is `false` and
+  `dev::read` is `None` at COMPILE time, so a public binary opens nothing under `/tmp` but its own
+  logs (device-verified: no FIFO, no `:8910` listener). The same feature gates `Remote::open` and
+  `capture::init` — those are structural surfaces with no path literal, which is also why
+  `dev::any_trigger_present` (the whole-`/tmp` scan behind the picker suppression) lives there
+  rather than being greppable. The harness is unaffected: `tests/run.py` builds with plain `make`.
+  Two behaviours bite:
   `make run` clears ONLY the event log (unlike `tests/run.py`, which glob-clears triggers), so a
   by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also
   suppresses the who's-watching picker, silently changing which screen you boot to. The

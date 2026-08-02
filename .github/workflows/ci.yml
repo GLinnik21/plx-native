@@ -100,7 +100,12 @@ jobs:
         # CLAUDE.md's rasterization contract says to re-verify the size ladder after a font swap.
         # That rule is currently enforced by memory alone; this makes it a step.
         run: |
-          pip install --quiet freetype-py
+          # --break-system-packages: ubuntu-24.04's system python is PEP 668 externally-managed,
+          # and a bare `pip install` there fails the whole cross-build job for a reason that has
+          # nothing to do with the code. A throwaway runner is exactly where overriding that
+          # marker is correct; the alternative (actions/setup-python) pulls a second interpreter
+          # in for one script. Kept quiet, and tolerant of images that predate the marker.
+          pip install --quiet --break-system-packages freetype-py || pip install --quiet freetype-py
           ./tools/font-hint-audit.py
 
       - name: webosbrew compatibility check

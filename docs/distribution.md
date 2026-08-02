@@ -16,7 +16,7 @@ where that pass changed the answer it is marked **[corrected]**.
 | Ship via **webOS Homebrew Channel**? | **Yes** — it is a real, current, native-app-friendly path. ~1 day of packaging work plus the licence fixes below. |
 | Ship via **LG Content Store**? | **No.** Not for a hand-written native binary, not under any partner tier, not at any price. Would require a rewrite as a web app. |
 | Runs on **newer webOS**? | 32-bit armv7 is *not* the problem — it stays the native userland through webOS 26. **ACB is the problem**: `libAcbAPI` exists on webOS 4.x only. Today's binary does not reach `main()` on 5.0+. |
-| Is **private data** in the repo? | Git history is clean of credentials. But every built binary bakes in `192.168.0.3` and ~40 `/Users/gleblinnik/…` paths, and two runtime surfaces (a squattable `/tmp` FIFO, unauthenticated `0.0.0.0:8910`) must not ship enabled. |
+| Is **private data** in the repo? | Git history is clean of credentials. **Mostly resolved 2026-08-02:** the 252 (not ~40) `/Users/gleblinnik/…` paths are remapped to 0, and both runtime surfaces — the squattable `/tmp` FIFO and the unauthenticated `0.0.0.0:8910` listener — are compiled out of a release build along with the whole trigger surface. Left: `192.168.0.3` is still baked into a binary built on *this* machine (release comes from CI, which has no `config.local.h`), the token still wants rotating, and `tests/`+`docs/` still quote a private library. |
 | Needs a **rooted** TV? | **No** — device-proven, see §3.5. But the app currently only works under the **Dev Mode** install prefix; a Homebrew-Channel install breaks fonts and login. |
 | **Licensing** clear? | Font blocker **CLEARED 2026-08-01** — Inter (OFL 1.1) replaced Monotype Arial. FFmpeg/LGPL is fine. The repo still has **no LICENSE file at all**. |
 | **Trademarks**? | Plex itself is fine (their guidelines have an explicit permitted formula). **Rotten Tomatoes marks have no licensing route that exists**, and the TMDB logo ships without its mandatory attribution. |
@@ -432,8 +432,18 @@ world-readable `/tmp` on the TV across many runs.
   default and will authenticate against *any* rooted webOS TV a contributor points `TV=` at.
 - `192.168.0.114` / `192.168.0.3` — RFC1918, low risk, but they are the maintainer's home topology,
   they are the defaults every contributor inherits, **and one of them gets baked into the binary**.
-- `glinnik21@gmail.com` (`ipkroot/ctl/control:6`) — deliberate maintainer contact, but a personal
-  Gmail shipping inside every distributed `.ipk`.
+  **FIXED 2026-08-02.** `git ls-files | xargs grep '192\.168\.0\.'` is now empty outside this
+  section, which keeps its citations on purpose. The TV's address moved to the gitignored
+  **`.tv-host`**, which `Makefile`'s `TV` and `tools/`' `TV_HOST` both fall back to — so the loop
+  is unchanged for anyone who has one, and a target that needs a TV without one fails saying so
+  rather than dialling `root@`. Documentation and fixtures use RFC 5737 TEST-NET (`192.0.2.x`).
+  `alpine` deliberately stayed (see above): it identifies nobody, and removing it protects nothing.
+  The PMS address is the one that still reaches a *binary*, and only one built on this machine —
+  see the leak list below.
+- `glinnik21@gmail.com` (`ipkroot/ctl/control:7` — this said `:6`) — deliberate maintainer contact,
+  but a personal Gmail shipping inside every distributed `.ipk`. **FIXED 2026-08-02:** replaced with
+  the GitHub noreply alias, and `ci/check-package.py` now asserts the field is not a personal
+  mailbox, so it cannot come back by an edit nobody reviews.
 
 **What a public build would leak (verified by `strings` on `pkg/plxnative` and inside the ipk):**
 
@@ -441,7 +451,26 @@ world-readable `/tmp` on the TV across many runs.
    `/tmp/plxnative-token` automation branch — `app.rs:436-438` — so a public build with no
    `config.local.h` compiles the `"YOUR_PMS_HOST"` placeholder and never uses it. Still, don't ship a
    binary built on this machine.)*
-2. ~40 `/Users/gleblinnik/…` panic paths. Fix: `RUSTFLAGS="--remap-path-prefix=$HOME=~"`.
+   **Measured 2026-08-02, and better than this list implied: the TOKEN never reaches the binary.**
+   `PMS_TOKEN` is referenced nowhere outside `config.local.h` itself — `main.c` passes only
+   `PMS_HOST`/`PMS_PORT` to `plex_run` — and `strings` finds zero occurrences of the real value.
+   The leak here is one RFC1918 address, not a credential. Note also that the local guard is
+   self-disabling: `ci/check-elf.sh` skips its config-dependent assertions when `config.local.h`
+   is present, so `make ipk` on this machine still produces a fully valid, correctly-hashed
+   package with that address inside it and every check passing. Release comes from CI.
+2. ~~~40~~ **252** `/Users/gleblinnik/…` panic paths — **FIXED 2026-08-02**, count corrected by
+   measurement (`strings -a pkg/plxnative | grep -c /Users/`): 113 from `-Z build-std` compiling
+   std out of `$RUSTUP_HOME`, 139 from dependency panic locations under `$CARGO_HOME`. 250 of the
+   252 are in `.rodata`, which is why **`strip` does not touch them** — this section used to list
+   the two as adjacent chores and they are independent fixes. The Makefile now always sets
+   `RUSTFLAGS` with three `--remap-path-prefix` entries; `$HOME` first, the specific roots after,
+   because rustc applies the **last** match (measured — with `$HOME` last, `$CARGO_HOME` came out
+   as `/build/.cargo` rather than `/cargo`). Now 0.
+
+   Worth separating from privacy: this is also what made the Makefile's "same commit + same
+   toolchain → same sha256" claim TRUE. While `$HOME` sat in `.rodata`, two developers at one
+   commit produced different packages — and that hash is the entire integrity story for a user's
+   install, since nothing in the webosbrew chain is signed.
 3. The maintainer's Gmail, in the control file.
 
 **Runtime surfaces that must not ship enabled:**
@@ -749,44 +778,111 @@ Listed because each could change a decision above.
    OFL-1.1, Apache-2.0-WITH-LLVM-exception). **Ship them inside the `.ipk`** — LGPL §6's "prominent
    notice with each copy of the work" travels with the binary, not just the GitHub repo. ~200 KB
    against a 4 MB package.
-4. Fix the RT icons (text + source name, or a house glyph), and either ship TMDB's official
-   unmodified logo with its required notice or drop it. Attribute `user.svg` (Material, Apache-2.0)
-   and `backspace.svg` (Feather, MIT).
-5. Rename `X-Plex-Product` / `X-Plex-Device-Name` to a unique name; make `account.rs` and `client.rs`
-   agree. Re-run the player suite.
-6. Restore the jsmpeg MIT banner; fix `src/svg.c:1`'s "public domain" mislabel.
+4. ~~Fix the RT icons~~ **DONE 2026-08-02** (§11): providers named in text, verdict-only glyphs, and
+   the IMDb/TMDB brand-colour chips — which this list never mentioned — gone with them.
+   ~~Attribute `user.svg` / `backspace.svg`~~ **DONE** (`THIRD-PARTY-NOTICES.md` §3).
+5. ~~Rename `X-Plex-Product` / `X-Plex-Device-Name`~~ **DONE 2026-08-02** — and the scope was wider
+   than these two fields. `account.rs` and `client.rs` had drifted on **five of seven**; both now
+   read one `plex/identity.rs`. Three findings this item did not anticipate:
+   - **`net.rs` set the libcurl `User-Agent` to `PlexForWebOS/1.0 (LG webOS)`** on every plex.tv and
+     `discover.provider.plex.tv` request. Same impersonation as the product string and arguably
+     worse — it is what lands in Plex's own server logs — and it named a version that never existed.
+   - **`X-Plex-Model` was `49SM9000PLA`**, the author's television, reported as fact by every
+     install. Now a generic `LG webOS TV`.
+   - **`X-Plex-Version` was two literals** (`1.0` to plex.tv, `0.1.0` to the PMS), already stale in
+     opposite directions before release. Now `env!("CARGO_PKG_VERSION")`, with
+     `ci/check-package.py` asserting `Cargo.toml` and `appinfo.json` agree.
+
+   **Still open from this item:** the PMS-side `X-Plex-Client-Identifier` is a hardcoded UUID, so
+   every install on earth is one device to a server — sessions merge, and the transcode-stop call
+   keyed on it can reach across installs. The plex.tv half is already correct (`session.rs` mints
+   and persists a v4 UUID); the fix is threading that id into `plex::install`, ~10 lines, and it
+   touches the boot path so it wants a player-suite run.
+6. ~~Restore the jsmpeg MIT banner; fix `src/svg.c:1`~~ **DONE** (commit 2df3d90).
 7. Decide on the Plex ToS licence grant (§5.5 item 3) and write the privacy notice.
+8. **NEW:** no source file carries a `Copyright © 2026` header. `LICENSE` landed but §5.5 records
+   the Plex ToS obligation as a notice *in the source code*, and that half was never done. One
+   banner in `src/main.c` and `rust-modules/src/lib.rs`.
 
-**Privacy/security:**
+**Privacy/security — all but two DONE 2026-08-02:**
 
-8. `--remap-path-prefix` for release builds; ensure no `config.local.h` is present when building the
-   release binary; replace the control-file Maintainer with a project alias.
-9. Put the whole `/tmp/plxnative-*` trigger surface (including `Remote::open()` and the capture
-   listener) behind a cargo feature the release build does not enable, so a public binary reads
-   nothing from a shared `/tmp`. Where a trigger must survive, `stat` it and require our own euid.
-10. `setrlimit(RLIMIT_CORE, 0)` in release builds — today one crash writes 200 MB into a 615 MB
-    partition shared with every app on the TV.
-11. Sanitize `tests/manifest.json` and the personal-library references in `docs/`.
-12. Rotate the Plex token. Clean `main.o`, `.claude/worktrees/`, `.tv-*.log`, and the stale 200 MB
+9. ~~`--remap-path-prefix`~~ **DONE.** See §4 item 2 for the corrected numbers and why this was the
+   hard release blocker: `ci/check-elf.sh` already *gated* on host paths while nothing set the flag,
+   so the first tagged release would have failed its own check. The gate had two bugs of its own —
+   its hint named `-C --remap-path-prefix` (it is a top-level rustc flag) and its `/home/[a-z]`
+   pattern matched plex.tv's `/api/v2/home/users` endpoint, which would have failed **every** build
+   regardless. Both fixed, and the host-path assertion was split out of the config-dependent ones so
+   it runs on a dev machine too — it had never once executed against a real build.
+   ~~Replace the control-file Maintainer~~ **DONE**, plus `Homepage`/`License`, all three asserted.
+10. ~~Put the whole `/tmp/plxnative-*` surface behind a cargo feature~~ **DONE.** New `devtriggers`
+    feature (a *second* feature, not more things under `devtools`, whose stated contract is
+    draw-only — that promise is worth keeping) and a new `src/dev.rs` every read goes through.
+    Verified on the built ARM binary: a `RELEASE=1` build's only `/tmp` strings are its three log
+    sinks. The FIFO path and the capture trigger are optimised away entirely.
+
+    Two things this item's framing would have missed. **`automated_boot` names no path** — it
+    `read_dir`s `/tmp` and matches by prefix, so a literal-replacement sweep greps clean while the
+    boot screen is still steerable by a squatted file. And **the euid check is now moot**: nothing
+    has to survive, so there is no trigger left to `stat`.
+
+    The assumed conflict does not exist — `make run` touches `/tmp` only to clear and read back the
+    event log, and `tests/run.py` builds with plain `make`, so the harness never sees a release
+    binary and gating the whole surface costs it nothing.
+11. ~~`setrlimit(RLIMIT_CORE, 0)`~~ **DONE** (`src/main.c`, the other half of the tracer's re-raise).
+    `make DEBUG=1` keeps cores via a new `-DPLX_DEBUG`; that is now the only behavioural thing
+    `DEBUG=1` changes.
+12. Sanitize `tests/manifest.json` and the personal-library references in `docs/`. *(Narrower than
+    it reads: `docs/` is ~12 lines across 5 files. The concentration is `tests/` — the inventory
+    appears twice, in `manifest.json` and `README.md` — plus, unlisted here, real titles in
+    `rust-modules/src` comments, most of which are the RATIONALE for the code and should stay.)*
+13. Rotate the Plex token. Clean `main.o`, `.claude/worktrees/`, `.tv-*.log`, and the stale 200 MB
     `core` sitting in the app dir on the dev TV.
+    **The worktree half was structural, not housekeeping:** 16 copies of `config.local.h` with the
+    live token were held out of the index by `.git/info/exclude` alone — local-only, not reviewable,
+    absent from a clone, and inert in a CI checkout. Moved to `.gitignore` 2026-08-02.
 
 **Then packaging:**
 
-13. **Resolve the app directory at runtime** (`/proc/self/exe`) in `text.rs` and `session.rs`, make
-    the session path a probed search order, and make `save()` log its failure. Without this the
-    Homebrew-Channel install is broken — which is the whole distribution channel. See §3.5.
+13. ~~**Resolve the app directory at runtime**~~ **DONE** (commit a6864dd) — `paths.rs`, via
+    `/proc/self/exe`, with the session path a probed search order and `save()` logging its failure.
 14. ~~Run `webosbrew-ipk-verify --details --fw-releases '>=4.0, <5.0'` locally until clean.~~
     **DONE 2026-08-02 — clean on 4.4.2 and 4.10.0.** Found and fixed two bugs that made the ipk
     uninstallable; see §9. A real ipk install on the device is now proven end to end.
-15. ~~Add `Installed-Size`~~ (done, §9) / add `Homepage` / `License` to the control file; strip the
-    binary (7.96 MB → 5.59 MB); ~~make the ipk reproducible~~ (done — byte-identical rebuilds).
+15. ~~Add `Installed-Size`~~ (done, §9) / ~~add `Homepage` / `License`~~ **DONE 2026-08-02, and
+    asserted** / ~~strip the binary~~ **DONE**: measured 7,835,376 → 5,495,476 (−2.34 MB, 30%),
+    `Installed-Size` 10117 → 7781 KiB, ipk 4.85 MB. Only the **staged** copy is stripped, never
+    `pkg/plxnative` — `tools/crash-report.sh` symbolizes against that local binary *and* md5-compares
+    it to the on-TV copy, so stripping in place would break the identity check and lose function
+    names from every release crash report. ~~make the ipk reproducible~~ (done — byte-identical
+    rebuilds, re-verified after the strip landed).
 16. ~~Draw real icons (they're solid gold squares today).~~ **DONE 2026-08-02** — `tools/mkicons.py`
     cuts all four sizes (80/130 for LG, 160/320 for the channel listing) from
     `assets/logo-master.png`, measuring the master's ink and refitting it to LG's panel geometry
     rather than scaling the master's own canvas. Verified in the real launcher; see §10.
-17. Write a root README with build instructions that work from a clean clone.
+17. ~~Write a root README with build instructions that work from a clean clone.~~ **DONE 2026-08-02.**
 18. `webosbrew-gen-manifest`, attach both assets to a GitHub Release, submit the PR, tick the AI-use
     box that says an experienced developer reviewed and tested the generated code.
+
+**19. NEW — the ordering trap, and the things only a human can do.** These are what actually stand
+between here and a release, and none of them is code:
+
+- **Merge `publish-prep` to `main` BEFORE tagging.** `main` today has no `.github/`, no `LICENSE`,
+  no `licenses/`, no `icon160.png`/`icon320.png`. The generated manifest pins `iconUri` to
+  `…/main/pkg/icon160.png`, so a tag cut before the merge publishes a manifest whose icon URL 404s
+  — and webosbrew's own `repogen.lintpkg` rejects that.
+- **Make the repo public**, for the same reason: that raw URL must return 200.
+- ~~Set the `RUST_NIGHTLY` repo variable~~ **DONE 2026-08-02** — `nightly-2026-07-02`, the toolchain
+  the device-verified builds actually used. Unset, both workflows fell back to floating `nightly`,
+  which defeats the pin `-Z build-std` needs (and a `rust-toolchain.toml` cannot substitute — see
+  the Makefile).
+- **Run `ci.yml` by `workflow_dispatch` before ever cutting a tag.** Nothing in `.github/` has ever
+  executed: no CI run, no Release, no tag. The NDK action's cache and relocate step, the toolbox
+  `.deb` download, the pip install, the arm64 runner — all unexecuted. The first run should not be
+  the release path.
+- **Write `packages/com.beb.plxnative.yml` in a fork of `webosbrew/apps-repo`** and open the PR.
+  Nothing in this repo generates or validates it. Carry `requirements.webosRelease: '>=4.0, <5.0'` —
+  **that bound exists ONLY in this hand-written file**, not in the manifest CI generates, and
+  without it a webOS 5+ user installs an app whose `libAcbAPI` and `libav*.so.57` do not exist.
 
 ---
 

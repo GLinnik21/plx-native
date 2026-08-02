@@ -72,6 +72,21 @@ check(re.fullmatch(r"\d+\.\d+\.\d+", appinfo["version"]) is not None,
 check(appinfo["type"] == "native", 'appinfo type == "native"')
 check(not appinfo["id"].startswith(("com.palm", "com.webos", "com.lge", "com.palmdts")),
       "app id avoids LG's reserved prefixes")
+# The crate version is a THIRD copy of the same number: plex/identity.rs sends it to both Plex
+# services as X-Plex-Version via env!("CARGO_PKG_VERSION"), so a build whose Cargo.toml disagreed
+# with appinfo.json would report a version no release ever had.
+cargo_ver = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / "rust-modules/Cargo.toml").read_text(), re.M)
+check(cargo_ver is not None and cargo_ver.group(1) == appinfo["version"],
+      f'rust-modules/Cargo.toml version == appinfo version ({appinfo["version"]})')
+
+# Control-file provenance. None of this is read by opkg, and that is the point: it is what a
+# human — a webosbrew reviewer, or a user running `opkg info` — sees about who ships this and
+# under what terms. The Maintainer assertion exists because the field held a personal Gmail that
+# travelled inside every distributed .ipk, and nothing would have caught its return.
+check("Homepage" in control, "control declares a Homepage")
+check(control.get("License") == "MIT", f'control License == MIT (saw {control.get("License")!r})')
+check("@users.noreply.github.com" in control["Maintainer"] or "@gmail.com" not in control["Maintainer"],
+      f'control Maintainer is not a personal mailbox ({control["Maintainer"]})')
 
 print("== icons ==")
 check(png_size(ROOT / "pkg/icon.png") == (80, 80), "icon.png is 80x80")
