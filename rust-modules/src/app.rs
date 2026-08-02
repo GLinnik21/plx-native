@@ -3535,8 +3535,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // `loop_shown` — LOOP ITERATIONS, the same number the heartbeat logs as
                         // `loop=`, NOT the frame rate. It also necessarily FREEZES on a settled
                         // screen: it is drawn, so it can only update on a frame that presents.
-                        let loop_col = [0.4f32, 1.0, 0.55, 1.0];
-                        crate::gfx::draw_number(loop_shown, SCR_W as f32 - 70.0, 64.0, 46.0, loop_col.as_ptr());
+                        //
+                        // NOT in a release build (`make RELEASE=1` → --no-default-features). This
+                        // costs the fps scenes nothing: they grade the once/sec heartbeat in the
+                        // EVENT LOG, never the pixels, so `loop_floor`/`fps_floor`/`fps_ceiling`
+                        // are unaffected by whether the digits are painted.
+                        #[cfg(feature = "devtools")]
+                        {
+                            let loop_col = [0.4f32, 1.0, 0.55, 1.0];
+                            crate::gfx::draw_number(loop_shown, SCR_W as f32 - 70.0, 64.0, 46.0, loop_col.as_ptr());
+                        }
                     }
                     crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
                 });

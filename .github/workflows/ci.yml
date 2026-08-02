@@ -1,0 +1,127 @@
+name: CI
+
+# WHAT A GREEN RUN HERE MEANS: the code compiles for ARMv7-A soft-float with the right ABI and no
+# CP15 barriers, the pure logic is unbroken, no shadowed `else if` shipped, and the artifact is
+# well-formed. WHAT IT DOES NOT MEAN: that the app boots, binds the video plane, decodes a frame,
+# renders correctly, or holds 60 fps. There is no host runtime — the drawing, decoding and
+# platform-binding surface is all `extern "C"` into libraries only the TV has. `./tests/run.py`
+# against the real television remains the only evidence for any of that.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Deliberately a SEPARATE job from cross-build, not a prerequisite of it: the Makefile documents
+  # that `make check` is not a prerequisite of `all` so the cross-build never depends on a host
+  # toolchain run. Running them in parallel preserves that literally — a red clippy cannot mask a
+  # broken ARM link, and vice versa.
+  host-checks:
+    name: host checks (NOT a device gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust
+        # Both components are load-bearing and neither is in rustup's `minimal` profile:
+        #   clippy   -> `make lint`, the shadowed-branch gate
+        #   rust-src -> `-Z build-std`, which the ARM build cannot work without
+        run: |
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal \
+            --component clippy --component rust-src
+          rustup run "$RUST_NIGHTLY" rustc --version
+        env:
+          RUST_NIGHTLY: nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-modules
+
+      - name: make check (lint + host unit suite)
+        run: make check
+
+      - name: Report suite size
+        # CLAUDE.md's stated test count has gone stale twice. Print the real number rather than
+        # trusting a doc: the count is a fact the suite can produce about itself.
+        run: |
+          n=$(cd rust-modules && cargo test --lib -- --list | grep -c ': test' || true)
+          echo "host unit tests: $n" >> "$GITHUB_STEP_SUMMARY"
+
+  cross-build:
+    name: cross-build (armv7) + artifact assertions
+    # MUST be arm64 Linux. webosbrew/native-toolchain publishes darwin-arm64, darwin-x86_64 and
+    # linux-aarch64 for this release — there is NO linux-x86_64 build, so ubuntu-latest cannot
+    # obtain the toolchain at all. See the Makefile's NDK bootstrap block.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust
+        run: |
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
+        env:
+          RUST_NIGHTLY: nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-modules
+          # -Z build-std recompiles std from source and rust-cache cannot see those crates
+          # (Swatinem/rust-cache#161: cargo metadata never mentions them, so they are pruned).
+          # The crate's own deps still cache; std is rebuilt each run and that is expected.
+          key: armv7-build-std
+
+      - id: ndk
+        uses: ./.github/actions/webos-ndk
+
+      - name: Build
+        run: make WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
+
+      - name: Package
+        run: make ipk WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}'
+
+      - name: ELF assertions
+        run: ./ci/check-elf.sh
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+
+      - name: Packaging assertions
+        run: python3 ci/check-package.py
+
+      - name: Font hinting audit
+        # CLAUDE.md's rasterization contract says to re-verify the size ladder after a font swap.
+        # That rule is currently enforced by memory alone; this makes it a step.
+        run: |
+          pip install --quiet freetype-py
+          ./tools/font-hint-audit.py
+
+      - name: webosbrew compatibility check
+        # THE gate that matters for distribution: resolves the ELF's DT_NEEDED and symbols against
+        # 14 real firmware databases — the exact check webosbrew/apps-repo runs on a submission PR,
+        # and the one thing the stub-.so link trick makes otherwise invisible. Fully offline (the
+        # fw-symbols package carries the databases). Scoped to webOS 4.x because libAcbAPI and the
+        # FFmpeg .so.57 family do not exist from 5.0 on — see docs/distribution.md §1.4.
+        run: |
+          set -euo pipefail
+          TAG=v20260731-e1bb0c0
+          for p in fw-symbols ipk-verify; do
+            curl -fsSLO "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
+          done
+          sudo apt-get install -y ./webosbrew-toolbox-*.deb
+          webosbrew-ipk-verify --details --format markdown \
+            --fw-releases '>=4.0, <5.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plxnative-${{ github.sha }}
+          path: |
+            pkg/*.ipk
+            pkg/ipk.sha256

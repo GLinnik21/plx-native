@@ -1,0 +1,70 @@
+name: Provision webOS NDK
+description: >
+  Cache, download, checksum, extract and relocate the webosbrew buildroot SDK pinned by the
+  Makefile's NDK_REL, then prove its sysroot can satisfy LIBS_REAL before any build runs.
+
+# WHY runs-on MUST be an arm64 Linux runner (ubuntu-24.04-arm):
+# webosbrew/native-toolchain publishes exactly three host builds for webos-d7ed7ee.6 —
+# darwin-arm64, darwin-x86_64 and linux-aarch64. There is NO linux-x86_64 asset in this release
+# or the one before it. On ubuntu-latest (x86_64) the old hardcoded `darwin-$(uname -m)` URL
+# resolved and quietly delivered a Mach-O toolchain; the Makefile now refuses that host outright.
+
+inputs:
+  install-root:
+    description: >
+      Directory the SDK is extracted INTO. Must be byte-identical between cache save and restore:
+      relocate-sdk.sh bakes absolute sysroot/specs/ld paths into the toolchain, and it is only
+      re-run on a cache MISS.
+    required: false
+    default: ${{ github.workspace }}/.webos-ndk
+
+outputs:
+  sdk-dir:
+    description: Pass this as WEBOS_SDK= to make.
+    value: ${{ inputs.install-root }}/arm-webos-linux-gnueabi_sdk-buildroot
+
+runs:
+  using: composite
+  steps:
+    - name: Restore webOS NDK
+      id: ndk-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.install-root }}
+        # No restore-keys, deliberately. A prefix match would hand the build a DIFFERENT buildroot
+        # revision, and this project's codegen is revision-sensitive (GCC 12 / glibc 2.12 /
+        # armv7-a soft-float). Every on-device measurement in docs/ was taken against this one.
+        key: webos-ndk-${{ runner.os }}-${{ runner.arch }}-webos-d7ed7ee.6
+
+    - name: Download + relocate webOS NDK
+      if: steps.ndk-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p '${{ inputs.install-root }}'
+        # The Makefile owns the URL, the pin and the sha256 — this step just points it at the
+        # right destination, so there is exactly one place to bump the toolchain.
+        make setup-env WEBOS_SDK='${{ inputs.install-root }}/arm-webos-linux-gnueabi_sdk-buildroot'
+
+    - name: Verify the toolchain and the sysroot
+      shell: bash
+      run: |
+        set -euo pipefail
+        SDK='${{ inputs.install-root }}/arm-webos-linux-gnueabi_sdk-buildroot'
+        # A liveness probe, not `test -x`: a wrong-host toolchain is executable but unloadable.
+        "$SDK/bin/arm-webos-linux-gnueabi-gcc" --version | head -1
+        SYSROOT="$SDK/arm-webos-linux-gnueabi/sysroot"
+        # Makefile LIBS_REAL. libAcbAPI / libplayerAPIs / libpf-1.0 are LG's own proprietary
+        # libraries shipped inside the NDK sysroot. Verified present in the linux-aarch64 asset
+        # on 2026-08-01 — if a future release ever ships a thinner sysroot, fail HERE with a
+        # name rather than later with "cannot find -lplayerAPIs".
+        missing=()
+        for l in SDL2 SDL2_ttf GLESv2 luna-service2 glib-2.0 AcbAPI wayland-client playerAPIs pf-1.0; do
+          find "$SYSROOT" -maxdepth 5 \( -name "lib${l}.so" -o -name "lib${l}.so.*" \) -print -quit \
+            | grep -q . || missing+=("$l")
+        done
+        if [ "${#missing[@]}" -ne 0 ]; then
+          echo "::error::webOS sysroot is missing link libraries: ${missing[*]}"
+          exit 1
+        fi
+        echo "sysroot OK — all 9 LIBS_REAL present"

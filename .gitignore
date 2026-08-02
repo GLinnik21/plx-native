@@ -24,6 +24,7 @@ sysroot/
 local.env
 src/config.local.h
 rust-modules/target/
+rust-modules/target-release/
 
 # dead prototype dir (code lives in rust-modules/ now)
 rust-poc/
@@ -41,3 +42,4 @@ pkg/sockprobe
 .tv-tunnel.pid
 .tv-tunnel.log
 .tv-remote-url
+pkg/.build-config

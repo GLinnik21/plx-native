@@ -3,5 +3,6 @@ Version: 0.1.0
 Section: misc
 Priority: optional
 Architecture: arm
+Installed-Size: 10117
 Maintainer: beb <glinnik21@gmail.com>
 Description: PlxNative — unofficial native Plex client for LG webOS (not affiliated with Plex)

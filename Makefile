@@ -18,7 +18,12 @@
 # make run      — launch on TV, keep alive $(RUN_SECS)s, fetch event log
 # make test     — build + deploy + run
 # make kill     — close the app on the TV
-# make ipk      — repackage pkg/com.beb.plxnative_0.1.0_arm.ipk
+# make ipk      — repackage pkg/com.beb.plxnative_<version>_arm.ipk (version from appinfo.json)
+#
+# RELEASE=1 drops the `devtools` cargo feature (today: the on-screen counter). It must be on
+# EVERY invocation that produces or ships the binary — `make RELEASE=1 deploy`, not
+# `make RELEASE=1 && make deploy`, which rebuilds as dev and deploys that. Both targets echo
+# which configuration they are shipping.
 
 TV       ?= 192.168.0.114
 SSH       = sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$(TV)
@@ -28,6 +33,17 @@ RUN_SECS ?= 18
 
 # --- webOS NDK toolchain -----------------------------------------------------
 WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
+# Which nightly to use. Defaults to whatever rustup calls `nightly` (the dev-machine behaviour
+# this has always had). CI pins an exact date — `make RUST_NIGHTLY=nightly-2026-07-02 …` — because
+# `-Z build-std` recompiles std from source and is the most drift-sensitive thing this build does.
+# NB a rust-toolchain.toml would NOT work here: a `cargo +toolchain` on the command line outranks
+# the file, so the pin has to come through this variable.
+RUST_NIGHTLY ?= nightly
+
+# sha256 helper: coreutils `sha256sum` on Linux, perl `shasum -a 256` on macOS. Both print the
+# same "<hex>  <path>" format, so `-c -` works against either.
+SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
+
 TOOLPREFIX   = $(WEBOS_SDK)/bin/arm-webos-linux-gnueabi-
 CC           = $(TOOLPREFIX)gcc
 AR           = $(TOOLPREFIX)ar
@@ -62,8 +78,50 @@ STUBS = stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libswscale
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
 # C++/ACB seam) + svg.c (nanosvg rasterizer).
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
+# RELEASE=1 drops the `devtools` cargo feature — today that is the on-screen seven-segment
+# counter (app.rs), which must not ship to users. See rust-modules/Cargo.toml's [features].
+#
+# The stamp exists because of this project's classic stale-artifact trap: cargo fingerprints the
+# feature set and would rebuild, but MAKE would never invoke it — toggling RELEASE=1 touches no
+# file, so the recipe looks up to date and the PREVIOUS feature set's staticlib gets linked with
+# no comment. Depending on a stamp whose CONTENT is the flag makes the switch a real prerequisite.
+# RELEASE=1 drops the `devtools` cargo feature — today that is the on-screen seven-segment
+# counter (app.rs), which must not ship to users. See rust-modules/Cargo.toml's [features].
+#
+# Each feature set gets its OWN target dir, and that is load-bearing rather than tidy. Cargo names
+# the staticlib by crate, so both builds would otherwise write the SAME libplxnative_modules.a —
+# and cargo fingerprints the build without hashing its output, so after a RELEASE=1 build it
+# reports the dev build "Finished in 0.04s" and leaves the release .a sitting there. `make` then
+# links it with no comment: a release binary shipped as if it were the tested dev one. Measured,
+# not theorised. Separate dirs also let make track each artifact honestly.
+RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)
+RUST_TDIR      = target$(if $(RELEASE),-release,)
+# ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
+# write. Per-dir targets keep cargo honest, but after a RELEASE=1 build the dev .a is older
+# than the release binary sitting at pkg/plxnative, so make would call the link up to date and
+# leave the release binary in place under a plain `make`. The stamp's CONTENT is the flag set,
+# so switching configuration is a real prerequisite change.
+RUST_STAMP     = pkg/.build-config
+RUST_CFG       = features:$(RUST_FEATFLAGS)
+# Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
+# Both choices are load-bearing, and both were arrived at by measuring the failures:
+#   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
+#     from a stat taken BEFORE its prerequisites' recipes run, so a stamp written by a recipe is
+#     read with its OLD mtime and the relink is skipped.
+#   * A newer stamp is not enough either. make 3.81 compares mtimes at ONE-SECOND granularity, so
+#     a stamp written 0.5s after the binary compares EQUAL and the link is still skipped —
+#     measured: stamp 1785559259.894 vs binary 1785559259.408, no relink.
+# Removing pkg/plxnative cannot be defeated by either, because "the target does not exist" is not
+# a timestamp comparison. The failure this prevents is silent: you get the OTHER configuration's
+# binary, with the dev counter burned into a release build or vice versa.
+# (Consequence: a `make -n` that CHANGES the configuration really does delete the binary. The next
+# real build restores it; a dry run that does not switch configuration touches nothing.)
+ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
+  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative)
+endif
+
 RUST_TARGET = arm-unknown-linux-gnueabi
-RUST_LIB    = rust-modules/target/$(RUST_TARGET)/release/libplxnative_modules.a
+RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modules.a
 
 SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))   # = main.c + starfish.c + svg.c
 OBJS = $(SRCS:.c=.o)
@@ -97,7 +155,8 @@ src/%.o: src/%.c $(wildcard src/*.h) Makefile
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
 $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/.cargo/config.toml Makefile
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
-	  cargo +nightly build --release --target $(RUST_TARGET)
+	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
+	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
@@ -121,13 +180,36 @@ stub/libcurl.so: stub/curl_stub.c Makefile
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
 NDK_REL ?= webos-d7ed7ee.6
+# Host-aware asset selection. webosbrew/native-toolchain publishes exactly THREE host builds for
+# this release — darwin-arm64, darwin-x86_64, linux-aarch64 — and NO linux-x86_64. That is why CI
+# runs on `ubuntu-24.04-arm`: an x86_64 Linux runner cannot obtain this toolchain at all, and the
+# old hardcoded `darwin-$(uname -m)` name RESOLVED there (downloading a Mach-O toolchain that
+# passed the `test -x` guard below and died later with "Exec format error").
+NDK_OS   := $(shell uname -s | tr A-Z a-z)
 NDK_HOST := $(shell uname -m)
-NDK_TARBALL = arm-webos-linux-gnueabi_sdk-buildroot_darwin-$(NDK_HOST).tar.bz2
+ifeq ($(NDK_OS),darwin)
+  NDK_PLAT = darwin-$(if $(filter arm64,$(NDK_HOST)),arm64,x86_64)
+else ifeq ($(NDK_HOST),aarch64)
+  NDK_PLAT = linux-aarch64
+else
+  NDK_PLAT = UNSUPPORTED
+endif
+NDK_TARBALL = arm-webos-linux-gnueabi_sdk-buildroot_$(NDK_PLAT).tar.bz2
 NDK_URL = https://github.com/webosbrew/native-toolchain/releases/download/$(NDK_REL)/$(NDK_TARBALL)
+# sha256 of the linux-aarch64 tarball (the one CI fetches), verified 2026-08-01. Empty for the
+# darwin assets — `make setup-env` on a dev Mac keeps its existing no-checksum behaviour; CI is
+# where an unverified 156 MB download actually matters.
+NDK_SHA256_linux-aarch64 = 45a2d12ff557457d92cde4fddaa77a6f1090fca03adc43bb74397e5e0c379501
+NDK_SHA256 = $(NDK_SHA256_$(NDK_PLAT))
 setup-env:
+	@test "$(NDK_PLAT)" != UNSUPPORTED || { \
+	  echo "no webOS NDK published for $(NDK_OS)-$(NDK_HOST) at $(NDK_REL)."; \
+	  echo "Available: darwin-arm64, darwin-x86_64, linux-aarch64."; exit 1; }
 	@test -x $(CC) && { echo "NDK already present at $(WEBOS_SDK)"; exit 0; } || true
 	mkdir -p $(dir $(WEBOS_SDK))
-	curl -fL -o $(dir $(WEBOS_SDK))/ndk.tar.bz2 "$(NDK_URL)"
+	curl -fL --retry 3 --retry-all-errors -o $(dir $(WEBOS_SDK))/ndk.tar.bz2 "$(NDK_URL)"
+	@test -z "$(NDK_SHA256)" || { \
+	  echo "$(NDK_SHA256)  $(dir $(WEBOS_SDK))/ndk.tar.bz2" | $(SHA256SUM) -c -; }
 	tar xjf $(dir $(WEBOS_SDK))/ndk.tar.bz2 -C $(dir $(WEBOS_SDK))
 	cd $(WEBOS_SDK) && ./relocate-sdk.sh
 	rm -f $(dir $(WEBOS_SDK))/ndk.tar.bz2
@@ -144,10 +226,11 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 # ipk — the only artifact a non-developer ever receives — shipped WITHOUT the fonts, so a clean
 # install silently rendered the whole theme::size ladder in the system DroidSans, invalidating
 # the light-hinting/pixel-snapping contract that tools/font-hint-audit.py exists to guard.
-APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png \
-            pkg/appfont.ttf pkg/appfont-bold.ttf
+APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png pkg/splash.png \
+            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt
 
 deploy: pkg/plxnative
+	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
 	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could
@@ -215,7 +298,7 @@ test: deploy run
 # `#[cfg(test)] mod tests` blocks (there are no integration tests in tests/ — that directory is the
 # on-device Python harness, a different thing entirely).
 check: lint
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo test --lib
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --lib
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -234,21 +317,32 @@ check: lint
 # is full of. The escape hatch is this repo's own habit: clippy suppresses it when each arm carries
 # its own comment. Comment the arms, do not reach for an `#[allow]`.
 lint:
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +nightly clippy --all-targets -- \
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) clippy --all-targets -- \
 	  -A clippy::all \
 	  -D clippy::ifs_same_cond -D clippy::same_functions_in_if_condition -D clippy::if_same_then_else
 
 # ipk assembly: deb-style ar archive; the NDK ar emits GNU format (macOS ar is BSD)
+# pkg/appinfo.json is the ONE place the version is written; the ipk filename and everything else
+# derive from it, and ci/check-package.py asserts ipkroot/ctl/control still agrees. The registry
+# reads both out of the archive (webosbrew repogen/ipk_file.py), so a mismatch is a rejected
+# submission rather than a warning.
+IPK_VERSION := $(shell python3 -c "import json;print(json.load(open('pkg/appinfo.json'))['version'])")
+IPK         := pkg/com.beb.plxnative_$(IPK_VERSION)_arm.ipk
+
+# The .ipk is REPRODUCIBLE: same commit + same toolchain -> same sha256. That matters because the
+# manifest carries that hash and every user's TV verifies it at install time (there is no code
+# signing anywhere in the webosbrew chain — sha256 over HTTPS is the entire integrity story), so a
+# non-reproducible archive makes "rebuilt" and "tampered with" indistinguishable.
+#   - ci/mkipk.py normalises uid/gid/uname/gname/mtime/mode/order and the gzip header. `tar czf`
+#     was embedding `gleblinnik/staff` in every shipped archive.
+#   - `ar` gets D (deterministic): binutils' default embeds the builder's uid and a real mtime.
 ipk: pkg/plxnative
+	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
 	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative
 	cp $(APP_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/
-	cd ipkroot && tar czf control.tar.gz -C ctl control && \
-	  tar czf data.tar.gz -C data usr && \
-	  printf '2.0\n' > debian-binary
-	rm -f pkg/com.beb.plxnative_0.1.0_arm.ipk
-	cd ipkroot && $(AR) rc ../pkg/com.beb.plxnative_0.1.0_arm.ipk \
-	  debian-binary control.tar.gz data.tar.gz
-	shasum -a 256 pkg/com.beb.plxnative_0.1.0_arm.ipk | tee pkg/ipk.sha256
+	rm -f pkg/com.beb.plxnative_*_arm.ipk
+	python3 ci/mkipk.py
+	$(SHA256SUM) $(IPK) | tee pkg/ipk.sha256
 
 # tools/threadprobe.c — measures where pthread_create actually gives up on the TV (the question
 # behind rust-modules/src/task.rs). Standalone diagnostic: not linked into the app, not deployed

@@ -9,6 +9,17 @@ edition = "2021"
 name = "plxnative_modules"
 crate-type = ["staticlib"]
 
+[features]
+# On by default, so every ordinary `make`, every `make test` and every on-device harness run
+# behaves exactly as it always has. `make RELEASE=1` passes --no-default-features, which is what
+# CI's release job builds with.
+default = ["devtools"]
+# Developer-facing chrome that must not reach a public build. Currently: the on-screen
+# seven-segment counter. Everything gated here must be DRAW-ONLY or otherwise inert — the device
+# is the only test this project has, so a release build must not differ from the tested one in
+# any way that could change behaviour, only in what it paints.
+devtools = []
+
 [dependencies]
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
