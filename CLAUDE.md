@@ -250,10 +250,15 @@ There **is** a host unit suite, and it is not the real gate — both halves matt
 them is how this section used to be wrong in three files at once.
 
 **Tier 1 — `make check` (host, sub-second).** `cd rust-modules && cargo test --lib` runs the whole
-host suite in **~0.3s** on the dev Mac, no TV involved (59 tests as of 2026-07-29 — re-derive with
+host suite in **~0.3s** on the dev Mac, no TV involved (284 tests as of 2026-08-02, up from a
+documented 59 that was five times stale before anyone noticed — re-derive with
 `cargo test --lib -- --list | grep -c ': test'` rather than trusting this or the per-module counts
 below; the first version of this section was stale within one commit because two agents added tests
-to the same batch that documented it). `make check` is that command **plus `make lint`** (three
+to the same batch that documented it). **Run it with the same toolchain the Makefile does.** A bare
+`cargo test` uses the default toolchain; `make check` uses `cargo +$(RUST_NIGHTLY)`, and the two
+have disagreed — `task.rs`'s refused-spawn test passed 284/284 on stable while panicking inside
+`std` on nightly, which reads as flakiness and is not. Nightly is the gate, because `-Z build-std`
+means nightly is what ships. `make check` is that command **plus `make lint`** (three
 named clippy lints, see the build section — the shadowed-branch gate, ~1s warm); it is deliberately
 **not** a prerequisite of `all`, so an ordinary `make` still cross-compiles without ever invoking a
 host toolchain run. Run it before `make test` — it is free by comparison, and it is the only signal
