@@ -1,7 +1,1 @@
-<!-- Rotten Tomatoes ripe (`rottentomatoes://image.rating.ripe`) — body, stem, two calyx sepals.
-     The sepals clear the SHOULDER: level with the body they fuse into one flat top and the
-     silhouette reads as a mushroom.
-     ONE path, every subpath clockwise: see ui/icons.rs for why that is the rule. -->
-<svg viewBox="0 0 24 24" fill="#ffffff">
-  <path d="M 19.61 13.39 C 19.61 17.59 16.2 21 12 21 C 7.8 21 4.39 17.59 4.39 13.39 C 4.39 9.19 7.8 5.78 12 5.78 C 16.2 5.78 19.61 9.19 19.61 13.39 Z M 10.86 8.14 C 10.86 1.29 13.14 1.29 13.14 8.14 Z M 12.38 9.51 C 12.68 6.54 15.12 4.45 18.24 4.03 C 17.61 7.12 15.36 9.41 12.38 9.51 Z M 11.62 9.51 C 8.64 9.41 6.39 7.12 5.76 4.03 C 8.88 4.45 11.32 6.54 11.62 9.51 Z"/>
-</svg>
+<svg viewBox="-1 1.6 26 26" fill="#ffffff"><circle cx="12" cy="14.6" r="7.6"/></svg>

@@ -1864,11 +1864,11 @@ pub(crate) enum BadgeStyle {
 /// how tall the thing it is placing is.
 pub(crate) const BADGE_H: f32 = 34.0;
 /// A leading glyph's box, at the label's own type size — a touch over its cap height, the same
-/// relationship [`rating_badge`]'s brand mark has to its score. Deliberately smaller than
+/// relationship [`rating_group`]'s verdict mark has to its score. Deliberately smaller than
 /// [`Button`]'s `sz * BTN_ICON_RATIO`: this chip is half a button's height, so a button-proportioned
 /// glyph would fill it edge to edge.
 const BADGE_ICON: f32 = theme::size::CAPTION as f32;
-/// Glyph → label air. They are one run, so the tightest rung (as in [`rating_badge`]).
+/// Glyph → label air. They are one run, so the tightest rung (as in [`rating_group`]).
 const BADGE_ICON_GAP: f32 = theme::space::XS;
 
 /// pixel width [`badge`] will occupy for `text` (+ `icon`) — the layout companion (e.g. reserving
@@ -1924,218 +1924,119 @@ pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, icon: Option<crate:
 }
 
 // ---------------------------------------------------------------------------------------
-// ---- Rating badge: one review score behind its provider's brand mark. Deliberately NOT a [`badge`]
-// chip: a chip's border boxes in art that is already a distinct silhouette, and four boxed chips in a
-// row shout over the hero. The score is ordinary primary ink and the pair reads as part of the
-// metadata block it sits in. Returns the drawn width so a row can flow badges inline, with
-// [`rating_badge_w`] as the measure-first companion (same contract as `badge`/`badge_w`).
+// ---- Rating row: one PROVIDER's scores under the provider's name in words.
 //
-// A provider's mark takes ONE of two forms, and which one is a property of the brand, not a style
-// choice (`Details Screen.dc.html` draws all four):
+// Rewritten 2026-08-02 from `Details Screen.dc.html`. It used to draw one badge per score, each
+// behind that provider's own brand mark — Rotten Tomatoes' fruit and popcorn tub as tinted
+// silhouettes, IMDb and TMDB as logotype chips in their brand colours. All of that is gone:
 //
-//   * [`RatingMark::Glyph`] — Rotten Tomatoes, whose marks ARE silhouettes (a tomato, a tub) and
-//     whose *state* is the drawing. Two stacked masks, base + accent, so the tomato keeps its green
-//     leaf and the tub its gold popcorn; see `ui/icons.rs`.
-//   * [`RatingMark::Wordmark`] — IMDb and TMDB, whose brands are LOGOTYPES. Their old silhouettes (a
-//     generic star, a generic ring) named no provider: a five-point star says "a rating", not "IMDb".
-//     A gold `IMDb` chip and a teal `TMDB` chip are unmistakable, and cost nothing but a rect.
+//   * the RT marks had no licensing route (see `ui/icons.rs`), and
+//   * the chips were reproducing two more brands' logotypes to solve a problem — "whose score is
+//     this?" — that a WORD solves for free, and that naming the provider solves *lawfully*, since
+//     referential use needs no licence where a mark does.
+//
+// So a group is: the provider's name as a quiet MICRO caption in TEXT_TERTIARY, then its score or
+// scores. That inverts what carried the colour. Before, four saturated brand marks competed with
+// the hero art and with each other; now the captions recede to caption weight and the ONLY colour
+// left in the row is the verdict — a red or gold or hollow tomato, a green or drained crowd. The
+// row reads as one rhythm instead of four logos.
+//
+// Rotten Tomatoes is ONE group with two scores under one caption, because critics and audience are
+// two readings from one source; IMDb and TMDB are one score each. That is also why this draws a
+// GROUP rather than a badge: the caption is shared, so the unit that knows how to lay itself out
+// is the provider, not the score.
 // ----
-/// Mark box (px) for a [`RatingMark::Glyph`]. A little over the meta line's cap height so a 24-unit
-/// silhouette still resolves at couch distance — these marks carry the VERDICT (fresh vs rotten), so
-/// legibility here is not cosmetic.
+
+/// Mark box (px). A little over the meta line's cap height so a 26-unit silhouette still resolves
+/// at couch distance — these marks carry the VERDICT, so legibility here is not cosmetic.
 const RATING_MARK_D: f32 = 30.0;
-/// Glyph mark → score gap. They are one unit, so it stays tight.
+/// Glyph → its score. They are one unit, so it stays tight.
 const RATING_GAP: f32 = 10.0;
-/// Wordmark chip → score gap — one step wider than a glyph's. The chip carries its own side padding,
-/// so at an equal geometric gap its INK sits further from the score than a glyph's does; this is the
-/// optical correction, and it is why the two are separate constants rather than one shared rung.
-const CHIP_SCORE_GAP: f32 = 12.0;
-/// The wordmark chip's height — the SAME band as [`BADGE_H`], so a logotype chip and a metadata chip
-/// laid on one line agree. (28 first, which set the logotypes two rungs under the score beside them and
-/// read as a footnote rather than a brand.)
-const CHIP_H: f32 = BADGE_H;
-/// Strips a [`Wordmark::face_to`] sweep is banded into. 16 across a ~62px chip is ~4px a band, which
-/// is under the eye's threshold for these two stops; the reason it is banded at all is that the
-/// painter's only gradient runs VERTICALLY (`Painter::rect`), and this sweep runs left→right.
-const SWEEP_BANDS: usize = 16;
+/// Provider caption → the first score under it.
+const RATING_CAPTION_GAP: f32 = 12.0;
+/// Score → the next glyph in the SAME group (Rotten Tomatoes' critic → audience). Wider than
+/// [`RATING_GAP`] so the two pairs read as two readings rather than one run of four things.
+const RATING_PAIR_GAP: f32 = 14.0;
 
-/// One provider's logotype, in its own brand colours — the data half of [`RatingMark::Wordmark`].
-/// A `static` per provider (see [`WORDMARK_IMDB`]/[`WORDMARK_TMDB`]) rather than fields threaded
-/// through the draw call, so a brand's colours are spelled once and the row cannot mix them up.
-pub(crate) struct Wordmark {
-    /// The brand's name, exactly as the brand sets it (`IMDb`, not `IMDB`).
-    pub(crate) text: &'static std::ffi::CStr,
-    /// Type size for the logotype. Per-brand, not one shared rung: a longer word needs a step down to
-    /// keep its chip from outgrowing its neighbours (`TMDB` is set under `IMDb` for exactly that).
-    pub(crate) sz: std::os::raw::c_int,
-    /// Face fill, or the START stop when [`Wordmark::face_to`] is set.
-    pub(crate) face: [f32; 4],
-    /// `Some(stop)` = a left→right two-stop sweep from [`Wordmark::face`] to `stop`; `None` = flat.
-    pub(crate) face_to: Option<[f32; 4]>,
-    /// Ink over the face.
-    pub(crate) ink: [f32; 4],
-    /// Corner radius, or `0.0` for a full pill (radius = height/2).
-    pub(crate) radius: f32,
-    /// Face padding either side of the logotype.
-    pub(crate) pad: f32,
-    /// Inset border width in the ink colour; `0.0` = none.
-    pub(crate) border: f32,
-}
-
-/// IMDb: black-bordered gold box. The border is part of the logo, not a chip convention — IMDb sets
-/// its wordmark in a keyline box and it looks wrong without one.
-pub(crate) static WORDMARK_IMDB: Wordmark = Wordmark {
-    text: c"IMDb",
-    sz: theme::size::CAPTION,
-    face: theme::RATING_IMDB,
-    face_to: None,
-    ink: theme::RATING_IMDB_INK,
-    radius: 6.0,
-    pad: 10.0,
-    border: 2.5,
-};
-/// TMDB: a pill carrying its green→blue brand sweep, no keyline.
-pub(crate) static WORDMARK_TMDB: Wordmark = Wordmark {
-    text: c"TMDB",
-    sz: theme::size::MICRO,
-    face: theme::RATING_TMDB_LO,
-    face_to: Some(theme::RATING_TMDB),
-    ink: theme::RATING_TMDB_INK,
-    radius: 0.0,
-    pad: 12.0,
-    border: 0.0,
-};
-
-/// One colour layer of a [`RatingMark::Glyph`] — a mask and the tint it is painted in.
+/// One colour layer of a rating mark — a mask and the tint it is painted in. Marks are two-tone
+/// (body + calyx), and the rasterizer renders a MASK, so a mark is a slice rather than one icon.
 pub(crate) type MarkLayer = (crate::ui::icons::Icon, [f32; 4]);
 
-/// How one provider draws its mark — see the block comment above for why the two forms exist.
-pub(crate) enum RatingMark {
-    /// Tinted masks painted back-to-front at the SAME rect, one per colour. A slice rather than a
-    /// base-plus-accent pair because Certified Fresh needs three (a gold seal, a red box, and green
-    /// calyx-and-banner over both) and a plain tomato needs two — and because the ORDER is the
-    /// drawing: the layers overlap, so back-to-front is load-bearing, not incidental.
-    ///
-    /// Each layer must be a single `<path>` (or a single primitive element); `ui/icons.rs`'s
-    /// authoring contract explains why — two elements inside ONE layer alpha-composite and leave a
-    /// visible crease where their antialiased edges meet. Across layers that compositing is exactly
-    /// what draws the mark.
-    Glyph(&'static [MarkLayer]),
-    /// The provider's logotype in its own chip.
-    Wordmark(&'static Wordmark),
+/// One score inside a provider group: the mark that carries its verdict, and the score as text.
+/// `mark` is empty for a provider that has no verdict to draw (IMDb, TMDB) — their number IS the
+/// whole statement, and inventing a glyph for them is what put a meaningless star here before.
+pub(crate) struct RatingCell<'a> {
+    pub(crate) mark: &'a [MarkLayer],
+    pub(crate) value: &'a str,
+    /// Trailing unit set a rung down in tertiary ink — IMDb's "/10". A percentage carries its own
+    /// "%" inside `value`, because there the unit is part of the number rather than a scale note.
+    pub(crate) suffix: &'a str,
 }
 
-impl RatingMark {
-    /// The mark's own width — everything left of the score's gap.
-    fn width(&self) -> f32 {
-        match self {
-            RatingMark::Glyph(_) => RATING_MARK_D,
-            RatingMark::Wordmark(w) => wordmark_chip_w(w),
-        }
-    }
-    /// Mark → score gap, which differs by form (see [`CHIP_SCORE_GAP`]).
-    fn gap(&self) -> f32 {
-        match self {
-            RatingMark::Glyph(_) => RATING_GAP,
-            RatingMark::Wordmark(_) => CHIP_SCORE_GAP,
-        }
-    }
-}
-
-/// The chip's drawn width for `w`'s logotype — the layout companion to [`wordmark_chip`].
-pub(crate) fn wordmark_chip_w(w: &Wordmark) -> f32 {
-    crate::text::text_width(w.text.as_ptr(), w.sz, 1) + 2.0 * w.pad
-}
-
-/// Draw one provider's logotype chip with its LEFT edge at `x`, centred on `cy`; returns its width.
-/// Public because it is a brand mark, not a rating-row internal — anything that needs to say "IMDb"
-/// should say it this way rather than re-styling a [`badge`].
-pub(crate) fn wordmark_chip(p: Painter, x: f32, cy: f32, w: &Wordmark) -> f32 {
-    let cw = wordmark_chip_w(w);
-    let r = Rect::new(x, cy - CHIP_H * 0.5, cw, CHIP_H);
-    let rad = if w.radius > 0.0 { w.radius } else { CHIP_H * 0.5 };
-    match w.face_to {
-        // A left→right sweep, banded: clip to a vertical slice and fill the WHOLE chip-shaped
-        // rounded rect in that band's colour, so every band inherits the chip's silhouette and the
-        // corner arcs survive. Same scissor trick as `card_row::resume_bar`'s corner-wrapping fill.
-        Some(to) => {
-            let bw = r.w / SWEEP_BANDS as f32;
-            for i in 0..SWEEP_BANDS {
-                let t = (i as f32 + 0.5) / SWEEP_BANDS as f32;
-                let c = [
-                    w.face[0] + (to[0] - w.face[0]) * t,
-                    w.face[1] + (to[1] - w.face[1]) * t,
-                    w.face[2] + (to[2] - w.face[2]) * t,
-                    w.face[3] + (to[3] - w.face[3]) * t,
-                ];
-                // +1px of overlap: the scissor is integer, so abutting bands can leave a seam.
-                p.clip(Rect::new(r.x + i as f32 * bw, r.y, bw + 1.0, r.h));
-                p.rrect(r, rad, rad, c);
-            }
-            p.clip_clear();
-        }
-        None => p.rrect(r, rad, rad, w.face),
-    }
-    if w.border > 0.0 {
-        // knockout: the keyline in ink, then the face inset by it — the same two-call shape
-        // `BadgeStyle::Outlined` uses, in the opposite order (ink outside, face inside).
-        p.rrect(r, rad, rad, w.ink);
-        let b = w.border;
-        p.rrect(
-            Rect::new(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b),
-            (rad - b).max(0.0),
-            (rad - b).max(0.0),
-            w.face,
-        );
-    }
-    let ty = crate::text::text_vcenter_y(w.sz, 1, cy);
-    p.text(w.text.as_ptr(), r.x + w.pad, ty, w.sz, w.ink, 0, 1);
-    cw
-}
-
-/// pixel width [`rating_badge`] will occupy — measure before drawing so a row can stop at a margin
-/// instead of running a badge off the panel.
-pub(crate) fn rating_badge_w(mark: &RatingMark, value: &str) -> f32 {
-    std::ffi::CString::new(value)
-        .ok()
-        .map(|c| {
-            mark.width() + mark.gap() + crate::text::text_width(c.as_ptr(), theme::size::LABEL, 1)
-        })
-        .unwrap_or(0.0)
-}
-
-/// Draw one rating badge with its LEFT edge at `x`, centred on `cy`; returns its width.
-pub(crate) fn rating_badge(p: Painter, x: f32, cy: f32, mark: &RatingMark, value: &str) -> f32 {
-    let vc = match std::ffi::CString::new(value) {
-        Ok(c) => c,
-        Err(_) => return 0.0,
+/// Width [`rating_group`] will occupy. Measure before drawing so a row can stop at a margin
+/// instead of running a group off the panel (same contract as `badge`/`badge_w`).
+pub(crate) fn rating_group_w(caption: &str, cells: &[RatingCell]) -> f32 {
+    let cap = std::ffi::CString::new(caption).ok();
+    let mut w = match cap {
+        Some(c) => crate::text::text_width(c.as_ptr(), theme::size::MICRO, 1) + RATING_CAPTION_GAP,
+        None => return 0.0,
     };
-    match mark {
-        RatingMark::Glyph(layers) => {
-            // every layer rides the SAME rect, so all of them rasterize at one size from one 24×24
+    for (i, cell) in cells.iter().enumerate() {
+        if i > 0 {
+            w += RATING_PAIR_GAP;
+        }
+        if !cell.mark.is_empty() {
+            w += RATING_MARK_D + RATING_GAP;
+        }
+        if let Ok(v) = std::ffi::CString::new(cell.value) {
+            w += crate::text::text_width(v.as_ptr(), theme::size::LABEL, 1);
+        }
+        if let Ok(s) = std::ffi::CString::new(cell.suffix) {
+            w += crate::text::text_width(s.as_ptr(), theme::size::MICRO, 1);
+        }
+    }
+    w
+}
+
+/// Draw one provider's group with its LEFT edge at `x`, centred on `cy`; returns its width.
+pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[RatingCell]) -> f32 {
+    let Ok(cap) = std::ffi::CString::new(caption) else { return 0.0 };
+    let mut bx = x;
+    // The caption sits on the SCORE's baseline, not on its own centre: the design aligns the row
+    // by baseline (`align-items:baseline`), so a MICRO caption beside a LABEL number must share
+    // the number's baseline or it floats.
+    let base = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy)
+        + crate::text::text_cap_band(theme::size::LABEL, 1).1
+        - crate::text::text_cap_band(theme::size::MICRO, 1).1;
+    p.text(cap.as_ptr(), bx, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0, 1);
+    bx += crate::text::text_width(cap.as_ptr(), theme::size::MICRO, 1) + RATING_CAPTION_GAP;
+
+    for (i, cell) in cells.iter().enumerate() {
+        if i > 0 {
+            bx += RATING_PAIR_GAP;
+        }
+        if !cell.mark.is_empty() {
+            // every layer rides the SAME rect, so all of them rasterize at one size from one
             // viewBox and register exactly — see `ui/icons.rs`'s note on the layered marks
-            let r = Rect::new(x, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
-            for (mask, tint) in layers.iter() {
+            let r = Rect::new(bx, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
+            for (mask, tint) in cell.mark.iter() {
                 crate::ui::icons::draw(p, *mask, r, *tint);
             }
+            bx += RATING_MARK_D + RATING_GAP;
         }
-        RatingMark::Wordmark(w) => {
-            wordmark_chip(p, x, cy, w);
+        if let Ok(v) = std::ffi::CString::new(cell.value) {
+            let ty = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy);
+            p.text(v.as_ptr(), bx, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 0, 1);
+            bx += crate::text::text_width(v.as_ptr(), theme::size::LABEL, 1);
+        }
+        if let Ok(s) = std::ffi::CString::new(cell.suffix) {
+            p.text(s.as_ptr(), bx, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0, 1);
+            bx += crate::text::text_width(s.as_ptr(), theme::size::MICRO, 1);
         }
     }
-    let ty = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy);
-    p.text(
-        vc.as_ptr(),
-        x + mark.width() + mark.gap(),
-        ty,
-        theme::size::LABEL,
-        theme::TEXT_PRIMARY,
-        0,
-        1,
-    );
-    // the MEASURED width, not what `text` reports it rasterized — `badge` calls `badge_w` for the
-    // same reason: a draw and its measurer that can disagree will eventually be caught disagreeing
-    rating_badge_w(mark, value)
+    // the MEASURED width, not what the draws accumulated — a draw and its measurer that can
+    // disagree will eventually be caught disagreeing
+    rating_group_w(caption, cells)
 }
 
 

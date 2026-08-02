@@ -24,7 +24,8 @@ where that pass changed the answer it is marked **[corrected]**.
 **Blockers, in the order they'd bite:** *(1 — the Arial font — was cleared 2026-08-01, see §5.3)*
 
 2. No `LICENSE` file → all-rights-reserved → ineligible for webosbrew `pool: main`, and no licence for anyone who clones the repo.
-3. 10 icons reproduce Rotten Tomatoes / TMDB / IMDb marks, tinted in those brands' exact hex.
+3. ~~10 icons reproduce Rotten Tomatoes / TMDB / IMDb marks, tinted in those brands' exact hex.~~
+   **CLEARED 2026-08-02** — see §11.
 4. `X-Plex-Product: Plex for webOS` — Plex's own first-party naming pattern, on a platform that has an official Plex app.
 5. Release builds bake in the dev's LAN IP and home-directory paths.
 6. `remote.rs:36-38` creates/opens `/tmp/plxnative-remote` unconditionally every boot (`app.rs:1603`) without checking ownership — squattable on a shared `/tmp`.
@@ -1069,3 +1070,34 @@ Third-party marks: Rotten Tomatoes Developer Network (archive 2025-02-19), Fanda
 (archive 2024-11-05), `themoviedb.org/api-terms-of-use` (rev. 2023-10-20).
 On-device evidence: `.abi-cache/libavcodec.so.57.89.100` build-config string; NDK `readelf -d pkg/plxnative`;
 fontTools dumps of `pkg/appfont*.ttf`; `tar tzf ipkroot/data.tar.gz`.
+
+---
+
+## 11. The rating marks are ours now (2026-08-02)
+
+The last hard trademark blocker. Rotten Tomatoes' marks had **no licensing route in existence** —
+their developer programme is closed to unofficial projects and `developer.fandango.com` does not
+resolve, so there was not even an application path — and redrawing a mark is the standard
+infringement pattern rather than a defence.
+
+Removed: the 5 RT states as 11 layered SVGs (fruit, Certified Fresh seal, upright and spilled
+popcorn tubs), plus a dead `tmdb.svg` and a retired `star.svg` that nothing drew. Also removed —
+and this was not on the original blocker list — the IMDb and TMDB **logotype chips**, which
+reproduced two more brands' wordmarks in their exact brand colours to answer "whose score is this?".
+
+Replaced by naming each provider in words (referential use needs no licence) and drawing only the
+VERDICT: our own tomato — red ripe, gold for the rarer Certified bar, hollow when drained — and a
+two-figure crowd for the audience score, green or drained. Four assets instead of eleven.
+
+The design brief is `Details Screen.dc.html` in the owner's Claude Design project. Verified on
+device against the live PMS: `rk=1` (ripe + upright, all four providers) and `rk=2020` (**rotten** +
+upright). Rendered ink matches the design's geometry within ~1.5 px.
+
+**Two states could not be verified on device**: `certified` and `spilled` appear on no item in this
+library. Both reuse masks the verified states already exercise and differ only by a tint constant
+(`RATING_CERTIFIED`, `RATING_MUTED`), so the risk is a wrong colour, not a wrong drawing.
+
+What remains is not a licensing question but a taste one: the tomato is a fruit, and a fruit next to
+a percentage in a movie app still gestures at Rotten Tomatoes. That is the owner's call, made with
+the facts on the table, and the two shapes a rights holder would actually write about — the seal and
+the popcorn pair — are the ones that are gone.

@@ -39,9 +39,9 @@ pub enum Icon {
     // rasterizer draws untransformed, so direction is per-asset, not a rotation)
     ChevronDown,
     ChevronUp,
-    /// Hollow circle — the Unwatched toolbar chip's off state. It used to double as The Movie
-    /// Database's mark; [`Icon::Tmdb`] is that now, so the chip is free to change shape without
-    /// silently redrawing a brand mark.
+    /// Hollow circle — the Unwatched toolbar chip's off state. It once doubled as The Movie
+    /// Database's mark; TMDB is spelled in text now (as every provider is), so this shape carries
+    /// no brand meaning and the chip is free to change without redrawing anyone's mark.
     Ring,
     /// The amber unwatched corner mark (top-right of a poster): a right triangle whose outer
     /// corner is pre-rounded to sit flush inside the card's 14px corner radius. Filled mask.
@@ -64,58 +64,37 @@ pub enum Icon {
     PlayStart,
     /// An X — "remove this" (the item menu's Remove from Continue Watching row).
     Close,
-    // ---- review-score brand marks (the detail hero's ratings row). Which of the five Rotten
-    // Tomatoes marks a badge draws comes from the server's `Rating.image` state, never from the
-    // score — see `metadata::RatingArt`. Each asset is a plain silhouette because the rasterizer
-    // renders a MASK and the brand colour is the tint (`theme::RATING_*`).
+    // ---- review-score marks (the detail hero's ratings row) ----
     //
-    // The Rotten Tomatoes marks are drawn as TWO STACKED MASKS, not one tinted silhouette: a base
-    // and an accent layer (`*-calyx`, `*-kernels`) at the same rect and size, so the tomato gets a
-    // green leaf on a red body and the tub gets gold popcorn. `Details Screen.dc.html` draws them
-    // multi-tone, and it is right to: at the 30px the row uses, a flat-red tomato has lost its leaf
-    // and reads as a red blob, and a mono tub has lost its popcorn. Both layers rasterize from the
-    // same 24×24 viewBox, so they register exactly — see `ui::detail::rating_mark`, which is the one
-    // place that pairs them.
+    // These are OUR OWN drawings, not reproductions. Rotten Tomatoes' marks — the fruit, the
+    // Certified Fresh seal, the popcorn tub — were shipped here until 2026-08-02 and removed:
+    // there is no licensing route for them (RT's developer programme is closed to unofficial
+    // projects and `developer.fandango.com` does not resolve), and redrawing a mark is the
+    // standard infringement pattern rather than a defence. The provider is now NAMED in text
+    // instead, which is referential use and needs no licence — so the glyph no longer has to say
+    // *whose* score this is. It only has to carry the VERDICT, which is what these four do.
     //
-    // Sized for the row's 30px mark (`detail::RATING_MARK_D`) rather than scaled down from a
-    // poster-sized drawing — at that size the mark carries the VERDICT, so anything that blurs into
-    // a blob has failed. ----
-    /// Rotten Tomatoes' fresh tomato, red body — `rottentomatoes://image.rating.ripe`. Base layer of
-    /// the pair; [`Icon::TomatoCalyx`] paints its leaf.
+    // Two layers per mark for the same reason as before: the rasterizer renders a MASK and the
+    // colour is the tint (`theme::RATING_*`), so a two-tone mark needs two masks at one rect.
+    // Both critic layers share one 26×26 viewBox and register exactly.
+    /// The tomato's body. Tinted [`theme::RATING_FRESH`] for a ripe score and
+    /// [`theme::RATING_CERTIFIED`] for the rarer Certified bar — the SAME fruit struck in gold,
+    /// not a seal, which is the one substantive simplification against the retired art.
     Tomato,
-    /// The stem-and-sepals of [`Icon::Tomato`], for painting green over it.
+    /// The stem-and-sepals over [`Icon::Tomato`]. Painted [`theme::RATING_LEAF`] on a fresh or
+    /// certified body and [`theme::RATING_MUTED`] on a hollow one. Its base sits INSIDE the body's
+    /// silhouette, so the two masks overlap solidly instead of meeting at a seam.
     TomatoCalyx,
-    // Certified Fresh — `…image.rating.certified` — is RT's SEAL, not a variant of the fruit: a gold
-    // disc carrying a red box, a green calyx and a green banner. Three layers, drawn in this order.
-    /// The gold seal disc, back-most layer of Certified Fresh.
-    TomatoCertifiedSeal,
-    /// The red box on the seal — the middle layer.
-    TomatoCertifiedBox,
-    /// The green calyx and banner — the front layer.
-    TomatoCertifiedGreen,
-    /// Rotten Tomatoes' splattered tomato — `…image.rating.rotten`. The one RT mark with no accent
-    /// layer: a splat is one substance, and a second hue on it reads as two splats.
-    TomatoRotten,
-    /// The upright popcorn tub (audience score) — `…image.rating.upright`. Base layer;
-    /// [`Icon::PopcornKernels`] paints its contents.
-    Popcorn,
-    /// The six crowning kernels of [`Icon::Popcorn`], for painting gold over it.
-    PopcornKernels,
-    /// The tipped, spilled tub — `…image.rating.spilled`. Base layer;
-    /// [`Icon::PopcornSpilledKernels`] paints the thrown contents.
-    PopcornSpilled,
-    /// The three thrown kernels of [`Icon::PopcornSpilled`], for painting gold over it.
-    PopcornSpilledKernels,
-    /// Five-point star — the old IMDb mark. **Retired from the ratings row**, which now spells the
-    /// brand with [`crate::ui::widgets::wordmark_chip`] instead (a generic star names no provider,
-    /// where a gold `IMDb` chip is unmistakable). Kept because it is a good star and the row is one
-    /// call away from wanting one back.
-    Star,
-    /// The Movie Database's score dial, a filled annulus. **Retired from the ratings row** for the
-    /// same reason as [`Icon::Star`] — TMDB's brand IS a wordmark, and the chip can now spell it.
-    /// Its own asset rather than [`Icon::Ring`]'s, so the Unwatched chip and a brand mark stop
-    /// sharing one file.
-    Tmdb,
+    /// A rotten score: the same fruit drained to an outline. A stroked ring rather than a splat —
+    /// the negation is "the colour has gone out of it", which needs no second device.
+    TomatoHollow,
+    /// The audience mark: a CROWD — two figures under one shoulder line, so it reads as "many
+    /// people" rather than "a person". One layer, and the only mark here with four elements in it:
+    /// permitted because none of them touch (heads clear their bodies by ~2.5 units and the two
+    /// figures do not overlap in x), so there is no antialiased seam for them to composite across.
+    /// It negates by DRAINING to [`theme::RATING_MUTED`] rather than going hollow: a single fruit
+    /// can carry an outline, but outlining every shape in a crowd is a tangle of strokes at 30px.
+    Crowd,
 }
 
 fn src(id: Icon) -> &'static str {
@@ -141,16 +120,8 @@ fn src(id: Icon) -> &'static str {
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
         Icon::Tomato => include_str!("../../../assets/icons/tomato.svg"),
         Icon::TomatoCalyx => include_str!("../../../assets/icons/tomato-calyx.svg"),
-        Icon::TomatoCertifiedSeal => include_str!("../../../assets/icons/tomato-certified-seal.svg"),
-        Icon::TomatoCertifiedBox => include_str!("../../../assets/icons/tomato-certified-box.svg"),
-        Icon::TomatoCertifiedGreen => include_str!("../../../assets/icons/tomato-certified-green.svg"),
-        Icon::TomatoRotten => include_str!("../../../assets/icons/tomato-rotten.svg"),
-        Icon::Popcorn => include_str!("../../../assets/icons/popcorn.svg"),
-        Icon::PopcornKernels => include_str!("../../../assets/icons/popcorn-kernels.svg"),
-        Icon::PopcornSpilled => include_str!("../../../assets/icons/popcorn-spilled.svg"),
-        Icon::PopcornSpilledKernels => include_str!("../../../assets/icons/popcorn-spilled-kernels.svg"),
-        Icon::Star => include_str!("../../../assets/icons/star.svg"),
-        Icon::Tmdb => include_str!("../../../assets/icons/tmdb.svg"),
+        Icon::TomatoHollow => include_str!("../../../assets/icons/tomato-hollow.svg"),
+        Icon::Crowd => include_str!("../../../assets/icons/crowd.svg"),
     }
 }
 

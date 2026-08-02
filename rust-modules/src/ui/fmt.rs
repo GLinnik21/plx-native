@@ -173,3 +173,15 @@ pub(crate) fn rating_score(art: crate::metadata::RatingArt, value: f64) -> Strin
         _ => format!("{}%", (value * 10.0).round().clamp(0.0, 100.0) as i64),
     }
 }
+
+/// The unit that trails a score, set a rung down in tertiary ink — see `widgets::RatingCell`.
+///
+/// Only IMDb has one. A percentage carries its `%` inside [`rating_score`] because there the sign
+/// is part of the number, whereas "/10" is a note about the SCALE: it is what stops an 8.1 being
+/// read against the 69% beside it, and it is the reason the two can share a row at all.
+pub(crate) fn rating_suffix(art: crate::metadata::RatingArt) -> &'static str {
+    match art {
+        crate::metadata::RatingArt::Imdb => "/10",
+        _ => "",
+    }
+}

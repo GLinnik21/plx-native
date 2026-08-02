@@ -1861,61 +1861,63 @@ fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f
     bx - x
 }
 
-/// `RatingArt` → the mask and brand tint that draw it. The mapping lives here, in the UI layer, so
-/// `metadata::RatingArt` (which is parsed out of the server's `Rating.image` string) stays free of
+/// `RatingArt` → the mask layers that draw its VERDICT. The mapping lives here, in the UI layer,
+/// so `metadata::RatingArt` (parsed out of the server's `Rating.image` string) stays free of
 /// `Icon`/colour — and so the *state* the server named is what picks the art, end to end.
-fn rating_mark(art: metadata::RatingArt) -> crate::ui::widgets::RatingMark {
+///
+/// An empty slice means "this provider has no verdict to draw". IMDb and TMDB publish a number and
+/// nothing else; they used to get a logotype chip in their brand colours, and before that a generic
+/// star, and both were answering "whose score is this?" — which the group's caption now answers in
+/// words. A mark here has to mean something, or it should not be drawn.
+fn rating_mark(art: metadata::RatingArt) -> &'static [crate::ui::widgets::MarkLayer] {
     use crate::ui::icons::Icon;
-    use crate::ui::widgets::{MarkLayer, RatingMark, WORDMARK_IMDB, WORDMARK_TMDB};
+    use crate::ui::widgets::MarkLayer;
     use metadata::RatingArt as A;
 
     // Each mark's colour layers, BACK TO FRONT — the order is the drawing, since they overlap.
-    // `static` so the slices outlive the call; see `widgets::RatingMark::Glyph` for the one-path-per-
-    // layer contract these obey.
+    // `static` so the slices outlive the call.
     /// Ripe: red body, green calyx over it.
     static FRESH: &[MarkLayer] =
         &[(Icon::Tomato, theme::RATING_FRESH), (Icon::TomatoCalyx, theme::RATING_LEAF)];
-    /// Certified Fresh: RT's SEAL — gold disc, red box, then the green calyx and banner. Not a
-    /// variant of the fruit, which is why it shares no layer with [`FRESH`].
-    static CERTIFIED: &[MarkLayer] = &[
-        (Icon::TomatoCertifiedSeal, theme::RATING_SEAL),
-        (Icon::TomatoCertifiedBox, theme::RATING_FRESH),
-        (Icon::TomatoCertifiedGreen, theme::RATING_LEAF),
-    ];
-    /// Rotten: one layer. A splat is one substance, and a second hue on it reads as two splats.
-    static ROTTEN: &[MarkLayer] = &[(Icon::TomatoRotten, theme::RATING_ROTTEN)];
-    /// Upright tub: the audience score's POSITIVE art, so the tub shares the fresh red; gold corn.
-    static UPRIGHT: &[MarkLayer] =
-        &[(Icon::Popcorn, theme::RATING_FRESH), (Icon::PopcornKernels, theme::RATING_KERNEL)];
-    /// Spilled tub: the rotten green, gold corn thrown clear of it.
-    static SPILLED: &[MarkLayer] = &[
-        (Icon::PopcornSpilled, theme::RATING_ROTTEN),
-        (Icon::PopcornSpilledKernels, theme::RATING_KERNEL),
-    ];
+    /// Certified: the SAME fruit struck in gold. A rarer bar reads as a richer version of the
+    /// thing — and the retired art's alternative, RT's own Certified Fresh seal, was the one shape
+    /// in the set that was unmistakably somebody's award rather than a piece of fruit.
+    static CERTIFIED: &[MarkLayer] =
+        &[(Icon::Tomato, theme::RATING_CERTIFIED), (Icon::TomatoCalyx, theme::RATING_LEAF)];
+    /// Rotten: the same fruit drained to an outline, calyx included. Negation by losing the colour,
+    /// not by acquiring a second device.
+    static ROTTEN: &[MarkLayer] =
+        &[(Icon::TomatoHollow, theme::RATING_MUTED), (Icon::TomatoCalyx, theme::RATING_MUTED)];
+    /// A crowd that liked it.
+    static CROWD_UP: &[MarkLayer] = &[(Icon::Crowd, theme::RATING_AUDIENCE)];
+    /// The same crowd, drained. One layer, so it cannot go hollow the way the fruit does — see
+    /// `Icon::Crowd`.
+    static CROWD_DOWN: &[MarkLayer] = &[(Icon::Crowd, theme::RATING_MUTED)];
 
     match art {
-        A::TomatoFresh => RatingMark::Glyph(FRESH),
-        A::TomatoCertified => RatingMark::Glyph(CERTIFIED),
-        A::TomatoRotten => RatingMark::Glyph(ROTTEN),
-        A::PopcornUpright => RatingMark::Glyph(UPRIGHT),
-        A::PopcornSpilled => RatingMark::Glyph(SPILLED),
-        // …and the two logotype brands, whose marks are their NAMES (see `widgets::RatingMark`)
-        A::Imdb => RatingMark::Wordmark(&WORDMARK_IMDB),
-        A::Tmdb => RatingMark::Wordmark(&WORDMARK_TMDB),
+        A::TomatoFresh => FRESH,
+        A::TomatoCertified => CERTIFIED,
+        A::TomatoRotten => ROTTEN,
+        A::PopcornUpright => CROWD_UP,
+        A::PopcornSpilled => CROWD_DOWN,
+        A::Imdb | A::Tmdb => &[],
     }
 }
 
 /// The review-score row — **its own line under the meta line**, flowed left→right from the text
 /// margin and centred on the band a [`theme::size::LABEL`] score occupies (so the row sits on a real
-/// text line rather than at a guessed y). A badge that would cross the right margin is dropped and
+/// text line rather than at a guessed y). A group that would cross the right margin is dropped and
 /// the flow stops there.
 ///
 /// It used to trail the genre line inline, which put a tomato at a different x on every item and
 /// gave the row whatever width the genres left over — on a three-genre show the fourth score fell off
-/// the panel. `Details Screen.dc.html` gives it a line, and a line is what it needs: four marks in
-/// four different shapes are a block to scan, not a clause. The band is only reserved when there is
-/// at least one score (see [`hero_chain`]), so a title the agents found no reviews for closes the gap
-/// instead of leaving a hole.
+/// the panel. `Details Screen.dc.html` gives it a line, and a line is what it needs. The band is only
+/// reserved when there is at least one score (see [`hero_chain`]), so a title the agents found no
+/// reviews for closes the gap instead of leaving a hole.
+///
+/// The unit of flow is the PROVIDER, not the score: `ratings` arrives sorted by
+/// `RatingArt::rank`, which already puts Rotten Tomatoes' two states adjacent, so this is a
+/// run-length pass over equal [`metadata::RatingArt::provider`] names.
 fn draw_ratings(p: Painter, x: f32, row_y: f32) {
     let ratings = match metadata::current() {
         Some(d) if !d.ratings.is_empty() => &d.ratings,
@@ -1924,15 +1926,32 @@ fn draw_ratings(p: Painter, x: f32, row_y: f32) {
     let (cap_top, baseline) = crate::text::text_cap_band(theme::size::LABEL, 1);
     let cy = row_y + (cap_top + baseline) * 0.5;
     let mut bx = x;
-    for r in ratings.iter() {
-        let mark = rating_mark(r.art);
-        let score = crate::ui::fmt::rating_score(r.art, r.value);
-        let w = crate::ui::widgets::rating_badge_w(&mark, &score);
+    let mut i = 0;
+    while i < ratings.len() {
+        let caption = ratings[i].art.provider();
+        let end = ratings[i..].partition_point(|r| r.art.provider() == caption) + i;
+        // Borrowed by `RatingCell`, so they have to outlive the draw — hence the two vectors
+        // rather than formatting inside the map.
+        let scores: Vec<String> = ratings[i..end]
+            .iter()
+            .map(|r| crate::ui::fmt::rating_score(r.art, r.value))
+            .collect();
+        let cells: Vec<crate::ui::widgets::RatingCell> = ratings[i..end]
+            .iter()
+            .zip(scores.iter())
+            .map(|(r, s)| crate::ui::widgets::RatingCell {
+                mark: rating_mark(r.art),
+                value: s,
+                suffix: crate::ui::fmt::rating_suffix(r.art),
+            })
+            .collect();
+        let w = crate::ui::widgets::rating_group_w(caption, &cells);
         if w <= 0.0 || bx + w > SCR_W - MARGIN_X {
             break;
         }
-        crate::ui::widgets::rating_badge(p, bx, cy, &mark, &score);
+        crate::ui::widgets::rating_group(p, bx, cy, caption, &cells);
         bx += w + RATING_ROW_GAP;
+        i = end;
     }
 }
 

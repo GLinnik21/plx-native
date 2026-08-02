@@ -343,6 +343,27 @@ impl RatingArt {
             RatingArt::Tmdb => 3,
         }
     }
+
+    /// The provider's name, **as the provider sets it** — the row spells this in words instead of
+    /// drawing anyone's mark, so it is the only thing identifying the source and it has to be
+    /// right. `IMDb`, not `IMDB`.
+    ///
+    /// It is also the GROUPING key: Rotten Tomatoes' critic and audience scores are two readings
+    /// from one source, so they share one caption and sit under it as a pair, while IMDb and TMDB
+    /// are a caption and a number each. Equal names group; [`RatingArt::rank`] already orders the
+    /// five RT states adjacently, so grouping is a run-length pass over the sorted list and never
+    /// needs to reorder anything.
+    pub(crate) fn provider(self) -> &'static str {
+        match self {
+            RatingArt::Imdb => "IMDb",
+            RatingArt::TomatoFresh
+            | RatingArt::TomatoCertified
+            | RatingArt::TomatoRotten
+            | RatingArt::PopcornUpright
+            | RatingArt::PopcornSpilled => "ROTTEN TOMATOES",
+            RatingArt::Tmdb => "TMDB",
+        }
+    }
 }
 
 /// One review score to badge on the detail hero: the artwork the server named, the score as PMS

@@ -295,49 +295,35 @@ pub const BADGE_FILL: [f32; 4] = [0.86, 0.88, 0.92, 0.20];
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
 pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-// ── Review-score brand marks (detail hero ratings row) ───────────────────────
-// These four are the ONE place the palette borrows someone else's colour, and the exception earns
-// itself: a rating badge is a BRAND MARK, and a tomato that isn't red (or an IMDb star that isn't
-// gold) has stopped doing the badge's whole job. They tint an icon MASK only — never text, never a
-// surface — so they cannot leak into the rest of the UI. Two are the provider's exact brand hex;
-// the two Rotten Tomatoes ones are lightened a step, because RT authors its marks against white
-// and the untouched values sit too dark on this hero's scrim.
-/// Rotten Tomatoes' **fresh** red — the ripe tomato, the Certified Fresh one, AND the upright
-/// popcorn bucket. `#f5341a` (their `#fa320a` lifted a hair).
+// ── Review-score marks (detail hero ratings row) ─────────────────────────────
+// These used to be the ONE place the palette borrowed someone else's colour, justified by the
+// badge being a BRAND MARK. That justification is gone with the marks: Rotten Tomatoes' fruit,
+// seal and popcorn tub were removed 2026-08-02 (no licensing route exists, and a redraw is the
+// infringement pattern, not a defence), and every provider is NAMED in text instead. So these are
+// now our own semantic colours for a VERDICT, and only two still sit near a brand's hue because a
+// ripe tomato that isn't red has stopped being a tomato.
+//
+// They tint an icon MASK only — never text, never a surface — so they cannot leak into the rest of
+// the UI. The row's captions and scores use the ordinary TEXT_* tokens, which is the point: the
+// only colour left in the row is the verdict.
+/// The ripe tomato's body — `#f5341a`.
 pub const RATING_FRESH: [f32; 4] = [0.961, 0.204, 0.102, 1.0];
-/// Rotten Tomatoes' **rotten** green — the splattered tomato and the spilled bucket. `#3ec96b`,
-/// lightened from their darker splat green. The counter-intuitive polarity (red = good, green =
-/// bad) is Rotten Tomatoes' own; don't "fix" it.
-pub const RATING_ROTTEN: [f32; 4] = [0.243, 0.788, 0.420, 1.0];
-/// IMDb gold `#f5c518` (exact) — the IMDb wordmark chip's face, and the popcorn tub's kernels,
-/// which are the same yellow.
-pub const RATING_IMDB: [f32; 4] = [0.961, 0.773, 0.094, 1.0];
-/// The Movie Database's teal `#01b4e4` (exact) — the END stop of its wordmark chip's gradient.
-pub const RATING_TMDB: [f32; 4] = [0.004, 0.706, 0.894, 1.0];
-/// TMDB's gradient START stop `#90cea1` — the pale green its brand sweep runs from. The chip is a
-/// two-stop LEFT-to-RIGHT sweep (`Details Screen.dc.html`'s `linear-gradient(100deg, …)`), which is
-/// why this is a stop and not a fill: see [`crate::ui::widgets::wordmark_chip`].
-pub const RATING_TMDB_LO: [f32; 4] = [0.565, 0.808, 0.631, 1.0];
-/// The **Certified Fresh seal's** gold `#ffc426` — the disc RT stamps that badge on. Its own value
-/// rather than [`RATING_IMDB`]'s near-identical gold: they are two brands' colours that happen to
-/// land close, and folding them would make an IMDb tweak silently restyle a Rotten Tomatoes award.
-pub const RATING_SEAL: [f32; 4] = [1.0, 0.769, 0.149, 1.0];
-/// The **calyx** green — the ripe tomato's leaf-and-stem, and the spilled tub's lid and stripes.
-/// `#2fae5b`, and deliberately NOT [`RATING_ROTTEN`]: this one is a leaf on a mark whose verdict is
-/// *good*, so sharing the rotten green would put the failure hue on a fresh tomato. It exists
-/// because these marks are drawn as LAYERED masks — one per colour — rather than tinted flat.
+/// The Certified body — `#f0b429`. The SAME fruit struck in gold rather than a separate seal:
+/// a rarer bar reads as a richer version of the thing, and a seal was the one shape here that was
+/// unmistakably somebody's award rather than a piece of fruit.
+pub const RATING_CERTIFIED: [f32; 4] = [0.941, 0.706, 0.161, 1.0];
+/// The audience crowd when the verdict is good — `#3ec96b`. Note the polarity across the row is
+/// deliberately NOT uniform: critics go red-for-good (a ripe tomato), audience goes green-for-good
+/// (a healthy crowd). Each mark is read against itself, not against its neighbour.
+pub const RATING_AUDIENCE: [f32; 4] = [0.243, 0.788, 0.420, 1.0];
+/// The **calyx** green — the tomato's leaf-and-stem, on a fresh or certified body. `#2fae5b`, and
+/// deliberately not [`RATING_AUDIENCE`]: they are two marks' greens that land close, and folding
+/// them would let an audience tweak silently restyle a leaf.
 pub const RATING_LEAF: [f32; 4] = [0.184, 0.682, 0.357, 1.0];
-/// The popcorn tub's paper white `#f4f7f5` — the spilled bucket's body, under its green lid.
-pub const RATING_TUB: [f32; 4] = [0.957, 0.969, 0.961, 1.0];
-/// Popped-corn gold — the kernel layer on both popcorn tubs. The SAME value as [`RATING_IMDB`], and
-/// an alias rather than a second constant so they can never drift apart; it exists because
-/// `RATING_IMDB` on a Rotten Tomatoes kernel reads at the call site as the wrong brand.
-pub const RATING_KERNEL: [f32; 4] = RATING_IMDB;
-/// Ink over the IMDb chip's gold `#0b0b0c`.
-pub const RATING_IMDB_INK: [f32; 4] = [0.043, 0.043, 0.047, 1.0];
-/// Ink over the TMDB chip's teal sweep `#062a33` — a dark teal, not the IMDb chip's neutral black,
-/// because it sits on a green→blue face.
-pub const RATING_TMDB_INK: [f32; 4] = [0.024, 0.165, 0.200, 1.0];
+/// The drained state, for both a hollow tomato and a negated crowd — an ALIAS of
+/// [`TEXT_TERTIARY`], not a copy, because the negation is literally "this has the weight of a
+/// caption now". An alias so the two can never drift apart.
+pub const RATING_MUTED: [f32; 4] = TEXT_TERTIARY;
 
 // ── Card-glow geometry (the glow *color* is shader-baked in gfx.rs's FS_SRC/FS_IMG; only geometry
 // is tunable). The hero-grid card's wide glow pad is `consts::GLOW_PAD` (shared with off-screen
