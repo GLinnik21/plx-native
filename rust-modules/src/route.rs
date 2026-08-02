@@ -294,7 +294,7 @@ fn server_decision(rk: &str, session: &str) -> Option<bool> {
 /// lane will actually ARRIVE in (it equals the source codec only when that lane is copied).
 /// Assuming "a container remux copies the audio" broke mp4 items whose audio PMS re-encodes to
 /// the transcode-target's AC3: the payload said AAC, the stream carried AC3, and the
-/// configured-for-AAC pipeline played silence (Hannah Montana).
+/// configured-for-AAC pipeline played silence (the `movie_hevc_aac_mp4` harness case).
 /// PURE: the codec pair the server's /decision OUTPUT actually declares, or None if it names
 /// neither. The Load payload must match this, not the source file — a transcode changes the
 /// codec and rate, and describing the source to the decoder gives silent audio.
@@ -592,7 +592,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // the guard that forced non-h264 to transcode is gone.
     // Smart direct-play: the video decodes natively (H264/HEVC) AND some audio track is
     // direct-playable (AAC/AC3/E-AC3) — even if the DEFAULT track isn't. We own the demuxer, so
-    // we direct-play the raw file and FEED a direct-playable track (e.g. Toy Story 3: TrueHD
+    // we direct-play the raw file and FEED a direct-playable track (e.g. a 4K HEVC item: TrueHD
     // default + an AC3 track → native 4K HEVC + AC3, no transcode — beats the server's
     // video-downscaling transcode). Falls back to the server /decision (then the local codec
     // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn smart_dp_takes_a_playable_sibling_over_a_non_playable_default() {
-        // Toy Story 3: TrueHD default + an AC3 sibling — direct-play beats the server's
+        // A 4K HEVC item: TrueHD default + an AC3 sibling — direct-play beats the server's
         // video-downscaling transcode.
         let tracks = [trk(1, "truehd", "eng", true), trk(2, "ac3", "eng", false)];
         assert_eq!(pick_dp_audio(&tracks, "truehd"), Some((1, "ac3".into(), 2)));
@@ -1200,7 +1200,7 @@ mod tests {
 
     #[test]
     fn the_servers_selected_track_outranks_the_english_preference() {
-        // The Substance: a user picks the second Russian dub on their phone. English is still the
+        // A user picks the second Russian dub on their phone. English is still the
         // FIRST direct-playable track, so the old ladder handed back English on every play.
         let tracks = [
             trk(2693, "ac3", "rus", true),
@@ -1225,7 +1225,7 @@ mod tests {
 
     #[test]
     fn a_selected_track_that_cannot_direct_play_falls_through_to_the_ladder() {
-        // Home Alone's live shape: the server holds the English DTS track (a real pick — it is
+        // A live shape off the server: it holds the English DTS track (a real pick — it is
         // not the file default), which this pipeline cannot decode. Honouring it would force a
         // whole-video transcode for one audio track, so the ladder runs on instead.
         let tracks = [
@@ -1265,7 +1265,7 @@ mod tests {
                     trk(3, "ac3", "eng", false),
                 ],
                 "ac3",
-                Some((2, "ac3".into(), 3)), // Home Alone: rung 2 (English) still applies
+                Some((2, "ac3".into(), 3)), // rung 2 (English) still applies
             ),
             (
                 "rung 2: no selection at all → the English preference, as before",

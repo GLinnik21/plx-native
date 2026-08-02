@@ -1,6 +1,6 @@
 # Plex Media Server API — reference for the native webOS client
 
-Verified live against the user's PMS (192.168.0.3:32400) by a research workflow, 2026-07.
+Verified live against a real PMS (`<pms-host>:32400`) by a research workflow, 2026-07.
 Sections: Movies=1, TV Shows=2, Music=3. Default response is XML; send `Accept: application/json`.
 
 ## Auth / client identity headers (or query params)

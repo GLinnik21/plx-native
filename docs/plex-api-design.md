@@ -80,7 +80,7 @@ inline path `format!` in `pms.rs`, `metadata.rs`, `posters.rs`, `route.rs`, `pla
 /// workers, the timeline reporter, the detail loader all read it). Host is a numeric
 /// dotted-quad — the raw socket does no DNS.
 pub struct Client {
-    host: String,      // "192.168.0.3"  (numeric; passed straight to http_get/http_open)
+    host: String,      // "192.0.2.10"  (numeric; passed straight to http_get/http_open)
     port: i32,         // 32400
     token: String,     // X-Plex-Token value
     client_id: String, // X-Plex-Client-Identifier — stable device id ("com.beb.plxnative")

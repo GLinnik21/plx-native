@@ -1,17 +1,7 @@
 {
   "version": 1,
-  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/plxnative-* triggers (see README) and asserts on /tmp/plxnative-events.log. rks are real PMS items (192.168.0.3:32400). The runner (run.py) reads the X-Plex-Token from src/config.local.h at runtime — it is NEVER stored here. Cases are derived from the library survey; see library_gaps for combos no real item can cover.",
-  "pms": {
-    "host": "192.168.0.3",
-    "port": 32400
-  },
-  "_test_user_comment": "By default the harness runs as this Plex Home managed user so test playback + timeline scrobbles land on THIS user's history, never the owner's real account. run.py fetches this user's per-server accessToken via the admin token (shared_servers) at runtime -- no secret is stored. Pass --owner to run as the config.local.h owner token instead. The user must already have library access shared (Guest here already does).",
-  "test_user": {
-    "id": 762808621,
-    "title": "Guest"
-  },
-  "tv": "192.168.0.114",
-  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the once/sec `loop=<n> route=<r> fps=<n>` heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest loop= >= loop_floor plus whichever of fps_floor / fps_ceiling the scene declares. loop= counts LOOP ITERATIONS (liveness only — a settled screen reads ~62 while swapping nothing); fps= counts FRAMES ACTUALLY SWAPPED and is the only real frame rate here. RENAMED 2026-08-01 with the old name REUSED: a pre-rename log's FPS= is this loop=, and its pres= is this fps=. rk fields are library-specific like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
+  "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/plxnative-* triggers (see README) and asserts on /tmp/plxnative-events.log. This file is INSTALLATION-INDEPENDENT: a case names the SHAPE of the item it needs (`item`, a symbolic key) and never a ratingKey. tests/manifest.local.json — gitignored, copy it from manifest.local.json.example — maps those keys to items on YOUR server and carries the pms host, tv address and test_user with them; run.py merges it over this file at load and refuses to run without it, naming any key it cannot resolve. The X-Plex-Token is read from src/config.local.h at runtime — it is NEVER stored in either file. Cases are derived from a survey of one real library; see library_gaps for combos no item in it could cover.",
+  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the once/sec `loop=<n> route=<r> fps=<n>` heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest loop= >= loop_floor plus whichever of fps_floor / fps_ceiling the scene declares. loop= counts LOOP ITERATIONS (liveness only — a settled screen reads ~62 while swapping nothing); fps= counts FRAMES ACTUALLY SWAPPED and is the only real frame rate here. RENAMED 2026-08-01 with the old name REUSED: a pre-rename log's FPS= is this loop=, and its pres= is this fps=. `item` keys resolve through manifest.local.json exactly like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
   "fps_scenes": [
     {
       "name": "home-hero",
@@ -73,7 +63,7 @@
       "loop_floor": 45,
       "run_secs": 22,
       "warmup_s": 6,
-      "rk": "2012",
+      "item": "movie_in_home_catalog",
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-detailosc": true
@@ -102,8 +92,8 @@
       "loop_floor": 50,
       "run_secs": 20,
       "warmup_s": 6,
-      "rk": "2005",
-      "comment": "cast[0] of this movie is Peter Sallis, who has titles in BOTH libraries, so the page draws two poster shelves. detailsec=1 walks the hero focus down to the credits row (a movie's second section); detailok presses OK on it.",
+      "item": "movie_cast0_in_both_libraries",
+      "comment": "cast[0] of this movie must be a person with titles in BOTH libraries, so the page draws two poster shelves — that is what the item key asks for. detailsec=1 walks the hero focus down to the credits row (a movie's second section); detailok presses OK on it.",
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-detailsec": 1,
@@ -165,7 +155,7 @@
       "run_secs": 36,
       "warmup_s": 6,
       "_run_secs_note": "36 for the same reason as home-library-nav: a route-CHANGING scene splits its once/sec samples between two routes. This one scraped through at 22s with exactly 6 post-warmup samples against a minimum of 5 — passing on one sample of margin is not a gate, it is a coin flip.",
-      "rk": "2012",
+      "item": "movie_in_home_catalog",
       "comment": "The Home<->DETAIL arm of the route transition (phase 2), the half home-library-nav cannot reach: no shared tab bar (so the top band fades WITH the page instead of holding still), a hero backdrop and an ambient ground on the far side, and a real teardown at the fade floor. navosc with a ratingKey bounces nav_open out and nav_back home every 1400ms through the same calls a grid-card OK and the BACK key raise. route=detail samples the arrival ramp, the settled page and the fade-OUT; the Home side is covered by home-hero/home-grid/home-library-nav.",
       "triggers": {
         "plxnative-navosc": "$rk"
@@ -181,7 +171,7 @@
       "loop_floor": 45,
       "run_secs": 26,
       "warmup_s": 9,
-      "rk": "1926",
+      "item": "movie_hevc_4k_hdr10_truehd",
       "triggers": {
         "plxnative-play": "$rk",
         "plxnative-info": true
@@ -195,7 +185,7 @@
       "loop_floor": 45,
       "run_secs": 26,
       "warmup_s": 9,
-      "rk": "1926",
+      "item": "movie_hevc_4k_hdr10_truehd",
       "triggers": {
         "plxnative-play": "$rk",
         "plxnative-menu": "0"
@@ -204,10 +194,10 @@
   ],
   "cases": [
     {
-      "name": "substance_h264_ac3",
-      "rk": "4",
+      "name": "dp_h264_ac3_1080p",
+      "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "The Substance",
+      "title": "movie · h264/ac3 · 1080p · embedded SRT",
       "covers": [
         "h264+ac3",
         "directplay-1080p",
@@ -229,10 +219,10 @@
       }
     },
     {
-      "name": "morning_show_hdr10_eac3",
-      "rk": "1804",
+      "name": "dp_hevc_eac3_4k_hdr10",
+      "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "The Morning Show S2E2",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · direct-play anchor",
       "covers": [
         "hevc-4k-hdr10",
         "eac3",
@@ -255,10 +245,10 @@
       }
     },
     {
-      "name": "morning_show_skip_intro",
-      "rk": "1804",
+      "name": "marker_intro_offer",
+      "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "The Morning Show S2E2 (skip-intro offer)",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · carries an intro marker (skip-intro offer)",
       "covers": [
         "markers",
         "includeMarkers",
@@ -288,10 +278,10 @@
       }
     },
     {
-      "name": "morning_show_skip_intro_press",
-      "rk": "1804",
+      "name": "marker_intro_press",
+      "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "The Morning Show S2E2 (press Skip Intro)",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · intro marker, pressed (consumed-marker latch)",
       "covers": [
         "markers",
         "skip-intro",
@@ -324,10 +314,10 @@
       }
     },
     {
-      "name": "morning_show_up_next_autoadvance",
-      "rk": "1804",
+      "name": "marker_credits_up_next",
+      "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "The Morning Show S2E2 -> S2E3 (credits auto-advance)",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · `final` credits marker -> the next episode of the same season",
       "covers": [
         "markers",
         "credits-final",
@@ -339,7 +329,7 @@
       "setup": {
         "viewOffset_ms": 0,
         "also_reset": [
-          "1805"
+          "episode_hevc_4k_hdr10_eac3_next"
         ]
       },
       "operations": [
@@ -349,7 +339,7 @@
         {
           "op": "marker",
           "marker": "credits",
-          "expect_up_next": "1805"
+          "expect_up_next": "episode_hevc_4k_hdr10_eac3_next"
         }
       ],
       "expect": {
@@ -362,10 +352,10 @@
       }
     },
     {
-      "name": "toy_story3_smart_dp",
-      "rk": "1926",
+      "name": "dp_hevc_truehd_ac3_sibling",
+      "item": "movie_hevc_4k_hdr10_truehd",
       "kind": "movie",
-      "title": "Toy Story 3",
+      "title": "movie · hevc 4K HDR10 · truehd default + ac3 sibling (smart direct-play)",
       "covers": [
         "smart-dp",
         "hevc-4k-hdr10",
@@ -388,10 +378,10 @@
       }
     },
     {
-      "name": "project_hail_mary_dovi",
-      "rk": "1900",
+      "name": "dp_hevc_eac3_dovi_p8",
+      "item": "movie_hevc_4k_dovi_p8",
       "kind": "movie",
-      "title": "Project Hail Mary",
+      "title": "movie · hevc 4K Dolby Vision P8 / e-ac3 · many embedded SRT",
       "covers": [
         "hevc-4k-dovi-p8",
         "eac3",
@@ -413,10 +403,10 @@
       }
     },
     {
-      "name": "hannah_montana_mp4_aac",
-      "rk": "1816",
+      "name": "transcode_mp4_container",
+      "item": "movie_hevc_aac_mp4",
       "kind": "movie",
-      "title": "Hannah Montana 20th Anniversary",
+      "title": "movie · hevc/aac in an mp4 container · sidecar subs · transcode-expected",
       "covers": [
         "hevc+aac",
         "mp4-container",
@@ -440,10 +430,10 @@
       }
     },
     {
-      "name": "phineas_h264_aac",
-      "rk": "72",
+      "name": "dp_h264_aac_episode",
+      "item": "episode_h264_aac",
       "kind": "episode",
-      "title": "Phineas and Ferb S1E1",
+      "title": "episode · h264/aac · 1080p · no subtitle tracks",
       "covers": [
         "h264+aac",
         "episode",
@@ -465,10 +455,10 @@
       }
     },
     {
-      "name": "home_alone_manyaudio",
-      "rk": "3",
+      "name": "dp_h264_ac3_many_audio",
+      "item": "movie_h264_ac3_many_audio",
       "kind": "movie",
-      "title": "Home Alone",
+      "title": "movie · h264/ac3 · 1080p · 8 audio tracks (dts + vorbis present)",
       "covers": [
         "h264+ac3",
         "many-audio-tracks",
@@ -490,10 +480,10 @@
       }
     },
     {
-      "name": "toy_story4_av1_transcode",
-      "rk": "1945",
+      "name": "transcode_av1_no_dp_audio",
+      "item": "movie_av1_no_dp_audio",
       "kind": "movie",
-      "title": "Toy Story 4 (AV1)",
+      "title": "movie · av1 video, no direct-playable audio · transcode-expected -> hevc 4K",
       "covers": [
         "av1-video",
         "no-dp-audio",
@@ -516,10 +506,10 @@
       }
     },
     {
-      "name": "substance_seek_inplace",
-      "rk": "4",
+      "name": "seek_inplace_h264",
+      "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "The Substance (in-place seek)",
+      "title": "movie · h264/ac3 · 1080p — in-place seek",
       "covers": [
         "seek-inplace",
         "libavformat-seek",
@@ -546,10 +536,10 @@
       }
     },
     {
-      "name": "substance_seek_rapid",
-      "rk": "4",
+      "name": "seek_rapid_h264",
+      "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "The Substance (rapid tap-burst seek, fwd+back)",
+      "title": "movie · h264/ac3 · 1080p — rapid tap-burst seek, fwd+back",
       "covers": [
         "seek-rapid",
         "seek-coalesce",
@@ -578,10 +568,10 @@
       }
     },
     {
-      "name": "morning_show_seek_rapid",
-      "rk": "1804",
+      "name": "seek_rapid_hevc_4k",
+      "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "The Morning Show (rapid back-tap burst, 4K HEVC HDR10)",
+      "title": "episode · hevc 4K HDR10 / e-ac3 — rapid back-tap burst",
       "covers": [
         "seek-rapid",
         "seek-coalesce",
@@ -598,7 +588,7 @@
           "mode": "rapid",
           "script": "gap=50,200,-10,-10,-10,-10",
           "final_s": 160,
-          "_note": "rapid 10s-back taps at the D-pad auto-repeat cadence - the historical stale-audio-silence repro shape (AUDIO_STALE_AHEAD guard). See the substance_seek_rapid note for why gap=50 and not 300."
+          "_note": "rapid 10s-back taps at the D-pad auto-repeat cadence - the historical stale-audio-silence repro shape (AUDIO_STALE_AHEAD guard). See the seek_rapid_h264 note for why gap=50 and not 300."
         }
       ],
       "expect": {
@@ -611,10 +601,10 @@
       }
     },
     {
-      "name": "toy_story4_seek_transcode",
-      "rk": "1945",
+      "name": "seek_transcode",
+      "item": "movie_av1_no_dp_audio",
       "kind": "movie",
-      "title": "Toy Story 4 (transcode seek)",
+      "title": "movie · av1 -> transcode — seek while transcoding",
       "covers": [
         "seek-transcode",
         "transcode-reload"
@@ -640,10 +630,10 @@
       }
     },
     {
-      "name": "substance_resume_directplay",
-      "rk": "4",
+      "name": "resume_directplay",
+      "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "The Substance (resume @600s)",
+      "title": "movie · h264/ac3 · 1080p — resume @600s (direct-play)",
       "covers": [
         "resume-viewoffset",
         "directplay"
@@ -672,10 +662,10 @@
       }
     },
     {
-      "name": "toy_story4_resume_transcode",
-      "rk": "1945",
+      "name": "resume_transcode",
+      "item": "movie_av1_no_dp_audio",
       "kind": "movie",
-      "title": "Toy Story 4 (transcode resume @600s)",
+      "title": "movie · av1 -> transcode — resume @600s",
       "covers": [
         "resume-viewoffset",
         "transcode"
@@ -704,10 +694,10 @@
       }
     },
     {
-      "name": "morning_show_audio_native",
-      "rk": "1804",
+      "name": "audio_switch_native",
+      "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "The Morning Show (native audio switch; eng auto-picked at start -> switch to rus row 0)",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · foreign default + eng — native audio switch (eng auto-picked at start -> the default-language track, row 0)",
       "covers": [
         "audio-switch-native",
         "hevc-stays-174",
@@ -736,10 +726,10 @@
       }
     },
     {
-      "name": "home_alone_audio_transcode",
-      "rk": "3",
+      "name": "audio_switch_transcode",
+      "item": "movie_h264_ac3_many_audio",
       "kind": "movie",
-      "title": "Home Alone (English DTS -> transcode)",
+      "title": "movie · h264/ac3 · 1080p · 8 audio tracks — switch to the English dts track (forces transcode)",
       "covers": [
         "audio-switch-transcode",
         "lang-forces-transcode",
@@ -767,10 +757,10 @@
       }
     },
     {
-      "name": "substance_subtitle_srt",
-      "rk": "4",
+      "name": "subtitle_text_srt",
+      "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "The Substance (embedded subtitle soft-render, ff.rs demuxer)",
+      "title": "movie · h264/ac3 · 1080p · 4 embedded text subtitle tracks — soft-render (ff.rs demuxer)",
       "covers": [
         "subtitle-srt",
         "soft-render",
@@ -800,10 +790,10 @@
       }
     },
     {
-      "name": "toy_story2_subtitle_pgs",
-      "rk": "1919",
+      "name": "subtitle_image_pgs",
+      "item": "movie_hevc_4k_pgs_subs",
       "kind": "movie",
-      "title": "Toy Story 2 (PGS image subtitle, client-rendered)",
+      "title": "movie · hevc 4K direct-play · PGS image subtitle track — client-rendered bitmap",
       "covers": [
         "subtitle-pgs",
         "image-sub-bitmap",
@@ -850,17 +840,17 @@
       "flac",
       "pcm/lpcm",
       "mp3",
-      "dts-only-at-movie-level (only via language selection: Home Alone/Frozen English)"
+      "dts-only-at-movie-level (reachable only via language selection on a many-audio movie, never as the item's own default)"
     ],
     "subtitles": [
       "ass/ssa",
-      "vobsub/dvd_subtitle (image-sub RENDERING is covered by toy_story2_subtitle_pgs; VobSub-specifically has no library item to exercise the dvdsub decoder)",
+      "vobsub/dvd_subtitle (image-sub RENDERING is covered by subtitle_image_pgs; VobSub-specifically has no library item to exercise the dvdsub decoder)",
       "mov_text/tx3g soft-render (present in mp4s but not on our pipeline)"
     ],
     "hdr": [
       "hlg",
       "hdr10+",
-      "dovi-p5-ipt (only on Wicked, mp4)"
+      "dovi-p5-ipt (the one item carrying it is mp4, which the container gate sends to the server anyway)"
     ]
   }
 }

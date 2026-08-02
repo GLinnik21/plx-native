@@ -605,9 +605,9 @@ mod tests {
     fn media_rows_are_shelved_by_their_own_type_not_the_containers_view_group() {
         let mut mc = MediaContainer::default();
         mc.metadata = vec![
-            row("movie", "1", "Frozen"),
-            row("show", "1975", "Cracking Contraptions"),
-            row("movie", "2", "Frozen II"),
+            row("movie", "1", "A Movie"),
+            row("show", "1975", "A Show"),
+            row("movie", "2", "Another Movie"),
         ];
         let s = split_by_type(&mc);
         assert_eq!(s[0].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1", "2"]);

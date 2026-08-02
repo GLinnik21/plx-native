@@ -139,7 +139,7 @@ touch  /tmp/plxnative-noidle               # pin present==loop so pres= is unamb
 | **C — recovered** | `make kill`, app closed 15 min, relaunch | 3 min |
 
 ```
-timeout 2400 make run-stream TV=192.168.0.114 | tee /tmp/soak-A.log
+timeout 2400 make run-stream TV=<tv> | tee /tmp/soak-A.log
 ```
 
 **Log**: `pres=` and `worstframe=` off each 1 Hz heartbeat, plus the `FRAMEDROP total= pump= up= px=` lines.

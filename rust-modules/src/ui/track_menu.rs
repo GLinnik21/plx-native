@@ -331,7 +331,7 @@ fn panel_rect() -> Rect {
     let px = SCR_W - 80.0 - pw; // right:80 (mockup)
     // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
     // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
-    // crosses `top_min` — so a long list (Toy Story's many audio dubs) SCROLLS inside the panel
+    // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
     // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
     // the bottom edge steady.
     let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons

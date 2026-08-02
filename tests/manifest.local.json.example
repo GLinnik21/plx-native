@@ -1,0 +1,28 @@
+{
+  "_comment": "TEMPLATE for tests/manifest.local.json — copy this file to that name (it is gitignored) and replace every <placeholder>. It carries the values that describe YOUR server, YOUR TV and YOUR library; tests/manifest.json carries only the case definitions, which are the same everywhere. run.py merges this over the manifest at load, refuses to run without it, and names any key it cannot resolve. No secret belongs here either — the X-Plex-Token is still read from the gitignored src/config.local.h at runtime.",
+  "pms": {
+    "host": "<pms-host>",
+    "port": 32400
+  },
+  "tv": "<tv-host>",
+  "_test_user_comment": "By default the harness runs as this Plex Home managed user so test playback + timeline scrobbles land on THIS user's history, never the owner's real account. run.py fetches this user's per-server accessToken via the admin token (shared_servers) at runtime -- no secret is stored. `id` is the plex.tv numeric userID, which is what shared_servers is keyed by. Pass --owner to run as the config.local.h owner token instead. The user must already have the libraries shared with it. Delete this block entirely to always run as the owner (run.py warns that watch history WILL be affected).",
+  "test_user": {
+    "id": "<plex.tv numeric userID>",
+    "title": "<display name, cosmetic>"
+  },
+  "_items_comment": "Maps each symbolic `item` key used by tests/manifest.json to the ratingKey of an item on YOUR server with that shape. The key names the shape the case needs, and each case's `title` in manifest.json spells it out in full, so a missing or wrong mapping is a test-setup error rather than a mystery failure — run.py names the key it could not resolve. Several cases deliberately SHARE one item, which is why run.py resets the server-side resume point before every case. Two keys are for the FPS scenes rather than a playback case and carry an extra requirement: `movie_in_home_catalog` must be reachable from the home catalog (recently-added / on-deck) or detail-transition never enters route=detail, and `movie_cast0_in_both_libraries` must have a first-billed cast member with titles in BOTH libraries so the person page draws two poster shelves. An item whose shape you have nothing for can be dropped along with the cases that name it.",
+  "items": {
+    "movie_h264_ac3_1080p": "<ratingKey>",
+    "episode_hevc_4k_hdr10_eac3": "<ratingKey>",
+    "episode_hevc_4k_hdr10_eac3_next": "<ratingKey: the episode that follows the one above>",
+    "movie_hevc_4k_hdr10_truehd": "<ratingKey>",
+    "movie_hevc_4k_dovi_p8": "<ratingKey>",
+    "movie_hevc_aac_mp4": "<ratingKey>",
+    "episode_h264_aac": "<ratingKey>",
+    "movie_h264_ac3_many_audio": "<ratingKey>",
+    "movie_av1_no_dp_audio": "<ratingKey>",
+    "movie_hevc_4k_pgs_subs": "<ratingKey>",
+    "movie_in_home_catalog": "<ratingKey>",
+    "movie_cast0_in_both_libraries": "<ratingKey>"
+  }
+}

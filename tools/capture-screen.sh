@@ -26,7 +26,7 @@
 #     method      : DISPLAY (default) | VIDEO | GRAPHIC   (see above)
 #
 # Environment overrides:
-#     TV_HOST (192.168.0.114)  TV_USER (root)  TV_PASS (alpine)
+#     TV_HOST (default: the gitignored .tv-host)  TV_USER (root)  TV_PASS (alpine)
 #     CAP_W (1920)  CAP_H (1080)
 #
 # Requires: bash, ssh, scp, and (only if no SSH key is installed) sshpass.
@@ -34,7 +34,10 @@
 #
 set -euo pipefail
 
-TV_HOST="${TV_HOST:-192.168.0.114}"
+# The TV's address comes from $TV_HOST, else the gitignored .tv-host next to the Makefile (the
+# same file `make TV=` falls back to) — the repo carries no home-network address of its own.
+TV_HOST="${TV_HOST:-$(cat "$(dirname "$0")/../.tv-host" 2>/dev/null || true)}"
+[ -n "$TV_HOST" ] || { echo "no TV configured — put its IP in .tv-host, or set TV_HOST=<ip>" >&2; exit 1; }
 TV_USER="${TV_USER:-root}"
 TV_PASS="${TV_PASS:-alpine}"
 CAP_W="${CAP_W:-1920}"

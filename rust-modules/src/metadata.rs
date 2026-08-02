@@ -1338,10 +1338,10 @@ mod marker_tests {
             is_final: is_final as i64,
         }
     }
-    /// The Morning Show S2E2 as the live server actually returns it (2026-07-29): an intro and a
+    /// An episode's markers as the live server actually returns them (2026-07-29): an intro and a
     /// `final` credits marker, in that wire order — credits FIRST, which is why nothing here may
     /// assume the array is sorted by time.
-    fn morning_show() -> Vec<Marker> {
+    fn episode_markers() -> Vec<Marker> {
         convert_markers(&[
             wire("credits", 3_065_648, 3_130_720, true),
             wire("intro", 990, 99_625, false),
@@ -1350,7 +1350,7 @@ mod marker_tests {
 
     #[test]
     fn only_the_kinds_the_player_acts_on_survive_parsing() {
-        let m = morning_show();
+        let m = episode_markers();
         assert_eq!(m.len(), 2);
         assert_eq!(m[0].kind, MarkerKind::Credits);
         assert!(m[0].final_seg);
@@ -1373,7 +1373,7 @@ mod marker_tests {
 
     #[test]
     fn the_playhead_selects_the_segment_it_is_inside() {
-        let m = morning_show();
+        let m = episode_markers();
         assert!(marker_at(&m, 0).is_none(), "before the intro starts (it begins at 990ms)");
         assert_eq!(marker_at(&m, 990).unwrap().kind, MarkerKind::Intro, "inclusive at the start");
         assert_eq!(marker_at(&m, 50_000).unwrap().kind, MarkerKind::Intro);
@@ -1388,7 +1388,7 @@ mod marker_tests {
         // PMS sets a `final` marker's end to the CONTAINER duration, but our playhead is the
         // decoder's and routinely stops short of it — an exclusive end there made the pill blink
         // out over the last frames, exactly when it is being reached for.
-        let m = morning_show();
+        let m = episode_markers();
         assert!(marker_at(&m, 3_130_720).is_some(), "at the stated end");
         assert!(marker_at(&m, 3_130_720 + 5_000).is_some(), "and past it");
 
@@ -1460,8 +1460,8 @@ mod rating_tests {
     }
 
     /// The `image` string picks the ARTWORK — provider AND state — and the score never does. Both
-    /// halves matter: a threshold would put a fresh tomato on 6.0 (`My Fault: London` is 4.0 and
-    /// ROTTEN, `Hannah Montana…` is 6.0 and RIPE on this server), and a provider read off `type`
+    /// halves matter: a threshold would put a fresh tomato on 6.0 (on the live server one item is
+    /// 4.0 and ROTTEN while another is 6.0 and RIPE), and a provider read off `type`
     /// would be wrong for IMDb and TMDB, which both arrive as `audience`.
     #[test]
     fn image_string_picks_the_provider_and_the_state() {

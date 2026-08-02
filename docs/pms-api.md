@@ -47,8 +47,8 @@ GET /library/sections/2/all?...        # shows; totalSize: Movies=23, Shows=12
 Verified movie entry (trimmed to gallery-relevant fields):
 
 ```json
-{"ratingKey":"1","key":"/library/metadata/1","type":"movie","title":"Frozen",
- "contentRating":"PG","summary":"Fearless optimist Anna teams up with ...",
+{"ratingKey":"1","key":"/library/metadata/1","type":"movie","title":"Example Movie",
+ "contentRating":"PG","summary":"A one-paragraph plot synopsis ...",
  "rating":8.9,"audienceRating":8.5,"viewCount":1,"year":2013,
  "thumb":"/library/metadata/1/thumb/1778526065",
  "art":"/library/metadata/1/art/1778526065",
@@ -136,8 +136,8 @@ The tag arrays on an item (`Role[]`, `Director[]`, `Writer[]`) are the entry poi
 carry **six** attributes, not the three the app used to parse:
 
 ```json
-{ "id": 465, "filter": "actor=465", "tag": "Cynthia Erivo",
-  "tagKey": "5d776c4b7a53e9001e73f56d", "role": "Elphaba",
+{ "id": 465, "filter": "actor=465", "tag": "<person name>",
+  "tagKey": "5d776c4b7a53e9001e73f56d", "role": "<character name>",
   "thumb": "https://metadata-static.plex.tv/b/people/b575cd9….jpg" }
 ```
 
@@ -223,7 +223,7 @@ and hub `key` + paging for "see all".
 
 ## 4. Item detail & show → season → episode chain
 
-### Movie detail (verified with Frozen, ratingKey 1)
+### Movie detail (verified against a movie item, ratingKey 1)
 
 ```
 GET /library/metadata/1?X-Plex-Token=...
@@ -249,13 +249,13 @@ An item carries its review scores **twice**, in two shapes:
   { "image": "themoviedb://image.rating",               "value": 7.8, "type": "audience" }
 ]
 ```
-(*Luca*, ratingKey 2032, verbatim. Some items also carry a `count` per row.)
+(a movie item, ratingKey 2032, verbatim. Some items also carry a `count` per row.)
 
 - **`image` names the provider AND the icon state**, and is the ONLY thing that may pick the badge
   art: `…rating.ripe` = fresh tomato, `…rating.rotten` = green splat, `…rating.upright` = standing
   popcorn, `…rating.spilled` = tipped popcorn. All four occur on this library. Do **not** threshold
-  `value` to decide fresh-vs-rotten — RT's critic and audience cutoffs differ and move (*My Fault:
-  London* is 4.0 **rotten**, *Hannah Montana 20th Anniversary Special* is 6.0 **ripe**).
+  `value` to decide fresh-vs-rotten — RT's critic and audience cutoffs differ and move (on this
+  library one item is 4.0 and **rotten** while another is 6.0 and **ripe**, so no threshold works).
 - **`type` does not identify the provider.** IMDb and TMDB both arrive as `audience`; only
   Rotten Tomatoes' tomato is ever `critic`.
 - `value` is normalised **0–10 for every provider**, including the ones that publish percentages —
@@ -290,8 +290,8 @@ GET /library/metadata/{rk}?includeMarkers=1&includeChapters=1
 - **The array is NOT sorted by time** — the sample above is verbatim, credits before intro.
 - **`id` is not an identity.** Every marker on every item came back as `id: 3096`; key markers by
   kind + offsets, never by id.
-- Not every episode has both: The Morning Show S2E2 carries intro + credits, while The Office
-  S5E26 and Top Gear S14E7 carry credits only. Movies generally carry none.
+- Not every episode has both: of the episodes probed here, one carries intro + credits and two
+  carry credits only. Movies generally carry none — coverage is uneven, so never assume either.
 - A `final` marker's `endTimeOffset` equals the **container** duration, which the decoder's
   playhead routinely stops short of — treat it as open-ended rather than exclusive, or an
   end-of-item prompt blinks out over the last frames.
@@ -307,11 +307,11 @@ subsequent direct-play need, so the feature costs zero extra round-trips.
 - Rows carry `playQueueItemID`; the container carries `playQueueSelectedItemID`,
   `playQueueSelectedItemOffset` and `playQueueTotalCount`. Find the successor by **item id**, not
   `ratingKey` — a queue may hold the same item twice.
-- The queue does **not** span past the available episodes: The Office S5E26 (the last episode on
-  this server) returns `playQueueTotalCount: 1`, i.e. no successor. A movie behaves the same way.
+- The queue does **not** span past the available episodes: the last episode a server holds for a
+  show returns `playQueueTotalCount: 1`, i.e. no successor. A movie behaves the same way.
 - The POST needs an `X-Plex-Client-Identifier`; without it PMS answers with an empty body.
 
-### Show chain (verified with "Every Year After", ratingKey 1857)
+### Show chain (verified against a show, ratingKey 1857)
 
 ```
 GET /library/metadata/1857/children      → seasons
@@ -330,9 +330,9 @@ Episode entry (verified, trimmed):
 
 ```json
 {"ratingKey":"1859","key":"/library/metadata/1859","type":"episode",
- "title":"Every Summer After","index":1,"parentIndex":1,
+ "title":"Example Episode","index":1,"parentIndex":1,
  "grandparentRatingKey":"1857","parentRatingKey":"1858",
- "grandparentTitle":"Every Year After","parentTitle":"Season 1",
+ "grandparentTitle":"Example Show","parentTitle":"Season 1",
  "thumb":"/library/metadata/1859/thumb/1781586780",
  "grandparentThumb":"/library/metadata/1857/thumb/1782966880",
  "duration":3273248,
@@ -397,11 +397,11 @@ at 1080p) keeps texture memory minimal: 420×236 RGBA = ~400 KB VRAM per card.
 
 ## 6. Direct-play URL
 
-Chain (verified end-to-end with Frozen):
+Chain (verified end-to-end against a movie item):
 
 1. `GET /library/metadata/{ratingKey}` → `Metadata[0].Media[i].Part[0].key`
    e.g. `"/library/parts/738/1767473373/file.mkv"`
-2. Play `http://192.168.0.3:32400{Part.key}?X-Plex-Token=...`
+2. Play `http://<pms-host>:32400{Part.key}?X-Plex-Token=...`
 
 Verified with a range GET:
 

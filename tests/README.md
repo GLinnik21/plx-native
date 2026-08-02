@@ -4,10 +4,19 @@ Headless regression tests for the native webOS Plex player. There is no host-sid
 (the code only runs on the TV), so every test drives the **real app on the real TV** via the
 `/tmp/plxnative-*` dev triggers and asserts on the on-device event log (`/tmp/plxnative-events.log`).
 
-- `manifest.json` — the test matrix: real PMS items (rk), the triggers each case needs, and
-  the expected log signals.
+- `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
+  needs, the expected log signals, and the *shape* of the item it needs (`item`, a symbolic key
+  like `movie_h264_ac3_1080p`) rather than any ratingKey.
+- `manifest.local.json` — **gitignored, one per installation**, and required. Maps each `item`
+  key to a ratingKey on *your* server, and carries your `pms` host, `tv` address and `test_user`.
+  Copy it from `manifest.local.json.example` and fill it in; `run.py` merges it over the manifest
+  at load and refuses to run without it, naming any key it cannot resolve.
 - `run.py` — the runner (Python 3 stdlib only; macOS system `python3` is fine).
 - `README.md` — this file.
+
+The split is not just anonymisation. The symbolic key keeps "five cases deliberately share one
+item" visible in the tracked file — which is the fact the per-case resume reset exists for — and
+it makes a mis-set item a named setup error instead of a mystery failure.
 
 ## Security
 
@@ -17,29 +26,32 @@ logs, or writes it — progress URLs are redacted to `<token>` in output. The TV
 credentials are already in the committed `Makefile`, so the runner shells out to `make` /
 `sshpass` for device I/O (no new secret is introduced).
 
-## Test identity — runs as Guest (no watch-history pollution)
+## Test identity — runs as a managed user (no watch-history pollution)
 
-By default the harness plays **as the Plex Home managed user in `manifest.json` → `test_user`**
-(Guest, id 762808621), so test playback + timeline scrobbles land on *that* user's history and
-your real account stays clean. It works without storing any new secret:
+By default the harness plays **as the Plex Home managed user in `manifest.local.json` →
+`test_user`**, so test playback + timeline scrobbles land on *that* user's history and your real
+account stays clean. It works without storing any new secret:
 
 - `run.py` uses the owner token (from `config.local.h`) to look up that user's **per-server
   access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
-  `userID`). The managed user must already have the libraries shared with it (Guest here does).
+  `userID` — which is what `test_user.id` is). The managed user must already have the libraries
+  shared with it.
 - That token is used for the `/:/progress` resume seed **and** written to `/tmp/plxnative-token` on the
   TV. The app reads `/tmp/plxnative-token` at boot and overrides its compiled-in owner token with it
   (see `plex_run`), so the **app itself** plays and scrobbles as the managed user — not just the
-  seed. The token value is never printed (redacted to `<Guest …>`), and `plxnative-token` is cleared
-  between cases like every other trigger.
+  seed. The token value is never printed (redacted to `<…, redacted>`), and `plxnative-token` is
+  cleared between cases like every other trigger.
 - Pass **`--owner`** to run as the `config.local.h` owner token instead (history *will* be
-  affected). If the manifest has no `test_user`, the runner falls back to owner with a warning.
+  affected). If the overlay has no `test_user`, the runner falls back to owner with a warning.
 
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`,
   and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `CLAUDE.md`).
-- The TV powered on and reachable (`root@192.168.0.114`, default from the manifest).
-- The PMS reachable at `http://192.168.0.3:32400` (host/port in the manifest `pms` block).
+- `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in every
+  `<placeholder>` (PMS host/port, TV address, `test_user`, and a ratingKey per `item` key).
+- The TV powered on and reachable (`root@<tv>`, the overlay's `tv`).
+- The PMS reachable at `http://<pms-host>:32400` (the overlay's `pms` block).
 - `src/config.local.h` present with `PMS_TOKEN`.
 
 ## Running
@@ -52,17 +64,17 @@ your real account stays clean. It works without storing any new secret:
 ./tests/run.py --build
 
 # run one case (or a family) by name substring; assumes the app is already deployed
-./tests/run.py --filter morning
+./tests/run.py --filter marker
 ./tests/run.py --filter seek
 
 # run everything against an already-deployed build
 ./tests/run.py
 
-# point at a different TV
-./tests/run.py --tv 192.168.0.50 --filter substance
+# point at a different TV (overrides the overlay's `tv`)
+./tests/run.py --tv 10.0.0.50 --filter dp_h264
 
-# run as the OWNER token instead of the Guest test_user (history WILL be affected)
-./tests/run.py --owner --filter substance
+# run as the OWNER token instead of the overlay's test_user (history WILL be affected)
+./tests/run.py --owner --filter dp_h264
 ```
 
 The runner prints per-assertion PASS/FAIL with the failing evidence line, then a final
@@ -88,7 +100,7 @@ cast+about / info-panel regressions.
 # UI tier only — home hero, home grid, detail scroll transition. No video, no PMS token needed.
 ./tests/run.py --fps
 
-# add the player tier (info panel, track menu) — these decode video as the Guest test_user, slower.
+# add the player tier (info panel, track menu) — these decode video as the test_user, slower.
 ./tests/run.py --fps-player
 
 # build first, or list the scenes:
@@ -124,11 +136,13 @@ cast+about / info-panel regressions.
   `docs/perf-view-buffers-and-thermal.md`.
 - **False-negative guard:** a scene with <5 post-warmup samples for its route FAILs (it never reached
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
-  pass. `detail-transition`'s `rk` must be an **in-home-catalog (recently-added / on-deck) movie**.
+  pass. `detail-transition`'s item (`movie_in_home_catalog`) must be an **in-home-catalog
+  (recently-added / on-deck) movie**.
 - Validated by injection: reverting the glyph-cache fix (`TCACHE 160→48`) makes `detail-transition`
   fail (~34fps) while the unaffected home scenes still pass.
-- Same nonzero-exit-on-failure contract as the case suite. Tune floors / rks / scenes in
-  `manifest.json → fps_scenes`; the harness stays library-agnostic.
+- Same nonzero-exit-on-failure contract as the case suite. Tune floors / scenes in
+  `manifest.json → fps_scenes` and point their `item` keys at your own library from
+  `manifest.local.json`; the harness stays library-agnostic.
 
 ### What each case does (per case, automatically)
 
@@ -149,35 +163,38 @@ works for **any** rk) and drives the same field-based play path the detail Play 
 bypassing the catalog lookup entirely. It honors the server `viewOffset` for resume and logs
 `plxnative-play: rk=<rk> start` so the harness can confirm the trigger fired.
 
-## Coverage — the 8 real matrix items + operations
+## Coverage — the 8 matrix item shapes + operations
+
+The `item` column is the symbolic key `manifest.local.json` maps to a ratingKey on your server;
+it is also the specification of what that item has to be.
 
 Base playback (decision + codec + not-stuck), one case each:
 
-| Case | rk | Covers |
-|------|----|--------|
-| `substance_h264_ac3` | 4 | H264 + AC3 direct-play, 1080p, embedded SRT |
-| `morning_show_hdr10_eac3` | 1804 | HEVC 4K **HDR10** + E-AC3 direct-play, TV episode |
-| `toy_story3_smart_dp` | 1926 | **smart direct-play** (TrueHD default → AC3 sibling), HEVC 4K |
-| `project_hail_mary_dovi` | 1900 | HEVC 4K **Dolby Vision P8** + E-AC3 direct-play |
-| `hannah_montana_mp4_aac` | 1816 | HEVC + AAC, **mp4 container**, sidecar subs |
-| `phineas_h264_aac` | 72 | H264 + AAC direct-play, TV episode, no subs |
-| `home_alone_manyaudio` | 3 | H264 + AC3 direct-play, 8 audio tracks (DTS/vorbis present) |
-| `toy_story4_av1_transcode` | 1945 | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 (needs server pref `TranscoderHEVCEncodingMode=always`; else video drops to audio-only) |
+| Case | item | Covers |
+|------|------|--------|
+| `dp_h264_ac3_1080p` | `movie_h264_ac3_1080p` | H264 + AC3 direct-play, 1080p, embedded SRT |
+| `dp_hevc_eac3_4k_hdr10` | `episode_hevc_4k_hdr10_eac3` | HEVC 4K **HDR10** + E-AC3 direct-play, TV episode |
+| `dp_hevc_truehd_ac3_sibling` | `movie_hevc_4k_hdr10_truehd` | **smart direct-play** (TrueHD default → AC3 sibling), HEVC 4K |
+| `dp_hevc_eac3_dovi_p8` | `movie_hevc_4k_dovi_p8` | HEVC 4K **Dolby Vision P8** + E-AC3 direct-play |
+| `transcode_mp4_container` | `movie_hevc_aac_mp4` | HEVC + AAC, **mp4 container**, sidecar subs |
+| `dp_h264_aac_episode` | `episode_h264_aac` | H264 + AAC direct-play, TV episode, no subs |
+| `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (DTS/vorbis present) |
+| `transcode_av1_no_dp_audio` | `movie_av1_no_dp_audio` | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 (needs server pref `TranscoderHEVCEncodingMode=always`; else video drops to audio-only) |
 
 Operation cases (each also re-checks not-stuck / no-error afterward):
 
-| Case | rk | Asserts |
-|------|----|---------|
-| `substance_seek_inplace` | 4 | in-place seek to 140s (`seek(in-place)` + `sendSegment=1`, **no** `reload_at`), timeline reaches ~140s |
-| `substance_seek_rapid` | 4 | rapid tap-burst seek (6 requests @300ms, fwd+back — exercises coalescing): ≥2 in-place seeks, **no** `reload_at`, post-burst timeline reaches ~130s **and keeps climbing**, audio lane resumes (`feed a#` after the last seek) |
-| `morning_show_seek_rapid` | 1804 | rapid 10s-**back**-tap burst on 4K HEVC HDR10 (the historical stale-audio-silence shape): same assertions, final ~160s |
-| `toy_story4_seek_transcode` | 1945 | transcode seek (`seek(transcode)` **or** `reload_at: fresh Load at 140s`), timeline reaches ~140s |
-| `substance_resume_directplay` | 4 | viewOffset 600s honored — first `timeline` near 600s, not 0 |
-| `toy_story4_resume_transcode` | 1945 | `resume(transcode): restart at offset 600s`, first timeline near 600s |
-| `morning_show_audio_native` | 1804 | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
-| `home_alone_audio_transcode` | 3 | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
-| `substance_subtitle_srt` | 4 | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] "text"` lines |
-| `toy_story2_subtitle_pgs` | 1919 | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y rects=N canvas=WxH` (op flagged `"image": true`) |
+| Case | item | Asserts |
+|------|------|---------|
+| `seek_inplace_h264` | `movie_h264_ac3_1080p` | in-place seek to 140s (`seek(in-place)` + `sendSegment=1`, **no** `reload_at`), timeline reaches ~140s |
+| `seek_rapid_h264` | `movie_h264_ac3_1080p` | rapid tap-burst seek (6 requests @300ms, fwd+back — exercises coalescing): ≥2 in-place seeks, **no** `reload_at`, post-burst timeline reaches ~130s **and keeps climbing**, audio lane resumes (`feed a#` after the last seek) |
+| `seek_rapid_hevc_4k` | `episode_hevc_4k_hdr10_eac3` | rapid 10s-**back**-tap burst on 4K HEVC HDR10 (the historical stale-audio-silence shape): same assertions, final ~160s |
+| `seek_transcode` | `movie_av1_no_dp_audio` | transcode seek (`seek(transcode)` **or** `reload_at: fresh Load at 140s`), timeline reaches ~140s |
+| `resume_directplay` | `movie_h264_ac3_1080p` | viewOffset 600s honored — first `timeline` near 600s, not 0 |
+| `resume_transcode` | `movie_av1_no_dp_audio` | `resume(transcode): restart at offset 600s`, first timeline near 600s |
+| `audio_switch_native` | `episode_hevc_4k_hdr10_eac3` | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
+| `audio_switch_transcode` | `movie_h264_ac3_many_audio` | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
+| `subtitle_text_srt` | `movie_h264_ac3_1080p` | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] "text"` lines |
+| `subtitle_image_pgs` | `movie_hevc_4k_pgs_subs` | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y rects=N canvas=WxH` (op flagged `"image": true`) |
 
 ### Key log signals asserted (filter `smp_cb type=43 num=0 str=$` first)
 
@@ -218,10 +235,11 @@ instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are now client
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each
 display-set to RGBA, and `player_hud::draw_subtitle_bitmap` composites it over the video as a GL
 texture (the webOS pipeline's own HW subtitle engine is only reachable in URI/demuxer mode, not
-our in-process buffer-feed — see project memory). Verified on Toy Story 2 (rk 1919, 6× PGS).
+our in-process buffer-feed — see project memory). Verified on a 4K HEVC movie carrying 6 PGS
+tracks (`movie_hevc_4k_pgs_subs`).
 
-The case targets `The Substance` (rk 4) — the local copy is Russian-dubbed with four text
-tracks `[RU-forced, RU, EN, EN-SDH]`, so it picks **row 3 = the English track** (row 0 is Off;
+The text case targets `movie_h264_ac3_1080p`, which has four text tracks
+`[RU-forced, RU, EN, EN-SDH]`, so it picks **row 3 = the English track** (row 0 is Off;
 `desired_sub_idx = row − 1`) and seeds a `viewOffset` of 843 s so playback lands in the dense
 opening monologue and cues appear within the run window. (For a transcode item, soft subs ride a
 WebVTT sidecar, which per project memory delivers 0 bytes on this pipeline — direct-play is the
@@ -234,9 +252,9 @@ Append an entry to `manifest.json` → `cases`:
 ```json
 {
   "name": "my_case",
-  "rk": "1234",
+  "item": "movie_h264_ac3_1080p",     // symbolic; map it in manifest.local.json → items
   "kind": "movie",
-  "title": "…",
+  "title": "movie · h264/ac3 · 1080p — …",   // the item SHAPE, not a library title
   "covers": ["…"],
   "run_secs": 60,
   "setup": { "viewOffset_ms": 600000 },        // optional — seeds resume
@@ -272,12 +290,13 @@ The library survey found these have no exercising item; the harness can't test t
 media (see `library_gaps` in `manifest.json`). A small set of **synthetic** `ffmpeg` clips
 (10–30 s), served from the host (`python3 -m http.server`) and fed via the `/tmp/plxnative-url` boot
 trigger, would close them deterministically — recommended as an optional supplement, kept clearly
-labeled "synthetic" and secondary to the 8 authoritative real items:
+labeled "synthetic" and secondary to the 8 authoritative real item shapes:
 
 - **Video:** VP9, MPEG-2, VC-1, MPEG-4-ASP; **8-bit HEVC** (every HEVC is Main10); **4K H.264**
   (all 4K is HEVC/AV1); interlaced. (These would exercise the transcode-fallback path from the
   client side.)
 - **Audio:** FLAC, PCM/LPCM, MP3; a DTS-only file to force an audio-only transcode without
-  depending on Home Alone's track ordering.
+  depending on the many-audio movie's track ordering.
 - **Subtitles:** ASS/SSA, VobSub/dvd_subtitle; mov_text/tx3g soft-render.
-- **HDR:** HLG, HDR10+, Dolby Vision P5 (IPT, no HDR10 fallback — only on Wicked, mp4).
+- **HDR:** HLG, HDR10+, Dolby Vision P5 (IPT, no HDR10 fallback — the only item carrying it is
+  mp4, which the container gate sends to the server anyway).

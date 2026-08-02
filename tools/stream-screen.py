@@ -59,7 +59,7 @@
 # injects into the web-app layer, not our SDL/wayland path — hence the in-app FIFO.
 #
 # Environment overrides (same as capture-screen.sh):
-#     TV_HOST (192.168.0.114)  TV_USER (root)  TV_PASS (alpine)
+#     TV_HOST (default: the gitignored .tv-host)  TV_USER (root)  TV_PASS (alpine)
 #
 # Auth: prefers an installed SSH key; falls back to `sshpass -p $TV_PASS` if present.
 # Stop with Ctrl-C. Requires: python3 (stdlib only), ssh; sshpass only if no key.
@@ -67,7 +67,17 @@
 import argparse, base64, functools, hashlib, os, re, shutil, signal, socket, subprocess, sys, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TV_HOST = os.environ.get("TV_HOST", "192.168.0.114")
+def _default_tv_host():
+    """The TV's address, from the gitignored .tv-host beside the Makefile — the same file
+    `make TV=` falls back to, so the repository carries no home-network address of its own."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".tv-host")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+TV_HOST = os.environ.get("TV_HOST") or _default_tv_host()
 TV_USER = os.environ.get("TV_USER", "root")
 TV_PASS = os.environ.get("TV_PASS", "alpine")
 
@@ -1111,7 +1121,7 @@ def main():
     if args.host in ("0.0.0.0", "::", ""):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("192.168.0.114", 80))   # any routable addr; no packets sent
+            s.connect(("192.0.2.1", 80))   # TEST-NET-1; any routable addr, no packets sent
             disp_host = s.getsockname()[0]
             s.close()
         except Exception:

@@ -390,9 +390,9 @@ pub struct Chapter {
 /// recorded content); offsets are ms into the item. `is_final` marks a credits segment that runs
 /// to the end of the file — the usual case, and what makes "skip credits" equivalent to "finish".
 ///
-/// Verified against the live server 2026-07-29: The Morning Show S2E2 carries both an intro
-/// (0.99s–99.6s) and a `final` credits marker (3065.6s–3130.7s); The Office S5E26 and Top Gear
-/// S14E7 carry credits only. The `id` field repeats across items (every marker came back as
+/// Verified against the live server 2026-07-29: one episode carries both an intro
+/// (0.99s–99.6s) and a `final` credits marker (3065.6s–3130.7s); two other episodes on the same
+/// server carry credits only. The `id` field repeats across items (every marker came back as
 /// `id: 3096`), so it is NOT an identity — the app keys markers by kind + offsets, never by id.
 #[derive(Deserialize, Default)]
 pub struct Marker {
@@ -602,7 +602,7 @@ mod tests {
     /// one) — see docs/pms-api.md §4.
     #[test]
     fn media_technical_fields_survive_both_encodings_and_keep_every_version() {
-        let json = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"1859","title":"Every Summer After",
+        let json = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"1859","title":"Example Movie",
             "Media":[
               {"bitrate":14663,"width":3840,"height":2160,"videoResolution":"4k","videoCodec":"hevc",
                "Part":[{"id":1,"key":"/library/parts/1/1/file.mkv"}]},

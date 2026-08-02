@@ -510,4 +510,4 @@ plus `pub(crate)` on `AuNode`/`AuQueue` visibility already present, and `aq_is_a
 - **Cue UAF guard** — `cues_abort` + join before the `Vec` is cleared; `keep_cues` keeps only a fully-loaded table.
 - **Duration liveness** — republished by the demux read trampoline from the same thread that writes it, so the HUD sees duration the instant Info is parsed, without the C's unguarded 64-bit cross-thread read.
 
-**Key files**: `/Users/gleblinnik/Developer/plex/plex-native-poc/src/playback.c` (source, to delete), `/Users/gleblinnik/Developer/plex/plex-native-poc/src/starfish.c`+`.h` (the seam, stays C), and the new `/Users/gleblinnik/Developer/plex/plex-native-poc/rust-modules/src/player/{mod,shared,engine,pump,threads,ffi}.rs`; touched: `rust-modules/src/{lib,app,route,aq}.rs` and `rust-modules/src/ui/player_hud.rs`.
+**Key files**: `src/playback.c` (source, to delete), `src/starfish.c`+`.h` (the seam, stays C), and the new `rust-modules/src/player/{mod,shared,engine,pump,threads,ffi}.rs`; touched: `rust-modules/src/{lib,app,route,aq}.rs` and `rust-modules/src/ui/player_hud.rs`.

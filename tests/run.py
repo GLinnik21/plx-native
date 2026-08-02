@@ -2,6 +2,11 @@
 """
 On-device regression harness for the webOS Plex player (plex-native-poc).
 
+The matrix is split in two: manifest.json holds the installation-independent case definitions,
+and the gitignored manifest.local.json (see manifest.local.json.example) maps each case's
+symbolic `item` key to a ratingKey on this server and supplies the PMS host, TV address and
+test user. load_manifest merges them and fails with the missing key if the overlay is absent.
+
 For each case in manifest.json this driver:
   1. closes the running app on the TV (luna-send closeByAppId + fuser -k, via `make kill`);
   2. establishes the item's resume point server-side -- AFTER the close, so a live
@@ -9,9 +14,9 @@ For each case in manifest.json this driver:
      seeds `setup.viewOffset_ms` if the case declares one. The offset lives on the SERVER and
      outlives the run, and the app reports progress every 10s while playing, so an unreset case
      inherits whatever the last case -- or the last RUN -- left on that rk, and `resume_ns`
-     resumes anything past 10s. rk=4 is shared by five cases and rk=1804 by three, so leaving it
-     implicit turned "play from the start" into "resume from somewhere", varying with suite
-     order and run history. Do not make the reset conditional again;
+     resumes anything past 10s. One item is shared by five cases and another by three, so
+     leaving it implicit turned "play from the start" into "resume from somewhere", varying with
+     suite order and run history. Do not make the reset conditional again;
   3. clears every /tmp/plxnative-* trigger on the TV, then writes only the ones this case needs;
   4. runs `make run-stream TV=<tv>`, which relaunches the app and tails
      /tmp/plxnative-events.log live;
@@ -28,7 +33,7 @@ Makefile, so we shell out to `make` / sshpass for device I/O.
 Usage:
   ./tests/run.py --list                 # list cases and what they cover
   ./tests/run.py --build                # cargo + make + make deploy, then run all cases
-  ./tests/run.py --filter morning       # run only cases whose name contains "morning"
+  ./tests/run.py --filter marker        # run only cases whose name contains "marker"
   ./tests/run.py                        # run every case (assumes app already deployed)
 
 Exit code is nonzero if any selected case fails.
@@ -54,6 +59,8 @@ import urllib.request
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TESTS_DIR)
 MANIFEST = os.path.join(TESTS_DIR, "manifest.json")
+MANIFEST_LOCAL = os.path.join(TESTS_DIR, "manifest.local.json")
+MANIFEST_LOCAL_EXAMPLE = MANIFEST_LOCAL + ".example"
 CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 
 # reference list of the dev triggers the app reads (apply_triggers now GLOB-clears /tmp/plxnative-*,
@@ -77,6 +84,91 @@ TYPE43_SPAM = re.compile(r"smp_cb type=43 num=0 str=\s*$")
 
 # ---------------------------------------------------------------------------
 # Token (never printed)
+# ---------------------------------------------------------------------------
+# Manifest + local overlay
+#
+# manifest.json is installation-INDEPENDENT: it holds the case definitions (names, operations,
+# assertions, run_secs, triggers), and every field that would name a particular server, TV or
+# library item lives in the gitignored manifest.local.json instead. A case says which SHAPE of
+# item it needs (`item`, a symbolic key like `movie_h264_ac3_1080p`); the overlay's `items` map
+# turns that into the ratingKey on this machine's server. Resolution happens once, here, and
+# writes the concrete value back as `rk`, so every consumer below (the play trigger, the
+# unscrobble/seed, the fps scenes' "$rk") is unchanged and still reads case["rk"].
+#
+# The symbolic key is not just anonymisation: it is what keeps "five cases share one item"
+# visible in the tracked file, which is the fact run_case's reset comment depends on.
+# ---------------------------------------------------------------------------
+def _die_no_overlay(extra=""):
+    sys.exit(f"missing test configuration: {MANIFEST_LOCAL}\n"
+             f"  This file is gitignored — it maps the manifest's symbolic item keys to the\n"
+             f"  ratingKeys on YOUR server, and carries the PMS host, TV address and test user.\n"
+             f"  Create it with:  cp {MANIFEST_LOCAL_EXAMPLE} {MANIFEST_LOCAL}\n"
+             f"  then replace every <placeholder> in it.{extra}")
+
+
+def _resolve_items(entries, items, what):
+    """Turn each entry's symbolic `item` key into the concrete `rk` the rest of the runner uses."""
+    for e in entries:
+        key = e.get("item")
+        if key is None:
+            continue                      # an fps scene that needs no library item
+        if key not in items:
+            _die_no_overlay(f"\n  (no `items` entry for {key!r}, needed by {what} {e['name']!r})")
+        e["rk"] = str(items[key])
+
+
+def load_manifest():
+    with open(MANIFEST) as f:
+        manifest = json.load(f)
+    try:
+        with open(MANIFEST_LOCAL) as f:
+            local = json.load(f)
+    except FileNotFoundError:
+        _die_no_overlay()
+    except ValueError as e:
+        sys.exit(f"{MANIFEST_LOCAL} is not valid JSON: {e}")
+
+    for field in ("pms", "tv"):
+        if field not in local:
+            _die_no_overlay(f"\n  (no {field!r} block)")
+        manifest[field] = local[field]
+    # test_user is optional by design: leaving it out runs as the owner (with a warning).
+    if "test_user" in local:
+        manifest["test_user"] = local["test_user"]
+
+    items = local.get("items", {})
+    _resolve_items(manifest["cases"], items, "case")
+    _resolve_items(manifest.get("fps_scenes", []), items, "fps scene")
+    # The two places an item key appears NESTED rather than as a case's own `item`: the successor
+    # a credits marker auto-advances into is both reset server-side and asserted on by ratingKey.
+    def rk_of(key, case_name, field):
+        if key not in items:
+            _die_no_overlay(f"\n  (no `items` entry for {key!r}, needed by case "
+                            f"{case_name!r} {field})")
+        return str(items[key])
+
+    for c in manifest["cases"]:
+        setup = c.get("setup", {})
+        if "also_reset" in setup:
+            setup["also_reset"] = [rk_of(k, c["name"], "setup.also_reset")
+                                   for k in setup["also_reset"]]
+        for op in c.get("operations", []):
+            if op.get("expect_up_next"):
+                op["expect_up_next"] = rk_of(op["expect_up_next"], c["name"], "expect_up_next")
+
+    # A copied-but-unedited template fails LOUDLY here rather than as a 404 from plex.tv or as a
+    # case that never plays: every value in the example is bracketed, and none is ever legitimate.
+    stray = [f"{k}={v}" for k, v in
+             [("pms.host", manifest["pms"].get("host")), ("tv", manifest["tv"])]
+             + [(f"items.{k}", v) for k, v in items.items()]
+             + ([("test_user.id", manifest["test_user"].get("id"))] if "test_user" in manifest else [])
+             if isinstance(v, str) and v.startswith("<")]
+    if stray:
+        sys.exit(f"{MANIFEST_LOCAL} still holds template placeholders: {', '.join(stray)}\n"
+                 f"  Replace each with the value for your own server / TV / library.")
+    return manifest
+
+
 # ---------------------------------------------------------------------------
 def read_token():
     """Extract PMS_TOKEN "..." from the gitignored src/config.local.h."""
@@ -647,7 +739,7 @@ def failed_for_good(case, lines):
     limits early PASS: once the disqualifying line exists it never un-exists, so the rest of the
     cap is pure waste. Every OTHER failure means "the line has not appeared YET" — exactly what
     more time could still fix — so those must run to the cap. This matters because a red suite is
-    the one you iterate against: morning_show_seek_rapid burns its full 75s to reach a verdict
+    the one you iterate against: seek_rapid_hevc_4k burns its full 75s to reach a verdict
     that is already settled ~25s in.
     """
     if case["expect"].get("no_playing_error", True):
@@ -954,9 +1046,9 @@ def run_case(case, cfg, token, verbose):
     # here, before the seed below.
     # EVERY case seeds, including the ones that mean "from the start" (viewOffset_ms 0). The
     # resume point is SERVER-side and persists across cases and across whole runs: the app's
-    # timeline reporter posts progress every 10s while playing, so a case that just played rk=4
+    # timeline reporter posts progress every 10s while playing, so a case that just played an item
     # for 20s leaves a 20s offset on it, and `metadata::resume_ns` resumes anything past 10s.
-    # Left implicit, five different cases share rk=4 and three share rk=1804, so "play from the
+    # Left implicit, five different cases share one item and three share another, so "play from the
     # start" silently became "resume from wherever the previous case stopped" — a different code
     # path than the one under test, varying with suite order and with the PREVIOUS run's ending.
     # Seeding unconditionally is what makes a case's starting position a property of the manifest
@@ -1250,9 +1342,10 @@ def run_fps_suite(scenes, cfg, token, include_player):
 #           and the Load payload's codecs. Never drives the transport, so it cannot see a seek,
 #           teardown or threading regression. Run it when route.rs or plex/ changes.
 #   logic — also seeks / resumes / switches audio / renders subtitles: the engine, pump and
-#           demuxer. Spans the codec matrix on its own (substance = H264 direct-play,
-#           morning_show + toy_story2 = 4K HEVC, toy_story4 + home_alone = transcode), which is
-#           what makes it a safe default for player work. It drops decision BREADTH only:
+#           demuxer. Spans the codec matrix on its own (movie_h264_ac3_1080p = H264 direct-play,
+#           episode_hevc_4k_hdr10_eac3 + movie_hevc_4k_pgs_subs = 4K HEVC, movie_av1_no_dp_audio
+#           + movie_h264_ac3_many_audio = transcode), which is what makes it a safe default for
+#           player work. It drops decision BREADTH only:
 #           Dolby Vision, MP4/sidecar, AAC, smart-DP's TrueHD-default -> AC3-sibling.
 # NB `tier` is a DIFFERENT axis, on fps_scenes (ui|player) — do not merge the two vocabularies.
 def case_suite(case):
@@ -1270,26 +1363,25 @@ def main():
                          "play-only decision + Load-payload cases). Default: every case. "
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
-    ap.add_argument("--tv", default=None, help="override TV IP (default from manifest)")
+    ap.add_argument("--tv", default=None, help="override TV IP (default from manifest.local.json)")
     ap.add_argument("--verbose", action="store_true", help="print evidence for passing assertions too")
     ap.add_argument("--no-early", action="store_true",
                     help="don't stop a case as soon as it passes — run the full manifest run_secs. "
                          "Slower by design: it widens the window for a LATE `Playing error` to show "
                          "up, which early exit trades away for speed.")
     ap.add_argument("--owner", action="store_true",
-                    help="run as the config.local.h OWNER token (default: run as the manifest "
-                         "test_user, e.g. Guest, so watch history stays off your real account)")
+                    help="run as the config.local.h OWNER token (default: run as the overlay's "
+                         "test_user, so watch history stays off your real account)")
     ap.add_argument("--fps", action="store_true",
                     help="run the FPS regression suite (UI tier: home/detail, no video needed)")
     ap.add_argument("--fps-player", action="store_true",
                     help="FPS suite INCLUDING player-tier scenes (info/menu — needs playback, slower)")
     args = ap.parse_args()
 
-    with open(MANIFEST) as f:
-        manifest = json.load(f)
+    manifest = load_manifest()   # case definitions + the gitignored local overlay, merged
     cfg = {
-        "tv": args.tv or manifest.get("tv", "192.168.0.114"),
-        "pms": manifest.get("pms", {"host": "192.168.0.3", "port": 32400}),
+        "tv": args.tv or manifest["tv"],
+        "pms": manifest["pms"],
         "no_early": args.no_early,
     }
     cases = manifest["cases"]
@@ -1339,7 +1431,7 @@ def main():
 
     admin_token = read_token()  # owner token from config.local.h; never printed
 
-    # Resolve the identity every case plays as. Default = the manifest test_user (Guest), so
+    # Resolve the identity every case plays as. Default = the overlay's test_user, so
     # playback + timeline scrobbles land on that user's history and the owner's real account
     # stays clean. --owner opts back into the owner token. Neither token is ever printed.
     test_user = manifest.get("test_user")
@@ -1348,7 +1440,8 @@ def main():
         cfg["user_label"] = "owner (config.local.h)"
         cfg["inject_token"] = True  # the binary has NO baked token; every identity is injected
         if not args.owner:
-            print("NOTE: no test_user in manifest -> running as OWNER (history WILL be affected)")
+            print("NOTE: no test_user in manifest.local.json -> running as OWNER "
+                  "(history WILL be affected)")
     else:
         token = fetch_managed_user_token(admin_token, cfg["pms"]["host"], cfg["pms"]["port"],
                                          test_user["id"])

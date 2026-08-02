@@ -1651,7 +1651,7 @@ pub(crate) fn draw_tab_row(p: Painter) {
             TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
         );
         // dark-material weight: light enough to keep a hint of the art, dark enough that the
-        // TEXT_TERTIARY plain segments hold contrast even over pure-white art (Toy Story 2)
+        // TEXT_TERTIARY plain segments hold contrast even over near-white art
         p.rect_sheened(track, track.h * 0.5, theme::scrim_black(0.72), theme::scrim_black(0.82));
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
         // scissor case (see the ui/CLAUDE.md clipping rule): a pill leaving the row is cut at the

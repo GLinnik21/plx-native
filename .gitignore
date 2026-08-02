@@ -23,6 +23,16 @@ sysroot/
 # local dev overrides (real PMS host + X-Plex-Token)
 local.env
 src/config.local.h
+# ...and every agent worktree carries its OWN copy of that file, with the real token in it.
+# These were held out of the index by .git/info/exclude, which is local-only: it does not survive
+# a clone, is not reviewable, and does not apply in a fresh worktree or a CI checkout. On a repo
+# about to go public that is the difference between "ignored" and "one `git add -A` from a live
+# credential in history". Belongs here, in the tracked file, where anyone can see it.
+.claude/worktrees/
+# the on-device suite's installation-specific half: which PMS, which TV, which ratingKeys, which
+# Plex Home user. tests/manifest.json keeps the case DEFINITIONS (public); this keeps the private
+# library inventory that used to be committed alongside them. See tests/manifest.local.json.example.
+tests/manifest.local.json
 rust-modules/target/
 rust-modules/target-release/
 
@@ -30,6 +40,9 @@ rust-modules/target-release/
 rust-poc/
 .abi-cache/
 .tv-mac
+# which television this working copy talks to (Makefile TV, tools/ TV_HOST) — one line, an IP or
+# hostname. Local because it is the maintainer's home network, not a project fact.
+.tv-host
 .tv-stream.pid
 .tv-stream.log
 pkg/sockprobe

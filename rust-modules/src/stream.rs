@@ -222,7 +222,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         //
         // This was tried once and REVERTED (docs/async-model-decision.md): it made every reopen
         // interruptible while the pump was firing `http_shutdown` to service a SEEK, which cost
-        // `substance_seek_inplace`. That coupling is gone — 5938b5f/71929ee moved seeking into the
+        // `seek_inplace_h264`. That coupling is gone — 5938b5f/71929ee moved seeking into the
         // demux thread's own `av_seek_frame`, so the only `http_shutdown` left in the tree is
         // teardown's (`player/engine.rs`), where cutting an open short is precisely the intent.
         //

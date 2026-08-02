@@ -511,7 +511,7 @@ fn show_started(d: &metadata::Detail) -> bool {
 /// It is the SERVER's on-deck episode (`Detail::on_deck`), not a search of the loaded season, and that
 /// is the entire point: the client holds one season at a time, so the previous client-side search made
 /// the hero's subject change every time you browsed to a different season tab. On this library the
-/// server answers S2E2 for The Morning Show while season 1 is the tab you are looking at.
+/// server answers S2E2 of a show while season 1 is the tab you are looking at.
 ///
 /// Two states have no episode to be about, and the server only covers one of them:
 /// * **finished** — PMS returns no `OnDeck` at all, so `?` here handles it for free.
@@ -1069,7 +1069,7 @@ struct TabLay {
 /// for THREE times a frame now (the scroll target through `tab_focus_geom`, the capsule spans in
 /// `update`, and the draw), and each answer costs one `format!` + one `CString` + one `text_width`
 /// per season. Cheap per season — `text::text_width` is a `TTF_SizeUTF8` metrics walk, not a
-/// rasterize+upload — but a many-season strip (Top Gear) multiplies it by 20-odd, and **no FPS scene
+/// rasterize+upload — but a many-season strip multiplies it by 20-odd, and **no FPS scene
 /// covers this row**: `fps:detail-transition` is a MOVIE, which returns from `draw_tabs` before
 /// reaching here. So the cost cannot be gated on device and must not be paid per frame. The
 /// fingerprint is the item + the season titles themselves, because a `/children` load can rewrite a
@@ -1664,7 +1664,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     HeroLogo::new(rk, title, LogoRung::Hero).draw(p, Rect::new(tx, TITLE_BOTTOM - band, HERO_TEXT_W, band));
 
     // ---- meta line: "TV Show · Sci-Fi · Adventure · 18+", or for an EPISODE's own page
-    // "Every Year After · S1, E1 · TV-MA". ----
+    // "<show name> · S1, E1 · TV-MA". ----
     //
     // The leading part answers "what am I looking at", and for an episode the honest answer is the
     // SHOW it belongs to, not its kind: the title band above already says the episode's name, so a
@@ -2046,7 +2046,7 @@ fn draw_tabs(p: Painter) {
         return;
     }
     let tab_y = 0.0; // local origin — the ScrollColumn pre-translates the painter to this section's top
-    // many-season shows (Top Gear) overflow the row width, so the whole strip scrolls horizontally to
+    // many-season shows (20-odd seasons) overflow the row width, so the whole strip scrolls horizontally to
     // keep the focused tab visible (spring target in `tab_hscroll_target`); off-screen tabs are culled.
     let sx = view().tab_hscroll.pos;
     let pt = p.translate(-sx, 0.0);

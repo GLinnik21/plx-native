@@ -182,7 +182,7 @@ runs**.
 
 Why: it makes *every* reopen interruptible, and the demuxer reopens that socket from **two**
 places — its outer-loop head and the AVIO `seek_cb` — while the pump fires `http_shutdown` on the
-same stream to service a seek. Cost `substance_seek_inplace`, confirmed by bisect (fails with the
+same stream to service a seek. Cost `seek_inplace_h264`, confirmed by bisect (fails with the
 change, passes without). A first patch (retry an interrupted reopen) made it worse — 16/18 — and
 the logs showed the demuxer was not even dying; the seek was being rejected by the pump's guard
 and never firing.
@@ -225,7 +225,7 @@ worth of divergence in one syscall.
 Host coverage: `an_open_stalled_in_the_header_read_is_interruptible` — verified to fail on the
 pre-fix code by taking exactly 15.00 s (the `SO_RCVTIMEO`), and to pass in 0.3 s after.
 
-Device: 18/18 + 5/5 FPS, and the seek tier 12/12 over three runs — `substance_seek_inplace`, the
+Device: 18/18 + 5/5 FPS, and the seek tier 12/12 over three runs — `seek_inplace_h264`, the
 case that bisected the original revert, among them.
 
 **Still open, and NOT closed by this:** `http_shutdown` reads the fd and then acts on it, so it can
@@ -305,7 +305,7 @@ a different subsystem, worth its own look before the fd-publication work below.
 payoff is no longer `Job`'s cancellation — it is that `teardown` currently joins the demux thread
 while it may be inside `http_open`, so a stop during a stalled reopen blocks the **main loop** for
 up to the 2 s connect or 15 s recv deadline. Same reversal trigger applies: bisect
-`substance_seek_inplace` before and after.
+`seek_inplace_h264` before and after.
 
 ### Step 4 — `MainThread` token, LANDED (2026-07-29)
 
@@ -442,7 +442,7 @@ the need to join on the main thread at all, and deleted shared state instead of 
 
 ### Pre-existing failure, not ours — and since RESOLVED
 
-`morning_show_seek_rapid` failed on **clean HEAD** with the identical message (`only 1
+`seek_rapid_hevc_4k` failed on **clean HEAD** with the identical message (`only 1
 seek(in-place) fired, need >=2`). It was mis-attributed to step 1 at first. The suite was therefore
 17/18 before and after, and this case was left as unrelated to the async work.
 

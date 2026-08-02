@@ -177,7 +177,7 @@ mod tests {
 
     /// The whole up-next extraction. Every case here is one the live server actually produces:
     /// a mid-season episode (a successor exists), a season finale with nothing after it
-    /// (`playQueueTotalCount: 1` — verified on The Office S5E26), and a movie, whose
+    /// (`playQueueTotalCount: 1` — verified on a show's last episode), and a movie, whose
     /// `continuous=1` queue is just itself.
     #[test]
     fn the_successor_is_the_row_after_the_selected_one() {
@@ -231,7 +231,7 @@ mod tests {
             r#"{"MediaContainer":{"size":3,"playQueueID":40213,"playQueueSelectedItemID":13083,
               "playQueueSelectedItemOffset":0,"playQueueTotalCount":3,"Metadata":[
               {"playQueueItemID":13083,"ratingKey":"1804","type":"episode","title":"Pilot",
-               "grandparentTitle":"The Morning Show","parentIndex":1,"index":1,
+               "grandparentTitle":"Example Show","parentIndex":1,"index":1,
                "thumb":"/library/metadata/1804/thumb/1781586780","duration":"3273248",
                "viewOffset":"142000","Role":[{"tag":"Jennifer Aniston"}],
                "Media":[{"videoCodec":"hevc","audioCodec":"eac3",
@@ -240,11 +240,11 @@ mod tests {
                 {"videoCodec":"h264","audioCodec":"aac",
                  "Part":[{"id":3134,"key":"/library/parts/3134/1781468203/file.mkv"}]}]},
               {"playQueueItemID":13084,"ratingKey":"1805","type":"episode","title":"A Seat at the Table",
-               "grandparentTitle":"The Morning Show","parentIndex":1,"index":2,"duration":3120000,
+               "grandparentTitle":"Example Show","parentIndex":1,"index":2,"duration":3120000,
                "Media":[{"videoCodec":"h264","audioCodec":"ac3",
                  "Part":[{"key":"/library/parts/3140/1781467999/file.mkv"}]}]},
               {"playQueueItemID":13085,"ratingKey":"1806","type":"episode","title":"Chaos Is the New Cocaine",
-               "grandparentTitle":"The Morning Show","parentIndex":1,"index":3,
+               "grandparentTitle":"Example Show","parentIndex":1,"index":3,
                "Media":[{"videoCodec":"h264","audioCodec":"ac3","Part":[{"key":"/p/3.mkv"}]}]}]}}"#,
             "1804",
         );
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(first.item_id, 13083);
         assert_eq!(first.kind, "episode");
         assert_eq!(first.title, "Pilot");
-        assert_eq!(first.show_title, "The Morning Show");
+        assert_eq!(first.show_title, "Example Show");
         assert_eq!((first.season, first.index), (1, 1));
         assert_eq!(first.thumb, "/library/metadata/1804/thumb/1781586780");
         assert_eq!((first.dur_ms, first.resume_ms), (3273248, 142000), "string-encoded numbers still land");

@@ -199,7 +199,7 @@ mod tests {
     }
     /// A session that can reach its server, i.e. one the app actually boots into Home on.
     fn local(mut s: Session) -> Session {
-        s.server = ServerRef { address: "192.168.0.10".into(), port: 32400, token: "srv".into(), ..Default::default() };
+        s.server = ServerRef { address: "192.0.2.10".into(), port: 32400, token: "srv".into(), ..Default::default() };
         s
     }
     fn menu(s: &Session, active: Option<&UserRef>) -> (String, Vec<&'static str>) {
