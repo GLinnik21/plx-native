@@ -44,7 +44,7 @@ from pathlib import Path
 EPOCH = 1262304000
 
 
-def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str) -> None:
+def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str, skip: set = ()) -> None:
     """Add src's contents under arc_root, sorted, with all identity fields normalised."""
     entries = sorted(
         [p for p in src.rglob("*")],
@@ -52,6 +52,8 @@ def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str) -> None:
     )
     for p in entries:
         rel = p.relative_to(src).as_posix()
+        if rel in skip:
+            continue
         ti = tf.gettarinfo(str(p), arcname=f"{arc_root}/{rel}" if arc_root else rel)
         ti.uid = ti.gid = 0
         ti.uname = ti.gname = "root"
@@ -66,10 +68,17 @@ def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str) -> None:
             tf.addfile(ti)
 
 
-def write_targz(out: Path, src: Path, arc_root: str) -> None:
+def write_targz(out: Path, src: Path, arc_root: str, extra: dict = None) -> None:
+    """Tar+gzip src under arc_root. `extra` maps arcname -> bytes for members built in memory."""
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.GNU_FORMAT) as tf:
-        add_tree(tf, src, arc_root)
+        add_tree(tf, src, arc_root, skip=set((extra or {}).keys()))
+        for name, blob in sorted((extra or {}).items()):
+            ti = tarfile.TarInfo(f"{arc_root}/{name}" if arc_root else name)
+            ti.size, ti.mode, ti.mtime = len(blob), 0o644, EPOCH
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = "root"
+            tf.addfile(ti, io.BytesIO(blob))
     # mtime=0 and an empty filename keep the gzip HEADER deterministic too — `tar czf` writes
     # both, and they are outside the tar stream so they survive any tar-level normalisation.
     with open(out, "wb") as fh:
@@ -95,16 +104,22 @@ def write_packageinfo(data: Path, app: dict) -> Path:
     return out
 
 
-def set_installed_size(ctl: Path, data: Path) -> int:
-    """Rewrite the control file's Installed-Size from the real payload. Returns the size in KiB."""
+def control_with_size(ctl: Path, data: Path) -> tuple:
+    """The control file's text with a real Installed-Size. Returns (text, size in KiB).
+
+    Deliberately NOT written back to `ipkroot/ctl/control`: the size depends on the binary, so it
+    differs between a dev and a RELEASE build (10117 vs 10120 KiB today). Rewriting the tracked file
+    would make every `make ipk` dirty the worktree and invite someone to commit whichever value
+    happened to be last — a number that is then wrong for the other configuration. The tracked file
+    stays the source of the fields a human maintains; this one is assembled at package time.
+    """
     kib = (sum(p.stat().st_size for p in data.rglob("*") if p.is_file()) + 1023) // 1024
     lines = [ln for ln in ctl.read_text().splitlines() if not ln.startswith("Installed-Size:")]
     # Debian orders Installed-Size after Architecture; opkg does not care, but a stock-shaped
     # control file is one less difference when someone diffs this against a reference package.
     at = next((i for i, ln in enumerate(lines) if ln.startswith("Architecture:")), len(lines) - 1)
     lines.insert(at + 1, f"Installed-Size: {kib}")
-    ctl.write_text("\n".join(lines) + "\n")
-    return kib
+    return "\n".join(lines) + "\n", kib
 
 
 def write_ar(out: Path, members: list) -> None:
@@ -128,8 +143,9 @@ def main() -> int:
     root = repo / "ipkroot"
     app = json.loads((repo / "pkg" / "appinfo.json").read_text())
     write_packageinfo(root / "data", app)
-    kib = set_installed_size(root / "ctl" / "control", root / "data")
-    write_targz(root / "control.tar.gz", root / "ctl", "")
+    control, kib = control_with_size(root / "ctl" / "control", root / "data")
+    write_targz(root / "control.tar.gz", root / "ctl", "",
+                extra={"control": control.encode()})
     write_targz(root / "data.tar.gz", root / "data", "")
     (root / "debian-binary").write_bytes(b"2.0\n")
     ipk = repo / "pkg" / f"{app['id']}_{app['version']}_arm.ipk"
