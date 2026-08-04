@@ -965,6 +965,46 @@ between here and a release, and none of them is code:
 
 ---
 
+## 7a. Cutting a release (2026-08-04)
+
+**Actions → Release → Run workflow → pick `patch`, `minor` or `major` → Run.** That is the whole
+process. Nothing is edited by hand and nothing is tagged by hand.
+
+The `prepare` job runs `ci/bump-version.py`, which is the ONE place that knows the version lives in
+four files — `pkg/appinfo.json` (the source), `ipkroot/ctl/control`, `rust-modules/Cargo.toml` and
+`Cargo.lock`. It then runs `ci/check-package.py` to prove they agree **before** committing, commits
+`release: X.Y.Z`, tags `vX.Y.Z`, pushes both, and hands the tag to the build.
+
+Two other ways in, both still supported:
+
+- **`version: 1.2.3`** — an explicit number instead of a bump level.
+- **`rebuild_tag: v0.1.0`** — re-publish an existing tag, skipping the bump entirely. This is the
+  input the old workflow called `tag`, and it was *required*, which is why the first dispatch
+  failed: it was given `0.1.0`, no such tag existed, and checkout died fetching `refs/tags/0.1.0*`.
+  It is optional now and named for what it does.
+
+**Why this shape, and the two traps in it.**
+
+*No double build.* `prepare` pushes the tag with `GITHUB_TOKEN`, and GitHub deliberately refuses to
+start a workflow run from a `GITHUB_TOKEN` push. So the `push: tags: ['v*']` trigger stays for a
+hand-pushed tag without firing a second time on our own. If that push is ever moved to a PAT or a
+deploy key, this becomes an infinite loop — that is the thing to remember.
+
+*`needs` exposes only DIRECT dependencies.* `legal-gate`, `build` and `publish` cannot see
+`prepare`, so the resolved tag is computed once in `guard` and published as `needs.guard.outputs.tag`;
+those jobs list `guard` in their `needs` purely to read it. Repeating the
+`prepare || rebuild || ref_name` fallback in each job silently evaluates to empty in three of them.
+
+*Bumping backwards is refused,* because `releases/latest` resolves by publish DATE while the
+Homebrew Channel compares VERSIONS to decide an update exists — so a sideways or backwards release
+is one that no installed client will ever offer.
+
+**Locally**, `ci/bump-version.py --current` prints the version and `ci/bump-version.py patch
+--dry-run` shows what would move. Prefer the workflow for anything that ships: a local bump has to
+be committed, tagged and pushed by hand, which is the sequence this exists to remove.
+
+---
+
 ## 8. Release CI (built 2026-08-01)
 
 `.github/workflows/{ci,release}.yml` + `.github/actions/webos-ndk` + `ci/`.
