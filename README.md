@@ -14,12 +14,10 @@ what it is: a web app running in the TV's Chromium.
 Writing a whole client was not my first idea. I tried the obvious things first, and this project is
 what was left after both failed:
 
-- **Patching and optimising the web app.** You can get at it and change it, and I did. But you run
-  into a ceiling that isn't in the code — it's the browser, on a TV this old, doing compositing and
-  JavaScript for an interface that should be a few hundred draw calls.
-- **Kodi with a Plex plugin.** This set reports 1.6 GB of RAM, but only about 440 MB is actually
-  available to an app once webOS and its services have taken their share. Kodi wants more than
-  that, so it never really got off the ground.
+- **Patching and optimising the web app.** You can get at it and change it, and I did. The ceiling
+  isn't in the code, though — it's the browser itself on hardware this old.
+- **Kodi with a Plex plugin.** There isn't enough free memory on this TV to run it. Most of the RAM
+  is already spoken for by webOS.
 
 What kept nagging at me was the Apple TV app: similar hardware, and its interface simply moves. The
 answer turned out to be unglamorous — it's a native app. No browser, no JavaScript, no web view. It
