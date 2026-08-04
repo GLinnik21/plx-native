@@ -94,9 +94,10 @@ telemetry, no crash reporting. I didn't leave it out to be virtuous — I just n
   `.ipk` you point it at, listed in its catalogue or not — or LG Developer Mode.
 - A Plex Media Server on your network, and a Plex account.
 
-**You don't need a rooted TV.** The app runs inside LG's normal jail as an ordinary unprivileged
-app — I checked on the device: uid 6910, no capabilities. Root only matters for the development
-loop below.
+**You don't need a rooted TV.** The app runs inside LG's normal sandbox as an ordinary unprivileged
+app — not as root, with no special permissions. I verified that on the device rather than assuming
+it; the evidence is in [`docs/distribution.md`](docs/distribution.md) §3.5. Root only matters for
+the development loop below.
 
 If you go the **Developer Mode** route rather than the Homebrew Channel, know that LG expires a Dev
 Mode session after 1000 hours and *uninstalls your apps* when it does. The Homebrew Channel doesn't.
