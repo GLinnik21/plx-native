@@ -916,14 +916,18 @@ between here and a release, and none of them is code:
   and flag §9 already ran against the real binary. Note it is `<5.0`, not `<4.9` — webOS numbers
   **4.10 above 4.9**, and 4.10.0 is one of the two firmwares the binary is proven good on.
 
-  **The PR template carries an AI-use declaration, and it is Gleb's to answer.** The options run
-  from "no AI tools" to "produced primarily by AI"; the repository states outright that apps
-  "made primarily by AI and submitted without meaningful human development, testing, and review are
-  not accepted", and that the submitter remains responsible for the code either way. Given how this
-  codebase was written, the truthful box is the agent one — *AI coding agents were used; an
-  experienced developer has reviewed and tested all generated code* — and it is only truthful if
-  that review and testing actually happened. There are two other checkboxes on the same template:
-  tested on a real webOS TV, and complies with the repository rules.
+  **The PR template carries an AI-use declaration. ANSWERED 2026-08-04:** the box is *"AI coding
+  agents were used; an experienced developer has reviewed and tested all generated code."* The
+  repository states outright that apps "made primarily by AI and submitted without meaningful human
+  development, testing, and review are not accepted", and that the submitter remains responsible
+  for the code either way — so the second half of that box is the load-bearing part, and Gleb
+  confirms it: every change in this project was reviewed and exercised on his own television. It is
+  a visible pattern in the record rather than an assurance — the scrubber's credits band, the
+  on-screen frame counter leaking into the screenshots, a wrong RAM figure and an unexplained uid
+  were all caught by him reading the output, not by the agents producing it.
+
+  Two other checkboxes on the same template: tested on a real webOS TV (yes — `tests/run.py` is
+  21 cases against a live PMS on the device), and complies with the repository rules (§1.5).
 
 ---
 
