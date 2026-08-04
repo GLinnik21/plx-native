@@ -138,6 +138,13 @@ STUBS = stub/libavformat.so stub/libavcodec.so stub/libavutil.so stub/libswscale
 # not theorised. Separate dirs also let make track each artifact honestly.
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)
 RUST_TDIR      = target$(if $(RELEASE),-release,)
+# OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
+# flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
+# cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
+# PREVIOUS feature set without a word. Exactly the stale-artifact trap the stamp exists to prevent,
+# one step removed — and it burned two builds while shooting the README screenshots (which want
+# devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). Correct:
+#   make RUST_FEATFLAGS="--no-default-features --features devtriggers" RUST_TDIR=target-shots deploy
 # ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
 # write. Per-dir targets keep cargo honest, but after a RELEASE=1 build the dev .a is older
 # than the release binary sitting at pkg/plxnative, so make would call the link up to date and

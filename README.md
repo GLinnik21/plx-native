@@ -2,6 +2,9 @@
 
 An unofficial native [Plex](https://www.plex.tv/) client for LG webOS 4.x televisions.
 
+*Working and in daily use on a webOS 4.5 set. Not yet packaged as a release — see
+[Installing](#installing).*
+
 ## Why this exists
 
 The official Plex app on my old LG runs in Chromium, and it shows. Scrolling a shelf stutters,
@@ -72,7 +75,8 @@ telemetry, no crash reporting. I didn't leave it out to be virtuous — I just n
 
 - An **LG TV on webOS 4.0–4.9** (see above for why).
 - A way to install unsigned apps: the
-  [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel), or LG Developer Mode.
+  [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) — which installs any
+  `.ipk` you point it at, listed in its catalogue or not — or LG Developer Mode.
 - A Plex Media Server on your network, and a Plex account.
 
 **You don't need a rooted TV.** The app runs inside LG's normal jail as an ordinary unprivileged
@@ -83,6 +87,12 @@ If you go the **Developer Mode** route rather than the Homebrew Channel, know th
 Mode session after 1000 hours and *uninstalls your apps* when it does. The Homebrew Channel doesn't.
 
 ## Installing
+
+> **There's no published build yet, and it isn't in the Homebrew Channel's app list.** If you want
+> to try it today, [build it yourself](#building-it-yourself) — it's two commands once the NDK is
+> in place. The rest of this section is how installing will work; the
+> [releases page](https://github.com/GLinnik21/plx-native/releases) is the source of truth, and
+> this note goes away when there's something on it.
 
 Grab the `.ipk` from the [latest release](https://github.com/GLinnik21/plx-native/releases) and
 install it with the Homebrew Channel or
