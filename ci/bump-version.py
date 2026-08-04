@@ -104,11 +104,19 @@ def main() -> None:
         ap.error("give patch, minor, major or an explicit X.Y.Z (or --current)")
 
     new = nextver(cur, a.spec)
-    if tuple(map(int, new.split("."))) <= tuple(map(int, cur.split("."))):
-        # Not pedantry: releases/latest is resolved by publish DATE, but the Homebrew Channel
-        # compares VERSIONS to decide whether an update exists. Going backwards or sideways
-        # publishes a release no installed client will ever offer to update to.
-        sys.exit(f"{new} is not greater than the current {cur}")
+    if tuple(map(int, new.split("."))) < tuple(map(int, cur.split("."))):
+        # Only BACKWARDS is refused here. Going sideways is legitimate and is in fact the very
+        # first release: appinfo.json already says 0.1.0, nothing has ever been tagged, and
+        # `--version 0.1.0` means "ship what is already written". Refusing equality made the
+        # first release structurally impossible — the guard was pointed at appinfo.json when the
+        # thing that must not repeat is a TAG. Whether a version has already shipped is a
+        # question about tags, so the workflow asks it there (`git rev-parse refs/tags/vX.Y.Z`),
+        # where the answer actually lives.
+        sys.exit(f"{new} is lower than the current {cur} — releases only move forwards")
+
+    if new == cur:
+        print(f"{cur} unchanged — nothing to write")
+        return
 
     changed = write(new, a.dry_run)
     verb = "would update" if a.dry_run else "updated"

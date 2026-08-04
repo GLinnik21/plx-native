@@ -995,9 +995,17 @@ deploy key, this becomes an infinite loop — that is the thing to remember.
 those jobs list `guard` in their `needs` purely to read it. Repeating the
 `prepare || rebuild || ref_name` fallback in each job silently evaluates to empty in three of them.
 
-*Bumping backwards is refused,* because `releases/latest` resolves by publish DATE while the
-Homebrew Channel compares VERSIONS to decide an update exists — so a sideways or backwards release
-is one that no installed client will ever offer.
+*Backwards is refused; sideways is not.* The first attempt at this got the reference point wrong
+and made the FIRST RELEASE impossible: it required the new version to exceed `pkg/appinfo.json`,
+which already said `0.1.0` when nothing had ever been tagged, so `version: 0.1.0` — the correct
+input for a first release — was rejected as "not greater than the current 0.1.0". The thing that
+must never repeat is a **tag**, not a number in a file, so that is what `prepare` now checks
+(`git rev-parse -q --verify refs/tags/vX.Y.Z`), and it says which input to use instead. An
+unchanged version simply commits nothing and tags `main` as it stands.
+
+Only going *backwards* is refused, and there the original reasoning holds: `releases/latest`
+resolves by publish DATE while the Homebrew Channel compares VERSIONS to decide an update exists,
+so a backwards release is one no installed client will ever offer.
 
 **Locally**, `ci/bump-version.py --current` prints the version and `ci/bump-version.py patch
 --dry-run` shows what would move. Prefer the workflow for anything that ships: a local bump has to

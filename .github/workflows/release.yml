@@ -71,13 +71,30 @@ jobs:
           python3 ci/bump-version.py "$spec"
           new=$(python3 ci/bump-version.py --current)
           tag="v$new"
+
+          # THE question that decides whether this version may ship, asked where the answer lives.
+          # An explicit `version:` equal to what appinfo.json already says is legitimate — it is
+          # exactly the first release, "ship what is already written" — so the script no longer
+          # refuses it. What must never repeat is a TAG.
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::$tag already exists. To re-publish it use the rebuild_tag input; to ship something new pick a bump level."
+            exit 1
+          fi
+
           # Prove the four files agree BEFORE committing — this is the assertion that makes the
           # whole scheme safe, and it is cheaper to fail here than after a tag exists.
           python3 ci/check-package.py
+
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add pkg/appinfo.json ipkroot/ctl/control rust-modules/Cargo.toml rust-modules/Cargo.lock
-          git commit -m "release: $new"
+          # No commit when the version did not move (the first release, or a re-run after one
+          # failed downstream): the tag then simply points at main as it stands.
+          if git diff --cached --quiet; then
+            echo "version already $new — tagging main as it stands"
+          else
+            git commit -m "release: $new"
+          fi
           git tag -a "$tag" -m "$new"
           git push origin main "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
