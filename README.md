@@ -24,16 +24,23 @@ I use it myself, every day, to watch things off my server in the next room.
 
 Real screenshots off the television, not mockups.
 
-|  |  |
-|---|---|
-| ![Home](docs/screenshots/home.jpg) | ![Library](docs/screenshots/library.jpg) |
-| **Home** — a hero for what you're partway through, shelves below | **Library** — sort, filter, unwatched-only, and an A–Z rail |
-| ![Detail](docs/screenshots/detail.jpg) | ![Player](docs/screenshots/player.jpg) |
-| **Detail** — ratings, cast, and where to carry on | **Player** — the transport over hardware-decoded 4K |
+![Home](docs/screenshots/home.jpg)
 
-That last one is the whole point of the project: the picture is on the TV's video plane, decoded by
-the same silicon the built-in apps use, with the interface drawn on top of it. That's what the
-browser-based client can't do.
+**Home** — a hero for whatever you're partway through, shelves underneath.
+
+![Detail](docs/screenshots/detail.jpg)
+
+**Detail** — ratings, cast, and where to carry on.
+
+![Library](docs/screenshots/library.jpg)
+
+**Library** — sort, filter, unwatched-only, and an A–Z rail down the side.
+
+![Player](docs/screenshots/player.jpg)
+
+**Player** — the transport over hardware-decoded 4K. This one is the whole point of the project:
+the picture is on the TV's video plane, decoded by the same silicon the built-in apps use, with the
+interface drawn on top of it. That's the thing a browser-based client can't do.
 
 ## What I'd want you to know before installing
 
