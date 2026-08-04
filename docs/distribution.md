@@ -316,6 +316,30 @@ instead of corrupting memory. It already reads the data.
   real webOS-24 breakage reports found were a jail-permission regression (`/dev/dma_buf_unified`
   became inaccessible to libmali, EGL init failed) and a video-decode regression.
 
+### 3.4a No emulator substitutes for the hardware (researched 2026-07-28)
+
+Recorded here because the README tells webOS 5+ owners that their *hardware* is the blocker, and a
+reader is entitled to ask why a virtual machine will not do. It will not, for four independent
+reasons, any one of which is sufficient:
+
+- **LG's TV emulator is x86 and deprecated.** It boots a webOS image under VirtualBox on an x86
+  host. This app is an ARM ELF; there is no ARM emulator image, and none is published for 4.5.
+- **The webOS TV Simulator runs web apps only.** It is a desktop application that hosts the web
+  runtime. It has no mechanism to execute a native `.ipk` payload at all.
+- **webOS OSE has neither Starfish nor ACB.** The open-source edition ships no
+  `libplayerAPIs`/`libAcbAPI`: those are LG's proprietary TV media stack, and they are the entire
+  playback path here. A build could link (the NDK sysroot has real 69 KB / 105 KB libraries to link
+  against) and would then have nothing to bind to at runtime.
+- **Apple Silicon cannot run AArch32 at all**, so the dev machine cannot even host a 32-bit ARM
+  guest without full software emulation of a device tree that does not exist.
+
+So the honest position is the one the README states: this needs a real webOS 5+ television, and
+the author does not have one.
+
+*Caveat on method:* this was a documentation and tooling survey, not an attempt to stand an
+emulator up. If someone gets a native `.ipk` to execute under any LG emulator, that is a finding
+worth having and this section is wrong.
+
 ### 3.5 Root is NOT required — but the install *prefix* is the live bug
 
 **Device-proven 2026-08-01 on the 49SM9000PLA.** The running app is `Uid: 6910`, `Gid: 5000`,
