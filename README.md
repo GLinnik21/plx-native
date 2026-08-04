@@ -7,13 +7,23 @@ An unofficial native [Plex](https://www.plex.tv/) client for LG webOS 4.x televi
 
 ## Why this exists
 
-The official Plex app on my old LG is a web app running in Chromium, and on hardware this old you
-can feel it. Scrolling a shelf stutters, opening a poster takes a beat too long, and the whole
-thing feels like a website pretending to be a television app.
+The official Plex app on my old LG is slow. Scrolling a shelf stutters, opening a poster takes a
+beat too long. It behaves like a web page, and when I went looking, that turned out to be exactly
+what it is: a web app running in the TV's Chromium.
 
-I kept wondering how the Apple TV app manages a UI that looks that good and still moves at 60fps on
-hardware that isn't especially fast. It turns out the answer is boring: it's a native app. No
-browser, no JavaScript, no web view — it just draws.
+Writing a whole client was not my first idea. I tried the obvious things first, and this project is
+what was left after both failed:
+
+- **Patching and optimising the web app.** You can get at it and change it, and I did. But you run
+  into a ceiling that isn't in the code — it's the browser, on a TV this old, doing compositing and
+  JavaScript for an interface that should be a few hundred draw calls.
+- **Kodi with a Plex plugin.** This set reports 1.6 GB of RAM, but only about 440 MB is actually
+  available to an app once webOS and its services have taken their share. Kodi wants more than
+  that, so it never really got off the ground.
+
+What kept nagging at me was the Apple TV app: similar hardware, and its interface simply moves. The
+answer turned out to be unglamorous — it's a native app. No browser, no JavaScript, no web view. It
+just draws.
 
 So I wrote one. PlxNative is an Apple-TV-inspired Plex client that draws its interface directly with
 OpenGL ES 2 and hands video to the TV's own hardware decoder. Almost all of it is Rust.
