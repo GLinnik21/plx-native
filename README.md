@@ -50,32 +50,6 @@ Real screenshots off the television, not mockups.
 the picture is on the TV's video plane, decoded by the same silicon the built-in apps use, with the
 interface drawn on top of it. That's the thing a browser-based client can't do.
 
-## What I'd want you to know before installing
-
-I built this for how *I* watch, so the honest scope is narrower than Plex's:
-
-- **Movies and TV shows.** That's what's in my library, so that's what's here. No music, no photos,
-  no live TV or DVR.
-- **A server on the same network.** Not a preference — the app only ever connects to a server it
-  finds on your LAN, and the networking underneath it takes a numeric address with no DNS and no
-  TLS. Remote-only servers and relay connections will not connect at all, and there's no box to
-  type an address into.
-- **webOS 4.x, not 5 or newer.** Partly because a 4.5 set is the TV I own and can test on. But it's
-  a real wall, not a version check: webOS 5.0 removed the LG library this uses to put decoded video
-  on the hardware plane, *and* moved every FFmpeg version underneath it. Both have to be rebuilt,
-  on hardware, before a newer set could work.
-
-  **If you have a rooted webOS 5+ TV, I'd love the help** — that's the one thing I can't do from
-  here, and no emulator substitutes for it ([why](docs/distribution.md#34a-no-emulator-substitutes-for-the-hardware-researched-2026-07-28)).
-  What's needed is someone who can actually run and debug on the set, not a report of what's
-  installed on it; that part is already known.
-- **One panel.** The app *tells* your server it can handle HEVC, 4K and 10-bit; it doesn't ask the
-  television, because that's what mine does. On a lower-end webOS 4.x set that claim will be wrong,
-  and so will the fallback.
-- **One person's spare time.** There will be bugs I haven't hit because I don't watch the way you do.
-
-If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.
-
 ## What it does
 
 - Sign in on the TV with an on-screen QR code, pick a Plex Home profile, browse, and play.
@@ -88,23 +62,32 @@ If that fits, it's genuinely nice to use. If it doesn't, the official app will s
 `plex.tv` to sign in, and to `discover.provider.plex.tv` for cast biographies. No analytics, no
 telemetry, no crash reporting. I didn't leave it out to be virtuous — I just never wanted any.
 
-## What you need
+## Before you install
 
-- An **LG TV on webOS 4.x** — anything from 4.0 up to but not including 5.0. (webOS numbers 4.10
-  *above* 4.9, so "4.9" is not the ceiling.)
-- A way to install unsigned apps: the
-  [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) — which installs any
-  `.ipk` you point it at, listed in its catalogue or not — or LG Developer Mode.
-- A Plex Media Server on your network, and a Plex account.
+**What you need.** An LG TV on **webOS 4.x** (why it stops there is below), a Plex Media Server, a
+Plex account, and a way to install unsigned apps — the
+[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel), which installs any `.ipk`
+you point it at whether or not it's in the catalogue, or LG Developer Mode. You do **not** need a
+rooted TV: the app runs in LG's normal sandbox as an ordinary unprivileged app, which I checked on
+the device rather than assumed (evidence in [`docs/distribution.md`](docs/distribution.md) §3.5).
+Root only matters for the development loop below.
 
-**You don't need a rooted TV.** The app runs inside LG's normal sandbox as an ordinary unprivileged
-app — not as root, with no special permissions. I verified that on the device rather than assuming
-it; the evidence is in [`docs/distribution.md`](docs/distribution.md) §3.5. Root only matters for
-the development loop below.
+**The honest scope.** I built this for how *I* watch, so it's narrower than Plex's:
 
-If you go the **Developer Mode** route rather than the Homebrew Channel, know that LG expires a Dev
-Mode session after 1000 hours and *uninstalls your apps* when it does — dev-manager-desktop can renew
-it for you before that happens. The Homebrew Channel has no expiry at all.
+- **Movies and TV shows.** No music, no photos, no live TV or DVR.
+- **A server on your LAN.** The app only connects to a server it finds locally, over a socket that
+  takes a numeric address with no DNS and no TLS. Remote-only and relay servers won't connect at
+  all, and there's nowhere to type an address in.
+- **webOS 4.0 up to but not including 5.0** — and note webOS numbers 4.10 *above* 4.9, so 4.9 isn't
+  the ceiling. That bound is a wall rather than a version check: 5.0 removed the LG library this
+  uses to put decoded video on the hardware plane, *and* moved every FFmpeg version underneath it.
+  Both have to be rebuilt, on hardware, before a newer set could work.
+- **One panel.** The app *tells* your server it can handle HEVC, 4K and 10-bit; it doesn't ask the
+  television, because that's what mine does. On a lower-end webOS 4.x set that will be wrong, and
+  so will the fallback.
+- **One person's spare time.** There will be bugs I haven't hit because I don't watch the way you do.
+
+If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.
 
 ## Installing
 
@@ -113,6 +96,10 @@ it for you before that happens. The Homebrew Channel has no expiry at all.
 > is in place. The rest of this section is how installing will work; the
 > [releases page](https://github.com/GLinnik21/plx-native/releases) is the source of truth, and
 > this note goes away when there's something on it.
+
+If you install through **Developer Mode** rather than the Homebrew Channel, know that LG expires a
+Dev Mode session after 1000 hours and *uninstalls your apps* when it does — dev-manager-desktop can
+renew it for you before that happens. The Homebrew Channel has no expiry.
 
 Grab the `.ipk` from the [latest release](https://github.com/GLinnik21/plx-native/releases) and
 install it with the Homebrew Channel or
@@ -181,15 +168,22 @@ that took a while to work out. Each major subsystem has one of its own next to t
 
 ## Contributing
 
-Issues and pull requests are welcome, especially from anyone with a TV or a library that differs
-from mine — a **rooted webOS 5+ set** most of all (see above), but also a different panel, a remote
-server, or media this has never met. Two things worth knowing first:
+Issues and pull requests are welcome, especially from anyone whose TV or library differs from mine.
+
+**A rooted webOS 5+ set is the thing I need most.** I can't develop for one blind: no emulator
+substitutes for the hardware
+([why](docs/distribution.md#34a-no-emulator-substitutes-for-the-hardware-researched-2026-07-28)),
+and what's missing is someone who can run and debug on the set — not a report of what's installed
+on it, which is already known. A different 4.x panel, a remote server, or media this has never met
+are all useful too.
+
+Two things worth knowing first:
 
 - **Run `make check` before you push**, on nightly — `make check` runs `cargo +nightly`, while a bare
   `cargo test` picks up your default toolchain. The two have disagreed.
-- **Anything touching playback, the UI or input has to be checked on a real TV.** There's no host
-  runtime, and no emulator can run this — that was investigated properly and ruled out, see `docs/`.
-  Say in the PR what you verified and how.
+- **Anything touching playback, the UI or input has to be checked on a real TV.** Nothing on your
+  computer draws a pixel or decodes a frame, so a green host suite proves less than it looks like
+  it does. Say in the PR what you verified and how.
 
 ## Licence
 
