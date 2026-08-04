@@ -244,7 +244,9 @@ pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 /// between the track and the fill so the played part of a segment reads as played. Stays inside the
 /// rail's monochrome language on purpose: a hue here would compete with the amber resume fill for
 /// "this bit is special", and the rail sits straight over moving video.
-pub const RAIL_MARKER: [f32; 4] = [1.0, 1.0, 1.0, 0.42];
+// (RAIL_MARKER, white @ 0.42, was the intro/credits band on the scrubber. Removed 2026-08-04 with
+// the band itself — at twice the track's opacity it read as a rendering artifact rather than as
+// information. See the "the rail carries NO marks" note in ui/player_hud.rs.)
 /// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
 /// keying it (the person page's header state, `Person Screen v2.dc.html`'s
 /// `rgba(233,230,224,.10)`). Its own token rather than [`ACCENT`], which it is a hair from: ACCENT

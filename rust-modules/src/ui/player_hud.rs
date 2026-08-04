@@ -492,51 +492,22 @@ pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
     ((mx - SB_X) / sb_w()).clamp(0.0, 1.0)
 }
 
-// ---- rail marks: the intro/credits segments ---------------------------------------------------
-// The marker set already sits in memory during playback and belongs to the PLAYING leaf —
-// `metadata::playing_markers()`, which the Skip control reads every frame. It costs no request:
-// `?includeMarkers=1` rides the fetch the track store already makes. So this is a draw, not a fetch.
+// ---- the rail carries NO marks ------------------------------------------------------------
+// Nothing is drawn on the scrubber but the track, the watched fill and the playhead. Two kinds of
+// mark have been tried here and both were removed, for the same reason and by the same judgement:
 //
-// The device constraint shapes the geometry: this Mali is FILL-RATE bound and the HUD composites
-// over the transparent UI plane above the hardware video plane, so a mark here is a small opaque
-// quad — no glow, no gradient, no per-mark text. At most two segments exist per item (an intro and
-// a credits), so the draw cost is bounded by the data rather than by a coalescing rule.
+//   * chapter-boundary ticks — the rail reads cleaner as one continuous bar. The chapter LIST is
+//     the affordance (`ui/chapters_panel.rs`, off `metadata::playing_chapters()`).
+//   * intro/credits segment bands — removed 2026-08-04. They were `RAIL_MARKER`, white at 0.42
+//     against a 0.20 track, so a credits band on a feature film was a bright unlabelled patch
+//     floating near the right end of an otherwise empty rail. Reviewed cold on a screenshot it
+//     read as a RENDERING ARTIFACT, not as information, which is a complete failure of the thing.
 //
-// Chapter-boundary ticks were drawn here too and were REMOVED — an owner taste call, not a defect:
-// the rail reads cleaner as one continuous bar. The chapter LIST is untouched and is the affordance
-// (`ui/chapters_panel.rs`, off the same `metadata::playing_chapters()`), so do not re-add rail ticks
-// as a "cheap win" — the backlog entry that proposed them predates the decision.
-
-/// Floor width for a marker band, so a very short segment on a long item is still a visible mark
-/// rather than a sub-pixel sliver. The rail's end wins over it: a segment starting in the last few
-/// px is drawn short rather than pushed off its own offset.
-const MARKER_MIN_W: f32 = 6.0;
-
-/// PURE: rail x for a position in ms, clamped to the rail. Total by construction — an unknown
-/// duration (the whole pre-roll, and any item the demuxer never reported one for) maps everything
-/// to the rail's start, and the caller below refuses to draw at all in that case.
-fn rail_x(ms: i64, dur_ms: i64, sx: f32, sw: f32) -> f32 {
-    if dur_ms <= 0 {
-        return sx;
-    }
-    sx + sw * (ms as f64 / dur_ms as f64).clamp(0.0, 1.0) as f32
-}
-
-/// PURE: a marker segment's `(left, right)` extent on the rail, or None when it cannot be drawn
-/// (unknown duration, or a segment that starts at/after the end of the item).
-///
-/// A `final` credits marker's stated `end_ms` is the CONTAINER duration and routinely overshoots
-/// the decoder's, so the right edge is clamped to the rail rather than allowed to overhang it —
-/// the same overshoot [`crate::metadata::marker_at`] absorbs by treating such a segment as
-/// open-ended.
-fn marker_band(m: crate::metadata::Marker, dur_ms: i64, sx: f32, sw: f32) -> Option<(f32, f32)> {
-    if dur_ms <= 0 || sw <= 0.0 || m.start_ms >= dur_ms || m.end_ms <= m.start_ms {
-        return None;
-    }
-    let l = rail_x(m.start_ms.max(0), dur_ms, sx, sw);
-    let r = rail_x(m.end_ms, dur_ms, sx, sw).max(l + MARKER_MIN_W).min(sx + sw);
-    (r > l).then_some((l, r))
-}
+// Neither loses anything: the Skip Intro / Skip Credits pill (`ui/skip_pill.rs`) is driven from
+// the very same `metadata::playing_markers()` and appears exactly when a marker is reachable, so
+// the band was decoration duplicating a control that already announces itself. Do not re-add
+// either as a "cheap win" — the marker data is already in memory, which is precisely what makes
+// drawing it tempting and still wrong.
 
 /// draw a clock string centred on `cx` as ONE label box, clamped so it stays inside [lo, hi].
 /// (The old last-':'-anchor read visibly lopsided once the clock grew to H:MM:SS — "1:05" left of
@@ -623,15 +594,6 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     let dur = crate::player::duration_ns();
     let frac = if dur > 0 { (dispos as f64 / dur as f64).clamp(0.0, 1.0) } else { 0.0 };
     p.rect(Rect::new(sx, sy, sw, sh), sh * 0.5, track, track, 0.0);
-    let dur_ms = dur / 1_000_000;
-    // intro / credits segments, UNDER the fill: a segment already watched should read as watched,
-    // exactly like the rest of the rail. At most two per item (an intro and a credits).
-    for m in crate::metadata::playing_markers() {
-        if let Some((l, r)) = marker_band(*m, dur_ms, sx, sw) {
-            let rad = (sh * 0.5).min((r - l) * 0.5);
-            p.rrect(Rect::new(l, sy, r - l, sh), rad, rad, theme::RAIL_MARKER);
-        }
-    }
     let fw = (sw as f64 * frac) as f32;
     if fw > sh * 0.5 {
         p.rrect(Rect::new(sx, sy, fw, sh), sh * 0.5, 0.0, white);
@@ -793,26 +755,6 @@ mod tests {
         assert_eq!(intro, SkipAction::Seek(2_000 * 1_000_000));
     }
 
-    /// The intro/credits band covers its own segment, and a `final` credits marker — whose stated
-    /// end is the CONTAINER duration, which routinely overshoots the decoder's — stops at the rail's
-    /// end instead of overhanging it.
-    #[test]
-    fn a_marker_band_covers_its_segment_and_stops_at_the_rail() {
-        assert_eq!(marker_band(seg(100, 200, false), DUR, SX, SW), Some((200.0, 300.0)));
-
-        // a `final` credits segment running to (or past) the container duration
-        assert_eq!(marker_band(seg(900, 1_000, true), DUR, SX, SW), Some((1_000.0, 1_100.0)));
-        assert_eq!(marker_band(seg(900, 1_200, true), DUR, SX, SW), Some((1_000.0, 1_100.0)));
-
-        // a segment shorter than the floor is widened to it rather than drawn sub-pixel
-        let (l, r) = marker_band(seg(500, 501, false), DUR, SX, SW).expect("a 1ms segment still draws");
-        assert_eq!((l, r), (600.0, 600.0 + MARKER_MIN_W));
-
-        // nothing to draw: no duration, a segment that starts at/after the end, an inverted one
-        assert_eq!(marker_band(seg(100, 200, false), 0, SX, SW), None);
-        assert_eq!(marker_band(seg(1_000, 1_100, false), DUR, SX, SW), None);
-        assert_eq!(marker_band(seg(300, 300, false), DUR, SX, SW), None);
-    }
     /// The ring only goes back to the scrubber on the EDGE where a stand-in vanished under it.
     /// As a steady state (`is_discs() && focused`, which is how it shipped) it fired on every
     /// frame the user had walked UP to the Subtitles/Audio discs, so focus could not rest there
