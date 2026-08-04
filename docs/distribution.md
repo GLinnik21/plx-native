@@ -904,9 +904,26 @@ between here and a release, and none of them is code:
   `.deb` download, the pip install, the arm64 runner — all unexecuted. The first run should not be
   the release path.
 - **Write `packages/com.beb.plxnative.yml` in a fork of `webosbrew/apps-repo`** and open the PR.
-  Nothing in this repo generates or validates it. Carry `requirements.webosRelease: '>=4.0, <5.0'` —
-  **that bound exists ONLY in this hand-written file**, not in the manifest CI generates, and
-  without it a webOS 5+ user installs an app whose `libAcbAPI` and `libav*.so.57` do not exist.
+  **DRAFTED — `docs/webosbrew-package.yml` is the ready file**; copy it into the fork under that
+  name. Schema re-verified against upstream 2026-08-04: required keys are `title`, `iconUri`,
+  `manifestUrl`, `category`, `pool`, `description`; `shortDescription` is capped at 80 characters;
+  `category: multimedia` and `pool: main` match what comparable clients use.
+
+  Carry `requirements.webosRelease: '>=4.0, <5.0'` — **that bound exists ONLY in this hand-written
+  file**, not in the manifest CI generates, so without it a webOS 5+ user installs an app whose
+  `libAcbAPI` and `libav*.so.57` are absent. The value is not a guess: `repogen/check_compat.py`
+  passes the string **verbatim** to `webosbrew-ipk-verify --fw-releases`, which is the same tool
+  and flag §9 already ran against the real binary. Note it is `<5.0`, not `<4.9` — webOS numbers
+  **4.10 above 4.9**, and 4.10.0 is one of the two firmwares the binary is proven good on.
+
+  **The PR template carries an AI-use declaration, and it is Gleb's to answer.** The options run
+  from "no AI tools" to "produced primarily by AI"; the repository states outright that apps
+  "made primarily by AI and submitted without meaningful human development, testing, and review are
+  not accepted", and that the submitter remains responsible for the code either way. Given how this
+  codebase was written, the truthful box is the agent one — *AI coding agents were used; an
+  experienced developer has reviewed and tested all generated code* — and it is only truthful if
+  that review and testing actually happened. There are two other checkboxes on the same template:
+  tested on a real webOS TV, and complies with the repository rules.
 
 ---
 

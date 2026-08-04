@@ -1,0 +1,74 @@
+# The webosbrew Homebrew Channel submission for this app.
+#
+# THIS FILE DOES NOT BELONG TO THIS REPOSITORY AT RUNTIME. It is kept here so the submission is
+# version-controlled and reviewable alongside the thing it describes. To submit, fork
+# https://github.com/webosbrew/apps-repo and copy this file to `packages/com.beb.plxnative.yml`.
+#
+# Schema: content/schemas/packages/PackageInfo.json in that repo.
+# Required: title, iconUri, manifestUrl, category, pool, description. Verified 2026-08-04.
+
+title: PlxNative
+
+# Both icon URLs are raw links to THIS repository's default branch, so they resolve only once the
+# repo is public — and `repogen.lintpkg` rejects a submission whose iconUri does not return 200.
+# 160 for the listing card, 320 for the detail page; tools/mkicons.py cuts both from the master.
+iconUri: https://raw.githubusercontent.com/GLinnik21/plx-native/main/pkg/icon160.png
+detailIconUri: https://raw.githubusercontent.com/GLinnik21/plx-native/main/pkg/icon320.png
+
+# `releases/latest/download/...` always resolves to the newest release, which is how the channel
+# picks up an update without this file changing. The release workflow sets neither `draft` nor
+# `prerelease` precisely because either would exclude the release from `latest` and break this URL.
+manifestUrl: https://github.com/GLinnik21/plx-native/releases/latest/download/com.beb.plxnative.manifest.json
+
+category: multimedia
+pool: main
+
+# Max 80 characters (schema-enforced).
+shortDescription: A native, Apple-TV-style Plex client for LG webOS 4.x — no browser
+
+requirements:
+  # Passed VERBATIM to `webosbrew-ipk-verify --fw-releases`, which is the same tool and flag the
+  # release CI already runs against the built binary — clean on 4.4.2 and 4.10.0, failing on
+  # every firmware from 5.0 up. This bound exists ONLY here: the manifest CI generates carries no
+  # version requirement, so without this line a webOS 5+ user installs an app whose LG media
+  # library and FFmpeg SONAMEs do not exist on their set.
+  #
+  # Note it is NOT '>=4.0, <4.9' — webOS numbers 4.10 above 4.9, and 4.10.0 is one of the two
+  # firmwares the binary is proven good on.
+  webosRelease: '>=4.0, <5.0'
+
+description: |
+  An unofficial, native Plex client for LG webOS 4.x televisions.
+
+  The official Plex app on these sets runs in Chromium, and on older hardware it shows: shelves
+  stutter, posters open a beat late. PlxNative draws its interface directly on the GPU and hands
+  video to the TV's own hardware decoder — the same silicon the built-in apps use — so the picture
+  sits on the video plane with the interface composited over it.
+
+  **What it does**
+
+  * Sign in on the TV with an on-screen QR code, pick a Plex Home profile, browse and play
+  * Direct play wherever the TV can decode it, including HEVC, 4K and 10-bit; the server is asked
+    to transcode only when it genuinely cannot
+  * Resume, seek and scrub, chapters, audio and subtitle track switching (including image
+    subtitles), Skip Intro / Skip Credits, Up Next with auto-advance, and progress reported back
+    to your server
+
+  **Scope — please read before installing**
+
+  * **Movies and TV shows only.** No music, photos, live TV or DVR.
+  * **A server on your local network.** The app connects only to a server it finds on the LAN;
+    remote-only and relay servers will not connect, and there is nowhere to enter an address.
+  * **webOS 4.x only.** webOS 5.0 removed the LG library this uses to bind decoded video to the
+    hardware plane and moved every FFmpeg version underneath it.
+  * **Codec capability is asserted, not probed.** The app tells your server it can handle HEVC,
+    4K and 10-bit because that is what the author's set does; on a lower-end webOS 4.x panel that
+    will be wrong.
+
+  Your library never leaves your network. The app talks to your own Plex Media Server, to plex.tv
+  to sign in, and to discover.provider.plex.tv for cast biographies. There is no analytics, no
+  telemetry and no crash reporting.
+
+  Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
+
+  Source, screenshots and issues: https://github.com/GLinnik21/plx-native
