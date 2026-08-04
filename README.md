@@ -7,9 +7,9 @@ An unofficial native [Plex](https://www.plex.tv/) client for LG webOS 4.x televi
 
 ## Why this exists
 
-The official Plex app on my old LG runs in Chromium, and it shows. Scrolling a shelf stutters,
-opening a poster takes a beat too long, and the whole thing feels like a website pretending to be a
-television app.
+The official Plex app on my old LG is a web app running in Chromium, and on hardware this old you
+can feel it. Scrolling a shelf stutters, opening a poster takes a beat too long, and the whole
+thing feels like a website pretending to be a television app.
 
 I kept wondering how the Apple TV app manages a UI that looks that good and still moves at 60fps on
 hardware that isn't especially fast. It turns out the answer is boring: it's a native app. No
