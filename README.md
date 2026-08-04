@@ -29,8 +29,13 @@ I built this for how *I* watch, so the honest scope is narrower than Plex's:
 - **webOS 4.x, not 5 or newer.** Partly because a 4.5 set is the TV I own and can test on. But it's
   also a real technical wall: the app puts decoded video on the TV's hardware plane through LG's
   `libAcbAPI`, and that library is gone from webOS 5.0 onward. Supporting newer sets means finding
-  what replaced it and testing on real hardware, not just relaxing a version check. I'd like to get
-  there eventually.
+  what replaced it and testing on real hardware, not just relaxing a version check.
+
+  **If you have a rooted webOS 5+ TV, I'd love the help.** That's the one thing I can't do from
+  here — no emulator can stand in for it (I looked into this properly; see
+  [`docs/distribution.md`](docs/distribution.md) §3). Even just telling me what's in
+  `/usr/lib` on your set, and whether `libAcbAPI` has a successor there, would move this forward
+  more than anything else on the list.
 - **One person's spare time.** There will be bugs I haven't hit because I don't watch the way you do.
 
 If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.
@@ -127,7 +132,8 @@ that took a while to work out. Each major subsystem has one of its own next to t
 ## Contributing
 
 Issues and pull requests are welcome, especially from anyone with a TV or a library that differs
-from mine. Two things worth knowing first:
+from mine — a **rooted webOS 5+ set** most of all (see above), but also a different panel, a remote
+server, or media this has never met. Two things worth knowing first:
 
 - **Run `make check` before you push**, using the nightly toolchain the Makefile pins. A bare
   `cargo test` picks up a different one, and the two have disagreed.
