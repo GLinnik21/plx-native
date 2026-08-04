@@ -275,7 +275,12 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 # current notices do NOT cover — it is deliberately dev-deploy-only (see capture.rs).
 APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt THIRD-PARTY-NOTICES.md
-LICENSE_FILES = LICENSE $(wildcard licenses/*.txt)
+# TRADEMARKS.md ships too: it carries the brand reservation and the Plex/LG non-affiliation
+# statement, which used to be appended to LICENSE. It was moved out because GitHub's `licensee`
+# matches LICENSE against known texts by SIMILARITY, and the appended thirty lines pushed the file
+# under the threshold — so the repository advertised "Other" rather than MIT, misrepresenting the
+# terms in the one place most people look. Splitting the file must not un-ship the reservation.
+LICENSE_FILES = LICENSE TRADEMARKS.md $(wildcard licenses/*.txt)
 
 deploy: pkg/plxnative
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"

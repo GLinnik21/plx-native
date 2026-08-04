@@ -128,8 +128,17 @@ print("== compliance artifacts ==")
 # LGPL-2.1 §6 requires the notice AND the licence text to travel with the BINARY, so these are
 # payload rather than repo decoration — a copy on GitHub does not discharge it for someone who
 # received only the .ipk. release.yml's legal-gate refuses to publish without the first two.
-for f in ("LICENSE", "THIRD-PARTY-NOTICES.md"):
+for f in ("LICENSE", "TRADEMARKS.md", "THIRD-PARTY-NOTICES.md"):
     check((ROOT / f).exists(), f"{f} present")
+# LICENSE must stay VERBATIM MIT. GitHub's `licensee` matches it against known licence texts by
+# similarity, and this file previously carried the trademark reservation appended below the grant —
+# which pushed it under the threshold, so the repository reported its licence as "Other". That
+# misrepresents the terms in the one place most people look. The reservation lives in TRADEMARKS.md
+# now; this assertion is what stops it drifting back.
+_lic = (ROOT / "LICENSE").read_text()
+check(_lic.rstrip().endswith("SOFTWARE."),
+      "LICENSE is verbatim MIT (no appended text — it would read as 'Other' on GitHub)")
+check("TRADEMARK" not in _lic.upper(), "LICENSE carries no trademark reservation (see TRADEMARKS.md)")
 NEEDED_LICENCES = {
     "LGPL-2.1.txt": "FFmpeg, GLib, glibc — dynamically linked, §6 notice duty",
     "MIT.txt": "Feather/Heroicons and the MIT-elected Rust crates",
@@ -146,7 +155,7 @@ print("== ipk payload ==")
 expected = {
     "plxnative", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
     "appfont.ttf", "appfont-bold.ttf", "OFL.txt",
-    "THIRD-PARTY-NOTICES.md", "LICENSE", *NEEDED_LICENCES,
+    "THIRD-PARTY-NOTICES.md", "LICENSE", "TRADEMARKS.md", *NEEDED_LICENCES,
 }
 data_tar = ROOT / "ipkroot/data.tar.gz"
 if data_tar.exists():

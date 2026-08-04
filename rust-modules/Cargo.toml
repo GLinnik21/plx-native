@@ -11,7 +11,7 @@ edition = "2021"
 # was a contradiction with no upside.
 license = "MIT"
 description = "Application core for PlxNative — an unofficial native Plex client for LG webOS."
-repository = "https://github.com/GLinnik21/plex-native"
+repository = "https://github.com/GLinnik21/plx-native"
 
 # Static library linked into the C app (hybrid migration): each ported module
 # exposes the same C ABI its src/*.h declares, so the C code calls it unchanged.

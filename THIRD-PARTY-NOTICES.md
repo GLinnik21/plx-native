@@ -2,7 +2,9 @@
 
 This file accompanies the **PlxNative** application package (`com.beb.plxnative`), an unofficial
 native Plex client for LG webOS 4.x televisions. PlxNative itself is Copyright (c) 2026 Gleb
-Linnik and is distributed under the MIT License (see `LICENSE` in the source distribution).
+Linnik and is distributed under the MIT License (see `LICENSE`; the brand reservation and the
+non-affiliation statements are in `TRADEMARKS.md`, alongside it in both the repository and this
+package).
 
 The file is organised by **relationship**, because relationship — not licence — is what
 determines the obligation:

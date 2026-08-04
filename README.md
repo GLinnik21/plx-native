@@ -40,7 +40,7 @@ no such expiry.
 
 ## Installing
 
-Download the `.ipk` from the [latest release](https://github.com/GLinnik21/plex-native/releases)
+Download the `.ipk` from the [latest release](https://github.com/GLinnik21/plx-native/releases)
 and install it with the Homebrew Channel or
 [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop).
 
@@ -113,7 +113,8 @@ Issues and pull requests are welcome. Two things worth knowing before you start:
 
 [MIT](LICENSE), © 2026 Gleb Linnik.
 
-The PlxNative name and its logo/splash artwork are excluded — see the reservation in `LICENSE`.
+The PlxNative name and its logo/splash artwork are excluded — see
+[`TRADEMARKS.md`](TRADEMARKS.md), which also carries the Plex and LG non-affiliation statements.
 
 Third-party components, their licences, and the notices that must travel with a built package are
 in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and `licenses/`. Notably, the app links the
