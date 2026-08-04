@@ -57,7 +57,13 @@ echo "== DT_NEEDED =="
 # Adding a call to any library that happens to be in the NDK sysroot silently adds a DT_NEEDED
 # entry. webosbrew CI resolves this exact list against 14 firmware databases and rejects on a
 # miss, so drift here is a rejected submission.
-"$READELF" -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | sort > /tmp/dt-needed.actual
+# LC_ALL=C is load-bearing, and its absence is what made this gate fail on its first CI run while
+# passing on every dev machine. `sort` collates by LOCALE: macOS's default UTF-8 locale orders
+# case-insensitively (…libgcc_s, libGLESv2, libglib…) while the Linux runner's C locale puts every
+# capital first (libAcbAPI, libGLESv2, libSDL2…, then libav…). Same 21 libraries either way — the
+# diff was pure ordering, which reads exactly like the ABI drift this check exists to catch.
+# The expectation file is regenerated in C collation to match.
+"$READELF" -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | LC_ALL=C sort > /tmp/dt-needed.actual
 if ! diff -u ci/expected-dt-needed.txt /tmp/dt-needed.actual; then
   fail "DT_NEEDED drifted. If intended, check the new library exists on webOS 4.x, then update ci/expected-dt-needed.txt"
 fi

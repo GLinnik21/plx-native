@@ -1,5 +1,8 @@
 ld-linux.so.3
 libAcbAPI.so.1
+libGLESv2.so.2
+libSDL2-2.0.so.0
+libSDL2_ttf-2.0.so.0
 libavcodec.so.57
 libavformat.so.57
 libavutil.so.55
@@ -7,7 +10,6 @@ libc.so.6
 libcurl.so.5
 libdl.so.2
 libgcc_s.so.1
-libGLESv2.so.2
 libglib-2.0.so.0
 libluna-service2.so.3
 libm.so.6
@@ -15,7 +17,5 @@ libpf-1.0.so.1
 libplayerAPIs.so.1
 libpthread.so.0
 librt.so.1
-libSDL2_ttf-2.0.so.0
-libSDL2-2.0.so.0
 libswscale.so.4
 libwayland-client.so.0
