@@ -17,6 +17,21 @@ OpenGL ES 2 and hands video to the TV's own hardware decoder. Almost all of it i
 
 I use it myself, every day, to watch things off my server in the next room.
 
+## What it looks like
+
+Real screenshots off the television, not mockups.
+
+|  |  |
+|---|---|
+| ![Home](docs/screenshots/home.jpg) | ![Library](docs/screenshots/library.jpg) |
+| **Home** — a hero for what you're partway through, shelves below | **Library** — sort, filter, unwatched-only, and an A–Z rail |
+| ![Detail](docs/screenshots/detail.jpg) | ![Player](docs/screenshots/player.jpg) |
+| **Detail** — ratings, cast, and where to carry on | **Player** — the transport over hardware-decoded 4K |
+
+That last one is the whole point of the project: the picture is on the TV's video plane, decoded by
+the same silicon the built-in apps use, with the interface drawn on top of it. That's what the
+browser-based client can't do.
+
 ## What I'd want you to know before installing
 
 I built this for how *I* watch, so the honest scope is narrower than Plex's:
