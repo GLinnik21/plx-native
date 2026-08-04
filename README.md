@@ -2,8 +2,9 @@
 
 An unofficial native [Plex](https://www.plex.tv/) client for LG webOS 4.x televisions.
 
-*Working and in daily use on a webOS 4.5 set. Not yet packaged as a release — see
-[Installing](#installing).*
+*In daily use on a webOS 4.5 set. [v0.1.0](https://github.com/GLinnik21/plx-native/releases/latest)
+is the first release; the Homebrew Channel listing is
+[submitted](https://github.com/webosbrew/apps-repo/pull/224) and not yet merged.*
 
 ## Why this exists
 
@@ -68,9 +69,8 @@ telemetry, no crash reporting. I didn't leave it out to be virtuous — I just n
 Plex account, and a way to install unsigned apps — the
 [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel), which installs any `.ipk`
 you point it at whether or not it's in the catalogue, or LG Developer Mode. You do **not** need a
-rooted TV: the app runs in LG's normal sandbox as an ordinary unprivileged app, which I checked on
-the device rather than assumed (evidence in [`docs/distribution.md`](docs/distribution.md) §3.5).
-Root only matters for the development loop below.
+rooted TV — the app runs in LG's normal sandbox like anything else on the set, unprivileged and
+with no special permissions. Root only matters for the development loop below.
 
 **The honest scope.** I built this for how *I* watch, so it's narrower than Plex's:
 
@@ -79,9 +79,9 @@ Root only matters for the development loop below.
   takes a numeric address with no DNS and no TLS. Remote-only and relay servers won't connect at
   all, and there's nowhere to type an address in.
 - **webOS 4.0 up to but not including 5.0** — and note webOS numbers 4.10 *above* 4.9, so 4.9 isn't
-  the ceiling. That bound is a wall rather than a version check: 5.0 removed the LG library this
-  uses to put decoded video on the hardware plane, *and* moved every FFmpeg version underneath it.
-  Both have to be rebuilt, on hardware, before a newer set could work.
+  the ceiling. It's a hard limit, not a number I picked: 5.0 removed the LG library this uses to
+  put decoded video on the hardware plane, and moved every FFmpeg version underneath it. Both have
+  to be rebuilt, on hardware, before a newer set could work.
 - **One panel.** The app *tells* your server it can handle HEVC, 4K and 10-bit; it doesn't ask the
   television, because that's what mine does. On a lower-end webOS 4.x set that will be wrong, and
   so will the fallback.
@@ -91,11 +91,9 @@ If that fits, it's genuinely nice to use. If it doesn't, the official app will s
 
 ## Installing
 
-> **There's no published build yet, and it isn't in the Homebrew Channel's app list.** If you want
-> to try it today, [build it yourself](#building-it-yourself) — it's a few commands once the NDK
-> is in place. The rest of this section is how installing will work; the
-> [releases page](https://github.com/GLinnik21/plx-native/releases) is the source of truth, and
-> this note goes away when there's something on it.
+> **Not in the Homebrew Channel's app list yet** — the submission is
+> [open](https://github.com/webosbrew/apps-repo/pull/224). Until it lands, point the Channel at the
+> `.ipk` below yourself, or use dev-manager-desktop.
 
 If you install through **Developer Mode** rather than the Homebrew Channel, know that LG expires a
 Dev Mode session after 1000 hours and *uninstalls your apps* when it does — dev-manager-desktop can
