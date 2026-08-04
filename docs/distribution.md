@@ -16,7 +16,7 @@ where that pass changed the answer it is marked **[corrected]**.
 | Ship via **webOS Homebrew Channel**? | **Yes** — it is a real, current, native-app-friendly path. ~1 day of packaging work plus the licence fixes below. |
 | Ship via **LG Content Store**? | **No.** Not for a hand-written native binary, not under any partner tier, not at any price. Would require a rewrite as a web app. |
 | Runs on **newer webOS**? | 32-bit armv7 is *not* the problem — it stays the native userland through webOS 26. **ACB is the problem**: `libAcbAPI` exists on webOS 4.x only. Today's binary does not reach `main()` on 5.0+. |
-| Is **private data** in the repo? | Git history is clean of credentials. **Mostly resolved 2026-08-02:** the 252 (not ~40) `/Users/gleblinnik/…` paths are remapped to 0, and both runtime surfaces — the squattable `/tmp` FIFO and the unauthenticated `0.0.0.0:8910` listener — are compiled out of a release build along with the whole trigger surface. Left: `192.168.0.3` is still baked into a binary built on *this* machine (release comes from CI, which has no `config.local.h`), the token still wants rotating, and `tests/`+`docs/` still quote a private library. |
+| Is **private data** in the repo? | Git history is clean of credentials. **Mostly resolved 2026-08-02:** the 252 (not ~40) `/Users/gleblinnik/…` paths are remapped to 0, and both runtime surfaces — the squattable `/tmp` FIFO and the unauthenticated `0.0.0.0:8910` listener — are compiled out of a release build along with the whole trigger surface. Left: the **event log is still written by every build** and names the server, its LAN address, profile names and episode titles into a world-readable `/tmp` (§4 — the one item on that list not compiled out); `192.168.0.3` is still baked into a binary built on *this* machine (release comes from CI, which has no `config.local.h`); and the token still wants rotating. |
 | Needs a **rooted** TV? | **No** — device-proven, see §3.5. But the app currently only works under the **Dev Mode** install prefix; a Homebrew-Channel install breaks fonts and login. |
 | **Licensing** clear? | Font blocker **CLEARED 2026-08-01** — Inter (OFL 1.1) replaced Monotype Arial. FFmpeg/LGPL is fine. The repo still has **no LICENSE file at all**. |
 | **Trademarks**? | Plex itself is fine (their guidelines have an explicit permitted formula). **Rotten Tomatoes marks have no licensing route that exists**, and the TMDB logo ships without its mandatory attribution. |
@@ -522,8 +522,17 @@ world-readable `/tmp` on the TV across many runs.
   fills it. This is squarely webosbrew rule 3 ("be considerate to users' TV").
   Fix: `setrlimit(RLIMIT_CORE, 0)` in a release build; the tracer's own PC+maps log is what triage
   actually uses.
-- The event log prints server name + LAN address, Plex Home profile names and episode titles. There
-  is a token redactor on the *host* side (`tests/run.py` `RE_TOKEN`) but none on the device.
+- **STILL OPEN — the one unfixed item on this list.** The event log prints the server name + LAN
+  address, Plex Home profile names and episode titles, and it is written by EVERY build: the four
+  log sinks are deliberately outside the `devtriggers` gate (`dev.rs`'s module doc says why — they
+  are how on-device crash triage works at all). `/tmp` is mode 1777 in the production jail too, so
+  on a shipped install that file is world-readable. There is a token redactor on the *host* side
+  (`tests/run.py` `RE_TOKEN`) and none on the device.
+
+  Impact is bounded — it is read-only and needs code execution on the TV already — but its three
+  neighbours above are now compiled out and this is not, so do not read the group as closed.
+  The fix is a mode-0600 open plus dropping titles and profile names from the log, or logging
+  ratingKeys instead of titles.
 
 **Verified clean, no action:** no analytics, no telemetry, no crash upload; the only outbound hosts
 are the user's PMS, plex.tv and `discover.provider.plex.tv`; TLS verification is on
@@ -718,6 +727,14 @@ note `client.rs` uses a *different* product string (`PlxNative`): the plex.tv-fa
 identities disagree. *(Small caution: PMS transcode/direct-play decisions can key off client
 identity, so re-run the player suite after renaming.)*
 
+> **RESOLVED 2026-08-02 — this subsection is the ANALYSIS THAT LED TO THE FIX, not a description
+> of what ships.** Everything below was true when written and is not true now: all ten Rotten
+> Tomatoes icons and `tmdb.svg` were deleted, and the rating row names each provider in text with
+> a verdict-only glyph beside the score. See **§11**. Kept because the reasoning — why redrawing a
+> mark does not avoid the trademark, and why referential use in words does — is the useful part and
+> is what any future brand asset should be measured against. Verify against `assets/icons/` before
+> quoting anything here as current.
+
 **BLOCKING — Rotten Tomatoes.** There is **no licensing route that exists**. The RT Developer Network
 page states *"we no longer support unauthorized use of our data (e.g. unofficial projects)"*, the
 Fandango Data Feed Terms licence the "RT Marks" only with a written authorization, and
@@ -765,11 +782,18 @@ Listed because each could change a decision above.
    `1920x1080` (cosmetic vs blocker) hangs entirely on this, and it's assumed.
 3. ~~`webosbrew-ipk-verify` has never been run on the real binary.~~ **RESOLVED 2026-08-02 — it
    passes.** See §9; the run also found two packaging bugs that made the ipk uninstallable.
-4. **LG's own terms are entirely uncovered** — nobody read LG's SDK/NDK licence, the webOS TV EULA,
-   or any anti-reverse-engineering clause. `src/starfish.c` is built from **decompiled** offsets into
-   LG's proprietary `libplayerAPIs` and binds mangled C++ symbols in `libAcbAPI`/`libpf-1.0`. Plus
-   DMCA §1201 / EU anti-circumvention for both the decompilation and the rooting dependency. This is
-   plausibly the largest single legal exposure in the project and it has zero coverage here.
+4. **LG's own terms are entirely uncovered** — nobody has read LG's SDK/NDK licence, the webOS TV
+   EULA, or any anti-reverse-engineering clause in either. That is the open question, and it is
+   genuinely unassessed.
+
+   The facts underneath it are public and unremarkable: `src/starfish.c` binds mangled C++ symbols
+   in `libAcbAPI`/`libpf-1.0` from offsets derived by decompilation — the source says so in its own
+   comments — and Kodi's `MediaPipelineWebOS.cpp` and mariotaku's `ss4s` bind the same LG symbols in
+   the open. What this entry used to do on top of that was name DMCA §1201 and call the practice
+   "plausibly the largest single legal exposure in the project": a legal conclusion about the
+   author's own conduct, reached by a document with no standing to reach it, sitting in a public
+   repository. The open question is worth recording; the verdict was not this document's to render,
+   and nobody is obliged to volunteer one against themselves. **Get advice if it matters to you.**
 5. **Who owns the copyright?** If there's an employer IP-assignment, the licence choice isn't the
    author's to make.
 6. **Audience size.** ACB gone at 5.0 → webOS 4.x only → 2018–2019 models → whose owners must either
@@ -794,8 +818,18 @@ Listed because each could change a decision above.
 
 **Legal blockers (must precede any public artifact):**
 
-1. Replace `pkg/appfont*.ttf` — Arimo or Inter. Re-run `tools/font-hint-audit.py`. Remove the Arial
-   blobs from history (they're the only reason a rewrite would be needed; check when they entered).
+1. ~~Replace `pkg/appfont*.ttf` — Arimo or Inter.~~ **DONE** (Inter, §5.3).
+   ~~Remove the Arial blobs from history.~~ **DONE 2026-08-04 for everything public**, and verified
+   by cloning the public repo fresh: zero Arial objects reachable from any ref, and a cloner gets
+   Inter. `git filter-repo --strip-blobs-with-ids` removed the two Monotype blobs while keeping all
+   293 commits — stripping the PATH would have taken the shipping Inter fonts with it, since both
+   live at `pkg/appfont*.ttf`.
+
+   **The trap, recorded because it was nearly missed:** rewriting `main` and deleting the branches
+   was not enough. The tag `archive/rust-prototype` was also on origin and reached both blobs, so
+   for a short window after the repo went public a licensed Monotype font was downloadable from it.
+   Deleted. **37 LOCAL refs still carry the blobs** — every agent branch plus that tag — so from
+   this clone, never `git push --all` or `git push --tags`.
 2. Add `LICENSE` (MIT), and a `Copyright © 2026 <holder>` header — the Plex ToS requires the notice
    *in the source*.
 3. Add `THIRD-PARTY-NOTICES.md` + `licenses/` (LGPL-2.1, MIT, Apache-2.0, Zlib, BSD-3-Clause,
