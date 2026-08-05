@@ -234,17 +234,26 @@ def cmd_grade(args, db):
         if not fws:
             die(f"no such release; have {', '.join(f.release for f in load_firmwares(db))}")
 
+    floor = relver(args.min_release) if args.min_release else None
     print(f"{'release':<9} {'verdict':<8} {'missing libraries':<52} symbols")
     print("-" * 96)
     worst = 0
     for fw in fws:
         mlibs, msyms = grade(fw, needed, undef)
         ok = not mlibs and not msyms
-        worst = max(worst, 0 if ok else 1)
+        # Releases below the floor are graded and PRINTED but do not set the exit status. The five
+        # oldest (webOS 1.2.0 through 3.9.2) fail permanently and for reasons nobody intends to
+        # fix — they predate the C++11 std::string ABI, so StarfishMediaAPIs::Feed has a different
+        # mangling — so counting them would make this tool useless as a gate while hiding the
+        # regression it exists to catch.
+        counts = floor is None or relver(fw.release) >= floor
+        if counts and not ok:
+            worst = 1
         libs = ", ".join(mlibs) if mlibs else "-"
         if len(libs) > 51:
             libs = libs[:48] + "..."
-        print(f"{fw.release:<9} {'OK' if ok else 'FAIL':<8} {libs:<52} {len(msyms) or '-'}")
+        mark = "" if counts else "  (below --min-release; not gated)"
+        print(f"{fw.release:<9} {'OK' if ok else 'FAIL':<8} {libs:<52} {len(msyms) or '-'}{mark}")
 
     if args.release and len(fws) == 1:
         mlibs, msyms = grade(fws[0], needed, undef)
@@ -298,6 +307,12 @@ def main():
     ap.add_argument("binary", nargs="?", default=str(DEFAULT_BINARY))
     ap.add_argument("--db", help="an already-extracted compat-checker data directory")
     ap.add_argument("--release", action="append", help="grade only this release (repeatable)")
+    ap.add_argument(
+        "--min-release",
+        metavar="REL",
+        help="exit non-zero only for failures at or above this release (e.g. 4.4.2). "
+        "Everything is still graded and printed; this decides what counts as a regression.",
+    )
     ap.add_argument("--lib", help="dump one library's presence and symbols across releases")
     ap.add_argument("--grep", help="with --lib, filter symbols by this regex")
     ap.add_argument("--inventory", nargs="+", help="show which releases carry these library prefixes")

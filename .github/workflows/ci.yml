@@ -111,9 +111,13 @@ jobs:
       - name: webosbrew compatibility check
         # THE gate that matters for distribution: resolves the ELF's DT_NEEDED and symbols against
         # 14 real firmware databases — the exact check webosbrew/apps-repo runs on a submission PR,
-        # and the one thing the stub-.so link trick makes otherwise invisible. Fully offline (the
-        # fw-symbols package carries the databases). Scoped to webOS 4.x because libAcbAPI and the
-        # FFmpeg .so.57 family do not exist from 5.0 on — see docs/distribution.md §1.4.
+        # and the error class that is otherwise invisible until a television refuses to start the
+        # process. Fully offline (the fw-symbols package carries the databases).
+        #
+        # Scoped to the range the CATALOGUE advertises, which is deliberately narrower than the
+        # range the binary can load on. The app starts on 4.4.2 through 11.2.0 since the SONAMEs
+        # moved to runtime resolution, but playback above 4.10.0 has never been observed on
+        # hardware — so this stays at 4.x and the wider picture is reported below, not asserted.
         run: |
           set -euo pipefail
           TAG=v20260731-e1bb0c0
@@ -123,6 +127,30 @@ jobs:
           sudo apt-get install -y ./webosbrew-toolbox-*.deb
           webosbrew-ipk-verify --details --format markdown \
             --fw-releases '>=4.0, <5.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: firmware load matrix
+        # The same databases the step above just installed, read by our own tool, across ALL 14
+        # releases — and this one GATES. A one-line #[link] or a new FFI call is all it takes to
+        # put the binary back inside webOS 4.x, and that regression is invisible in every other
+        # check: it links fine, the tests pass, and the failure only appears as a television that
+        # will not start the process.
+        #
+        # --min-release 4.4.2 is the floor because the five oldest releases fail permanently and
+        # for reasons nobody intends to fix (they predate the C++11 std::string ABI, so
+        # StarfishMediaAPIs::Feed carries a different mangling). They are still printed.
+        #
+        # It grades whether the app STARTS. It says nothing about playback, which above 4.10.0 has
+        # never been observed on hardware — see docs/webos5-port.md §4.
+        run: |
+          set -euo pipefail
+          {
+            echo '### Firmware load matrix'
+            echo '_Does the process start and do all symbols resolve? Says nothing about playback._'
+            echo '```'
+            ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
+              --min-release 4.4.2 pkg/plxnative
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
