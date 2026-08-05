@@ -35,7 +35,8 @@ full one-time setup + troubleshooting.
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
-- `make` — build `pkg/plxnative` (the ARM binary). Also builds the FFmpeg/curl stub `.so` if stale.
+- `make` — build `pkg/plxnative` (the ARM binary). Also compiles `ci/ffabi-assert.c` against BOTH
+  vendored FFmpeg header trees (n3.3 and n4.0), which is what proves `ff.rs`'s two ABI tables.
 - `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
 - `make run` — close any running instance, wipe `/tmp/plxnative-events.log`, launch, keep alive
   `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
@@ -86,35 +87,66 @@ which the Makefile links against. Rust is a static lib built with plain `cargo +
 build-std --target arm-unknown-linux-gnueabi` (a staticlib needs no linker, so no external
 cross-linker — but `-Z build-std` + `-C target-cpu=cortex-a9` is load-bearing: the default
 ARMv6 codegen emits the CP15 barrier that SIGILLs on the A53; see the Makefile comment). Headers
-come from `include/` (the TV's SDL2 2.0.4-fork headers, kept ahead of the sysroot's newer copies
+come from `include/` (the TV's SDL2 2.0.x-fork headers, kept ahead of the sysroot's newer copies
 so we compile against the ABI the TV runs). The ipk needs **no `ar` at all** — `ci/mkipk.py` writes
 the archive itself; this line used to say the opposite ("uses the NDK's `ar` (GNU format; macOS BSD
 `ar` won't work)") and had it exactly backwards, see the ipk bullet below. The old `zig cc` path is
 gone.
 
-## The stub `.so` linking trick (now just FFmpeg + curl)
+## Linking: real libraries, and the ones resolved at RUNTIME
 
-Almost everything links against the **real sysroot libraries** (SDL2, SDL2_ttf, GLESv2,
-wayland-client, glib-2.0, luna-service2, and even LG's proprietary `libAcbAPI` / `libplayerAPIs`
-/ `libpf-1.0` — all bundled in the NDK), so the Starfish/ACB C++ calls get real link-time symbol
-checking. Only **two families remain hand-written stubs in `stub/`**, because the sysroot can't
-satisfy them: **FFmpeg** (`libavformat/avcodec/avutil` — absent from the sysroot) and **libcurl**
-(sysroot ships `libcurl.so.4`, but the TV wants `libcurl.so.5`).
+Most of the app links against the **real sysroot libraries** (SDL2, SDL2_ttf, GLESv2,
+wayland-client, glib-2.0, luna-service2, and LG's proprietary `libplayerAPIs` / `libpf-1.0` — all
+bundled in the NDK), so the Starfish C++ calls get real link-time symbol checking. Every one of
+those has the **same SONAME on every webOS release from 2.2.3 to 11.2.0**, which is what makes
+linking them normally the right call — check any of it with `tools/fwcompat.py --inventory`.
 
-Each stub is a `.c` file of empty symbol bodies, compiled `-fPIC -shared -nostdlib` with
-`-Wl,-soname,<the TV's real SONAME>` (e.g. `libavformat.so.57`). At link time it satisfies the
-symbols; **at runtime the TV's own real library (matching that SONAME via `DT_NEEDED`) is loaded
-instead.** So:
+**Three families are deliberately NOT linked**: FFmpeg (`libav*`, `libswscale`), `libcurl`, and
+`libAcbAPI`. Their SONAMEs move between releases — FFmpeg 55→57→58→59→60, curl `.so.5`→`.so.4`,
+and ACB is *deleted outright* at webOS 5.0 — and a `DT_NEEDED` entry is a hard requirement for one
+exact name, which cannot express "57 or 58". So they are **`dlopen`'d by SONAME candidate list**:
 
-- Adding a call to a new **FFmpeg/curl** function means **adding its symbol to the matching
-  `stub/*_stub.c`** or the link fails — only the *name* must match (empty `void foo(void){}`).
-- Adding a dependency on any **other** TV library that the **sysroot also has**: link it real
-  (add `-l<name>` to `LIBS_REAL`), don't write a stub. Only stub a lib the sysroot lacks or ships
-  with a different SONAME than the TV.
+- **`rust-modules/src/dynlib.rs`** is the one door. `dynlib!` takes a block shaped exactly like the
+  `extern "C"` block it replaces and emits same-named wrappers, so call sites don't change.
+  Loading is **all-or-nothing** — every symbol resolves or the table stays empty and the missing
+  names go to the event log. Read that module's doc before adding a library to it; the rule is
+  *only* when the version actually varies, because moving a library there trades link-time symbol
+  checking for version tolerance.
+- **`src/starfish.c`** resolves ACB and the webOS 5+ SDL exported-window API the same way, and
+  picks between them (`vp_mode()`). The two are complementary across all 14 firmwares.
+- Adding a new FFmpeg/curl call means **adding it to the `dynlib!` block**. There is no link error
+  to catch you any more — the failure is a logged `Incomplete` at boot and a refusal to demux.
+
+**This replaced the old stub-`.so` trick, and `stub/` is deleted.** Empty `.so` files carrying the
+TV's SONAMEs got the link to succeed, but in doing so pinned the binary to webOS 4.x: on anything
+newer the loader killed the process at `exec()`, before `main`, before the event log existed. That
+was the entire portability problem. Full account: **`docs/webos5-port.md`**.
+
 - The C++ `StarfishMediaAPIs` methods are still called from C via `extern … __asm__("<mangled
-  name>")` declarations (in `src/starfish.c`) — now resolved against the real `libplayerAPIs`.
+  name>")` declarations (in `src/starfish.c`), resolved against the real `libplayerAPIs`. All 15
+  are present unchanged from webOS 4.4.2 through 11.2.0.
 - The gitignored `sysroot/usr/lib/` (a few real TV `.so` files pulled off the device) is only for
   reference/inspection; the build uses the **NDK's** sysroot, not that directory.
+
+## Portability: grading the binary against 14 real firmwares, offline
+
+**`tools/fwcompat.py`** resolves the built ELF's `DT_NEEDED` and undefined symbols against
+webosbrew's firmware **inventories** — for 14 real LG images, every library, its `DT_NEEDED`, and
+its full exported-symbol list, keyed by webOS release. It runs on the dev Mac, offline, in under a
+second, and it reproduces `webosbrew-ipk-verify`'s verdict exactly. Run it after any change to
+linkage or FFI.
+
+```sh
+tools/fwcompat.py                       # the matrix: OK/FAIL per release
+tools/fwcompat.py --release 5.3.1       # one release, listing what is missing
+tools/fwcompat.py --inventory libAcbAPI libavformat libcurl
+tools/fwcompat.py --lib libSDL2-2.0.so.0 --grep webOS
+```
+
+**It grades whether the app STARTS, and nothing else.** A firmware can export every ACB entry point
+and still refuse to put a picture on the video plane. Today: OK on releases 4.4.2 through 11.2.0;
+playback is device-verified only on 4.10.0, and `docs/webos5-port.md` §4 is the list of what
+webOS 5+ still needs a human with a television to settle.
 
 ## Runtime architecture (big picture)
 
@@ -143,7 +175,7 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Key files
 
-- `Makefile` — build/deploy/run/ipk; toolchain, stub SONAME rules, TV ssh creds.
+- `Makefile` — build/deploy/run/ipk; toolchain, the dual FFmpeg-ABI gate, TV ssh creds.
 - `src/main.c` — the **boot shim** (crash tracer, event-log/stderr setup, process bring-up); calls
   the Rust `plex_run()`. `src/starfish.c` — the StarfishMediaAPIs C++/ACB seam. `src/svg.c` —
   nanosvg rasterizer. These three are the *entire* C side.
@@ -163,8 +195,10 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   Content-Length/close delimited, **no chunked decoding**, no DNS. `aq.rs` — one-producer/
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
-- `stub/*.c` + `stub/*.so` — link-time symbol stubs carrying the TV's real SONAMEs — now just
-  FFmpeg + curl (see above).
+- `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen` by SONAME candidate list) for
+  the three families whose SONAME moves between webOS releases: FFmpeg, curl, ACB. Replaced
+  `stub/`, which is deleted. `tools/fwcompat.py` grades the result; `docs/webos5-port.md` is the
+  full account.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.

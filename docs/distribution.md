@@ -241,6 +241,14 @@ forward-compatible by symbol versioning. SDL2 and SDL2_ttf ship on every firmwar
 from 4.10 through 11.2, and Kodi's current master still drives BUFFERSTREAM buffer-feed the same way
 we do.
 
+
+> **SUPERSEDED IN PART, 2026-08-05.** Sections 3.2 through 3.4 below were written when the port was
+> hypothetical. It is no longer: the app now starts on every release from 4.4.2 to 11.2.0, the
+> FFmpeg offsets are tabled per major and proven by the compiler, and ACB has a webOS 5 counterpart
+> in the tree. **`docs/webos5-port.md` is the current record** — including three corrections to what
+> is below (libcurl, 3.9.2, and the "highest-leverage fix" note, which has been done). What remains
+> true here is the *shape* of the problem and the effort estimates for webOS 10.2.0+.
+
 ### 3.2 What actually breaks
 
 | Seam | webOS 4.x | 5.0 / 6.x | 22–26 |
@@ -250,7 +258,7 @@ we do.
 | `libplayerAPIs` + BUFFERSTREAM | ✅ | ✅ | ✅ |
 | **`libAcbAPI.so.1`** | ✅ | ❌ **gone** | ❌ **gone** |
 | **FFmpeg SONAMEs** | 57/57/55/4 | 58 | 59 → 60 |
-| **`libcurl.so.5`** | ✅ | ✅ | ❌ → `.so.4` |
+| **`libcurl.so.5`** | ✅ | ✅ (compat alias) | ❌ → `.so.4` |
 
 Three mechanical breaks, one of which is architectural:
 
@@ -260,7 +268,9 @@ Three mechanical breaks, one of which is architectural:
    hard evidence that `libAcbAPI.so.1` is absent; the `wl_webos_foreign` replacement is
    developer-forum evidence, not LG documentation.)*
 2. **FFmpeg majors move**, which destroys hardcoded struct offsets — and ours are hardcoded to n3.3.
-3. **libcurl flips SONAME** at webOS 22.
+3. **libcurl flips SONAME** at webOS 22 — **corrected 2026-08-05: it flips at 7.4.0.** The file
+   becomes `libcurl.so.4.5.0` at 5.3.1, but LG kept a `libcurl.so.5` compat *alias* beside it on
+   5.3.1 and 6.4.0, so the name still resolves there and the real break is one release later.
 
 Net: today's binary **does not reach `main()`** on anything past webOS 4.x — 5 missing libraries on
 5/6, 6 on 22–26.
@@ -273,8 +283,11 @@ refinements the table understated:
 - **5.0 is not only an ACB break.** On 5.3.1 the missing set is `libAcbAPI.so.1` **plus all four
   FFmpeg SONAMEs** (57/57/55/4) — the major bump and the ACB removal land in the *same* release, so
   "port ACB to `wl_webos_foreign`" is not on its own enough to reach webOS 5.
-- **3.9.2 fails too** (`libAcbAPI.so.1` absent), so ACB's window is 4.x on both sides, not just the
-  top. The `>=4.0` half of the requirement is load-bearing.
+- **3.9.2 fails too**, so the supported window has a bottom as well as a top and the `>=4.0` half
+  of the requirement is load-bearing. ~~(`libAcbAPI.so.1` absent)~~ — **that reason was WRONG,
+  corrected 2026-08-05**: 3.9.2 *has* `libAcbAPI.so.1`. It fails on the FFmpeg SONAMEs (it ships
+  55/55/52/2, not 57/57/55/4) and on `StarfishMediaAPIs::Feed`, which carries a pre-C++11
+  `std::string` mangling there. Check either with `tools/fwcompat.py --release 3.9.2`.
 
 ### 3.3 The pinning inside our own code (`audit:portability`, file-cited)
 
@@ -301,9 +314,11 @@ refinements the table understated:
 - `sys_grab_wayland` hardcodes SDL version bytes 2/0/4 and never checks `subsystem`; a newer SDL
   silently returns a null surface and **video plays invisibly under an opaque UI plane**.
 
-**Highest-leverage fix, ~10 lines:** make `ff::boot()` compare the runtime
+~~**Highest-leverage fix, ~10 lines:** make `ff::boot()` compare the runtime
 `avformat_version()`/`avcodec_version()` against the offsets' provenance and **refuse to start**
-instead of corrupting memory. It already reads the data.
+instead of corrupting memory.~~ **DONE** — the refusal landed in `363548b`, and `4c3e237` went
+further: the majors now *select* one of two offset tables, each asserted at build time against
+real upstream headers. See `docs/webos5-port.md` §3.2.
 
 ### 3.4 Effort to reach newer webOS
 
