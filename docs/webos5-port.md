@@ -234,9 +234,19 @@ Ranked by how much damage a wrong assumption does.
 - **Codec capability is still asserted, not probed.** `profile_extra()` tells PMS "HEVC + 4K +
   10-bit" unconditionally because that is what the author's panel does. On a lower-end webOS 5 set
   that is wrong, and so is the transcode fallback, which also targets HEVC.
-- **Resolution is still a compile-time 1920×1080** in six places. `SDL_webOSGetPanelResolution`
-  exists on **both** eras, so this is fixable and testable on a webOS 4.x TV today — it does not
-  need webOS 5 hardware, and it is the obvious next piece of work.
+- **Resolution: do NOT use `SDL_webOSGetPanelResolution`.** It exists on both eras, which makes it
+  an inviting answer and the wrong one — it reports the **panel**, not your drawable. Measured on
+  the dev TV (a 4K set): `window=1920x1080 drawable=1920x1080 panel=3840x2160`. Sizing the UI from
+  the panel would render a 4K interface into a 1080p buffer.
+
+  The 1920×1080 authoring canvas is correct and stays. `surface.rs` now reads the real drawable and
+  `glViewport` follows it, with `u_screen` staying logical so the shaders' own divide does the
+  mapping — an unexpected surface therefore scales the interface rather than parking it in the
+  bottom-left corner. `scale()` is 1.0 on every device seen so far.
+
+  **Rendering at panel resolution would be the wrong trade even where offered.** 60 fps at 1080p on
+  this Mali part took real optimisation work; 3840×2160 is four times the pixels through the same
+  shaders, while the compositor's upscale is free and in hardware.
 
 ## 6. Emulators — no, and the reason is not a gap in the search
 

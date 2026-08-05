@@ -282,8 +282,16 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   differs by profile). The session file is a probed SEARCH ORDER for the same reason. Both
   failures were silent before: fonts fell through to DroidSans while `init_text` still logged
   `ok=1`, and the session write dropped ENOENT into a best-effort save. Both now log loudly.
-- Video track is always full-panel `1920x1080`; the UI is authored at a fixed `1920x1080`
-  (`SCR_W`/`SCR_H`), no DPI scaling (panel is 1:1 at 1080p).
+- **Three resolutions, and they are not the same number.** The UI is authored at a fixed logical
+  `1920x1080` (`SCR_W`/`SCR_H`) and the video track is full-panel `1920x1080`. The **drawable** —
+  what GL renders into — is read back at boot by `rust-modules/src/surface.rs` and is what
+  `glViewport` uses; it has been 1920x1080 on every device so far, so `surface::scale()` is 1.0 and
+  nothing scales. The **panel** is a third number entirely: `SDL_webOSGetPanelResolution` reports
+  `3840x2160` on the dev TV, whose UI surface is 1080p. It is a diagnostic — **never a layout
+  input**, since sizing the UI from it renders a 4K interface into a 1080p buffer. The boot log
+  prints all three on one `surface:` line. Do not render at panel resolution even if a set offers
+  it: 4x the fill rate through shaders that needed work to reach 60 fps at 1080p, versus a free
+  hardware upscale.
 
 ## Testing / verification (two tiers: a fast host unit suite, then the device)
 
