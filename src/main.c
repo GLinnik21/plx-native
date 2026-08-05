@@ -16,6 +16,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include <sys/resource.h>
+#include <fcntl.h>
 
 FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by the
                        * crash handler here and by the starfish.c seam. Opened "w" each
@@ -121,9 +122,27 @@ static void install_crash_tracer(void) {
 #endif
 }
 
+/* Open the event log TRUNCATED (fresh each launch, as `make run` and tests/run.py both assume)
+ * but in APPEND mode, so every write lands at end-of-file.
+ *
+ * Both halves matter, and it used to be `fopen(…, "w")`, which gets only the first. A "w" stream
+ * carries its own file offset, while Rust's `crate::log` opens the same path with O_APPEND — so
+ * the two writers do not see each other's output and the C side writes back over lines the Rust
+ * side has already appended. That is not theoretical: it ate the first two characters of the very
+ * first Rust log line at boot ("surface: …" arrived as "rface: …"), which is exactly the kind of
+ * corruption that makes a log untrustworthy at the moment you most need it — and it silently ate
+ * whole lines whenever the C side wrote more than Rust had.
+ *
+ * Mode 0600 because this file records the server name, the LAN address, Plex Home profile names
+ * and episode titles, and /tmp is world-readable. */
+static FILE *open_event_log(void) {
+    int fd = open("/tmp/plxnative-events.log", O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+    return fd >= 0 ? fdopen(fd, "a") : NULL;
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
-    elogf = fopen("/tmp/plxnative-events.log", "w");
+    elogf = open_event_log();
     clogf = fopen("/tmp/plxnative-crash.log", "a");     /* append: keep prior crashes across relaunches */
     freopen("/tmp/plxnative-stderr.log", "w", stderr); /* capture abort/assert text */
     install_crash_tracer();

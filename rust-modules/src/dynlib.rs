@@ -85,6 +85,17 @@ impl Handle {
         None
     }
 
+    /// A handle to the process's own global symbol scope (`RTLD_DEFAULT`), for asking "did the
+    /// library that actually loaded bring this entry point" about something already linked.
+    ///
+    /// This is how the webOS-version splits are detected without linking either side: SDL's
+    /// exported-window family exists only from webOS 5.0, `SDL_webOSGetPanelResolution` only from
+    /// 4.4.2, and naming either at link time would make the binary demand a symbol that older
+    /// televisions do not have.
+    pub fn self_handle() -> Handle {
+        Handle(std::ptr::null_mut()) // RTLD_DEFAULT
+    }
+
     pub fn sym(&self, name: &str) -> Option<*mut c_void> {
         let c = CString::new(name).ok()?;
         let p = unsafe {

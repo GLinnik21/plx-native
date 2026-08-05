@@ -123,21 +123,32 @@ const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 const GL_SCISSOR_TEST: c_uint = 0x0C11;
 
 /// Hard-clip subsequent draws to the UI-space rect (top-left origin, 1920×1080 authored coords).
-/// GL scissor is bottom-left window pixels, but the panel is 1:1 at 1080p (no DPI scale — see
-/// CLAUDE.md), so the only transform is the Y flip. Pair with [`clip_clear`]. Scrolling lists use
-/// this so a partial row is cut cleanly at the frame edge instead of poking over the video / buttons
-/// (`Painter` otherwise has no clip). Rect is clamped to the framebuffer so a negative edge can't
-/// underflow the unsigned scissor box.
+/// Pair with [`clip_clear`]. Scrolling lists use this so a partial row is cut cleanly at the frame
+/// edge instead of poking over the video / buttons (`Painter` otherwise has no clip). Rect is
+/// clamped to the canvas so a negative edge can't underflow the unsigned scissor box.
+///
+/// **This is the one drawing call that is NOT in logical coordinates.** Everything else reaches GL
+/// through `u_screen`, which the shaders divide by — so the viewport transform scales the whole
+/// authored canvas to whatever the drawable is, for free. `glScissor` bypasses all of that: it
+/// takes bottom-left *window pixels*. So it needs both the Y flip and the logical→physical scale,
+/// which is 1.0 on every television seen so far (`surface::scale`) and would otherwise clip the
+/// wrong band of the screen.
 pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     let x0 = x.max(0.0);
     let y_top = y.max(0.0);
     let x1 = (x + w).min(SCR_W);
     let y1 = (y + h).min(SCR_H);
     let (wi, hi) = ((x1 - x0).max(0.0), (y1 - y_top).max(0.0));
+    let s = crate::surface::scale();
     unsafe {
         glEnable(GL_SCISSOR_TEST);
         // GL y is bottom-up: the box's bottom in GL space is SCR_H - (top + height)
-        glScissor(x0 as c_int, (SCR_H - (y_top + hi)) as c_int, wi as c_int, hi as c_int);
+        glScissor(
+            (x0 * s) as c_int,
+            ((SCR_H - (y_top + hi)) * s) as c_int,
+            (wi * s) as c_int,
+            (hi * s) as c_int,
+        );
     }
 }
 /// Remove the scissor clip set by [`clip_set`].

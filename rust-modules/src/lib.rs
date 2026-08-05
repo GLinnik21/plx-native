@@ -30,6 +30,7 @@ mod posters;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod stream;
+mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app

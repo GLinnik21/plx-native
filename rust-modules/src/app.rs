@@ -337,6 +337,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log("GL ctx failed");
             return 1;
         }
+        crate::surface::probe(win);
         // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so the
         // FPS counter reports the TRUE GPU render rate (a diagnostic: if fps then jumps well past the
         // vsynced number, we were panel/refresh-bound, not GPU-bound).
@@ -3448,7 +3449,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
             let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) = (fd_pc_pump, fd_pc_pump, fd_pc_pump);
             if present {
-                glViewport(0, 0, SCR_W, SCR_H);
+                // The DRAWABLE, not the authored canvas. The shaders divide every coordinate by
+                // `u_screen` (which stays 1920x1080), so this one call is what maps the authored
+                // canvas onto whatever surface webOS actually gave us — at 1:1 on every television
+                // seen so far, and scaled rather than stuffed into the bottom-left corner if a
+                // newer compositor ever grants a different size. See `surface`.
+                let (dw, dh) = crate::surface::drawable();
+                glViewport(0, 0, dw, dh);
                 // EVERY screen draws inside ONE panic barrier. `plex_run` is `extern "C"` (main.c calls
                 // it), so a panic unwinding out of a screen's draw is UB the toolchain turns into
                 // abort() — the app dies and a live Starfish session is torn down mid-Feed(), on a
