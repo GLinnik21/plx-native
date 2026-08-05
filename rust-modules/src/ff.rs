@@ -175,15 +175,34 @@ pub struct AVSubtitleRect {
     pub flags: c_int,              // +128
 }
 
-// ---- externs ----
-// The four `#[link]` directives are gated out of `cfg(test)` so the crate's pure logic stays
-// host-testable: the dev machine has no libavformat to link against, and these are the only
-// hard link directives in the crate (SDL/GLES/curl are resolved by the Makefile's final link,
-// so unreferenced externs are dead-stripped instead). A test that actually CALLS into
-// FFmpeg or GL will fail to link — that is the intended boundary, not a bug.
-#[cfg_attr(not(test), link(name = "avformat"))]
-extern "C" {
+// ---- externs, bound at RUNTIME by SONAME candidate list (see `dynlib`) ----
+//
+// These were four `#[link]` directives, which put `libavformat.so.57` and its three siblings in
+// DT_NEEDED. That is fatal on any firmware that moved the major: webOS 5.3.1 ships 58/58/56/5,
+// 10.2.0 ships 59/59/57/6, 11.2.0 ships 60/60/58/7 — and a missing DT_NEEDED kills the process at
+// exec(), before main, before this log file is even open. DT_NEEDED also cannot say "57 OR 58", so
+// one binary spanning both eras has to do the resolution itself.
+//
+// The candidate lists reach past the majors this table describes ON PURPOSE. Opening a
+// libavformat 59 does not make the offsets below correct — `boot()` still refuses it — but the
+// difference between refusing and never starting is the difference between a UI that browses your
+// library and says it cannot play, and a television where nothing happens at all.
+//
+// Two consequences worth knowing. The `cfg(test)` gate is gone: with no link directive the host
+// suite links unconditionally, and a test that calls into FFmpeg now fails by taking `dlopen`'s
+// None branch on Darwin instead of by failing to link. And `av_register_all` is the one symbol
+// that ever disappears (deleted in libavformat 59), so on 10.2.0+ the load reports Incomplete and
+// names it — which is a correct refusal, not a bug to work around, until someone with that
+// hardware makes the call optional.
+crate::dynlib! {
+    avformat: ["libavformat.so.57", "libavformat.so.58", "libavformat.so.59", "libavformat.so.60"] {
     fn av_register_all();
+    // Declared beside libavformat's other entry points because that is the library that DEFINES
+    // it. Under `#[link]` the final link resolved every name against every library at once and
+    // the grouping was cosmetic; `dlsym` searches one handle and its dependency chain, and
+    // libavutil does not depend on libavformat — so leaving this in the avutil block reported the
+    // whole avutil table as Incomplete on every device, including working ones.
+    fn avformat_version() -> c_uint;
     fn avformat_network_init() -> c_int;
     fn avformat_alloc_context() -> *mut AVFormatContext;
     fn avformat_open_input(
@@ -225,9 +244,9 @@ extern "C" {
     fn av_write_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
     fn avio_flush(s: *mut AVIOContext);
     fn avformat_free_context(s: *mut AVFormatContext);
-}
-#[cfg_attr(not(test), link(name = "avcodec"))]
-extern "C" {
+}}
+crate::dynlib! {
+    avcodec: ["libavcodec.so.57", "libavcodec.so.58", "libavcodec.so.59", "libavcodec.so.60"] {
     fn avcodec_version() -> c_uint;
     fn av_packet_alloc() -> *mut AVPacket;
     fn av_packet_free(pkt: *mut *mut AVPacket);
@@ -267,11 +286,13 @@ extern "C" {
     fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
-}
-#[cfg_attr(not(test), link(name = "avutil"))]
-extern "C" {
+}}
+crate::dynlib! {
+    // avformat_version lives in libavformat, not libavutil — but it was declared here and the
+    // loader resolves by symbol, not by header, so it must move to the library that defines it or
+    // the whole avutil table reports Incomplete on every device.
+    avutil: ["libavutil.so.55", "libavutil.so.56", "libavutil.so.57", "libavutil.so.58"] {
     fn avutil_version() -> c_uint;
-    fn avformat_version() -> c_uint;
     fn av_malloc(size: usize) -> *mut c_void;
     fn av_freep(ptr: *mut c_void);
     fn av_rescale_q(a: i64, bq: AVRational, cq: AVRational) -> i64;
@@ -282,9 +303,9 @@ extern "C" {
     fn av_frame_make_writable(frame: *mut c_void) -> c_int;
     fn av_opt_set(obj: *mut c_void, name: *const c_char, val: *const c_char, search_flags: c_int) -> c_int;
     fn av_get_pix_fmt(name: *const c_char) -> c_int;
-}
-#[cfg_attr(not(test), link(name = "swscale"))]
-extern "C" {
+}}
+crate::dynlib! {
+    swscale: ["libswscale.so.4", "libswscale.so.5", "libswscale.so.6", "libswscale.so.7"] {
     fn sws_getContext(
         src_w: c_int, src_h: c_int, src_fmt: c_int,
         dst_w: c_int, dst_h: c_int, dst_fmt: c_int,
@@ -297,7 +318,7 @@ extern "C" {
         dst: *const *mut u8, dst_stride: *const c_int,
     ) -> c_int;
     fn sws_freeContext(c: *mut c_void);
-}
+}}
 
 // ---- constants (n3.3) ----
 pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
@@ -944,8 +965,42 @@ fn ver(v: c_uint) -> String {
     format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff)
 }
 
+/// Resolve the four FFmpeg libraries by SONAME candidate list. `false` means this device has no
+/// FFmpeg we can use, and NOTHING in this module may be called — not even `avformat_version`.
+///
+/// Kept separate from the version check that follows it because the two failures are different
+/// facts about the television and deserve different log lines: "there is no libavformat here at
+/// all" versus "there is one and it is the wrong major".
+fn load_libraries() -> bool {
+    let mut ok = true;
+    for (what, verdict) in [
+        ("avformat", avformat::load()),
+        ("avcodec", avcodec::load()),
+        ("avutil", avutil::load()),
+        ("swscale", swscale::load()),
+    ] {
+        match verdict {
+            crate::dynlib::Loaded::Ok(soname) => crate::log(&format!("ff: bound {what} -> {soname}")),
+            crate::dynlib::Loaded::NoLibrary => {
+                ok = false;
+                crate::log(&format!("ff: no {what} on this device (tried the 4 known majors)"));
+            }
+            crate::dynlib::Loaded::Incomplete(soname, n) => {
+                ok = false;
+                crate::log(&format!("ff: {soname} is missing {n} symbol(s) we need — named above"));
+            }
+        }
+    }
+    ok
+}
+
 /// Boot smoke test + optional ABI probe. Called once at startup.
 pub(crate) fn boot() {
+    if !load_libraries() {
+        ABI_OK.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::log("ff: FFmpeg unavailable — the app runs, playback will refuse");
+        return;
+    }
     unsafe {
         let (fmt, cod, utl) = (avformat_version(), avcodec_version(), avutil_version());
         crate::player::log(&format!(

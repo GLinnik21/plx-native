@@ -354,7 +354,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         crate::gfx::init_gl();
         crate::text::init_text();
         crate::gfx::init_image();
-        crate::net::global_init(); // one-time libcurl init (main thread) before any threaded HTTPS call
+        // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
+        // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
+        // still runs, and `net::global_init` has already said so in the event log.
+        let _ = crate::net::global_init();
 
         // NO token is compiled into this binary. PMS access comes from the signed-in session,
         // or — for automated runs only (the regression harness, headless captures) — from the
