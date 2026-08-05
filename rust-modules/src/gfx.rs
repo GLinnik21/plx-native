@@ -139,13 +139,17 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     let x1 = (x + w).min(SCR_W);
     let y1 = (y + h).min(SCR_H);
     let (wi, hi) = ((x1 - x0).max(0.0), (y1 - y_top).max(0.0));
+    // The same uniform scale and centring offset `glViewport` was given, because the scissor box
+    // has to land on the same pixels the viewport maps to. Deriving both from `surface` rather
+    // than duplicating the arithmetic is what keeps them in step.
     let s = crate::surface::scale();
+    let (vx, vy, _, _) = crate::surface::viewport();
     unsafe {
         glEnable(GL_SCISSOR_TEST);
         // GL y is bottom-up: the box's bottom in GL space is SCR_H - (top + height)
         glScissor(
-            (x0 * s) as c_int,
-            ((SCR_H - (y_top + hi)) * s) as c_int,
+            vx + (x0 * s) as c_int,
+            vy + ((SCR_H - (y_top + hi)) * s) as c_int,
             (wi * s) as c_int,
             (hi * s) as c_int,
         );

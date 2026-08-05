@@ -48,9 +48,19 @@ pub(crate) fn drawable() -> (i32, i32) {
     (DRAWABLE_W.load(Ordering::Relaxed), DRAWABLE_H.load(Ordering::Relaxed))
 }
 
-/// Logical -> physical scale. **1.0 on every device this has ever run on**, and the fast path
-/// stays exactly that: `scale() == 1.0` means every drawn coordinate is already a pixel and the
-/// crispness contract holds unchanged.
+/// **Uniform** logical -> physical scale: `min(dw/1920, dh/1080)`.
+///
+/// 1.0 on every device this has ever run on, and the fast path stays exactly that — `scale() == 1.0`
+/// means every drawn coordinate is already a pixel and the crispness contract holds unchanged.
+///
+/// It is `min`, not `dw/1920`, because the alternative is a stretched interface. Stretching to fill
+/// only looks harmless while every drawable is 16:9 — which is true of televisions, and is exactly
+/// the assumption this module exists to stop making. A non-16:9 surface (signage, or a compositor
+/// that applied `appRotation`) would give circles as ellipses and, worse, would silently disagree
+/// with `glScissor`, which has one scale factor to work with and would clip the wrong band.
+///
+/// Uniform scaling plus [`viewport`]'s centring means the canvas letterboxes instead. The bars are
+/// empty, which is honest; a distorted UI is not.
 ///
 /// Why this is not used to render a 4K interface, even where one would be offered: fill rate. The
 /// UI took real work to reach 60 fps at 1080p on this Mali part (the SDF fast path, the backdrop
@@ -59,7 +69,49 @@ pub(crate) fn drawable() -> (i32, i32) {
 /// sharper interface at 20 fps is not a better interface.
 #[inline]
 pub(crate) fn scale() -> f32 {
-    DRAWABLE_W.load(Ordering::Relaxed) as f32 / LOGICAL_W
+    let (dw, dh) = drawable();
+    (dw as f32 / LOGICAL_W).min(dh as f32 / LOGICAL_H)
+}
+
+/// The `glViewport` rect: the logical canvas scaled uniformly and **centred** in the drawable.
+///
+/// Returns `(x, y, w, h)` in physical pixels. On a 1:1 surface this is `(0, 0, 1920, 1080)` and on
+/// a 16:9 surface of any size the offsets are zero — so on every television, letterboxing costs
+/// nothing and this is a plain scale. The shaders divide by `u_screen`, which stays logical, so
+/// this rect is the entire logical->physical mapping; nothing else in the renderer knows the
+/// drawable size at all.
+#[inline]
+pub(crate) fn viewport() -> (i32, i32, i32, i32) {
+    let (dw, dh) = drawable();
+    let s = scale();
+    let (w, h) = ((LOGICAL_W * s).round() as i32, (LOGICAL_H * s).round() as i32);
+    ((dw - w) / 2, (dh - h) / 2, w, h)
+}
+
+/// Physical window pixels -> the authored 1920x1080 canvas: the exact inverse of [`viewport`].
+///
+/// SDL reports pointer positions in window pixels, and the UI compares them against layout
+/// constants in logical units. Those are the same numbers only while the scale is 1.0 — which it
+/// is on every television seen so far, and which is precisely the assumption worth not making
+/// twice. Without this, a scaled surface would draw the interface correctly and put every touch
+/// and Magic-Remote click in the wrong place, which reads as "the pointer is broken" rather than
+/// as a resolution problem.
+#[inline]
+pub(crate) fn to_logical(px: f32, py: f32) -> (f32, f32) {
+    let s = scale();
+    let (vx, vy, _, _) = viewport();
+    ((px - vx as f32) / s, (py - vy as f32) / s)
+}
+
+/// The authored canvas -> physical window pixels. The inverse of [`to_logical`], for the one
+/// direction that runs the other way: `remote_synth_ptr` builds SDL events in authored coords and
+/// pushes them onto SDL's own queue, where the ordinary handler picks them up and converts them
+/// back. Without this the synthetic path would be transformed once too often on a scaled surface.
+#[inline]
+pub(crate) fn to_physical(lx: f32, ly: f32) -> (f32, f32) {
+    let s = scale();
+    let (vx, vy, _, _) = viewport();
+    (lx * s + vx as f32, ly * s + vy as f32)
 }
 
 /// Read back what we were actually given, once, after the GL context exists.
@@ -100,6 +152,100 @@ pub(crate) fn probe(win: *mut c_void) {
                 LOGICAL_W as i32, LOGICAL_H as i32, scale()
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `DRAWABLE_*` is a crate global, so these serialize. Every case here is unreachable on the
+    /// only hardware anyone involved owns — which is the entire reason they exist: this is
+    /// resolution-independence arithmetic for surfaces nobody can hold.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_drawable<T>(w: i32, h: i32, f: impl FnOnce() -> T) -> T {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        DRAWABLE_W.store(w, Ordering::Relaxed);
+        DRAWABLE_H.store(h, Ordering::Relaxed);
+        let r = f();
+        DRAWABLE_W.store(LOGICAL_W as i32, Ordering::Relaxed);
+        DRAWABLE_H.store(LOGICAL_H as i32, Ordering::Relaxed);
+        r
+    }
+
+    /// The path every real television takes. Must be bit-for-bit the old hardcoded behaviour:
+    /// full-surface viewport, unit scale, pointer coords passed straight through.
+    #[test]
+    fn a_1080p_surface_is_the_identity() {
+        with_drawable(1920, 1080, || {
+            assert_eq!(viewport(), (0, 0, 1920, 1080));
+            assert_eq!(scale(), 1.0);
+            assert_eq!(to_logical(960.0, 540.0), (960.0, 540.0));
+            assert_eq!(to_physical(960.0, 540.0), (960.0, 540.0));
+        });
+    }
+
+    /// 16:9 at any size is a plain proportional scale with NO letterbox — 4K is exactly 2x and
+    /// 8K exactly 4x. This is the answer to "would a 4K canvas scale proportionately": yes, and
+    /// by an integer, which is also the best case for the glyph raster.
+    #[test]
+    fn sixteen_by_nine_scales_uniformly_with_no_bars() {
+        for (w, h, s) in [(3840, 2160, 2.0), (7680, 4320, 4.0), (2560, 1440, 4.0 / 3.0)] {
+            with_drawable(w, h, || {
+                assert_eq!(scale(), s, "scale at {w}x{h}");
+                assert_eq!(viewport(), (0, 0, w, h), "viewport at {w}x{h}");
+                // The canvas centre maps to the surface centre, at every size.
+                let (px, py) = to_physical(960.0, 540.0);
+                assert!((px - w as f32 / 2.0).abs() < 0.5 && (py - h as f32 / 2.0).abs() < 0.5);
+            });
+        }
+    }
+
+    /// A non-16:9 surface LETTERBOXES rather than stretching. Stretching is what a naive
+    /// `dw/1920` scale would do, and it would also silently disagree with `glScissor`, which has
+    /// one factor to work with.
+    #[test]
+    fn an_odd_aspect_letterboxes_instead_of_distorting() {
+        // Wider than 16:9 -> pillarboxed: height binds, bars left and right.
+        with_drawable(2560, 1080, || {
+            assert_eq!(scale(), 1.0);
+            assert_eq!(viewport(), (320, 0, 1920, 1080));
+        });
+        // Taller than 16:9 -> letterboxed: width binds, bars top and bottom.
+        with_drawable(1920, 1440, || {
+            assert_eq!(scale(), 1.0);
+            assert_eq!(viewport(), (0, 180, 1920, 1080));
+        });
+    }
+
+    /// The two pointer transforms must compose to the identity, letterbox offset included —
+    /// otherwise the interface draws correctly and every click lands somewhere else.
+    #[test]
+    fn pointer_transforms_round_trip() {
+        for (w, h) in [(1920, 1080), (3840, 2160), (7680, 4320), (2560, 1080), (1440, 1080)] {
+            with_drawable(w, h, || {
+                for (lx, ly) in [(0.0, 0.0), (960.0, 540.0), (1919.0, 1079.0), (137.0, 42.0)] {
+                    let (px, py) = to_physical(lx, ly);
+                    let (bx, by) = to_logical(px, py);
+                    assert!((bx - lx).abs() < 0.01 && (by - ly).abs() < 0.01, "{lx},{ly} at {w}x{h}");
+                }
+            });
+        }
+    }
+
+    /// A click at the canvas corners must land inside the drawn area on a letterboxed surface —
+    /// i.e. inside the viewport rect, never in a bar.
+    #[test]
+    fn canvas_corners_map_inside_the_viewport() {
+        with_drawable(2560, 1080, || {
+            let (vx, vy, vw, vh) = viewport();
+            for (lx, ly) in [(0.0, 0.0), (1920.0, 1080.0)] {
+                let (px, py) = to_physical(lx, ly);
+                assert!(px >= vx as f32 && px <= (vx + vw) as f32, "x {px} outside {vx}..{}", vx + vw);
+                assert!(py >= vy as f32 && py <= (vy + vh) as f32, "y {py} outside {vy}..{}", vy + vh);
+            }
+        });
     }
 }
 
