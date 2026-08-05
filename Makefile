@@ -211,14 +211,26 @@ src/%.o: src/%.c $(wildcard src/*.h) Makefile
 # failure mode on a project whose only verification is observing the device.
 # The FFmpeg ABI gate. ff.rs reads the TV's FFmpeg structs at offsets that were originally derived
 # BY HAND from stripped device binaries — correct, but unprovable by the build until now.
-# ci/ffabi-assert.c re-derives every one with offsetof against the real n3.3 public headers
-# (vendor/ffmpeg-3.3-headers), so a slip is a compile error naming the field instead of a wild
-# pointer on a television. Compiled, never linked — it contains only _Static_asserts.
-# It is a prerequisite of the staticlib, so no binary is produced if the table is wrong.
+# ci/ffabi-assert.c re-derives every one with offsetof against the real public headers, so a slip
+# is a compile error naming the field instead of a wild pointer on a television. Compiled, never
+# linked — it contains only _Static_asserts. It is a prerequisite of the staticlib, so no binary
+# is produced if a table is wrong.
+#
+# COMPILED ONCE PER SUPPORTED MAJOR, because ff.rs now carries one offset table per major (`Abi`)
+# and an unproven table is exactly as dangerous as the hand-derived ones were. The assert file's
+# expectations are selected by the headers' own version macros, so each pass proves its own table:
+#   n3.3 headers -> libavformat 57 -> ABI_N33 -> webOS 2.2.3 .. 4.10.0
+#   n4.0 headers -> libavformat 58 -> ABI_N4X -> webOS 5.3.1 .. 9.2.0
+# n4.0 stands in for the whole of major 58: 5.3.1/6.4.0 ship 58.12 (= n4.0), 7.4.0/8.3.0 ship
+# 58.29 (= n4.2) and 9.2.0 ships 58.76 (= n4.4), and every constant in the table is identical
+# across all three. Only three sizes move within the major — sizeof(AVStream) is 688/704/424 —
+# and none of them is in the table, because the app allocates none of those structs.
 FFABI_STAMP = pkg/.ffabi-ok
-$(FFABI_STAMP): ci/ffabi-assert.c $(wildcard vendor/ffmpeg-3.3-headers/*/*.h) Makefile
+FFABI_HEADERS = $(wildcard vendor/ffmpeg-3.3-headers/*/*.h) $(wildcard vendor/ffmpeg-4.0-headers/*/*.h)
+$(FFABI_STAMP): ci/ffabi-assert.c $(FFABI_HEADERS) Makefile
 	@mkdir -p pkg
 	$(CC) $(CFLAGS) -I vendor/ffmpeg-3.3-headers -std=c11 -c ci/ffabi-assert.c -o /dev/null
+	$(CC) $(CFLAGS) -I vendor/ffmpeg-4.0-headers -std=c11 -c ci/ffabi-assert.c -o /dev/null
 	@touch $@
 
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
