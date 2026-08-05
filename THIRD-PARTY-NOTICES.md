@@ -51,7 +51,14 @@ Two disclosures, so this claim is not overstated:
 - The application reads a small number of FFmpeg struct fields at byte offsets fixed for the ABI
   denoted by the SONAMEs above (`libavformat.so.57` / `libavcodec.so.57`). Replacements that are
   interface-compatible with those SONAMEs work; a rebuild that changes struct layout without
-  bumping the SONAME would not.
+  bumping the SONAME would not. The app refuses to demux at all if the runtime majors are not the
+  ones it was built for.
+- **FFmpeg's own public HEADERS are redistributed in this repository**, under
+  `vendor/ffmpeg-3.3-headers/` — 24 files taken unmodified from the FFmpeg n3.3 release. They are
+  build-time only: `ci/ffabi-assert.c` compiles `offsetof` against them to prove the offsets above
+  are the real n3.3 layout, and nothing from them reaches the shipped package. They are LGPL-2.1
+  like the libraries they describe, the licence text already travels with this file, and their
+  presence does not change the dynamic-linking analysis above — no FFmpeg code is compiled in.
 - Small fragments of glibc's own startup and compatibility code **are** statically linked into
   `plxnative` by the toolchain (`crt1.o` and objects from `libc_nonshared.a` — this is why the
   binary defines `_start`, `__libc_csu_init`, `__libc_csu_fini`, `fstat64`, `lstat64`,

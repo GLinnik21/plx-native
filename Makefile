@@ -201,8 +201,20 @@ src/%.o: src/%.c $(wildcard src/*.h) Makefile
 # assets/icons/*.svg) at COMPILE time. Those were in no dependency list, so editing a shader
 # or an icon produced no rebuild and the TV silently kept running the old one — the worst
 # failure mode on a project whose only verification is observing the device.
+# The FFmpeg ABI gate. ff.rs reads the TV's FFmpeg structs at offsets that were originally derived
+# BY HAND from stripped device binaries — correct, but unprovable by the build until now.
+# ci/ffabi-assert.c re-derives every one with offsetof against the real n3.3 public headers
+# (vendor/ffmpeg-3.3-headers), so a slip is a compile error naming the field instead of a wild
+# pointer on a television. Compiled, never linked — it contains only _Static_asserts.
+# It is a prerequisite of the staticlib, so no binary is produced if the table is wrong.
+FFABI_STAMP = pkg/.ffabi-ok
+$(FFABI_STAMP): ci/ffabi-assert.c $(wildcard vendor/ffmpeg-3.3-headers/*/*.h) Makefile
+	@mkdir -p pkg
+	$(CC) $(CFLAGS) -I vendor/ffmpeg-3.3-headers -std=c11 -c ci/ffabi-assert.c -o /dev/null
+	@touch $@
+
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
-$(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/.cargo/config.toml Makefile
+$(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
 	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)

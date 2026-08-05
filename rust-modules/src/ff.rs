@@ -23,6 +23,10 @@ use std::sync::Once;
 /// Feed audio (es=2) to the pipeline. Cleared by the /tmp/plxnative-noaudio dev trigger to
 /// A/B whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
 static FEED_AUDIO: AtomicBool = AtomicBool::new(true);
+/// Does the FFmpeg on this device have the ABI these offsets were written for? Set once by
+/// [`boot`]; read by [`demux`]. Starts FALSE so the gate is closed until boot has actually looked
+/// — a demux that somehow ran first should refuse, not assume.
+static ABI_OK: AtomicBool = AtomicBool::new(false);
 pub(crate) fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
 }
@@ -165,7 +169,7 @@ pub struct AVSubtitleRect {
     pub pict_linesize: [c_int; 8], // +52  (AVPicture.linesize — deprecated)
     pub data: [*mut u8; 4],        // +84  data[0]=PAL8 indices, data[1]=palette (256×BGRA)
     pub linesize: [c_int; 4],      // +100
-    pub type_: c_int,              // +116 (enum AVSubtitleType: 0=BITMAP, 1=TEXT, 2=ASS)
+    pub type_: c_int,              // +116 (enum AVSubtitleType: 0=NONE, 1=BITMAP, 2=TEXT, 3=ASS)
     pub text: *mut c_char,         // +120
     pub ass: *mut c_char,          // +124
     pub flags: c_int,              // +128
@@ -387,7 +391,12 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
 // {1,30} regardless of the actual (jittery, <=30fps) capture cadence; jsmpeg in
 // streaming mode ignores timestamps and decodes as data arrives.
 
-// AVCodecContext (n3.3, 32-bit ARM) — width/height/pix_fmt have no AVOption.
+// AVCodecContext (n3.3, 32-bit ARM). These three are POKED rather than set through AVOptions,
+// and the note that used to sit here — "width/height/pix_fmt have no AVOption" — was wrong.
+// `video_size` (an IMAGE_SIZE option writing width AND height) and `pixel_format` are both in
+// libavcodec's own option table at these very offsets, verified against the DEVICE's binary and
+// present identically in 4.x. Venc::open now sets them by name; these constants remain only
+// because the venc self-check reads them back.
 const OFF_CTX_WIDTH: usize = 124;
 const OFF_CTX_HEIGHT: usize = 128;
 const OFF_CTX_PIX_FMT: usize = 144;
@@ -510,9 +519,6 @@ impl Venc {
                 t_n: 0,
                 t_last_log: std::time::Instant::now(),
             });
-            poke_i32(ctx as *mut c_void, OFF_CTX_WIDTH, w);
-            poke_i32(ctx as *mut c_void, OFF_CTX_HEIGHT, h);
-            poke_i32(ctx as *mut c_void, OFF_CTX_PIX_FMT, fmt_yuv);
             // {1,30} is in MPEG1's fixed frame-rate table; a non-table rate hard-fails open2.
             // maxrate+bufsize MUST be set together (one alone errors) and bufsize (in BITS)
             // must be >= bit_rate/fps; b/7 with maxrate 1.4x caps I-frame transit spikes on
@@ -521,6 +527,14 @@ impl Venc {
                 let c = std::ffi::CString::new(val).unwrap();
                 av_opt_set(ctx as *mut c_void, name.as_ptr() as *const c_char, c.as_ptr(), 0)
             };
+            // width/height/pix_fmt BY NAME, not by poking OFF_CTX_*. `video_size` is an
+            // IMAGE_SIZE option that writes width and height together, and both it and
+            // `pixel_format` live in libavcodec's own option table — confirmed against the
+            // device's binary AND present unchanged in 4.x, so unlike a byte offset these three
+            // survive an FFmpeg major. The comment that used to justify the pokes claimed no
+            // AVOption existed for them; it was simply wrong.
+            set(b"video_size\0", format!("{w}x{h}"));
+            set(b"pixel_format\0", "yuv420p".into());
             set(b"time_base\0", "1/30".into());
             set(b"b\0", bitrate_bps.to_string());
             set(b"maxrate\0", (bitrate_bps * 7 / 5).to_string());
@@ -933,12 +947,30 @@ fn ver(v: c_uint) -> String {
 /// Boot smoke test + optional ABI probe. Called once at startup.
 pub(crate) fn boot() {
     unsafe {
+        let (fmt, cod, utl) = (avformat_version(), avcodec_version(), avutil_version());
         crate::player::log(&format!(
             "ff: avformat={} avcodec={} avutil={}",
-            ver(avformat_version()),
-            ver(avcodec_version()),
-            ver(avutil_version())
+            ver(fmt),
+            ver(cod),
+            ver(utl)
         ));
+        // THE MAJORS ARE THE ABI. Everything below reads FFmpeg structs at offsets fixed to the
+        // n3.3 layout that webOS 4.x ships (libavformat 57 / libavcodec 57 / libavutil 55), and
+        // FFmpeg only guarantees layout within a major — minors may APPEND, majors reorder.
+        //
+        // This used to log the versions and gate nothing, which is worse than not reading them:
+        // on a webOS 5 set (libavformat 58) `sizeof(AVStream)` is 688 while OFF_STREAM_CODECPAR
+        // is 708, so the demuxer would read 20 bytes PAST the struct and dereference whatever it
+        // found as an `AVCodecParameters *` — on a device with no debugger. Refusing is the only
+        // safe answer, because a wrong offset does not fail, it succeeds with garbage.
+        let bad = (fmt >> 16, cod >> 16, utl >> 16) != (57, 57, 55);
+        ABI_OK.store(!bad, std::sync::atomic::Ordering::Relaxed);
+        if bad {
+            crate::player::log(
+                "ff: UNSUPPORTED FFmpeg majors (need avformat 57 / avcodec 57 / avutil 55) \
+                 — the struct offsets this demuxer uses are n3.3-only; refusing to demux",
+            );
+        }
     }
     // Phase A dev trigger: /tmp/plxnative-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
@@ -1390,6 +1422,15 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
 }
 
 pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+    // Refuse rather than read a struct whose shape we do not know (see `boot`). EOF must still be
+    // set on both lanes or `pump` waits forever on a queue nothing will ever fill — the same
+    // contract the panic barrier below exists to keep.
+    if !ABI_OK.load(Ordering::Relaxed) {
+        crate::player::log("demux: refusing — FFmpeg ABI on this device is not the one built for");
+        crate::aq::aq_set_eof(aq.0);
+        crate::aq::aq_set_eof(aqa.0);
+        return;
+    }
     DIAG_FIRST.store(true, Ordering::Relaxed);
     ensure_registered();
     let aq_p = aq.0; // VIDEO lane (also the AVIO abort ptr + EOF marker)
