@@ -65,7 +65,7 @@ echo "== DT_NEEDED =="
 # The expectation file is regenerated in C collation to match.
 "$READELF" -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | LC_ALL=C sort > /tmp/dt-needed.actual
 if ! diff -u ci/expected-dt-needed.txt /tmp/dt-needed.actual; then
-  fail "DT_NEEDED drifted. If intended, check the new library exists on webOS 4.x, then update ci/expected-dt-needed.txt"
+  fail "DT_NEEDED drifted. If intended, confirm with tools/fwcompat.py that it exists on every supported release, then update ci/expected-dt-needed.txt"
 fi
 ok "$(wc -l < /tmp/dt-needed.actual | tr -d ' ') entries, unchanged"
 

@@ -159,6 +159,13 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)
 # leave the release binary in place under a plain `make`. The stamp's CONTENT is the flag set,
 # so switching configuration is a real prerequisite change.
 RUST_STAMP     = pkg/.build-config
+# The bundled FFmpeg is configured differently by RELEASE=1 too (no swscale, no mpeg1/mpegts), so
+# it belongs in the SAME stamp. It was missed at first, and the failure was exactly the one this
+# mechanism exists to prevent, one layer down: `ci/build-ffmpeg.sh` is reached through a single
+# header sentinel, so make never re-ran it once the header existed, its own .plx-flags guard was
+# unreachable, and `make RELEASE=1` shipped the libraries built for a DEV configuration — while
+# the comment two blocks below claimed otherwise. Building release-first then dev is worse: the
+# swscale staging rule globs a prefix that has none and the build dies.
 RUST_CFG       = features:$(RUST_FEATFLAGS)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
@@ -174,7 +181,8 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)
 # (Consequence: a `make -n` that CHANGES the configuration really does delete the binary. The next
 # real build restores it; a dry run that does not switch configuration touches nothing.)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
-  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative)
+  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative \
+          vendor/ffmpeg-prefix/include/libavformat/avformat.h pkg/lib*-plx.so.* pkg/.ffabi-ok)
 endif
 
 RUST_TARGET = arm-unknown-linux-gnueabi
@@ -326,9 +334,11 @@ LICENSE_FILES = LICENSE TRADEMARKS.md $(wildcard licenses/*.txt)
 
 deploy: pkg/plxnative $(FFMPEG_STAGED)
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
-	# The bundled FFmpeg, under its SONAME — ff.rs dlopens these by absolute path from the app
-	# directory. Unconditional, like the fonts: a CHANGED library must be able to reach the TV.
-	for f in $(FFMPEG_SONAMES); do $(SCP) pkg/$$f root@$(TV):$(APPDIR)/$$f; done
+	# The bundled FFmpeg, under its SONAMEs — ff.rs dlopens these by absolute path from the app
+	# directory. ONE scp for all of them: each connection is a full SSH handshake to a television
+	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
+	# a CHANGED library must be able to reach the TV.
+	$(SCP) $(FFMPEG_STAGED) root@$(TV):$(APPDIR)/
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
 	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could

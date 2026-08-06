@@ -20,89 +20,29 @@ type curl_slist = c_void;
 // ---- libcurl, bound at RUNTIME by SONAME candidate list ----
 //
 // The TV's libcurl SONAME is not stable across webOS: releases up to 6.4.0 answer to
-// `libcurl.so.5`, and from 7.4.0 on only `libcurl.so.4` exists. Naming either one in DT_NEEDED
-// therefore excludes half the fleet — and the exclusion is not "curl calls fail", it is the
-// dynamic loader refusing to start the process at all. (5.3.1 and 6.4.0 carry BOTH names, a
-// compat alias LG kept over the transition, which is why `.so.5` reached further than the file
-// listing suggests.)
+// `libcurl.so.5`, and from 7.4.0 on only `libcurl.so.4` exists. Naming either in DT_NEEDED
+// excludes half the fleet — and the exclusion is not "curl calls fail", it is the dynamic loader
+// refusing to start the process. (5.3.1 and 6.4.0 carry BOTH names, a compat alias LG kept over
+// the transition, which is why `.so.5` reached further than the file listing suggests.)
 //
-// Hand-written rather than expanded from `dynlib!` because two of these are VARIADIC —
-// `curl_easy_setopt(handle, option, ...)` is the whole shape of curl's easy API — and a
-// macro_rules pattern cannot carry `...` through to the function-pointer type it transmutes to.
-// The loading itself is still `dynlib::load_into`, so the all-or-nothing publication rule and the
-// per-symbol logging are shared, not reimplemented.
-mod sys {
-    use std::os::raw::c_void;
-    use std::sync::atomic::AtomicPtr;
-
-    pub(super) const CANDIDATES: &[&str] = &["libcurl.so.4", "libcurl.so.5"];
-    macro_rules! cell {
-        ($($n:ident),*) => { $( pub(super) static $n: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut()); )* };
-    }
-    cell!(GLOBAL_INIT, EASY_INIT, SETOPT, PERFORM, GETINFO, CLEANUP, SLIST_APPEND, SLIST_FREE_ALL);
-
-    pub(super) fn load() -> crate::dynlib::Loaded {
-        crate::dynlib::load_into(
-            None, // the TV's own libcurl, wherever the loader finds it
-            CANDIDATES,
-            &[
-                ("curl_global_init", &GLOBAL_INIT),
-                ("curl_easy_init", &EASY_INIT),
-                ("curl_easy_setopt", &SETOPT),
-                ("curl_easy_perform", &PERFORM),
-                ("curl_easy_getinfo", &GETINFO),
-                ("curl_easy_cleanup", &CLEANUP),
-                ("curl_slist_append", &SLIST_APPEND),
-                ("curl_slist_free_all", &SLIST_FREE_ALL),
-            ],
-            &[], // every curl symbol here has existed since forever and on every SONAME
-        )
-    }
-}
-
-/// Resolve one cell or take the `missing_symbol` panic. Unreachable once [`global_init`] has
-/// returned true, which every caller here is downstream of.
-macro_rules! curlfn {
-    ($cell:ident, $name:literal, $ty:ty) => {{
-        let p = sys::$cell.load(std::sync::atomic::Ordering::Acquire);
-        if p.is_null() {
-            crate::dynlib::missing_symbol("libcurl", $name);
-        }
-        std::mem::transmute::<*mut c_void, $ty>(p)
-    }};
-}
-
-unsafe fn curl_global_init(flags: c_long) -> c_int {
-    curlfn!(GLOBAL_INIT, "curl_global_init", extern "C" fn(c_long) -> c_int)(flags)
-}
-unsafe fn curl_easy_init() -> *mut CURL {
-    curlfn!(EASY_INIT, "curl_easy_init", extern "C" fn() -> *mut CURL)()
-}
-unsafe fn curl_easy_perform(handle: *mut CURL) -> c_int {
-    curlfn!(PERFORM, "curl_easy_perform", extern "C" fn(*mut CURL) -> c_int)(handle)
-}
-unsafe fn curl_easy_cleanup(handle: *mut CURL) {
-    curlfn!(CLEANUP, "curl_easy_cleanup", extern "C" fn(*mut CURL))(handle)
-}
-unsafe fn curl_slist_append(list: *mut curl_slist, s: *const c_char) -> *mut curl_slist {
-    curlfn!(SLIST_APPEND, "curl_slist_append", extern "C" fn(*mut curl_slist, *const c_char) -> *mut curl_slist)(list, s)
-}
-unsafe fn curl_slist_free_all(list: *mut curl_slist) {
-    curlfn!(SLIST_FREE_ALL, "curl_slist_free_all", extern "C" fn(*mut curl_slist))(list)
-}
-/// The two variadic ones. Each call site passes exactly one trailing argument and its type is
-/// fixed by the option id, so they are resolved to a concrete non-variadic signature per use —
-/// which is what the compiler was doing at the call sites anyway, and is why the option-id
-/// constants below must keep matching the argument each one is given.
-unsafe fn curl_easy_setopt_ptr(handle: *mut CURL, option: c_int, v: *const c_void) -> c_int {
-    curlfn!(SETOPT, "curl_easy_setopt", extern "C" fn(*mut CURL, c_int, *const c_void) -> c_int)(handle, option, v)
-}
-unsafe fn curl_easy_setopt_long(handle: *mut CURL, option: c_int, v: c_long) -> c_int {
-    curlfn!(SETOPT, "curl_easy_setopt", extern "C" fn(*mut CURL, c_int, c_long) -> c_int)(handle, option, v)
-}
-unsafe fn curl_easy_getinfo_long(handle: *mut CURL, info: c_int, out: *mut c_long) -> c_int {
-    curlfn!(GETINFO, "curl_easy_getinfo", extern "C" fn(*mut CURL, c_int, *mut c_long) -> c_int)(handle, info, out)
-}
+// The three setopt/getinfo wrappers share two C symbols via the macro's `= "name"` override. That
+// is how the variadic API is bound: each call site passes exactly one trailing argument whose type
+// is fixed by the option id, so one concrete non-variadic signature per call shape is both
+// sufficient and what the compiler was already generating. This was hand-written once on the
+// belief that a macro could not express it — the blocker was never the variadics, only the
+// one-symbol-per-wrapper assumption.
+crate::dynlib! {
+    curl: ["libcurl.so.4", "libcurl.so.5"] {
+    fn curl_global_init(flags: c_long) -> c_int;
+    fn curl_easy_init() -> *mut CURL;
+    fn curl_easy_perform(handle: *mut CURL) -> c_int;
+    fn curl_easy_cleanup(handle: *mut CURL);
+    fn curl_slist_append(list: *mut curl_slist, s: *const c_char) -> *mut curl_slist;
+    fn curl_slist_free_all(list: *mut curl_slist);
+    fn curl_easy_setopt_ptr = "curl_easy_setopt"(handle: *mut CURL, option: c_int, v: *const c_void) -> c_int;
+    fn curl_easy_setopt_long = "curl_easy_setopt"(handle: *mut CURL, option: c_int, v: c_long) -> c_int;
+    fn curl_easy_getinfo_long = "curl_easy_getinfo"(handle: *mut CURL, info: c_int, out: *mut c_long) -> c_int;
+}}
 
 // curl.h option ids (CURLOPTTYPE_LONG=0, OBJECTPOINT=10000, FUNCTIONPOINT=20000).
 const CURLOPT_URL: c_int = 10002;
@@ -127,7 +67,7 @@ const CURL_GLOBAL_ALL: c_long = 3;
 /// plex.tv sign-in and no account calls — but a running app, and a log line saying why.
 static CURL_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-pub(crate) fn available() -> bool {
+fn available() -> bool {
     CURL_OK.load(std::sync::atomic::Ordering::Acquire)
 }
 
@@ -135,7 +75,7 @@ pub(crate) fn available() -> bool {
 /// init isn't thread-safe). Idempotent on the curl side. Returns false if libcurl could not be
 /// bound at all, in which case nothing else in this module may be called.
 pub fn global_init() -> bool {
-    match sys::load() {
+    match curl::load(None) {
         crate::dynlib::Loaded::Ok(soname) => {
             crate::log(&format!("net: bound libcurl -> {soname}"));
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
@@ -180,6 +120,12 @@ impl Resp {
 /// (empty slice → POST with no body), `None` → GET. Returns `None` on a transport error (offline,
 /// TLS failure, timeout) — callers treat that as "not reachable" and fall back to the local server.
 fn perform(url: &str, headers: &[String], post_body: Option<&[u8]>) -> Option<Resp> {
+    // The guard `CURL_OK` exists for. Without it, a device with no libcurl this app can bind
+    // reaches `curl_easy_init`'s wrapper and takes `dynlib::missing_symbol`, which panics — an
+    // account lookup failing should return None and let the caller fall back, not kill a thread.
+    if !available() {
+        return None;
+    }
     unsafe {
         let h = curl_easy_init();
         if h.is_null() {

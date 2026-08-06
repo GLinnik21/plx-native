@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Resolve this binary against 14 real LG firmwares, offline, on the dev machine.
 
-WHY THIS EXISTS. The stub-`.so` link trick (see the root CLAUDE.md) makes the one error class
-that matters for portability INVISIBLE at link time: a library or symbol the TV does not have
-still links, and then the dynamic loader kills the app at `exec()` with nothing in the event log.
+WHY THIS EXISTS. The error class that matters for portability is invisible at link time: the app
+resolves FFmpeg, libcurl and libAcbAPI at RUNTIME and bundles its own FFmpeg, so nothing in the
+build can tell you a television lacks a library or a symbol — the dynamic loader finds out, at
+`exec()`, with nothing in the event log.
 The only previous check for that was `webosbrew-ipk-verify`, which ships as an arm64 `.deb` and so
 runs in CI on Linux and NOWHERE on this Mac. That put a full push-and-wait between "I changed a
 `#[link]`" and "I know whether it still loads".
@@ -42,7 +43,7 @@ from pathlib import Path
 
 # Pinned so a database refresh is a visible commit rather than a silent change of verdict.
 FWSYM_TAG = "v20260731-e1bb0c0"
-FWSYM_DEB = f"webosbrew-toolbox-fw-symbols_0.4.0-1_arm64.deb"
+FWSYM_DEB = "webosbrew-toolbox-fw-symbols_0.4.0-1_arm64.deb"
 FWSYM_URL = f"https://github.com/webosbrew/dev-toolbox-cli/releases/download/{FWSYM_TAG}/{FWSYM_DEB}"
 
 REPO = Path(__file__).resolve().parent.parent
@@ -65,7 +66,7 @@ def ensure_db(db_arg):
     """Return the directory holding one subdirectory per firmware, downloading if needed."""
     if db_arg:
         d = Path(db_arg)
-        if not (d / "").is_dir():
+        if not d.is_dir():
             die(f"--db {d} is not a directory")
         return d
     data = CACHE / "data"
@@ -228,18 +229,21 @@ def cmd_grade(args, db):
     needed, undef = elf_facts(binary)
     print(f"{binary}: {len(needed)} DT_NEEDED, {len(undef)} undefined dynamic symbols\n")
 
-    fws = load_firmwares(db)
+    every = load_firmwares(db)
+    fws = every
     if args.release:
-        fws = [f for f in fws if f.release in args.release]
+        fws = [f for f in every if f.release in args.release]
         if not fws:
-            die(f"no such release; have {', '.join(f.release for f in load_firmwares(db))}")
+            die(f"no such release; have {', '.join(f.release for f in every)}")
 
     floor = relver(args.min_release) if args.min_release else None
+    # Graded ONCE per firmware. The detail block below used to re-grade the selected release, so
+    # the table and the detail could in principle disagree about the same binary.
+    rows = [(fw, *grade(fw, needed, undef)) for fw in fws]
     print(f"{'release':<9} {'verdict':<8} {'missing libraries':<52} symbols")
     print("-" * 96)
     worst = 0
-    for fw in fws:
-        mlibs, msyms = grade(fw, needed, undef)
+    for fw, mlibs, msyms in rows:
         ok = not mlibs and not msyms
         # Releases below the floor are graded and PRINTED but do not set the exit status. The five
         # oldest (webOS 1.2.0 through 3.9.2) fail permanently and for reasons nobody intends to
@@ -255,14 +259,14 @@ def cmd_grade(args, db):
         mark = "" if counts else "  (below --min-release; not gated)"
         print(f"{fw.release:<9} {'OK' if ok else 'FAIL':<8} {libs:<52} {len(msyms) or '-'}{mark}")
 
-    if args.release and len(fws) == 1:
-        mlibs, msyms = grade(fws[0], needed, undef)
+    if args.release and len(rows) == 1:
+        fw, mlibs, msyms = rows[0]
         if mlibs:
-            print(f"\nmissing libraries on {fws[0].release}:")
+            print(f"\nmissing libraries on {fw.release}:")
             for x in mlibs:
                 print(f"  {x}")
         if msyms:
-            print(f"\nmissing symbols on {fws[0].release} ({len(msyms)}):")
+            print(f"\nmissing symbols on {fw.release} ({len(msyms)}):")
             for x in msyms:
                 print(f"  {x}")
     return worst

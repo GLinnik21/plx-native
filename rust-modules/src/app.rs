@@ -36,8 +36,9 @@ use crate::ui::consts::{
     is_back, is_ok, SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_PAGEDOWN, SDLK_PAGEUP, SDLK_RETURN,
     SDLK_RIGHT, SDLK_UP, WCODE_CH_DOWN, WCODE_CH_UP, WCODE_PAUSE, WCODE_PLAY, WCODE_STOP,
 };
-const SCR_W: c_int = 1920;
-const SCR_H: c_int = 1080;
+// The window we ASK SDL for. `surface::probe` then reads back what we actually got.
+const SCR_W: c_int = crate::surface::LOGICAL_W as c_int;
+const SCR_H: c_int = crate::surface::LOGICAL_H as c_int;
 const COLS: c_int = 10;
 const RESUME_REWIND_NS: i64 = 5_000_000_000;
 

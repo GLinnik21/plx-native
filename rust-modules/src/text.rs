@@ -9,8 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::addr_of_mut;
 
-const SCR_W: f32 = 1920.0;
-const SCR_H: f32 = 1080.0;
+use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 
 /// Last resort only. Reaching this is a DEFECT, not a graceful degradation — see `font_at`.
 const DROIDSANS: &CStr = c"/usr/share/fonts/DroidSans.ttf";

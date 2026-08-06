@@ -26,14 +26,18 @@
 //! the surface we request is an assumption — and it is a cheap one to stop making.
 use crate::log;
 use std::os::raw::{c_int, c_void};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 extern "C" {
     fn SDL_GetWindowSize(win: *mut c_void, w: *mut c_int, h: *mut c_int);
     fn SDL_GL_GetDrawableSize(win: *mut c_void, w: *mut c_int, h: *mut c_int);
 }
 
-/// The logical canvas the whole UI is authored in. Not a guess about any device.
+/// The logical canvas the whole UI is authored in — **THE definition**, re-exported by
+/// `ui::consts` and used under the name `SCR_W`/`SCR_H` by `gfx`, `text` and `app`. It used to be
+/// five independent literals that agreed only because they were all typed the same; a module whose
+/// whole premise is "do not assume the drawable equals the canvas" should not leave four other
+/// answers to what the canvas is. Not a guess about any device.
 pub(crate) const LOGICAL_W: f32 = 1920.0;
 pub(crate) const LOGICAL_H: f32 = 1080.0;
 
@@ -42,9 +46,23 @@ pub(crate) const LOGICAL_H: f32 = 1080.0;
 static DRAWABLE_W: AtomicI32 = AtomicI32::new(LOGICAL_W as i32);
 static DRAWABLE_H: AtomicI32 = AtomicI32::new(LOGICAL_H as i32);
 
-/// The GL drawable size in pixels — what `glViewport` and `glScissor` must be expressed in.
+/// The viewport rect and the scale, COMPUTED ONCE by [`probe`] rather than on every read.
+///
+/// They derive from `DRAWABLE_*`, which is written exactly once at boot — so recomputing them per
+/// call was pure repetition, and not free: the two `round()`s compile to `roundf` LIBM CALLS on
+/// this target (ARMv7 has no `vrinta`), and `clip_set` runs 20-40 times in a frame with a shelf
+/// on screen. Storing them makes every reader a plain relaxed load.
+static VX: AtomicI32 = AtomicI32::new(0);
+static VY: AtomicI32 = AtomicI32::new(0);
+static VW: AtomicI32 = AtomicI32::new(LOGICAL_W as i32);
+static VH: AtomicI32 = AtomicI32::new(LOGICAL_H as i32);
+/// `scale()` as f32 bits — `AtomicF32` does not exist.
+static SCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+
+/// The GL drawable size in pixels. Private: outside this module the interesting things are
+/// [`viewport`], [`scale`] and the two pointer transforms.
 #[inline]
-pub(crate) fn drawable() -> (i32, i32) {
+fn drawable() -> (i32, i32) {
     (DRAWABLE_W.load(Ordering::Relaxed), DRAWABLE_H.load(Ordering::Relaxed))
 }
 
@@ -69,8 +87,7 @@ pub(crate) fn drawable() -> (i32, i32) {
 /// sharper interface at 20 fps is not a better interface.
 #[inline]
 pub(crate) fn scale() -> f32 {
-    let (dw, dh) = drawable();
-    (dw as f32 / LOGICAL_W).min(dh as f32 / LOGICAL_H)
+    f32::from_bits(SCALE_BITS.load(Ordering::Relaxed))
 }
 
 /// The `glViewport` rect: the logical canvas scaled uniformly and **centred** in the drawable.
@@ -82,10 +99,24 @@ pub(crate) fn scale() -> f32 {
 /// drawable size at all.
 #[inline]
 pub(crate) fn viewport() -> (i32, i32, i32, i32) {
+    (
+        VX.load(Ordering::Relaxed),
+        VY.load(Ordering::Relaxed),
+        VW.load(Ordering::Relaxed),
+        VH.load(Ordering::Relaxed),
+    )
+}
+
+/// Derive [`scale`] and [`viewport`] from the drawable. Called by [`probe`], and by the tests.
+fn recompute() {
     let (dw, dh) = drawable();
-    let s = scale();
+    let s = (dw as f32 / LOGICAL_W).min(dh as f32 / LOGICAL_H);
     let (w, h) = ((LOGICAL_W * s).round() as i32, (LOGICAL_H * s).round() as i32);
-    ((dw - w) / 2, (dh - h) / 2, w, h)
+    SCALE_BITS.store(s.to_bits(), Ordering::Relaxed);
+    VW.store(w, Ordering::Relaxed);
+    VH.store(h, Ordering::Relaxed);
+    VX.store((dw - w) / 2, Ordering::Relaxed);
+    VY.store((dh - h) / 2, Ordering::Relaxed);
 }
 
 /// Physical window pixels -> the authored 1920x1080 canvas: the exact inverse of [`viewport`].
@@ -135,6 +166,7 @@ pub(crate) fn probe(win: *mut c_void) {
             DRAWABLE_W.store(dw, Ordering::Relaxed);
             DRAWABLE_H.store(dh, Ordering::Relaxed);
         }
+        recompute();
 
         // The panel, for the log only. See the module doc: this is the number it is tempting and
         // wrong to build on. Resolved through dlsym because webOS releases below 4.4.2 lack it.
@@ -168,9 +200,11 @@ mod tests {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         DRAWABLE_W.store(w, Ordering::Relaxed);
         DRAWABLE_H.store(h, Ordering::Relaxed);
+        recompute();
         let r = f();
         DRAWABLE_W.store(LOGICAL_W as i32, Ordering::Relaxed);
         DRAWABLE_H.store(LOGICAL_H as i32, Ordering::Relaxed);
+        recompute();
         r
     }
 

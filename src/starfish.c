@@ -51,14 +51,11 @@ static struct {
     int  (*setMediaVideoData)(long, const char *, long *);
     int  (*setState)(long, int, int, long *);
     int  (*setDisplayWindow)(long, long, long, long, long, int, long *);
-    void (*destroy)(long);
 } acb;
 
 static struct {
     const char *(*createExportedWindow)(int type);
     int  (*setExportedWindow)(const char *windowId, VpRect *src, VpRect *dst);
-    int  (*exportedSetCropRegion)(const char *windowId, VpRect *org, VpRect *src, VpRect *dst);
-    int  (*exportedSetProperty)(const char *windowId, const char *name, const char *value);
     void (*destroyExportedWindow)(const char *windowId);
 } sdlvp;
 
@@ -83,7 +80,10 @@ int vp_mode(void) {
         acb.setMediaVideoData = dlsym(h, "AcbAPI_setMediaVideoData");
         acb.setState          = dlsym(h, "AcbAPI_setState");
         acb.setDisplayWindow  = dlsym(h, "AcbAPI_setDisplayWindow");
-        acb.destroy           = dlsym(h, "AcbAPI_destroy");
+        /* Every pointer assigned above, checked. This list used to name seven of the eight and
+         * drop `destroy` silently — which is the argument against hand-enumeration, and why
+         * `destroy` and the two unused SDL crop/property pointers are gone rather than resolved
+         * and forgotten. Add one here only when something calls it. */
         if (acb.create && acb.initialize && acb.setSinkType && acb.setMediaId &&
             acb.setMediaVideoData && acb.setState && acb.setDisplayWindow) {
             g_vp_mode = VP_ACB;
@@ -99,8 +99,6 @@ int vp_mode(void) {
      * would have said yes on every device and meant nothing. */
     sdlvp.createExportedWindow  = dlsym(RTLD_DEFAULT, "SDL_webOSCreateExportedWindow");
     sdlvp.setExportedWindow     = dlsym(RTLD_DEFAULT, "SDL_webOSSetExportedWindow");
-    sdlvp.exportedSetCropRegion = dlsym(RTLD_DEFAULT, "SDL_webOSExportedSetCropRegion");
-    sdlvp.exportedSetProperty   = dlsym(RTLD_DEFAULT, "SDL_webOSExportedSetProperty");
     sdlvp.destroyExportedWindow = dlsym(RTLD_DEFAULT, "SDL_webOSDestroyExportedWindow");
     if (sdlvp.createExportedWindow && sdlvp.setExportedWindow) {
         g_vp_mode = VP_EXPORTED;

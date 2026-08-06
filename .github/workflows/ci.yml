@@ -82,6 +82,18 @@ jobs:
       - id: ndk
         uses: ./.github/actions/webos-ndk
 
+      - name: Cache the bundled FFmpeg
+        # vendor/ffmpeg-prefix is gitignored and ci/build-ffmpeg.sh is a prerequisite of the
+        # staticlib, so without this every run downloads the tarball and cross-builds FFmpeg from
+        # scratch — minutes, on every push. The script's VERSION, SHA256 and configure flags are
+        # its whole input, so hashing the script is the whole key.
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/ffmpeg-prefix
+            vendor/ffmpeg-build
+          key: ffmpeg-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh') }}
+
       - name: Build
         run: make WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
 

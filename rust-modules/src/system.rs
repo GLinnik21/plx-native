@@ -87,11 +87,11 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
         }
         let subsystem = i32::from_ne_bytes([wmbuf[4], wmbuf[5], wmbuf[6], wmbuf[7]]);
         let (surf, disp) = (G_WL_SURFACE, G_WL_DISPLAY);
-        let mut v = [0u8; 3];
-        SDL_GetVersion(v.as_mut_ptr());
+        // The version bytes are still in wmbuf[0..3] — SDL_GetWindowWMInfo validates them and
+        // writes only `subsystem` and the union, so there is nothing to re-read.
         log(&format!(
             "wm sdl={}.{}.{} subsys={subsystem} wl_surface={surf:p} wl_display={disp:p} alpha={a}",
-            v[0], v[1], v[2]
+            wmbuf[0], wmbuf[1], wmbuf[2]
         ));
         // Loud, because the consequence is a black screen with working audio and nothing else in
         // the log would say why. SDL_SYSWM_WAYLAND is 6 in SDL2's enum; anything else here means

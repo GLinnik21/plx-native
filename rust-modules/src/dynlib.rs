@@ -26,16 +26,9 @@
 //!
 //! [`dynlib!`] takes a block shaped exactly like the `extern "C"` block it replaces and emits an
 //! `unsafe fn` of the same name and signature for each entry, so call sites do not change. The
-//! generated `load()` is all-or-nothing over the REQUIRED symbols: it resolves every one or it
+//! generated `load()` is all-or-nothing: it resolves every symbol or it
 //! reports which are missing and leaves the table empty. Callers must gate on that result —
 //! `ff::boot()` does, and `ff::demux()` refuses when it failed.
-//!
-//! A trailing `optional { … }` section holds symbols the library may legitimately drop between
-//! majors while staying perfectly usable. Their absence neither fails the load nor logs an error,
-//! and the wrapper does nothing when called. They must return `()`: a symbol whose absence needs a
-//! fallback VALUE is not optional, it is a branch the caller has to make and see. There is exactly
-//! one today — `av_register_all`, a no-op since FFmpeg 4.0 and deleted in 5.0 — and getting that
-//! wrong made the app refuse to demux on webOS 10.2.0 and 11.2.0 for a symbol it does not need.
 //!
 //! Calling a wrapper whose symbol never resolved is a bug in that gating, not a recoverable
 //! condition, so it logs the symbol name and panics rather than jumping through a null pointer.
@@ -44,22 +37,22 @@
 //! the two, on a device where diagnosis means reading a log over ssh.
 #![allow(dead_code)]
 
+use libc::{dlerror, dlopen, dlsym, RTLD_GLOBAL, RTLD_NOW};
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::c_void;
+use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
-
-extern "C" {
-    fn dlopen(file: *const c_char, mode: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
-    fn dlerror() -> *const c_char;
-}
 
 /// `RTLD_NOW | RTLD_GLOBAL`. NOW because a lazily-bound miss would surface as a jump into the
 /// resolver at an arbitrary later moment — the whole point here is to learn at load time. GLOBAL
 /// because these libraries satisfy each other's imports (libavformat needs libavcodec needs
 /// libavutil) and because the ACB path wants its symbols visible to anything loaded after it.
-const RTLD_NOW_GLOBAL: c_int = 0x00002 | 0x00100;
+///
+/// From `libc`, not hand-written: the flags are not the same numbers everywhere. `0x100` is
+/// RTLD_GLOBAL on glibc but RTLD_FIRST on Darwin — and this module's unit tests run on Darwin, so
+/// a hardcoded constant would have meant the tests exercised a different mode than the device.
+const RTLD_NOW_GLOBAL: libc::c_int = RTLD_NOW | RTLD_GLOBAL;
 
 /// An opened library. Not `Drop` — nothing here is ever closed, deliberately: the media libraries
 /// stay mapped for the life of the process, and `dlclose` on a library with live pipeline threads
@@ -85,6 +78,14 @@ impl Handle {
         Self::open_in(None, candidates)
     }
 
+    /// The `dlopen` itself, once, so `open_in`'s two branches cannot drift.
+    fn dlopen_str(path: &str) -> *mut c_void {
+        match CString::new(path) {
+            Ok(c) => unsafe { dlopen(c.as_ptr(), RTLD_NOW_GLOBAL) },
+            Err(_) => null_mut(),
+        }
+    }
+
     /// As [`open`], but resolving names inside `dir` when one is given.
     ///
     /// `dir` is how the BUNDLED FFmpeg is found: those libraries live beside the binary, which is
@@ -92,14 +93,20 @@ impl Handle {
     /// which ships FFmpeg 6 itself — silently open the television's copy instead of ours. An
     /// absolute path makes "which library did we get" structural rather than a matter of search
     /// order. (The `-plx` build suffix is the second half of that guarantee.)
-    pub fn open_in<'a>(dir: Option<&str>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+    /// `dir` is a `Path`, not a `&str`, because the caller's app directory comes from
+    /// `paths::app_dir()` and a `.to_str()` on the way in has a `None` branch — one that would
+    /// silently turn "our bundled FFmpeg" into "whatever the loader finds".
+    pub fn open_in<'a>(dir: Option<&Path>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
         for name in candidates {
-            let path = match dir {
-                Some(d) => format!("{d}/{name}"),
-                None => (*name).to_string(),
+            let h = match dir {
+                Some(d) => match d.join(name).to_str() {
+                    Some(p) => Self::dlopen_str(p),
+                    // A non-UTF-8 install path. Refuse rather than fall back to a bare SONAME,
+                    // which on webOS 11 could open the television's FFmpeg instead of ours.
+                    None => continue,
+                },
+                None => Self::dlopen_str(name),
             };
-            let Ok(c) = CString::new(path) else { continue };
-            let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW_GLOBAL) };
             if !h.is_null() {
                 return Some((Handle(h), name));
             }
@@ -163,20 +170,10 @@ pub fn missing_symbol(lib: &str, sym: &str) -> ! {
 ///
 /// Split out of the macro so the logic exists once rather than once per library: a macro that
 /// expands a loop body five times is five copies to keep in step.
-/// `optional` entries are resolved and published if present, and their absence is neither logged
-/// as an error nor counted against the load. That is for symbols the library legitimately drops
-/// between majors while remaining perfectly usable — `av_register_all` is the whole population:
-/// deprecated in FFmpeg 4.0, a no-op ever since, deleted in 5.0. Treating it as required made the
-/// app refuse to demux on webOS 10.2.0 and 11.2.0 for a symbol it does not need, while reporting
-/// the wrong reason.
-///
-/// An optional wrapper must return `()`. A symbol whose absence needs a fallback VALUE is not
-/// optional — it is a branch the caller has to make and see.
 pub fn load_into(
-    dir: Option<&str>,
+    dir: Option<&Path>,
     candidates: &'static [&'static str],
     required: &[(&'static str, &AtomicPtr<c_void>)],
-    optional: &[(&'static str, &AtomicPtr<c_void>)],
 ) -> Loaded {
     let Some((h, soname)) = Handle::open_in(dir, candidates) else {
         return Loaded::NoLibrary;
@@ -196,17 +193,20 @@ pub fn load_into(
     if missing > 0 {
         return Loaded::Incomplete(soname, missing);
     }
-    // Publish only once every REQUIRED symbol is known good, so a partial table is never
-    // observable. Optional cells stay null when absent, and their wrappers return without calling.
+    // Publish only once EVERY symbol is known good, so a partial table is never observable.
     for ((_, cell), p) in required.iter().zip(resolved) {
         cell.store(p, Ordering::Release);
     }
-    for (name, cell) in optional {
-        if let Some(p) = h.sym(name) {
-            cell.store(p, Ordering::Release);
-        }
-    }
     Loaded::Ok(soname)
+}
+
+/// The C symbol a wrapper resolves: its own name, or an explicit override. Two wrappers may name
+/// the SAME symbol — which is how a variadic C function is bound here, by declaring one concrete
+/// non-variadic signature per call shape rather than carrying `...` through a macro.
+#[macro_export]
+macro_rules! dynlib_sym {
+    ($fname:ident) => { stringify!($fname) };
+    ($fname:ident, $sym:literal) => { $sym };
 }
 
 /// Declare a runtime-bound library. The body is shaped like the `extern "C"` block it replaces.
@@ -228,19 +228,9 @@ macro_rules! dynlib {
         $modname:ident : [ $($cand:literal),+ $(,)? ] {
             $(
                 $(#[$fmeta:meta])*
-                fn $fname:ident ( $($arg:ident : $argty:ty),* $(,)? ) $(-> $ret:ty)? ;
+                fn $fname:ident $(= $sym:literal)? ( $($arg:ident : $argty:ty),* $(,)? ) $(-> $ret:ty)? ;
             )*
         }
-        $(
-            // Symbols the library may legitimately not have on some majors. Must return `()`;
-            // see `load_into`. Absent -> the wrapper does nothing, and the load still succeeds.
-            optional {
-                $(
-                    $(#[$ometa:meta])*
-                    fn $oname:ident ( $($oarg:ident : $oargty:ty),* $(,)? ) ;
-                )*
-            }
-        )?
     ) => {
         $(#[$meta])*
         #[allow(non_upper_case_globals)]
@@ -250,16 +240,14 @@ macro_rules! dynlib {
 
             pub(crate) const CANDIDATES: &[&str] = &[$($cand),+];
             $( pub(crate) static $fname: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut()); )*
-            $($( pub(crate) static $oname: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut()); )*)?
 
             /// Open the first candidate SONAME that exists and resolve every required symbol.
             /// `dir` scopes the search to one directory — see `Handle::open_in`.
-            pub(crate) fn load(dir: Option<&str>) -> $crate::dynlib::Loaded {
+            pub(crate) fn load(dir: Option<&std::path::Path>) -> $crate::dynlib::Loaded {
                 $crate::dynlib::load_into(
                     dir,
                     CANDIDATES,
-                    &[$((stringify!($fname), &$fname)),*],
-                    &[$($((stringify!($oname), &$oname)),*)?],
+                    &[$(($crate::dynlib_sym!($fname $(, $sym)?), &$fname)),*],
                 )
             }
         }
@@ -272,27 +260,20 @@ macro_rules! dynlib {
             // functions they are not.
             #[allow(non_snake_case)]
             pub(crate) unsafe fn $fname ( $($arg : $argty),* ) $(-> $ret)? {
-                let p = $modname::$fname.load(std::sync::atomic::Ordering::Acquire);
+                // Relaxed, not Acquire: an Acquire load emits a full `dmb ish` on this ARM core,
+                // on EVERY FFmpeg call. It buys nothing here — the table is published by
+                // `ff::boot()` on the main thread before any pipeline thread exists, and
+                // `thread::spawn` is itself the synchronising edge for the workers.
+                let p = $modname::$fname.load(std::sync::atomic::Ordering::Relaxed);
                 if p.is_null() {
-                    $crate::dynlib::missing_symbol($modname::CANDIDATES[0], stringify!($fname));
+                    $crate::dynlib::missing_symbol(
+                        $modname::CANDIDATES[0], $crate::dynlib_sym!($fname $(, $sym)?));
                 }
                 let f: extern "C" fn($($argty),*) $(-> $ret)? = std::mem::transmute(p);
                 f($($arg),*)
             }
         )*
 
-        $($(
-            $(#[$ometa])*
-            #[inline]
-            #[allow(non_snake_case)]
-            pub(crate) unsafe fn $oname ( $($oarg : $oargty),* ) {
-                let p = $modname::$oname.load(std::sync::atomic::Ordering::Acquire);
-                if !p.is_null() {
-                    let f: extern "C" fn($($oargty),*) = std::mem::transmute(p);
-                    f($($oarg),*);
-                }
-            }
-        )*)?
     };
 }
 
@@ -322,7 +303,7 @@ mod tests {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static CAND: &[&str] = &["libplxnative-nope.so.99"];
-        let v = load_into(None, CAND, &[("x", &A), ("y", &B)], &[]);
+        let v = load_into(None, CAND, &[("x", &A), ("y", &B)]);
         assert!(matches!(v, Loaded::NoLibrary));
         assert!(A.load(Ordering::Acquire).is_null() && B.load(Ordering::Acquire).is_null());
     }
@@ -333,42 +314,19 @@ mod tests {
     fn a_partial_load_publishes_nothing() {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(None, HOST_LIBC, &[("malloc", &A), ("plxnative_no_such_symbol", &B)], &[]);
+        let v = load_into(None, HOST_LIBC, &[("malloc", &A), ("plxnative_no_such_symbol", &B)]);
         assert!(matches!(v, Loaded::Incomplete(_, 1)), "expected one missing symbol");
         assert!(A.load(Ordering::Acquire).is_null(), "malloc must not be published alone");
     }
 
-    /// An ABSENT OPTIONAL symbol must not fail the load, and must leave its cell null so the
-    /// generated wrapper no-ops. This is the webOS 10.2.0/11.2.0 case exactly: libavformat 59 and
-    /// 60 carry 55 of the 56 functions ff.rs binds, and the one they dropped — av_register_all —
-    /// has been a no-op since FFmpeg 4.0. Counting it made the app refuse to demux on the two
-    /// newest firmware families, and report the wrong reason.
-    #[test]
-    fn an_absent_optional_symbol_does_not_fail_the_load() {
-        static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(None, HOST_LIBC, &[("malloc", &A)], &[("plxnative_no_such_symbol", &B)]);
-        assert!(v.ok(), "an absent OPTIONAL symbol must not fail the load");
-        assert!(!A.load(Ordering::Acquire).is_null(), "the required symbol must still publish");
-        assert!(B.load(Ordering::Acquire).is_null(), "the absent optional must stay null");
-    }
 
-    /// A PRESENT optional symbol publishes like any other.
-    #[test]
-    fn a_present_optional_symbol_is_published() {
-        static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(None, HOST_LIBC, &[("malloc", &A)], &[("free", &B)]);
-        assert!(v.ok());
-        assert!(!B.load(Ordering::Acquire).is_null());
-    }
 
     /// The happy path, graded against the host libc so it runs everywhere `cargo test` does.
     #[test]
     fn a_complete_load_publishes_every_cell() {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(None, HOST_LIBC, &[("malloc", &A), ("free", &B)], &[]);
+        let v = load_into(None, HOST_LIBC, &[("malloc", &A), ("free", &B)]);
         assert!(v.ok(), "libc should open and carry malloc/free");
         assert!(!A.load(Ordering::Acquire).is_null() && !B.load(Ordering::Acquire).is_null());
     }

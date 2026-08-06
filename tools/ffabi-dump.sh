@@ -14,7 +14,7 @@ CC="$NDK/bin/arm-webos-linux-gnueabi-gcc"
 NM="$NDK/bin/arm-webos-linux-gnueabi-nm"
 INC=${1:-$ROOT/vendor/ffmpeg-prefix/include}
 
-[ -d "$INC" ] || { echo "no headers at $INC — run 'make ffmpeg' first" >&2; exit 1; }
+[ -d "$INC" ] || { echo "no headers at $INC — run 'make' first (the FFmpeg build is a prerequisite of the staticlib)" >&2; exit 1; }
 OBJ=$(mktemp -t ffabi).o
 trap 'rm -f "$OBJ"' EXIT
 

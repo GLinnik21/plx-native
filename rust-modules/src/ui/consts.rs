@@ -15,8 +15,7 @@ pub const ROW_PITCH: f32 = CARD_H + ROW_TITLE_H + 144.0; // 549: room for the sh
 pub const CARD_DY: f32 = 26.0;
 pub const CONTENT_Y: f32 = 200.0;
 pub const GLOW_PAD: f32 = 48.0;
-pub const SCR_W: f32 = 1920.0;
-pub const SCR_H: f32 = 1080.0;
+pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 
 // hero <-> grid continuum
 /// Shelf top in hero view. Re-derived once the peek row stopped magnifying its focused cell: the

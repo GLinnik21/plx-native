@@ -309,6 +309,10 @@ impl Transport {
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// **`Bound` is the ACB bind, and the webOS 5 path SKIPS it** — `VP_EXPORTED` goes
+/// `Playing -> Streaming` directly, because there is no bind sequence to be in the middle of.
+/// So `stage >= Bound` means "bound or later" on webOS 4 and "is Streaming" on webOS 5; a new
+/// test against it has to decide which of those it wants.
 pub(crate) enum Stage {
     Loading = 0,
     Playing,

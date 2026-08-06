@@ -135,35 +135,22 @@ fn engine_take(_: &MainThread) -> Option<Engine> {
     unsafe { (*std::ptr::addr_of_mut!(ENGINE)).take() }
 }
 
-/// The webOS 5+ exported-window id, once created. Empty on a webOS 4.x set, where the whole
-/// concept does not exist and ACB does this job instead.
-///
-/// Held here rather than fetched from the seam per use because it has to be spliced into the Load
-/// payload, which is built as a string on this thread.
-static WINDOW_ID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-
 /// Bind the decoded video sink to the display plane, whichever way this television does it.
 ///
-/// Two mechanisms, split at webOS 5.0, and the seam has already worked out which one is here:
+/// **Boot-scoped.** Called once, from `plex_run`, and never again — which is why the webOS 5
+/// exported window is NOT created here: that one is created per session in [`start_bufferfeed`],
+/// beside the payload it has to be spliced into, and destroyed by the matching `teardown`.
+///
 ///   - `VP_ACB` — create + initialize the ACB. We deliberately DON'T register our own
-///     com.webos.media client; it collides with the pipeline's uMS connection.
-///   - `VP_EXPORTED` — create the exported window NOW, because its compositor-assigned id has to
-///     be inside the Load payload as `option.windowId`, and Load happens on the media worker a
-///     moment from here. There is no ACB handle and no state mirroring on this path: webOS 5
-///     deleted that sequence outright rather than replacing it.
+///     com.webos.media client; it collides with the pipeline's uMS connection. The handle lives
+///     for the process; what teardown calls is `acb_unload`, a session-scoped state change.
+///   - `VP_EXPORTED` — nothing to do at boot. There is no handle, and no state mirroring:
+///     webOS 5 deleted that sequence outright rather than replacing it.
 pub(crate) fn acb_init(mt: &MainThread) {
     match ffi::vp_mode() {
         ffi::VP_EXPORTED => {
-            let id = unsafe { ffi::vp_create_window(mt) };
-            let s = if id.is_null() {
-                String::new()
-            } else {
-                unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy().into_owned()
-            };
-            log(&format!("vplane: exported window id={s:?} (webOS 5+ path — UNTESTED)"));
-            *WINDOW_ID.lock().unwrap() = s;
-            // Nothing to mirror and nothing to bind later; the pump's ACB stages are skipped by
-            // ACB_OK staying false.
+            log("vplane: exported window (webOS 5+) — created per session, UNTESTED path");
+            // Nothing to bind later; the pump's ACB stages are skipped by ACB_OK staying false.
             ACB_OK.store(false, Ordering::Relaxed);
         }
         ffi::VP_NONE => {
@@ -232,26 +219,39 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
     p
 }
 
-/// Splice `option.windowId` into a Load payload on the webOS 5+ path.
+/// Create the exported window and splice its id into the Load payload — the webOS 5+ binding, in
+/// one place.
 ///
-/// On webOS 5 this one string IS the video-plane binding: the compositor assigned it to the
-/// exported window we created, the pipeline imports that window by name and punches through to it.
+/// **Session-scoped, and that is the point.** The window is created HERE rather than at boot
+/// because `teardown` destroys it, and the two ends have to sit at the same level: created once at
+/// boot and destroyed per session, the second play would splice nothing and show no picture, in
+/// silence. Creating it beside its only consumer also makes the "must exist before Load" ordering
+/// locally visible instead of a promise made across two files.
+///
+/// On webOS 5 this one string IS the video-plane binding: the compositor assigned it to the window
+/// we just created, and the pipeline imports that window by name and punches through to it.
 /// Everything else about the BUFFERSTREAM payload is unchanged between the eras — which is what
 /// both reference implementations show (ss4s compiles the same payload builder for webOS 3, 4 and
 /// 5 and swaps only the resource file; Kodi adds this key and nothing else).
 ///
 /// Inserted after `"appId":"…"` because that is a stable sibling inside `option` in every payload
-/// variant here. A no-op when the id is empty, which is every webOS 4.x set.
-fn with_window_id(p: String) -> String {
-    let id = WINDOW_ID.lock().unwrap();
-    if id.is_empty() {
-        return p;
+/// variant here. A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
+fn with_window_id(mt: &MainThread, p: &str) -> String {
+    if ffi::vp_mode() != ffi::VP_EXPORTED {
+        return p.to_string();
     }
+    let id = unsafe { ffi::vp_create_window(mt) };
+    if id.is_null() {
+        log("windowId: no exported window — video will not bind");
+        return p.to_string();
+    }
+    let id = unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy();
     let anchor = r#""appId":"com.beb.plxnative""#;
     if !p.contains(anchor) {
         log("windowId: payload has no appId anchor — NOT spliced; video will not bind");
-        return p;
+        return p.to_string();
     }
+    log(&format!("vplane: exported windowId={id} spliced into the Load payload"));
     p.replace(anchor, &format!(r#"{anchor},"windowId":"{id}""#))
 }
 
@@ -361,7 +361,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // rather than inside build_av_payload — three of the four variants are static strings that
     // never see the builder, and a binding that works only for streamed A/V would be the kind of
     // bug that reproduces on some content and not others.
-    let payload_c = std::ffi::CString::new(with_window_id(payload_str.to_string())).unwrap();
+    let payload_c = std::ffi::CString::new(with_window_id(mt, payload_str)).unwrap();
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();
@@ -672,14 +672,11 @@ fn teardown(mt: &MainThread, for_reload: bool) {
         }
         unsafe { ffi::sf_destroy(mt) };
     }
-    // The webOS 5+ counterpart of acb_unload. Outside the sf_ready guard because the window is
-    // created BEFORE Load — a session that failed between the two would otherwise leak it, and
-    // the next Load would ask the compositor for another. `acb_init` creates one per session, so
-    // this must retire one per session.
-    if ffi::vp_mode() == ffi::VP_EXPORTED {
-        unsafe { ffi::vp_destroy_window(mt) };
-        WINDOW_ID.lock().unwrap().clear();
-    }
+    // The webOS 5+ counterpart of acb_unload, and the other half of `with_window_id`'s create.
+    // Outside the sf_ready guard because the window is created BEFORE Load — a session that failed
+    // between the two would otherwise leak it, and the next Load would ask for another. Unguarded
+    // because the seam already no-ops in the other modes (see starfish.h).
+    unsafe { ffi::vp_destroy_window(mt) };
     // 4. drain + destroy both queues (drain_aq also clears both pendings)
     if stream {
         drain_aq(&mut eng);

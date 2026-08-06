@@ -62,3 +62,8 @@ pkg/.build-config
 # 30k files. The .ipk carries the four built .so; releases carry the tarball for LGPL.
 vendor/ffmpeg-build/
 vendor/ffmpeg-prefix/
+# ...and the copies staged into pkg/ for the package. Equally derived: pkg/plxnative depends on
+# them, so a fresh clone rebuilds FFmpeg either way, and tracking them costs 2.1 MB per version
+# bump forever in a repo whose reproducibility rests on the pinned tarball.
+pkg/lib*-plx.so.*
+pkg/.ffabi-ok

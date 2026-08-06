@@ -6,8 +6,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const SCR_W: f32 = 1920.0;
-const SCR_H: f32 = 1080.0;
+use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 
 // Per-frame counters for the frame-drop detector: how many card composites are actually issued
 // (`draw_tex_carded`), and how many of those are (partly) off-screen — to confirm the cull is tight.

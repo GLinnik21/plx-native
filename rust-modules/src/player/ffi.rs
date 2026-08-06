@@ -118,6 +118,10 @@ pub(crate) unsafe fn sf_destroy(_: &MainThread) {
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
 /// comment at the top of `src/starfish.c`.
 pub(crate) const VP_NONE: c_int = 0;
+/// Not referenced in Rust: the ACB path is selected by the SEAM (every `acb_*` verb no-ops in the
+/// other modes) rather than by a branch here, and `ACB_OK` carries the fact the pump needs. Kept
+/// so the three values are readable together, matching `starfish.h`.
+#[allow(dead_code)]
 pub(crate) const VP_ACB: c_int = 1;
 pub(crate) const VP_EXPORTED: c_int = 2;
 

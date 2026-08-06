@@ -17,7 +17,7 @@ use crate::player::SHARED;
 use crate::stream::HttpStream;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
 /// Feed audio (es=2) to the pipeline. Cleared by the /tmp/plxnative-noaudio dev trigger to
@@ -44,7 +44,6 @@ pub enum AVDictionary {}
 pub enum AVCodec {}
 pub enum AVCodecContext {} // opaque: we only pass the lib-allocated pointer to decode/free
 pub enum AVBitStreamFilter {}
-pub enum AVBSFInternal {}
 pub enum AVBufferRef {}
 pub enum AVPacketSideData {}
 // AVStream is opaque here: it is 712 bytes with a large "internal but ABI" block, so
@@ -188,19 +187,10 @@ pub struct AVFormatContext {
 
 
 
-// AVBSFContext head (through time_base_out) — we set par_in + time_base_in before init.
-#[repr(C)]
-pub struct AVBSFContext {
-    pub av_class: *const AVClass,         // +0
-    pub filter: *const AVBitStreamFilter, // +4
-    // `AVBSFInternal *internal` used to sit here; FFmpeg 5.0 removed it, pulling everything
-    // below up by four bytes.
-    pub priv_data: *mut c_void,           // +8
-    pub par_in: *mut AVCodecParameters,   // +12
-    pub par_out: *mut AVCodecParameters,  // +16
-    pub time_base_in: AVRational,         // +20
-    pub time_base_out: AVRational,        // +28
-}
+// AVBSFContext is NOT modelled. The app does its own AVCC->Annex-B conversion in Rust, so the
+// bitstream-filter API is never driven — only `av_bsf_get_by_name` survives, and only to log
+// whether the filters exist. Keeping a #[repr(C)] mirror of a struct nothing reads meant
+// re-deriving its offsets at every FFmpeg bump to prove a fact that did not matter.
 
 
 // AVSubtitle (avcodec.h) — one decoded subtitle "display set". sizeof 32 on 32-bit ARM
@@ -252,12 +242,9 @@ pub struct AVSubtitleRect {
 // difference between refusing and never starting is the difference between a UI that browses your
 // library and says it cannot play, and a television where nothing happens at all.
 //
-// Two consequences worth knowing. The `cfg(test)` gate is gone: with no link directive the host
+// One consequence worth knowing: the `cfg(test)` gate is gone. With no link directive the host
 // suite links unconditionally, and a test that calls into FFmpeg now fails by taking `dlopen`'s
-// None branch on Darwin instead of by failing to link. And `av_register_all` is the one symbol
-// that ever disappears (deleted in libavformat 59), so on 10.2.0+ the load reports Incomplete and
-// names it — which is a correct refusal, not a bug to work around, until someone with that
-// hardware makes the call optional.
+// None branch on Darwin instead of by failing to link.
 crate::dynlib! {
     avformat: ["libavformat-plx.so.63"] {
     // Declared beside libavformat's other entry points because that is the library that DEFINES
@@ -307,17 +294,6 @@ crate::dynlib! {
     fn av_write_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
     fn avio_flush(s: *mut AVIOContext);
     fn avformat_free_context(s: *mut AVFormatContext);
-}
-optional {
-    /// **Required on n3.3, a no-op from FFmpeg 4.0, DELETED in 5.0** (webOS 10.2.0 ships
-    /// libavformat 59, 11.2.0 ships 60 — neither exports it). Registering muxers and demuxers
-    /// became automatic in 4.0, so on those sets not calling it is not merely tolerable, it is
-    /// what the library asks for.
-    ///
-    /// It was the ONLY one of the 56 FFmpeg functions this app binds that is ever absent, and
-    /// treating it as required made the app refuse to demux on the two newest firmware families
-    /// for a symbol it does not need — and report the wrong reason for doing so.
-    fn av_register_all();
 }}
 crate::dynlib! {
     avcodec: ["libavcodec-plx.so.63"] {
@@ -325,14 +301,8 @@ crate::dynlib! {
     fn av_packet_alloc() -> *mut AVPacket;
     fn av_packet_free(pkt: *mut *mut AVPacket);
     fn av_packet_unref(pkt: *mut AVPacket);
-    fn avcodec_parameters_copy(dst: *mut AVCodecParameters, src: *const AVCodecParameters) -> c_int;
     fn avcodec_get_name(id: c_int) -> *const c_char;
     fn av_bsf_get_by_name(name: *const c_char) -> *const AVBitStreamFilter;
-    fn av_bsf_alloc(f: *const AVBitStreamFilter, ctx: *mut *mut AVBSFContext) -> c_int;
-    fn av_bsf_init(ctx: *mut AVBSFContext) -> c_int;
-    fn av_bsf_send_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
-    fn av_bsf_receive_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
-    fn av_bsf_free(ctx: *mut *mut AVBSFContext);
     // Image-subtitle software decode (PGS/VobSub/DVB → paletted bitmap). The classic 3.x
     // API: decode_subtitle2 fills an AVSubtitle the caller must avsubtitle_free.
     fn avcodec_find_decoder(id: c_int) -> *const AVCodec;
@@ -398,16 +368,13 @@ crate::dynlib! {
 pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
 pub const AVMEDIA_TYPE_AUDIO: c_int = 1;
 pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
-// AAC and AC3 sit ABOVE the removed VOXWARE entry in the audio block, so they are the same
-// number on every major and stay consts. H264, HEVC and E-AC3 are not — they live in `Abi`.
+// The only codec id the app compares against. The others (H264, AC3, E-AC3) and AV_PKT_FLAG_KEY
+// were declared and never read; their values shift between FFmpeg majors, so each one was a
+// constant to re-derive and assert in order to prove nothing.
 pub const AV_CODEC_ID_AAC: c_int = 0x15002;
-pub const AV_CODEC_ID_AC3: c_int = 0x15003;
 // FF_API_XVMC and FF_API_VOXWARE both died before FFmpeg 6, which is why these differ from the
 // values the n3.3 televisions use (28 / 174 / 0x15029).
-pub const AV_CODEC_ID_H264: c_int = 27;
 pub const AV_CODEC_ID_HEVC: c_int = 172;
-pub const AV_CODEC_ID_EAC3: c_int = 0x15028;
-pub const AV_PKT_FLAG_KEY: c_int = 0x0001;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 pub const AVERROR_EOF: c_int = -541478725;
 pub const AVERROR_EAGAIN: c_int = -11;
@@ -415,9 +382,8 @@ pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 pub const AV_TIME_BASE: i64 = 1_000_000;
 pub const NS_TB: AVRational = AVRational { num: 1, den: 1_000_000_000 };
 
-// ---- AVStream field accessors. The offsets come from the runtime `Abi` table, because
-// FFmpeg 4.0 deleted a deprecated member ahead of both of them: time_base 40 -> 16,
-// codecpar 708 -> 176. ----
+// ---- AVStream field accessors, at the constants above. Read by offset rather than modelled:
+// the struct is large, mostly internal, and only three fields are wanted. ----
 #[inline]
 unsafe fn stream_codecpar(s: *mut AVStream) -> *mut AVCodecParameters {
     *((s as *const u8).add(OFF_STREAM_CODECPAR) as *const *mut AVCodecParameters)
@@ -579,7 +545,7 @@ impl Venc {
     /// 50-110ms/frame on this CPU where 480x270 stays near 15-25ms; the caller rebuilds
     /// the session when the geometry changes.
     pub(crate) fn open(w: c_int, h: c_int, bitrate_bps: i64) -> Option<Box<Venc>> {
-        ensure_registered(); // the file's ONE registration guard (av_register_all + network_init)
+        ensure_registered(); // the file's ONE network-init guard
         if !SWS_OK.load(Ordering::Relaxed) {
             crate::log("venc: libswscale is not loaded (RELEASE build) — mpeg1 capture off");
             return None;
@@ -1050,9 +1016,10 @@ unsafe fn decode_bitmap_cue(dec: *mut AVCodecContext, pkt: *mut AVPacket, track:
 }
 
 static REGISTER: Once = Once::new();
+/// One-time `avformat_network_init`. Was also the home of `av_register_all`, which FFmpeg 4.0
+/// made a no-op and 5.0 deleted — registration is automatic now, and the bundled build is 9.0.
 fn ensure_registered() {
     REGISTER.call_once(|| unsafe {
-        av_register_all();
         avformat_network_init();
     });
 }
@@ -1071,8 +1038,7 @@ fn load_libraries() -> bool {
     // The bundled FFmpeg lives beside the binary, which is on no library search path — so it is
     // opened by ABSOLUTE PATH. That is not a convenience: webOS 11.2.0 ships FFmpeg 6 itself, and
     // a bare SONAME there could open the television's copy instead of ours.
-    let dir = crate::paths::app_dir();
-    let dir = dir.to_str();
+    let dir = Some(crate::paths::app_dir());
 
     // DEPENDENCY ORDER, and it is load-bearing. libavformat NEEDs libavcodec NEEDs libavutil by
     // SONAME, and these libraries carry no rpath (FFmpeg's configure evals its flags, so
@@ -1134,12 +1100,12 @@ pub(crate) fn boot() {
         // THE MAJORS ARE THE ABI. Everything below reads FFmpeg structs at offsets that are fixed
         // per major: FFmpeg guarantees layout only within one, and majors reorder.
         //
-        // So the majors SELECT a table rather than being checked against one. There are two, and
-        // between them they cover webOS 2.2.3 through 9.2.0. Anything else is refused, and the
-        // refusal is the point: a wrong offset does not fail, it succeeds with garbage. On a
-        // libavformat 58 set the n3.3 `codecpar` at +708 reads 20 bytes past a 688-byte AVStream
-        // and dereferences what it finds as a pointer; on 9.2.0's 424-byte AVStream, 284 bytes
-        // past. Neither produces an error, on a device with no debugger.
+        // One version, checked against the one we built for. This used to SELECT between two
+        // offset tables because the app read the television's FFmpeg and every webOS release
+        // shipped a different one; bundling made that a single equality. The refusal still
+        // matters: a wrong offset does not fail, it succeeds with garbage. Reading `codecpar` at
+        // the n3.3 offset on a modern AVStream lands hundreds of bytes past the struct and
+        // dereferences whatever it finds, on a device with no debugger.
         // The version we BUILT against, not a version we hope to find. These libraries ship
         // inside the package under a -plx SONAME, so a mismatch means the deployed payload is
         // stale or someone put a different file there — not a firmware difference.
