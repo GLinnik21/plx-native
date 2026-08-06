@@ -189,6 +189,17 @@ pub(crate) struct Shared {
 
     // demux (D) -> main (M)
     pub file_size: AtomicI64,                 // g_file_size
+    /// The DECODED FRAME SIZE, published by the demuxer once the video stream is known.
+    ///
+    /// Exists for the webOS 5+ exported window, whose `SDL_webOSSetExportedWindow(id, src, dst)`
+    /// wants the frame you are FEEDING as `src` and the on-screen rect as `dst` — the pair is what
+    /// expresses scaling. webOS 4's `AcbAPI_setDisplayWindow` takes only a destination, so nothing
+    /// needed this before and the exported path was written passing the authoring canvas (1920x1080)
+    /// for both. That is wrong for every 4K direct play, which is most of them.
+    ///
+    /// 0 until the demuxer has opened the stream; readers must treat 0 as "not known yet".
+    pub video_w: AtomicI32,
+    pub video_h: AtomicI32,
     pub duration_ns: AtomicI64,               // was g_mkv.duration_ns (published)
     // set once the pipeline has drained to true end-of-stream (EOS pushed AND the last fed frame
     // has been presented). app.rs polls player::ended() to tear the player down at the credits.
@@ -226,6 +237,8 @@ impl Shared {
             sub_cues: Mutex::new(Vec::new()),
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
+            video_w: AtomicI32::new(0),
+            video_h: AtomicI32::new(0),
             duration_ns: AtomicI64::new(0),
             ended: AtomicBool::new(false),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),

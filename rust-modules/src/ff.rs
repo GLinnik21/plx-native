@@ -1729,6 +1729,11 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             // across n3.3 / 6 / 9. The on-device suite asserted the bare number, so bundling our
             // own FFmpeg failed all 21 cases at once on a codec the app had identified perfectly
             // well. `avcodec_get_name` is stable, means what the assertion meant, and is free.
+            // Publish the coded size: the webOS 5+ exported window needs the frame it is being
+            // fed, and this is the only place that knows it for certain — a transcode's declared
+            // dimensions and its actual output need not agree.
+            SHARED.video_w.store((*vcp).width, Ordering::Relaxed);
+            SHARED.video_h.store((*vcp).height, Ordering::Relaxed);
             let cname = std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
             crate::player::log(&format!(
                 "ff: v=#{vi} codec={cname} codec_id={} {}x{} a=#{ai} dur_ns={}",

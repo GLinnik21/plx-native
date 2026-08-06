@@ -259,13 +259,21 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         && ffi::vp_mode() == ffi::VP_EXPORTED
         && SHARED.frames.load(Relaxed) >= 2
     {
-        // src is the decoded frame size, dst the on-screen rect; the pair also expresses scaling.
-        // Both are the full panel here for the same reason acb_start passes 0,0,1920,1080 — the
-        // app authors at a fixed 1080p and plays full-screen.
-        let rv = unsafe { ffi::vp_place(mt, 1920, 1080, 0, 0, 1920, 1080) };
+        // src is the DECODED FRAME, dst the on-screen rect; the pair is what expresses scaling
+        // (webosbrew's native media guide: "`src` is the frame you are feeding, `dst` is where it
+        // goes on screen"). This used to pass 1920x1080 for BOTH, copied from `acb_start`'s
+        // literals — but ACB's setDisplayWindow takes only a DESTINATION rect, so that number
+        // meant nothing in the src slot. It would have told the compositor a 4K direct play was a
+        // 1080p source, which is most of what this app plays.
+        //
+        // Falls back to the authoring canvas only if the demuxer has not published a size yet,
+        // which `frames >= 2` should already have ruled out.
+        let (sw, sh) = (SHARED.video_w.load(Relaxed), SHARED.video_h.load(Relaxed));
+        let (sw, sh) = if sw > 0 && sh > 0 { (sw, sh) } else { (1920, 1080) };
+        let rv = unsafe { ffi::vp_place(mt, sw, sh, 0, 0, 1920, 1080) };
         eng.video_info_sent = true;
         eng.stage = Stage::Streaming;
-        super::log(&format!("vplane: exported window placed rv={rv} → streaming"));
+        super::log(&format!("vplane: exported window placed src={sw}x{sh} rv={rv} → streaming"));
     }
 
     // ---------- feed AUs once playing (Feed only succeeds after Play). NOT while a seek
