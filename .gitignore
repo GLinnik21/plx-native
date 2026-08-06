@@ -56,3 +56,9 @@ pkg/sockprobe
 .tv-tunnel.log
 .tv-remote-url
 pkg/.build-config
+
+# Bundled FFmpeg: the upstream source tree and the build output. Both are DERIVED —
+# ci/build-ffmpeg.sh reproduces them from a sha256-pinned tarball — and the tree alone is
+# 30k files. The .ipk carries the four built .so; releases carry the tarball for LGPL.
+vendor/ffmpeg-build/
+vendor/ffmpeg-prefix/

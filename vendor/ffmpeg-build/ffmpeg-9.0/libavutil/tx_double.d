@@ -1,8 +1,0 @@
-libavutil/tx_double.o: libavutil/tx_double.c libavutil/tx_priv.h \
- libavutil/tx.h libavutil/thread.h config.h libavutil/error.h \
- libavutil/macros.h libavutil/avconfig.h libavutil/mem_internal.h \
- libavutil/attributes.h libavutil/common.h libavutil/version.h \
- libavutil/intmath.h libavutil/arm/intmath.h libavutil/attributes.h \
- libavutil/internal.h libavutil/libm.h libavutil/mathematics.h \
- libavutil/rational.h libavutil/intfloat.h libavutil/tx_template.c \
- libavutil/mem.h

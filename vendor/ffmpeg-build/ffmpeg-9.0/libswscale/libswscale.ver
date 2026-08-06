@@ -1,7 +1,0 @@
-LIBSWSCALE_10 {
-    global:
-        swscale_*;
-        sws_*;
-    local:
-        *;
-};
