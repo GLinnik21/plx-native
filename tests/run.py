@@ -359,7 +359,10 @@ def filter_log(raw):
 
 
 RE_DECISION = re.compile(r"decision: part=.* -> (DIRECT PLAY|TRANSCODE)")
-RE_CODEC = re.compile(r"ff: v=#0 codec_id=(\d+)\s+(\d+)x(\d+)")
+# Grades the codec NAME, not the raw AV_CODEC_ID: that enum renumbers between FFmpeg
+# majors (H264 is 28 / 27, HEVC 174 / 173 / 172 across n3.3 / 6 / 9), so asserting the
+# number quietly made this suite a test of which FFmpeg the app happened to be using.
+RE_CODEC = re.compile(r"ff: v=#0 codec=(\S+) codec_id=(\d+)\s+(\d+)x(\d+)")
 RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
 # the 1Hz media position carried on the render heartbeat (app.rs). Anchored to loop= so it can
 # never pick up a `pos=` that some other line grows later. loop= and NOT fps=, because `pos=` sits
@@ -393,12 +396,12 @@ def redact(s):
 
 
 def codec_ids(lines):
-    """All (codec_id, width, height) from `ff: v=#0` lines, in order."""
+    """All (codec_name, width, height) from `ff: v=#0` lines, in order."""
     out = []
     for ln in lines:
         m = RE_CODEC.search(ln)
         if m:
-            out.append((int(m.group(1)), int(m.group(2)), int(m.group(3)), ln))
+            out.append((m.group(1), int(m.group(3)), int(m.group(4)), ln))
     return out
 
 
@@ -464,13 +467,13 @@ def a_decision(lines, expected):
     return False, "no `stream: ... path=` or `decision: ... ->` line found"
 
 
-def a_codec(lines, expected_id, min_width):
+def a_codec(lines, expected, min_width):
     cs = codec_ids(lines)
     if not cs:
-        return False, "no `ff: v=#0 codec_id=` line found"
-    cid, w, h, ln = cs[0]
-    ok = (cid == expected_id) and (w >= min_width)
-    return ok, f"codec_id={cid} {w}x{h} (want id={expected_id} w>={min_width}) :: {ln.strip()}"
+        return False, "no `ff: v=#0 codec=` line found"
+    name, w, h, ln = cs[0]
+    ok = (name == expected) and (w >= min_width)
+    return ok, f"codec={name} {w}x{h} (want {expected} w>={min_width}) :: {ln.strip()}"
 
 
 def a_no_error(lines):
@@ -630,10 +633,10 @@ def op_audio_native(lines):
     cs = codec_ids(lines)
     if not cs:
         return False, "no ff codec line after switch"
-    last_id = cs[-1][0]
-    if last_id != 174:
-        return False, f"codec after native switch = {last_id}, expected 174 (should stay HEVC) :: {cs[-1][3].strip()}"
-    return True, f"native switch OK; codec stayed 174 :: {hit.strip()}"
+    last = cs[-1][0]
+    if last != "hevc":
+        return False, f"codec after native switch = {last}, expected hevc (should not change) :: {cs[-1][3].strip()}"
+    return True, f"native switch OK; codec stayed hevc :: {hit.strip()}"
 
 
 def op_audio_transcode(lines):
@@ -643,10 +646,10 @@ def op_audio_transcode(lines):
         return False, f"missing transcode-switch logs (re-transcode={bool(re_t)} reload_transcode={bool(rl_t)})"
     cs = codec_ids(lines)
     # the transcode target is HEVC (keeps 4K + HDR10), so an audio-forced re-transcode
-    # re-encodes the video to HEVC (174). NB: a future "audio-only transcode" that COPIES the
-    # video would leave it at the source codec instead — update this expectation if that lands.
-    if cs and cs[-1][0] != 174:
-        return False, f"codec after transcode switch = {cs[-1][0]}, expected 174 (HEVC target) :: {cs[-1][3].strip()}"
+    # re-encodes the video to HEVC. NB: a future "audio-only transcode" that COPIES the video
+    # would leave it at the source codec instead — update this expectation if that lands.
+    if cs and cs[-1][0] != "hevc":
+        return False, f"codec after transcode switch = {cs[-1][0]}, expected hevc (target) :: {cs[-1][3].strip()}"
     return True, f"transcode switch OK :: {rl_t.strip()}"
 
 
@@ -988,7 +991,7 @@ def evaluate(case, lines):
 
     # base assertions (every case)
     results.append(("decision", *a_decision(lines, exp["decision"])))
-    results.append(("codec", *a_codec(lines, exp["codec_id"], exp["min_video_width"])))
+    results.append(("codec", *a_codec(lines, exp["codec"], exp["min_video_width"])))
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))

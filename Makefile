@@ -209,28 +209,40 @@ src/%.o: src/%.c $(wildcard src/*.h) Makefile
 # assets/icons/*.svg) at COMPILE time. Those were in no dependency list, so editing a shader
 # or an icon produced no rebuild and the TV silently kept running the old one — the worst
 # failure mode on a project whose only verification is observing the device.
-# The FFmpeg ABI gate. ff.rs reads the TV's FFmpeg structs at offsets that were originally derived
-# BY HAND from stripped device binaries — correct, but unprovable by the build until now.
-# ci/ffabi-assert.c re-derives every one with offsetof against the real public headers, so a slip
-# is a compile error naming the field instead of a wild pointer on a television. Compiled, never
-# linked — it contains only _Static_asserts. It is a prerequisite of the staticlib, so no binary
-# is produced if a table is wrong.
+# ---- The bundled FFmpeg ------------------------------------------------------
+# The app ships its own FFmpeg rather than reading the television's. Why, at length, in
+# ci/build-ffmpeg.sh and docs/webos5-port.md; the short version is that the TV's version moves with
+# the firmware (55 -> 57 -> 58 -> 59 -> 60 across webOS 2 to 11), and while the struct OFFSETS
+# could be re-derived from upstream headers at the matching version, the component list could not
+# be checked at all — demuxers and bitstream filters live in a registry, as data, invisible to
+# every symbol table. Bundling makes both compile-time facts.
 #
-# COMPILED ONCE PER SUPPORTED MAJOR, because ff.rs now carries one offset table per major (`Abi`)
-# and an unproven table is exactly as dangerous as the hand-derived ones were. The assert file's
-# expectations are selected by the headers' own version macros, so each pass proves its own table:
-#   n3.3 headers -> libavformat 57 -> ABI_N33 -> webOS 2.2.3 .. 4.10.0
-#   n4.0 headers -> libavformat 58 -> ABI_N4X -> webOS 5.3.1 .. 9.2.0
-# n4.0 stands in for the whole of major 58: 5.3.1/6.4.0 ship 58.12 (= n4.0), 7.4.0/8.3.0 ship
-# 58.29 (= n4.2) and 9.2.0 ships 58.76 (= n4.4), and every constant in the table is identical
-# across all three. Only three sizes move within the major — sizeof(AVStream) is 688/704/424 —
-# and none of them is in the table, because the app allocates none of those structs.
-FFABI_STAMP = pkg/.ffabi-ok
-FFABI_HEADERS = $(wildcard vendor/ffmpeg-3.3-headers/*/*.h) $(wildcard vendor/ffmpeg-4.0-headers/*/*.h)
-$(FFABI_STAMP): ci/ffabi-assert.c $(FFABI_HEADERS) Makefile
+# Built once into vendor/ffmpeg-prefix (gitignored, derived); ~2 minutes cold, nothing after.
+# RELEASE=1 drops swscale and the mpeg1/mpegts pair, which only the dev capture stream uses.
+FFMPEG_PREFIX = vendor/ffmpeg-prefix
+FFMPEG_INC    = $(FFMPEG_PREFIX)/include
+# Staged into pkg/ under their SONAMEs, which is the name ff.rs dlopens by absolute path.
+FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 \
+                 $(if $(RELEASE),,libswscale-plx.so.10)
+FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
+
+$(FFMPEG_INC)/libavformat/avformat.h:
+	RELEASE=$(RELEASE) ./ci/build-ffmpeg.sh
+
+# The real files carry a full version (libavutil-plx.so.58.29.100); ship them under the SONAME.
+$(FFMPEG_STAGED): pkg/%: $(FFMPEG_INC)/libavformat/avformat.h
 	@mkdir -p pkg
-	$(CC) $(CFLAGS) -I vendor/ffmpeg-3.3-headers -std=c11 -c ci/ffabi-assert.c -o /dev/null
-	$(CC) $(CFLAGS) -I vendor/ffmpeg-4.0-headers -std=c11 -c ci/ffabi-assert.c -o /dev/null
+	cp $$(ls $(FFMPEG_PREFIX)/lib/$*.* | head -1) $@
+
+# The FFmpeg ABI gate. ff.rs reads FFmpeg structs at hardcoded offsets; ci/ffabi-assert.c
+# re-derives every one with offsetof against THE HEADERS THE SHIPPED LIBRARIES WERE BUILT FROM, so
+# a slip is a compile error naming the field instead of a wild pointer on a television. Compiled,
+# never linked — it contains only _Static_asserts — and a prerequisite of the staticlib, so no
+# binary is produced if a constant is wrong.
+FFABI_STAMP = pkg/.ffabi-ok
+$(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
+	@mkdir -p pkg
+	$(CC) $(CFLAGS) -I $(FFMPEG_INC) -std=c11 -c ci/ffabi-assert.c -o /dev/null
 	@touch $@
 
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
@@ -241,7 +253,7 @@ $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
-pkg/plxnative: $(OBJS) $(RUST_LIB) Makefile
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) Makefile
 	$(CC) $(CFLAGS) $(OBJS) $(RUST_LIB) $(LIBS_REAL) -ldl -lpthread -lm -o $@
 
 # --- NDK bootstrap -----------------------------------------------------------
@@ -298,8 +310,13 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 # a copy in the GitHub repo does not discharge it for someone who received only the package.
 # NB adding libturbojpeg.so.0 here would create IJG + BSD-3-Clause + Zlib obligations that the
 # current notices do NOT cover — it is deliberately dev-deploy-only (see capture.rs).
+# The bundled FFmpeg is PAYLOAD, not an optional extra: without it the app starts, browses and
+# refuses to play. It is also the reason THIRD-PARTY-NOTICES.md and licenses/ must travel with the
+# package — LGPL-2.1 §6 wants the notice and the licence text alongside the binary, and shipping
+# FFmpeg ourselves makes that our obligation rather than the television's.
 APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png pkg/splash.png \
-            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt THIRD-PARTY-NOTICES.md
+            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt THIRD-PARTY-NOTICES.md \
+            $(FFMPEG_STAGED)
 # TRADEMARKS.md ships too: it carries the brand reservation and the Plex/LG non-affiliation
 # statement, which used to be appended to LICENSE. It was moved out because GitHub's `licensee`
 # matches LICENSE against known texts by SIMILARITY, and the appended thirty lines pushed the file
@@ -307,8 +324,11 @@ APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png pkg/sp
 # terms in the one place most people look. Splitting the file must not un-ship the reservation.
 LICENSE_FILES = LICENSE TRADEMARKS.md $(wildcard licenses/*.txt)
 
-deploy: pkg/plxnative
+deploy: pkg/plxnative $(FFMPEG_STAGED)
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
+	# The bundled FFmpeg, under its SONAME — ff.rs dlopens these by absolute path from the app
+	# directory. Unconditional, like the fonts: a CHANGED library must be able to reach the TV.
+	for f in $(FFMPEG_SONAMES); do $(SCP) pkg/$$f root@$(TV):$(APPDIR)/$$f; done
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
 	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could

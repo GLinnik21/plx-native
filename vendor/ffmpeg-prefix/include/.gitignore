@@ -1,5 +1,0 @@
-
-# Bundled FFmpeg: source tree + build output. Reproduced by ci/build-ffmpeg.sh from a
-# sha256-pinned upstream tarball, so it is derived, not source.
-vendor/ffmpeg-build/
-vendor/ffmpeg-prefix/

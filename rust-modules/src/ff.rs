@@ -27,6 +27,11 @@ static FEED_AUDIO: AtomicBool = AtomicBool::new(true);
 /// [`boot`]; read by [`demux`]. Starts FALSE so the gate is closed until boot has actually looked
 /// — a demux that somehow ran first should refuse, not assume.
 static ABI_OK: AtomicBool = AtomicBool::new(false);
+/// Did libswscale load? It is the one FFmpeg library that is NOT required: `RELEASE=1` leaves it
+/// out of the package because only the dev capture stream's RGBA->YUV conversion uses it. `venc`
+/// checks this rather than relying on being feature-gated out, so the dependency is enforced
+/// where it exists instead of somewhere else.
+static SWS_OK: AtomicBool = AtomicBool::new(false);
 pub(crate) fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
 }
@@ -46,89 +51,31 @@ pub enum AVPacketSideData {}
 // rather than transcribe every field we read only the three we need at their verified
 // n3.3 offsets (index +0, time_base +40, codecpar +708). Phase A confirms the offsets.
 pub enum AVStream {}
-/// `AVStream.index` — +0 on every FFmpeg major, so it needs no table entry.
-const OFF_STREAM_INDEX: usize = 0;
+// ---- The FFmpeg 9.0 ABI, on 32-bit ARM. ----
+//
+// These were a RUNTIME TABLE selected per libavformat major, because the app read the
+// television's own FFmpeg and every webOS release ships a different one (55 / 57 / 58 / 59 / 60
+// across webOS 2 to 11). They are plain constants again because the app now ships its own
+// FFmpeg: exactly one version exists, under a SONAME that cannot collide with the TV's, and
+// `ci/ffabi-assert.c` holds every number here against the very headers the shipped libraries
+// were built from.
+//
+// That is the point of bundling. An offset that is merely *probably* right — derived from a
+// version string plus an upstream tarball — becomes one the compiler checked.
+//
+// `tools/ffabi-dump.sh` re-derives all of them if the bundled version ever changes.
+const OFF_STREAM_INDEX: usize = 4; // NB not 0 — FFmpeg 5.0 put `const AVClass *av_class` first
+const OFF_STREAM_CODECPAR: usize = 12;
+const OFF_STREAM_TIME_BASE: usize = 20;
+/// `AVFormatContext.duration`, in AV_TIME_BASE units. By offset — see the struct's closing note.
+const OFF_FMT_DURATION: usize = 64;
 
-/// The FFmpeg facts that MOVE between majors, chosen at boot from the runtime version.
-///
-/// This is a small table because the app reads a small number of things. Nearly everything it
-/// touches — the whole of AVPacket, AVCodecParameters, AVSubtitle, AVSubtitleRect and AVFrame —
-/// is byte-identical from 3.3 through 4.4, because the two deprecation guards that set those
-/// layouts (`FF_API_CONVERGENCE_DURATION`, `FF_API_AVPICTURE`) are `MAJOR < 59` and so survive
-/// the whole of FFmpeg 4.x. What moves is AVStream (4.0 deleted a deprecated `AVFraction pts`,
-/// pulling everything after it forward), AVFormatContext (4.0 inserted `char *url`), and three
-/// codec ids (removing FF_API_XVMC and FF_API_VOXWARE renumbered the enum below them).
-///
-/// Every value here was derived by compiling `offsetof` against the real upstream headers with
-/// this project's own cross-compiler, and each set is asserted at build time — `ci/ffabi-assert.c`
-/// for n3.3, `ci/ffabi-assert-4x.c` for n4.x. Nothing in it was written from memory.
-#[derive(Clone, Copy)]
-struct Abi {
-    /// Which libavformat major this describes — for the log line, and for `boot` to match on.
-    avformat_major: c_uint,
-    stream_time_base: usize,
-    stream_codecpar: usize,
-    /// `AVFormatContext.duration`, in AV_TIME_BASE units.
-    fmt_duration: usize,
-    codec_id_h264: c_int,
-    codec_id_hevc: c_int,
-    codec_id_eac3: c_int,
-}
-
-/// FFmpeg n3.3 — libavformat 57 / libavcodec 57 / libavutil 55. webOS 2.2.3 through 4.10.0.
-/// The only configuration this app has ever run on, and the one the on-device suite grades.
-const ABI_N33: Abi = Abi {
-    avformat_major: 57,
-    stream_time_base: 40,
-    stream_codecpar: 708,
-    fmt_duration: 1064,
-    codec_id_h264: 28,
-    codec_id_hevc: 174,
-    codec_id_eac3: 0x15029,
-};
-
-/// FFmpeg 4.x — libavformat 58 / libavcodec 58 / libavutil 56. webOS 5.3.1 through 9.2.0
-/// (4.0 on 5.3.1 and 6.4.0, 4.2 on 7.4.0 and 8.3.0, 4.4 on 9.2.0).
-///
-/// One table covers all three, which is the fact that makes this cheap: every constant here is
-/// identical on 58.12, 58.29 and 58.76. The three sizes that DO move within major 58 —
-/// `sizeof(AVStream)` is 688/704/424, and 4.4 shrank it by moving 39 tail fields into
-/// AVStreamInternal — are not in this table and must never be, because the app allocates none of
-/// those structs and reads nothing in AVStream past `codecpar` at +176.
-///
-/// **UNTESTED ON HARDWARE.** The offsets are proven against upstream headers; that LG's build of
-/// libavformat 58 was not patched in a way its version macros do not admit is an assumption. The
-/// cheap on-device check is the one `boot` already logs, plus `/tmp/plxnative-ffprobe` on a known
-/// file: if codec_id, width and height come back sane, the table is right.
-const ABI_N4X: Abi = Abi {
-    avformat_major: 58,
-    stream_time_base: 16,
-    stream_codecpar: 176,
-    fmt_duration: 1072,
-    // FF_API_XVMC is gone in major 58, and AV_CODEC_ID_MPEG2VIDEO_XVMC sat below both of these.
-    codec_id_h264: 27,
-    codec_id_hevc: 173,
-    // FF_API_VOXWARE likewise: AV_CODEC_ID_VOXWARE was the entry right below E-AC3. Reading a
-    // stream with the old value on a webOS 5 set would name ATRAC3P, not E-AC3.
-    codec_id_eac3: 0x15028,
-};
-
-/// The table in force, published by [`boot`]. Null until then; every reader is downstream of
-/// `ABI_OK`, which `boot` only sets once this points somewhere.
-static ABI: AtomicPtr<Abi> = AtomicPtr::new(std::ptr::null_mut());
-
-#[inline]
-fn abi() -> &'static Abi {
-    // The n3.3 fallback is for the window before `boot` runs — reachable only by a caller that
-    // ignored `ABI_OK`, in which case the wrong offsets are the smaller of its problems.
-    unsafe { ABI.load(Ordering::Acquire).as_ref().unwrap_or(&ABI_N33) }
-}
-
-/// `AVFormatContext.duration`. Not a struct field, because 3.3 and 4.x disagree about where it is.
+/// The only field this app reads past `AVFormatContext.streams`.
 #[inline]
 unsafe fn fmt_duration(fmt: *const AVFormatContext) -> i64 {
-    *((fmt as *const u8).add(abi().fmt_duration) as *const i64)
+    *((fmt as *const u8).add(OFF_FMT_DURATION) as *const i64)
 }
+
 
 // ---- structs (exact n3.3 field order; 32-bit ARM/AAPCS sizes) ----
 #[repr(C)]
@@ -141,53 +88,78 @@ pub struct AVRational {
 // sizeof = 72
 #[repr(C)]
 pub struct AVPacket {
-    pub buf: *mut AVBufferRef,        // +0
-    pub pts: i64,                     // +8
-    pub dts: i64,                     // +16
-    pub data: *mut u8,                // +24
-    pub size: c_int,                  // +28
-    pub stream_index: c_int,          // +32
-    pub flags: c_int,                 // +36
+    pub buf: *mut AVBufferRef,            // +0
+    pub pts: i64,                         // +8
+    pub dts: i64,                         // +16
+    pub data: *mut u8,                    // +24
+    pub size: c_int,                      // +28
+    pub stream_index: c_int,              // +32
+    pub flags: c_int,                     // +36
     pub side_data: *mut AVPacketSideData, // +40
-    pub side_data_elems: c_int,       // +44
-    pub duration: i64,                // +48
-    pub pos: i64,                     // +56
-    pub convergence_duration: i64,    // +64  (FF_API_CONVERGENCE_DURATION)
+    pub side_data_elems: c_int,           // +44
+    pub duration: i64,                    // +48
+    pub pos: i64,                         // +56
+    // The tail changed at FFmpeg 5.0: `convergence_duration` went with
+    // FF_API_CONVERGENCE_DURATION, and these three arrived. sizeof 72 -> 80. The app never
+    // allocates an AVPacket (av_packet_alloc does), so only the offsets above matter — but the
+    // size is asserted anyway, because a short model here would be a silent overread.
+    pub opaque: *mut c_void,              // +64
+    pub opaque_ref: *mut AVBufferRef,     // +68
+    pub time_base: AVRational,            // +72
 }
+
 
 // sizeof = 136
 #[repr(C)]
 pub struct AVCodecParameters {
-    pub codec_type: c_int,   // +0
-    pub codec_id: c_int,     // +4
-    pub codec_tag: u32,      // +8
-    pub extradata: *mut u8,  // +12
-    pub extradata_size: c_int, // +16
-    pub format: c_int,       // +20
-    pub bit_rate: i64,       // +24
-    pub bits_per_coded_sample: c_int, // +32
-    pub bits_per_raw_sample: c_int,   // +36
-    pub profile: c_int,      // +40
-    pub level: c_int,        // +44
-    pub width: c_int,        // +48
-    pub height: c_int,       // +52
-    pub sample_aspect_ratio: AVRational, // +56
-    pub field_order: c_int,  // +64
-    pub color_range: c_int,  // +68
-    pub color_primaries: c_int, // +72
-    pub color_trc: c_int,    // +76
-    pub color_space: c_int,  // +80
-    pub chroma_location: c_int, // +84
-    pub video_delay: c_int,  // +88
-    pub channel_layout: u64, // +96
-    pub channels: c_int,     // +104
-    pub sample_rate: c_int,  // +108
-    pub block_align: c_int,  // +112
-    pub frame_size: c_int,   // +116
-    pub initial_padding: c_int, // +120
-    pub trailing_padding: c_int, // +124
-    pub seek_preroll: c_int, // +128
+    pub codec_type: c_int,            // +0
+    pub codec_id: c_int,              // +4
+    pub codec_tag: u32,               // +8
+    pub extradata: *mut u8,           // +12
+    pub extradata_size: c_int,        // +16
+    pub coded_side_data: *mut AVPacketSideData, // +20
+    pub nb_coded_side_data: c_int,    // +24
+    pub format: c_int,                // +28
+    pub bit_rate: i64,                // +32
+    pub bits_per_coded_sample: c_int, // +40
+    pub bits_per_raw_sample: c_int,   // +44
+    pub profile: c_int,               // +48
+    pub level: c_int,                 // +52
+    pub width: c_int,                 // +56
+    pub height: c_int,                // +60
+    pub sample_aspect_ratio: AVRational, // +64
+    pub framerate: AVRational,        // +72
+    pub field_order: c_int,           // +80
+    pub color_range: c_int,           // +84
+    pub color_primaries: c_int,       // +88
+    pub color_trc: c_int,             // +92
+    pub color_space: c_int,           // +96
+    pub chroma_location: c_int,       // +100
+    pub video_delay: c_int,           // +104
+    // FFmpeg 7 DELETED the deprecated `channel_layout`/`channels` pair that lived here and left
+    // only this struct. `nb_channels` is the replacement for the `channels` int, and reading the
+    // old field is not a compile error on a hand-written model — it is a silent read of whatever
+    // now occupies +104. Which is the argument for shipping a known FFmpeg in one sentence.
+    pub ch_layout: AVChannelLayout,   // +112
+    pub sample_rate: c_int,           // +136
+    pub block_align: c_int,           // +140
+    pub frame_size: c_int,            // +144
+    pub initial_padding: c_int,       // +148
+    pub trailing_padding: c_int,      // +152
+    pub seek_preroll: c_int,          // +156
+    pub alpha_mode: c_int,            // +160
 }
+
+/// `AVChannelLayout`, modelled only as far as `nb_channels` — the one field this app reads.
+/// The union that follows is 8-aligned, so a 4-byte pad sits after `nb_channels` on ARM.
+#[repr(C)]
+pub struct AVChannelLayout {
+    pub order: c_int,       // +0
+    pub nb_channels: c_int, // +4
+    pub u_mask: u64,        // +8  (union { mask, map })
+    pub opaque: *mut c_void, // +16
+}
+
 
 // AVFormatContext truncated after `filename` — we only ever hold a library-returned pointer and
 // read leading fields. NEVER stack-allocate this.
@@ -207,22 +179,29 @@ pub struct AVFormatContext {
     pub ctx_flags: c_int,              // +20
     pub nb_streams: c_uint,            // +24
     pub streams: *mut *mut AVStream,   // +28
-    pub filename: [c_char; 1024],      // +32
-    // ... more fields omitted; do not construct this struct. See `fmt_duration`.
+    // STOPS HERE. Everything past `streams` shifts between majors — `duration` is at +48 on
+    // FFmpeg 6, +64 on 9, and +1064 on the n3.3 the televisions ship, because 5.0 deleted
+    // `filename[1024]` and later releases kept rearranging what replaced it. It is the only field
+    // beyond this point the app reads, so it is read at OFF_FMT_DURATION rather than declared at
+    // a position that would be quietly wrong after a version bump.
 }
+
+
 
 // AVBSFContext head (through time_base_out) — we set par_in + time_base_in before init.
 #[repr(C)]
 pub struct AVBSFContext {
     pub av_class: *const AVClass,         // +0
     pub filter: *const AVBitStreamFilter, // +4
-    pub internal: *mut AVBSFInternal,     // +8
-    pub priv_data: *mut c_void,           // +12
-    pub par_in: *mut AVCodecParameters,   // +16
-    pub par_out: *mut AVCodecParameters,  // +20
-    pub time_base_in: AVRational,         // +24
-    pub time_base_out: AVRational,        // +32
+    // `AVBSFInternal *internal` used to sit here; FFmpeg 5.0 removed it, pulling everything
+    // below up by four bytes.
+    pub priv_data: *mut c_void,           // +8
+    pub par_in: *mut AVCodecParameters,   // +12
+    pub par_out: *mut AVCodecParameters,  // +16
+    pub time_base_in: AVRational,         // +20
+    pub time_base_out: AVRational,        // +28
 }
+
 
 // AVSubtitle (avcodec.h) — one decoded subtitle "display set". sizeof 32 on 32-bit ARM
 // (u16 format @0; u32 start/end_display_time @4/@8, ms relative to `pts`; num_rects @12;
@@ -244,20 +223,21 @@ pub struct AVSubtitle {
 // slots to confirm which the decoder populates before Pass B reads pixels. sizeof = 132.
 #[repr(C)]
 pub struct AVSubtitleRect {
-    pub x: c_int,                  // +0
-    pub y: c_int,                  // +4
-    pub w: c_int,                  // +8
-    pub h: c_int,                  // +12
-    pub nb_colors: c_int,          // +16
-    pub pict_data: [*mut u8; 8],   // +20  (AVPicture.data — deprecated, FF_API_AVPICTURE)
-    pub pict_linesize: [c_int; 8], // +52  (AVPicture.linesize — deprecated)
-    pub data: [*mut u8; 4],        // +84  data[0]=PAL8 indices, data[1]=palette (256×BGRA)
-    pub linesize: [c_int; 4],      // +100
-    pub type_: c_int,              // +116 (enum AVSubtitleType: 0=NONE, 1=BITMAP, 2=TEXT, 3=ASS)
-    pub text: *mut c_char,         // +120
-    pub ass: *mut c_char,          // +124
-    pub flags: c_int,              // +128
+    pub x: c_int,           // +0
+    pub y: c_int,           // +4
+    pub w: c_int,           // +8
+    pub h: c_int,           // +12
+    pub nb_colors: c_int,   // +16
+    // +20 — was +84 on the TV's FFmpeg 3.3, because an entire deprecated AVPicture sat ahead of
+    // it under FF_API_AVPICTURE. FFmpeg 5.0 deleted that, taking sizeof from 132 to 68.
+    pub data: [*mut u8; 4], // +20  data[0]=PAL8 indices, data[1]=palette (256×BGRA)
+    pub linesize: [c_int; 4], // +36
+    pub type_: c_int,       // +52 (enum AVSubtitleType: 0=NONE, 1=BITMAP, 2=TEXT, 3=ASS)
+    pub text: *mut c_char,  // +56
+    pub ass: *mut c_char,   // +60
+    pub flags: c_int,       // +64
 }
+
 
 // ---- externs, bound at RUNTIME by SONAME candidate list (see `dynlib`) ----
 //
@@ -279,7 +259,7 @@ pub struct AVSubtitleRect {
 // names it — which is a correct refusal, not a bug to work around, until someone with that
 // hardware makes the call optional.
 crate::dynlib! {
-    avformat: ["libavformat.so.57", "libavformat.so.58", "libavformat.so.59", "libavformat.so.60"] {
+    avformat: ["libavformat-plx.so.63"] {
     // Declared beside libavformat's other entry points because that is the library that DEFINES
     // it. Under `#[link]` the final link resolved every name against every library at once and
     // the grouping was cosmetic; `dlsym` searches one handle and its dependency chain, and
@@ -340,7 +320,7 @@ optional {
     fn av_register_all();
 }}
 crate::dynlib! {
-    avcodec: ["libavcodec.so.57", "libavcodec.so.58", "libavcodec.so.59", "libavcodec.so.60"] {
+    avcodec: ["libavcodec-plx.so.63"] {
     fn avcodec_version() -> c_uint;
     fn av_packet_alloc() -> *mut AVPacket;
     fn av_packet_free(pkt: *mut *mut AVPacket);
@@ -385,7 +365,7 @@ crate::dynlib! {
     // avformat_version lives in libavformat, not libavutil — but it was declared here and the
     // loader resolves by symbol, not by header, so it must move to the library that defines it or
     // the whole avutil table reports Incomplete on every device.
-    avutil: ["libavutil.so.55", "libavutil.so.56", "libavutil.so.57", "libavutil.so.58"] {
+    avutil: ["libavutil-plx.so.61"] {
     fn avutil_version() -> c_uint;
     fn av_malloc(size: usize) -> *mut c_void;
     fn av_freep(ptr: *mut c_void);
@@ -399,7 +379,7 @@ crate::dynlib! {
     fn av_get_pix_fmt(name: *const c_char) -> c_int;
 }}
 crate::dynlib! {
-    swscale: ["libswscale.so.4", "libswscale.so.5", "libswscale.so.6", "libswscale.so.7"] {
+    swscale: ["libswscale-plx.so.10"] {
     fn sws_getContext(
         src_w: c_int, src_h: c_int, src_fmt: c_int,
         dst_w: c_int, dst_h: c_int, dst_fmt: c_int,
@@ -422,12 +402,11 @@ pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
 // number on every major and stay consts. H264, HEVC and E-AC3 are not — they live in `Abi`.
 pub const AV_CODEC_ID_AAC: c_int = 0x15002;
 pub const AV_CODEC_ID_AC3: c_int = 0x15003;
-#[inline]
-fn codec_id_h264() -> c_int { abi().codec_id_h264 }
-#[inline]
-fn codec_id_hevc() -> c_int { abi().codec_id_hevc }
-#[inline]
-fn codec_id_eac3() -> c_int { abi().codec_id_eac3 }
+// FF_API_XVMC and FF_API_VOXWARE both died before FFmpeg 6, which is why these differ from the
+// values the n3.3 televisions use (28 / 174 / 0x15029).
+pub const AV_CODEC_ID_H264: c_int = 27;
+pub const AV_CODEC_ID_HEVC: c_int = 172;
+pub const AV_CODEC_ID_EAC3: c_int = 0x15028;
 pub const AV_PKT_FLAG_KEY: c_int = 0x0001;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 pub const AVERROR_EOF: c_int = -541478725;
@@ -441,11 +420,11 @@ pub const NS_TB: AVRational = AVRational { num: 1, den: 1_000_000_000 };
 // codecpar 708 -> 176. ----
 #[inline]
 unsafe fn stream_codecpar(s: *mut AVStream) -> *mut AVCodecParameters {
-    *((s as *const u8).add(abi().stream_codecpar) as *const *mut AVCodecParameters)
+    *((s as *const u8).add(OFF_STREAM_CODECPAR) as *const *mut AVCodecParameters)
 }
 #[inline]
 unsafe fn stream_time_base(s: *mut AVStream) -> AVRational {
-    *((s as *const u8).add(abi().stream_time_base) as *const AVRational)
+    *((s as *const u8).add(OFF_STREAM_TIME_BASE) as *const AVRational)
 }
 #[inline]
 unsafe fn stream_index(s: *mut AVStream) -> c_int {
@@ -526,7 +505,7 @@ const OFF_FRAME_LINESIZE: usize = 32; // c_int[8]
 const OFF_FRAME_WIDTH: usize = 68;
 const OFF_FRAME_HEIGHT: usize = 72;
 const OFF_FRAME_FORMAT: usize = 80;
-const OFF_FRAME_PTS: usize = 104;
+const OFF_FRAME_PTS: usize = 96;
 const SWS_BILINEAR: c_int = 2;
 const VENC_TB: AVRational = AVRational { num: 1, den: 30 };
 
@@ -601,6 +580,10 @@ impl Venc {
     /// the session when the geometry changes.
     pub(crate) fn open(w: c_int, h: c_int, bitrate_bps: i64) -> Option<Box<Venc>> {
         ensure_registered(); // the file's ONE registration guard (av_register_all + network_init)
+        if !SWS_OK.load(Ordering::Relaxed) {
+            crate::log("venc: libswscale is not loaded (RELEASE build) — mpeg1 capture off");
+            return None;
+        }
         unsafe {
             let cname = b"mpeg1video\0".as_ptr() as *const c_char;
             let codec = avcodec_find_encoder_by_name(cname);
@@ -666,20 +649,35 @@ impl Venc {
                 crate::log(&format!("venc: avcodec_open2 failed ({r})"));
                 return None; // Drop frees ctx
             }
-            // runtime ABI self-check: the offsets above must round-trip through the
-            // battle-tested AVCodecParameters model, or we stop before feeding frames.
-            let mut par: AVCodecParameters = std::mem::zeroed();
-            if avcodec_parameters_from_context(&mut par, ctx) < 0
-                || par.width != w || par.height != h || par.format != fmt_yuv
-            {
-                crate::log(&format!(
-                    "venc: ABI self-check FAILED (par {}x{} fmt {} vs {}x{} fmt {}) — mpeg off",
-                    par.width, par.height, par.format, w, h, fmt_yuv
-                ));
-                free_ptr(par.extradata as *mut c_void);
+            // Runtime ABI self-check: the options set above must round-trip through the
+            // AVCodecParameters model, or we stop before feeding frames.
+            //
+            // LIBRARY-ALLOCATED, never on the stack. `avcodec_parameters_from_context` begins by
+            // memset-ing sizeof(AVCodecParameters) bytes, and that size is NOT stable across
+            // FFmpeg majors — 136 on the n3.3 the TVs shipped, 176 on the 6.1 this app now
+            // bundles. A stack copy sized by our own model is therefore a stack smash the moment
+            // the two disagree, and it would be one written by the very check meant to catch ABI
+            // drift. Allocating through the library makes the size the library's problem forever;
+            // our model stays a read-only PREFIX, which is all it was ever used as.
+            let par = avcodec_parameters_alloc();
+            if par.is_null() {
+                crate::log("venc: avcodec_parameters_alloc failed");
                 return None;
             }
-            free_ptr(par.extradata as *mut c_void);
+            let ok = avcodec_parameters_from_context(par, ctx) >= 0
+                && (*par).width == w && (*par).height == h && (*par).format == fmt_yuv;
+            if !ok {
+                crate::log(&format!(
+                    "venc: ABI self-check FAILED (par {}x{} fmt {} vs {}x{} fmt {}) — mpeg off",
+                    (*par).width, (*par).height, (*par).format, w, h, fmt_yuv
+                ));
+                avcodec_parameters_free(&mut { par });
+                return None;
+            }
+            // The library owns par->extradata now, so free the whole thing rather than the
+            // field: avcodec_parameters_free does both, and the old hand-free of just extradata
+            // would have leaked the 176-byte struct.
+            avcodec_parameters_free(&mut { par });
             let frame = av_frame_alloc();
             if frame.is_null() {
                 return None;
@@ -1070,24 +1068,50 @@ fn ver(v: c_uint) -> String {
 /// facts about the television and deserve different log lines: "there is no libavformat here at
 /// all" versus "there is one and it is the wrong major".
 fn load_libraries() -> bool {
+    // The bundled FFmpeg lives beside the binary, which is on no library search path — so it is
+    // opened by ABSOLUTE PATH. That is not a convenience: webOS 11.2.0 ships FFmpeg 6 itself, and
+    // a bare SONAME there could open the television's copy instead of ours.
+    let dir = crate::paths::app_dir();
+    let dir = dir.to_str();
+
+    // DEPENDENCY ORDER, and it is load-bearing. libavformat NEEDs libavcodec NEEDs libavutil by
+    // SONAME, and these libraries carry no rpath (FFmpeg's configure evals its flags, so
+    // -Wl,-rpath,$ORIGIN does not survive — see ci/build-ffmpeg.sh). Loading a dependency FIRST
+    // with RTLD_GLOBAL puts it in the global scope under its SONAME, so when the next library
+    // names it the loader finds the one we just opened rather than searching the system paths and
+    // finding the TV's. Open libavformat first and that guarantee is gone.
     let mut ok = true;
     for (what, verdict) in [
-        ("avformat", avformat::load()),
-        ("avcodec", avcodec::load()),
-        ("avutil", avutil::load()),
-        ("swscale", swscale::load()),
+        ("avutil", avutil::load(dir)),
+        ("avcodec", avcodec::load(dir)),
+        ("avformat", avformat::load(dir)),
     ] {
         match verdict {
             crate::dynlib::Loaded::Ok(soname) => crate::log(&format!("ff: bound {what} -> {soname}")),
             crate::dynlib::Loaded::NoLibrary => {
                 ok = false;
-                crate::log(&format!("ff: no {what} on this device (tried the 4 known majors)"));
+                crate::log(&format!(
+                    "ff: {what} is MISSING from the app directory — the bundled FFmpeg did not \
+                     deploy. Playback will refuse; reinstall the package."
+                ));
             }
             crate::dynlib::Loaded::Incomplete(soname, n) => {
                 ok = false;
                 crate::log(&format!("ff: {soname} is missing {n} symbol(s) we need — named above"));
             }
         }
+    }
+    // swscale is NOT required, and treating it as required broke the RELEASE build entirely:
+    // `RELEASE=1` drops it from the package (only the dev capture stream's RGBA->YUV conversion
+    // uses it), so an all-or-nothing loop over four libraries would have found three, reported
+    // failure, and refused to play anything — in the configuration users actually receive, and in
+    // no configuration ever tested here.
+    match swscale::load(dir) {
+        crate::dynlib::Loaded::Ok(soname) => {
+            SWS_OK.store(true, Ordering::Relaxed);
+            crate::log(&format!("ff: bound swscale -> {soname}"));
+        }
+        _ => crate::log("ff: no swscale (expected in a RELEASE build) — dev capture JPEG/MPEG1 off"),
     }
     ok
 }
@@ -1116,28 +1140,17 @@ pub(crate) fn boot() {
         // libavformat 58 set the n3.3 `codecpar` at +708 reads 20 bytes past a 688-byte AVStream
         // and dereferences what it finds as a pointer; on 9.2.0's 424-byte AVStream, 284 bytes
         // past. Neither produces an error, on a device with no debugger.
-        let table: Option<&'static Abi> = match (fmt >> 16, cod >> 16, utl >> 16) {
-            (57, 57, 55) => Some(&ABI_N33),
-            (58, 58, 56) => Some(&ABI_N4X),
-            _ => None,
-        };
-        ABI.store(
-            table.map_or(std::ptr::null_mut(), |t| t as *const Abi as *mut Abi),
-            Ordering::Release,
-        );
-        ABI_OK.store(table.is_some(), Ordering::Relaxed);
-        match table {
-            Some(t) if t.avformat_major == 57 => {
-                crate::player::log("ff: ABI table n3.3 (libavformat 57) — the tested configuration")
-            }
-            Some(_) => crate::player::log(
-                "ff: ABI table n4.x (libavformat 58) — webOS 5+, DERIVED FROM HEADERS, NOT \
-                 DEVICE-VERIFIED. If playback misbehaves, say so: this path has never run on a TV.",
-            ),
-            None => crate::player::log(
-                "ff: UNSUPPORTED FFmpeg majors — this demuxer has offset tables for avformat \
-                 57 (webOS <=4.10) and 58 (webOS 5.3.1..9.2.0) only; refusing to demux",
-            ),
+        // The version we BUILT against, not a version we hope to find. These libraries ship
+        // inside the package under a -plx SONAME, so a mismatch means the deployed payload is
+        // stale or someone put a different file there — not a firmware difference.
+        let bad = (fmt >> 16, cod >> 16, utl >> 16) != (63, 63, 61);
+        ABI_OK.store(!bad, Ordering::Relaxed);
+        if bad {
+            crate::log(
+                "ff: BUNDLED FFmpeg is not the one this build expects (want avformat 63 / \
+                 avcodec 63 / avutil 61) — the app directory holds a stale or foreign \
+                 libav*-plx; refusing to demux",
+            );
         }
     }
     // Phase A dev trigger: /tmp/plxnative-ffprobe holds a media URL to open + dump streams,
@@ -1554,7 +1567,7 @@ fn adts_freq_index(rate: c_int) -> Option<u8> {
 /// every frame (Maxton Hall, HE-AAC 5.1). Falls back to codecpar for ASC-less streams.
 unsafe fn adts_params(acp: *const AVCodecParameters) -> Option<(u8, u8)> {
     let chan_fallback = {
-        let ch = (*acp).channels;
+        let ch = (*acp).ch_layout.nb_channels;
         if (1..=7).contains(&ch) { ch as u8 } else { 2 }
     };
     // AudioSpecificConfig: aot(5) freqIdx(4) [+24-bit rate if idx==15] chanCfg(4) …
@@ -1744,8 +1757,15 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             if dur > 0 {
                 SHARED.duration_ns.store(dur.saturating_mul(1000), Ordering::Relaxed);
             }
+            // The NAME as well as the id, and the name is what anything downstream should grade.
+            // A raw AV_CODEC_ID is an FFmpeg enum, and that enum RENUMBERS between majors — H264
+            // is 28 on the n3.3 the televisions ship, 27 on FFmpeg 6, and HEVC is 174 / 173 / 172
+            // across n3.3 / 6 / 9. The on-device suite asserted the bare number, so bundling our
+            // own FFmpeg failed all 21 cases at once on a codec the app had identified perfectly
+            // well. `avcodec_get_name` is stable, means what the assertion meant, and is free.
+            let cname = std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
             crate::player::log(&format!(
-                "ff: v=#{vi} codec_id={} {}x{} a=#{ai} dur_ns={}",
+                "ff: v=#{vi} codec={cname} codec_id={} {}x{} a=#{ai} dur_ns={}",
                 (*vcp).codec_id,
                 (*vcp).width,
                 (*vcp).height,
@@ -1793,7 +1813,7 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
             // parameter sets on this 3.3 build (it leaves the keyframe starting with SEI), so we
             // build the AU from the codecpar extradata; libavformat still owns demux + seeking.
-            let is_hevc = (*vcp).codec_id == codec_id_hevc();
+            let is_hevc = (*vcp).codec_id == AV_CODEC_ID_HEVC;
             let (param_blob, nal_len_size) =
                 parse_extradata((*vcp).extradata, (*vcp).extradata_size.max(0) as usize, is_hevc);
             crate::player::log(&format!(

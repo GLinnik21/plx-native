@@ -82,8 +82,23 @@ impl Handle {
     /// a second pass means calling `dlopen` again — which bumps the library's reference count and
     /// costs a real open on every candidate that was skipped.
     pub fn open<'a>(candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        Self::open_in(None, candidates)
+    }
+
+    /// As [`open`], but resolving names inside `dir` when one is given.
+    ///
+    /// `dir` is how the BUNDLED FFmpeg is found: those libraries live beside the binary, which is
+    /// on no library search path, so a bare SONAME would either fail or — worse, on webOS 11,
+    /// which ships FFmpeg 6 itself — silently open the television's copy instead of ours. An
+    /// absolute path makes "which library did we get" structural rather than a matter of search
+    /// order. (The `-plx` build suffix is the second half of that guarantee.)
+    pub fn open_in<'a>(dir: Option<&str>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
         for name in candidates {
-            let Ok(c) = CString::new(*name) else { continue };
+            let path = match dir {
+                Some(d) => format!("{d}/{name}"),
+                None => (*name).to_string(),
+            };
+            let Ok(c) = CString::new(path) else { continue };
             let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW_GLOBAL) };
             if !h.is_null() {
                 return Some((Handle(h), name));
@@ -158,12 +173,12 @@ pub fn missing_symbol(lib: &str, sym: &str) -> ! {
 /// An optional wrapper must return `()`. A symbol whose absence needs a fallback VALUE is not
 /// optional — it is a branch the caller has to make and see.
 pub fn load_into(
+    dir: Option<&str>,
     candidates: &'static [&'static str],
     required: &[(&'static str, &AtomicPtr<c_void>)],
     optional: &[(&'static str, &AtomicPtr<c_void>)],
 ) -> Loaded {
-    // Which candidate opened is the one fact that says which ABI era this device is.
-    let Some((h, soname)) = Handle::open(candidates) else {
+    let Some((h, soname)) = Handle::open_in(dir, candidates) else {
         return Loaded::NoLibrary;
     };
     let mut missing = 0usize;
@@ -238,8 +253,10 @@ macro_rules! dynlib {
             $($( pub(crate) static $oname: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut()); )*)?
 
             /// Open the first candidate SONAME that exists and resolve every required symbol.
-            pub(crate) fn load() -> $crate::dynlib::Loaded {
+            /// `dir` scopes the search to one directory — see `Handle::open_in`.
+            pub(crate) fn load(dir: Option<&str>) -> $crate::dynlib::Loaded {
                 $crate::dynlib::load_into(
+                    dir,
                     CANDIDATES,
                     &[$((stringify!($fname), &$fname)),*],
                     &[$($((stringify!($oname), &$oname)),*)?],
@@ -305,7 +322,7 @@ mod tests {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static CAND: &[&str] = &["libplxnative-nope.so.99"];
-        let v = load_into(CAND, &[("x", &A), ("y", &B)], &[]);
+        let v = load_into(None, CAND, &[("x", &A), ("y", &B)], &[]);
         assert!(matches!(v, Loaded::NoLibrary));
         assert!(A.load(Ordering::Acquire).is_null() && B.load(Ordering::Acquire).is_null());
     }
@@ -316,7 +333,7 @@ mod tests {
     fn a_partial_load_publishes_nothing() {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(HOST_LIBC, &[("malloc", &A), ("plxnative_no_such_symbol", &B)], &[]);
+        let v = load_into(None, HOST_LIBC, &[("malloc", &A), ("plxnative_no_such_symbol", &B)], &[]);
         assert!(matches!(v, Loaded::Incomplete(_, 1)), "expected one missing symbol");
         assert!(A.load(Ordering::Acquire).is_null(), "malloc must not be published alone");
     }
@@ -330,7 +347,7 @@ mod tests {
     fn an_absent_optional_symbol_does_not_fail_the_load() {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(HOST_LIBC, &[("malloc", &A)], &[("plxnative_no_such_symbol", &B)]);
+        let v = load_into(None, HOST_LIBC, &[("malloc", &A)], &[("plxnative_no_such_symbol", &B)]);
         assert!(v.ok(), "an absent OPTIONAL symbol must not fail the load");
         assert!(!A.load(Ordering::Acquire).is_null(), "the required symbol must still publish");
         assert!(B.load(Ordering::Acquire).is_null(), "the absent optional must stay null");
@@ -341,7 +358,7 @@ mod tests {
     fn a_present_optional_symbol_is_published() {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(HOST_LIBC, &[("malloc", &A)], &[("free", &B)]);
+        let v = load_into(None, HOST_LIBC, &[("malloc", &A)], &[("free", &B)]);
         assert!(v.ok());
         assert!(!B.load(Ordering::Acquire).is_null());
     }
@@ -351,7 +368,7 @@ mod tests {
     fn a_complete_load_publishes_every_cell() {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(HOST_LIBC, &[("malloc", &A), ("free", &B)], &[]);
+        let v = load_into(None, HOST_LIBC, &[("malloc", &A), ("free", &B)], &[]);
         assert!(v.ok(), "libc should open and carry malloc/free");
         assert!(!A.load(Ordering::Acquire).is_null() && !B.load(Ordering::Acquire).is_null());
     }

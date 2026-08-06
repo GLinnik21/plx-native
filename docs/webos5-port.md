@@ -115,17 +115,21 @@ Eleven constants move between n3.3 and 4.x, and every one has a cause in FFmpeg'
 | `AV_CODEC_ID_HEVC` | 174 | **173** | same |
 | `AV_CODEC_ID_EAC3` | 0x15029 | **0x15028** | `FF_API_VOXWARE` removed |
 
+(FFmpeg 9, which the app now ships, moves them again — HEVC is **172** there, `AVFrame.pts` is
+**96** and `AVCodecParameters` drops the deprecated `channels` field entirely. That every major
+shifts something is the argument, not a footnote to it.)
+
 Everything else is untouched, and that is a finding rather than luck: the whole of `AVPacket`,
 `AVCodecParameters`, `AVSubtitle`, `AVSubtitleRect` and `AVFrame` is byte-identical from 3.3 to
 4.4, because the two deprecation guards that set those layouts
 (`FF_API_CONVERGENCE_DURATION`, `FF_API_AVPICTURE`) are `MAJOR < 59` and survive all of FFmpeg 4.x.
 **One table covers 58.12, 58.29 and 58.76** — webOS 5.3.1 through 9.2.0.
 
-**Nothing here was written from memory.** `ci/ffabi-assert.c` selects its expectations from the
-headers' own version macros and is compiled twice by the Makefile, against `vendor/ffmpeg-3.3-headers`
-and `vendor/ffmpeg-4.0-headers`, so each pass proves its own table. Negative controls run on both
-arms: perturbing `codecpar` 176→177 on the 4.x side, or 708→176 on the 3.3 side, fires the
-assertion that names the field.
+**SUPERSEDED — the app now bundles its own FFmpeg** (9.0, `ci/build-ffmpeg.sh`), so there is one
+version instead of a table per firmware, and `ci/ffabi-assert.c` checks it against the very
+headers the shipped libraries were built from. The per-major analysis above is kept because it is
+the reason bundling won: offsets could be re-derived from a version string, but the *component*
+list — which demuxers and bitstream filters LG compiled in — could not be checked at all.
 
 Three sizes DO move within major 58 — `sizeof(AVStream)` is 688/704/**424** (4.4 moved 39 tail
 fields into `AVStreamInternal`) — and none is in the table, because the app allocates none of those

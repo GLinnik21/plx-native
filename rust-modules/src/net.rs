@@ -43,6 +43,7 @@ mod sys {
 
     pub(super) fn load() -> crate::dynlib::Loaded {
         crate::dynlib::load_into(
+            None, // the TV's own libcurl, wherever the loader finds it
             CANDIDATES,
             &[
                 ("curl_global_init", &GLOBAL_INIT),

@@ -211,7 +211,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 15,
         "no_playing_error": true,
@@ -237,7 +237,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 15,
         "no_playing_error": true,
@@ -270,7 +270,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
@@ -306,7 +306,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
@@ -344,7 +344,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 5,
         "no_playing_error": true,
@@ -370,7 +370,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 15,
         "no_playing_error": true,
@@ -395,7 +395,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 15,
         "no_playing_error": true,
@@ -422,7 +422,7 @@
       "expect": {
         "_note": "mp4 containers deliberately go to the server (b1002de: the reopen-per-seek AVIO cannot stream mp4); PMS converts this one to hevc+ac3, and the Load payload must pick the OUTPUT codecs up from the /decision response (the old directplay expectation predated the container gate).",
         "decision": "transcode",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 1900,
         "min_timeline_climb_s": 15,
         "no_playing_error": true,
@@ -447,7 +447,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 15,
         "no_playing_error": true,
@@ -472,7 +472,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 15,
         "no_playing_error": true,
@@ -498,7 +498,7 @@
       ],
       "expect": {
         "decision": "transcode",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 12,
         "no_playing_error": true,
@@ -528,7 +528,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 10,
         "no_playing_error": true,
@@ -560,7 +560,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 10,
         "no_playing_error": true,
@@ -593,7 +593,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 10,
         "no_playing_error": true,
@@ -622,7 +622,7 @@
       ],
       "expect": {
         "decision": "transcode",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 10,
         "no_playing_error": true,
@@ -654,7 +654,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
@@ -686,7 +686,7 @@
       ],
       "expect": {
         "decision": "transcode",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
@@ -718,7 +718,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
@@ -749,7 +749,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
@@ -782,7 +782,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 28,
+        "codec": "h264",
         "min_video_width": 1900,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
@@ -817,7 +817,7 @@
       ],
       "expect": {
         "decision": "directplay",
-        "codec_id": 174,
+        "codec": "hevc",
         "min_video_width": 3000,
         "min_timeline_climb_s": 8,
         "no_playing_error": true,

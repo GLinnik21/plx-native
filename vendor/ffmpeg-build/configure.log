@@ -20,7 +20,6 @@ optimize for size         yes
 optimizations             yes
 static                    no
 shared                    yes
-postprocessing support    no
 network support           no
 threading support         pthreads
 safe bitstream reader     yes
@@ -29,6 +28,7 @@ perl enabled              yes
 pod2man enabled           yes
 makeinfo enabled          no
 makeinfo supports HTML    no
+experimental features     yes
 xmllint enabled           yes
 
 External libraries:
@@ -70,7 +70,7 @@ file
 Enabled filters:
 
 Enabled bsfs:
-aac_adtstoasc           h264_mp4toannexb
+aac_adtstoasc           h264_mp4toannexb        vvc_mp4toannexb
 extract_extradata       hevc_mp4toannexb
 
 Enabled indevs:
@@ -80,15 +80,3 @@ Enabled outdevs:
 License: LGPL version 2.1 or later
 
 WARNING: /Users/gleblinnik/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-linux-gnueabi-pkg-config not found, library detection may fail.
-config_components.h is unchanged
-libavutil/avconfig.h is unchanged
-libavfilter/filter_list.c is unchanged
-libavcodec/codec_list.c is unchanged
-libavcodec/parser_list.c is unchanged
-libavcodec/bsf_list.c is unchanged
-libavformat/demuxer_list.c is unchanged
-libavformat/muxer_list.c is unchanged
-libavdevice/indev_list.c is unchanged
-libavdevice/outdev_list.c is unchanged
-libavformat/protocol_list.c is unchanged
-ffbuild/config.sh is unchanged

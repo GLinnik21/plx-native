@@ -1,0 +1,14 @@
+prefix=/Users/gleblinnik/Developer/plex/plex-native-poc/vendor/ffmpeg-prefix
+exec_prefix=${prefix}
+libdir=/Users/gleblinnik/Developer/plex/plex-native-poc/vendor/ffmpeg-prefix/lib
+includedir=/Users/gleblinnik/Developer/plex/plex-native-poc/vendor/ffmpeg-prefix/include
+
+Name: libavformat-plx
+Description: FFmpeg container format library
+Version: 62.12.102
+Requires: 
+Requires.private: libavcodec-plx >= 62.28.102, libavutil-plx >= 60.26.102
+Conflicts:
+Libs: -L${libdir}  -lavformat-plx 
+Libs.private: -lm -latomic -lbz2 -lz
+Cflags: -I${includedir}

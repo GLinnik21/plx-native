@@ -34,8 +34,8 @@
 # flag to survive quoting, and unlike an rpath it can be asserted from inside the app.
 set -eu
 
-VERSION=6.1.2
-SHA256=3b624649725ecdc565c903ca6643d41f33bd49239922e45c9b1442c63dca4e38
+VERSION=9.0
+SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NDK=${WEBOS_SDK:-$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot}
 SYSROOT="$NDK/arm-webos-linux-gnueabi/sysroot"
@@ -67,6 +67,17 @@ if [ "$have" != "$SHA256" ]; then
 fi
 [ -d "$SRC" ] || tar xf "$TAR" -C "$WORK"
 
+# Wipe the prefix whenever the version changes. `make install` only ADDS files, so a version bump
+# leaves the previous major's libraries sitting beside the new ones — and since the Makefile stages
+# by SONAME glob, the package would quietly ship whichever the shell listed first. Found the hard
+# way going 6.1 -> 8.1: the prefix held libavformat 60 AND 62.
+STAMP="$PREFIX/.plx-version"
+if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$VERSION" ]; then
+  rm -rf "$PREFIX"
+  mkdir -p "$PREFIX"
+  printf '%s' "$VERSION" > "$STAMP"
+fi
+
 # Components: exactly what the app uses, and nothing else — the size is almost entirely a
 # function of this list. Each line maps to real code:
 #   demuxers   matroska/mov/mpegts are the containers PMS direct-plays or transcodes to;
@@ -83,8 +94,9 @@ set -- \
   --arch=arm --cpu=cortex-a9 --target-os=linux --sysroot="$SYSROOT" \
   --build-suffix=-plx \
   --enable-shared --disable-static --enable-pic \
+  --extra-cflags='-Dstatic_assert=_Static_assert' \
   --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
-  --disable-network --disable-swresample --disable-postproc \
+  --disable-network --disable-swresample \
   --disable-debug --enable-small \
   --disable-everything \
   --enable-demuxer=matroska,mov,mpegts,h264,hevc \
