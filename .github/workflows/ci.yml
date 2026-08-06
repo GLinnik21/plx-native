@@ -114,10 +114,11 @@ jobs:
         # and the error class that is otherwise invisible until a television refuses to start the
         # process. Fully offline (the fw-symbols package carries the databases).
         #
-        # Scoped to the range the CATALOGUE advertises, which is deliberately narrower than the
-        # range the binary can load on. The app starts on 4.4.2 through 11.2.0 since the SONAMEs
-        # moved to runtime resolution, but playback above 4.10.0 has never been observed on
-        # hardware — so this stays at 4.x and the wider picture is reported below, not asserted.
+        # Scoped to the range the CATALOGUE advertises, which is now a FLOOR with no ceiling: the
+        # binary starts on every release from 4.4.2 to 11.2.0 since the SONAMEs moved to runtime
+        # resolution and FFmpeg is bundled. Playback above 4.10.0 is still unobserved, and that
+        # caveat lives in the package description rather than in a bound that would hide the app
+        # from the only people who can settle it.
         run: |
           set -euo pipefail
           TAG=v20260731-e1bb0c0
@@ -126,7 +127,7 @@ jobs:
           done
           sudo apt-get install -y ./webosbrew-toolbox-*.deb
           webosbrew-ipk-verify --details --format markdown \
-            --fw-releases '>=4.0, <5.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
+            --fw-releases '>=4.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: firmware load matrix
         # The same databases the step above just installed, read by our own tool, across ALL 14
