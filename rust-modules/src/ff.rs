@@ -280,7 +280,6 @@ pub struct AVSubtitleRect {
 // hardware makes the call optional.
 crate::dynlib! {
     avformat: ["libavformat.so.57", "libavformat.so.58", "libavformat.so.59", "libavformat.so.60"] {
-    fn av_register_all();
     // Declared beside libavformat's other entry points because that is the library that DEFINES
     // it. Under `#[link]` the final link resolved every name against every library at once and
     // the grouping was cosmetic; `dlsym` searches one handle and its dependency chain, and
@@ -328,6 +327,17 @@ crate::dynlib! {
     fn av_write_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
     fn avio_flush(s: *mut AVIOContext);
     fn avformat_free_context(s: *mut AVFormatContext);
+}
+optional {
+    /// **Required on n3.3, a no-op from FFmpeg 4.0, DELETED in 5.0** (webOS 10.2.0 ships
+    /// libavformat 59, 11.2.0 ships 60 — neither exports it). Registering muxers and demuxers
+    /// became automatic in 4.0, so on those sets not calling it is not merely tolerable, it is
+    /// what the library asks for.
+    ///
+    /// It was the ONLY one of the 56 FFmpeg functions this app binds that is ever absent, and
+    /// treating it as required made the app refuse to demux on the two newest firmware families
+    /// for a symbol it does not need — and report the wrong reason for doing so.
+    fn av_register_all();
 }}
 crate::dynlib! {
     avcodec: ["libavcodec.so.57", "libavcodec.so.58", "libavcodec.so.59", "libavcodec.so.60"] {

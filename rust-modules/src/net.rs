@@ -36,16 +36,6 @@ mod sys {
     use std::sync::atomic::AtomicPtr;
 
     pub(super) const CANDIDATES: &[&str] = &["libcurl.so.4", "libcurl.so.5"];
-    pub(super) const NAMES: &[&str] = &[
-        "curl_global_init",
-        "curl_easy_init",
-        "curl_easy_setopt",
-        "curl_easy_perform",
-        "curl_easy_getinfo",
-        "curl_easy_cleanup",
-        "curl_slist_append",
-        "curl_slist_free_all",
-    ];
     macro_rules! cell {
         ($($n:ident),*) => { $( pub(super) static $n: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut()); )* };
     }
@@ -54,8 +44,17 @@ mod sys {
     pub(super) fn load() -> crate::dynlib::Loaded {
         crate::dynlib::load_into(
             CANDIDATES,
-            NAMES,
-            &[&GLOBAL_INIT, &EASY_INIT, &SETOPT, &PERFORM, &GETINFO, &CLEANUP, &SLIST_APPEND, &SLIST_FREE_ALL],
+            &[
+                ("curl_global_init", &GLOBAL_INIT),
+                ("curl_easy_init", &EASY_INIT),
+                ("curl_easy_setopt", &SETOPT),
+                ("curl_easy_perform", &PERFORM),
+                ("curl_easy_getinfo", &GETINFO),
+                ("curl_easy_cleanup", &CLEANUP),
+                ("curl_slist_append", &SLIST_APPEND),
+                ("curl_slist_free_all", &SLIST_FREE_ALL),
+            ],
+            &[], // every curl symbol here has existed since forever and on every SONAME
         )
     }
 }
