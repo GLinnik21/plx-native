@@ -251,7 +251,7 @@ jobs:
       - name: Compatibility check (gating)
         run: |
           webosbrew-ipk-verify --details --format markdown \
-            --fw-releases '>=4.0, <5.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
+            --fw-releases '>=4.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
 
       - id: name
         run: echo "ipk=$(ls pkg/*.ipk)" >> "$GITHUB_OUTPUT"
@@ -283,6 +283,22 @@ jobs:
           [ "$want" = "$have" ] || { echo "::error::manifest sha256 $want != artifact $have"; exit 1; }
           echo "ipk sha256 $have" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: LGPL corresponding source for the bundled FFmpeg
+        # NOT optional and not paperwork. The package ships four FFmpeg shared libraries, so
+        # LGPL-2.1's source obligation is OURS rather than the television's, and
+        # THIRD-PARTY-NOTICES.md §1.1 states in writing that the exact tarball and the complete
+        # configure invocation accompany every release. A release without these contradicts the
+        # notice that ships inside it.
+        #
+        # The tarball is the pristine upstream one build-ffmpeg.sh already downloaded and verified
+        # against a pinned sha256 — no patches are applied, so this IS the corresponding source.
+        run: |
+          set -euo pipefail
+          tarball=$(ls vendor/ffmpeg-build/ffmpeg-*.tar.xz)
+          cp "$tarball" pkg/
+          cp ci/build-ffmpeg.sh pkg/
+          echo "LGPL source: $(basename "$tarball") + build-ffmpeg.sh" >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets
@@ -290,6 +306,8 @@ jobs:
             pkg/*.ipk
             pkg/*.manifest.json
             pkg/ipk.sha256
+            pkg/ffmpeg-*.tar.xz
+            pkg/build-ffmpeg.sh
 
   publish:
     name: publish release
@@ -316,6 +334,8 @@ jobs:
             dist/*.ipk
             dist/*.manifest.json
             dist/ipk.sha256
+            dist/ffmpeg-*.tar.xz
+            dist/build-ffmpeg.sh
       - name: Propagation note
         run: |
           {

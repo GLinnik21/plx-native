@@ -34,6 +34,18 @@ mod sys {
         pub(super) fn sf_unload();
         pub(super) fn sf_destroy();
 
+        pub(super) fn vp_mode() -> c_int;
+        pub(super) fn vp_create_window() -> *const c_char;
+        pub(super) fn vp_place(
+            src_w: c_int,
+            src_h: c_int,
+            dst_x: c_int,
+            dst_y: c_int,
+            dst_w: c_int,
+            dst_h: c_int,
+        ) -> c_int;
+        pub(super) fn vp_destroy_window();
+
         pub(super) fn acb_create(app_id: *const c_char, player_type: c_int) -> c_long;
         pub(super) fn acb_bind(media_id: *const c_char);
         pub(super) fn acb_send_video_data(source_info: *const c_char) -> c_int;
@@ -101,6 +113,43 @@ pub(crate) unsafe fn sf_unload(_: &MainThread) {
 #[inline]
 pub(crate) unsafe fn sf_destroy(_: &MainThread) {
     sys::sf_destroy()
+}
+
+/// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
+/// comment at the top of `src/starfish.c`.
+pub(crate) const VP_NONE: c_int = 0;
+pub(crate) const VP_ACB: c_int = 1;
+pub(crate) const VP_EXPORTED: c_int = 2;
+
+/// Resolved once inside the seam and cached there, so this is cheap to call repeatedly. Takes no
+/// token: it only reads a memoized int and touches no pipeline state.
+#[inline]
+pub(crate) fn vp_mode() -> c_int {
+    unsafe { sys::vp_mode() }
+}
+
+/// `VP_EXPORTED` only. Create the exported window; the returned id must go into the Load payload
+/// as `option.windowId`. Ordering matters — see the `MainThread` note in the module doc, and note
+/// this must happen BEFORE `sf_load`, which runs on the media worker.
+#[inline]
+pub(crate) unsafe fn vp_create_window(_: &MainThread) -> *const c_char {
+    sys::vp_create_window()
+}
+#[inline]
+pub(crate) unsafe fn vp_place(
+    _: &MainThread,
+    src_w: c_int,
+    src_h: c_int,
+    dst_x: c_int,
+    dst_y: c_int,
+    dst_w: c_int,
+    dst_h: c_int,
+) -> c_int {
+    sys::vp_place(src_w, src_h, dst_x, dst_y, dst_w, dst_h)
+}
+#[inline]
+pub(crate) unsafe fn vp_destroy_window(_: &MainThread) {
+    sys::vp_destroy_window()
 }
 
 #[inline]

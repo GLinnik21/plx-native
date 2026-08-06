@@ -1,0 +1,6 @@
+LIBAVFORMAT_60 {
+    global:
+        av*;
+    local:
+        *;
+};

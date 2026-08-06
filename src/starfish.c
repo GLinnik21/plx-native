@@ -3,27 +3,154 @@
  * std::string, the over-allocated in-place object (never new/delete), and the
  * 3-arg ACB taskId out-param. Callers touch only the flat sf_ / acb_ verbs. */
 #include "starfish.h"
+#include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
 
 extern FILE *elogf;   /* the event log (owned by the boot shim) */
 
-/* ---- ACB (App Common Binding) extern decls ---- */
-extern long AcbAPI_create(void);
-extern int  AcbAPI_initialize(long acbId, int playerType, const char *appId,
-                              void (*cb)(long, long, long, long, long, const char *));
-extern int  AcbAPI_setSinkType(long acbId, int sinkType);
-extern int  AcbAPI_setMediaId(long acbId, const char *connId);
-/* 3-arg ABI CONFIRMED: createTask(TaskType, long*) writes the task id through arg3
- * — the 2-arg form leaves garbage in r2 and segfaults / corrupts memory. Audio is
- * owned by the pipeline (never feed it to ACB → SOUND_ERROR_019), so
- * AcbAPI_setMediaAudioData is intentionally unused. */
-extern int  AcbAPI_setMediaVideoData(long acbId, const char *payload, long *taskId);
-extern int  AcbAPI_setState(long acbId, int appState, int playState, long *taskId);
-extern int  AcbAPI_setDisplayWindow(long acbId, long x, long y, long w, long h,
-                                    int fullScreen, long *taskId);
-extern int  AcbAPI_finalize(long acbId);
-extern void AcbAPI_destroy(long acbId);
+/* ---------------------------------------------------------------------------
+ * The video-plane binding, in its two mutually-exclusive forms.
+ *
+ * Decoded video does not reach the panel by itself: something has to tell the TV to punch a hole
+ * in the compositor and route the pipeline's sink into it. LG changed how, exactly once, at
+ * webOS 5.0 — and the two mechanisms are complementary across every firmware, never both:
+ *
+ *   webOS 2.2.3 .. 4.10.0   libAcbAPI.so.1 present, SDL exports no exported-window entry points
+ *   webOS 5.3.1 .. 11.2.0   libAcbAPI.so.1 DELETED, SDL exports all five of them
+ *
+ * (Verified against 14 real firmware inventories — `tools/fwcompat.py --inventory libAcbAPI`.)
+ *
+ * So this file resolves BOTH at runtime and picks. libAcbAPI is dlopen'd rather than linked
+ * because a DT_NEEDED entry for a library that does not exist kills the process at exec(), before
+ * main, before the event log is open — which is what a webOS 5 owner sees today: nothing happens,
+ * and there is nothing to send back. The SDL five are dlsym'd out of the already-loaded libSDL2
+ * for the same reason in reverse: naming them at link time would make the binary demand symbols
+ * that webOS 4.5 does not have.
+ *
+ * NOTHING BELOW THE RESOLUTION IS DEVICE-VERIFIED ON WEBOS 5. The symbols are proven present and
+ * the call shapes come from the two implementations that ship (Kodi and mariotaku's ss4s); that a
+ * picture actually lands on the plane is not something a symbol table can tell you, and the author
+ * has no webOS 5 television. Treat `VP_EXPORTED` as untested code that is known to compile and
+ * known to be calling the right names.
+ * ------------------------------------------------------------------------- */
+
+/* Same layout as SDL_Rect, which has been four ints since SDL2 existed. Declared here rather than
+ * pulling SDL's headers into this file — the repo pins SDL 2.0.4 headers that predate SDL_webOS.h,
+ * so an #include would resolve to a header without the prototypes we need anyway. */
+typedef struct { int x, y, w, h; } VpRect;
+
+static struct {
+    long (*create)(void);
+    int  (*initialize)(long, int, const char *, void (*)(long, long, long, long, long, const char *));
+    int  (*setSinkType)(long, int);
+    int  (*setMediaId)(long, const char *);
+    /* 3-arg ABI CONFIRMED: createTask(TaskType, long*) writes the task id through arg3 — the
+     * 2-arg form leaves garbage in r2 and segfaults / corrupts memory. Audio is owned by the
+     * pipeline (never feed it to ACB -> SOUND_ERROR_019), so setMediaAudioData is unused. */
+    int  (*setMediaVideoData)(long, const char *, long *);
+    int  (*setState)(long, int, int, long *);
+    int  (*setDisplayWindow)(long, long, long, long, long, int, long *);
+    void (*destroy)(long);
+} acb;
+
+static struct {
+    const char *(*createExportedWindow)(int type);
+    int  (*setExportedWindow)(const char *windowId, VpRect *src, VpRect *dst);
+    int  (*exportedSetCropRegion)(const char *windowId, VpRect *org, VpRect *src, VpRect *dst);
+    int  (*exportedSetProperty)(const char *windowId, const char *name, const char *value);
+    void (*destroyExportedWindow)(const char *windowId);
+} sdlvp;
+
+static int g_vp_mode = -1;                  /* -1 = not yet resolved; else a VP_* value */
+static char g_window_id[64];                /* our copy of SDL's string — see vp_create_window */
+
+/* The webOS 5 exported-window type. The real header spells the constant EXPORED, not EXPORTED
+ * (LG's typo, present verbatim in the NDK's SDL_webOS.h); the literal avoids inheriting it. */
+#define VP_EXPORTED_TYPE_VIDEO 0
+
+int vp_mode(void) {
+    if (g_vp_mode >= 0) return g_vp_mode;
+
+    /* ACB first: on a 4.x set it is the only path, and probing SDL there costs five failed
+     * lookups. RTLD_NOW so a half-usable library is rejected here rather than mid-playback. */
+    void *h = dlopen("libAcbAPI.so.1", RTLD_NOW | RTLD_GLOBAL);
+    if (h) {
+        acb.create            = dlsym(h, "AcbAPI_create");
+        acb.initialize        = dlsym(h, "AcbAPI_initialize");
+        acb.setSinkType       = dlsym(h, "AcbAPI_setSinkType");
+        acb.setMediaId        = dlsym(h, "AcbAPI_setMediaId");
+        acb.setMediaVideoData = dlsym(h, "AcbAPI_setMediaVideoData");
+        acb.setState          = dlsym(h, "AcbAPI_setState");
+        acb.setDisplayWindow  = dlsym(h, "AcbAPI_setDisplayWindow");
+        acb.destroy           = dlsym(h, "AcbAPI_destroy");
+        if (acb.create && acb.initialize && acb.setSinkType && acb.setMediaId &&
+            acb.setMediaVideoData && acb.setState && acb.setDisplayWindow) {
+            g_vp_mode = VP_ACB;
+            if (elogf) { fprintf(elogf, "vplane: ACB (webOS 4.x)\n"); fflush(elogf); }
+            return g_vp_mode;
+        }
+        if (elogf) { fprintf(elogf, "vplane: libAcbAPI.so.1 opened but is missing entry points\n"); fflush(elogf); }
+    }
+
+    /* RTLD_DEFAULT: libSDL2 is a normal DT_NEEDED dependency, so its symbols are already in the
+     * global scope. This asks "did the SDL that actually loaded bring these", which is exactly
+     * the question — the NDK's sysroot copy carries stub bodies for them, so a link-time check
+     * would have said yes on every device and meant nothing. */
+    sdlvp.createExportedWindow  = dlsym(RTLD_DEFAULT, "SDL_webOSCreateExportedWindow");
+    sdlvp.setExportedWindow     = dlsym(RTLD_DEFAULT, "SDL_webOSSetExportedWindow");
+    sdlvp.exportedSetCropRegion = dlsym(RTLD_DEFAULT, "SDL_webOSExportedSetCropRegion");
+    sdlvp.exportedSetProperty   = dlsym(RTLD_DEFAULT, "SDL_webOSExportedSetProperty");
+    sdlvp.destroyExportedWindow = dlsym(RTLD_DEFAULT, "SDL_webOSDestroyExportedWindow");
+    if (sdlvp.createExportedWindow && sdlvp.setExportedWindow) {
+        g_vp_mode = VP_EXPORTED;
+        if (elogf) { fprintf(elogf, "vplane: SDL exported window (webOS 5+) — UNTESTED PATH\n"); fflush(elogf); }
+        return g_vp_mode;
+    }
+
+    g_vp_mode = VP_NONE;
+    if (elogf) { fprintf(elogf, "vplane: NONE — no libAcbAPI and no SDL exported window; video cannot be shown\n"); fflush(elogf); }
+    return g_vp_mode;
+}
+
+/* Create the exported window and return its id, or NULL. VP_EXPORTED only.
+ *
+ * Must be called BEFORE Load, because the id has to travel inside the Load payload as
+ * option.windowId — that string is the whole of the binding on webOS 5. The compositor assigns it
+ * ("_Window_Id_<n>") and SDL hands back a pointer whose ownership and lifetime LG does not
+ * document, so it is copied immediately; ss4s does the same. */
+const char *vp_create_window(void) {
+    if (vp_mode() != VP_EXPORTED || !sdlvp.createExportedWindow) return 0;
+    const char *id = sdlvp.createExportedWindow(VP_EXPORTED_TYPE_VIDEO);
+    if (!id) {
+        if (elogf) { fprintf(elogf, "vplane: SDL_webOSCreateExportedWindow returned NULL\n"); fflush(elogf); }
+        return 0;
+    }
+    snprintf(g_window_id, sizeof g_window_id, "%s", id);
+    if (elogf) { fprintf(elogf, "vplane: exported windowId=%s\n", g_window_id); fflush(elogf); }
+    return g_window_id;
+}
+
+/* Place the video: source frame size -> on-screen rect. The VP_EXPORTED counterpart of
+ * acb_start's setDisplayWindow, and the pair also expresses scaling. */
+int vp_place(int src_w, int src_h, int dst_x, int dst_y, int dst_w, int dst_h) {
+    if (vp_mode() != VP_EXPORTED || !g_window_id[0] || !sdlvp.setExportedWindow) return 0;
+    VpRect src = { 0, 0, src_w, src_h };
+    VpRect dst = { dst_x, dst_y, dst_w, dst_h };
+    int rv = sdlvp.setExportedWindow(g_window_id, &src, &dst);
+    if (elogf) {
+        fprintf(elogf, "vplane: place %dx%d -> %d,%d %dx%d rv=%d\n",
+                src_w, src_h, dst_x, dst_y, dst_w, dst_h, rv);
+        fflush(elogf);
+    }
+    return rv;
+}
+
+void vp_destroy_window(void) {
+    if (g_window_id[0] && sdlvp.destroyExportedWindow) sdlvp.destroyExportedWindow(g_window_id);
+    g_window_id[0] = 0;
+}
+
 #define SINK_TYPE_MAIN      0
 #define APPSTATE_FOREGROUND 1
 #define PLAYSTATE_UNLOADED  0
@@ -173,28 +300,37 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
     return 'e';
 }
 
-/* ---- ACB verbs (the 3-arg taskId ABI is hidden) ---- */
+/* ---- ACB verbs (the 3-arg taskId ABI is hidden) ----
+ *
+ * Every one is a no-op when this device has no ACB, so the caller does not have to branch: on
+ * webOS 5 the whole setSinkType / setMediaId / setMediaVideoData / setState sequence has no
+ * replacement — it is simply deleted, which is what both reference implementations do (ss4s stubs
+ * all of them to `return true`, Kodi guards each with `if (acb)`). */
 long acb_create(const char *appId, int playerType) {
-    g_acb = AcbAPI_create();
-    if (g_acb) AcbAPI_initialize(g_acb, playerType, appId ? appId : "com.beb.plxnative", acb_cb);
+    if (vp_mode() != VP_ACB) return 0;
+    g_acb = acb.create();
+    if (g_acb) acb.initialize(g_acb, playerType, appId ? appId : "com.beb.plxnative", acb_cb);
     return g_acb;
 }
 void acb_bind(const char *mediaId) {
-    AcbAPI_setSinkType(g_acb, SINK_TYPE_MAIN);
-    AcbAPI_setMediaId(g_acb, mediaId);
-    AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &g_taskId);
+    if (!g_acb) return;
+    acb.setSinkType(g_acb, SINK_TYPE_MAIN);
+    acb.setMediaId(g_acb, mediaId);
+    acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &g_taskId);
 }
 int acb_send_video_data(const char *sourceInfoVerbatim) {
-    return AcbAPI_setMediaVideoData(g_acb, sourceInfoVerbatim, &g_taskId);
+    if (!g_acb) return 0;
+    return acb.setMediaVideoData(g_acb, sourceInfoVerbatim, &g_taskId);
 }
 void acb_start(long x, long y, long w, long h) {
-    AcbAPI_setDisplayWindow(g_acb, x, y, w, h, 1, &g_taskId);
-    AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId);
+    if (!g_acb) return;
+    acb.setDisplayWindow(g_acb, x, y, w, h, 1, &g_taskId);
+    acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId);
 }
 void acb_unload(void) {
-    if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &g_taskId);
+    if (g_acb) acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &g_taskId);
 }
 /* Kodi-parity: mirror the ACB PLAYSTATE on transport pause/resume (the app owns the sink; the
  * pipeline Pause/Play alone leaves the ACB state stale). Only meaningful once the plane is bound. */
-void acb_pause(void)  { if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PAUSED,  &g_taskId); }
-void acb_resume(void) { if (g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId); }
+void acb_pause(void)  { if (g_acb) acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PAUSED,  &g_taskId); }
+void acb_resume(void) { if (g_acb) acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId); }

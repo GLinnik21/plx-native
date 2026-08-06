@@ -6,10 +6,6 @@
 //! modular-split crash. wl_surface opcode 4 = set_opaque_region.
 use std::os::raw::{c_int, c_uint, c_void};
 
-// SDL 2.0.4 (the TV's SDL); SDL_GetWindowWMInfo checks these version bytes.
-const SDL_MAJOR: u8 = 2;
-const SDL_MINOR: u8 = 0;
-const SDL_PATCH: u8 = 4;
 const SDL_GL_ALPHA_SIZE: c_int = 3; // SDL_GLattr: RED=0,GREEN=1,BLUE=2,ALPHA=3
 const GL_ALPHA_BITS: c_uint = 0x0D55;
 const GL_RED_BITS: c_uint = 0x0D52;
@@ -18,6 +14,8 @@ const GL_RED_BITS: c_uint = 0x0D52;
 extern "C" {
     fn wl_proxy_marshal(proxy: *mut c_void, opcode: c_uint, ...);
     fn SDL_GetWindowWMInfo(window: *mut c_void, info: *mut c_void) -> c_int;
+    /// Fills `SDL_version` — three `Uint8`, major/minor/patch.
+    fn SDL_GetVersion(ver: *mut u8);
     fn SDL_GL_GetAttribute(attr: c_int, value: *mut c_int) -> c_int;
     fn glGetIntegerv(pname: c_uint, params: *mut c_int);
     fn g_main_context_pending(ctx: *mut c_void) -> c_int;
@@ -53,10 +51,26 @@ pub(crate) fn ls2_pump() {
 pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
     unsafe {
         let mut wmbuf = [0u8; 512];
-        // SDL_VERSION(&wm->version): major/minor/patch (u8) at offset 0
-        wmbuf[0] = SDL_MAJOR;
-        wmbuf[1] = SDL_MINOR;
-        wmbuf[2] = SDL_PATCH;
+        // SDL_VERSION(&wm->version): major/minor/patch (u8) at offset 0.
+        //
+        // ASK THE LIBRARY, do not hardcode. This declares which SDL_SysWMinfo layout the CALLER
+        // was built against, and SDL checks it: from 2.0.6 on, `Wayland_GetWindowWMInfo` computes
+        // major*1000000 + minor*10000 + patch and, if that is below 2000006, sets
+        // subsystem = SDL_SYSWM_UNKNOWN and returns failure WITHOUT filling the union. This used
+        // to say 2/0/4 — the version webOS 4.x ships — which is the right answer on exactly the
+        // televisions the app has run on and wrong on every newer one: webOS 5.3.1/6.4.0 ship
+        // SDL 2.0.10 and 7.4.0+ ship 2.0.14.
+        //
+        // The failure mode is why this matters more than it looks. A rejected call leaves
+        // `G_WL_SURFACE` null, so `clear_opaque_region` silently does nothing, so the UI plane
+        // stays opaque — and video decodes correctly, invisibly, underneath it. No error, no log
+        // line, no crash: a black screen with working audio.
+        //
+        // Reporting the runtime version is safe in the other direction because the union's first
+        // two members — `wl_display *display` then `wl_surface *surface` — have never moved;
+        // later SDL versions only APPEND to that struct, which is also why the buffer is
+        // over-allocated to 512 bytes (the TV's fork writes more than the headers declare).
+        SDL_GetVersion(wmbuf.as_mut_ptr());
         let mut a: c_int = -1;
         SDL_GL_GetAttribute(SDL_GL_ALPHA_SIZE, &mut a);
         let mut abits: c_int = -1;
@@ -73,7 +87,19 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
         }
         let subsystem = i32::from_ne_bytes([wmbuf[4], wmbuf[5], wmbuf[6], wmbuf[7]]);
         let (surf, disp) = (G_WL_SURFACE, G_WL_DISPLAY);
-        log(&format!("wm subsys={subsystem} wl_surface={surf:p} wl_display={disp:p} alpha={a}"));
+        let mut v = [0u8; 3];
+        SDL_GetVersion(v.as_mut_ptr());
+        log(&format!(
+            "wm sdl={}.{}.{} subsys={subsystem} wl_surface={surf:p} wl_display={disp:p} alpha={a}",
+            v[0], v[1], v[2]
+        ));
+        // Loud, because the consequence is a black screen with working audio and nothing else in
+        // the log would say why. SDL_SYSWM_WAYLAND is 6 in SDL2's enum; anything else here means
+        // we did not get a surface and the video plane will stay hidden under an opaque UI.
+        if surf.is_null() {
+            log("wm: NO wl_surface — the UI plane cannot be made transparent, so video will \
+                 decode invisibly beneath it. Check the SDL_SysWMinfo version handshake.");
+        }
         clear_opaque_region();
     }
 }

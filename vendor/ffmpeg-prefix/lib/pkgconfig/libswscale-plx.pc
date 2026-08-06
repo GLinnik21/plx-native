@@ -1,0 +1,14 @@
+prefix=/Users/gleblinnik/Developer/plex/plex-native-poc/vendor/ffmpeg-prefix
+exec_prefix=${prefix}
+libdir=/Users/gleblinnik/Developer/plex/plex-native-poc/vendor/ffmpeg-prefix/lib
+includedir=/Users/gleblinnik/Developer/plex/plex-native-poc/vendor/ffmpeg-prefix/include
+
+Name: libswscale-plx
+Description: FFmpeg image rescaling library
+Version: 10.1.100
+Requires: 
+Requires.private: libavutil-plx >= 61.1.100
+Conflicts:
+Libs: -L${libdir}  -lswscale-plx 
+Libs.private: -lm -latomic
+Cflags: -I${includedir}

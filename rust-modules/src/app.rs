@@ -106,6 +106,16 @@ fn rd_u32(ev: &[u8], off: usize) -> u32 {
     u32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
 #[inline]
+/// An SDL pointer event's position, converted from window pixels to the authored 1920x1080 canvas.
+///
+/// THE one place event coordinates enter the UI, so the conversion cannot be forgotten at a new
+/// call site — there are nine, and patching them individually is how the tenth ends up wrong.
+/// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is on every
+/// television seen so far.
+fn ptr_xy(ev: &[u8]) -> (f32, f32) {
+    crate::surface::to_logical(rd_i32(ev, 20) as f32, rd_i32(ev, 24) as f32)
+}
+
 fn rd_i32(ev: &[u8], off: usize) -> i32 {
     i32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
@@ -144,6 +154,12 @@ fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
 fn remote_synth_ptr(x: i32, y: i32) {
     let mut ev = [0u8; 128];
     let mut push = |et: u32, px: i32, py: i32| {
+        // Authored coords go onto SDL's queue as WINDOW pixels, because that is what a real
+        // pointer event carries and `ptr_xy` converts every one of them back. Skipping this would
+        // transform the synthetic path twice on a scaled surface — and it is the path the whole
+        // headless test harness clicks through, so it would fail in a way that looked like the UI.
+        let (px, py) = crate::surface::to_physical(px as f32, py as f32);
+        let (px, py) = (px.round() as i32, py.round() as i32);
         ev[0..4].copy_from_slice(&et.to_ne_bytes());
         ev[20..24].copy_from_slice(&px.to_ne_bytes());
         ev[24..28].copy_from_slice(&py.to_ne_bytes());
@@ -337,6 +353,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log("GL ctx failed");
             return 1;
         }
+        crate::surface::probe(win);
         // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so the
         // FPS counter reports the TRUE GPU render rate (a diagnostic: if fps then jumps well past the
         // vsynced number, we were panel/refresh-bound, not GPU-bound).
@@ -354,7 +371,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         crate::gfx::init_gl();
         crate::text::init_text();
         crate::gfx::init_image();
-        crate::net::global_init(); // one-time libcurl init (main thread) before any threaded HTTPS call
+        // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
+        // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
+        // still runs, and `net::global_init` has already said so in the event log.
+        let _ = crate::net::global_init();
 
         // NO token is compiled into this binary. PMS access comes from the signed-in session,
         // or — for automated runs only (the regression harness, headless captures) — from the
@@ -2274,8 +2294,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     last_input = SDL_GetTicks();
                     last_ptr_motion = last_input;
                     cur_hidden = false;
-                    let mx = rd_i32(&ev, 20) as f32;
-                    let my = rd_i32(&ev, 24) as f32;
+                    let (mx, my) = ptr_xy(&ev);
                     if prev_mx >= 0.0 {
                         mot_accum += (mx - prev_mx).abs() + (my - prev_my).abs();
                     }
@@ -2340,8 +2359,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         let hud_vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed)
                             || crate::player::loading();
                         hud_dismissed = false;
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         // An open panel owns the click: dismiss it and STOP. The transport is
                         // partly hidden while a panel is up (draw_hud gets transport:false), so
                         // its rects must not be consulted — mirrors the modal key arms above.
@@ -2397,8 +2415,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         extend_hud(last_input, HUD_LINGER_MS);
                     } else if matches!(route, Route::Home) {
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         if crate::ui::home::profile_chip_click(cx, cy) {
                             crate::ui::account_menu::open(); // top-left avatar → profile menu
                             route = Route::Account;
@@ -2429,8 +2446,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut trail, &mut hud_nav, &mut nav_pending);
                         }
                     } else if matches!(route, Route::Library) {
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         match crate::ui::library::click(cx, cy) {
                             crate::ui::library::Action::GoHome => {
                                 // `library::click` has already parked focus on the Home pill, so
@@ -2448,8 +2464,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // (episode / Related / Cast) gets the tvOS press dip, committed on the
                         // button-up spring-back below; the Play pill, watched disc and season tabs
                         // act at once, exactly as in the key arm.
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         // A FRESH click supersedes a press still in flight from the previous one —
                         // the pointer's twin of the nav-key abort above. Without this, clicking a
                         // card and then something else within the ~210ms commit window let the
@@ -2477,14 +2492,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         }
                     } else if matches!(route, Route::Person) {
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         if matches!(crate::ui::person::click(cx, cy), crate::ui::person::Action::Card) {
                             open_person_card(route, &mut nav_pending);
                         }
                     } else if matches!(route, Route::Account) {
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         // a click on a row commits it; anywhere else dismisses the popover
                         match crate::ui::account_menu::click(cx, cy) {
                             crate::ui::account_menu::Action::ChangeProfile => {
@@ -2506,8 +2519,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         }
                     } else if let Route::ItemMenu { over } = route {
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         // a click on a row commits it; anywhere else dismisses the popover. THIS arm
                         // existing before the Home arm below is what keeps a click off the panel
                         // from falling through onto the shelf and launching whatever card it hit —
@@ -2518,8 +2530,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         route = over.route();
                         apply_item_action(mt, act, over, &mut route, &mut played_from_detail, &mut trail, &mut hud_nav, &mut nav_pending);
                     } else if matches!(route, Route::Profiles) {
-                        let cx = rd_i32(&ev, 20) as f32;
-                        let cy = rd_i32(&ev, 24) as f32;
+                        let (cx, cy) = ptr_xy(&ev);
                         crate::ui::profiles::click(cx, cy);
                     } else if matches!(route, Route::Login) {
                         // one actionable thing on the login screen (retry on error) — click = OK
@@ -3445,7 +3456,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
             let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) = (fd_pc_pump, fd_pc_pump, fd_pc_pump);
             if present {
-                glViewport(0, 0, SCR_W, SCR_H);
+                // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
+                // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
+                // is the entire logical->physical mapping — nothing else in the renderer knows the
+                // drawable size. At 1:1 on every television seen so far; on any 16:9 surface a
+                // plain scale with zero letterbox (1080p->4K is exactly 2x); and on an unexpected
+                // aspect, letterboxed rather than stretched or stuffed into a corner. See `surface`.
+                let (vx, vy, vw, vh) = crate::surface::viewport();
+                glViewport(vx, vy, vw, vh);
                 // EVERY screen draws inside ONE panic barrier. `plex_run` is `extern "C"` (main.c calls
                 // it), so a panic unwinding out of a screen's draw is UB the toolchain turns into
                 // abort() — the app dies and a live Starfish session is torn down mid-Feed(), on a

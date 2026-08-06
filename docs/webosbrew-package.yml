@@ -27,15 +27,23 @@ pool: main
 shortDescription: A native, Apple-TV-style Plex client for LG webOS 4.x — no browser
 
 requirements:
-  # Passed VERBATIM to `webosbrew-ipk-verify --fw-releases`, which is the same tool and flag the
-  # release CI already runs against the built binary — clean on 4.4.2 and 4.10.0, failing on
-  # every firmware from 5.0 up. This bound exists ONLY here: the manifest CI generates carries no
-  # version requirement, so without this line a webOS 5+ user installs an app whose LG media
-  # library and FFmpeg SONAMEs do not exist on their set.
+  # Passed VERBATIM to `webosbrew-ipk-verify --fw-releases`, the same tool and flag the release CI
+  # runs against the built binary. This bound exists ONLY here — the manifest CI generates carries
+  # no version requirement.
   #
-  # Note it is NOT '>=4.0, <4.9' — webOS numbers 4.10 above 4.9, and 4.10.0 is one of the two
-  # firmwares the binary is proven good on.
-  webosRelease: '>=4.0, <5.0'
+  # THE UPPER BOUND IS GONE, and the reasoning is worth keeping. It used to read '>=4.0, <5.0'
+  # because the binary genuinely could not START past webOS 4.x: it named libAcbAPI and four
+  # FFmpeg SONAMEs in DT_NEEDED, all of which vanish at 5.0, so the loader killed the process
+  # before main. That is no longer true — those libraries are resolved at runtime and FFmpeg is
+  # bundled, and `tools/fwcompat.py` grades the binary clean on every release from 4.4.2 to
+  # 11.2.0 against real firmware inventories.
+  #
+  # What is still NOT proven is that a picture reaches the video plane on 5+. The exported-window
+  # path that replaces ACB there has never run on hardware. So the honesty lives in the
+  # description, where someone reads it before installing, rather than in a bound that would hide
+  # the app from the only people who can ever settle the question. A floor with no ceiling is also
+  # how every other package in this repository declares itself.
+  webosRelease: '>=4.0'
 
 description: |
   An unofficial, native Plex client for LG webOS 4.x televisions.
@@ -59,8 +67,11 @@ description: |
   * **Movies and TV shows only.** No music, photos, live TV or DVR.
   * **A server on your local network.** The app connects only to a server it finds on the LAN;
     remote-only and relay servers will not connect, and there is nowhere to enter an address.
-  * **webOS 4.x only.** webOS 5.0 removed the LG library this uses to bind decoded video to the
-    hardware plane and moved every FFmpeg version underneath it.
+  * **webOS 4.x is what is tested.** It installs and runs on webOS 5 and newer, but webOS 5.0
+    replaced the LG library that binds decoded video to the hardware plane, and while the
+    replacement is implemented it has never run on an actual set — so on 5+ you may get sound and
+    a black picture. If you try it there, please say how it went: the app writes what it chose to
+    `/tmp/plxnative-events.log`, and one of those settles it.
   * **Codec capability is asserted, not probed.** The app tells your server it can handle HEVC,
     4K and 10-bit because that is what the author's set does; on a lower-end webOS 4.x panel that
     will be wrong.

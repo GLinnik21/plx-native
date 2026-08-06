@@ -22,56 +22,70 @@ package; the exact required contents of that directory are listed in section 5.
 
 ---
 
-## 1. LGPL-2.1 components, dynamic linking, and your right to relink
+## 1. LGPL-2.1 components and your right to modify and replace them
 
-PlxNative links dynamically against the following **LGPL-2.1-or-later** libraries, all of which
-are part of your television's own system software and are **not** distributed by us:
+Two different situations, and the difference matters for what we owe you.
+
+### 1.1 FFmpeg — **redistributed inside this package**
+
+PlxNative **ships its own build of FFmpeg**. Earlier releases linked against the television's copy;
+they no longer do, because the TV's version moves with the firmware (libavformat 55, 57, 58, 59 and
+60 across webOS 2 to 11) and the components compiled into it cannot be determined from outside.
+
+| Shipped file | Upstream | Licence |
+|---|---|---|
+| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63`, `libswscale-plx.so.10` | FFmpeg **9.0**, unmodified | LGPL-2.1-or-later |
+
+**These libraries are covered by the GNU Lesser General Public License, version 2.1 or later.** A
+complete copy of that licence is supplied with this package at `licenses/LGPL-2.1.txt`.
+
+**Complete corresponding source.** The exact upstream tarball these were built from —
+`ffmpeg-9.0.tar.xz`, sha256 `7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52`,
+from <https://ffmpeg.org/releases/> — is attached to every PlxNative release alongside the `.ipk`.
+The sources are **unmodified**: no patches are applied. The complete configure invocation that
+produced them, including every enabled component, is `ci/build-ffmpeg.sh` in the PlxNative
+repository, which is also attached to each release.
+
+**Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
+`--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
+component is present. Only demuxers, parsers, bitstream filters and *subtitle* decoders are
+enabled — video and audio are decoded by the television's hardware, not by FFmpeg.
+
+**You may modify and replace them.** They are ordinary shared libraries, loaded at run time by
+`dlopen` from the application's own directory; no FFmpeg code is linked into the `plxnative`
+executable. Build your own from the source above and put it in the app directory under the same
+file name, and PlxNative will load yours instead, with no change to the application. The `-plx`
+suffix in the file names exists so these cannot be confused with — or accidentally replace — the
+television's own FFmpeg; it denotes nothing about their content, which is stock upstream.
+
+One disclosure, so the claim is not overstated: the application reads FFmpeg struct fields at
+byte offsets fixed for the ABI of the versions above, and refuses to demux at all if the library
+it loads reports different majors. A replacement built from the same upstream release works; one
+built from a different release will be declined rather than misread.
+
+### 1.2 Libraries provided by your television
+
+PlxNative also links dynamically against the following **LGPL-2.1-or-later** libraries, which are
+part of your television's own system software and are **not** distributed by us:
 
 | Library | Version on this webOS 4.5 build | SONAME(s) the app requests |
 |---|---|---|
-| FFmpeg — libavformat, libavcodec, libavutil, libswscale | 3.3 (LG `lib32-ffmpeg/3.3-r0`) | `libavformat.so.57`, `libavcodec.so.57`, `libavutil.so.55`, `libswscale.so.4` |
 | GLib | 2.48.2 | `libglib-2.0.so.0` |
 | GNU C Library (glibc) | 2.24 | `libc.so.6`, `libm.so.6`, `libpthread.so.0`, `librt.so.1`, `libdl.so.2`, `ld-linux.so.3` |
+| libcurl | 7.x | `libcurl.so.4` or `libcurl.so.5` (whichever the firmware provides) |
 
-**These libraries and their use are covered by the GNU Lesser General Public License, version
-2.1 or later.** A complete copy of that licence is supplied with this package at
-`licenses/LGPL-2.1.txt`.
+For these, PlxNative uses the ordinary shared-library mechanism (LGPL-2.1 §6(b)): no code from
+them is copied into the executable, and the dynamic loader resolves them at run time against the
+television's own `/usr/lib`. To use your own build, install an interface-compatible library under
+the same SONAME. The MIT terms under which PlxNative is distributed permit modification of the
+application for your own use and reverse engineering for debugging such modifications.
 
-**You may modify and replace them.** PlxNative uses the ordinary shared-library mechanism
-(LGPL-2.1 §6(b)): no code from these libraries is copied into the `plxnative` executable — it
-records the SONAMEs above as `DT_NEEDED` entries and the dynamic loader resolves them at run time
-against the television's own `/usr/lib`. To use your own build, install an interface-compatible
-library under the same SONAME so the loader finds it in place of the stock one; PlxNative will
-load it with no change to the application. The MIT terms under which PlxNative is distributed
-permit modification of the application for your own use and reverse engineering for debugging
-such modifications.
-
-Two disclosures, so this claim is not overstated:
-
-- The application reads a small number of FFmpeg struct fields at byte offsets fixed for the ABI
-  denoted by the SONAMEs above (`libavformat.so.57` / `libavcodec.so.57`). Replacements that are
-  interface-compatible with those SONAMEs work; a rebuild that changes struct layout without
-  bumping the SONAME would not. The app refuses to demux at all if the runtime majors are not the
-  ones it was built for.
-- **FFmpeg's own public HEADERS are redistributed in this repository**, under
-  `vendor/ffmpeg-3.3-headers/` — 24 files taken unmodified from the FFmpeg n3.3 release. They are
-  build-time only: `ci/ffabi-assert.c` compiles `offsetof` against them to prove the offsets above
-  are the real n3.3 layout, and nothing from them reaches the shipped package. They are LGPL-2.1
-  like the libraries they describe, the licence text already travels with this file, and their
-  presence does not change the dynamic-linking analysis above — no FFmpeg code is compiled in.
-- Small fragments of glibc's own startup and compatibility code **are** statically linked into
-  `plxnative` by the toolchain (`crt1.o` and objects from `libc_nonshared.a` — this is why the
-  binary defines `_start`, `__libc_csu_init`, `__libc_csu_fini`, `fstat64`, `lstat64`,
-  `fstatat64`). They are covered by the same LGPL-2.1 notice and licence copy above. Whether
-  those particular files additionally carry glibc's linking exception was **not verified** for
-  the NDK build used here.
-
-Because the shared-library mechanism of §6(b) is used, no source code or relinkable object code
-is supplied under §6(a). FFmpeg's own request (ffmpeg.org/legal.html) that distributors point at
-the corresponding source is honoured informally: the FFmpeg 3.3 sources are available from
-ffmpeg.org; the build on this television is LG's, configured with `--disable-gpl`, without
-`--enable-version3` and without `--enable-nonfree` (verified by reading the configure string out
-of the device's own `libavutil.so.55`), so no GPL-licensed FFmpeg component is present.
+One further disclosure: small fragments of glibc's own startup and compatibility code **are**
+statically linked into `plxnative` by the toolchain (`crt1.o` and objects from `libc_nonshared.a`
+— this is why the binary defines `_start`, `__libc_csu_init`, `__libc_csu_fini`, `fstat64`,
+`lstat64`, `fstatat64`). They are covered by the same LGPL-2.1 notice and licence copy above.
+Whether those particular files additionally carry glibc's linking exception was **not verified**
+for the NDK build used here.
 
 ---
 
@@ -241,7 +255,7 @@ are due in substance.
 
 | Library | Version on this build | Licence | Note |
 |---|---|---|---|
-| FFmpeg (libavformat / libavcodec / libavutil / libswscale) | 3.3 | LGPL-2.1-or-later | See section 1 |
+| FFmpeg (libavformat / libavcodec / libavutil / libswscale) | **9.0, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
 | GLib | 2.48.2 | LGPL-2.1-or-later | See section 1 |
 | GNU C Library | 2.24 | LGPL-2.1-or-later | See section 1 |
 | SDL2 (LG fork) | 2.0.4 | Zlib | Copyright (C) 1997-2016 Sam Lantinga |

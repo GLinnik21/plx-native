@@ -14,6 +14,8 @@ mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-
 mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
+#[macro_use]
+mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases
 mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — the TV's own FFmpeg 3.3 via the stub-.so link
 mod gfx;
 mod img;
@@ -28,6 +30,7 @@ mod posters;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod stream;
+mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app

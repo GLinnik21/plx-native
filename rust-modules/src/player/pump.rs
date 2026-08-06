@@ -245,6 +245,29 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         }
     }
 
+    // ---------- webOS 5+ (VP_EXPORTED): place the video rect once frames flow ----------
+    //
+    // The counterpart of the whole ACB block above, and it is one call, because that is all webOS
+    // 5 kept: the binding itself already happened when `option.windowId` went into the Load
+    // payload. There is no sourceInfo to forward and no LOADED/PLAYING state to mirror — that
+    // sequence was deleted, not replaced.
+    //
+    // Gated on the same `frames >= 2` as the ACB path so the sink exists before we size it, and
+    // done once per session. UNTESTED ON HARDWARE.
+    if eng.stage == Stage::Playing
+        && !eng.video_info_sent
+        && ffi::vp_mode() == ffi::VP_EXPORTED
+        && SHARED.frames.load(Relaxed) >= 2
+    {
+        // src is the decoded frame size, dst the on-screen rect; the pair also expresses scaling.
+        // Both are the full panel here for the same reason acb_start passes 0,0,1920,1080 — the
+        // app authors at a fixed 1080p and plays full-screen.
+        let rv = unsafe { ffi::vp_place(mt, 1920, 1080, 0, 0, 1920, 1080) };
+        eng.video_info_sent = true;
+        eng.stage = Stage::Streaming;
+        super::log(&format!("vplane: exported window placed rv={rv} → streaming"));
+    }
+
     // ---------- feed AUs once playing (Feed only succeeds after Play). NOT while a seek
     // is armed: on a resume the seek is armed before PLAYING, so feeding first would
     // present the file start for a frame before the seek repositions — a visible jump. ----------
