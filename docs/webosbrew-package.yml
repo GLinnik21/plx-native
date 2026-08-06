@@ -38,6 +38,13 @@ requirements:
   # bundled, and `tools/fwcompat.py` grades the binary clean on every release from 4.4.2 to
   # 11.2.0 against real firmware inventories.
   #
+  # THE FLOOR IS AN INFERENCE, not a measurement, and it should be read as one. webosbrew's
+  # firmware database carries exactly ONE image below 4.4.2, so releases 4.0 through 4.3 are graded
+  # by nothing. What makes '>=4.0' defensible is webosbrew's own bucketing: their data keys every 
+  # release by CODENAME, and 4.0~4.4 are all `goldilocks` with one library set between them
+  # (docs/develop/guides/library-version.md). So the claim is "the whole goldilocks bucket looks
+  # like the 4.4.2 we graded", which is their model, not ours.
+  #
   # What is still NOT proven is that a picture reaches the video plane on 5+. The exported-window
   # path that replaces ACB there has never run on hardware. So the honesty lives in the
   # description, where someone reads it before installing, rather than in a bound that would hide

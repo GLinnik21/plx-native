@@ -339,6 +339,14 @@ deploy: pkg/plxnative $(FFMPEG_STAGED)
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
 	# a CHANGED library must be able to reach the TV.
 	$(SCP) $(FFMPEG_STAGED) root@$(TV):$(APPDIR)/
+	# ...then retire any FFmpeg from a PREVIOUS version. `scp` only adds, so bumping the bundled
+	# release left the old majors sitting in the app directory forever — observed on the dev TV,
+	# which was carrying libavcodec-plx.so.60 and .so.58 from an earlier experiment alongside the
+	# live .63/.61. Harmless (ff.rs opens by exact name) but it accumulates, and it ships nothing:
+	# the .ipk only ever contains the current set. Removal comes AFTER the copy so there is never
+	# a moment with no FFmpeg on the device.
+	$(SSH) 'cd $(APPDIR) && for f in lib*-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
+
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
 	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could

@@ -34,6 +34,7 @@ type curl_slist = c_void;
 crate::dynlib! {
     curl: ["libcurl.so.4", "libcurl.so.5"] {
     fn curl_global_init(flags: c_long) -> c_int;
+    fn curl_version() -> *const c_char;
     fn curl_easy_init() -> *mut CURL;
     fn curl_easy_perform(handle: *mut CURL) -> c_int;
     fn curl_easy_cleanup(handle: *mut CURL);
@@ -77,8 +78,16 @@ fn available() -> bool {
 pub fn global_init() -> bool {
     match curl::load(None) {
         crate::dynlib::Loaded::Ok(soname) => {
-            crate::log(&format!("net: bound libcurl -> {soname}"));
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
+            // The version string carries the TLS backend and its version, which is the fact worth
+            // having in a bug report from hardware nobody here owns.
+            let v = unsafe { curl_version() };
+            let v = if v.is_null() {
+                String::new()
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy().into_owned()
+            };
+            crate::log(&format!("net: bound libcurl -> {soname} ({v})"));
             CURL_OK.store(true, std::sync::atomic::Ordering::Release);
             true
         }
@@ -174,6 +183,21 @@ fn perform(url: &str, headers: &[String], post_body: Option<&[u8]>) -> Option<Re
         curl_easy_cleanup(h);
         drop(hdr_owned);
         if rc != 0 {
+            // NAMED, not just counted. Everything here rides the TELEVISION's curl and therefore
+            // its OpenSSL and its CA store — the library webosbrew's caniuse data singles out as
+            // the one that varies most across firmwares. Collapsing every failure to None made a
+            // stale CA bundle on a set nobody here owns indistinguishable from being offline: the
+            // QR sign-in simply never completes. These four are the ones that mean something
+            // different from "the network is down".
+            let why = match rc {
+                60 => "peer certificate could not be verified (CA store too old?)",
+                35 => "TLS handshake failed (protocol too new for this firmware?)",
+                77 => "CA bundle could not be read",
+                6 => "could not resolve host",
+                28 => "timed out",
+                _ => "transport error",
+            };
+            crate::log(&format!("net: curl rc={rc} — {why}"));
             return None;
         }
         Some(Resp { status: code as u16, body: buf })
