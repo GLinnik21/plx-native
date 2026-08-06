@@ -14,6 +14,12 @@
 # It also collapses the maintenance: one FFmpeg on every television, so adding a webOS release
 # costs nothing and the demuxer stops being a variable in every bug report.
 #
+# THIS IS ALSO WEBOSBREW'S PUBLISHED GUIDANCE, which is worth knowing before anyone re-opens the
+# decision. https://www.webosbrew.org/develop/caniuse/?q=ffmpeg carries a warning rather than a
+# compatibility table: "Don't use system FFmpeg libraries! They will cause linkage issues and
+# doesn't come with usable video codecs either." Both halves are the reasoning above — the SONAME
+# drift, and the component list that cannot be inspected from outside.
+#
 # LICENCE. Built SHARED, deliberately. FFmpeg here is LGPL-2.1 (no --enable-gpl, no --enable-
 # nonfree), and shipping it as separate .so files keeps us in §6(b) — the user can replace the
 # library — exactly as dynamic linking against the TV's copy did. Static linking would pull in

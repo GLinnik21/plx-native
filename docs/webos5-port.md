@@ -34,6 +34,23 @@ the break is at 7.4.0. And **webOS 3.9.2 has libAcbAPI**; `docs/distribution.md`
 not. 3.9.2 fails for a different reason (FFmpeg 55, and a pre-C++11 `std::string` ABI, so
 `StarfishMediaAPIs::Feed` carries a different mangling).
 
+### An external check on the FFmpeg decision
+
+webosbrew publishes guidance on this exact question, and it is a warning rather than a table —
+<https://www.webosbrew.org/develop/caniuse/?q=ffmpeg>:
+
+> Don't use system FFmpeg libraries! They will cause linkage issues and doesn't come with usable
+> video codecs either.
+
+Both clauses are the reasoning in §3.2 and §1: the SONAME moves with the firmware, and the
+component list cannot be inspected from outside. The bundling decision here was reached
+independently and then found to match; it is not a novel position, and re-litigating it means
+disagreeing with the platform's own documentation.
+
+Worth knowing where that page's data comes from, too: it is generated from
+`WEBOSBREW_DEV_TOOLBOX_DATA` — the same dev-toolbox firmware database `tools/fwcompat.py` reads.
+The site and the local matrix are the same facts, not two opinions.
+
 ## 2. The verification substrate — why any of this is checkable
 
 `webosbrew-toolbox-fw-symbols` is not a checker. It is an **inventory**: for 14 real LG firmware
