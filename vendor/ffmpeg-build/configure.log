@@ -1,0 +1,94 @@
+install prefix            /Users/gleblinnik/Developer/plex/plex-native-poc/vendor/ffmpeg-prefix
+source path               .
+C compiler                /Users/gleblinnik/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-linux-gnueabi-gcc
+C library                 glibc
+host C compiler           cc
+host C library            
+ARCH                      arm (cortex-a9)
+build suffix              -plx
+big-endian                no
+runtime cpu detection     yes
+ARMv5TE enabled           yes
+ARMv6 enabled             yes
+ARMv6T2 enabled           yes
+VFP enabled               yes
+NEON enabled              yes
+THUMB enabled             no
+debug symbols             no
+strip symbols             yes
+optimize for size         yes
+optimizations             yes
+static                    no
+shared                    yes
+postprocessing support    no
+network support           no
+threading support         pthreads
+safe bitstream reader     yes
+texi2html enabled         no
+perl enabled              yes
+pod2man enabled           yes
+makeinfo enabled          no
+makeinfo supports HTML    no
+xmllint enabled           yes
+
+External libraries:
+alsa                    iconv
+bzlib                   zlib
+
+External libraries providing hardware acceleration:
+
+Libraries:
+avcodec                 avutil
+avformat                swscale
+
+Programs:
+
+Enabled decoders:
+ass                     pgssub                  text
+dvbsub                  srt                     webvtt
+dvdsub                  subrip
+
+Enabled encoders:
+mpeg1video
+
+Enabled hwaccels:
+
+Enabled parsers:
+aac                     dvbsub                  h264
+ac3                     dvdsub                  hevc
+
+Enabled demuxers:
+h264                    matroska                mpegts
+hevc                    mov
+
+Enabled muxers:
+adts                    latm                    mpegts
+
+Enabled protocols:
+file
+
+Enabled filters:
+
+Enabled bsfs:
+aac_adtstoasc           h264_mp4toannexb
+extract_extradata       hevc_mp4toannexb
+
+Enabled indevs:
+
+Enabled outdevs:
+
+License: LGPL version 2.1 or later
+
+WARNING: /Users/gleblinnik/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-linux-gnueabi-pkg-config not found, library detection may fail.
+config_components.h is unchanged
+libavutil/avconfig.h is unchanged
+libavfilter/filter_list.c is unchanged
+libavcodec/codec_list.c is unchanged
+libavcodec/parser_list.c is unchanged
+libavcodec/bsf_list.c is unchanged
+libavformat/demuxer_list.c is unchanged
+libavformat/muxer_list.c is unchanged
+libavdevice/indev_list.c is unchanged
+libavdevice/outdev_list.c is unchanged
+libavformat/protocol_list.c is unchanged
+ffbuild/config.sh is unchanged
