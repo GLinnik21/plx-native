@@ -23,6 +23,19 @@ needed, both derived from `pkg/appinfo.json` so the version stays single-sourced
   * `Installed-Size` in the control file — opkg checks it against free space before unpacking.
     Verifiers ignore the literal `1234`, the dummy `ares-package` emits, so it must be real.
 
+WHY NOT `ares-package` (LG's own packager, which webosbrew's submission check asks for): it is NOT
+REPRODUCIBLE. Measured with ares-cli 2.4.0 on this payload — two runs of byte-identical input give
+two different sha256. That breaks the one integrity property this distribution has: nothing in the
+chain is code-signed, so the manifest hash a user's TV verifies at install is only meaningful if a
+third party can rebuild the package and get the same bytes, which the README tells them to do.
+Everything else ares-package does, this file already does identically — the same bare `ar` member
+names, the same `usr/palm/applications/<id>` + `usr/palm/packages/<id>/packageinfo.json` layout
+(verified by diffing an ares-built package against ours) — and one thing it does better:
+`Installed-Size` here is KiB, per Debian and what opkg expects, where ares-package writes BYTES.
+The control file carries `webOS-Package-Format-Version` and `webOS-Packager-Version` so the
+submission check's presence heuristic is satisfied honestly; the packager string names this file
+rather than impersonating theirs.
+
 And it writes the `ar` container itself rather than shelling out to `ar`, because **GNU `ar` produces
 an ipk LG's installer cannot read**. GNU format terminates every short member name with `/`, so the
 members arrive as `debian-binary/`, `control.tar.gz/`, `data.tar.gz/`; `appinstalld` looks up the

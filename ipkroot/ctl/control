@@ -8,3 +8,5 @@ Maintainer: Gleb Linnik <23104281+GLinnik21@users.noreply.github.com>
 Homepage: https://github.com/GLinnik21/plx-native
 License: MIT
 Description: PlxNative — unofficial native Plex client for LG webOS (not affiliated with Plex)
+webOS-Package-Format-Version: 2
+webOS-Packager-Version: plxnative-mkipk/1

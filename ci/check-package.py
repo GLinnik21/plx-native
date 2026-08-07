@@ -84,6 +84,19 @@ check(cargo_ver is not None and cargo_ver.group(1) == appinfo["version"],
 # under what terms. The Maintainer assertion exists because the field held a personal Gmail that
 # travelled inside every distributed .ipk, and nothing would have caught its return.
 check("Homepage" in control, "control declares a Homepage")
+
+# The three fields webosbrew's ipk-verify reads to decide whether a package was built by a webOS
+# packager. Any one missing and every submission report carries ":warning: This package looks
+# hand-rolled. Please build it with `ares-package`." — the check itself still PASSES, so nothing
+# fails and the warning simply rides along on the PR forever. The heuristic is presence-only
+# (dev-toolbox-cli, common/ipk/src/ipk.rs: `PACKAGER_FIELDS.iter().any(|f| control.get(f).is_none())`).
+#
+# Installed-Size is written by mkipk.py at build time, so only the two static ones are asserted
+# here. Values taken from what ares-package 2.4.0 itself emits, except the packager string, which
+# names OUR packager rather than copying theirs — claiming to be ares when we are not would be the
+# dishonest way to silence a warning. See mkipk.py's header for why we do not use ares-package.
+for field in ("webOS-Package-Format-Version", "webOS-Packager-Version"):
+    check(field in control, f"control declares {field}")
 check(control.get("License") == "MIT", f'control License == MIT (saw {control.get("License")!r})')
 check("@users.noreply.github.com" in control["Maintainer"] or "@gmail.com" not in control["Maintainer"],
       f'control Maintainer is not a personal mailbox ({control["Maintainer"]})')
