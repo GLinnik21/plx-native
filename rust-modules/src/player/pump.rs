@@ -28,6 +28,24 @@ fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
 
+/// Place the webOS 5+ exported window: source frame -> on-screen rect.
+///
+/// No-op on the ACB path. `src` is the frame being FED and `dst` where it lands, and the pair is
+/// what expresses scaling — so a 4K direct play must not be described as 1080p, which passing the
+/// authoring canvas for both would do. The coded size comes from the demuxer, the only thing that
+/// knows it for certain; before it has published, the canvas is the least-wrong fallback and the
+/// caller re-places once the real one arrives.
+fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
+    if ffi::vp_mode() != ffi::VP_EXPORTED {
+        return;
+    }
+    let (w, h) = (SHARED.video_w.load(Relaxed), SHARED.video_h.load(Relaxed));
+    let src = if w > 0 && h > 0 { (w, h) } else { (1920, 1080) };
+    let rv = unsafe { ffi::vp_place(mt, src.0, src.1, 0, 0, 1920, 1080) };
+    eng.placed_src = src;
+    super::log(&format!("vplane: exported window placed src={}x{} rv={rv}", src.0, src.1));
+}
+
 pub(crate) fn pump(mt: &MainThread, now: u32) {
     use super::shared::PlaybackState;
     let eng = match engine(mt) {
@@ -206,6 +224,25 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         SHARED.load_completed.store(true, Relaxed);
         super::log("SMP loadCompleted");
         eng.stage = Stage::Playing;
+        // webOS 5+: place the exported window HERE, the instant Load reports success — which is
+        // exactly where ss4s does it (smp_player.c calls StarfishResourcePostLoad synchronously
+        // on the line after StarfishMediaAPIs_load returns true).
+        //
+        // It used to wait for `frames >= 2`, copied from the ACB block below, and that is a
+        // DEADLOCK on this path: the pipeline does not emit frames until its sink is bound, and
+        // the sink is not placed until frames arrive. The symptom is a player stuck in buffering
+        // forever, which is what webOS 6 and 10 reported. The gate is right for ACB and only for
+        // ACB — `setMediaVideoData` there needs the sourceInfo envelope, which cannot exist until
+        // the pipeline has produced something. The exported window has no such dependency: the
+        // BINDING already happened via `option.windowId` in the Load payload, and this call is
+        // pure geometry.
+        place_exported(mt, eng);
+        if ffi::vp_mode() == ffi::VP_EXPORTED {
+            // Playing -> Streaming directly: there is no bind sequence to sit in the middle of.
+            // The transition is load-bearing beyond bookkeeping — `pushEOS` is gated on
+            // `>= Streaming`, so without it the last frames never drain and Up Next never fires.
+            eng.stage = Stage::Streaming;
+        }
         // A fresh Load for a seek/resume (rebase_pending) primes before Play so the clock does
         // not free-run through the demux av_seek reopen gap (fast-forward on resume). Initial
         // play-from-0 has no such gap — Play immediately.
@@ -245,35 +282,16 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         }
     }
 
-    // ---------- webOS 5+ (VP_EXPORTED): place the video rect once frames flow ----------
-    //
-    // The counterpart of the whole ACB block above, and it is one call, because that is all webOS
-    // 5 kept: the binding itself already happened when `option.windowId` went into the Load
-    // payload. There is no sourceInfo to forward and no LOADED/PLAYING state to mirror — that
-    // sequence was deleted, not replaced.
-    //
-    // Gated on the same `frames >= 2` as the ACB path so the sink exists before we size it, and
-    // done once per session. UNTESTED ON HARDWARE.
-    if eng.stage == Stage::Playing
-        && !eng.video_info_sent
-        && ffi::vp_mode() == ffi::VP_EXPORTED
-        && SHARED.frames.load(Relaxed) >= 2
-    {
-        // src is the DECODED FRAME, dst the on-screen rect; the pair is what expresses scaling
-        // (webosbrew's native media guide: "`src` is the frame you are feeding, `dst` is where it
-        // goes on screen"). This used to pass 1920x1080 for BOTH, copied from `acb_start`'s
-        // literals — but ACB's setDisplayWindow takes only a DESTINATION rect, so that number
-        // meant nothing in the src slot. It would have told the compositor a 4K direct play was a
-        // 1080p source, which is most of what this app plays.
-        //
-        // Falls back to the authoring canvas only if the demuxer has not published a size yet,
-        // which `frames >= 2` should already have ruled out.
-        let (sw, sh) = (SHARED.video_w.load(Relaxed), SHARED.video_h.load(Relaxed));
-        let (sw, sh) = if sw > 0 && sh > 0 { (sw, sh) } else { (1920, 1080) };
-        let rv = unsafe { ffi::vp_place(mt, sw, sh, 0, 0, 1920, 1080) };
-        eng.video_info_sent = true;
-        eng.stage = Stage::Streaming;
-        super::log(&format!("vplane: exported window placed src={sw}x{sh} rv={rv} → streaming"));
+    // ---------- webOS 5+ (VP_EXPORTED): correct the placement if the real frame size only
+    // became known after Load. The demuxer publishes the coded size when it opens the stream,
+    // which races the load thread — so the placement above may have used the fallback. Re-placing
+    // costs one call, and Kodi re-places on every render-area change anyway.
+    // ----------
+    if eng.stage >= Stage::Playing && eng.placed_src != (0, 0) {
+        let now = (SHARED.video_w.load(Relaxed), SHARED.video_h.load(Relaxed));
+        if now.0 > 0 && now.1 > 0 && now != eng.placed_src {
+            place_exported(mt, eng);
+        }
     }
 
     // ---------- feed AUs once playing (Feed only succeeds after Play). NOT while a seek

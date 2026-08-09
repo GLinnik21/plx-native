@@ -38,11 +38,12 @@ requirements:
   # bundled, and `tools/fwcompat.py` grades the binary clean on every release from 4.4.2 to
   # 11.2.0 against real firmware inventories.
   #
-  # THE CEILING IS BACK, 2026-08-09. Dropping it was defensible while "does a picture appear on
-  # 5+" was open: the app started everywhere and the description said the video path had never run
-  # on a real set. mariotaku then ran it on webOS 6 and 10 — it fails to start. "Unverified" and
-  # "known broken" are different claims and deserve different bounds. It comes off again when the
-  # exported-window path works and somebody has seen it work.
+  # THE CEILING CAME BACK AND WENT AGAIN, 2026-08-09, and the round trip is worth recording.
+  # mariotaku's first report from real webOS 6 and 10 hardware read as "crashes or didn't start",
+  # which is known-broken and deserves a ceiling. His correction an hour later was the opposite:
+  # the app runs, signs in and browses the library there — only playback sticks in buffering. That
+  # is an unfinished feature on a working app, not a broken app, and the submission is a DRAFT that
+  # cannot land until playback works anyway. Ceiling off.
   #
   # THE FLOOR IS AN INFERENCE, not a measurement, and it should be read as one. webosbrew's
   # firmware database carries exactly ONE image below 4.4.2, so releases 4.0 through 4.3 are graded
@@ -56,7 +57,7 @@ requirements:
   # description, where someone reads it before installing, rather than in a bound that would hide
   # the app from the only people who can ever settle the question. A floor with no ceiling is also
   # how every other package in this repository declares itself.
-  webosRelease: '>=4.0, <5.0'
+  webosRelease: '>=4.0'
 
 description: |
   An unofficial, native Plex client for LG webOS 4.x televisions.
@@ -80,10 +81,10 @@ description: |
   * **Movies and TV shows only.** No music, photos, live TV or DVR.
   * **A server on your local network.** The app connects only to a server it finds on the LAN;
     remote-only and relay servers will not connect, and there is nowhere to enter an address.
-  * **webOS 4.x only.** webOS 5.0 replaced the LG library that binds decoded video to the
-    hardware plane. A replacement is implemented but does not work yet — on webOS 6 and 10 the app
-    fails to start. Support returns when it is fixed and someone has seen it working. Previously
-    this said "untested"; it has since been tested. The app writes what it chose to
+  * **webOS 4.x is what is tested.** The app runs and the library browses on webOS 6 and 10, but
+    playback does not start there yet: webOS 5.0 replaced the LG library that binds decoded video
+    to the hardware plane, and the replacement is still being worked out. The app writes what it
+    chose to
     `/tmp/plxnative-events.log`, and one of those settles it.
   * **Codec capability is asserted, not probed.** The app tells your server it can handle HEVC,
     4K and 10-bit because that is what the author's set does; on a lower-end webOS 4.x panel that

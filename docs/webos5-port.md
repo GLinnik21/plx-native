@@ -1,12 +1,18 @@
 # The webOS 5+ port
 
-**Status, 2026-08-09: TESTED ON WEBOS 6 AND 10, AND IT FAILS TO START THERE.**
+**Status, 2026-08-09: TESTED ON WEBOS 6 AND 10. IT RUNS; PLAYBACK DOES NOT.**
 
 mariotaku ran it on both while reviewing the Homebrew Channel submission
-([apps-repo#224](https://github.com/webosbrew/apps-repo/pull/224)) — "The app crashes (or didn't
-start) on webOS 6 or 10" — and marked the PR draft. The catalogue bound is back to
-`>=4.0, <5.0` and the README says webOS 4.x, because "unverified" and "known broken" are
-different claims.
+([apps-repo#224](https://github.com/webosbrew/apps-repo/pull/224)) and marked it draft. His first
+report read as a crash; the correction an hour later is the useful one:
+
+> It didn't crash and I was able to see the media library with 0.2.0. But I didn't get media to
+> load. Not necessarily incompatible (can't prove), but it stuck in buffering state.
+
+So on 5+ the process starts, SDL/GLES/wayland work, sign-in works, the data layer works and the UI
+renders. The failure is confined to playback — which is exactly and only the part that had never
+run on hardware. The bound stays `>=4.0`: this is an unfinished feature on a working app, and the
+submission is a draft that cannot land until playback works anyway.
 
 That result does not invalidate the static work below; it invalidates the inference drawn from
 it. `tools/fwcompat.py` and webosbrew's own check both say the process starts and every symbol

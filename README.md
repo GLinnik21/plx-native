@@ -3,7 +3,7 @@
 An unofficial native [Plex](https://www.plex.tv/) client for LG webOS 4.x televisions.
 
 *In daily use on a webOS 4.5 set. The
-[latest release](https://github.com/GLinnik21/plx-native/releases/latest) is for webOS 4.x; the
+[latest release](https://github.com/GLinnik21/plx-native/releases/latest) plays on webOS 4.x; the
 Homebrew Channel listing is
 [submitted](https://github.com/webosbrew/apps-repo/pull/224).*
 
@@ -79,10 +79,10 @@ with no special permissions. Root only matters for the development loop below.
 - **A server on your LAN.** The app only connects to a server it finds locally, over a socket that
   takes a numeric address with no DNS and no TLS. Remote-only and relay servers won't connect at
   all, and there's nowhere to type an address in.
-- **webOS 4.x.** 5.0 replaced the LG library that puts decoded video on the hardware plane. A
-  replacement is written, but it does not work yet: it has now been run on webOS 6 and 10 and the
-  app fails to start there. Support comes back when that is fixed and someone has watched something
-  on it. [#224](https://github.com/webosbrew/apps-repo/pull/224) has the report.
+- **webOS 4.x is what's tested.** It runs on 6 and 10 — the UI works and the library browses — but
+  playback doesn't start there yet: 5.0 replaced the LG library that puts decoded video on the
+  hardware plane, and getting the replacement right is in progress.
+  [#224](https://github.com/webosbrew/apps-repo/pull/224) has the report from a real set.
 - **One panel.** The app *tells* your server it can handle HEVC, 4K and 10-bit; it doesn't ask the
   television, because that's what mine does. On a lower-end webOS 4.x set that will be wrong, and
   so will the fallback.

@@ -63,6 +63,9 @@ impl Drop for AuBox {
 pub(crate) struct Engine {
     pub stage: Stage,
     pub video_info_sent: bool, // videoInfoSent
+    /// webOS 5+ only: the source size the exported window was last placed with, so a corrective
+    /// re-place happens exactly once if the demuxer publishes the real one later. 0 = never placed.
+    pub placed_src: (c_int, c_int),
     pub eos_pushed: bool,      // Kodi VIDEO_DRAIN: pushEOS() sent once at true EOF
     pub rebase_pending: bool,  // g_rebase_pending
     // In-place seek only: keyframes this far AHEAD of the seek target are stale frames the demuxer
@@ -455,6 +458,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     let eng = Engine {
         stage: Stage::Loading,
         video_info_sent: false,
+        placed_src: (0, 0),
         eos_pushed: false,
         // if a seek is armed for the FIRST open (resume, or reload_at), rebase the first
         // post-seek keyframe to fed-pts 0 so the pipeline sees a 0-based timeline identical
