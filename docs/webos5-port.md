@@ -261,6 +261,34 @@ Ranked by how much damage a wrong assumption does.
    `sizeof(AVPacket)` and the whole `AVSubtitleRect` layout move for the first time. `av_register_all`
    is also gone, so the loader reports `Incomplete` and names it.
 
+### What the firmware symbol tables say about the 4-vs-6/10 difference
+
+Asked of the databases rather than a disassembler, since we have symbol tables for all 14
+firmwares and binaries for none. Three facts, none of which is the buffering bug, all of which
+change what we know:
+
+**`StarfishMediaAPIs` grew a windowId API at exactly 5.3.1.** `setWindowId(const char *)`,
+`setSink(const char *)` and `setHdrInfo(const char *)` are absent on every release through 4.10.0
+and present on every release from 5.3.1 — the same release `libAcbAPI` disappears. That is the
+replacement surface, and it is worth knowing it exists.
+
+It is NOT what we are missing: neither Kodi (`MediaPipelineWebOS.cpp`) nor ss4s
+(`smp_player.c`, `smp_resource_webos5.c`) calls `setWindowId` at all — both pass the id only as
+`option.windowId` in the Load payload, and both ship on modern webOS. Our approach matches the two
+implementations known to work. `setWindowId` is a fallback to try if the payload route turns out
+not to be enough, not a correction.
+
+**`mediapipeline::CustomPipeline` gained 78 exported methods on 6.4.0 and 92 on 10.2.0** —
+`createPipeline`, `requestResource`, `setAppSrcCaps`, `removeAudioBin` and the rest. A class that
+grew that much has almost certainly changed layout, which is the strongest evidence yet that
+`starfish.c`'s `g_smp+0x4c` → `+0x04` walk to reach it must not run on those firmwares. The
+in-place seek that depends on it is now disabled on `VP_EXPORTED` for exactly that reason.
+
+**The whole of libplayerAPIs+libpf moved a long way**: 2144 exported symbols on 4.10.0, 2736 on
+6.4.0, 2628 on 10.2.0. `FeedStream` even gains a second overload with four more arguments on
+10.2.0. We call none of those directly — `Feed` takes JSON — but it is the scale of the change
+that matters when judging how much a webOS 4 assumption is worth elsewhere.
+
 ## 5. Things a webOS 5 port must NOT forget
 
 - **The event-type numbering shifts by 2** between webOS 4 and 5 for every `StarfishMediaAPIs`
