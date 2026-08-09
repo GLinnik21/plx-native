@@ -1,7 +1,24 @@
 # The webOS 5+ port
 
-**Status: the app now STARTS on every webOS release from 4.4.2 (2018) to 11.2.0 (2025). Whether a
-picture appears on webOS 5+ is unknown, because nobody involved owns one.**
+**Status, 2026-08-09: TESTED ON WEBOS 6 AND 10, AND IT FAILS TO START THERE.**
+
+mariotaku ran it on both while reviewing the Homebrew Channel submission
+([apps-repo#224](https://github.com/webosbrew/apps-repo/pull/224)) — "The app crashes (or didn't
+start) on webOS 6 or 10" — and marked the PR draft. The catalogue bound is back to
+`>=4.0, <5.0` and the README says webOS 4.x, because "unverified" and "known broken" are
+different claims.
+
+That result does not invalidate the static work below; it invalidates the inference drawn from
+it. `tools/fwcompat.py` and webosbrew's own check both say the process starts and every symbol
+resolves on 4.4.2 through 11.2.0, and both were answering "would the dynamic loader accept this
+binary". Something after the loader is what fails. §4 was explicit that starting is not playing —
+what it did not anticipate is that the app would not reach a UI at all.
+
+WHAT IS NEEDED NEXT is `/tmp/plxnative-events.log` and `/tmp/plxnative-crash.log` from one of those
+sets. The first says how far boot got and which video-plane path was chosen; the second is
+append-only and survives the relaunch, so it holds the faulting PC if the tracer ran. An empty or
+absent events log means the loader killed the process before `main`, which would contradict the
+static analysis and be the most interesting outcome of the two.
 
 That distinction is the whole of this document. Everything below is either a fact provable on a
 desk — and then it is stated flatly, with how to re-derive it — or an assumption that needs one
