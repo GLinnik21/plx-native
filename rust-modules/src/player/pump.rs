@@ -67,6 +67,13 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         set_state(PlaybackState::Error);
         return;
     }
+    // The same escape for a Load the pipeline REFUSED. `loadCompleted` can never arrive after
+    // that, so without this the pump stays in Stage::Loading and the user watches a spinner with
+    // no error and no way to tell it apart from a slow server.
+    if SHARED.load_failed.load(Relaxed) {
+        set_state(PlaybackState::Error);
+        return;
+    }
     let stream = matches!(eng.source, Source::Stream);
 
     // ---------- pending NATIVE audio-track switch (direct-play, no transcode): reload

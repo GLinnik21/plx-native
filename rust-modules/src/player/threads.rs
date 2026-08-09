@@ -16,6 +16,12 @@ pub(crate) fn load_thread(payload: SendPtr<c_char>) {
     super::log("SMP: calling Load (uid=NULL)");
     let ok = unsafe { super::ffi::sf_load(payload.0) };
     super::log(&format!("SMP: Load returned ok={ok}"));
+    if ok == 0 {
+        // Publish it. This used to be logged and discarded, so a refused payload was
+        // indistinguishable from a slow one and the pump waited on a `loadCompleted` that could
+        // never come.
+        super::SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// How long the progress reporter waits between /:/timeline posts.

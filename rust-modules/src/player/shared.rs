@@ -180,6 +180,14 @@ pub(crate) struct Shared {
     // (which needs `duration_ns > 0`) can never fire and the player would sit on a black screen
     // forever. The pump turns this into `PlaybackState::Error` so the HUD can say so.
     pub demux_failed: AtomicBool,
+    /// `sf_load` returned 0 — the pipeline REFUSED the Load payload.
+    ///
+    /// Without this the pump has no way to learn it: `load_thread` logged the result and dropped
+    /// it, `loadCompleted` never arrives, and `Stage::Loading` is never left — so the player sits
+    /// on a spinner forever with no error and no timeout. A rejected payload is the most likely
+    /// shape of a webOS-5-specific failure (a key the newer pipeline will not accept), which makes
+    /// this exactly the case that must be visible.
+    pub load_failed: AtomicBool,
 
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
@@ -233,6 +241,7 @@ impl Shared {
             pending_retranscode: AtomicBool::new(false),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
+            load_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
             sub_cues: Mutex::new(Vec::new()),
             sub_bitmaps: Mutex::new(Vec::new()),
@@ -269,6 +278,7 @@ impl Shared {
         self.pending_retranscode.store(false, Ordering::Relaxed);
         self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
+        self.load_failed.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). The cue/bitmap STORES below are transient render state

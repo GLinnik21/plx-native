@@ -27,6 +27,12 @@ static FEED_AUDIO: AtomicBool = AtomicBool::new(true);
 /// [`boot`]; read by [`demux`]. Starts FALSE so the gate is closed until boot has actually looked
 /// — a demux that somehow ran first should refuse, not assume.
 static ABI_OK: AtomicBool = AtomicBool::new(false);
+/// Did this demux session hand a single video AU to a lane? Cleared by `demux` on entry.
+///
+/// The tail uses it to tell "ended cleanly" from "ended having produced nothing", which EOF alone
+/// cannot express — and which is the difference between a real end-of-file and the player sitting
+/// on "Buffering…" forever with no error.
+static PUSHED_ANY: AtomicBool = AtomicBool::new(false);
 /// Did libswscale load? It is the one FFmpeg library that is NOT required: `RELEASE=1` leaves it
 /// out of the package because only the dev capture stream's RGBA->YUV conversion uses it. `venc`
 /// checks this rather than relying on being feature-gated out, so the dependency is enforced
@@ -1569,6 +1575,7 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
 }
 
 pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+    PUSHED_ANY.store(false, Ordering::Relaxed);
     // Refuse rather than read a struct whose shape we do not know (see `boot`). EOF must still be
     // set on both lanes or `pump` waits forever on a queue nothing will ever fill — the same
     // contract the panic barrier below exists to keep.
@@ -1855,6 +1862,7 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                             head
                         ));
                     }
+                    PUSHED_ANY.store(true, Ordering::Relaxed);
                     crate::aq::aq_push(
                         aq_p,
                         aubuf.as_ptr(),
@@ -1982,6 +1990,19 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
         // the pump waiting on a stage it can never reach. This is the same flag the `http_open`
         // failure above raises, and `pump` turns it into `PlaybackState::Error` (gated on
         // `frames == 0`, so a panic MID-playback is left to the EOF/EOS path below instead).
+        SHARED.demux_failed.store(true, Ordering::Release);
+    }
+    // A demux that ends having produced NOTHING is a failure, whatever route it took out.
+    // Only two exits used to say so — the http_open failure and the panic handler — while every
+    // other early `break` in the open sequence (the ABI refusal, av_malloc, avio_alloc_context,
+    // avformat_alloc_context, open_input, find_stream_info, no video stream) simply set EOF and
+    // returned. EOF with zero AUs is indistinguishable from a zero-length file: the pump keeps
+    // waiting, `frames` stays 0, and the HUD says "Buffering…" forever with nothing in the log to
+    // say why. That is precisely the report that came back from webOS 6 and 10, and it is why the
+    // report could not name a cause. Failing loudly here does not fix any of those bugs; it makes
+    // the next one diagnosable.
+    if !PUSHED_ANY.load(Ordering::Relaxed) {
+        crate::player::log("ff: demux produced no access units — treating as a failure");
         SHARED.demux_failed.store(true, Ordering::Release);
     }
     crate::aq::aq_set_eof(aq_p);

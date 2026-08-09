@@ -493,7 +493,17 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // subsequent item, into a full reload for the rest of the app's life. Placed HERE rather than
     // at the top of this function on purpose: the `engine_is_live` no-op return above must NOT
     // re-arm, or a stray PLAY landing mid-session would cancel a fallback that is still needed.
-    super::INPLACE_SEEK_OK.store(true, Ordering::Relaxed);
+    //
+    // NOT re-armed on webOS 5+. In-place seek reaches the pipeline through two decompile-derived
+    // offsets into LG-private C++ objects — `StarfishMediaAPIs::player` at g_smp+0x4c, then
+    // `AbstractPlayer::pipeline` at +0x04 (src/starfish.c's sf_pipeline), plus
+    // MEDIA_CUSTOM_CONTENT_INFO's ptsToDecode at +0x28. Every one of those was read off a
+    // webOS 4.5 binary with a disassembler, and nothing in a symbol table can confirm them on
+    // another firmware: a field added to StarfishMediaAPIs by any 5.x build moves +0x4c and the
+    // very next seek dereferences whatever now lives there. The reload fallback is slower but is
+    // built out of Load/Play alone and assumes no layout at all. Re-enable per release only once
+    // somebody has re-derived the offsets on that firmware.
+    super::INPLACE_SEEK_OK.store(ffi::vp_mode() != ffi::VP_EXPORTED, Ordering::Relaxed);
     engine_install(mt, eng);
     TX.started.store(true, Ordering::Relaxed);
     log(&format!("SMP: media thread spawned, stream={}", stream as i32));
