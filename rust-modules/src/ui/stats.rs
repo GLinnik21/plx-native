@@ -163,7 +163,7 @@ pub(crate) fn update(now: u32) {
         // tells a story that never happened is worse than no panel.
         let d = crate::player::diag();
         let prev = addr_of_mut!(PREV_FED).read();
-        addr_of_mut!(HEAD).write(header());
+        addr_of_mut!(HEAD).write(header(&d, now));
         addr_of_mut!(LEFT).write(left_column(&d, prev, now));
         addr_of_mut!(RIGHT).write(right_column(&d));
         addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
@@ -178,7 +178,7 @@ pub(crate) fn update(now: u32) {
     crate::ui::idle::invalidate();
 }
 
-fn header() -> [String; 3] {
+fn header(d: &crate::player::Diag, now: u32) -> [String; 3] {
     let w = crate::webos::info();
     let os = if w.major == 0 {
         "webOS unknown — /var/run/nyx/os_info.json unreadable".to_string()
@@ -187,14 +187,18 @@ fn header() -> [String; 3] {
     };
     let (_, _, vw, vh) = crate::surface::viewport();
     [
-        format!("PlxNative {}", env!("CARGO_PKG_VERSION")),
+        format!(
+            "PlxNative {} · {}",
+            env!("CARGO_PKG_VERSION"),
+            if cfg!(feature = "devtriggers") { "dev" } else { "release" }
+        ),
         format!("{os} · surface {vw}x{vh}"),
-        playback_line(),
+        playback_line(d, now),
     ]
 }
 
 /// The one-line verdict, in the largest type on the panel: what the pipeline thinks it is doing.
-fn playback_line() -> String {
+fn playback_line(d: &crate::player::Diag, now: u32) -> String {
     use crate::player::PlaybackState as S;
     let s = match crate::player::state() {
         S::Idle => "Idle",
@@ -206,10 +210,16 @@ fn playback_line() -> String {
         S::Error => "Playback error",
     };
     if crate::player::TX.paused.load(Ordering::Relaxed) {
-        format!("{s} (paused)")
-    } else {
-        s.to_string()
+        // the frozen clock must DISARM while paused — a paused picture is not a stalled one
+        return format!("{s} (paused)");
     }
+    // A stream that says "Playing" while nothing has moved for seconds is the failure with no
+    // error at all: the app freezes on its last frame and every other row still reads healthy.
+    let stuck = since(d.frame_at, now) / 1000;
+    if matches!(crate::player::state(), S::Playing) && d.seen_frame && stuck >= STALL_MS / 1000 {
+        return format!("{s} (stalled {stuck} s)");
+    }
+    s.to_string()
 }
 
 /// LEFT — the stall discriminators, in the order a maintainer reads them. Everything here answers
@@ -219,71 +229,124 @@ fn left_column(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<
     v.push(Field::section("VIDEO PLANE"));
     v.push(Field::new("Mode", d.vp_mode_str()).fault(d.vp_mode == crate::player::VP_NONE));
     if d.vp_mode == crate::player::VP_EXPORTED {
-        // webOS 5+: no window means the decoded frames have nowhere to land, and the symptom is
-        // sound over a black screen — or, if the payload never got the id, no frames at all.
+        // webOS 5+. No window means decoded frames have nowhere to land; no placement means the
+        // window exists and was never given geometry. Both present as "buffering forever".
         v.push(Field::new(
             "Window",
             if d.window_id.is_empty() { "NONE — cannot bind".into() } else { d.window_id.clone() },
         )
         .fault(d.window_id.is_empty()));
-        v.push(Field::new("Placed", match d.place_rv {
-            i32::MIN => "not placed".to_string(),
-            rv => format!("{}x{} rv={rv}", d.placed_w, d.placed_h),
-        })
-        .fault(d.place_rv == i32::MIN));
-    } else {
-        v.push(Field::new("ACB", if d.acb_ok { "bound" } else { "not bound" }).fault(!d.acb_ok));
+        // `rv == 0` is "the seam had no window or no symbol", NOT "SDL refused" — worded so a
+        // reader is not sent looking for a rejection that never happened.
+        v.push(
+            Field::new("Placed", match d.place_rv {
+                i32::MIN => "not placed".to_string(),
+                0 => "FAILED (rv=0)".to_string(),
+                rv => format!("src {}x{} rv={rv}", d.placed_w, d.placed_h),
+            })
+            .fault(d.place_rv == i32::MIN || d.place_rv == 0),
+        );
+    } else if d.vp_mode == crate::player::VP_ACB {
+        // ABSORBS the old `Stage` row. On the exported path Stage restated `Load` verbatim (the
+        // same block sets load_completed, then Playing, then Streaming two lines later); its real
+        // four-step content only ever existed here. `acb_bind` returns void, so "bind sent" — the
+        // panel must not claim a confirmation the API does not give.
+        v.push(
+            Field::new("ACB", match (d.acb_ok, d.stage) {
+                (false, _) => "NOT AVAILABLE",
+                (true, 0) => "init'd · NOT bound",
+                (true, 1) => "bind sent",
+                _ => "streaming",
+            })
+            .fault(!d.acb_ok),
+        );
     }
     v.push(Field::section("PIPELINE"));
-    v.push(Field::new("Stage", d.stage_str()));
-    v.push(Field::new(
-        "Load",
-        if d.load_failed { "REFUSED" } else if d.load_completed { "completed" } else { "waiting" },
-    )
-    .fault(d.load_failed));
-    // A completed Load with zero callbacks is the pipeline never speaking to us at all — the
-    // sharpest single symptom a stuck-buffering report can carry.
-    v.push(Field::new("Callbacks", match d.cb_count {
-        0 => "none".to_string(),
-        n => format!("{n} · last type {}", d.cb_last),
-    })
-    .fault(d.cb_count == 0 && d.load_completed));
-    v.push(Field::new("Demuxed", if d.pushed_any { "yes" } else { "NOTHING" }).fault(!d.pushed_any));
-    // Totals AND their rate. A total is monotonic, so it cannot express "this lane stopped" —
-    // which is exactly the shape of "video plays but there is no sound after a seek", where the
-    // audio lane's total stays large and stops moving. `+0/s` beside a healthy video rate says
-    // that in one line; the total alone never can.
-    v.push(Field::new("Fed v/a", format!("{} / {}", d.fed_v, d.fed_a)).fault(d.fed_v == 0 && d.load_completed));
-    // Its own row: totals plus rate on one line overflowed into the right column's keys.
-    v.push(Field::new("Feed rate", fed_rate(d, prev, now)));
-    // WHY the video feeder is where it is. `Fed`/`Feed rate` say whether AUs are moving; this says
-    // what the pipeline answered, which is the difference between "we stopped offering" and "it
-    // stopped accepting". A refusal that is not BufferFull is the pipeline rejecting our stream.
     v.push(
-        Field::new("Feed v", d.feed_reply_str())
-            .fault(d.feed_reply_v != 0 && d.feed_reply_v != b'O' as u32 && d.feed_reply_v != b'B' as u32),
+        Field::new(
+            "Load",
+            if d.load_failed { "REFUSED" } else if d.load_completed { "completed" } else { "waiting" },
+        )
+        .fault(d.load_failed),
     );
-    v.push(Field::new("Frames", match (d.frames, d.seen_frame) {
-        (0, false) => "0 — none this session".to_string(),
-        (0, true) => "0 — since seek".to_string(),
-        (n, _) => n.to_string(),
-    })
-    .fault(!d.seen_frame && d.load_completed));
-    let (cv, _ca) = crate::player::aq_caps();
-    // One unit for the pair rather than three separate `mb()` runs: "8.0 MB / 8.0 MB · 186 kB"
-    // overflowed the value column into the right-hand one.
+    // A completed Load with zero callbacks is the pipeline never speaking to us. A LATCHED error
+    // is the pipeline speaking once and refusing — which today reads as a perfectly healthy panel.
+    v.push(
+        Field::new("Callbacks", match (d.cb_count, d.cb_err) {
+            (0, _) => "none".to_string(),
+            (n, 0) => format!("{n} · no error"),
+            (n, e) => format!("{n} · ERR {e} @ {}", d.cb_err_at),
+        })
+        .fault(d.cb_err != 0 || (d.cb_count == 0 && d.load_completed)),
+    );
+    // The transport, which the panel was blind to entirely. Splits "the bytes never arrived" from
+    // "bytes arrived and nothing parsed" — a class no other row can reach.
+    v.push(
+        Field::new("HTTP", match (d.http_status, d.net_rx) {
+            (0, _) => "— · no connection".to_string(),
+            (st, rx) => format!("{st} · {}", mb(rx)),
+        })
+        .fault(d.http_status != 0 && !(200..300).contains(&d.http_status)),
+    );
+    v.push(Field::new("Demuxed", if d.pushed_any { "yes" } else { "NOTHING" }).fault(!d.pushed_any));
+    v.push(Field::new("Fed v/a", format!("{} / {}", d.fed_v, d.fed_a)).fault(d.fed_v == 0 && d.load_completed));
+    v.push(Field::new("Feed rate", fed_rate(d, prev, now)));
+    v.push(Field::new("Feed v", d.feed_state_str()).fault(d.feed_is_fault()));
+    // CARRIES THE CLOCK. A photograph has no time axis: "Load completed, 0 frames" is innocent at
+    // two seconds and damning at four minutes, and only this row can tell them apart.
+    v.push(
+        Field::new("Frames", frames_str(d, now))
+            .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
+    );
+    // No fault tint: pinned at the cap is the HEALTHY steady state under the feed-ahead throttle.
+    let (cv, ca) = crate::player::aq_caps();
     v.push(Field::new(
         "Buffered v/a",
-        format!("{:.1}/{:.1} MB · {}", d.aq_video as f64 / (1 << 20) as f64, cv as f64 / (1 << 20) as f64, mb(d.aq_audio)),
+        format!(
+            "{:.1}/{:.1} · {:.2}/{:.1} MB",
+            d.aq_video as f64 / (1 << 20) as f64,
+            cv as f64 / (1 << 20) as f64,
+            d.aq_audio as f64 / (1 << 20) as f64,
+            ca as f64 / (1 << 20) as f64
+        ),
     ));
     v
+}
+
+/// Milliseconds since an SDL-tick stamp, 0 when never stamped or the clock wrapped.
+fn since(at: u32, now: u32) -> u32 {
+    if at == 0 || now < at {
+        0
+    } else {
+        now - at
+    }
+}
+
+/// How long a still panel has to stay still before it is a stall rather than a slow server.
+const STALL_MS: u32 = 8_000;
+
+/// The frame count with its clock. `frames` is SEEK-scoped, so "0" has three meanings and the
+/// panel has to say which.
+fn frames_str(d: &crate::player::Diag, now: u32) -> String {
+    let stuck = since(d.frame_at.max(d.load_at), now) / 1000;
+    match (d.frames, d.seen_frame) {
+        (0, false) if d.load_completed => format!("none in {stuck} s"),
+        (0, false) => "none yet".to_string(),
+        (0, true) => "0 — since seek".to_string(),
+        (n, _) if stuck >= STALL_MS / 1000 => format!("{n} · frozen {stuck} s"),
+        (n, _) => n.to_string(),
+    }
 }
 
 /// RIGHT — the source and the build. What was asked for, and what the app is made of.
 fn right_column(d: &crate::player::Diag) -> Vec<Field> {
     let mut v = Vec::with_capacity(COLUMN_ROWS);
     v.push(Field::section("STREAM"));
-    v.push(Field::new("Source", if crate::route::is_transcoding() { "transcode" } else { "direct play" }));
+    v.push(Field::new("Source", match (crate::route::is_transcoding(), crate::route::is_remux()) {
+        (false, _) => "direct play",
+        (true, true) => "remux (copy)",
+        (true, false) => "transcode (re-encode)",
+    }));
     // SOURCE codec → what the Load payload actually declared. The arrow is the point: this repo's
     // documented silent-audio bug is a payload built from the source rather than from the
     // /decision OUTPUT, and it is invisible in either half on its own.
@@ -307,7 +370,6 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
             if d.dur_ns > 0 { crate::ui::fmt::clock(d.dur_ns / 1_000_000) } else { "unknown".into() }
         ),
     ));
-    v.push(Field::new("Size", if d.file_size > 0 { mb(d.file_size) } else { "unknown".into() }));
     // The two lanes' high-water fed PTS, differenced. Instantaneous and exact where the totals
     // are blind: a skew that keeps growing is the audio lane starving behind the video one, and a
     // skew near zero says both are keeping up and any missing sound is downstream of us.
@@ -319,7 +381,6 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
         if fmtv == 0 { "NOT BOUND".to_string() } else { format!("fmt {fmtv} · cod {codv} · util {utlv}") },
     )
     .fault(fmtv == 0));
-    v.push(Field::new("Config", if cfg!(feature = "devtriggers") { "dev" } else { "release" }));
     v
 }
 
@@ -540,8 +601,10 @@ mod tests {
     /// not happen" must say it.
     #[test]
     fn a_dead_session_marks_its_faults() {
-        let d = crate::player::Diag { load_completed: true, ..Default::default() };
-        let rows = left_column(&d, (0, 0, 0), 1_000);
+        // `load_at` a full stall-window in the past: a Load that completed SECONDS ago with no
+        // frame is the fault. The same session one tick after Load is NOT — see the test below.
+        let d = crate::player::Diag { load_completed: true, load_at: 1_000, ..Default::default() };
+        let rows = left_column(&d, (0, 0, 0), 1_000 + STALL_MS + 1);
         let faults: Vec<_> = rows
             .iter()
             .filter(|f| f.tone == crate::ui::widgets::Tone::Fault)
@@ -565,6 +628,20 @@ mod tests {
         );
         let right = MARGIN + 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
         assert!(right < SCR_W, "panel is wider than the screen: {right}");
+    }
+
+    /// **The chart can be deleted by a green suite.** `draw_chart` returns silently below 40 px,
+    /// and `neither_column_outgrows_the_page` grades only `len() <= COLUMN_ROWS` — so two extra
+    /// rows in the RIGHT column would take the chart's slack, the chart would stop drawing, and
+    /// nothing would fail. Grade the band directly.
+    #[test]
+    fn the_chart_keeps_a_drawable_band() {
+        let d = crate::player::Diag::default();
+        let used = right_column(&d).len();
+        let slack = FieldList::height(COLUMN_ROWS - used) - theme::space::XS;
+        assert!(slack >= 40.0, "right column leaves the chart only {slack} px — it will not draw");
+        let band = (slack - 22.0) * 0.5 - 4.0;
+        assert!(band >= 20.0, "each lane gets {band} px — too thin to read in a photograph");
     }
 
     /// …and it must leave the MAJORITY of the picture visible, or it is the full-screen card
@@ -603,6 +680,66 @@ mod tests {
         let sk = right_column(&d).into_iter().find(|f| f.key == "A/V skew").expect("skew row");
         assert_eq!(sk.val.as_deref(), Some("+30.0 s"));
         assert_eq!(sk.tone, crate::ui::widgets::Tone::Fault, "30 s of skew is a fault");
+    }
+
+    /// The clock is what makes "no frames" mean something. One tick after `loadCompleted` a
+    /// frameless pipeline is a pipeline that has not started yet; eight seconds later it is a
+    /// stall. Without this distinction the panel cries wolf on every single playback.
+    #[test]
+    fn a_freshly_completed_load_with_no_frames_yet_is_not_a_fault() {
+        let d = crate::player::Diag { load_completed: true, load_at: 1_000, ..Default::default() };
+        let fresh = left_column(&d, (0, 0, 0), 1_100);
+        let f = fresh.iter().find(|f| f.key == "Frames").unwrap();
+        assert_ne!(f.tone, crate::ui::widgets::Tone::Fault, "0.1 s after Load is not a stall");
+        assert_eq!(f.val.as_deref(), Some("none in 0 s"));
+
+        let stalled = left_column(&d, (0, 0, 0), 1_000 + STALL_MS + 4_000);
+        let f = stalled.iter().find(|f| f.key == "Frames").unwrap();
+        assert_eq!(f.tone, crate::ui::widgets::Tone::Fault, "12 s after Load with no frame IS");
+        assert_eq!(f.val.as_deref(), Some("none in 12 s"));
+    }
+
+    /// The transport row splits a class the panel could not previously see at all: no connection,
+    /// a connection that was refused, and a connection that answered and delivered nothing.
+    #[test]
+    fn the_http_row_splits_the_open_failures() {
+        let row = |d: &crate::player::Diag| {
+            left_column(d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "HTTP").unwrap()
+        };
+        let none = row(&crate::player::Diag::default());
+        assert_eq!(none.val.as_deref(), Some("— · no connection"));
+
+        let refused = row(&crate::player::Diag { http_status: 401, ..Default::default() });
+        assert_eq!(refused.val.as_deref(), Some("401 · 0 B"));
+        assert_eq!(refused.tone, crate::ui::widgets::Tone::Fault);
+
+        // answered fine and delivered bytes — the fault is downstream, and this row says so
+        let ok = row(&crate::player::Diag { http_status: 200, net_rx: 13_000_000, ..Default::default() });
+        assert_eq!(ok.val.as_deref(), Some("200 · 12.4 MB"));
+        assert_ne!(ok.tone, crate::ui::widgets::Tone::Fault);
+    }
+
+    /// `queue empty` vs `BufferFull` is the row's whole purpose: a dead PRODUCER and a dead SINK
+    /// read identically everywhere else on the panel and want opposite fixes. Neither is a fault
+    /// tint — both are ordinary moments in a healthy stream; only an outright refusal is.
+    #[test]
+    fn the_feed_row_splits_a_dead_producer_from_a_dead_sink() {
+        let f = |st: u8| crate::player::Diag { feed_state: st, ..Default::default() };
+        assert_eq!(f(5).feed_state_str(), "queue empty (no data)");
+        assert_eq!(f(2).feed_state_str(), "BufferFull (sink is full)");
+        assert!(!f(5).feed_is_fault() && !f(2).feed_is_fault() && !f(4).feed_is_fault());
+        assert!(f(3).feed_is_fault(), "an outright refusal is the only fault");
+    }
+
+    /// A latched pipeline error must survive later healthy callbacks — it is the one event that
+    /// explains the session — and must carry WHERE it happened, so "refused immediately" and
+    /// "died after a long healthy run" are different readings.
+    #[test]
+    fn a_latched_pipeline_error_outranks_a_healthy_callback_count() {
+        let d = crate::player::Diag { cb_count: 812, cb_err: 18, cb_err_at: 4, load_completed: true, ..Default::default() };
+        let row = left_column(&d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Callbacks").unwrap();
+        assert_eq!(row.val.as_deref(), Some("812 · ERR 18 @ 4"));
+        assert_eq!(row.tone, crate::ui::widgets::Tone::Fault);
     }
 
     /// Ordinary interleave is not a fault — containers put the two lanes a fraction of a second
@@ -662,7 +799,7 @@ mod tests {
     #[test]
     fn an_unknown_firmware_is_named_as_unknown() {
         let _g = crate::testlock::serial();
-        let line = &header()[1];
+        let line = &header(&crate::player::Diag::default(), 1_000)[1];
         if crate::webos::info().major == 0 {
             assert!(line.contains("unknown"), "{line}");
         } else {

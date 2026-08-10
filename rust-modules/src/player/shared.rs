@@ -234,9 +234,33 @@ pub(crate) struct Shared {
     /// 0x1c, so naming it would print a confident lie on the firmware we cannot test.
     pub dg_cb_count: AtomicU32,
     pub dg_cb_last: AtomicI32,
-    /// Last `Feed()` reply byte per lane ('O' for Ok, 'B' for BufferFull, …), 0 before the first.
-    pub dg_feed_reply_v: AtomicU32,
-    pub dg_feed_reply_a: AtomicU32,
+    /// Why the VIDEO feeder is where it is, taken at each of `feed_stream`'s exit points.
+    /// 0 none yet · 1 accepting · 2 BufferFull · 3 refused · 4 waiting for a frame (feed-ahead
+    /// throttle) · 5 queue empty.
+    ///
+    /// Supersedes a bare last-reply byte, which says strictly less: "BufferFull" and "the throttle
+    /// held us back" and "there was nothing to send" are three different faults with three
+    /// different fixes, and a reply byte cannot tell them apart because the last two never reach a
+    /// `Feed()` call at all. `queue empty` vs `BufferFull` is what splits a dead PRODUCER from a
+    /// dead SINK.
+    pub dg_feed_state: AtomicU8,
+    /// The first Starfish error callback (`ty == 18`) of this session, and the callback INDEX it
+    /// arrived at. Sticky: a later healthy callback must not erase the error that explains the
+    /// session, and the index says whether it was immediate or after a long healthy run.
+    pub dg_cb_err: AtomicI32,
+    pub dg_cb_err_at: AtomicU32,
+    /// The media GET's HTTP status and the bytes actually delivered to the demuxer. Written by the
+    /// DEMUX thread — the third writer of this block. 0/0 = no connection was ever made, which is
+    /// a different failure from a connection that answered 401.
+    pub dg_http_status: AtomicI32,
+    pub dg_net_rx: AtomicI64,
+    /// SDL ticks when `loadCompleted` landed, and when `frames` last CHANGED. A photograph has no
+    /// time axis: "Load completed, 0 frames" is innocent at 2 s and damning at 4 minutes, and the
+    /// panel cannot tell the difference without these. Stamped in the pump, never in `ui::stats` —
+    /// a stats-local timer would start when the panel is OPENED, so a four-minute hang would
+    /// photograph as twelve seconds.
+    pub dg_load_at: AtomicU32,
+    pub dg_frame_at: AtomicU32,
     /// Bytes queued in each AU lane at the last tick, against `engine::aq_caps`.
     pub dg_aq_video: AtomicI64,
     pub dg_aq_audio: AtomicI64,
@@ -271,8 +295,13 @@ impl Shared {
             dg_stage: AtomicU8::new(0),
             dg_cb_count: AtomicU32::new(0),
             dg_cb_last: AtomicI32::new(0),
-            dg_feed_reply_v: AtomicU32::new(0),
-            dg_feed_reply_a: AtomicU32::new(0),
+            dg_feed_state: AtomicU8::new(0),
+            dg_cb_err: AtomicI32::new(0),
+            dg_cb_err_at: AtomicU32::new(0),
+            dg_http_status: AtomicI32::new(0),
+            dg_net_rx: AtomicI64::new(0),
+            dg_load_at: AtomicU32::new(0),
+            dg_frame_at: AtomicU32::new(0),
             dg_aq_video: AtomicI64::new(0),
             dg_aq_audio: AtomicI64::new(0),
             dg_fed_v_pts: AtomicI64::new(0),
@@ -321,8 +350,15 @@ impl Shared {
         self.dg_stage.store(0, Ordering::Relaxed);
         self.dg_cb_count.store(0, Ordering::Relaxed);
         self.dg_cb_last.store(0, Ordering::Relaxed);
-        self.dg_feed_reply_v.store(0, Ordering::Relaxed);
-        self.dg_feed_reply_a.store(0, Ordering::Relaxed);
+        self.dg_feed_state.store(0, Ordering::Relaxed);
+        // A latched error MUST be cleared here, or one bad session paints every later healthy
+        // playback red for the life of the process.
+        self.dg_cb_err.store(0, Ordering::Relaxed);
+        self.dg_cb_err_at.store(0, Ordering::Relaxed);
+        self.dg_http_status.store(0, Ordering::Relaxed);
+        self.dg_net_rx.store(0, Ordering::Relaxed);
+        self.dg_load_at.store(0, Ordering::Relaxed);
+        self.dg_frame_at.store(0, Ordering::Relaxed);
         self.dg_aq_video.store(0, Ordering::Relaxed);
         self.dg_aq_audio.store(0, Ordering::Relaxed);
         self.dg_fed_v_pts.store(0, Ordering::Relaxed);
@@ -441,8 +477,15 @@ mod tests {
     #[test]
     fn every_diagnostics_mirror_field_has_a_writer() {
         const SHARED_SRC: &str = include_str!("shared.rs");
-        const WRITERS: [&str; 3] =
-            [include_str!("pump.rs"), include_str!("engine.rs"), include_str!("mod.rs")];
+        // ff.rs is the THIRD writer of this block — the demux thread stamps the HTTP status and
+        // the bytes it received. A writer file missing from this list reads exactly like a field
+        // with no writer, so adding one here is part of adding one there.
+        const WRITERS: [&str; 4] = [
+            include_str!("pump.rs"),
+            include_str!("engine.rs"),
+            include_str!("mod.rs"),
+            include_str!("../ff.rs"),
+        ];
 
         let declared: Vec<&str> = SHARED_SRC
             .lines()

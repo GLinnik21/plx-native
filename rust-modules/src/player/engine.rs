@@ -30,8 +30,15 @@ const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","optio
 // the single variable: does StarfishMediaAPIs BUFFERSTREAM decode HEVC on this panel?
 const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
-static VTOT: AtomicI64 = AtomicI64::new(0); // total video AUs fed (log cadence + `ui::stats`)
-static ATOT: AtomicI64 = AtomicI64::new(0); // total audio AUs fed (log cadence + `ui::stats`)
+// ACCEPTED AUs — what the pipeline took. This is what `ui::stats` reports, because a count of
+// attempts reads as healthy throughput through a stall: a full sink retains the AU and it is
+// re-offered every tick.
+static VTOT: AtomicI64 = AtomicI64::new(0);
+static ATOT: AtomicI64 = AtomicI64::new(0);
+// ATTEMPTS — the log's own cadence, kept separate because its `reply=` field is the only record
+// of a REJECTED feed and `tests/run.py` greps `feed v#` / `feed a#`.
+static VATT: AtomicI64 = AtomicI64::new(0);
+static AATT: AtomicI64 = AtomicI64::new(0);
 
 /// AUs fed to the Starfish pipeline this SESSION, video and audio.
 ///
@@ -313,6 +320,8 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // mean "this playback", and a count carried in from the last item answers neither question.
     VTOT.store(0, Ordering::Relaxed);
     ATOT.store(0, Ordering::Relaxed);
+    VATT.store(0, Ordering::Relaxed);
+    AATT.store(0, Ordering::Relaxed);
     // resolve the URL: route (a selected movie) wins, then /tmp/plxnative-url, then a local sample.
     let mut url = crate::route::url();
     if url.is_empty() {
@@ -759,6 +768,7 @@ fn drain_one(q: Option<&mut Box<AuQueue>>) {
         loop {
             let n = crate::aq::aq_pop(qp, &mut eof);
             if n.is_null() {
+                SHARED.dg_feed_state.store(5, Ordering::Relaxed); // queue empty / EOF
                 break;
             }
             unsafe { libc::free(n as *mut c_void) };
@@ -919,6 +929,7 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
             let pres = SHARED.pres_fed.load(Ordering::Relaxed);
             let budget = if es == 1 { MAX_FEED_AHEAD_NS } else { MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS };
             if pres != PRES_NONE && fp - pres > budget {
+                SHARED.dg_feed_state.store(4, Ordering::Relaxed); // waiting for a frame
                 break;
             }
         }
@@ -941,19 +952,27 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
             SHARED.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
             log(&format!("primed: v={}ms a={}ms -> Play", vbuf / 1_000_000, abuf / 1_000_000));
         }
+        // The log cadence counts ATTEMPTS (its `reply=` field is the only record of a rejected
+        // feed, and tests/run.py greps `feed v#`), so it keeps its own counter. VTOT counts what
+        // was ACCEPTED — see below.
         if es == 1 {
-            let v = VTOT.fetch_add(1, Ordering::Relaxed) + 1;
+            let v = VATT.fetch_add(1, Ordering::Relaxed) + 1;
             if v <= 4 || v % 100 == 0 {
                 let qb = crate::aq::aq_bytes(qp);
                 log(&format!("feed v#{v} sz={len} fed={fp} reply={} qbytes={qb}", r as u8 as char));
             }
         }
-        // The reply the pipeline gave for the LAST video AU, for the diagnostics read-out. The log
-        // above only prints it every hundredth AU, so a lane that has been refusing for a minute is
-        // invisible between two samples; this is always current.
-        SHARED.dg_feed_reply_v.store(r as u8 as u32, Ordering::Relaxed);
         if (r as u8) != b'O' {
-            break; // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
+            // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
+            SHARED.dg_feed_state.store(if (r as u8) == b'B' { 2 } else { 3 }, Ordering::Relaxed);
+            break;
+        }
+        SHARED.dg_feed_state.store(1, Ordering::Relaxed); // accepting
+        // COUNTED HERE, below the reply test, so `Fed` means AUs the pipeline TOOK. Counted above
+        // it, a permanently-full sink re-offered and re-counted the same retained AU every tick,
+        // and the read-out showed a brisk feed rate through a stall.
+        if es == 1 {
+            VTOT.fetch_add(1, Ordering::Relaxed);
         }
         eng.pending_video = None;
         fed += 1;
@@ -1012,12 +1031,14 @@ pub(crate) fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
         if fp > eng.max_fed_audio_pts {
             eng.max_fed_audio_pts = fp;
         }
-        let a = ATOT.fetch_add(1, Ordering::Relaxed) + 1;
+        let a = AATT.fetch_add(1, Ordering::Relaxed) + 1;
         if a <= 4 || a % 200 == 0 {
             let qb = crate::aq::aq_bytes(qp);
             log(&format!("feed a#{a} sz={len} fed={fp} reply={} qbytes={qb}", r as u8 as char));
         }
-        SHARED.dg_feed_reply_a.store(r as u8 as u32, Ordering::Relaxed);
+        if (r as u8) == b'O' {
+            ATOT.fetch_add(1, Ordering::Relaxed); // accepted, not attempted — see feed_stream
+        }
         if (r as u8) != b'O' {
             break; // 'B' BufferFull -> keep pending, retry next tick (AUDIO lane only)
         }
@@ -1051,5 +1072,27 @@ pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
         }
         s.next += 1;
         fed += 1;
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::{PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
+
+    /// **Every Load payload must carry the `appId` anchor**, because that string is what
+    /// `with_window_id` splices the webOS 5+ `option.windowId` onto — without it the decoded video
+    /// has nowhere to bind on every set from 5.0 up.
+    ///
+    /// This replaces a panel row that was proposed and rejected: the "not spliced — no anchor" arm
+    /// is UNREACHABLE at runtime (the anchor is a literal in all three constants and
+    /// `build_av_payload` never touches it), so a row reporting it would print the same constant on
+    /// a working and a broken television. The real risk is a payload edited a year from now that
+    /// drops the anchor — a build-time risk, caught at build time.
+    #[test]
+    fn every_load_payload_carries_the_window_id_anchor() {
+        const ANCHOR: &str = r#""appId":"com.beb.plxnative""#;
+        for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
+            assert!(p.contains(ANCHOR), "{name} lost the anchor — webOS 5+ video cannot bind");
+        }
     }
 }

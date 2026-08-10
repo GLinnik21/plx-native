@@ -1257,6 +1257,11 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             return AVERROR_EOF;
         }
         s.off += r as i64;
+        // Bytes actually delivered to the demuxer, for the diagnostics read-out. Counted HERE
+        // rather than from the socket so it means "what libavformat received": a connection that
+        // answered 200 and then delivered nothing is a different fault from one that never
+        // answered, and no other field on the panel can tell them apart.
+        SHARED.dg_net_rx.fetch_add(r as i64, Ordering::Relaxed);
         r
     }
 }
@@ -1656,13 +1661,17 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             }
             crate::stream::http_close(hs_p);
             if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
-                crate::player::log(&format!("ff: http_open FAILED status={}", crate::stream::hs_status(hs_p)));
+                let st = crate::stream::hs_status(hs_p);
+                SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                crate::player::log(&format!("ff: http_open FAILED status={st}"));
                 SHARED.demux_failed.store(true, Ordering::Release);
                 break;
             }
             let size = crate::stream::hs_content_length(hs_p);
             SHARED.file_size.store(size, Ordering::Release);
-            crate::player::log(&format!("ff: open status={} clen={}", crate::stream::hs_status(hs_p), size));
+            let st = crate::stream::hs_status(hs_p);
+            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            crate::player::log(&format!("ff: open status={st} clen={size}"));
 
             let mut state = Box::new(AvioState {
                 hs: hs_p,

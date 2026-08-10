@@ -191,7 +191,14 @@ pub(crate) struct Diag {
     pub fed_a_pts: i64,
     pub load_v: u8,
     pub load_a: u8,
-    pub feed_reply_v: u32,
+    pub feed_state: u8,
+    pub cb_err: i32,
+    pub cb_err_at: u32,
+    pub http_status: i32,
+    pub net_rx: i64,
+    pub load_at: u32,
+    pub frame_at: u32,
+    pub splice: u8,
     pub video_w: i32,
     pub video_h: i32,
     pub pos_ns: i64,
@@ -224,17 +231,25 @@ impl Diag {
             _ => "NONE (needAudio:false)",
         }
     }
-    /// What the pipeline said to the last VIDEO AU we handed it. The video lane specifically:
-    /// the picture is what a user complains about, and a two-lane string overflows the value
-    /// column. `BufferFull` is a healthy steady state under the feed-ahead throttle, not a fault —
-    /// what is NOT healthy is a lane that is refusing outright, or one that never got a reply.
-    pub fn feed_reply_str(&self) -> String {
-        match self.feed_reply_v {
-            0 => "— nothing fed yet".to_string(),
-            r if r == b'O' as u32 => "accepting".to_string(),
-            r if r == b'B' as u32 => "BufferFull (normal)".to_string(),
-            r => format!("REFUSED '{}'", r as u8 as char),
+    /// Why the VIDEO feeder is where it is. The video lane specifically: the picture is what a
+    /// user complains about, and a two-lane string overflows the value column.
+    ///
+    /// `queue empty` vs `BufferFull` is the row's whole point — a dead PRODUCER and a dead SINK
+    /// look identical from every other field on the panel and want opposite fixes.
+    pub fn feed_state_str(&self) -> &'static str {
+        match self.feed_state {
+            1 => "accepting",
+            2 => "BufferFull (sink is full)",
+            3 => "REFUSED",
+            4 => "waiting for a frame",
+            5 => "queue empty (no data)",
+            _ => "— nothing fed yet",
         }
+    }
+    /// Only an outright refusal is a fault. BufferFull is the steady state under the feed-ahead
+    /// throttle, and the throttle and an empty queue are ordinary moments in a healthy stream.
+    pub fn feed_is_fault(&self) -> bool {
+        self.feed_state == 3
     }
     pub fn stage_str(&self) -> &'static str {
         match self.stage {
@@ -277,7 +292,14 @@ pub(crate) fn diag() -> Diag {
         fed_a_pts: SHARED.dg_fed_a_pts.load(Relaxed),
         load_v: SHARED.dg_load_v.load(Relaxed),
         load_a: SHARED.dg_load_a.load(Relaxed),
-        feed_reply_v: SHARED.dg_feed_reply_v.load(Relaxed),
+        feed_state: SHARED.dg_feed_state.load(Relaxed),
+        cb_err: SHARED.dg_cb_err.load(Relaxed),
+        cb_err_at: SHARED.dg_cb_err_at.load(Relaxed),
+        http_status: SHARED.dg_http_status.load(Relaxed),
+        net_rx: SHARED.dg_net_rx.load(Relaxed),
+        load_at: SHARED.dg_load_at.load(Relaxed),
+        frame_at: SHARED.dg_frame_at.load(Relaxed),
+        splice: SHARED.dg_splice.load(Relaxed),
         video_w: SHARED.video_w.load(Relaxed),
         video_h: SHARED.video_h.load(Relaxed),
         pos_ns: SHARED.playpos_ns.load(Relaxed),
@@ -533,8 +555,18 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         // symptom the stuck-buffering reports could carry, and it is invisible in a log the user
         // cannot reach. Kept here rather than in the `ty` dispatch below so an event we do not
         // handle still counts — an unhandled callback is still the pipeline talking.
-        SHARED.dg_cb_count.fetch_add(1, Relaxed);
+        let n = SHARED.dg_cb_count.fetch_add(1, Relaxed) + 1;
         SHARED.dg_cb_last.store(ty, Relaxed);
+        // Latch the FIRST error, with the callback index it arrived at. Sticky, because a later
+        // healthy callback must not erase the one event that explains the session — and the index
+        // separates "refused immediately" from "died after a long healthy run". Only `ty == 18`:
+        // it is the one value this project has ever acted on, and it sits below the 0x1c point
+        // where the numbering shifts between webOS 4 and 5+, so it means the same on both. Naming
+        // any higher type would be a confident lie on the firmware we cannot test.
+        if ty == 18 && SHARED.dg_cb_err.load(Relaxed) == 0 {
+            SHARED.dg_cb_err.store(ty, Relaxed);
+            SHARED.dg_cb_err_at.store(n, Relaxed);
+        }
         let preview = if s.is_null() { String::new() } else {
             unsafe { CStr::from_ptr(s) }.to_string_lossy().chars().take(1400).collect()
         };

@@ -6,6 +6,7 @@ use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
 use crate::task::MainThread;
 use std::os::raw::c_char;
+use std::ptr::addr_of_mut;
 use std::sync::atomic::Ordering::{Relaxed, Release};
 
 /// Publish the one value the HUD renders from. Pure derivation off signals the workers already
@@ -64,7 +65,11 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
 ///
 /// `aq_bytes` takes each queue's pthread mutex, which is why it is sampled HERE, once per tick on
 /// the main thread, and never from a draw.
-fn publish_diag(eng: &Engine) {
+/// Last `frames` we saw, so a CHANGE can be stamped. A decrease counts: `frames` is seek-scoped
+/// and the pump zeroes it applying a seek, which is motion, not a freeze.
+static mut LAST_FRAMES: i32 = -1;
+
+fn publish_diag(eng: &Engine, now: u32) {
     SHARED.dg_stage.store(eng.stage as u8, Relaxed);
     let qv = eng.aq_video.as_ref().map_or(0, |q| {
         crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64
@@ -76,6 +81,14 @@ fn publish_diag(eng: &Engine) {
     SHARED.dg_aq_audio.store(qa, Relaxed);
     SHARED.dg_fed_v_pts.store(eng.max_fed_video_pts, Relaxed);
     SHARED.dg_fed_a_pts.store(eng.max_fed_audio_pts, Relaxed);
+    // Stamp when the frame count MOVES. The panel needs "how long has it been stuck" and a
+    // photograph has no time axis; stamping here rather than in `ui::stats` is what makes the
+    // clock measure the STALL rather than how long the panel has been open.
+    let f = SHARED.frames.load(Relaxed);
+    if unsafe { addr_of_mut!(LAST_FRAMES).read() } != f {
+        unsafe { addr_of_mut!(LAST_FRAMES).write(f) };
+        SHARED.dg_frame_at.store(now, Relaxed);
+    }
 }
 
 pub(crate) fn pump(mt: &MainThread, now: u32) {
@@ -92,7 +105,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // spot that cannot be forgotten as the pump grows, and it therefore keeps reporting through
     // the `sf_ready` and producer-died bail-outs — which is precisely when a stalled user is
     // looking at the panel. See `Shared`'s diagnostics-mirror block for the one-way rule.
-    publish_diag(eng);
+    publish_diag(eng, now);
     // wait for the media-thread ctor
     if unsafe { ffi::sf_ready(mt) } == 0 {
         set_state(PlaybackState::Connecting);
@@ -267,6 +280,8 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         && (SHARED.load_completed.load(Relaxed) || unsafe { ffi::sf_is_load_completed(mt) } != 0)
     {
         SHARED.load_completed.store(true, Relaxed);
+        // when it completed, so the panel can say how long we have been waiting for a frame since
+        SHARED.dg_load_at.store(now, Relaxed);
         super::log("SMP loadCompleted");
         eng.stage = Stage::Playing;
         // webOS 5+: place the exported window HERE, the instant Load reports success — which is

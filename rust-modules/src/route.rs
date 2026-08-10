@@ -141,6 +141,13 @@ pub(crate) fn set_source_codecs(vc: &str, ac: &str) {
         *addr_of_mut!(SRC_ACODEC) = ac.to_owned();
     }
 }
+/// Was this playback's transcode a container-only REMUX (codecs copied) rather than a re-encode?
+/// Meaningless unless `is_transcoding()`. The diagnostics read-out's three-way Source row turns on
+/// it: "the server touched the pixels" and "the server repackaged the bytes" are different facts
+/// and only one of them can explain a decode problem.
+pub(crate) fn is_remux() -> bool {
+    unsafe { addr_of!(CUR_REMUX).read() }
+}
 pub(crate) fn source_vcodec() -> String {
     unsafe { (*addr_of!(SRC_VCODEC)).clone() }
 }
