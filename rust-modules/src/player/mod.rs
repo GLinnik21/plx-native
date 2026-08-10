@@ -187,6 +187,10 @@ pub(crate) struct Diag {
     pub seen_frame: bool,
     pub aq_video: i64,
     pub aq_audio: i64,
+    pub fed_v_pts: i64,
+    pub fed_a_pts: i64,
+    pub load_v: u8,
+    pub load_a: u8,
     pub video_w: i32,
     pub video_h: i32,
     pub pos_ns: i64,
@@ -200,6 +204,23 @@ impl Diag {
             VP_EXPORTED => "exported window (webOS 5+)",
             VP_ACB => "ACB (webOS 4)",
             _ => "NONE — no video path",
+        }
+    }
+    /// What the Load payload named as the video codec, or `—` before one was built.
+    pub fn load_v_str(&self) -> &'static str {
+        match self.load_v {
+            1 => "H264",
+            2 => "H265",
+            _ => "—",
+        }
+    }
+    /// …and the audio codec. `needAudio:false` is its own answer, not an absence.
+    pub fn load_a_str(&self) -> &'static str {
+        match self.load_a {
+            1 => "AC3",
+            2 => "AC3 PLUS",
+            3 => "AAC",
+            _ => "NONE (needAudio:false)",
         }
     }
     pub fn stage_str(&self) -> &'static str {
@@ -239,6 +260,10 @@ pub(crate) fn diag() -> Diag {
         seen_frame: SHARED.seen_frame.load(Relaxed),
         aq_video: SHARED.dg_aq_video.load(Relaxed),
         aq_audio: SHARED.dg_aq_audio.load(Relaxed),
+        fed_v_pts: SHARED.dg_fed_v_pts.load(Relaxed),
+        fed_a_pts: SHARED.dg_fed_a_pts.load(Relaxed),
+        load_v: SHARED.dg_load_v.load(Relaxed),
+        load_a: SHARED.dg_load_a.load(Relaxed),
         video_w: SHARED.video_w.load(Relaxed),
         video_h: SHARED.video_h.load(Relaxed),
         pos_ns: SHARED.playpos_ns.load(Relaxed),

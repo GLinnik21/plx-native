@@ -1036,7 +1036,7 @@ impl View for TransportButton {
 
 /// A read-out value's severity. Carried by a WORD in the value text as well as by this tint —
 /// a phone photograph of a television chroma-subsamples, so hue alone must never be the signal.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tone {
     Normal,
     /// something is wrong here, and this is the row to read first
@@ -1069,7 +1069,7 @@ impl Field {
 
 /// Row pitch. Values are `size::BODY` (28); this is that plus air, and it is what bounds how many
 /// fields the overlay may carry — see `stats::COLUMN_ROWS`.
-pub const FIELD_ROW_H: f32 = 38.0;
+pub const FIELD_ROW_H: f32 = 36.0;
 /// Width of the key column inside a [`FieldList`] frame. Keys are right-aligned against it and
 /// values start one `space::MD` later, so every value in a column shares an x — which, with the
 /// font's tabular digits (all ten share one advance), is what makes the numbers line up.

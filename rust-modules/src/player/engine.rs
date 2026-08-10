@@ -357,7 +357,11 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     let stream_payload;
     let payload_str: &str = if stream {
         let hevc = crate::route::stream_vcodec() == "hevc";
+        // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
+        // video-only case, where `dg_load_a == 0` is the whole explanation for silence.
+        SHARED.dg_load_v.store(if hevc { 2 } else { 1 }, Ordering::Relaxed);
         if no_audio {
+            SHARED.dg_load_a.store(0, Ordering::Relaxed);
             if hevc { PAYLOAD_H265 } else { PAYLOAD_V }
         } else {
             let vc = if hevc { "H265" } else { "H264" };
@@ -369,6 +373,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                 "aac" => "AAC",
                 _ => "AC3",
             };
+            SHARED.dg_load_a.store(match ac { "AC3 PLUS" => 2, "AAC" => 3, _ => 1 }, Ordering::Relaxed);
             // Sink envelope = the panel max (4K) regardless of codec; the pipeline reads the
             // true dims from the bitstream (SPS), so this is just a ceiling and is correct for a
             // 4K stream (HEVC transcode / HEVC direct-play) AND harmless for a 1080p H264 file.

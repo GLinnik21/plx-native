@@ -123,8 +123,25 @@ const SAMPLE_MS: u32 = 500;
 /// Rows per column. The budget, not a preference: the panel is sized to exactly this and never
 /// scrolls — a read-out you have to scroll is two photographs and a chance of missing the line
 /// that mattered. A new field costs an existing one.
-const COLUMN_ROWS: usize = 12;
+const COLUMN_ROWS: usize = 14;
 
+/// The previous sample's fed totals and the tick they were taken at — what turns two totals into
+/// a RATE. Without it the panel can only say "1180 AUs have been fed", which stays true and stays
+/// large for as long as the app runs, including for the whole of a lane that stopped feeding
+/// thirty seconds ago. `(video, audio, at)`; `at == 0` means there is no previous sample yet.
+static mut PREV_FED: (i64, i64, u32) = (0, 0, 0);
+/// Fed-rate history, per lane, one entry per sample — the CHART, and the only thing on this panel
+/// that can answer "when did it stop, and did it come back".
+///
+/// Every other field is instantaneous, and a class of fault is invisible to all of them: "video
+/// plays but there is no sound after scrubbing" is one lane ceasing to advance while the other
+/// carries on. The totals stay large, the skew only says how far apart they are NOW, and neither
+/// says when it happened or whether it recovered. Thirty-two seconds of history at [`SAMPLE_MS`]
+/// does, and a dead lane draws as a flat gap that is unmistakable in a photograph.
+const HIST_N: usize = 64;
+static mut HIST_V: [u16; HIST_N] = [0; HIST_N];
+static mut HIST_A: [u16; HIST_N] = [0; HIST_N];
+static mut HIST_HEAD: usize = 0;
 static mut NEXT_SAMPLE: u32 = 0;
 static mut LEFT: Vec<Field> = Vec::new();
 static mut RIGHT: Vec<Field> = Vec::new();
@@ -145,9 +162,17 @@ pub(crate) fn update(now: u32) {
         // report "no frames" beside a right-hand position taken a moment later — a panel that
         // tells a story that never happened is worse than no panel.
         let d = crate::player::diag();
+        let prev = addr_of_mut!(PREV_FED).read();
         addr_of_mut!(HEAD).write(header());
-        addr_of_mut!(LEFT).write(left_column(&d));
+        addr_of_mut!(LEFT).write(left_column(&d, prev, now));
         addr_of_mut!(RIGHT).write(right_column(&d));
+        addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
+        // the same two rates the Fed row prints, kept as a ring so the chart can show their shape
+        let (rv, ra) = fed_rates(&d, prev, now);
+        let h = addr_of_mut!(HIST_HEAD).read();
+        (*addr_of_mut!(HIST_V))[h] = rv.min(u16::MAX as i64) as u16;
+        (*addr_of_mut!(HIST_A))[h] = ra.min(u16::MAX as i64) as u16;
+        addr_of_mut!(HIST_HEAD).write((h + 1) % HIST_N);
     }
     // a re-sample changes what is on screen, and no spring is involved — see `ui::idle`
     crate::ui::idle::invalidate();
@@ -189,7 +214,7 @@ fn playback_line() -> String {
 
 /// LEFT — the stall discriminators, in the order a maintainer reads them. Everything here answers
 /// "how far did this playback get before it stopped?", top to bottom.
-fn left_column(d: &crate::player::Diag) -> Vec<Field> {
+fn left_column(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     let mut v = Vec::with_capacity(COLUMN_ROWS);
     v.push(Field::section("VIDEO PLANE"));
     v.push(Field::new("Mode", d.vp_mode_str()).fault(d.vp_mode == crate::player::VP_NONE));
@@ -224,7 +249,13 @@ fn left_column(d: &crate::player::Diag) -> Vec<Field> {
     })
     .fault(d.cb_count == 0 && d.load_completed));
     v.push(Field::new("Demuxed", if d.pushed_any { "yes" } else { "NOTHING" }).fault(!d.pushed_any));
+    // Totals AND their rate. A total is monotonic, so it cannot express "this lane stopped" —
+    // which is exactly the shape of "video plays but there is no sound after a seek", where the
+    // audio lane's total stays large and stops moving. `+0/s` beside a healthy video rate says
+    // that in one line; the total alone never can.
     v.push(Field::new("Fed v/a", format!("{} / {}", d.fed_v, d.fed_a)).fault(d.fed_v == 0 && d.load_completed));
+    // Its own row: totals plus rate on one line overflowed into the right column's keys.
+    v.push(Field::new("Feed rate", fed_rate(d, prev, now)));
     v.push(Field::new("Frames", match (d.frames, d.seen_frame) {
         (0, false) => "0 — none this session".to_string(),
         (0, true) => "0 — since seek".to_string(),
@@ -232,7 +263,12 @@ fn left_column(d: &crate::player::Diag) -> Vec<Field> {
     })
     .fault(!d.seen_frame && d.load_completed));
     let (cv, _ca) = crate::player::aq_caps();
-    v.push(Field::new("Buffered v/a", format!("{} / {} · {}", mb(d.aq_video), mb(cv), mb(d.aq_audio))));
+    // One unit for the pair rather than three separate `mb()` runs: "8.0 MB / 8.0 MB · 186 kB"
+    // overflowed the value column into the right-hand one.
+    v.push(Field::new(
+        "Buffered v/a",
+        format!("{:.1}/{:.1} MB · {}", d.aq_video as f64 / (1 << 20) as f64, cv as f64 / (1 << 20) as f64, mb(d.aq_audio)),
+    ));
     v
 }
 
@@ -241,6 +277,16 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
     let mut v = Vec::with_capacity(COLUMN_ROWS);
     v.push(Field::section("STREAM"));
     v.push(Field::new("Source", if crate::route::is_transcoding() { "transcode" } else { "direct play" }));
+    // SOURCE codec → what the Load payload actually declared. The arrow is the point: this repo's
+    // documented silent-audio bug is a payload built from the source rather than from the
+    // /decision OUTPUT, and it is invisible in either half on its own.
+    v.push(Field::new("Video", chain(crate::route::source_vcodec(), crate::route::stream_vcodec(), d.load_v_str())));
+    // …and the same for audio, where `needAudio:false` is a COMPLETE explanation for silence:
+    // the pipeline was never asked for any.
+    v.push(
+        Field::new("Audio", chain(crate::route::source_acodec(), crate::route::stream_acodec(), d.load_a_str()))
+            .fault(d.load_a == 0 && d.load_v != 0),
+    );
     v.push(Field::new("Frame", match (d.video_w, d.video_h) {
         (0, _) | (_, 0) => "unknown — stream never opened".to_string(),
         (w, h) => format!("{w}x{h}"),
@@ -255,6 +301,10 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
         ),
     ));
     v.push(Field::new("Size", if d.file_size > 0 { mb(d.file_size) } else { "unknown".into() }));
+    // The two lanes' high-water fed PTS, differenced. Instantaneous and exact where the totals
+    // are blind: a skew that keeps growing is the audio lane starving behind the video one, and a
+    // skew near zero says both are keeping up and any missing sound is downstream of us.
+    v.push(Field::new("A/V skew", skew(d)).fault(skew_bad(d)));
     v.push(Field::section("BUILD"));
     let (fmtv, codv, utlv) = crate::ff::majors();
     v.push(Field::new(
@@ -264,6 +314,70 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
     .fault(fmtv == 0));
     v.push(Field::new("Config", if cfg!(feature = "devtriggers") { "dev" } else { "release" }));
     v
+}
+
+/// AUs per second per lane since the previous sample, as ` · +24/+0 /s`. Empty until there IS a
+/// previous sample, and empty if the clock went backwards (an SDL tick wrap) rather than printing
+/// a negative rate that would read as a fault.
+fn fed_rate(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> String {
+    let (pv, pa, at) = prev;
+    if at == 0 || now <= at {
+        return "—".to_string();
+    }
+    let (rv, ra) = fed_rates(d, prev, now);
+    let _ = (pv, pa);
+    format!("+{rv} / +{ra} AU/s")
+}
+
+/// AUs/second per lane since the previous sample. ONE derivation, shared by the Fed row and the
+/// chart, so the number and the bar can never disagree. `(0, 0)` with no previous sample.
+fn fed_rates(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> (i64, i64) {
+    let (pv, pa, at) = prev;
+    if at == 0 || now <= at {
+        return (0, 0);
+    }
+    let dt = (now - at) as f64 / 1000.0;
+    (
+        ((d.fed_v - pv).max(0) as f64 / dt).round() as i64,
+        ((d.fed_a - pa).max(0) as f64 / dt).round() as i64,
+    )
+}
+
+/// How far the audio lane trails the video lane, in whole seconds of stream time.
+fn skew(d: &crate::player::Diag) -> String {
+    if d.fed_v_pts == 0 && d.fed_a_pts == 0 {
+        return "—".to_string();
+    }
+    let ms = (d.fed_v_pts - d.fed_a_pts) / 1_000_000;
+    format!("{:+.1} s", ms as f64 / 1000.0)
+}
+
+/// A lane trailing by more than this is starving rather than merely interleaved. Real containers
+/// interleave a fraction of a second either way; whole seconds mean one lane has stopped.
+const SKEW_FAULT_MS: i64 = 3_000;
+
+fn skew_bad(d: &crate::player::Diag) -> bool {
+    (d.fed_v_pts != 0 || d.fed_a_pts != 0)
+        && ((d.fed_v_pts - d.fed_a_pts) / 1_000_000).abs() > SKEW_FAULT_MS
+}
+
+/// The codec's whole journey on one line: **what the file is → what the server sends → what we
+/// declared to Starfish**.
+///
+/// Three stages because three different things can be wrong and they are indistinguishable from
+/// any one of them. `hevc → h264 → H264` is a server re-encode working correctly. `hevc → hevc →
+/// H264` is the payload lying to the decoder, which is this repo's documented silent-audio /
+/// stalled-video bug. `hevc → h264 → H265` is the same mistake the other way. The middle stage is
+/// collapsed when it equals the source, so a direct play reads `h264 → H264` and only a real
+/// server-side transform costs the extra arrow.
+fn chain(src: String, sent: String, payload: &str) -> String {
+    let src = if src.is_empty() { "—".to_string() } else { src };
+    let sent = if sent.is_empty() { "—".to_string() } else { sent };
+    if src == sent {
+        format!("{src} → {payload}")
+    } else {
+        format!("{src} → {sent} → {payload}")
+    }
 }
 
 /// Bytes as the read-out spells them. Local rather than in `ui::fmt` because it is the only user;
@@ -296,9 +410,12 @@ const HEAD_H: f32 = 152.0;
 /// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
 /// needed a close-on-click arm at all.
 fn panel_rect() -> Rect {
-    let rows = unsafe { (*addr_of_mut!(LEFT)).len().max((*addr_of_mut!(RIGHT)).len()) };
+    // FIXED at the row budget rather than measured from the current rows. Two reasons: the chart
+    // lives in whatever the right column does not use, so a height measured from the rows would
+    // end above it — which is exactly how the chart first shipped drawing outside the card — and
+    // a panel that resizes as rows come and go is a panel that moves under the camera.
     let w = 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
-    let h = HEAD_H + FieldList::height(rows) + PAD;
+    let h = HEAD_H + FieldList::height(COLUMN_ROWS) + PAD;
     Rect::new(MARGIN, MARGIN, w, h)
 }
 
@@ -340,12 +457,55 @@ pub(crate) fn draw() {
 
     let top = frame.y + HEAD_H;
     let h = FieldList::height(COLUMN_ROWS);
+    let rx = inner + FIELD_COL_W + theme::space::MD;
     FieldList::new(unsafe { &*addr_of_mut!(LEFT) }, Rect::new(inner, top, FIELD_COL_W, h)).draw(&e, p);
-    FieldList::new(
-        unsafe { &*addr_of_mut!(RIGHT) },
-        Rect::new(inner + FIELD_COL_W + theme::space::MD, top, FIELD_COL_W, h),
-    )
-    .draw(&e, p);
+    FieldList::new(unsafe { &*addr_of_mut!(RIGHT) }, Rect::new(rx, top, FIELD_COL_W, h)).draw(&e, p);
+
+    // The chart, in the right column's own slack. The two columns are deliberately unequal — the
+    // stall discriminators all live on the left — so this costs no height at all.
+    let used = unsafe { (*addr_of_mut!(RIGHT)).len() };
+    let cy = top + FieldList::height(used) + theme::space::XS;
+    draw_chart(p, Rect::new(rx, cy, FIELD_COL_W, FieldList::height(COLUMN_ROWS - used) - theme::space::XS));
+}
+
+/// The fed-rate chart: one bar per sample, video over audio, sharing a y scale so the two lanes are
+/// directly comparable. A lane that stopped draws as a flat gap — which is the whole point, and is
+/// the one fault shape no instantaneous field on this panel can express.
+///
+/// Deliberately LOCAL rather than a `ui::widgets` component. It is a debug read-out, not a design
+/// system piece: it owns no tokens beyond a tint, has no focus, no state and no springs, and
+/// promoting it would put a diagnostic-only shape in the shared vocabulary for one caller.
+fn draw_chart(p: Painter, r: Rect) {
+    if r.h < 40.0 {
+        return;
+    }
+    let (hv, ha, head) =
+        unsafe { (*addr_of_mut!(HIST_V), *addr_of_mut!(HIST_A), addr_of_mut!(HIST_HEAD).read()) };
+    // ONE scale for both lanes, or a dead audio lane would be rescaled back up to look busy.
+    let peak = hv.iter().chain(ha.iter()).copied().max().unwrap_or(0).max(1) as f32;
+
+    let lab_h = 22.0;
+    if let Ok(cs) = CString::new(format!("FED AU/s — LAST {}s", HIST_N * SAMPLE_MS as usize / 1000)) {
+        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .bold()
+            .draw(p, Rect::new(r.x, r.y, r.w, lab_h));
+    }
+    let band = ((r.h - lab_h) * 0.5 - 4.0).max(8.0);
+    for (i, (hist, tint)) in [(&hv, theme::TEXT_PRIMARY), (&ha, theme::RESUME_FILL)].into_iter().enumerate() {
+        let by = r.y + lab_h + i as f32 * (band + 4.0);
+        // the ground, so a run of zeroes reads as a gap in a bar row rather than as blank panel
+        p.rect(Rect::new(r.x, by + band - 1.0, r.w, 1.0), 0.0, theme::TEXT_TERTIARY, theme::TEXT_TERTIARY, 0.0);
+        let bw = r.w / HIST_N as f32;
+        for k in 0..HIST_N {
+            // oldest first: `head` is where the NEXT sample lands, so it is also the oldest slot
+            let v = hist[(head + k) % HIST_N] as f32 / peak;
+            let bh = (v * band).max(0.0);
+            if bh < 1.0 {
+                continue;
+            }
+            p.rect(Rect::new(r.x + k as f32 * bw, by + band - bh, (bw - 1.0).max(1.0), bh), 0.0, tint, tint, 0.0);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -362,7 +522,8 @@ mod tests {
         // the wider one is the one that has to fit.
         for vp in [crate::player::VP_ACB, crate::player::VP_EXPORTED, crate::player::VP_NONE] {
             let d = crate::player::Diag { vp_mode: vp, ..Default::default() };
-            assert!(left_column(&d).len() <= COLUMN_ROWS, "left at vp={vp}: {}", left_column(&d).len());
+            let l = left_column(&d, (0, 0, 0), 1_000);
+            assert!(l.len() <= COLUMN_ROWS, "left at vp={vp}: {}", l.len());
             assert!(right_column(&d).len() <= COLUMN_ROWS, "right at vp={vp}");
         }
     }
@@ -373,7 +534,7 @@ mod tests {
     #[test]
     fn a_dead_session_marks_its_faults() {
         let d = crate::player::Diag { load_completed: true, ..Default::default() };
-        let rows = left_column(&d);
+        let rows = left_column(&d, (0, 0, 0), 1_000);
         let faults: Vec<_> = rows
             .iter()
             .filter(|f| f.tone == crate::ui::widgets::Tone::Fault)
@@ -399,14 +560,85 @@ mod tests {
         assert!(right < SCR_W, "panel is wider than the screen: {right}");
     }
 
-    /// …and it must leave a real amount of picture visible, or it is the full-screen card again.
-    /// A third of the screen is the line: enough room for the read-out, little enough that "is
-    /// anything on the panel?" is still answerable while it is up.
+    /// …and it must leave the MAJORITY of the picture visible, or it is the full-screen card
+    /// again and "is anything on screen?" — the question, when playback is broken — stops being
+    /// answerable while the read-out is up. 40% is the line rather than a third: the codec rows
+    /// and the chart are worth the four points, and a corner panel at 35% still shows most of the
+    /// frame. What is NOT negotiable is that it stays a corner panel; if this ever needs raising
+    /// again, shrink the type instead.
     #[test]
-    fn it_covers_no_more_than_a_third_of_the_screen() {
+    fn it_leaves_most_of_the_picture_visible() {
         let a = (2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD)
             * (HEAD_H + FieldList::height(COLUMN_ROWS) + PAD);
-        assert!(a < SCR_W * SCR_H / 3.0, "panel covers {:.0}% of the screen", 100.0 * a / (SCR_W * SCR_H));
+        let pct = 100.0 * a / (SCR_W * SCR_H);
+        assert!(pct < 40.0, "panel covers {pct:.0}% of the screen");
+    }
+
+    /// THE case this pair exists for: "video plays but there is no sound after scrubbing". The
+    /// audio lane stopped 30 s ago, so its TOTAL is still large — every instantaneous field reads
+    /// healthy — and only the rate and the skew can see it.
+    #[test]
+    fn a_stalled_audio_lane_is_visible_even_though_its_total_is_large() {
+        let d = crate::player::Diag {
+            load_completed: true,
+            fed_v: 5_000,
+            fed_a: 4_000,          // large, and unmoved since the previous sample
+            fed_v_pts: 60_000_000_000,
+            fed_a_pts: 30_000_000_000, // 30 s behind
+            ..Default::default()
+        };
+        let rows = left_column(&d, (4_400, 4_000, 500), 1_000);
+        let rate = rows.iter().find(|f| f.key == "Feed rate").expect("Feed rate row");
+        assert_eq!(rate.val.as_deref(), Some("+1200 / +0 AU/s"), "the rate must show the dead lane");
+        let fed = rows.iter().find(|f| f.key == "Fed v/a").expect("Fed row");
+        assert_ne!(fed.tone, crate::ui::widgets::Tone::Fault, "video IS feeding — that row is not the fault");
+
+        let sk = right_column(&d).into_iter().find(|f| f.key == "A/V skew").expect("skew row");
+        assert_eq!(sk.val.as_deref(), Some("+30.0 s"));
+        assert_eq!(sk.tone, crate::ui::widgets::Tone::Fault, "30 s of skew is a fault");
+    }
+
+    /// Ordinary interleave is not a fault — containers put the two lanes a fraction of a second
+    /// apart by construction, and flagging that would cry wolf on every healthy playback.
+    #[test]
+    fn ordinary_interleave_is_not_a_fault() {
+        let d = crate::player::Diag {
+            fed_v_pts: 10_400_000_000,
+            fed_a_pts: 10_000_000_000, // 0.4 s
+            ..Default::default()
+        };
+        assert!(!skew_bad(&d), "0.4 s apart is normal interleave");
+        assert_eq!(skew(&d), "+0.4 s");
+    }
+
+    /// Before playback there is nothing to compare — the row must say so rather than print a
+    /// confident 0.0 s that reads as "both lanes are in step".
+    #[test]
+    fn skew_is_unknown_before_anything_is_fed() {
+        assert_eq!(skew(&crate::player::Diag::default()), "—");
+        assert!(!skew_bad(&crate::player::Diag::default()));
+    }
+
+    /// No previous sample, and a backwards clock (an SDL tick wrap), must both yield no rate
+    /// rather than a negative one that would read as a fault.
+    #[test]
+    fn a_rate_needs_two_samples_and_a_forward_clock() {
+        let d = crate::player::Diag { fed_v: 10, fed_a: 10, ..Default::default() };
+        assert_eq!(fed_rate(&d, (0, 0, 0), 1_000), "—", "no previous sample");
+        assert_eq!(fed_rate(&d, (0, 0, 2_000), 1_000), "—", "clock went backwards");
+    }
+
+    /// The codec chain: a direct play collapses the middle stage, a real server transform shows
+    /// all three, and a payload disagreeing with what is being sent is visible as a mismatch
+    /// between the last two — which is the whole reason the row has three stages.
+    #[test]
+    fn the_codec_chain_shows_the_server_transform_only_when_there_is_one() {
+        assert_eq!(chain("h264".into(), "h264".into(), "H264"), "h264 → H264");
+        assert_eq!(chain("hevc".into(), "h264".into(), "H264"), "hevc → h264 → H264");
+        // the bug shape: the server re-encoded to h264 and we told the decoder H265
+        assert_eq!(chain("hevc".into(), "h264".into(), "H265"), "hevc → h264 → H265");
+        // and nothing known yet must not render as blank gaps around arrows
+        assert_eq!(chain(String::new(), String::new(), "—"), "— → —");
     }
 
     #[test]

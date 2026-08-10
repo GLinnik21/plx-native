@@ -65,6 +65,8 @@ fn publish_diag(eng: &Engine) {
     });
     SHARED.dg_aq_video.store(qv, Relaxed);
     SHARED.dg_aq_audio.store(qa, Relaxed);
+    SHARED.dg_fed_v_pts.store(eng.max_fed_video_pts, Relaxed);
+    SHARED.dg_fed_a_pts.store(eng.max_fed_audio_pts, Relaxed);
 }
 
 pub(crate) fn pump(mt: &MainThread, now: u32) {

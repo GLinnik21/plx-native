@@ -38,6 +38,14 @@ static mut PQ_ID: String = String::new();
 static mut PQ_ITEM_ID: String = String::new();
 // The streamed item's Media video/audio codec (h264/hevc, ac3/eac3/aac), so the player picks
 // the H265 Load payload for a native HEVC direct-play and the matching audio codec.
+/// The item's OWN codecs, as the file has them — captured once per playback and never overwritten
+/// by `apply_decision_codecs`, which replaces `STREAM_*` with the transcode OUTPUT.
+///
+/// Two different questions, and the diagnostics read-out needs both: "what is this file" and "what
+/// is the server actually sending". With only the second recorded, a transcode reported its output
+/// as though it were the source and the whole server-side transform was invisible.
+static mut SRC_VCODEC: String = String::new();
+static mut SRC_ACODEC: String = String::new();
 static mut STREAM_VCODEC: String = String::new();
 static mut STREAM_ACODEC: String = String::new();
 // Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
@@ -122,6 +130,22 @@ pub(crate) fn set_stream_codecs(vc: &str, ac: &str) {
         *addr_of_mut!(STREAM_VCODEC) = vc.to_owned();
         *addr_of_mut!(STREAM_ACODEC) = ac.to_owned();
     }
+}
+
+/// Record the SOURCE file's codecs for this playback. Called from the plan install only — never
+/// from `apply_decision_codecs`, whose whole job is to replace the stream codecs with the
+/// transcode's output. See [`SRC_VCODEC`].
+pub(crate) fn set_source_codecs(vc: &str, ac: &str) {
+    unsafe {
+        *addr_of_mut!(SRC_VCODEC) = vc.to_owned();
+        *addr_of_mut!(SRC_ACODEC) = ac.to_owned();
+    }
+}
+pub(crate) fn source_vcodec() -> String {
+    unsafe { (*addr_of!(SRC_VCODEC)).clone() }
+}
+pub(crate) fn source_acodec() -> String {
+    unsafe { (*addr_of!(SRC_ACODEC)).clone() }
 }
 /// pointers into the module-owned HUD buffers (valid for the whole frame draw_text uses them)
 pub(crate) fn title_cptr() -> *const c_char {
@@ -530,6 +554,11 @@ pub(crate) struct Plan {
     pub machine_id: String,   // "" = leave the cached one alone
     pub vcodec: String,
     pub acodec: String,
+    /// The SOURCE file's codecs, kept beside the ones above because on a transcode those are the
+    /// server's OUTPUT. "hevc → h264" is the whole server-side transform, and it is invisible if
+    /// only one half is recorded. Equal to `vcodec`/`acodec` for a direct play and for a remux.
+    pub src_vcodec: String,
+    pub src_acodec: String,
     pub fps: f64,
     pub audio_sid: i64,
     pub remux: bool,
@@ -564,7 +593,14 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // function — read the PREVIOUS item's part (or 0, and silently skipped, on the first play
     // of the process). Every non-MKV item takes the remux branch, so that mis-targeted PUT
     // failed to suppress a server-default subtitle and burned it into the transcode.
-    let mut plan = Plan { part_id: part_id_of(part), ..Default::default() };
+    // The arguments ARE the source codecs, whatever this function goes on to choose — captured
+    // once, here, so no later branch has to remember to.
+    let mut plan = Plan {
+        part_id: part_id_of(part),
+        src_vcodec: vcodec.to_string(),
+        src_acodec: acodec.to_string(),
+        ..Default::default()
+    };
     let client = match crate::plex::client_opt() {
         Some(c) => c,
         None => return plan,
@@ -969,6 +1005,8 @@ fn apply_plan(plan: Plan, rk: &str) {
     }
     if !plan.vcodec.is_empty() {
         set_stream_codecs(&plan.vcodec, &plan.acodec); // the pair is only ever set together
+        // …and what the FILE is, before any /decision output overwrites the pair above
+        set_source_codecs(&plan.src_vcodec, &plan.src_acodec);
     }
     unsafe {
         addr_of_mut!(CUR_PART_ID).write(plan.part_id);

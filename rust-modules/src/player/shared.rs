@@ -240,6 +240,22 @@ pub(crate) struct Shared {
     /// Bytes queued in each AU lane at the last tick, against `engine::aq_caps`.
     pub dg_aq_video: AtomicI64,
     pub dg_aq_audio: AtomicI64,
+    /// High-water fed PTS per lane. Their DIFFERENCE is the sharpest instantaneous answer to
+    /// "video plays but there is no sound": a snapshot of the fed COUNTS cannot see a lane that
+    /// stopped advancing, because a large total stays large. A skew that grows without bound is
+    /// the audio lane starving; a skew near zero says both lanes are keeping up and the fault is
+    /// downstream of us.
+    pub dg_fed_v_pts: AtomicI64,
+    pub dg_fed_a_pts: AtomicI64,
+    /// The codec strings this session actually put in the Starfish Load payload, as small codes
+    /// (0 = none/not built; video 1 = H264, 2 = H265; audio 1 = AC3, 2 = AC3 PLUS, 3 = AAC).
+    ///
+    /// Codes rather than strings so they need no lock on the render path — and the PAYLOAD's view
+    /// rather than a re-derivation, because the whole class of bug here is the payload disagreeing
+    /// with the stream. `dg_load_a == 0` is `needAudio:false`, which is a complete answer to
+    /// "there is no sound": the pipeline was never asked for any.
+    pub dg_load_v: AtomicU8,
+    pub dg_load_a: AtomicU8,
     /// `vp_place` return, and the size it was called with. `i32::MIN` = never called.
     pub dg_place_rv: AtomicI32,
     pub dg_placed_w: AtomicI32,
@@ -259,6 +275,10 @@ impl Shared {
             dg_feed_reply_a: AtomicU32::new(0),
             dg_aq_video: AtomicI64::new(0),
             dg_aq_audio: AtomicI64::new(0),
+            dg_fed_v_pts: AtomicI64::new(0),
+            dg_fed_a_pts: AtomicI64::new(0),
+            dg_load_v: AtomicU8::new(0),
+            dg_load_a: AtomicU8::new(0),
             dg_place_rv: AtomicI32::new(i32::MIN),
             dg_placed_w: AtomicI32::new(0),
             dg_placed_h: AtomicI32::new(0),
@@ -305,6 +325,10 @@ impl Shared {
         self.dg_feed_reply_a.store(0, Ordering::Relaxed);
         self.dg_aq_video.store(0, Ordering::Relaxed);
         self.dg_aq_audio.store(0, Ordering::Relaxed);
+        self.dg_fed_v_pts.store(0, Ordering::Relaxed);
+        self.dg_fed_a_pts.store(0, Ordering::Relaxed);
+        self.dg_load_v.store(0, Ordering::Relaxed);
+        self.dg_load_a.store(0, Ordering::Relaxed);
         self.dg_place_rv.store(i32::MIN, Ordering::Relaxed);
         self.dg_placed_w.store(0, Ordering::Relaxed);
         self.dg_placed_h.store(0, Ordering::Relaxed);
