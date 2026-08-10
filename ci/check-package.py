@@ -58,6 +58,16 @@ check(appinfo["id"] == control["Package"],
       f'appinfo id == control Package ({appinfo["id"]})')
 check(appinfo["version"] == control["Version"],
       f'appinfo version == control Version ({appinfo["version"]})')
+# Cargo.toml is the FOURTH witness, and the one with a user-visible consequence: the diagnostics
+# read-out prints `plex::identity::VERSION`, which is `env!("CARGO_PKG_VERSION")`, and that panel is
+# designed to be photographed into a bug report. A bump that missed Cargo.toml would ship a package
+# labelled 0.2.1 whose own on-screen version says 0.2.0 — precisely the disagreement `identity`
+# exists to make impossible, and nothing checked it until a release nearly went out that way.
+cargo = (ROOT / "rust-modules/Cargo.toml").read_text()
+m = re.search(r'^version = "([^"]+)"', cargo, re.M)
+check(m is not None and m.group(1) == appinfo["version"],
+      f'Cargo.toml version == appinfo version ({appinfo["version"]})')
+
 # The Makefile derives IPK_VERSION from appinfo.json, so the built filename is the third witness.
 built = sorted((ROOT / "pkg").glob("com.beb.plxnative_*_arm.ipk"))
 if built:
