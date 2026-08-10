@@ -1032,8 +1032,13 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     }
     let url = c.transcode_start_url(&sp).to_url();
     set_url(&url);
+    // NEVER log the URL. `transcode_start_url` ends in `X-Plex-Token=…`, and this line is reached
+    // by an ordinary audio-track switch — so the app's own support channel ("send us
+    // /tmp/plxnative-events.log") was asking users to paste a live PMS credential into a public
+    // issue thread. The rk, the track ids and the offset are the whole diagnostic value here; the
+    // URL added nothing that is not derivable from them.
     crate::player::log(&format!(
-        "retranscode rk={rk} audio={} sub={} offset={offset_secs} -> {url}",
+        "retranscode rk={rk} audio={} sub={} offset={offset_secs} -> transcode start",
         cur_audio_sid(),
         cur_sub_sid()
     ));

@@ -271,7 +271,11 @@ fn login_thread() {
         Some(p) if p.id != 0 && !p.code.is_empty() => p,
         _ => return set_error("Couldn't reach Plex — check the connection."),
     };
-    log(&format!("auth: pin created id={} code={} (waiting for authorization)", pin.id, pin.code));
+    // Neither the id nor the code may be logged. `GET /api/v2/pins/{id}` is what RETURNS the
+    // account token once the user authorizes (plex/account.rs `poll_pin`), so the id is a handle
+    // that redeems a credential, and the code is what authorizes it — and this file is the one we
+    // ask users to send us when something goes wrong. Log that we got here, not what we got.
+    log("auth: pin created (waiting for authorization)");
     // fetch the server-rendered QR PNG (the exact QR the official apps display); public, no token.
     let qr_url = if pin.qr.is_empty() {
         format!("https://plex.tv/api/v2/pins/qr/{}", pin.code)
