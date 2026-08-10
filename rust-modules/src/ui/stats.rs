@@ -1,5 +1,10 @@
-//! **Stats for nerds** — the on-screen diagnostics readout, toggled from the player's `…` overflow
-//! popover ([`crate::ui::more_menu`]) and from the account menu on Home.
+//! **Stats for nerds** — the on-screen diagnostics read-out, toggled from the player's `…` overflow
+//! popover ([`crate::ui::more_menu`]).
+//!
+//! PLAYER-ONLY today: `app.rs` draws it inside the player branch, so a toggle offered anywhere else
+//! would tick a box and show nothing. A Home entry point (for "starts but finds no server", which
+//! never reaches a player) is a real gap and a separate change — do not advertise it here until the
+//! draw call exists.
 //!
 //! # Why this exists, which is not why YouTube's does
 //!
@@ -138,7 +143,11 @@ static mut PREV_FED: (i64, i64, u32) = (0, 0, 0);
 /// carries on. The totals stay large, the skew only says how far apart they are NOW, and neither
 /// says when it happened or whether it recovered. Thirty-two seconds of history at [`SAMPLE_MS`]
 /// does, and a dead lane draws as a flat gap that is unmistakable in a photograph.
-const HIST_N: usize = 64;
+// 32 samples, not 64, and the photograph is why both ways: it halves the chart's per-frame draw
+// calls (each bar is its own `p.rect`, on the one route the idle gate deliberately excludes) AND
+// it doubles the bar width, which is what makes the shape readable across a room. Sixteen seconds
+// still shows a lane dying and recovering.
+const HIST_N: usize = 32;
 static mut HIST_V: [u16; HIST_N] = [0; HIST_N];
 static mut HIST_A: [u16; HIST_N] = [0; HIST_N];
 static mut HIST_HEAD: usize = 0;
@@ -163,12 +172,16 @@ pub(crate) fn update(now: u32) {
         // tells a story that never happened is worse than no panel.
         let d = crate::player::diag();
         let prev = addr_of_mut!(PREV_FED).read();
-        addr_of_mut!(HEAD).write(header(&d, now));
-        addr_of_mut!(LEFT).write(left_column(&d, prev, now));
-        addr_of_mut!(RIGHT).write(right_column(&d));
+        // `.replace()`, NOT `.write()`. `<*mut T>::write` is `ptr::write` — it overwrites without
+        // DROPPING what was there, and these three own heap: two `Vec<Field>` and three `String`s
+        // plus every row's value. At 2 Hz that orphaned ~1.4 KB and ~23 allocations every sample,
+        // on a panel explicitly designed to be left up for the length of a film.
+        drop(addr_of_mut!(HEAD).replace(header(&d, now)));
+        drop(addr_of_mut!(LEFT).replace(left_column(&d, prev, now)));
+        drop(addr_of_mut!(RIGHT).replace(right_column(&d)));
         addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
         // the same two rates the Fed row prints, kept as a ring so the chart can show their shape
-        let (rv, ra) = fed_rates(&d, prev, now);
+        let (rv, ra) = fed_rates(&d, prev, now).unwrap_or((0, 0));
         let h = addr_of_mut!(HIST_HEAD).read();
         (*addr_of_mut!(HIST_V))[h] = rv.min(u16::MAX as i64) as u16;
         (*addr_of_mut!(HIST_A))[h] = ra.min(u16::MAX as i64) as u16;
@@ -187,9 +200,12 @@ fn header(d: &crate::player::Diag, now: u32) -> [String; 3] {
     };
     let (_, _, vw, vh) = crate::surface::viewport();
     [
+        // via `plex::identity`, not a literal + `env!`: that module exists precisely so the
+        // product name and version cannot disagree between surfaces, and this one is photographed.
         format!(
-            "PlxNative {} · {}",
-            env!("CARGO_PKG_VERSION"),
+            "{} {} · {}",
+            crate::plex::identity::PRODUCT,
+            crate::plex::identity::VERSION,
             if cfg!(feature = "devtriggers") { "dev" } else { "release" }
         ),
         format!("{os} · surface {vw}x{vh}"),
@@ -302,13 +318,9 @@ fn left_column(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<
     let (cv, ca) = crate::player::aq_caps();
     v.push(Field::new(
         "Buffered v/a",
-        format!(
-            "{:.1}/{:.1} · {:.2}/{:.1} MB",
-            d.aq_video as f64 / (1 << 20) as f64,
-            cv as f64 / (1 << 20) as f64,
-            d.aq_audio as f64 / (1 << 20) as f64,
-            ca as f64 / (1 << 20) as f64
-        ),
+        // ONE unit for the group. Four `mb()` runs is the honest spelling but it does not fit the
+        // value column, and eliding a number is worse than sharing its unit.
+        format!("{:.1}/{:.1} · {:.2}/{:.1} MB", mb_f(d.aq_video), mb_f(cv), mb_f(d.aq_audio), mb_f(ca)),
     ));
     v
 }
@@ -376,11 +388,13 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
     v.push(Field::new("A/V skew", skew(d)).fault(skew_bad(d)));
     v.push(Field::section("BUILD"));
     let (fmtv, codv, utlv) = crate::ff::majors();
-    v.push(Field::new(
-        "FFmpeg",
-        if fmtv == 0 { "NOT BOUND".to_string() } else { format!("fmt {fmtv} · cod {codv} · util {utlv}") },
-    )
-    .fault(fmtv == 0));
+    v.push(
+        Field::new(
+            "FFmpeg fmt/cod/util",
+            if fmtv == 0 { "NOT BOUND".to_string() } else { format!("{fmtv} / {codv} / {utlv}") },
+        )
+        .fault(fmtv == 0),
+    );
     v
 }
 
@@ -388,27 +402,27 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
 /// previous sample, and empty if the clock went backwards (an SDL tick wrap) rather than printing
 /// a negative rate that would read as a fault.
 fn fed_rate(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> String {
-    let (pv, pa, at) = prev;
-    if at == 0 || now <= at {
-        return "—".to_string();
+    match fed_rates(d, prev, now) {
+        Some((rv, ra)) => format!("+{rv} / +{ra} AU/s"),
+        None => "—".to_string(),
     }
-    let (rv, ra) = fed_rates(d, prev, now);
-    let _ = (pv, pa);
-    format!("+{rv} / +{ra} AU/s")
 }
 
 /// AUs/second per lane since the previous sample. ONE derivation, shared by the Fed row and the
-/// chart, so the number and the bar can never disagree. `(0, 0)` with no previous sample.
-fn fed_rates(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> (i64, i64) {
+/// chart, so the number and the bar can never disagree.
+///
+/// `None` — not `(0, 0)` — when there is no previous sample: a lane that has genuinely stopped
+/// also reads zero, and the two must not be the same value.
+fn fed_rates(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Option<(i64, i64)> {
     let (pv, pa, at) = prev;
     if at == 0 || now <= at {
-        return (0, 0);
+        return None;
     }
     let dt = (now - at) as f64 / 1000.0;
-    (
+    Some((
         ((d.fed_v - pv).max(0) as f64 / dt).round() as i64,
         ((d.fed_a - pa).max(0) as f64 / dt).round() as i64,
-    )
+    ))
 }
 
 /// How far the audio lane trails the video lane, in whole seconds of stream time.
@@ -446,6 +460,12 @@ fn chain(src: String, sent: String, payload: &str) -> String {
     } else {
         format!("{src} → {sent} → {payload}")
     }
+}
+
+/// Bytes as MiB, for a row that groups several and shares one unit. The divisor lives HERE with
+/// [`mb`] so the module has one place that knows it.
+fn mb_f(b: i64) -> f64 {
+    b as f64 / (1 << 20) as f64
 }
 
 /// Bytes as the read-out spells them. Local rather than in `ui::fmt` because it is the only user;

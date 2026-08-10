@@ -179,7 +179,6 @@ pub(crate) struct Diag {
     pub load_completed: bool,
     pub load_failed: bool,
     pub cb_count: u32,
-    pub cb_last: i32,
     pub pushed_any: bool,
     pub fed_v: i64,
     pub fed_a: i64,
@@ -198,12 +197,10 @@ pub(crate) struct Diag {
     pub net_rx: i64,
     pub load_at: u32,
     pub frame_at: u32,
-    pub splice: u8,
     pub video_w: i32,
     pub video_h: i32,
     pub pos_ns: i64,
     pub dur_ns: i64,
-    pub file_size: i64,
 }
 
 impl Diag {
@@ -251,15 +248,6 @@ impl Diag {
     pub fn feed_is_fault(&self) -> bool {
         self.feed_state == 3
     }
-    pub fn stage_str(&self) -> &'static str {
-        match self.stage {
-            0 => "Loading",
-            1 => "Playing",
-            2 => "Bound",
-            3 => "Streaming",
-            _ => "?",
-        }
-    }
 }
 
 pub(crate) fn diag() -> Diag {
@@ -280,7 +268,6 @@ pub(crate) fn diag() -> Diag {
         load_completed: SHARED.load_completed.load(Relaxed),
         load_failed: SHARED.load_failed.load(Relaxed),
         cb_count: SHARED.dg_cb_count.load(Relaxed),
-        cb_last: SHARED.dg_cb_last.load(Relaxed),
         pushed_any: crate::ff::pushed_any(),
         fed_v,
         fed_a,
@@ -299,12 +286,10 @@ pub(crate) fn diag() -> Diag {
         net_rx: SHARED.dg_net_rx.load(Relaxed),
         load_at: SHARED.dg_load_at.load(Relaxed),
         frame_at: SHARED.dg_frame_at.load(Relaxed),
-        splice: SHARED.dg_splice.load(Relaxed),
         video_w: SHARED.video_w.load(Relaxed),
         video_h: SHARED.video_h.load(Relaxed),
         pos_ns: SHARED.playpos_ns.load(Relaxed),
         dur_ns: SHARED.duration_ns.load(Relaxed),
-        file_size: SHARED.file_size.load(Relaxed),
     }
 }
 
@@ -556,7 +541,6 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         // cannot reach. Kept here rather than in the `ty` dispatch below so an event we do not
         // handle still counts — an unhandled callback is still the pipeline talking.
         let n = SHARED.dg_cb_count.fetch_add(1, Relaxed) + 1;
-        SHARED.dg_cb_last.store(ty, Relaxed);
         // Latch the FIRST error, with the callback index it arrived at. Sticky, because a later
         // healthy callback must not erase the one event that explains the session — and the index
         // separates "refused immediately" from "died after a long healthy run". Only `ty == 18`:

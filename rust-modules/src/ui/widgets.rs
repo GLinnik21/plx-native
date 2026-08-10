@@ -1118,6 +1118,13 @@ impl View for FieldList<'_> {
                             .draw(p, Rect::new(self.frame.x, y, FIELD_KEY_W, FIELD_ROW_H));
                     }
                     let ink = if f.tone == Tone::Fault { theme::DANGER } else { theme::TEXT_PRIMARY };
+                    // ELIDE. Every other bounded-width text site in `ui/` does, and this one has a
+                    // value it cannot bound: the exported windowId is a compositor-assigned
+                    // char[64], which at this size is ~3x the value column and would run off the
+                    // card — on the one firmware family that cannot be tested here. `elide` is
+                    // memoised by (string, budget, size, bold) and the panel re-formats at 2 Hz.
+                    let bold = i32::from(f.tone == Tone::Fault);
+                    let v = crate::text::elide(v, vw, theme::size::BODY, bold, false);
                     if let Ok(cs) = CString::new(v.as_str()) {
                         let mut l = Label::new(cs.as_ptr(), theme::size::BODY, ink);
                         if f.tone == Tone::Fault {

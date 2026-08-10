@@ -6,7 +6,6 @@ use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
 use crate::task::MainThread;
 use std::os::raw::c_char;
-use std::ptr::addr_of_mut;
 use std::sync::atomic::Ordering::{Relaxed, Release};
 
 /// Publish the one value the HUD renders from. Pure derivation off signals the workers already
@@ -67,9 +66,16 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
 /// the main thread, and never from a draw.
 /// Last `frames` we saw, so a CHANGE can be stamped. A decrease counts: `frames` is seek-scoped
 /// and the pump zeroes it applying a seek, which is motion, not a freeze.
-static mut LAST_FRAMES: i32 = -1;
+static LAST_FRAMES: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 fn publish_diag(eng: &Engine, now: u32) {
+    // Nobody is looking: skip it. `aq_bytes` takes each queue's pthread mutex, and the read-out
+    // samples at 2 Hz, so publishing at 60 Hz is 30x more often than anything can observe. Costs
+    // no freshness — the loop order is pump → stats::update → stats::draw, so the frame the panel
+    // is switched on has already republished.
+    if !crate::ui::stats::enabled() {
+        return;
+    }
     SHARED.dg_stage.store(eng.stage as u8, Relaxed);
     let qv = eng.aq_video.as_ref().map_or(0, |q| {
         crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64
@@ -85,8 +91,7 @@ fn publish_diag(eng: &Engine, now: u32) {
     // photograph has no time axis; stamping here rather than in `ui::stats` is what makes the
     // clock measure the STALL rather than how long the panel has been open.
     let f = SHARED.frames.load(Relaxed);
-    if unsafe { addr_of_mut!(LAST_FRAMES).read() } != f {
-        unsafe { addr_of_mut!(LAST_FRAMES).write(f) };
+    if LAST_FRAMES.swap(f, Relaxed) != f {
         SHARED.dg_frame_at.store(now, Relaxed);
     }
 }

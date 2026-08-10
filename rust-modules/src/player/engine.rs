@@ -269,18 +269,15 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
     }
     let id = unsafe { ffi::vp_create_window(mt) };
     if id.is_null() {
-        SHARED.dg_splice.store(2, Ordering::Relaxed); // no window
         log("windowId: no exported window — video will not bind");
         return p.to_string();
     }
     let id = unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy();
     let anchor = r#""appId":"com.beb.plxnative""#;
     if !p.contains(anchor) {
-        SHARED.dg_splice.store(3, Ordering::Relaxed); // no anchor to splice onto
         log("windowId: payload has no appId anchor — NOT spliced; video will not bind");
         return p.to_string();
     }
-    SHARED.dg_splice.store(1, Ordering::Relaxed); // spliced
     log(&format!("vplane: exported windowId={id} spliced into the Load payload"));
     p.replace(anchor, &format!(r#"{anchor},"windowId":"{id}""#))
 }
@@ -768,7 +765,6 @@ fn drain_one(q: Option<&mut Box<AuQueue>>) {
         loop {
             let n = crate::aq::aq_pop(qp, &mut eof);
             if n.is_null() {
-                SHARED.dg_feed_state.store(5, Ordering::Relaxed); // queue empty / EOF
                 break;
             }
             unsafe { libc::free(n as *mut c_void) };
@@ -841,6 +837,9 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     eng.eos_pushed = true;
                     log("EOS pushed at true EOF");
                 }
+                // Nothing to send. THE case the read-out's Feed row exists to name: a dead
+                // PRODUCER, which every other field on the panel cannot tell from a dead sink.
+                SHARED.dg_feed_state.store(5, Ordering::Relaxed);
                 break;
             }
             eng.pending_video = Some(AuBox(n));

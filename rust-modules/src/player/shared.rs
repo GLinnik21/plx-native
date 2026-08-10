@@ -228,12 +228,12 @@ pub(crate) struct Shared {
     // One frame stale by construction, which no reader cares about at a 2 Hz sample.
     /// `Stage` as u8 — where the bind/play sequence has got to.
     pub dg_stage: AtomicU8,
-    /// Starfish callbacks seen this session, and the type of the last one. A count of 0 with a
-    /// completed Load is the pipeline never speaking to us — the sharpest single symptom there is.
-    /// The type is a RAW number on purpose: the numbering shifts between webOS 4 and 5+ above
-    /// 0x1c, so naming it would print a confident lie on the firmware we cannot test.
+    /// Starfish callbacks seen this session. A count of 0 with a completed Load is the pipeline
+    /// never speaking to us — the sharpest single symptom there is. The TYPE of the last callback
+    /// is deliberately not kept: the numbering shifts between webOS 4 and 5+ above 0x1c, so a
+    /// displayed type would be a confident lie on the firmware we cannot test. `dg_cb_err` latches
+    /// the one type that means the same on both.
     pub dg_cb_count: AtomicU32,
-    pub dg_cb_last: AtomicI32,
     /// Why the VIDEO feeder is where it is, taken at each of `feed_stream`'s exit points.
     /// 0 none yet · 1 accepting · 2 BufferFull · 3 refused · 4 waiting for a frame (feed-ahead
     /// throttle) · 5 queue empty.
@@ -284,9 +284,6 @@ pub(crate) struct Shared {
     pub dg_place_rv: AtomicI32,
     pub dg_placed_w: AtomicI32,
     pub dg_placed_h: AtomicI32,
-    /// Did the exported windowId make it into the Load payload? 0 n/a · 1 spliced · 2 no window ·
-    /// 3 no anchor to splice onto. On webOS 5+ anything but 1 means the video can never bind.
-    pub dg_splice: AtomicU8,
 }
 
 impl Shared {
@@ -294,7 +291,6 @@ impl Shared {
         Shared {
             dg_stage: AtomicU8::new(0),
             dg_cb_count: AtomicU32::new(0),
-            dg_cb_last: AtomicI32::new(0),
             dg_feed_state: AtomicU8::new(0),
             dg_cb_err: AtomicI32::new(0),
             dg_cb_err_at: AtomicU32::new(0),
@@ -311,7 +307,6 @@ impl Shared {
             dg_place_rv: AtomicI32::new(i32::MIN),
             dg_placed_w: AtomicI32::new(0),
             dg_placed_h: AtomicI32::new(0),
-            dg_splice: AtomicU8::new(0),
             playpos_ns: AtomicI64::new(0),
             pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
@@ -349,7 +344,6 @@ impl Shared {
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);
         self.dg_cb_count.store(0, Ordering::Relaxed);
-        self.dg_cb_last.store(0, Ordering::Relaxed);
         self.dg_feed_state.store(0, Ordering::Relaxed);
         // A latched error MUST be cleared here, or one bad session paints every later healthy
         // playback red for the life of the process.
@@ -368,7 +362,6 @@ impl Shared {
         self.dg_place_rv.store(i32::MIN, Ordering::Relaxed);
         self.dg_placed_w.store(0, Ordering::Relaxed);
         self.dg_placed_h.store(0, Ordering::Relaxed);
-        self.dg_splice.store(0, Ordering::Relaxed);
         self.playpos_ns.store(0, Ordering::Relaxed);
         self.pres_fed.store(0, Ordering::Relaxed);
         self.frames.store(0, Ordering::Relaxed);

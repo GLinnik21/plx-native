@@ -230,25 +230,24 @@ fn extend_hud(now: u32, ms: u32) {
         set_hud(want);
     }
 }
-/// the transport HUD is shown while its timer is live OR playback is paused, unless the user
-/// explicitly dismissed it (UP from the top row) — the dismiss holds until the next key.
-#[inline]
-fn hud_shown(now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
-    (now < until || is_paused) && !dismissed
-}
-/// Is the transport actually ON SCREEN? [`hud_shown`] answers only the TIMER question; this adds
-/// the STATE one — `player::loading()` pins the HUD up for as long as the pipeline is busy.
+/// Is the transport HUD on screen? Its timer is live, OR playback is paused, OR the pipeline is
+/// BUSY — unless the user explicitly dismissed it (UP from the top row), which holds until the
+/// next key but cannot hide a stalled pipeline's read-out.
 ///
-/// **The two must never diverge again.** The draw path and the pointer path had always spelled out
-/// `|| loading()`; the three KEY sites and the focus PARKER never did. That divergence was worst in
-/// the one state this app most needs a user to report: stuck in `Buffering` with the 4.5 s linger
-/// expired, the transport is drawn, but every key site believed it hidden — so the parker reset
-/// `hud_nav` to the scrubber on EVERY frame, UP was eaten as a "reveal", and focus could not reach
-/// the control row at all. The `…` disc, and the diagnostics overlay behind it, were unreachable in
-/// exactly the stall they exist to explain.
+/// **The `loading()` term is load-bearing and there must be exactly ONE predicate.** The draw path
+/// and the pointer path used to spell it out inline while the three KEY sites and the focus PARKER
+/// did not, and the divergence was worst in the one state this app most needs a user to report:
+/// stuck in `Buffering` with the 4.5 s linger expired, the transport is drawn, but every key site
+/// believed it hidden — so the parker reset `hud_nav` to the scrubber on EVERY frame, UP was eaten
+/// as a "reveal", and focus could not reach the control row at all. The `…` disc, and the
+/// diagnostics read-out behind it, were unreachable in exactly the stall they explain.
+///
+/// It was briefly TWO functions, a timer-only `hud_shown` wrapped by this one. That is the same
+/// trap with a friendlier name on it — seven call sites, no compiler help, and "shown" is the
+/// obvious one to reach for. One predicate, no wrong choice.
 #[inline]
 fn hud_visible(now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
-    hud_shown(now, until, is_paused, dismissed) || crate::player::loading()
+    ((now < until || is_paused) && !dismissed) || crate::player::loading()
 }
 
 /// The transport's visibility predicate. Almost nothing else in this file is host-testable — it is
@@ -276,9 +275,9 @@ mod hud_visibility_tests {
     #[test]
     fn a_stalled_pipeline_keeps_the_transport_reachable_after_the_linger_expires() {
         with_state(PlaybackState::Buffering, || {
+            // the timer alone would say hidden — 9 s past the linger, nothing paused
             let (now, expired) = (10_000u32, 1_000u32);
-            assert!(!hud_shown(now, expired, false, false), "the timer alone says hidden");
-            assert!(hud_visible(now, expired, false, false), "but it is on screen, so keys must reach it");
+            assert!(hud_visible(now, expired, false, false), "on screen, so keys must reach it");
         });
     }
 
@@ -2432,6 +2431,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::profiles::pointer_focus(mx, my);
                     } else if matches!(route, Route::Account) {
                         crate::ui::account_menu::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Player { overlay: Overlay::More }) {
+                        crate::ui::more_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::ItemMenu { .. }) {
                         crate::ui::item_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Library) {

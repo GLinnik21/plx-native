@@ -1091,7 +1091,7 @@ fn load_libraries() -> bool {
 /// Did the bundled FFmpeg load and match the ABI table? The diagnostics read-out's first question
 /// about the demuxer: false means every playback will refuse before it opens a socket, which from
 /// the outside looks identical to a stall.
-pub(crate) fn abi_ok() -> bool {
+fn abi_ok() -> bool {
     ABI_OK.load(std::sync::atomic::Ordering::Relaxed)
 }
 

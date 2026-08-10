@@ -60,12 +60,6 @@ pub(crate) fn info() -> &'static Info {
     INFO.get_or_init(Info::default)
 }
 
-/// The major webOS version, or 0 if it could not be read. **0 means unknown, not old** — treat it
-/// as "do not gate on this" rather than as a low number, or an unreadable file silently turns
-/// every `>=` test into the oldest behaviour.
-pub(crate) fn major() -> u32 {
-    info().major
-}
 
 /// Pull `"key": "value"` out of a flat JSON object. Returns None rather than erroring: nothing
 /// here is worth failing a boot over.

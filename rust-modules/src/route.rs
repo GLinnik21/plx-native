@@ -274,7 +274,7 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     // the old engine down — dropping its connection, and with it the old transcode.
     // /decision is just a query and doesn't cut the streaming connection.
     let session = sess();
-    let sp = transcode_spec(&rk, &session, unsafe { addr_of!(CUR_REMUX).read() }, offset_secs.max(0),
+    let sp = transcode_spec(&rk, &session, is_remux(), offset_secs.max(0),
                             cur_audio_sid(), cur_sub_sid());
     // same session, same output codecs — no payload rebuild here, so the body is unused
     let _ = c.transcode_decision(&sp);
