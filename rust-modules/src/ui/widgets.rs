@@ -6,6 +6,7 @@ use crate::pms::PmsMovie;
 use crate::ui::theme;
 use crate::ui::label::{HAlign, Label};
 use crate::ui::{Env, Painter, Rect, Spring, View};
+use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
 /// Build the transcode key for `path` on the stack. The ONE key builder the three resolvers below
@@ -981,8 +982,8 @@ impl View for StatusOverlay {
 }
 
 // ---- TransportButton: circular control button with a runtime-rasterized SVG glyph
-// (0 = subtitles/CC, 1 = audio). Focused = accent fill + dark icon; idle = faint fill + white
-// icon. Mirrors the mockup's round icon buttons. ----
+// (0 = subtitles/CC, 1 = audio, 2 = more/overflow). Focused = accent fill + dark icon; idle = faint
+// fill + white icon. Mirrors the mockup's round icon buttons. ----
 pub struct TransportButton {
     pub frame: Rect,
     pub which: i32,
@@ -1011,11 +1012,116 @@ impl View for TransportButton {
         p.rect(r, r.w * 0.5, bg, bg, 0.0); // circular
         let id = match self.which {
             1 => Icon::Audio,
+            2 => Icon::More,
             _ => Icon::Cc,
         };
         let s = (r.w * DISC_ICON_RATIO).round();
         let ir = Rect::new(r.x + (r.w - s) * 0.5, r.y + (r.h - s) * 0.5, s, s);
         crate::ui::icons::draw(p, id, ir, ink);
+    }
+}
+
+// ---- FieldList: a NON-INTERACTIVE key/value read-out ---------------------------------------
+//
+// The diagnostics overlay's list primitive (`ui/stats.rs`), and the reason it is not a
+// `TableView`: that is a SELECTION widget. It paints an accent pill under row `sel` on every draw
+// with no "nothing selected" mode, its rows are 60px so ~25 of them measure 1540 against a 1080
+// panel and SCROLL behind a scissor, and a row is `label` + optional sub-line + badges — there is
+// no right-hand value column at all. A read-out needs the opposite of all three: no selection, no
+// scrolling (a panel the user must scroll is two photographs and a chance of missing the line that
+// mattered), and a fixed value column. Nothing here was close, which is the condition ui/CLAUDE.md
+// sets for a new component.
+//
+// It owns no state, no focus and no springs: hand it a slice and a frame and it draws.
+
+/// A read-out value's severity. Carried by a WORD in the value text as well as by this tint —
+/// a phone photograph of a television chroma-subsamples, so hue alone must never be the signal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Normal,
+    /// something is wrong here, and this is the row to read first
+    Fault,
+}
+
+/// One line of a [`FieldList`]. `val: None` makes it a SECTION heading rather than a pair.
+pub struct Field {
+    pub key: &'static str,
+    pub val: Option<String>,
+    pub tone: Tone,
+}
+
+impl Field {
+    pub fn new(key: &'static str, val: impl Into<String>) -> Self {
+        Self { key, val: Some(val.into()), tone: Tone::Normal }
+    }
+    /// mark the row as the fault — see [`Tone`]
+    pub fn fault(mut self, bad: bool) -> Self {
+        if bad {
+            self.tone = Tone::Fault;
+        }
+        self
+    }
+    /// a group heading, drawn as a quiet caption above its rows
+    pub fn section(key: &'static str) -> Self {
+        Self { key, val: None, tone: Tone::Normal }
+    }
+}
+
+/// Row pitch. Values are `size::HEADLINE` (32); this is that plus air, and it is what bounds how
+/// many fields the overlay may carry — see `stats::COLUMN_ROWS`.
+pub const FIELD_ROW_H: f32 = 46.0;
+/// Width of the key column inside a [`FieldList`] frame. Keys are right-aligned against it and
+/// values start one `space::MD` later, so every value in a column shares an x — which, with the
+/// font's tabular digits (all ten share one advance), is what makes the numbers line up.
+const FIELD_KEY_W: f32 = 250.0;
+
+pub struct FieldList<'a> {
+    pub fields: &'a [Field],
+    pub frame: Rect,
+}
+
+impl<'a> FieldList<'a> {
+    pub fn new(fields: &'a [Field], frame: Rect) -> Self {
+        Self { fields, frame }
+    }
+    /// How tall this list draws — so a caller can size or split its columns without re-deriving
+    /// the pitch.
+    pub fn height(n: usize) -> f32 {
+        n as f32 * FIELD_ROW_H
+    }
+}
+
+impl View for FieldList<'_> {
+    fn draw(&self, _e: &Env, p: Painter) {
+        let vx = self.frame.x + FIELD_KEY_W + theme::space::MD;
+        let vw = (self.frame.w - FIELD_KEY_W - theme::space::MD).max(0.0);
+        for (i, f) in self.fields.iter().enumerate() {
+            let y = self.frame.y + i as f32 * FIELD_ROW_H;
+            match &f.val {
+                // a section heading spans the whole width and carries no value
+                None => {
+                    if let Ok(cs) = CString::new(f.key) {
+                        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+                            .draw(p, Rect::new(self.frame.x, y, self.frame.w, FIELD_ROW_H));
+                    }
+                }
+                Some(v) => {
+                    if let Ok(cs) = CString::new(f.key) {
+                        Label::new(cs.as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
+                            .h(HAlign::Right)
+                            .draw(p, Rect::new(self.frame.x, y, FIELD_KEY_W, FIELD_ROW_H));
+                    }
+                    let ink = if f.tone == Tone::Fault { theme::DANGER } else { theme::TEXT_PRIMARY };
+                    if let Ok(cs) = CString::new(v.as_str()) {
+                        let mut l = Label::new(cs.as_ptr(), theme::size::HEADLINE, ink);
+                        if f.tone == Tone::Fault {
+                            l = l.bold();
+                        }
+                        l.draw(p, Rect::new(vx, y, vw, FIELD_ROW_H));
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -129,6 +129,12 @@ const char *vp_create_window(void) {
     return g_window_id;
 }
 
+/* The compositor-assigned exported windowId, or "" when there is none — for the on-screen
+ * diagnostics read-out (`ui::stats`), which needs to say whether the window was ever created.
+ * Returns this module's own copy (see vp_create_window), so the pointer is permanently valid and
+ * the caller never owns it. Never NULL: an empty string IS the "no window" answer. */
+const char *vp_window_id(void) { return g_window_id; }
+
 /* Place the video: source frame size -> on-screen rect. The VP_EXPORTED counterpart of
  * acb_start's setDisplayWindow, and the pair also expresses scaling. */
 int vp_place(int src_w, int src_h, int dst_x, int dst_y, int dst_w, int dst_h) {

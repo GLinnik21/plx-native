@@ -64,6 +64,9 @@ pub enum Icon {
     PlayStart,
     /// An X — "remove this" (the item menu's Remove from Continue Watching row).
     Close,
+    /// A horizontal ellipsis — "more options". The player transport's third control disc, which
+    /// opens the overflow popover (`ui/more_menu.rs`). Overflow, so it sits at the END of the row.
+    More,
     // ---- review-score marks (the detail hero's ratings row) ----
     //
     // These are OUR OWN drawings, not reproductions. Rotten Tomatoes' marks — the fruit, the
@@ -118,6 +121,7 @@ fn src(id: Icon) -> &'static str {
         Icon::CheckCircle => include_str!("../../../assets/icons/check-circle.svg"),
         Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
+        Icon::More => include_str!("../../../assets/icons/more.svg"),
         Icon::Tomato => include_str!("../../../assets/icons/tomato.svg"),
         Icon::TomatoCalyx => include_str!("../../../assets/icons/tomato-calyx.svg"),
         Icon::TomatoHollow => include_str!("../../../assets/icons/tomato-hollow.svg"),

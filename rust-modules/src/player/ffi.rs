@@ -36,6 +36,7 @@ mod sys {
 
         pub(super) fn vp_mode() -> c_int;
         pub(super) fn vp_create_window() -> *const c_char;
+        pub(super) fn vp_window_id() -> *const c_char;
         pub(super) fn vp_place(
             src_w: c_int,
             src_h: c_int,
@@ -130,6 +131,15 @@ pub(crate) const VP_EXPORTED: c_int = 2;
 #[inline]
 pub(crate) fn vp_mode() -> c_int {
     unsafe { sys::vp_mode() }
+}
+
+/// The exported windowId the seam holds, or an empty string when none was created. Diagnostics
+/// only (`ui::stats`): it answers "did the window this firmware needs ever exist?", which is the
+/// first thing to check when webOS 5+ plays sound over a black screen. Points at the seam's own
+/// long-lived buffer, so it is never NULL and never owned here. No token — it reads a static char[].
+#[inline]
+pub(crate) fn vp_window_id() -> *const c_char {
+    unsafe { sys::vp_window_id() }
 }
 
 /// `VP_EXPORTED` only. Create the exported window; the returned id must go into the Load payload

@@ -236,6 +236,76 @@ fn extend_hud(now: u32, ms: u32) {
 fn hud_shown(now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
     (now < until || is_paused) && !dismissed
 }
+/// Is the transport actually ON SCREEN? [`hud_shown`] answers only the TIMER question; this adds
+/// the STATE one — `player::loading()` pins the HUD up for as long as the pipeline is busy.
+///
+/// **The two must never diverge again.** The draw path and the pointer path had always spelled out
+/// `|| loading()`; the three KEY sites and the focus PARKER never did. That divergence was worst in
+/// the one state this app most needs a user to report: stuck in `Buffering` with the 4.5 s linger
+/// expired, the transport is drawn, but every key site believed it hidden — so the parker reset
+/// `hud_nav` to the scrubber on EVERY frame, UP was eaten as a "reveal", and focus could not reach
+/// the control row at all. The `…` disc, and the diagnostics overlay behind it, were unreachable in
+/// exactly the stall they exist to explain.
+#[inline]
+fn hud_visible(now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
+    hud_shown(now, until, is_paused, dismissed) || crate::player::loading()
+}
+
+/// The transport's visibility predicate. Almost nothing else in this file is host-testable — it is
+/// the SDL event loop — but this pair is pure enough to pin, and the bug it encodes cost the
+/// diagnostics overlay its whole reason for existing.
+#[cfg(test)]
+mod hud_visibility_tests {
+    use super::*;
+    use crate::player::PlaybackState;
+
+    /// Drive the derived playback state through the field the pump owns. Crate-global, so the whole
+    /// body holds `testlock::serial()` — `state()` is read by other modules' tests too.
+    fn with_state<T>(s: PlaybackState, f: impl FnOnce() -> T) -> T {
+        let _g = crate::testlock::serial();
+        let prev = crate::player::swap_state_for_test(s);
+        let out = f();
+        crate::player::restore_state_for_test(prev);
+        out
+    }
+
+    /// THE regression. Stuck in `Buffering` with the linger long expired and nothing paused, the
+    /// timer predicate says hidden while the transport is in fact drawn — so every key site and the
+    /// focus parker must use the STATE-aware one, or focus is reset to the scrubber every frame and
+    /// the `…` disc cannot be reached in the one state worth reporting.
+    #[test]
+    fn a_stalled_pipeline_keeps_the_transport_reachable_after_the_linger_expires() {
+        with_state(PlaybackState::Buffering, || {
+            let (now, expired) = (10_000u32, 1_000u32);
+            assert!(!hud_shown(now, expired, false, false), "the timer alone says hidden");
+            assert!(hud_visible(now, expired, false, false), "but it is on screen, so keys must reach it");
+        });
+    }
+
+    /// While playing normally the two agree — an expired linger really does mean hidden, or the HUD
+    /// would never auto-hide at all.
+    #[test]
+    fn a_healthy_playing_pipeline_still_auto_hides() {
+        with_state(PlaybackState::Playing, || {
+            assert!(!hud_visible(10_000, 1_000, false, false));
+            assert!(hud_visible(500, 1_000, false, false), "inside the linger");
+            assert!(hud_visible(10_000, 1_000, true, false), "paused pins it up");
+        });
+    }
+
+    /// An explicit dismiss (UP from the top row) still hides it while healthy — but must NOT be able
+    /// to hide it while the pipeline is stalled, because that is the state the user needs to report
+    /// and the read-out is pinned on screen there regardless.
+    #[test]
+    fn dismiss_wins_while_healthy_and_loses_while_stalled() {
+        with_state(PlaybackState::Playing, || {
+            assert!(!hud_visible(500, 1_000, false, true), "dismissed during playback");
+        });
+        with_state(PlaybackState::Buffering, || {
+            assert!(hud_visible(500, 1_000, false, true), "a stall outranks the dismiss");
+        });
+    }
+}
 #[inline]
 fn scrub() -> i64 { crate::player::TX.scrub_ns.load(Relaxed) }
 #[inline]
@@ -594,8 +664,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// "reset the HUD focus" one assignment that `start_playback` cannot half-do.
         #[derive(Clone, Copy)]
         struct HudNav {
-            focus: i32, // 0 = scrubber, 1 = right buttons (Subtitles/Audio), 2 = bottom tabs
-            btn: i32,   // 0 = Subtitles, 1 = Audio (within the buttons row)
+            focus: i32, // 0 = scrubber, 1 = right buttons (Subtitles/Audio/More), 2 = bottom tabs
+            btn: i32,   // 0 = Subtitles, 1 = Audio, 2 = More (within the buttons row)
             tab: i32,   // 0 = Info, 1 = Chapters (within the tabs row)
         }
         impl HudNav {
@@ -659,6 +729,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             Menu,
             Info,
             Chapters,
+            /// the `…` disc's overflow popover (`ui/more_menu.rs`)
+            More,
         }
         /// Which screen a [`Route::ItemMenu`] popover is sitting over.
         ///
@@ -711,6 +783,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             Menu,
             Info,
             Chapters,
+            More,
         }
         fn modal_of(r: Route) -> Modal {
             match r {
@@ -719,7 +792,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Player { overlay: Overlay::Menu } => Modal::Menu,
                 Route::Player { overlay: Overlay::Info } => Modal::Info,
                 Route::Player { overlay: Overlay::Chapters } => Modal::Chapters,
+                Route::Player { overlay: Overlay::More } => Modal::More,
                 _ => Modal::None,
+            }
+        }
+        /// Perform what the `…` popover reported. Shared by the OK key and the pointer click, so
+        /// the two paths can never come to disagree about what a row does.
+        fn apply_more_action(a: crate::ui::more_menu::Action) {
+            match a {
+                crate::ui::more_menu::Action::ToggleStats => crate::ui::stats::toggle(),
+                crate::ui::more_menu::Action::None => {}
             }
         }
         /// A route change the user has ASKED for but which has not been applied yet: the page is
@@ -1159,6 +1241,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::ui::track_menu::close();
             crate::ui::info_panel::close();
             crate::ui::chapters_panel::close();
+            crate::ui::more_menu::close();
+            crate::ui::stats::close(); // a diagnostics panel must not survive into the next session
             crate::ui::up_next::cancel(); // disarm the auto-advance countdown
         }
 
@@ -1780,6 +1864,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         continue;
                     }
                     last_input = SDL_GetTicks();
+                    // BACK closes the diagnostics panel, and nothing else does from the keyboard.
+                    //
+                    // Sniffed HERE, above every route arm, deliberately: appending it to the modal
+                    // `if / else if` chain further down would put a NARROWER condition after a
+                    // broader one, and `make lint`'s three lints cannot see that — they catch
+                    // identical conditions and identical bodies, not a subset arm placed too late.
+                    // Scoped to the player route so a leaked flag can never swallow BACK at Home,
+                    // where BACK exits the app.
+                    //
+                    // It takes BACK and NOTHING else. OK, LEFT/RIGHT and the transport keep working
+                    // underneath, because watching `Fed v/a` and `Frames` move as you press play is
+                    // how you tell a wedged seek from a wedged load. The pointer is the exception
+                    // (a click under an opaque card is blind); a key press is not.
+                    if crate::ui::stats::is_open() && matches!(route, Route::Player { .. }) && is_back(sym, wcode) {
+                        crate::ui::stats::close();
+                        continue;
+                    }
                     hud_dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
                     // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press —
                     // spring the card back to rest WITHOUT activating (you "slid off" the control).
@@ -1879,6 +1980,25 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             extend_hud(last_input, HUD_LINGER_MS);
                         } else if is_back(sym, wcode) {
                             crate::ui::track_menu::close();
+                            route = Route::Player { overlay: Overlay::None };
+                        }
+                        continue;
+                    }
+                    // the `…` overflow popover is modal too, and has ONE column — so LEFT/RIGHT are
+                    // swallowed without moving anything, rather than falling through to the scrubber.
+                    if matches!(route, Route::Player { overlay: Overlay::More }) {
+                        if sym == SDLK_UP || sym == SDLK_DOWN {
+                            crate::ui::more_menu::move_focus(sym as c_int);
+                            held_sym = sym;
+                            held_since = last_input;
+                            last_rep = last_input;
+                            extend_hud(last_input, HUD_MENU_MS);
+                        } else if is_ok(sym) {
+                            apply_more_action(crate::ui::more_menu::on_ok());
+                            route = Route::Player { overlay: Overlay::None };
+                            extend_hud(last_input, HUD_LINGER_MS);
+                        } else if is_back(sym, wcode) {
+                            crate::ui::more_menu::close();
                             route = Route::Player { overlay: Overlay::None };
                         }
                         continue;
@@ -1990,7 +2110,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // press on a hidden HUD just reveals it (focused on the scrubber); pressing UP
                     // with nothing focusable above (the buttons row) hides the HUD again.
                     if matches!(route, Route::Player { .. }) && (sym == SDLK_UP || sym == SDLK_DOWN) {
-                        let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
+                        let vis = hud_visible(last_input, hud_until(), paused(), hud_dismissed);
                         let mut hide = false;
                         if !vis {
                             hud_nav.focus = 0; // reveal, on the scrubber
@@ -2061,7 +2181,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // LG pointer auto-hidden; ignore
                     } else if is_ok(sym) {
                         if matches!(route, Route::Player { .. }) {
-                            let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
+                            let vis = hud_visible(last_input, hud_until(), paused(), hud_dismissed);
                             // A stand-in owns row 1 — activate it. Same value the draw used.
                             if vis && hud_nav.focus == 1 && !ctrl.is_discs() {
                                 if activate_ctrl_row(mt, ctrl, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud_nav, &mut trail) {
@@ -2070,9 +2190,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             } else if vis && hud_nav.focus == 1 {
                                 // …so the discs are what row 1 holds — the complement of the arm
                                 // above, and the row's only other occupant.
-                                // OK on a control button opens its panel (Subtitles / Audio)
-                                crate::ui::track_menu::open_tab(if hud_nav.btn == 0 { 1 } else { 0 });
-                                route = Route::Player { overlay: Overlay::Menu };
+                                // OK on a control disc opens its panel (Subtitles / Audio / More)
+                                if hud_nav.btn == crate::ui::player_hud::BTN_MORE {
+                                    crate::ui::more_menu::open();
+                                    route = Route::Player { overlay: Overlay::More };
+                                } else {
+                                    crate::ui::track_menu::open_tab(if hud_nav.btn == 0 { 1 } else { 0 });
+                                    route = Route::Player { overlay: Overlay::Menu };
+                                }
                             } else if vis && hud_nav.focus == 2 {
                                 if hud_nav.tab == 0 {
                                     crate::ui::info_panel::open(); // Info card
@@ -2191,7 +2316,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             set_scrub(-1);
                         }
                         let fwd = sym == SDLK_RIGHT || sym == 417 || wcode == 417;
-                        let vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed);
+                        let vis = hud_visible(last_input, hud_until(), paused(), hud_dismissed);
                         extend_hud(last_input, HUD_LINGER_MS);
                         if !vis {
                             hud_nav.focus = 0; // first LEFT/RIGHT reveals the HUD on the scrubber
@@ -2361,8 +2486,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // transport geometry the user can SEE (the key path's vis gate — a
                         // hidden-HUD OK falls through to play/pause). Without this, a click in
                         // the invisible timed-out scrub band committed a blind seek.
-                        let hud_vis = hud_shown(last_input, hud_until(), paused(), hud_dismissed)
-                            || crate::player::loading();
+                        let hud_vis = hud_visible(last_input, hud_until(), paused(), hud_dismissed);
                         hud_dismissed = false;
                         let (cx, cy) = ptr_xy(&ev);
                         // An open panel owns the click: dismiss it and STOP. The transport is
@@ -2381,6 +2505,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::ui::chapters_panel::close();
                                 route = Route::Player { overlay: Overlay::None };
                             }
+                            // Unlike the panels above, this popover's rows are ACTIONS, so a click
+                            // that lands on one commits it (and a click outside reports None and
+                            // just dismisses) — `account_menu`'s contract, same as its key path.
+                            Modal::More => {
+                                apply_more_action(crate::ui::more_menu::click(cx, cy));
+                                route = Route::Player { overlay: Overlay::None };
+                            }
+                            // The diagnostics panel is a LATCHED flag, not a route overlay, so
+                            // `modal_of` cannot see it — and the transport's compile-time rects sit
+                            // UNDER an opaque card, where a click is blind and would start a scrub
+                            // seek nobody asked for. Placed after the `Modal::*` arms so the `…`
+                            // popover being used to turn it off still gets its own clicks.
+                            _ if crate::ui::stats::is_open() => crate::ui::stats::close(),
                             // The stand-ins are HUD furniture, so both are gated on the transport
                             // actually being on screen — `hud_vis` is sampled before the click
                             // re-arms it, exactly like the rects below. One shared dispatch with
@@ -2395,8 +2532,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 let on_scrub =
                                     if hud_vis && dur() > 0 { crate::ui::player_hud::scrub_hit(cx, cy) } else { None };
                                 if let Some(idx) = icon {
-                                    crate::ui::track_menu::open_tab(if idx == 0 { 1 } else { 0 }); // Subtitles button → subtitles tab
-                                    route = Route::Player { overlay: Overlay::Menu };
+                                    if idx == crate::ui::player_hud::BTN_MORE {
+                                        crate::ui::more_menu::open();
+                                        route = Route::Player { overlay: Overlay::More };
+                                    } else {
+                                        crate::ui::track_menu::open_tab(if idx == 0 { 1 } else { 0 }); // Subtitles button → subtitles tab
+                                        route = Route::Player { overlay: Overlay::Menu };
+                                    }
                                     hud_nav.focus = 1;
                                     hud_nav.btn = idx;
                                 } else if let Some(frac) = on_scrub {
@@ -2955,6 +3097,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::track_menu::move_focus(held_sym as c_int);
                         extend_hud(now, HUD_MENU_MS);
                     }
+                    Route::Player { overlay: Overlay::More } => {
+                        crate::ui::more_menu::move_focus(held_sym as c_int);
+                        extend_hud(now, HUD_MENU_MS);
+                    }
                     Route::Player { overlay: Overlay::Info } => {
                         crate::ui::info_panel::move_focus(held_sym as c_int);
                         extend_hud(now, HUD_MENU_MS);
@@ -3061,7 +3207,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
             }
             // when the HUD auto-hides, park focus back on the scrubber so the next reveal is clean
-            if matches!(route, Route::Player { .. }) && !hud_shown(now, hud_until(), paused(), hud_dismissed) {
+            if matches!(route, Route::Player { .. }) && !hud_visible(now, hud_until(), paused(), hud_dismissed) {
                 hud_nav = HudNav::HOME;
             }
             // hide the idle pointer during playback
@@ -3393,6 +3539,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(route, Route::Player { overlay: Overlay::Menu }) {
                 crate::ui::track_menu::update(dt); // pill slide + open fade
             }
+            if matches!(route, Route::Player { overlay: Overlay::More }) {
+                crate::ui::more_menu::update(dt);
+            }
+            // Re-samples on its own 2 Hz hold; a no-op when the panel is off.
+            crate::ui::stats::update(now);
             if matches!(route, Route::Player { overlay: Overlay::Info }) {
                 crate::ui::info_panel::update(dt);
             }
@@ -3486,7 +3637,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::system::clear_opaque_region();
                         glClearColor(0.0, 0.0, 0.0, 0.0);
                         glClear(GL_COLOR_BUFFER_BIT);
-                        let hud_up = hud_shown(now, hud_until(), paused(), hud_dismissed) || crate::player::loading();
+                        let hud_up = hud_visible(now, hud_until(), paused(), hud_dismissed);
                         // ONE resolve of which surface owns the "pipeline is working" signal, handed to
                         // both draws, so the centred read-out and the transport's inline spinner can
                         // never both light in the same frame. Resolved HERE (not beside `ctrl` at the
@@ -3518,6 +3669,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
                             crate::ui::chapters_panel::draw();
                         }
+                        if matches!(route, Route::Player { overlay: Overlay::More }) {
+                            crate::ui::more_menu::draw();
+                        }
+                        // LAST, over everything including the centred "Buffering…" read-out whose
+                        // block sits where this panel wants to be. It is not chrome and not an
+                        // overlay route: it stays up until it is turned off.
+                        crate::ui::stats::draw();
                     } else {
                         if matches!(route, Route::Login) {
                             crate::ui::login::draw();
@@ -3631,6 +3789,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Player { overlay: Overlay::Info } => " overlay=info",
                     Route::Player { overlay: Overlay::Chapters } => " overlay=chapters",
                     Route::Player { overlay: Overlay::Menu } => " overlay=menu",
+                    Route::Player { overlay: Overlay::More } => " overlay=more",
                     Route::Player { overlay: Overlay::None } => " overlay=none",
                     _ => "",
                 };

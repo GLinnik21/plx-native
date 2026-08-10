@@ -238,8 +238,14 @@ pub(crate) const CTRL_H: f32 = BTN_S;
 pub(crate) const CTRL_Y: f32 = BTN_Y;
 /// control-row right edge — 80px margin, matching the track-menu panel (right:80)
 pub(crate) const CTRL_RIGHT: f32 = SCR_W - 80.0;
-/// width the Subtitles+Audio pair occupies, the floor for anything replacing them
-pub(crate) const CTRL_PAIR_W: f32 = 2.0 * BTN_S + BTN_GAP;
+/// how many control discs the row holds: Subtitles, Audio, More
+const BTN_N: i32 = 3;
+/// Index of the `…` overflow disc within the row — the LAST one. Exported because `app.rs` routes
+/// its OK and its click, and a second literal `2` over there is exactly the drift `ControlSlot`
+/// was introduced to stop.
+pub(crate) const BTN_MORE: i32 = BTN_N - 1;
+/// width the disc row occupies, the floor for anything replacing it
+pub(crate) const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
 
 /// The shared control-row slot for anything that STANDS IN for the disc pair: right-aligned to the
 /// discs' own edge, and never narrower than the pair it replaces so the row does not visibly shrink
@@ -260,9 +266,9 @@ pub(crate) fn ctrl_slot(label: &str) -> Rect {
                 .ok()
                 .map(|c| crate::text::text_width(c.as_ptr(), theme::size::BODY, 1) + 2.0 * PAD_X)
                 .unwrap_or(0.0)
-                .max(CTRL_PAIR_W);
+                .max(CTRL_ROW_W);
             // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
-            if measured > CTRL_PAIR_W {
+            if measured > CTRL_ROW_W {
                 memo.push((label.to_string(), measured));
             }
             measured
@@ -293,7 +299,7 @@ impl ControlSlot {
     /// a hand-written `btn = 0` pin beside a `clamp(0, 1)`.
     pub(crate) fn items(self) -> c_int {
         match self {
-            ControlSlot::Discs => 2,
+            ControlSlot::Discs => BTN_N,
             _ => 1,
         }
     }
@@ -454,17 +460,16 @@ pub(crate) fn draw_readout(busy: Busy, now: u32) {
     StatusOverlay::new(readout_frame(), caption, kind).phase(now).draw(&hud_env(), Painter::root());
 }
 
-/// x of control button `idx` (0 = Subtitles on the left, 1 = Audio on the right)
+/// x of control button `idx`, left to right: 0 = Subtitles, 1 = Audio, 2 = More.
+///
+/// The row is RIGHT-anchored — the LAST disc's edge is `CTRL_RIGHT` — so adding a button pushes
+/// the existing ones left instead of moving the row's right margin, which is what keeps the discs
+/// and every stand-in (`ctrl_slot`) sharing one edge.
 fn btn_x(idx: i32) -> f32 {
-    let audio_x = CTRL_RIGHT - BTN_S;
-    if idx == 0 {
-        audio_x - BTN_S - BTN_GAP
-    } else {
-        audio_x
-    }
+    CTRL_RIGHT - BTN_S - (BTN_N - 1 - idx) as f32 * (BTN_S + BTN_GAP)
 }
 
-/// which control button a pointer at (cx,cy) is over: 0 = Subtitles, 1 = Audio, or None.
+/// which control button a pointer at (cx,cy) is over: 0 = Subtitles, 1 = Audio, 2 = More, or None.
 /// The single source of truth for the button rects, shared with draw_hud.
 ///
 /// `slot` is passed in rather than re-derived: while a stand-in owns the row the discs are not on
@@ -473,7 +478,7 @@ pub(crate) fn icon_hit(slot: ControlSlot, cx: f32, cy: f32) -> Option<i32> {
     if !slot.is_discs() || cy < BTN_Y || cy > BTN_Y + BTN_S {
         return None;
     }
-    (0..2).find(|&idx| {
+    (0..BTN_N).find(|&idx| {
         let x = btn_x(idx);
         cx >= x && cx <= x + BTN_S
     })
@@ -570,8 +575,11 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
         ControlSlot::UpNext(_) => crate::ui::up_next::draw(p, focus == 1, now),
         ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(p, pr, focus == 1),
         ControlSlot::Discs => {
-            TransportButton::new(0, Rect::new(btn_x(0), BTN_Y, BTN_S, BTN_S)).focused(focus == 1 && btn == 0).draw(&e, p);
-            TransportButton::new(1, Rect::new(btn_x(1), BTN_Y, BTN_S, BTN_S)).focused(focus == 1 && btn == 1).draw(&e, p);
+            for i in 0..BTN_N {
+                TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
+                    .focused(focus == 1 && btn == i)
+                    .draw(&e, p);
+            }
         }
     }
 
@@ -704,6 +712,63 @@ mod tests {
     const SW: f32 = 1000.0;
     const DUR: i64 = 1_000;
 
+    /// The disc row's geometry and its hit-test are ONE definition (`icon_hit` is documented as the
+    /// single source of the rects, shared with the draw), so the property worth asserting is that
+    /// they agree: every disc's own centre must hit-test back to that disc. Added when the row grew
+    /// a third disc — the `…` overflow — because the previous shape hard-coded two positions and a
+    /// `(0..2)` scan, and a third button that draws but cannot be clicked is exactly the kind of
+    /// half-wired control this file's `ControlSlot` note exists to prevent.
+    #[test]
+    fn every_disc_hit_tests_back_to_itself() {
+        let cy = BTN_Y + BTN_S * 0.5;
+        for i in 0..BTN_N {
+            let cx = btn_x(i) + BTN_S * 0.5;
+            assert_eq!(icon_hit(ControlSlot::Discs, cx, cy), Some(i), "disc {i} centre");
+        }
+    }
+
+    /// The row is right-anchored and does not overlap itself: the LAST disc ends exactly at
+    /// `CTRL_RIGHT`, each disc sits a full `BTN_GAP` clear of its neighbour, and the whole span is
+    /// `CTRL_ROW_W` — which is the floor `ctrl_slot` gives a stand-in, so a drifting span would
+    /// silently let the Skip pill shrink the row.
+    #[test]
+    fn the_disc_row_is_right_anchored_and_spans_ctrl_row_w() {
+        assert_eq!(btn_x(BTN_N - 1) + BTN_S, CTRL_RIGHT, "last disc must end at the row's edge");
+        for i in 1..BTN_N {
+            assert_eq!(btn_x(i) - (btn_x(i - 1) + BTN_S), BTN_GAP, "gap before disc {i}");
+        }
+        assert_eq!(CTRL_RIGHT - btn_x(0), CTRL_ROW_W, "drawn span vs the stand-in floor");
+    }
+
+    /// A point in the row's band but in a GAP, or past either end, belongs to no disc — the click
+    /// path falls through to the scrubber there, so a gap that answered `Some` would open a track
+    /// menu from a press on empty chrome.
+    #[test]
+    fn gaps_and_the_row_ends_belong_to_no_disc() {
+        let cy = BTN_Y + BTN_S * 0.5;
+        assert_eq!(icon_hit(ControlSlot::Discs, btn_x(0) - 1.0, cy), None, "left of the row");
+        assert_eq!(icon_hit(ControlSlot::Discs, CTRL_RIGHT + 1.0, cy), None, "right of the row");
+        for i in 1..BTN_N {
+            let mid = btn_x(i) - BTN_GAP * 0.5;
+            assert_eq!(icon_hit(ControlSlot::Discs, mid, cy), None, "gap before disc {i}");
+        }
+        // and the band itself is bounded vertically
+        let cx = btn_x(0) + BTN_S * 0.5;
+        assert_eq!(icon_hit(ControlSlot::Discs, cx, BTN_Y - 1.0), None, "above the row");
+        assert_eq!(icon_hit(ControlSlot::Discs, cx, BTN_Y + BTN_S + 1.0), None, "below the row");
+    }
+
+    /// While a stand-in owns the row the discs are not on screen, so nothing in that band may
+    /// report a disc — the rule `icon_hit`'s `slot` parameter exists for.
+    #[test]
+    fn a_stand_in_owning_the_row_hides_every_disc_from_the_hit_test() {
+        let cy = BTN_Y + BTN_S * 0.5;
+        let slot = slot_for(Some(marker(MarkerKind::Intro, false)), false);
+        for i in 0..BTN_N {
+            assert_eq!(icon_hit(slot, btn_x(i) + BTN_S * 0.5, cy), None, "disc {i} under a stand-in");
+        }
+    }
+
     /// The control row's precedence, which used to live in the ORDER of five separate if-chains
     /// across `player_hud` and `app.rs` — the draw, the OK handler, the pointer handler, the
     /// LEFT/RIGHT clamp and `icon_hit` — with nothing keeping them in step and nothing to test.
@@ -712,7 +777,7 @@ mod tests {
         // no segment under the playhead → the ordinary Subtitles + Audio pair
         assert!(slot_for(None, false).is_discs());
         assert!(slot_for(None, true).is_discs(), "a queued successor alone changes nothing");
-        assert_eq!(slot_for(None, true).items(), 2, "the disc pair is the only two-item row");
+        assert_eq!(slot_for(None, true).items(), BTN_N, "the discs are the only multi-item row");
 
         // an intro is always Skip, successor or not — "what's next" is an end-of-episode idea
         for has_next in [false, true] {

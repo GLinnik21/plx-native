@@ -217,11 +217,52 @@ pub(crate) struct Shared {
     // the pump/teardown can close(fd) to unblock a blocked recv. The box outlives
     // the worker threads (Engine drops after join), so the ptr stays valid.
     pub hs_ptr: AtomicPtr<HttpStream>,
+
+    // ---- diagnostics mirror (`ui::stats`) -------------------------------------------------
+    // Values the RENDER path needs that live on the Engine, republished once per pump tick.
+    // The render path may not call `engine(&MainThread)` — that hands out a `&'static mut` to a
+    // `static mut`, and a second live borrow is instant UB — so it reads these instead.
+    //
+    // STRICTLY ONE-WAY: written by the pump and the seam, read only by the read-out. Nothing in
+    // the playback state machine may ever branch on one, or a diagnostic becomes load-bearing.
+    // One frame stale by construction, which no reader cares about at a 2 Hz sample.
+    /// `Stage` as u8 — where the bind/play sequence has got to.
+    pub dg_stage: AtomicU8,
+    /// Starfish callbacks seen this session, and the type of the last one. A count of 0 with a
+    /// completed Load is the pipeline never speaking to us — the sharpest single symptom there is.
+    /// The type is a RAW number on purpose: the numbering shifts between webOS 4 and 5+ above
+    /// 0x1c, so naming it would print a confident lie on the firmware we cannot test.
+    pub dg_cb_count: AtomicU32,
+    pub dg_cb_last: AtomicI32,
+    /// Last `Feed()` reply byte per lane ('O' for Ok, 'B' for BufferFull, …), 0 before the first.
+    pub dg_feed_reply_v: AtomicU32,
+    pub dg_feed_reply_a: AtomicU32,
+    /// Bytes queued in each AU lane at the last tick, against `engine::aq_caps`.
+    pub dg_aq_video: AtomicI64,
+    pub dg_aq_audio: AtomicI64,
+    /// `vp_place` return, and the size it was called with. `i32::MIN` = never called.
+    pub dg_place_rv: AtomicI32,
+    pub dg_placed_w: AtomicI32,
+    pub dg_placed_h: AtomicI32,
+    /// Did the exported windowId make it into the Load payload? 0 n/a · 1 spliced · 2 no window ·
+    /// 3 no anchor to splice onto. On webOS 5+ anything but 1 means the video can never bind.
+    pub dg_splice: AtomicU8,
 }
 
 impl Shared {
     pub const fn new() -> Self {
         Shared {
+            dg_stage: AtomicU8::new(0),
+            dg_cb_count: AtomicU32::new(0),
+            dg_cb_last: AtomicI32::new(0),
+            dg_feed_reply_v: AtomicU32::new(0),
+            dg_feed_reply_a: AtomicU32::new(0),
+            dg_aq_video: AtomicI64::new(0),
+            dg_aq_audio: AtomicI64::new(0),
+            dg_place_rv: AtomicI32::new(i32::MIN),
+            dg_placed_w: AtomicI32::new(0),
+            dg_placed_h: AtomicI32::new(0),
+            dg_splice: AtomicU8::new(0),
             playpos_ns: AtomicI64::new(0),
             pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
@@ -255,6 +296,19 @@ impl Shared {
     }
     /// reset per-file state on stop (mirrors the tail of stop_bufferfeed).
     pub fn reset_session(&self) {
+        // the diagnostics mirror is per-session too — a stale bind outcome from the last item is
+        // exactly the misleading answer the read-out exists to avoid
+        self.dg_stage.store(0, Ordering::Relaxed);
+        self.dg_cb_count.store(0, Ordering::Relaxed);
+        self.dg_cb_last.store(0, Ordering::Relaxed);
+        self.dg_feed_reply_v.store(0, Ordering::Relaxed);
+        self.dg_feed_reply_a.store(0, Ordering::Relaxed);
+        self.dg_aq_video.store(0, Ordering::Relaxed);
+        self.dg_aq_audio.store(0, Ordering::Relaxed);
+        self.dg_place_rv.store(i32::MIN, Ordering::Relaxed);
+        self.dg_placed_w.store(0, Ordering::Relaxed);
+        self.dg_placed_h.store(0, Ordering::Relaxed);
+        self.dg_splice.store(0, Ordering::Relaxed);
         self.playpos_ns.store(0, Ordering::Relaxed);
         self.pres_fed.store(0, Ordering::Relaxed);
         self.frames.store(0, Ordering::Relaxed);

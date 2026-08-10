@@ -24,12 +24,14 @@ pub mod info_panel;
 pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
 pub mod label;
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
+pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
+pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub mod profile;

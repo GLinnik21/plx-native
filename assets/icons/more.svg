@@ -1,0 +1,17 @@
+<!-- A horizontal ellipsis — "more options" (the player transport's third control disc, which opens
+     the overflow popover). Three dots as THREE SUBPATHS of one path, per ui/icons.rs's authoring
+     contract. They do not overlap, so nonzero fill could not punch a hole here whatever the
+     winding — but each dot is built by the identical two-arc construction with sweep-flag 0, so
+     all three carry the same handedness anyway, and the mark stays one <path> so it composites as
+     one shape rather than three alpha-blended elements.
+
+     Geometry: r 2.25 at x 5 / 12 / 19 on the centre line of the 24x24 box, spanning 2.75..21.25 —
+     symmetric, and the 2.5 gap between dot EDGES is slightly wider than half a diameter, which is
+     what keeps three dots reading as an ellipsis rather than as a dashed bar at the 26px this
+     draws at. Filled rather than stroked (the sibling Cc/Audio glyphs are 2.4-wide strokes; a
+     filled 4.5 dot lands at comparable ink weight beside them). -->
+<svg viewBox="0 0 24 24" fill="#ffffff">
+  <path d="M 2.75 12 a 2.25 2.25 0 1 0 4.5 0 a 2.25 2.25 0 1 0 -4.5 0 Z
+           M 9.75 12 a 2.25 2.25 0 1 0 4.5 0 a 2.25 2.25 0 1 0 -4.5 0 Z
+           M 16.75 12 a 2.25 2.25 0 1 0 4.5 0 a 2.25 2.25 0 1 0 -4.5 0 Z"/>
+</svg>

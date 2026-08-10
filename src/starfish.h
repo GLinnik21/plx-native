@@ -40,6 +40,8 @@ int vp_mode(void);
  * webOS 5 that string is the entire binding. The returned pointer is owned by this seam. */
 const char *vp_create_window(void);
 /* VP_EXPORTED counterpart of acb_start's setDisplayWindow: source frame size -> on-screen rect. */
+/* The exported windowId we hold, or "" when none was created. Diagnostics only; never NULL. */
+const char *vp_window_id(void);
 int  vp_place(int src_w, int src_h, int dst_x, int dst_y, int dst_w, int dst_h);
 void vp_destroy_window(void);
 

@@ -30,8 +30,25 @@ const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","optio
 // the single variable: does StarfishMediaAPIs BUFFERSTREAM decode HEVC on this panel?
 const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
-static VTOT: AtomicI64 = AtomicI64::new(0); // total video AUs fed (log cadence only)
-static ATOT: AtomicI64 = AtomicI64::new(0); // total audio AUs fed (log cadence only)
+static VTOT: AtomicI64 = AtomicI64::new(0); // total video AUs fed (log cadence + `ui::stats`)
+static ATOT: AtomicI64 = AtomicI64::new(0); // total audio AUs fed (log cadence + `ui::stats`)
+
+/// AUs fed to the Starfish pipeline this SESSION, video and audio.
+///
+/// Zeroed by `start_bufferfeed`, not cumulative since boot: the diagnostics read-out has to answer
+/// "is this playback feeding?", and a number carried over from the last item answers a question
+/// nobody asked. The log's `v <= 4 || v % 100 == 0` cadence restarting per session is the behaviour
+/// that was wanted there too.
+pub(crate) fn fed_totals() -> (i64, i64) {
+    (VTOT.load(Ordering::Relaxed), ATOT.load(Ordering::Relaxed))
+}
+
+/// The AU queues' byte caps — the denominators the read-out shows `dg_aq_*` against, so a viewer
+/// can see backpressure (a video lane pinned at its cap is the demuxer outrunning the decoder;
+/// both lanes empty while Stage is Playing is the opposite).
+pub(crate) const fn aq_caps() -> (i64, i64) {
+    (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
+}
 
 // Per-lane queue byte caps (two-lane feed). Video matches the pipeline's srcBufferLevelVideo (8MB);
 // audio is kept small (the TV is RAM-tight and audio frames are tiny) yet large enough to cushion
@@ -289,6 +306,10 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
         log("start_bufferfeed: already running (no-op)");
         return true;
     }
+    // Per-SESSION, not per-boot: both the log's every-100th cadence and the diagnostics read-out
+    // mean "this playback", and a count carried in from the last item answers neither question.
+    VTOT.store(0, Ordering::Relaxed);
+    ATOT.store(0, Ordering::Relaxed);
     // resolve the URL: route (a selected movie) wins, then /tmp/plxnative-url, then a local sample.
     let mut url = crate::route::url();
     if url.is_empty() {

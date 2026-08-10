@@ -31,18 +31,40 @@
 //! Parsed by hand rather than through a JSON crate: this is a flat object of string values written
 //! by the platform, the crate has no JSON dependency, and a parser that cannot fail is the right
 //! shape for something that must never keep the app from booting.
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
 
-/// Major webOS release, or 0 when unknown. `4` on the sets this app is verified on.
-static MAJOR: AtomicU32 = AtomicU32::new(0);
+/// What the set said about itself. Owned strings rather than borrows into the file, because the
+/// file is read once and dropped; `OnceLock` because this is written exactly once, at boot, and
+/// read from the render thread every frame the diagnostics panel is up.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Info {
+    /// e.g. "4.10.2" — empty when unknown
+    pub release: String,
+    /// e.g. "goldilocks2-grampians" — webosbrew buckets firmware by this
+    pub codename: String,
+    /// e.g. "4.1.0"
+    pub api: String,
+    /// e.g. "webOS TV"
+    pub name: String,
+    /// leading component of `release`, or 0 when unknown
+    pub major: u32,
+}
+
+static INFO: OnceLock<Info> = OnceLock::new();
+
+/// What the set reported. All-empty with `major == 0` when the file could not be read — which is
+/// the honest answer and is what the panel prints.
+pub(crate) fn info() -> &'static Info {
+    INFO.get_or_init(Info::default)
+}
 
 /// The major webOS version, or 0 if it could not be read. **0 means unknown, not old** — treat it
 /// as "do not gate on this" rather than as a low number, or an unreadable file silently turns
 /// every `>=` test into the oldest behaviour.
 pub(crate) fn major() -> u32 {
-    MAJOR.load(Ordering::Relaxed)
+    info().major
 }
 
 /// Pull `"key": "value"` out of a flat JSON object. Returns None rather than erroring: nothing
@@ -56,21 +78,37 @@ fn field<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     Some(&rest[open..close])
 }
 
+/// Everything [`probe`] extracts, as a pure function of the file's text — so the parse is testable
+/// without a filesystem, and an unreadable file and an unparseable one land on the same value.
+fn parse(s: &str) -> Info {
+    let get = |k: &str| field(s, k).unwrap_or_default().to_string();
+    let release = get("webos_release");
+    let major = release.split('.').next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+    Info {
+        release,
+        codename: get("webos_release_codename"),
+        api: get("webos_api_version"),
+        name: get("webos_name"),
+        major,
+    }
+}
+
 /// Read it once and log it. Called at boot; safe to call when the file does not exist.
 pub(crate) fn probe() {
-    let Ok(s) = std::fs::read_to_string(OS_INFO) else {
-        crate::log(&format!("webos: {OS_INFO} unreadable — version unknown"));
-        return;
+    let info = match std::fs::read_to_string(OS_INFO) {
+        Ok(s) => parse(&s),
+        Err(e) => {
+            crate::log(&format!("webos: {OS_INFO} unreadable ({e}) — version unknown"));
+            Info::default()
+        }
     };
-    let release = field(&s, "webos_release").unwrap_or("?");
-    let codename = field(&s, "webos_release_codename").unwrap_or("?");
-    let api = field(&s, "webos_api_version").unwrap_or("?");
-    let name = field(&s, "webos_name").unwrap_or("?");
-    let maj = release.split('.').next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
-    MAJOR.store(maj, Ordering::Relaxed);
-    crate::log(&format!(
-        "webos: {name} release={release} codename={codename} api={api} major={maj}"
-    ));
+    if info.major > 0 {
+        crate::log(&format!(
+            "webos: {} release={} codename={} api={} major={}",
+            info.name, info.release, info.codename, info.api, info.major
+        ));
+    }
+    let _ = INFO.set(info);
 }
 
 #[cfg(test)]
@@ -128,5 +166,29 @@ mod tests {
     #[test]
     fn a_missing_key_is_none() {
         assert_eq!(field(REAL, "no_such_key"), None);
+    }
+
+    #[test]
+    fn parses_the_whole_record() {
+        let i = parse(REAL);
+        assert_eq!((i.release.as_str(), i.major), ("4.10.2", 4));
+        assert_eq!(i.codename, "goldilocks2-grampians");
+        assert_eq!(i.name, "webOS TV");
+    }
+
+    /// The unknown case must be EMPTY with major 0, never a plausible-looking default. A panel that
+    /// invents "4.0" for a set it could not read is worse than one that admits it does not know.
+    #[test]
+    fn an_unreadable_file_yields_no_version_rather_than_a_guess() {
+        let i = parse("not json at all");
+        assert_eq!(i.major, 0);
+        assert!(i.release.is_empty() && i.codename.is_empty());
+    }
+
+    /// A two-component release still yields its major — LG has shipped "6.0" as well as "4.10.2".
+    #[test]
+    fn a_short_release_still_gives_a_major() {
+        assert_eq!(parse(r#"{"webos_release": "6.0"}"#).major, 6);
+        assert_eq!(parse(r#"{"webos_release": "10.0.1"}"#).major, 10);
     }
 }

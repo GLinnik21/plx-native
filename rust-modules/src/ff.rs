@@ -1088,6 +1088,29 @@ fn load_libraries() -> bool {
     ok
 }
 
+/// Did the bundled FFmpeg load and match the ABI table? The diagnostics read-out's first question
+/// about the demuxer: false means every playback will refuse before it opens a socket, which from
+/// the outside looks identical to a stall.
+pub(crate) fn abi_ok() -> bool {
+    ABI_OK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Did the CURRENT demux session hand over a single video AU? Distinguishes "the demuxer produced
+/// nothing" from "it produced AUs that never reached the decoder" — two stalls that present
+/// identically as a spinner. See [`PUSHED_ANY`].
+pub(crate) fn pushed_any() -> bool {
+    PUSHED_ANY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The three FFmpeg majors actually bound, for the read-out's build line. Zeroes before [`boot`]
+/// has run or when the libraries did not load.
+pub(crate) fn majors() -> (u32, u32, u32) {
+    if !abi_ok() {
+        return (0, 0, 0);
+    }
+    unsafe { (avformat_version() >> 16, avcodec_version() >> 16, avutil_version() >> 16) }
+}
+
 /// Boot smoke test + optional ABI probe. Called once at startup.
 pub(crate) fn boot() {
     if !load_libraries() {

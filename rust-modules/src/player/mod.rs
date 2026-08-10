@@ -132,6 +132,121 @@ pub(crate) fn state() -> shared::PlaybackState {
     }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
 }
+/// Test-only: drive the derived playback state, returning the previous raw value to restore.
+///
+/// `pb_state` is the pump's field and `shared` is a private module, so a host test that needs the
+/// app in a given state — `app.rs`'s HUD-visibility pair, which pins the bug that made the `…` disc
+/// unreachable while stalled — sets it through here rather than widening the module for a test.
+/// Callers must hold `crate::testlock::serial()`: this is a crate global.
+#[cfg(test)]
+pub(crate) fn swap_state_for_test(s: shared::PlaybackState) -> u8 {
+    let prev = SHARED.pb_state.load(Relaxed);
+    SHARED.pb_state.store(s as u8, Relaxed);
+    prev
+}
+#[cfg(test)]
+pub(crate) fn restore_state_for_test(raw: u8) {
+    SHARED.pb_state.store(raw, Relaxed);
+}
+
+// ---- diagnostics --------------------------------------------------------------------------
+
+pub(crate) use engine::aq_caps;
+pub(crate) use ffi::{VP_ACB, VP_EXPORTED, VP_NONE};
+
+/// One consistent read of everything the on-screen diagnostics overlay shows (`ui::stats`).
+///
+/// A struct rather than twenty accessors for one reason: the panel must not tell a story that
+/// never happened. Sampled field-by-field across a frame it could report "no frames" beside a
+/// callback count taken 16 ms later, and the whole point is that a maintainer trusts the
+/// photograph. One call, one instant, main thread.
+///
+/// Everything here is a MIRROR — see `Shared`'s diagnostics block. Nothing in the playback state
+/// machine may read a `Diag` back.
+///
+/// `Default` is the never-started session — all zero, no window, nothing fed — which is both the
+/// honest pre-playback reading and what the host tests build, since the real [`diag`] reaches
+/// `starfish.c` symbols that do not exist on the dev Mac.
+#[derive(Default)]
+pub(crate) struct Diag {
+    pub vp_mode: c_int,
+    pub window_id: String,
+    pub acb_ok: bool,
+    pub place_rv: i32,
+    pub placed_w: i32,
+    pub placed_h: i32,
+    pub stage: u8,
+    pub load_completed: bool,
+    pub load_failed: bool,
+    pub cb_count: u32,
+    pub cb_last: i32,
+    pub pushed_any: bool,
+    pub fed_v: i64,
+    pub fed_a: i64,
+    pub frames: i32,
+    pub seen_frame: bool,
+    pub aq_video: i64,
+    pub aq_audio: i64,
+    pub video_w: i32,
+    pub video_h: i32,
+    pub pos_ns: i64,
+    pub dur_ns: i64,
+    pub file_size: i64,
+}
+
+impl Diag {
+    pub fn vp_mode_str(&self) -> &'static str {
+        match self.vp_mode {
+            VP_EXPORTED => "exported window (webOS 5+)",
+            VP_ACB => "ACB (webOS 4)",
+            _ => "NONE — no video path",
+        }
+    }
+    pub fn stage_str(&self) -> &'static str {
+        match self.stage {
+            0 => "Loading",
+            1 => "Playing",
+            2 => "Bound",
+            3 => "Streaming",
+            _ => "?",
+        }
+    }
+}
+
+pub(crate) fn diag() -> Diag {
+    let (fed_v, fed_a) = engine::fed_totals();
+    // `vp_window_id` hands back the seam's own static buffer — never NULL, "" when no window was
+    // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
+    let window_id = unsafe { std::ffi::CStr::from_ptr(ffi::vp_window_id()) }
+        .to_string_lossy()
+        .into_owned();
+    Diag {
+        vp_mode: ffi::vp_mode(),
+        window_id,
+        acb_ok: ACB_OK.load(Relaxed),
+        place_rv: SHARED.dg_place_rv.load(Relaxed),
+        placed_w: SHARED.dg_placed_w.load(Relaxed),
+        placed_h: SHARED.dg_placed_h.load(Relaxed),
+        stage: SHARED.dg_stage.load(Relaxed),
+        load_completed: SHARED.load_completed.load(Relaxed),
+        load_failed: SHARED.load_failed.load(Relaxed),
+        cb_count: SHARED.dg_cb_count.load(Relaxed),
+        cb_last: SHARED.dg_cb_last.load(Relaxed),
+        pushed_any: crate::ff::pushed_any(),
+        fed_v,
+        fed_a,
+        frames: SHARED.frames.load(Relaxed),
+        seen_frame: SHARED.seen_frame.load(Relaxed),
+        aq_video: SHARED.dg_aq_video.load(Relaxed),
+        aq_audio: SHARED.dg_aq_audio.load(Relaxed),
+        video_w: SHARED.video_w.load(Relaxed),
+        video_h: SHARED.video_h.load(Relaxed),
+        pos_ns: SHARED.playpos_ns.load(Relaxed),
+        dur_ns: SHARED.duration_ns.load(Relaxed),
+        file_size: SHARED.file_size.load(Relaxed),
+    }
+}
+
 pub(crate) fn seek_display_ns() -> i64 { SHARED.seek_display_ns.load(Relaxed) }
 /// The playhead the user INTENDS, which is not always the one being published: while a seek is
 /// still resolving (request → reopen → prime → Play) `playpos_ns` keeps reporting the PRE-seek
@@ -374,6 +489,13 @@ pub extern "C" fn sf_on_event(ty: c_int, num: i64, s: *const c_char) {
 }
 fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     if ty != 0 {
+        // The diagnostics census, beside the log line that already records every event. A COUNT is
+        // what the read-out needs: "Load completed and then nothing ever called us" is the sharpest
+        // symptom the stuck-buffering reports could carry, and it is invisible in a log the user
+        // cannot reach. Kept here rather than in the `ty` dispatch below so an event we do not
+        // handle still counts — an unhandled callback is still the pipeline talking.
+        SHARED.dg_cb_count.fetch_add(1, Relaxed);
+        SHARED.dg_cb_last.store(ty, Relaxed);
         let preview = if s.is_null() { String::new() } else {
             unsafe { CStr::from_ptr(s) }.to_string_lossy().chars().take(1400).collect()
         };

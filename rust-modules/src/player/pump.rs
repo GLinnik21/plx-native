@@ -1,7 +1,7 @@
 //! player::pump — the main-thread pump (was bufferfeed_pump). Runs each frame from
 //! plex_run: the pending-seek handler, the ACB-bind state machine (Stage), and the
 //! feed dispatch. All ACB/Starfish control calls happen here on the main thread.
-use super::engine::{drain_aq, engine, feed_audio_lane, feed_sample, feed_stream, Source};
+use super::engine::{drain_aq, engine, feed_audio_lane, feed_sample, feed_stream, Engine, Source};
 use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
 use crate::task::MainThread;
@@ -46,6 +46,27 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
     super::log(&format!("vplane: exported window placed src={}x{} rv={rv}", src.0, src.1));
 }
 
+/// Mirror the Engine-confined diagnostics into `Shared` for the render path.
+///
+/// The read-out cannot call `engine(&MainThread)` itself — that hands out a `&'static mut` to a
+/// `static mut`, and the draw runs inside a frame where the pump's borrow may still be live, so a
+/// second one is instant UB. This is the only bridge, it is one-way, and nothing in the playback
+/// state machine may read these fields back.
+///
+/// `aq_bytes` takes each queue's pthread mutex, which is why it is sampled HERE, once per tick on
+/// the main thread, and never from a draw.
+fn publish_diag(eng: &Engine) {
+    SHARED.dg_stage.store(eng.stage as u8, Relaxed);
+    let qv = eng.aq_video.as_ref().map_or(0, |q| {
+        crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64
+    });
+    let qa = eng.aq_audio.as_ref().map_or(0, |q| {
+        crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64
+    });
+    SHARED.dg_aq_video.store(qv, Relaxed);
+    SHARED.dg_aq_audio.store(qa, Relaxed);
+}
+
 pub(crate) fn pump(mt: &MainThread, now: u32) {
     use super::shared::PlaybackState;
     let eng = match engine(mt) {
@@ -55,6 +76,12 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             return;
         }
     };
+    // Republish the Engine-confined values the diagnostics read-out needs, BEFORE the early
+    // returns below. Placed here, immediately after the borrow, for two reasons: it is the one
+    // spot that cannot be forgotten as the pump grows, and it therefore keeps reporting through
+    // the `sf_ready` and producer-died bail-outs — which is precisely when a stalled user is
+    // looking at the panel. See `Shared`'s diagnostics-mirror block for the one-way rule.
+    publish_diag(eng);
     // wait for the media-thread ctor
     if unsafe { ffi::sf_ready(mt) } == 0 {
         set_state(PlaybackState::Connecting);
