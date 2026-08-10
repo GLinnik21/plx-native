@@ -1864,23 +1864,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         continue;
                     }
                     last_input = SDL_GetTicks();
-                    // BACK closes the diagnostics panel, and nothing else does from the keyboard.
-                    //
-                    // Sniffed HERE, above every route arm, deliberately: appending it to the modal
-                    // `if / else if` chain further down would put a NARROWER condition after a
-                    // broader one, and `make lint`'s three lints cannot see that — they catch
-                    // identical conditions and identical bodies, not a subset arm placed too late.
-                    // Scoped to the player route so a leaked flag can never swallow BACK at Home,
-                    // where BACK exits the app.
-                    //
-                    // It takes BACK and NOTHING else. OK, LEFT/RIGHT and the transport keep working
-                    // underneath, because watching `Fed v/a` and `Frames` move as you press play is
-                    // how you tell a wedged seek from a wedged load. The pointer is the exception
-                    // (a click under an opaque card is blind); a key press is not.
-                    if crate::ui::stats::is_open() && matches!(route, Route::Player { .. }) && is_back(sym, wcode) {
-                        crate::ui::stats::close();
-                        continue;
-                    }
                     hud_dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
                     // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press —
                     // spring the card back to rest WITHOUT activating (you "slid off" the control).
@@ -2512,12 +2495,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 apply_more_action(crate::ui::more_menu::click(cx, cy));
                                 route = Route::Player { overlay: Overlay::None };
                             }
-                            // The diagnostics panel is a LATCHED flag, not a route overlay, so
-                            // `modal_of` cannot see it — and the transport's compile-time rects sit
-                            // UNDER an opaque card, where a click is blind and would start a scrub
-                            // seek nobody asked for. Placed after the `Modal::*` arms so the `…`
-                            // popover being used to turn it off still gets its own clicks.
-                            _ if crate::ui::stats::is_open() => crate::ui::stats::close(),
                             // The stand-ins are HUD furniture, so both are gated on the transport
                             // actually being on screen — `hud_vis` is sampled before the click
                             // re-arms it, exactly like the rects below. One shared dispatch with

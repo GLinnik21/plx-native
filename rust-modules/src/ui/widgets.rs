@@ -1067,13 +1067,15 @@ impl Field {
     }
 }
 
-/// Row pitch. Values are `size::HEADLINE` (32); this is that plus air, and it is what bounds how
-/// many fields the overlay may carry — see `stats::COLUMN_ROWS`.
-pub const FIELD_ROW_H: f32 = 46.0;
+/// Row pitch. Values are `size::BODY` (28); this is that plus air, and it is what bounds how many
+/// fields the overlay may carry — see `stats::COLUMN_ROWS`.
+pub const FIELD_ROW_H: f32 = 38.0;
 /// Width of the key column inside a [`FieldList`] frame. Keys are right-aligned against it and
 /// values start one `space::MD` later, so every value in a column shares an x — which, with the
 /// font's tabular digits (all ten share one advance), is what makes the numbers line up.
-const FIELD_KEY_W: f32 = 250.0;
+pub const FIELD_KEY_W: f32 = 178.0;
+/// Width a [`FieldList`] column needs: the key gutter plus room for the longest value.
+pub const FIELD_COL_W: f32 = FIELD_KEY_W + theme::space::MD + 292.0;
 
 pub struct FieldList<'a> {
     pub fields: &'a [Field],
@@ -1100,20 +1102,24 @@ impl View for FieldList<'_> {
             match &f.val {
                 // a section heading spans the whole width and carries no value
                 None => {
+                    // A heading differs from a key by POSITION (full width, left-aligned, where a
+                    // key is right-aligned into its gutter) and by weight — not by size. Dropping
+                    // it to `MICRO` to save a few pixels is the one thing that token's doc forbids.
                     if let Ok(cs) = CString::new(f.key) {
-                        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+                        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
+                            .bold()
                             .draw(p, Rect::new(self.frame.x, y, self.frame.w, FIELD_ROW_H));
                     }
                 }
                 Some(v) => {
                     if let Ok(cs) = CString::new(f.key) {
-                        Label::new(cs.as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
+                        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
                             .h(HAlign::Right)
                             .draw(p, Rect::new(self.frame.x, y, FIELD_KEY_W, FIELD_ROW_H));
                     }
                     let ink = if f.tone == Tone::Fault { theme::DANGER } else { theme::TEXT_PRIMARY };
                     if let Ok(cs) = CString::new(v.as_str()) {
-                        let mut l = Label::new(cs.as_ptr(), theme::size::HEADLINE, ink);
+                        let mut l = Label::new(cs.as_ptr(), theme::size::BODY, ink);
                         if f.tone == Tone::Fault {
                             l = l.bold();
                         }

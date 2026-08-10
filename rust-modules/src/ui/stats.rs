@@ -21,13 +21,16 @@
 //!
 //! **It must be legible in a phone photo of a television across a room.** That is a harder floor
 //! than the couch floor: the camera undersamples the panel and chroma-subsamples the result. Values
-//! are `size::HEADLINE` over a near-black ground so the contrast is luminance, not hue, and any
+//! are `size::BODY` over a near-black opaque ground so the contrast is luminance, not hue, and any
 //! severity signal is carried by a WORD as well as a colour. `size::MICRO` is banned here (its own
 //! token doc bans it for content) — fitting more rows by shrinking them defeats the feature.
 //!
-//! **It must fit on one screen.** A readout the user has to scroll is two photographs and a chance
-//! of missing the line that mattered, so the field set is bounded by what fits: two columns, and no
-//! scrolling, ever. When a new field cannot fit, something else has to go.
+//! **It must not become the screen.** It is sized to its CONTENT and parked top-left, covering
+//! under a third of the panel and sitting entirely clear of the transport, so playback stays
+//! visible around it — the first version was a full-screen opaque card, which made "is anything on
+//! screen?" unanswerable at exactly the moment that is the question. It never scrolls, either: a
+//! read-out you have to scroll is two photographs and a chance of missing the line that mattered.
+//! When a new field will not fit, an existing one has to go.
 //!
 //! **It must hold still.** Values are sampled at [`SAMPLE_MS`] and held, not read per frame. A
 //! number that changes between the viewfinder and the shutter is a number the report cannot be
@@ -63,27 +66,26 @@
 //! compositor's own `windowId`, which is a bounded `char[64]` assigned by the TV. There is no path
 //! by which code elsewhere can push a string onto this panel, so adding a field is a deliberate
 //! edit to the one file that carries these rules.
-use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::label::Label;
-use crate::ui::widgets::{Field, FieldList};
+use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::ptr::addr_of_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Is the readout on screen? A plain flag, not a route: the panel is meant to sit OVER live
-/// playback the way YouTube's does, so it must not be modal and must not take the BACK key (which
-/// stops playback). It is dismissed by unticking the same checkbox that armed it — or by BACK,
-/// which `app.rs` sniffs above every route arm so it closes the panel instead of the movie.
+/// Is the read-out on screen?
+///
+/// A plain flag, and it takes NO KEYS AT ALL — not a route, not a modal, not even a BACK handler.
+/// It is turned off the way it was turned on: by unticking the same checkbox. That is deliberate
+/// and it is what keeps the whole feature out of the input path — every transport key keeps working
+/// underneath it, which matters, because watching `Fed v/a` and `Frames` move as you press play is
+/// how you tell a wedged seek from a wedged load. A BACK handler was tried and removed: it bought
+/// one convenience and cost a special case sniffed above every route arm, in a chain where
+/// `make lint` cannot see a narrower condition placed after a broader one.
 static ON: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
-}
-/// The name `app.rs`'s modal/BACK arms read — same answer, read at the call sites that mean
-/// "is a panel in the way?" rather than "is the setting on?".
-pub(crate) fn is_open() -> bool {
-    enabled()
 }
 
 /// Flip the readout. Deliberately NOT persisted across launches: the reviewer flow is "open the
@@ -94,7 +96,8 @@ pub(crate) fn toggle() {
     kick();
 }
 
-/// Force it off — the BACK key, a click anywhere while it is up, and the leave-playback ritual.
+/// Force it off. The only caller is the leave-playback ritual — a diagnostics panel that survived
+/// into the next session would be a bug in the feature built to find bugs.
 pub(crate) fn close() {
     ON.store(false, Ordering::Relaxed);
     kick();
@@ -117,10 +120,10 @@ fn kick() {
 /// thrashes it, which is a measured cost in this repo rather than a worry. And a number that
 /// changes between the viewfinder and the shutter is a number the report cannot be trusted on.
 const SAMPLE_MS: u32 = 500;
-/// Rows per column. The budget, not a preference: values are `size::HEADLINE` over `FIELD_ROW_H`,
-/// so this many is what fits below the header without scrolling — and a read-out that scrolls is
-/// two photographs. A new field costs an existing one.
-const COLUMN_ROWS: usize = 13;
+/// Rows per column. The budget, not a preference: the panel is sized to exactly this and never
+/// scrolls — a read-out you have to scroll is two photographs and a chance of missing the line
+/// that mattered. A new field costs an existing one.
+const COLUMN_ROWS: usize = 12;
 
 static mut NEXT_SAMPLE: u32 = 0;
 static mut LEFT: Vec<Field> = Vec::new();
@@ -229,10 +232,7 @@ fn left_column(d: &crate::player::Diag) -> Vec<Field> {
     })
     .fault(!d.seen_frame && d.load_completed));
     let (cv, _ca) = crate::player::aq_caps();
-    v.push(Field::new(
-        "Buffered",
-        format!("v {} / {} · a {}", mb(d.aq_video), mb(cv), mb(d.aq_audio)),
-    ));
+    v.push(Field::new("Buffered v/a", format!("{} / {} · {}", mb(d.aq_video), mb(cv), mb(d.aq_audio))));
     v
 }
 
@@ -279,8 +279,28 @@ fn mb(b: i64) -> String {
 
 // ---- drawing ----------------------------------------------------------------------------------
 
-const MARGIN: f32 = 80.0;
-const HEAD_H: f32 = 190.0;
+const MARGIN: f32 = 60.0;
+const PAD: f32 = 28.0;
+/// Height of the header block. It is a SUM, not a guess: title (16 + 40) + two caption lines
+/// (2 x 28) + the verdict (32) + air. It was 122 once and the verdict line drew straight through
+/// the first section heading — the columns start at exactly this offset, so it has to clear the
+/// last thing the header draws, not the last thing it is nominally made of.
+const HEAD_H: f32 = 152.0;
+
+/// The panel's box, SIZED TO ITS CONTENT rather than to the screen.
+///
+/// Two consequences, and both REMOVE code rather than adding it. The video stays visible around it,
+/// which is the point of a stats overlay you watch playback under — the first version was a
+/// full-screen opaque card that made "is anything on screen?" unanswerable while the panel was up.
+/// And it sits entirely ABOVE the transport (`player_hud::CTRL_Y`), so a pointer click can never
+/// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
+/// needed a close-on-click arm at all.
+fn panel_rect() -> Rect {
+    let rows = unsafe { (*addr_of_mut!(LEFT)).len().max((*addr_of_mut!(RIGHT)).len()) };
+    let w = 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
+    let h = HEAD_H + FieldList::height(rows) + PAD;
+    Rect::new(MARGIN, MARGIN, w, h)
+}
 
 pub(crate) fn draw() {
     if !enabled() {
@@ -288,60 +308,50 @@ pub(crate) fn draw() {
     }
     let p = Painter::root();
     let e = Env::inert();
-    let frame = Rect::new(MARGIN, MARGIN, SCR_W - 2.0 * MARGIN, SCR_H - 2.0 * MARGIN);
+    let frame = panel_rect();
     // Its own opaque ground. On the player route the UI plane is cleared fully TRANSPARENT, so a
-    // scrim would leave the stuck frame showing through 20 rows of small text — the one condition
-    // the photograph has to survive.
-    p.rect(frame, 28.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    // scrim would leave the picture showing through the text — the one condition a photograph of
+    // this has to survive.
+    p.rect(frame, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
 
     let head = unsafe { &*addr_of_mut!(HEAD) };
-    let inner = frame.x + theme::space::LG;
-    let iw = frame.w - 2.0 * theme::space::LG;
+    let inner = frame.x + PAD;
+    let iw = frame.w - 2.0 * PAD;
     if let Ok(cs) = CString::new("Diagnostics") {
-        Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+        Label::new(cs.as_ptr(), theme::size::HEADLINE, theme::TEXT_PRIMARY)
             .bold()
-            .draw(p, Rect::new(inner, frame.y + theme::space::MD, iw, 56.0));
+            .draw(p, Rect::new(inner, frame.y + theme::space::SM, iw, 40.0));
     }
-    for (i, (line, ink)) in [
-        (&head[0], theme::TEXT_TERTIARY),
-        (&head[1], theme::TEXT_SECONDARY),
-    ]
-    .into_iter()
-    .enumerate()
+    for (i, (line, ink)) in
+        [(&head[0], theme::TEXT_TERTIARY), (&head[1], theme::TEXT_SECONDARY)].into_iter().enumerate()
     {
         if let Ok(cs) = CString::new(line.as_str()) {
-            Label::new(cs.as_ptr(), theme::size::BODY, ink)
-                .draw(p, Rect::new(inner, frame.y + 84.0 + i as f32 * 34.0, iw, 34.0));
+            Label::new(cs.as_ptr(), theme::size::CAPTION, ink)
+                .draw(p, Rect::new(inner, frame.y + 56.0 + i as f32 * 28.0, iw, 28.0));
         }
     }
-    // the verdict, in the largest type on the panel
+    // the verdict — the one line that says what the pipeline thinks it is doing
     if let Ok(cs) = CString::new(head[2].as_str()) {
         let ink = if head[2].starts_with("Playback error") { theme::DANGER } else { theme::TEXT_PRIMARY };
-        Label::new(cs.as_ptr(), theme::size::HEADLINE, ink)
+        Label::new(cs.as_ptr(), theme::size::BODY, ink)
             .bold()
-            .draw(p, Rect::new(inner, frame.y + 150.0, iw, 40.0));
+            .draw(p, Rect::new(inner, frame.y + 112.0, iw, 32.0));
     }
 
-    let col_w = (iw - theme::space::XL) * 0.5;
     let top = frame.y + HEAD_H;
     let h = FieldList::height(COLUMN_ROWS);
-    FieldList::new(unsafe { &*addr_of_mut!(LEFT) }, Rect::new(inner, top, col_w, h)).draw(&e, p);
+    FieldList::new(unsafe { &*addr_of_mut!(LEFT) }, Rect::new(inner, top, FIELD_COL_W, h)).draw(&e, p);
     FieldList::new(
         unsafe { &*addr_of_mut!(RIGHT) },
-        Rect::new(inner + col_w + theme::space::XL, top, col_w, h),
+        Rect::new(inner + FIELD_COL_W + theme::space::MD, top, FIELD_COL_W, h),
     )
     .draw(&e, p);
-
-    // How to make it go away, in the one place someone photographing it will look.
-    if let Ok(cs) = CString::new("BACK to close  ·  … › Stats for nerds to re-open") {
-        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .draw(p, Rect::new(inner, frame.y + frame.h - 52.0, iw, 32.0));
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::consts::{SCR_H, SCR_W};
 
     /// The budget is the design (see [`COLUMN_ROWS`]) — a column that outgrows it does not scroll,
     /// it draws off the bottom of a panel someone is about to photograph. `_serial` because both
@@ -374,11 +384,29 @@ mod tests {
         }
     }
 
-    /// Two columns of `COLUMN_ROWS` plus the header must fit the panel with the footer clear.
+    /// The panel must sit entirely ABOVE the transport's control row. That is what makes a pointer
+    /// click unambiguous — no part of the scrubber or the discs is ever underneath an opaque card —
+    /// and it is why the click path needs no close-on-click arm.
     #[test]
-    fn the_page_fits_the_panel() {
-        let page = HEAD_H + FieldList::height(COLUMN_ROWS) + 52.0;
-        assert!(page <= SCR_H - 2.0 * MARGIN, "page {page} exceeds the panel");
+    fn the_panel_clears_the_transport() {
+        let bottom = MARGIN + HEAD_H + FieldList::height(COLUMN_ROWS) + PAD;
+        assert!(
+            bottom < crate::ui::player_hud::CTRL_Y,
+            "panel bottom {bottom} overlaps the control row at {}",
+            crate::ui::player_hud::CTRL_Y
+        );
+        let right = MARGIN + 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
+        assert!(right < SCR_W, "panel is wider than the screen: {right}");
+    }
+
+    /// …and it must leave a real amount of picture visible, or it is the full-screen card again.
+    /// A third of the screen is the line: enough room for the read-out, little enough that "is
+    /// anything on the panel?" is still answerable while it is up.
+    #[test]
+    fn it_covers_no_more_than_a_third_of_the_screen() {
+        let a = (2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD)
+            * (HEAD_H + FieldList::height(COLUMN_ROWS) + PAD);
+        assert!(a < SCR_W * SCR_H / 3.0, "panel covers {:.0}% of the screen", 100.0 * a / (SCR_W * SCR_H));
     }
 
     #[test]
