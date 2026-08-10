@@ -54,6 +54,7 @@ pub(crate) mod testlock {
     }
 }
 mod text;
+mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename)
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
 
 /// Append one line to the on-device event log (`/tmp/plxnative-events.log`) — the primary debugging

@@ -305,6 +305,10 @@ fn is_started() -> bool { crate::player::is_started() }
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     install_panic_logger();
+    // FIRST, before SDL and before anything can fail: which television is this. A report from
+    // hardware nobody here owns is worth far more when its opening line names the firmware — see
+    // `webos`'s module doc. Reads one file; cannot fail the boot.
+    crate::webos::probe();
     // THE main-thread token, minted once — this function IS the SDL main thread. Everything that
     // touches the ACB/Starfish seam or the Engine slot takes it by reference, and `&MainThread` is
     // !Send, so `task::spawn` rejects any closure that captured one. See `task::MainThread`.
