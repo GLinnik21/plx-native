@@ -78,18 +78,78 @@ check(m is not None and m.group(1) == appinfo["version"],
 #
 # The pattern is ANCHORED on a non-path character so ordinary URL fragments do not trip it: the
 # app talks to plex.tv's `/api/v2/home/users`, which is not a build path.
-HOSTPATH = re.compile(rb"(?:^|[^A-Za-z0-9/_.-])/(?:Users|home)/[a-z]")
+# A build-machine path anywhere in the payload.
+#
+# Two calibration bugs are baked into the shape below, both found by running this against a release
+# KNOWN to be dirty rather than assuming it worked:
+#
+#   * matching per-BLOB and allowing anything containing "webos-ndk" passes the very file it was
+#     written for. FFmpeg records its whole configure invocation as ONE string, so the unavoidable
+#     `--cross-prefix=/…/webos-ndk/…` sits beside the offending `--prefix=/…/plex-native-poc/…`
+#     and one allowed token vouches for the other. v0.2.1's libraries pass that test.
+#   * tokenising to fix it, without keeping the leading boundary, makes plex.tv's own
+#     `/api/v2/home/users` read as `/home/users` and fails every build.
+#
+# So: extract each path WITH its boundary character, drop the boundary, and allow per PATH.
+HOSTPATH = re.compile(rb"(?:^|[^A-Za-z0-9/_.-])(/(?:Users|home)/[A-Za-z0-9_./+-]+)")
+# The NDK's own location cannot be removed — `--cross-prefix` must be absolute (the wrapper gcc
+# dies when invoked through PATH), so it rides in FFmpeg's recorded configure string. It is
+# identical on every CI runner, which is the reason releases must be BUILT by CI.
+ALLOWED_PATH = re.compile(rb"webos-ndk|^/home/runner/")
+
 PAYLOAD = ROOT / "ipkroot/data/usr/palm/applications/com.beb.plxnative"
 for member in sorted(PAYLOAD.rglob("*")) if PAYLOAD.is_dir() else []:
     if not member.is_file():
         continue
-    blob = member.read_bytes()
-    hits = HOSTPATH.findall(blob)
-    # The NDK's own location is unavoidable — `--cross-prefix` must be absolute (the wrapper gcc
-    # dies when invoked through PATH), so it rides in FFmpeg's configure string. It is identical
-    # for every CI runner, which is why releases must be published BY the workflow.
-    check(not hits or b"webos-ndk" in blob or b"/home/runner/" in blob,
-          f"{member.name} carries no build-machine path")
+    dirty = sorted({m for m in HOSTPATH.findall(member.read_bytes()) if not ALLOWED_PATH.search(m)})
+    check(not dirty,
+          f"{member.name} carries no build-machine path"
+          + (f" (saw {dirty[0].decode(errors='replace')})" if dirty else ""))
+
+# ---- the RELEASE is coherent, not just the package -------------------------------------------
+#
+# These live here rather than in a skill or a checklist for one reason: a skill is advisory and a
+# gate is not. Every defect found in v0.2.1 got out because the gates were skipped — publishing by
+# hand skipped them wholesale — so the response to that cannot itself be something a person has to
+# remember to run.
+
+# CI publishes the release body from this file, so a missing one means a release with no notes.
+note = ROOT / f"docs/release-notes/v{appinfo['version']}.md"
+check(note.exists(), f"docs/release-notes/v{appinfo['version']}.md exists (CI publishes the body from it)")
+
+if note.exists():
+    body = note.read_text()
+    # Every firmware the note NAMES must be one this repo has evidence for. A past note asserted
+    # support for a "webOS 26" that does not exist; this is that gate.
+    evidence = (ROOT / "tools/fwcompat.py").read_text() + (ROOT / "docs/webos5-port.md").read_text()
+    unknown = sorted({v for v in re.findall(r"webOS (\d+(?:\.\d+)*)", body) if v not in evidence})
+    check(not unknown, "every webOS version the note names has evidence in the repo"
+                       + (f" (no evidence for {', '.join(unknown)})" if unknown else ""))
+
+# THIRD-PARTY-NOTICES must name exactly the libraries that ship. RELEASE=1 drops swscale, and the
+# notices claimed it for two releases — an LGPL document describing a file that is not in the box.
+shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")}
+if shipped:
+    named = set(re.findall(r"`(lib[a-z]+-plx\.so\.\d+)`", (ROOT / "THIRD-PARTY-NOTICES.md").read_text()))
+    check(shipped == named,
+          "THIRD-PARTY-NOTICES names exactly the shipped libraries"
+          + (f" (shipped-not-named={sorted(shipped-named)} named-not-shipped={sorted(named-shipped)})"
+             if shipped != named else ""))
+
+# A dev build carries the /tmp trigger surface. `RELEASE=1` must be on EVERY make invocation, and
+# any make without it deletes the release artifacts at parse time — so this is worth asserting on
+# the bytes rather than trusting the command line that produced them.
+binary = ROOT / "ipkroot/data/usr/palm/applications/com.beb.plxnative/plxnative"
+if binary.exists():
+    check(b"plxnative-autoplay" not in binary.read_bytes(),
+          "the packaged binary is a RELEASE build (no dev triggers compiled in)")
+
+# The checksum file has to verify where a USER stands: they download it beside the .ipk, so a
+# `pkg/` prefix in the line makes `shasum -a 256 -c` fail for everyone. It did, through v0.2.1.
+sha_file = ROOT / "pkg/ipk.sha256"
+if sha_file.exists():
+    check(not any(l.split("  ")[-1].startswith("pkg/") for l in sha_file.read_text().splitlines() if l.strip()),
+          "ipk.sha256 carries the bare filename, so `shasum -c` works beside the .ipk")
 
 # The Makefile derives IPK_VERSION from appinfo.json, so the built filename is the third witness.
 built = sorted((ROOT / "pkg").glob("com.beb.plxnative_*_arm.ipk"))

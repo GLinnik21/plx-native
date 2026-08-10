@@ -336,6 +336,17 @@ jobs:
             dist/ipk.sha256
             dist/ffmpeg-*.tar.xz
             dist/build-ffmpeg.sh
+      # Re-derive every published claim FROM the published artifacts. Everything assertable
+      # before publishing is in ci/check-package.py; this is the half that needs a live release —
+      # the hash agreeing in four places, `shasum -c` working where a user actually stands, the
+      # uploader being CI rather than a person, and no payload file carrying a build machine's
+      # directory layout. All four of v0.2.1's defects are in scope here; two of them are only
+      # visible once the assets exist.
+      - name: Verify what the public downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ci/verify-published.sh "${{ needs.guard.outputs.tag || github.ref_name }}"
+
       - name: Propagation note
         run: |
           {

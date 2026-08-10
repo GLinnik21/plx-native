@@ -57,7 +57,8 @@ sshpass -p alpine ssh root@$(cat .tv-host) \
 Past notes have claimed a "webOS 26" that does not exist and quoted an uncompressed size as a
 download size. Sizes come from the manifest's `ipkSize`; hashes from `shasum` on the published
 asset; firmware numbers must appear in `tools/fwcompat.py`'s matrix or `docs/webos5-port.md`'s
-table. `scripts/preflight.sh` checks all of this.
+table. `ci/check-package.py` gates all of this, and `ci/verify-published.sh` re-checks it
+against the artifacts a stranger actually downloads.
 
 ## The procedure
 
@@ -85,19 +86,21 @@ paraphrase, which is exactly why they are frozen.
 The compatibility statement has one editing rule, in §3 of the standard: **one television verified
 moves one line.** Do not widen it because a firmware "should" work.
 
-### 3. Build and verify locally, then let CI do the real one
+### 3. Build locally to catch mistakes early — CI builds what ships
 
 ```sh
 make RELEASE=1 ipk          # RELEASE=1 on every invocation, no exceptions
-python3 ci/check-package.py # four version witnesses, ar layout, both descriptors, build paths
-.claude/skills/cut-release/scripts/preflight.sh   # everything a command can decide
+python3 ci/check-package.py # the gate: versions, ar layout, descriptors, build paths, notes
 ```
 
-`preflight.sh` is the accumulated set of things that have gone wrong. Read its output rather than
-its exit code alone — some items are advisory and say so.
+**Everything a command can decide is a gate in `ci/check-package.py`, not a step here.** That is
+deliberate and it is the lesson of v0.2.1: a checklist is only as good as the person following it,
+and the release that skipped every gate skipped them *because* it was done by hand. If you find
+yourself wanting to add a check to this skill, add it to `check-package.py` instead — CI runs it on
+every build and it cannot be forgotten.
 
-A local build is for catching mistakes early. It is **not** what ships: CI builds the artifact,
-because a local build embeds the local NDK path.
+A local build is for fast feedback. It is **not** what ships: CI builds the artifact, because a
+local build embeds the local NDK path.
 
 ### 4. Publish through the workflow
 
@@ -122,15 +125,16 @@ gh api repos/GLinnik21/plx-native/releases/tags/vX.Y.Z --jq '.assets[] | "\(.nam
 
 ### 5. Verify what the public can actually download
 
-Not what you built — what a stranger gets:
+`ci/verify-published.sh` runs as the last step of the `publish` job, so this happens on its own:
+it downloads the real assets and re-derives every claim from them — the hash agreeing in four
+places, `shasum -c` working where a user stands, CI being the uploader, and no payload file
+carrying a build machine's directory layout.
+
+Run it by hand only to audit a release that already exists, including old ones:
 
 ```sh
-.claude/skills/cut-release/scripts/preflight.sh --published vX.Y.Z
+ci/verify-published.sh vX.Y.Z
 ```
-
-This downloads the published `.ipk`, re-hashes it, checks the hash matches the note **and** the
-manifest, runs `shasum -c` the way a user would, and scans every payload file for a build-machine
-path.
 
 ### 6. Install it the way a user would
 

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# preflight.sh — everything about a release that a command can decide.
+# verify-published.sh — check what the PUBLIC can actually download, after a release exists.
 #
-# Each check here exists because it failed in a real release of this project. The point is not
-# ceremony: it is that all four defects found in v0.2.1 were invisible from inside the step that
-# introduced them, and every one of them is one command away from being obvious.
+#   ci/verify-published.sh vX.Y.Z
 #
-#   preflight.sh                 check the LOCAL tree and pkg/ before publishing
-#   preflight.sh --published vX.Y.Z   check what the public can actually download
+# Everything that can be asserted BEFORE publishing lives in ci/check-package.py, which CI runs on
+# every build. This script exists for the half that cannot: it needs a published release to look
+# at. It downloads the real assets and re-derives every claim from them — the hash in four places,
+# whether `shasum -c` works where a user stands, who uploaded the files, and whether any payload
+# file carries a build machine's directory layout.
 #
-# Exit status is 0 only if every REQUIRED check passed. Advisory checks print and never fail the
-# run — they are things a human should look at, not things a machine can settle.
+# It is a CI job, not a checklist item, for the reason the whole exercise exists: v0.2.1 was
+# published by hand, which skipped every gate, and a checklist would have been skipped with them.
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 2
 
@@ -49,8 +50,8 @@ scan_paths() { # $1 = file
 }
 
 # ---------------------------------------------------------------- published mode
-if [ "${1:-}" = "--published" ]; then
-  TAG="${2:?usage: preflight.sh --published vX.Y.Z}"
+TAG="${1:?usage: ci/verify-published.sh vX.Y.Z}"
+if true; then
   VER="${TAG#v}"
   WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
   head_ "what the public downloads — $TAG"
@@ -98,84 +99,4 @@ open('data.tar.gz','wb').write(d[i+60:i+60+int(d[i+48:i+58])])" && tar xzf data.
   [ "$FAIL" -eq 0 ] || exit 1
   exit 0
 fi
-
-# ---------------------------------------------------------------- local mode
-head_ "version agreement"
-python3 - <<'PY'
-import json, re, sys, pathlib
-app = json.loads(pathlib.Path("pkg/appinfo.json").read_text())["version"]
-ctl = dict(l.split(": ", 1) for l in pathlib.Path("ipkroot/ctl/control").read_text().splitlines() if ": " in l)
-crg = re.search(r'^version = "([^"]+)"', pathlib.Path("rust-modules/Cargo.toml").read_text(), re.M).group(1)
-bad = []
-if ctl.get("Version") != app: bad.append(f"control={ctl.get('Version')}")
-if crg != app:                bad.append(f"Cargo.toml={crg} (the diagnostics panel prints this one)")
-print(("OK " if not bad else "BAD ") + f"appinfo={app} " + " ".join(bad))
-sys.exit(1 if bad else 0)
-PY
-[ $? -eq 0 ] && ok "appinfo, control and Cargo.toml agree" || bad "the version sources disagree"
-
-VER=$(python3 -c "import json;print(json.load(open('pkg/appinfo.json'))['version'])")
-IPK="pkg/com.beb.plxnative_${VER}_arm.ipk"
-
-head_ "release note"
-NOTE_MD="docs/release-notes/v${VER}.md"
-if [ -f "$NOTE_MD" ]; then
-  ok "docs/release-notes/v${VER}.md exists (CI publishes the body from it)"
-  # Every "webOS N" claimed must be a firmware this repo actually knows about.
-  UNKNOWN=""
-  for n in $(grep -oE 'webOS [0-9]+(\.[0-9]+)*' "$NOTE_MD" | awk '{print $2}' | sort -u); do
-    grep -qr -- "$n" tools/fwcompat.py docs/webos5-port.md 2>/dev/null || UNKNOWN="$UNKNOWN $n"
-  done
-  [ -z "$UNKNOWN" ] && ok "every webOS version named is one we have evidence for" \
-    || bad "note names webOS versions with no evidence in the repo:$UNKNOWN"
-  grep -qE '\b[0-9.]+ *(MB|KB|GB)\b' "$NOTE_MD" \
-    && note "the note states a size — confirm it came from the manifest's ipkSize, with the unit named" \
-    || ok "no hand-typed size in the note"
-else
-  bad "no docs/release-notes/v${VER}.md — write it from docs/release-notes/TEMPLATE.md"
 fi
-
-head_ "package"
-if [ -f "$IPK" ]; then
-  ok "$IPK is built"
-  python3 ci/check-package.py >/dev/null 2>&1 && ok "ci/check-package.py passes" || bad "ci/check-package.py fails — run it for the detail"
-  ( cd pkg && shasum -a 256 -c ipk.sha256 >/dev/null 2>&1 ) \
-    && ok "ipk.sha256 verifies from pkg/ (bare filename, as a user gets it)" \
-    || bad "ipk.sha256 does not verify — check it carries the bare filename, not a pkg/ path"
-else
-  bad "$IPK not built — run: make RELEASE=1 ipk"
-fi
-
-head_ "build configuration"
-DIRTY=0
-for f in pkg/plxnative pkg/*.so.*; do
-  [ -f "$f" ] || continue
-  scan_paths "$f" || { bad "$(basename "$f") carries a build-machine path"; DIRTY=1; }
-done
-[ "$DIRTY" = 0 ] && ok "no local build path in the staged binaries (beyond the NDK's own)"
-# A dev build has the trigger surface compiled in; strings is the cheapest way to tell.
-if [ -f pkg/plxnative ] && strings -a pkg/plxnative | grep -q "plxnative-autoplay"; then
-  bad "pkg/plxnative is a DEV build (dev triggers compiled in) — rebuild with RELEASE=1 on EVERY invocation"
-else
-  [ -f pkg/plxnative ] && ok "pkg/plxnative looks like a RELEASE build"
-fi
-
-head_ "third-party notices"
-python3 - <<'PY'
-import pathlib, re, sys, glob, os
-notices = pathlib.Path("THIRD-PARTY-NOTICES.md").read_text()
-shipped = {os.path.basename(p) for p in glob.glob("pkg/*.so.*")}
-named = set(re.findall(r'`(lib[a-z]+-plx\.so\.\d+)`', notices))
-missing, extra = shipped - named, named - shipped
-print("OK" if not (missing or extra) else f"BAD missing={sorted(missing)} named-but-not-shipped={sorted(extra)}")
-sys.exit(1 if (missing or extra) else 0)
-PY
-[ $? -eq 0 ] && ok "THIRD-PARTY-NOTICES names exactly the libraries shipped" \
-  || bad "THIRD-PARTY-NOTICES disagrees with what ships (RELEASE=1 drops swscale)"
-
-head_ "listing and submission"
-note "if compatibility changed, update the apps-repo PR body AND packages/com.beb.plxnative.yml"
-note "releases are published by CI: gh workflow run release.yml -f version=$VER — a bare tag push builds nothing"
-
-printf '\n%d passed, %d failed, %d to look at\n' "$PASS" "$FAIL" "$NOTE"
-[ "$FAIL" -eq 0 ] || exit 1
