@@ -47,6 +47,23 @@ NDK=${WEBOS_SDK:-$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot}
 SYSROOT="$NDK/arm-webos-linux-gnueabi/sysroot"
 WORK="$ROOT/vendor/ffmpeg-build"
 PREFIX="$ROOT/vendor/ffmpeg-prefix"
+# `--prefix` is the LITERAL /plx, not $PREFIX, and the install is redirected with DESTDIR below.
+#
+# WHY: FFmpeg records its entire configure INVOCATION inside libavutil (`avutil_configuration()`),
+# so every absolute path on that command line ends up in the shipped `.so`. A real `--prefix` put
+# the maintainer's working directory in all three libraries, and with it the `.ipk` sha — which
+# silently made "builds are reproducible" false in the v0.2.0 and v0.2.1 release notes, on the one
+# number a user has to check an unsigned download. `/plx` is a stand-in that exists nowhere.
+#
+# It does NOT make a local build reproducible, and nothing here can: `--cross-prefix` must be
+# absolute (see below — the NDK gcc is a wrapper that dies when invoked through PATH), so the
+# configure string still carries wherever the NDK lives. Reproducibility is therefore a property
+# of the CI BUILD, whose path is fixed for every GitHub runner — which is the real reason releases
+# must be published by the workflow and never by hand. Do not restore a "rebuild and compare"
+# claim to the notes without checking `strings` on all three libraries first.
+#
+# Do NOT "fix" this with -ffile-prefix-map: that flag is itself part of the configure line, so
+# passing absolute paths to it ADDS two more leaks than it removes. Tried, measured, reverted.
 SRC="$WORK/ffmpeg-$VERSION"
 
 # The NDK's gcc is a WRAPPER that resolves its own path at startup. Invoked through PATH it dies
@@ -95,7 +112,7 @@ fi
 #   encoder/   mpeg1video + mpegts are the DEV capture stream only, dropped by RELEASE=1 along
 #   muxer      with swscale, which nothing else uses.
 set -- \
-  --prefix="$PREFIX" \
+  --prefix=/plx \
   --enable-cross-compile --cross-prefix="$CROSS" --host-cc=cc \
   --arch=arm --cpu=cortex-a9 --target-os=linux --sysroot="$SYSROOT" \
   --build-suffix=-plx \
@@ -132,7 +149,11 @@ fi
 echo "ffmpeg: building"
 make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" > "$WORK/build.log" 2>&1 || {
   echo "ffmpeg: BUILD FAILED — $WORK/build.log" >&2; tail -20 "$WORK/build.log" >&2; exit 1; }
-make install > "$WORK/install.log" 2>&1
+# DESTDIR redirects the /plx prefix onto the real tree: the libraries believe they were
+# configured for /plx (so they record no build path) and land in $PREFIX regardless.
+make install DESTDIR="$WORK/destdir" > "$WORK/install.log" 2>&1
+mkdir -p "$PREFIX"
+cp -R "$WORK/destdir/plx/." "$PREFIX/"
 
 # Strip: these ship, and the debug info is ~4x the code.
 for f in "$PREFIX"/lib/lib*-plx.so.*; do

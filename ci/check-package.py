@@ -68,6 +68,29 @@ m = re.search(r'^version = "([^"]+)"', cargo, re.M)
 check(m is not None and m.group(1) == appinfo["version"],
       f'Cargo.toml version == appinfo version ({appinfo["version"]})')
 
+# No build machine's directory layout may ship inside the package.
+#
+# This exists because it happened: v0.2.1 went out with the maintainer's working directory baked
+# into all three bundled FFmpeg libraries — FFmpeg records its whole configure invocation in
+# libavutil — and with it the reproducibility claim in the release notes, on the one number a user
+# has to check an unsigned download. `ci/check-elf.sh` only ever scanned `pkg/plxnative`, so
+# nothing looked at the libraries beside it.
+#
+# The pattern is ANCHORED on a non-path character so ordinary URL fragments do not trip it: the
+# app talks to plex.tv's `/api/v2/home/users`, which is not a build path.
+HOSTPATH = re.compile(rb"(?:^|[^A-Za-z0-9/_.-])/(?:Users|home)/[a-z]")
+PAYLOAD = ROOT / "ipkroot/data/usr/palm/applications/com.beb.plxnative"
+for member in sorted(PAYLOAD.rglob("*")) if PAYLOAD.is_dir() else []:
+    if not member.is_file():
+        continue
+    blob = member.read_bytes()
+    hits = HOSTPATH.findall(blob)
+    # The NDK's own location is unavoidable — `--cross-prefix` must be absolute (the wrapper gcc
+    # dies when invoked through PATH), so it rides in FFmpeg's configure string. It is identical
+    # for every CI runner, which is why releases must be published BY the workflow.
+    check(not hits or b"webos-ndk" in blob or b"/home/runner/" in blob,
+          f"{member.name} carries no build-machine path")
+
 # The Makefile derives IPK_VERSION from appinfo.json, so the built filename is the third witness.
 built = sorted((ROOT / "pkg").glob("com.beb.plxnative_*_arm.ipk"))
 if built:

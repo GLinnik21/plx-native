@@ -466,7 +466,10 @@ ipk: pkg/plxnative
 	$(TOOLPREFIX)strip --strip-unneeded ipkroot/data/usr/palm/applications/com.beb.plxnative/plxnative
 	rm -f pkg/com.beb.plxnative_*_arm.ipk
 	python3 ci/mkipk.py
-	$(SHA256SUM) $(IPK) | tee pkg/ipk.sha256
+	@# Emitted from INSIDE pkg/ so the line carries the bare filename. With the `pkg/` prefix
+	@# in it, `shasum -a 256 -c ipk.sha256` fails for everyone who downloads the two release
+	@# assets side by side — which is every user, and is what shipped through v0.2.1.
+	cd pkg && $(SHA256SUM) $(notdir $(IPK)) | tee ipk.sha256
 
 # tools/threadprobe.c — measures where pthread_create actually gives up on the TV (the question
 # behind rust-modules/src/task.rs). Standalone diagnostic: not linked into the app, not deployed

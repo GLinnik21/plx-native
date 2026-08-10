@@ -34,7 +34,7 @@ they no longer do, because the TV's version moves with the firmware (libavformat
 
 | Shipped file | Upstream | Licence |
 |---|---|---|
-| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63`, `libswscale-plx.so.10` | FFmpeg **9.0**, unmodified | LGPL-2.1-or-later |
+| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0**, unmodified | LGPL-2.1-or-later |
 
 **These libraries are covered by the GNU Lesser General Public License, version 2.1 or later.** A
 complete copy of that licence is supplied with this package at `licenses/LGPL-2.1.txt`.
@@ -255,7 +255,7 @@ are due in substance.
 
 | Library | Version on this build | Licence | Note |
 |---|---|---|---|
-| FFmpeg (libavformat / libavcodec / libavutil / libswscale) | **9.0, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
+| FFmpeg (libavformat / libavcodec / libavutil) | **9.0, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
 | GLib | 2.48.2 | LGPL-2.1-or-later | See section 1 |
 | GNU C Library | 2.24 | LGPL-2.1-or-later | See section 1 |
 | SDL2 (LG fork) | 2.0.4 | Zlib | Copyright (C) 1997-2016 Sam Lantinga |
