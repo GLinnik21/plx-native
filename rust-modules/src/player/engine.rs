@@ -262,15 +262,18 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
     }
     let id = unsafe { ffi::vp_create_window(mt) };
     if id.is_null() {
+        SHARED.dg_splice.store(2, Ordering::Relaxed); // no window
         log("windowId: no exported window — video will not bind");
         return p.to_string();
     }
     let id = unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy();
     let anchor = r#""appId":"com.beb.plxnative""#;
     if !p.contains(anchor) {
+        SHARED.dg_splice.store(3, Ordering::Relaxed); // no anchor to splice onto
         log("windowId: payload has no appId anchor — NOT spliced; video will not bind");
         return p.to_string();
     }
+    SHARED.dg_splice.store(1, Ordering::Relaxed); // spliced
     log(&format!("vplane: exported windowId={id} spliced into the Load payload"));
     p.replace(anchor, &format!(r#"{anchor},"windowId":"{id}""#))
 }
@@ -945,6 +948,10 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 log(&format!("feed v#{v} sz={len} fed={fp} reply={} qbytes={qb}", r as u8 as char));
             }
         }
+        // The reply the pipeline gave for the LAST video AU, for the diagnostics read-out. The log
+        // above only prints it every hundredth AU, so a lane that has been refusing for a minute is
+        // invisible between two samples; this is always current.
+        SHARED.dg_feed_reply_v.store(r as u8 as u32, Ordering::Relaxed);
         if (r as u8) != b'O' {
             break; // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
         }
@@ -1010,6 +1017,7 @@ pub(crate) fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
             let qb = crate::aq::aq_bytes(qp);
             log(&format!("feed a#{a} sz={len} fed={fp} reply={} qbytes={qb}", r as u8 as char));
         }
+        SHARED.dg_feed_reply_a.store(r as u8 as u32, Ordering::Relaxed);
         if (r as u8) != b'O' {
             break; // 'B' BufferFull -> keep pending, retry next tick (AUDIO lane only)
         }

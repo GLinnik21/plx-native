@@ -256,6 +256,13 @@ fn left_column(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<
     v.push(Field::new("Fed v/a", format!("{} / {}", d.fed_v, d.fed_a)).fault(d.fed_v == 0 && d.load_completed));
     // Its own row: totals plus rate on one line overflowed into the right column's keys.
     v.push(Field::new("Feed rate", fed_rate(d, prev, now)));
+    // WHY the video feeder is where it is. `Fed`/`Feed rate` say whether AUs are moving; this says
+    // what the pipeline answered, which is the difference between "we stopped offering" and "it
+    // stopped accepting". A refusal that is not BufferFull is the pipeline rejecting our stream.
+    v.push(
+        Field::new("Feed v", d.feed_reply_str())
+            .fault(d.feed_reply_v != 0 && d.feed_reply_v != b'O' as u32 && d.feed_reply_v != b'B' as u32),
+    );
     v.push(Field::new("Frames", match (d.frames, d.seen_frame) {
         (0, false) => "0 — none this session".to_string(),
         (0, true) => "0 — since seek".to_string(),

@@ -191,6 +191,7 @@ pub(crate) struct Diag {
     pub fed_a_pts: i64,
     pub load_v: u8,
     pub load_a: u8,
+    pub feed_reply_v: u32,
     pub video_w: i32,
     pub video_h: i32,
     pub pos_ns: i64,
@@ -221,6 +222,18 @@ impl Diag {
             2 => "AC3 PLUS",
             3 => "AAC",
             _ => "NONE (needAudio:false)",
+        }
+    }
+    /// What the pipeline said to the last VIDEO AU we handed it. The video lane specifically:
+    /// the picture is what a user complains about, and a two-lane string overflows the value
+    /// column. `BufferFull` is a healthy steady state under the feed-ahead throttle, not a fault —
+    /// what is NOT healthy is a lane that is refusing outright, or one that never got a reply.
+    pub fn feed_reply_str(&self) -> String {
+        match self.feed_reply_v {
+            0 => "— nothing fed yet".to_string(),
+            r if r == b'O' as u32 => "accepting".to_string(),
+            r if r == b'B' as u32 => "BufferFull (normal)".to_string(),
+            r => format!("REFUSED '{}'", r as u8 as char),
         }
     }
     pub fn stage_str(&self) -> &'static str {
@@ -264,6 +277,7 @@ pub(crate) fn diag() -> Diag {
         fed_a_pts: SHARED.dg_fed_a_pts.load(Relaxed),
         load_v: SHARED.dg_load_v.load(Relaxed),
         load_a: SHARED.dg_load_a.load(Relaxed),
+        feed_reply_v: SHARED.dg_feed_reply_v.load(Relaxed),
         video_w: SHARED.video_w.load(Relaxed),
         video_h: SHARED.video_h.load(Relaxed),
         pos_ns: SHARED.playpos_ns.load(Relaxed),

@@ -425,6 +425,40 @@ pub(crate) enum Stage {
 mod tests {
     use super::*;
 
+    /// **Every `dg_*` mirror field must have a real writer.**
+    ///
+    /// The whole diagnostics mirror is write-here-read-there by construction, so a field that is
+    /// declared, cleared in `reset_session`, and read by the panel compiles, runs, and is silently
+    /// WRONG — there is no unused-field warning for it and no other test can see it. That is not
+    /// hypothetical: `dg_place_rv`, `dg_placed_w`, `dg_placed_h` and `dg_splice` shipped exactly
+    /// like that. `place_rv` stayed at its `i32::MIN` "never called" sentinel forever, so the
+    /// read-out rendered `Placed: not placed` in DANGER bold on every webOS 5+ television — a
+    /// fabricated fault, on the one firmware family we cannot test, aimed at the wrong layer.
+    ///
+    /// Source-level rather than behavioural because the writers live behind the ACB/Starfish seam,
+    /// which does not exist on the host. `reset_session` is excluded deliberately: clearing a field
+    /// is not writing it, and treating it as one is what let this through.
+    #[test]
+    fn every_diagnostics_mirror_field_has_a_writer() {
+        const SHARED_SRC: &str = include_str!("shared.rs");
+        const WRITERS: [&str; 3] =
+            [include_str!("pump.rs"), include_str!("engine.rs"), include_str!("mod.rs")];
+
+        let declared: Vec<&str> = SHARED_SRC
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub dg_"))
+            .filter_map(|l| l.split(':').next())
+            .collect();
+        assert!(declared.len() >= 10, "found only {} dg_ fields — the parse broke", declared.len());
+
+        for f in declared {
+            let written = WRITERS.iter().any(|src| {
+                src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
+            });
+            assert!(written, "dg_{f} is declared and read but NOTHING writes it — the panel would print its sentinel as fact");
+        }
+    }
+
     /// The one invariant that cannot be recovered from if it breaks, and breaks SILENTLY: a session
     /// boundary must forget this session's picture. `seen_frame` is set once, off-thread, and is
     /// never cleared anywhere else — so a `reset_session` that dropped it would leave it true for

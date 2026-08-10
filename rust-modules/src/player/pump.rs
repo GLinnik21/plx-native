@@ -43,6 +43,15 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
     let src = if w > 0 && h > 0 { (w, h) } else { (1920, 1080) };
     let rv = unsafe { ffi::vp_place(mt, src.0, src.1, 0, 0, 1920, 1080) };
     eng.placed_src = src;
+    // RECORD it, do not merely log it. These three fields had no writer anywhere in the tree, so
+    // `dg_place_rv` sat at its `i32::MIN` "never called" sentinel for the life of the process and
+    // the diagnostics read-out rendered `Placed: not placed` in DANGER bold on every webOS 5+ set
+    // — a fabricated fault, on the one firmware family nobody here can test, pointing every reader
+    // at the video plane. The dev TV takes the ACB path, so no amount of looking at it would have
+    // caught this.
+    SHARED.dg_place_rv.store(rv, Relaxed);
+    SHARED.dg_placed_w.store(src.0, Relaxed);
+    SHARED.dg_placed_h.store(src.1, Relaxed);
     super::log(&format!("vplane: exported window placed src={}x{} rv={rv}", src.0, src.1));
 }
 
