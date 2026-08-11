@@ -658,20 +658,30 @@ hand: it exists nowhere under review, `releases/latest` briefly carries a one-li
 documented `rebuild_tag:` path re-publishes without it. Committing it makes the record reviewable
 in a diff and identical on a rebuild — and removes the last argument for a `CHANGELOG.md`.
 
-**Errata.** A published note is an archival record and is never silently rewritten. When later
-evidence contradicts it, **append** a dated block at the top of that release's body *and* to its
-file:
+**Rewriting a published note.** Owner decision, 11 August 2026, overriding the errata-only rule
+this section previously carried: when a note is wrong or predates this standard, **rewrite it to the
+template** rather than appending a dated correction on top. The reasoning is that these notes have
+exactly one job — telling a stranger what they are installing — and a reader arriving today is
+served by a note that is simply correct, not by an archaeology of what was believed in August. A
+correction stacked above a wrong paragraph leaves both on the page and makes the reader adjudicate.
 
-```markdown
-> **Update, 9 August 2026.** Tested on real webOS 6 and 10 sets: the app runs, signs in and
-> browses there, but video does not start — it sits on a spinner. The prediction below ("sound and
-> a black picture") was wrong. See [v0.2.1](…).
-```
+Two things survive that decision, because they protect the reader rather than the record:
+
+* **A safety disclosure is never dropped when a note is rewritten.** It moves into the template's
+  own §3 (`## If you used vA.B.C or earlier: …`), which is where it belongs and where a reader
+  scanning on a phone will actually meet it. v0.1.0 and v0.2.0 both carry the token disclosure for
+  this reason even though neither mentioned it when published.
+* **Anything a reader could have acted on stays true or stays stated.** If a rewrite changes what a
+  release claims about itself — how it was built, whether a command works — the new text says so
+  plainly in the section that owns it, rather than quietly dropping it. v0.2.1's note says in its
+  verification section that it was published by hand.
+
+The record of what a note used to say lives in `git log` for these files, which is a better archive
+than a page of stacked corrections.
 
 Editing a release body touches no asset: the manifest's `ipkHash` covers the `.ipk` only, and
-`draft`/`prerelease` stay false, so `releases/latest` is unaffected. **v0.2.0 is owed one of these
-now** — for the disproven playback claim, and because its own log contained a live Plex token that
-its note describes as holding only "your server name, address and what you have been watching".
+`draft`/`prerelease` stay false, so `releases/latest` is unaffected. Verify rather than assume —
+`ci/verify-published.sh vX.Y.Z` re-checks that the note still quotes the artifact's real hash.
 
 ### How this connects to what already exists
 
