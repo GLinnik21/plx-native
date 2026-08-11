@@ -417,7 +417,9 @@ pub(crate) enum Busy {
 pub(crate) fn busy_surface(st: crate::player::PlaybackState, seen_frame: bool) -> Busy {
     use crate::player::PlaybackState;
     match st {
-        PlaybackState::Error => Busy::Readout(StatusKind::Failed, st.caption()),
+        // not `st.caption()`: the Error caption is shaped by WHY (an audio-only stream names the
+        // server; see `player::error_shape`), which a method on the bare state cannot know.
+        PlaybackState::Error => Busy::Readout(StatusKind::Failed, crate::player::error_caption()),
         s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, st.caption()),
         s if s.is_busy() => Busy::Transport,
         _ => Busy::None,

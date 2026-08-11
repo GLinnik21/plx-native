@@ -225,6 +225,15 @@ fn playback_line(d: &crate::player::Diag, now: u32) -> String {
         S::Playing => "Playing",
         S::Error => "Playback error",
     };
+    // The reason is the verdict when there is one — "Playback error" made the reviewer derive
+    // "the server dropped the video track" from the server's own transcoder logs (issue #22);
+    // this line is the photograph that should have said it.
+    if matches!(crate::player::state(), S::Error) {
+        return match crate::player::error_reason() {
+            "" => s.to_string(),
+            why => format!("{s} — {why}"),
+        };
+    }
     if crate::player::TX.paused.load(Ordering::Relaxed) {
         // the frozen clock must DISARM while paused — a paused picture is not a stalled one
         return format!("{s} (paused)");

@@ -1734,7 +1734,17 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                     .unwrap_or_else(|| av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0))
             };
             if vi < 0 {
-                crate::player::log("ff: no video stream");
+                // "No video stream" alone reads as a demuxer fault. When audio IS present the
+                // demuxer worked fine — the stream itself arrived without video, which on a
+                // transcode URL means the server dropped the track (no usable video target —
+                // issue #22: an HEVC-only target on a server without Plex Pass). Record which
+                // shape this is so the error the user sees can say so; the main thread words it.
+                if ai >= 0 {
+                    SHARED.demux_no_video.store(true, Ordering::Release);
+                    crate::player::log("ff: no video stream — the stream carries audio only");
+                } else {
+                    crate::player::log("ff: no video stream");
+                }
                 avformat_close_input(&mut fmt);
                 free_avio(avio);
                 break;

@@ -132,6 +132,34 @@ pub(crate) fn state() -> shared::PlaybackState {
     }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
 }
+
+/// The `Error` state's wording, shaped by WHY — issue #22's lesson: `ff: no video stream` was
+/// technically true and cost the reviewer a full server-side investigation that the sentence
+/// "the server sent audio only" would have ended. Pure so every arm is host-testable; the two
+/// wrappers below feed it the globals (main thread only — `route::is_transcoding` reads
+/// main-thread state).
+///
+/// The (no-video, not-transcoding) arm — an audio-only DIRECT-PLAYED file — is worded for the
+/// file because that is the truth there: route only direct-plays when PMS metadata names an
+/// h264/hevc video track, so reaching it means the file disagrees with its own metadata.
+fn error_shape(no_video: bool, transcoding: bool) -> (&'static std::ffi::CStr, &'static str) {
+    match (no_video, transcoding) {
+        (true, true) => (
+            c"Playback failed — server sent audio only",
+            "server sent audio only — it found no usable video transcode target",
+        ),
+        (true, false) => (c"Playback failed — no video in the file", "the stream carries no video track"),
+        _ => (c"Playback failed", ""),
+    }
+}
+/// HUD caption for `PlaybackState::Error` (main thread).
+pub(crate) fn error_caption() -> &'static std::ffi::CStr {
+    error_shape(SHARED.demux_no_video.load(Relaxed), crate::route::is_transcoding()).0
+}
+/// The same answer for the diagnostics panel's verdict line ("" = no reason known).
+pub(crate) fn error_reason() -> &'static str {
+    error_shape(SHARED.demux_no_video.load(Relaxed), crate::route::is_transcoding()).1
+}
 /// Test-only: drive the derived playback state, returning the previous raw value to restore.
 ///
 /// `pb_state` is the pump's field and `shared` is a private module, so a host test that needs the
@@ -618,6 +646,26 @@ pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #22: the error must NAME an audio-only stream, and name the right party. On a
+    /// transcode it is the server's doing (no usable video target); direct-played it is the
+    /// file's. And the reason must never invent itself — no flag, no blame, whatever the route
+    /// says. Drives the pure shape, so no globals move and nothing here can race the HUD test
+    /// that reads the real (default-false) flags.
+    #[test]
+    fn an_audio_only_stream_is_blamed_on_whoever_sent_it() {
+        let (cap, why) = error_shape(true, true);
+        assert!(cap.to_str().unwrap().contains("server sent audio only"), "{cap:?}");
+        assert!(why.contains("no usable video transcode target"), "{why:?}");
+        let (cap, why) = error_shape(true, false);
+        assert!(cap.to_str().unwrap().contains("no video in the file"), "{cap:?}");
+        assert!(why.contains("no video track"), "{why:?}");
+        for transcoding in [false, true] {
+            let (cap, why) = error_shape(false, transcoding);
+            assert_eq!(cap.to_str().unwrap(), "Playback failed", "no reason may be invented");
+            assert_eq!(why, "");
+        }
+    }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> SubRect {
         SubRect { x, y, w, h, rgba: vec![0u8; (w * h * 4) as usize] }

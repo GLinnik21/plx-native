@@ -180,6 +180,14 @@ pub(crate) struct Shared {
     // (which needs `duration_ns > 0`) can never fire and the player would sit on a black screen
     // forever. The pump turns this into `PlaybackState::Error` so the HUD can say so.
     pub demux_failed: AtomicBool,
+    /// WHY the demuxer found nothing to feed, when the answer is "the stream itself": the server
+    /// delivered audio streams and no video stream. Issue #22's whole shape — a transcode target
+    /// the server cannot honour makes PMS drop the video track, and `ff: no video stream` alone
+    /// sent the reviewer on a full server-side investigation the app could have named in one
+    /// line. Set by the demux thread beside `demux_failed`; read on the main thread, which
+    /// combines it with `route::is_transcoding()` to word the error (an audio-only TRANSCODE is
+    /// the server's doing; an audio-only FILE is the file's).
+    pub demux_no_video: AtomicBool,
     /// `sf_load` returned 0 — the pipeline REFUSED the Load payload.
     ///
     /// Without this the pump has no way to learn it: `load_thread` logged the result and dropped
@@ -326,6 +334,7 @@ impl Shared {
             pending_retranscode: AtomicBool::new(false),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
+            demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
             sub_cues: Mutex::new(Vec::new()),
@@ -385,6 +394,7 @@ impl Shared {
         self.pending_retranscode.store(false, Ordering::Relaxed);
         self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
+        self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
