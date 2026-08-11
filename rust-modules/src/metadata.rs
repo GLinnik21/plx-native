@@ -250,6 +250,42 @@ pub(crate) fn active_marker() -> Option<Marker> {
     (!skipped.contains(&(m.kind, m.start_ms))).then_some(m)
 }
 
+/// The last stretch of an episode counts as its credits when the server never said where the
+/// credits are. Credits DETECTION is a Plex Pass feature: on a server without one, no item ever
+/// carries a credits marker, so the Up Next tile — armed exclusively off that marker — could
+/// never appear, and binge-watching ended every episode by dropping the user back to the detail
+/// page (found by the Plex Pass dependency audit after issue #22). Synthesizing the segment
+/// reuses the entire existing chain — tile, countdown, cancel latch, HUD hold — instead of
+/// growing a parallel EOS path.
+///
+/// Deliberately narrow: only when a successor EXISTS (a movie's tail must not grow a Skip
+/// Credits pill pointing nowhere), only when the item carries no credits marker AT ALL (a server
+/// that said "credits start at 41:03" must not be second-guessed at 30s-before-end), and only
+/// when the item is long enough that its tail is clearly an ending (> 3x the window, so a short
+/// clip does not spend a third of its runtime offering the next one).
+pub(crate) const TAIL_WINDOW_MS: i64 = 30_000;
+pub(crate) fn synthesized_tail_marker(has_next: bool) -> Option<Marker> {
+    if !has_next || !crate::player::is_playing() {
+        return None;
+    }
+    if playing_markers().iter().any(|m| m.kind == MarkerKind::Credits) {
+        return None;
+    }
+    let dur_ms = crate::player::duration_ns() / 1_000_000;
+    let pos_ms = crate::player::playpos_ns() / 1_000_000;
+    tail_marker(pos_ms, dur_ms)
+}
+
+/// The pure half of [`synthesized_tail_marker`] — the window geometry alone, host-testable.
+pub(crate) fn tail_marker(pos_ms: i64, dur_ms: i64) -> Option<Marker> {
+    if dur_ms < TAIL_WINDOW_MS * 3 {
+        return None;
+    }
+    let start_ms = dur_ms - TAIL_WINDOW_MS;
+    (pos_ms >= start_ms)
+        .then_some(Marker { kind: MarkerKind::Credits, start_ms, end_ms: dur_ms, final_seg: true })
+}
+
 /// The marker containing `pos_ms`, if any — the ONE "am I inside a skippable segment" rule, shared
 /// by the skip prompt and the end-of-episode handoff so they can never disagree about where a segment
 /// begins. The range is half-open (`start <= pos < end`) so the prompt clears itself the instant a
@@ -1381,6 +1417,23 @@ mod marker_tests {
         assert!(marker_at(&m, 2_000_000).is_none(), "the long middle of the episode");
         assert_eq!(marker_at(&m, 3_065_648).unwrap().kind, MarkerKind::Credits);
         assert!(marker_at(&[], 1234).is_none());
+    }
+
+    /// The Plex-Pass-free tail: a server without credits detection ships no markers, so the last
+    /// [`TAIL_WINDOW_MS`] of an episode stands in as the credits segment (final, ending at the
+    /// duration) — the geometry Up Next arms from. Short items never grow one: a 60s clip
+    /// offering "next" for half its runtime is worse than no offer.
+    #[test]
+    fn the_tail_window_stands_in_for_undetected_credits() {
+        let dur = 22 * 60 * 1000; // a 22-minute episode
+        assert!(tail_marker(0, dur).is_none(), "the open");
+        assert!(tail_marker(dur - TAIL_WINDOW_MS - 1, dur).is_none(), "one ms before the window");
+        let m = tail_marker(dur - TAIL_WINDOW_MS, dur).expect("inclusive at the window edge");
+        assert_eq!((m.kind, m.final_seg), (MarkerKind::Credits, true));
+        assert_eq!((m.start_ms, m.end_ms), (dur - TAIL_WINDOW_MS, dur));
+        assert!(tail_marker(dur - 1, dur).is_some(), "the last frame still offers it");
+        assert!(tail_marker(80_000, 89_999).is_none(), "short items never grow a tail");
+        assert!(tail_marker(0, 0).is_none(), "no duration published (a transcode mid-probe)");
     }
 
     #[test]

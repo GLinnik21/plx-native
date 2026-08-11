@@ -354,7 +354,11 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) 
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
 pub(crate) fn slot() -> ControlSlot {
-    slot_for(crate::metadata::active_marker(), crate::route::up_next().is_some())
+    let has_next = crate::route::up_next().is_some();
+    // Server marker first; the synthesized tail only exists where credits DETECTION does not
+    // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker`.
+    let m = crate::metadata::active_marker().or_else(|| crate::metadata::synthesized_tail_marker(has_next));
+    slot_for(m, has_next)
 }
 
 /// PURE edge: has a stand-in just vanished OUT FROM UNDER the focus ring, so the ring has to go
