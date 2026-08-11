@@ -32,7 +32,7 @@ void sf_destroy(void);               /* destruct the object; clears sf_ready */
  * the loader kill the process before main. See the long comment at the top of starfish.c. */
 #define VP_NONE     0   /* neither: video cannot be displayed, but the app still runs */
 #define VP_ACB      1   /* webOS 2.2.3 .. 4.10.0 — libAcbAPI.so.1 */
-#define VP_EXPORTED 2   /* webOS 5.3.1 .. 11.2.0 — SDL_webOS*ExportedWindow*  [UNTESTED] */
+#define VP_EXPORTED 2   /* webOS 5.3.1 .. 11.2.0 — SDL_webOS*ExportedWindow* (device-verified webOS 6.5.2, issue #22) */
 int vp_mode(void);
 
 /* VP_EXPORTED only. Create the exported window and return its compositor-assigned id, or NULL.

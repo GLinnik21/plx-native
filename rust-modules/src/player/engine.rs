@@ -176,7 +176,7 @@ fn engine_take(_: &MainThread) -> Option<Engine> {
 pub(crate) fn acb_init(mt: &MainThread) {
     match ffi::vp_mode() {
         ffi::VP_EXPORTED => {
-            log("vplane: exported window (webOS 5+) — created per session, UNTESTED path");
+            log("vplane: exported window (webOS 5+) — created per session");
             // Nothing to bind later; the pump's ACB stages are skipped by ACB_OK staying false.
             ACB_OK.store(false, Ordering::Relaxed);
         }

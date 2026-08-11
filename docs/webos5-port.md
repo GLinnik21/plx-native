@@ -229,7 +229,19 @@ could have revealed it except asking.
 
 ## 4. What is NOT verified, and what would settle it
 
-Ranked by how much damage a wrong assumption does.
+> **2026-08-11 — item 1 is SETTLED, in the affirmative.** The webosbrew reviewer ran v0.2.1 on a
+> real LG 65UP7560AUD (webOS **6.5.2**, `Rockhopper 6.5.2-43`):
+> [issue #22](https://github.com/GLinnik21/plx-native/issues/22). The whole `VP_EXPORTED`
+> sequence ran — created, `windowId` spliced into the Load payload, placed `rv=1`, VDEC/ADEC
+> allocated, fed to EOS with clean teardown. Six of eight playbacks worked: H.264 1080p, H.264
+> 4K, HEVC, AAC and AC3, episodes, end-of-file. The two failures were server-side and
+> firmware-independent (an HEVC-only transcode target on a server without Plex Pass — fixed the
+> same day). Items 4 and 5 are implicitly settled by the same report — the reviewer browsed,
+> navigated and played with the UI composited over live video. The `UNTESTED PATH` log banners
+> are gone. Note the verification is one firmware (6.5.2): 5.x and 10/11 remain start-verified
+> only, and item 3's in-place seek stays disabled on `VP_EXPORTED`.
+
+Ranked by how much damage a wrong assumption does. *(Item 1 settled — see above.)*
 
 1. **Does a picture appear on webOS 5?** The entire `VP_EXPORTED` path. Symbols proven present,
    call shapes taken from the two implementations that ship. Nothing else is known.

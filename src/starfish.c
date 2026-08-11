@@ -102,7 +102,7 @@ int vp_mode(void) {
     sdlvp.destroyExportedWindow = dlsym(RTLD_DEFAULT, "SDL_webOSDestroyExportedWindow");
     if (sdlvp.createExportedWindow && sdlvp.setExportedWindow) {
         g_vp_mode = VP_EXPORTED;
-        if (elogf) { fprintf(elogf, "vplane: SDL exported window (webOS 5+) — UNTESTED PATH\n"); fflush(elogf); }
+        if (elogf) { fprintf(elogf, "vplane: SDL exported window (webOS 5+)\n"); fflush(elogf); }
         return g_vp_mode;
     }
 
