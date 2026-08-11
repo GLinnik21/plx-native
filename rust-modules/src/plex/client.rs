@@ -47,7 +47,7 @@ pub struct Client {
 
 /// The device facts of the playback identity. Shared with the plex.tv transport — see
 /// [`identity`](super::identity) for why these stopped being literals in this file.
-use super::identity::{DEVICE, DEVICE_NAME, MODEL, PLATFORM_VERSION, PROVIDES};
+use super::identity::{DEVICE, DEVICE_NAME, MODEL, PROVIDES};
 
 impl Client {
     pub fn new(host: &str, port: i32, token: &str) -> Client {
@@ -73,7 +73,7 @@ impl Client {
             .str("X-Plex-Product", &self.product)
             .str("X-Plex-Version", &self.version)
             .str("X-Plex-Platform", &self.platform)
-            .str("X-Plex-Platform-Version", PLATFORM_VERSION)
+            .str("X-Plex-Platform-Version", super::identity::platform_version())
             .str("X-Plex-Device", DEVICE)
             .str("X-Plex-Device-Name", DEVICE_NAME)
             .str("X-Plex-Model", MODEL)

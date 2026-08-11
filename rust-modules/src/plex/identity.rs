@@ -42,10 +42,20 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(crate) const PLATFORM: &str = "webOS";
 
-/// The OS version. Still a literal: the app is packaged for `>=4.0, <5.0` and nothing reads the
-/// real version off the device yet, so this is honest about the target and wrong in the third
-/// decimal on a 4.0 or 4.4 panel. An LS2 call would fix it; it is not worth a release blocker.
-pub(crate) const PLATFORM_VERSION: &str = "4.5";
+/// The OS version — the REAL one, read off the set at boot ([`crate::webos`]), because the app
+/// runs on webOS 4 through 11 now and a literal is wrong on every set but one. This was
+/// `const … = "4.5"` while the app was packaged `>=4.0, <5.0`; the webosbrew reviewer flagged it
+/// reporting 4.5 from a 6.5.2 television (issue #22). PMS augments our named Generic profile
+/// from the X-Plex-Client-Profile-Extra we send, so the version is informational today — but it
+/// is also how a server-side profile could ever distinguish firmware generations, and a false
+/// one poisons that forever. The fallback when `os_info.json` is unreadable keeps the literal
+/// this replaces — the exact claim every release so far has made — rather than inventing an
+/// empty-string case no server has ever been shown. Safe by boot order: `webos::probe()` is the
+/// first call in `plex_run`, before SDL exists, so no PMS request can precede the read.
+pub(crate) fn platform_version() -> &'static str {
+    let r = &crate::webos::info().release;
+    if r.is_empty() { "4.5" } else { r }
+}
 
 /// Device CLASS — what kind of thing this is. Generic on purpose: this app runs on any rooted
 /// webOS 4.x panel, not on the model it was developed against.
@@ -95,5 +105,15 @@ mod tests {
         for s in [super::DEVICE, super::MODEL, super::DEVICE_NAME] {
             assert!(!s.contains("49SM9000"), "{s:?} names the author's television");
         }
+    }
+
+    /// On the host there is no `/var/run/nyx/os_info.json`, so this exercises exactly the
+    /// unreadable-file path a television would hit: the fallback is the literal every release
+    /// so far reported, not an empty string no server has ever been shown. (The real-version
+    /// path can only be seen on a set — issue #22's reviewer saw "4.5" from webOS 6.5.2, which
+    /// is the bug this function fixes.)
+    #[test]
+    fn unknown_firmware_falls_back_to_the_old_literal() {
+        assert_eq!(super::platform_version(), "4.5");
     }
 }
