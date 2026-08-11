@@ -1993,6 +1993,76 @@ const BADGE_ICON_GAP: f32 = theme::space::XS;
 /// pixel width [`badge`] will occupy for `text` (+ `icon`) — the layout companion (e.g. reserving
 /// the inline-chip run so a row label elides before it). The icon's band is added OUTSIDE the
 /// short-tag floor, so a bare "CC" still measures its minimum and a glyphed chip still fits both.
+// ---- The PLEX PASS capsule (`Plex Pass Awareness.dc.html`, deliverable A) -------------------
+//
+// The name set in type — deliberately NO logo artwork: this is an unofficial client, and the
+// badge is a referential use of the words alone (the same reasoning `plex::identity` documents
+// for the product name). Height matches [`BADGE_H`] so it shares the badge row's optical line,
+// but the radius is the full pill, deliberately unlike the 4K chip's 6px — a different shape
+// marks a different class of thing: brand reference, not technical fact. Non-interactive
+// everywhere it appears; it is [`theme::PASS_GOLD`]'s only consumer and the one gold thing its
+// line may carry (see that token's doc for the two-ambers decision).
+
+/// Letter-tracking for the capsule label: the design's `.12em` of MICRO 22. The text renderer
+/// has no letter-spacing, so the label is drawn per character; nine one-char strings are a
+/// rounding error against the 160-slot glyph cache and they never churn (the label is constant).
+const PASS_TRACK: f32 = 22.0 * 0.12;
+const PASS_PAD_X: f32 = 14.0;
+const PASS_TEXT: &str = "PLEX PASS";
+
+fn pass_label_w() -> f32 {
+    let mut w = 0.0;
+    let mut n = 0;
+    for ch in PASS_TEXT.chars() {
+        let c = std::ffi::CString::new(ch.to_string()).unwrap();
+        w += crate::text::text_width(c.as_ptr(), theme::size::MICRO, 1);
+        n += 1;
+    }
+    w + PASS_TRACK * (n - 1) as f32
+}
+
+/// Layout width of the capsule — for right-anchoring and row flow.
+pub(crate) fn pass_capsule_w() -> f32 {
+    pass_label_w() + 2.0 * PASS_PAD_X
+}
+
+/// Draw the capsule with its LEFT edge at `x`, centred on `cy`; returns its width.
+///
+/// `bg: Some(ground)` is the OUTLINE form (stroke 1.5 pass-gold, gold label) — the default
+/// everywhere a surface sits behind it. Like [`keyline_chip`], the outline is a knockout (the
+/// SDF has no stroke-only mode), so `bg` must be the surface actually behind the capsule.
+/// `bg: None` is the FILLED form — pass-gold fill, near-black label — used in exactly one
+/// place, the playback-failed read-out, where the ground is pure black and an outline would
+/// read as a hole.
+pub(crate) fn pass_capsule(p: Painter, x: f32, cy: f32, bg: Option<[f32; 4]>) -> f32 {
+    let w = pass_capsule_w();
+    let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
+    let rad = BADGE_H * 0.5; // the full pill
+    let ink = match bg {
+        Some(ground) => {
+            const STROKE: f32 = 1.5;
+            p.rrect(r, rad, rad, theme::PASS_GOLD);
+            let inner = Rect::new(r.x + STROKE, r.y + STROKE, r.w - 2.0 * STROKE, r.h - 2.0 * STROKE);
+            p.rrect(inner, rad - STROKE, rad - STROKE, ground);
+            theme::PASS_GOLD
+        }
+        None => {
+            p.rrect(r, rad, rad, theme::PASS_GOLD);
+            theme::PASS_GOLD_INK
+        }
+    };
+    // MICRO for a badge LABEL, not content — the token's ban is about prose (the design: "22px
+    // is a label"). Authored literally, so no shared style can ever recase the pair.
+    let ty = crate::text::text_vcenter_y(theme::size::MICRO, 1, cy);
+    let mut cx = x + PASS_PAD_X;
+    for ch in PASS_TEXT.chars() {
+        let c = std::ffi::CString::new(ch.to_string()).unwrap();
+        p.text(c.as_ptr(), cx, ty, theme::size::MICRO, ink, 0, 1);
+        cx += crate::text::text_width(c.as_ptr(), theme::size::MICRO, 1) + PASS_TRACK;
+    }
+    w
+}
+
 pub(crate) fn badge_w(text: &str, icon: Option<crate::ui::icons::Icon>) -> f32 {
     const PAD: f32 = 12.0;
     const MIN_W: f32 = 56.0;

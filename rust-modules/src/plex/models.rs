@@ -51,6 +51,17 @@ pub struct MediaContainer {
     /// `?includeMeta=1` on a section listing — the server-driven Sort/Filter menus.
     #[serde(rename = "Meta", default)]
     pub meta: Option<Meta>,
+    /// `GET /` (the server root) only: does the server's OWNER hold a Plex Pass? Bool on PMS 1.43
+    /// (probed live 2026-08-10), and lenient like every flag here because PMS string-encodes
+    /// freely. `Option`, not a defaulted 0: a server old enough not to say must stay UNKNOWN —
+    /// defaulting would read as "no Plex Pass", a confident wrong answer on the field issue #22
+    /// (docs/plex-pass-audit.md) exists to get right. Consumed by `serverinfo.rs` only.
+    #[serde(rename = "myPlexSubscription", default, deserialize_with = "de_opt_i64")]
+    pub my_plex_subscription: Option<i64>,
+    /// `GET /` only: the PMS build string ("1.43.3.10861-cd85035e7"). Diagnostics
+    /// (`serverinfo.rs`); every other endpoint simply omits it.
+    #[serde(default)]
+    pub version: String,
 }
 
 /// Doubles as the generic `Directory[]` row: a library section ({key,type,title}), a secondary
@@ -298,6 +309,16 @@ pub struct Stream {
     // so a non-numeric frameRate never fails the whole detail parse — matches the old jfloat.
     #[serde(rename = "frameRate", default, deserialize_with = "de_f64")]
     pub frame_rate: f64,
+    /// Video stream only: the transfer characteristic — `smpte2084` (HDR10/PQ) or
+    /// `arib-std-b67` (HLG) mark an HDR source (probed live on the dev PMS 2026-08-11:
+    /// the HDR10 items send `colorTrc=smpte2084`). Drives the detail facts row's
+    /// HDR-without-tone-mapping warning; absent (SDR or old server) is just "".
+    #[serde(rename = "colorTrc", default)]
+    pub color_trc: String,
+    /// Video stream only: Dolby Vision present — HDR whatever `colorTrc` says. Lenient because
+    /// PMS sends bools as `true` and as `"1"` depending on the endpoint.
+    #[serde(rename = "DOVIPresent", default, deserialize_with = "de_i64")]
+    pub dovi_present: i64,
     #[serde(default, deserialize_with = "de_i64")]
     pub channels: i64,
     #[serde(rename = "audioChannelLayout", default)]
@@ -541,13 +562,18 @@ fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
 fn de_opt_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum IntStr {
+    enum IntStrBool {
         I(i64),
         S(String),
+        // `myPlexSubscription` on the root envelope is a JSON BOOL on PMS 1.43. A missing arm
+        // here fails the untagged enum → the WHOLE MediaContainer parse (`de_i64` learned the
+        // same lesson) — which on `GET /` reads as "server info unavailable" forever.
+        B(bool),
     }
-    Ok(match Option::<IntStr>::deserialize(d)? {
-        Some(IntStr::I(n)) => Some(n),
-        Some(IntStr::S(s)) => s.trim().parse().ok(),
+    Ok(match Option::<IntStrBool>::deserialize(d)? {
+        Some(IntStrBool::I(n)) => Some(n),
+        Some(IntStrBool::S(s)) => s.trim().parse().ok(),
+        Some(IntStrBool::B(b)) => Some(b as i64),
         None => None,
     })
 }

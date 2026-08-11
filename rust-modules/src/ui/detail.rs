@@ -1733,20 +1733,26 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
             }
         }
         bx += draw_media_badges(p, d, bx, ch.facts_y);
+        bx += draw_play_mode(p, d, bx, ch.facts_y);
         // …and the crew credit closes the row. Inline rather than on a line of its own: it is the same
         // KIND of fine print as everything left of it, and a second row of it under the first read as a
         // stray sentence. Elided to whatever the right-aligned Starring column leaves.
         if let Some(names) = directors() {
             let budget = SCR_W - MARGIN_X - STARRING_W - theme::space::LG - bx;
-            let line = crate::text::elide(
-                &format!("    \u{b7}    Directed by {}", names.join(", ")),
-                budget.max(0.0),
-                theme::size::CAPTION,
-                0,
-                false,
-            );
-            if let Ok(dc) = CString::new(line) {
-                p.text(dc.as_ptr(), bx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
+            // A budget too small for "Directed by" plus ONE name elides to a bare "…" — a stray
+            // tail, not a credit (seen live once the play-mode fragment joined the row). The
+            // credit is the row's most yielding member: it goes entirely before it goes garbled.
+            if budget >= 260.0 {
+                let line = crate::text::elide(
+                    &format!("    \u{b7}    Directed by {}", names.join(", ")),
+                    budget,
+                    theme::size::CAPTION,
+                    0,
+                    false,
+                );
+                if let Ok(dc) = CString::new(line) {
+                    p.text(dc.as_ptr(), bx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
+                }
             }
         }
     }
@@ -1858,6 +1864,54 @@ fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f
         }
         bx += crate::ui::widgets::keyline_chip(p, bx, cy, label, theme::TEXT_SECONDARY, theme::SURFACE_APP);
     }
+    bx - x
+}
+
+/// "How this plays" — the facts row's playback preview (`Plex Pass Awareness.dc.html`,
+/// deliverable B), flowed after the media chips at `x`; returns the width consumed.
+///
+/// Three states, one ever shown. States 1–2 are PLAIN FACTS — dot separator, tertiary CAPTION,
+/// no chip — reading as part of "year · runtime · how it plays". State 3 is the one warning:
+/// an HDR item that will transcode on a server known to have no Plex Pass gets tone-mapping
+/// nowhere, so the picture arrives washed-out — the only degradation in the Pass audit that
+/// code cannot fix and must therefore say (docs/plex-pass-audit.md). Its severity is carried by
+/// the alert glyph and the chip's keyline, never by hue: the only gold on the line is the
+/// capsule, per `theme::PASS_GOLD`'s one-gold rule. The mock composes state 3 as a second row
+/// because its hero column is 900px; this hero's facts line is wider and already elides the
+/// trailing credit, so the fragment rides the same line and the credit yields.
+fn draw_play_mode(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f32 {
+    let Some(pv) = crate::route::playback_preview(d) else { return 0.0 };
+    let dim = theme::TEXT_TERTIARY;
+    let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+    let cy = text_y + (cap_top + baseline) * 0.5;
+    let mut bx = x;
+    let warn = pv == crate::route::Preview::Converts
+        && d.hdr
+        && crate::plex::serverinfo::subscription() == crate::plex::serverinfo::Subscription::No;
+    if !warn {
+        let label = match pv {
+            crate::route::Preview::DirectPlay => c"\u{b7}    Direct Play",
+            crate::route::Preview::Converts => c"\u{b7}    Converts on server",
+        };
+        bx += theme::space::MD;
+        bx += p.text(label.as_ptr(), bx, text_y, theme::size::CAPTION, dim, 0, 0);
+        return bx - x;
+    }
+    // state 3: [⚠ HDR → SDR] tone-mapping needs [PLEX PASS]
+    bx += theme::space::MD;
+    bx += crate::ui::widgets::badge(
+        p,
+        bx,
+        cy,
+        "HDR \u{2192} SDR",
+        Some(crate::ui::icons::Icon::Alert),
+        crate::ui::widgets::BadgeStyle::Outlined { col: theme::TEXT_SECONDARY, bg: theme::SURFACE_APP },
+    );
+    bx += theme::space::SM;
+    let words = c"tone-mapping needs";
+    bx += p.text(words.as_ptr(), bx, text_y, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
+    bx += theme::space::SM;
+    bx += crate::ui::widgets::pass_capsule(p, bx, cy, Some(theme::SURFACE_APP));
     bx - x
 }
 

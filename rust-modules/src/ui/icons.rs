@@ -51,6 +51,11 @@ pub enum Icon {
     /// Counter-clockwise circular arrow (↺) — "play from the start", the detail hero's restart disc.
     Restart,
     Info,
+    /// Warning triangle — `info.svg`'s sibling (same 24 viewBox, 2.2 stroke, round caps/joins,
+    /// dot-and-bar inverted). From `Plex Pass Awareness.dc.html`: the facts row's HDR chip at
+    /// ~24px and the playback-failed read-out at 96px. Outline, not filled — a solid triangle
+    /// reads as an error state where this marks a warning or a verdict already worded in text.
+    Alert,
     User,
     Backspace,
     /// A screen with a play triangle — the item menu's "Go to Episode" leading glyph.
@@ -114,6 +119,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Pause => include_str!("../../../assets/icons/pause.svg"),
         Icon::Restart => include_str!("../../../assets/icons/restart.svg"),
         Icon::Info => include_str!("../../../assets/icons/info.svg"),
+        Icon::Alert => include_str!("../../../assets/icons/alert.svg"),
         Icon::User => include_str!("../../../assets/icons/user.svg"),
         Icon::Backspace => include_str!("../../../assets/icons/backspace.svg"),
         Icon::Episode => include_str!("../../../assets/icons/episode.svg"),

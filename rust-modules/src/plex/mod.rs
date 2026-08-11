@@ -25,6 +25,12 @@ mod library;
 mod timeline;
 mod transcoder;
 
+// The server's self-description (version + Plex Pass tristate), refreshed by `install` on every
+// session path. pub(crate) because it is a DIAGNOSTICS surface with readers outside this layer
+// (`ui::stats`, `player::error_shape`) — and deliberately nothing else: see its module doc for
+// why subscription state must never become a routing input.
+pub(crate) mod serverinfo;
+
 // The plex.tv ACCOUNT surface (login/discovery/home-users) — a separate service from the PMS
 // `Client` above (own host + HTTPS transport), so it's its own `AccountClient`, not an `impl`.
 // pub(crate): the login/boot code (app.rs) + the UI screens construct these directly.
@@ -48,5 +54,7 @@ pub use params::*;
 // rest of `timeline` is reached through `Client`'s methods and needs none).
 #[allow(unused_imports)]
 pub use timeline::{queue_index_of, QueueRow};
+// DP_AUDIO_CODECS rides along for `devcaps`, which intersects it with the device's own codec
+// table — the caps snapshot is what `is_dp_audio` and the profile string then both read.
 #[allow(unused_imports)]
-pub use transcoder::is_dp_audio;
+pub use transcoder::{is_dp_audio, DP_AUDIO_CODECS};

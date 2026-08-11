@@ -639,7 +639,19 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // default + an AC3 track → native 4K HEVC + AC3, no transcode — beats the server's
     // video-downscaling transcode). Falls back to the server /decision (then the local codec
     // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
-    let video_dp = matches!(vcodec, "h264" | "hevc");
+    // The video gate consults the DEVICE's own decoder table (devcaps), not this codebase's
+    // memory of the dev TV: "the panel decodes HEVC" was the last dev-environment claim still
+    // asserted as universal (issue #22's bug class — docs/plex-pass-audit.md, closing section).
+    // This is belt-and-braces with the profile — a no-hevc profile means PMS should never
+    // *offer* hevc direct-play, but the smart-DP branch below can bypass the server's /decision
+    // entirely, so the local gate must agree with the profile on BOTH axes it asserts: the codec
+    // AND the width/height bound. Codec agreement alone left the resolution half open — the
+    // profile's `*`-scoped limitation makes PMS transcode a 4K source down for a 1080p-bounded
+    // SoC, but a branch that never asks the server never meets the limitation, so a 4K file with
+    // any AAC/AC3 track (nearly every file has one) direct-played straight onto the bounded
+    // decoder. See `video_direct_plays` for the gate itself.
+    let (src_w, src_h) = plan.playing.as_ref().map(|p| (p.width, p.height)).unwrap_or((0, 0));
+    let video_dp = video_direct_plays(vcodec, src_w, src_h, crate::devcaps::caps());
     // MKV and MP4 both direct-play. MP4 once died after AU#0 (b1002de) because the mov demuxer's
     // random access needed seeks the then-unseekable AVIO could not serve; `ff.rs::seek_cb` has
     // reopened with a byte Range since, and mp4 was re-measured on-device 2026-08-11: sequential
@@ -653,10 +665,14 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     let tracks = plan.playing.as_ref().map(|p| p.audio.as_slice()).unwrap_or(&[]);
     let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(tracks, acodec) };
     let directplay = if !video_dp {
-        // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265.
-        // Anything else (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's
-        // /decision says directplay (it adjudicates the panel's decoders, not our payload). This
-        // gate is why the local sample path (rk empty) is the only other non-transcode case.
+        // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265,
+        // and H265 only on a SoC whose table lists the decoder (devcaps). Anything else
+        // (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's /decision
+        // says directplay (it adjudicates the panel's decoders, not our payload). This gate is
+        // why the local sample path (rk empty) is the only other non-transcode case. A source
+        // exceeding the device's width/height bound lands here too, and deliberately on the
+        // RE-ENCODE side of the branch below (a remux would copy the too-big pixels verbatim);
+        // its /decision carries the profile's own bound, so PMS scales the video down.
         false
     } else if !streamable {
         false // non-MKV container → remux (the transcode branch copies the source codecs)
@@ -709,14 +725,17 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // Transcode OR container-remux, both served via start.mkv. If the SOURCE video is
     // direct-playable (h264/hevc) we only reached here because the container isn't streamable, so
     // ask Plex to REMUX — copy both codecs into MKV, no re-encode (keeps 4K + HDR10); the Load
-    // payload then uses the SOURCE codecs. Otherwise it's a real RE-ENCODE to the hevc+ac3 target
-    // (HEVC target keeps 4K + HDR10; see profile_extra + the server's "HEVC encoding = Always").
+    // payload then uses the SOURCE codecs. Otherwise it's a real RE-ENCODE to the profile's
+    // target chain (hevc first when the SoC decodes it — keeps 4K + HDR10 — else h264; see
+    // profile_for). The guess below is only the /decision-unreachable fallback: decision_codecs
+    // overrides it with the server's ACTUAL output, but the guess still tracks devcaps because
+    // a payload naming hevc on a SoC without the decoder configures a pipeline that cannot start.
     if video_dp {
         let achosen = audio_sel.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_else(|| acodec.to_string());
         plan.vcodec = vcodec.to_string();
         plan.acodec = achosen;
     } else {
-        plan.vcodec = "hevc".into();
+        plan.vcodec = crate::devcaps::caps().encode_vcodec().into();
         plan.acodec = "ac3".into();
     }
     // Carry the picked SOURCE track into the server-side selection (put_selection +
@@ -861,6 +880,47 @@ fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
         return None;
     }
     Some((subs[i].id, ord))
+}
+
+/// PURE: the local direct-play VIDEO test — the codec and the source's stated frame size must
+/// BOTH clear the device's own decode table (`devcaps`).
+///
+/// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc only when the table
+/// lists the decoder — anything else the pipeline cannot feed at all. The resolution half is the
+/// local agreement with the profile's `*`-scoped `video.width`/`video.height` limitation: the
+/// profile makes PMS transcode a 4K source down for a 1080p-bounded SoC, but the smart-DP branch
+/// never asks PMS, so without this test a 4K file with one direct-playable audio track was fed
+/// verbatim to a decoder whose table says 1920x1088 — the wrong-side failure devcaps' own doc
+/// names (issue #22's over-claim class), invisible on the dev TV, whose bound is 4096x2176.
+///
+/// Unknown dimensions (0) PASS: PMS omitting a Media attribute is not evidence of 4K, and
+/// failing open is yesterday's behavior for every file the server never measured — the same
+/// misread-degrades-to-assumed rule `devcaps::parse` applies.
+fn video_direct_plays(vcodec: &str, src_w: i64, src_h: i64, caps: &crate::devcaps::Caps) -> bool {
+    let codec_ok = vcodec == "h264" || (vcodec == "hevc" && caps.hevc);
+    let (bw, bh) = caps.hevc_max;
+    codec_ok && src_w <= bw as i64 && src_h <= bh as i64
+}
+
+/// The detail page's "how this plays" answer, BEFORE anything is played — the same three gates
+/// `build_stream` will apply (codec+resolution via [`video_direct_plays`], container via
+/// [`part_is_streamable`], one direct-playable audio track), asked of the loaded `Detail`.
+/// An approximation by design: the real decision can still consult the server (`server_decision`
+/// when no DP audio track is found), so this leans the same way that fallback usually lands.
+/// It exists for `Plex Pass Awareness.dc.html`'s facts row and must stay a READ-ONLY preview —
+/// nothing in the playback path may branch on it (the path re-derives for itself).
+#[derive(PartialEq, Clone, Copy)]
+pub(crate) enum Preview {
+    DirectPlay,
+    Converts,
+}
+pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
+    if d.part.is_empty() {
+        return None; // nothing playable loaded (a show still resolving its episode)
+    }
+    let video = video_direct_plays(&d.vcodec, d.width, d.height, crate::devcaps::caps());
+    let audio = d.audio.iter().any(|a| crate::plex::is_dp_audio(&a.codec));
+    Some(if video && part_is_streamable(&d.part) && audio { Preview::DirectPlay } else { Preview::Converts })
 }
 
 /// True when the part's container is one the buffer-feed demuxer streams over HTTP: MKV, or
@@ -1072,9 +1132,12 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
         addr_of_mut!(CUR_REMUX).write(false);
         *addr_of_mut!(TSESSION) = session;
     }
-    // the transcode output is HEVC + AC3 — record it so a pipeline RELOAD (audio switch)
-    // builds the H265 Load payload matching the re-encoded stream.
-    set_stream_codecs("hevc", "ac3");
+    // the transcode output is the profile target's head (`Caps::encode_vcodec` — the ONE
+    // definition, shared with build_stream's guess and profile_for) + AC3 — record it so a
+    // pipeline RELOAD (audio switch) builds a Load payload matching the re-encoded stream. A
+    // guess: apply_decision_codecs below replaces it with the server's actual output, but it
+    // must still track devcaps, not the dev TV (issue #22's bug class).
+    set_stream_codecs(crate::devcaps::caps().encode_vcodec(), "ac3");
     put_selection(cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
     let qsess = sess();
     let sp = transcode_spec(&rk, &qsess, false, offset_secs.max(0), cur_audio_sid(), cur_sub_sid());
@@ -1389,6 +1452,40 @@ mod tests {
         // report key on, so an id-less stream would render subtitles while the menu said Off.
         let subs = [server_selected(sub(0, 3, "eng", false))];
         assert_eq!(pick_dp_subtitle(&subs), None);
+    }
+
+    // ---- video_direct_plays: the local codec + resolution direct-play gate -------------------
+
+    /// The RESOLUTION half of the gate (issue #22's over-claim class): the smart-DP branch never
+    /// asks PMS, so the profile's `*`-scoped width/height limitation cannot save a 4K source from
+    /// direct-playing onto a 1080p-bounded decoder — the client must refuse it locally. Invisible
+    /// on the dev TV (bound 4096x2176); this drives the gate with the reviewer-class caps.
+    #[test]
+    fn a_source_beyond_the_device_bound_does_not_direct_play() {
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (1920, 1088),
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
+        // the codec agrees; the frame size must still refuse — on either codec
+        assert!(!video_direct_plays("h264", 3840, 2160, &caps));
+        assert!(!video_direct_plays("hevc", 3840, 2160, &caps));
+        // one axis over is over (per-axis bound, not an area heuristic)
+        assert!(!video_direct_plays("h264", 4096, 1080, &caps));
+        // within the bound plays, exactly at it included (1088 IS the table's number)
+        assert!(video_direct_plays("h264", 1920, 1088, &caps));
+    }
+
+    /// Unknown dimensions fail OPEN (0 = PMS never measured the file — not evidence of 4K, and
+    /// yesterday's behavior for it), while the codec half keeps gating regardless.
+    #[test]
+    fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
+        let caps =
+            crate::devcaps::Caps { hevc: false, hevc_max: (1920, 1088), vp9: false, audio: "aac".into() };
+        assert!(video_direct_plays("h264", 0, 0, &caps));
+        assert!(!video_direct_plays("hevc", 1280, 720, &caps), "no decoder row, no direct play");
+        assert!(!video_direct_plays("av1", 1280, 720, &caps), "the pipeline cannot feed it at any size");
     }
 
     #[test]

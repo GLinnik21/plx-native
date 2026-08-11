@@ -42,12 +42,16 @@ old measurement never re-taken (mkv-only gate). The standing mitigations:
 - the diagnostics panel names server-side failures in words ("server sent audio only — it found
   no usable video transcode target") instead of "playback failed".
 
-The remaining member of the class is the *decode capability* assertion — the app tells every
-server it can handle HEVC/4K/10-bit because the author's television can. The device publishes
-its own decoder table (`/etc/umediaserver/device_codec_capability_config.json` — verified present
-on webOS 4.5, listing per-codec max resolution/framerate/bitrate) plus `getSystemInfo`'s `UHD`
-flag and the config service's HDR/Dolby Vision keys; deriving the profile from those is the
-planned fix and is tracked separately.
+The last member of the class was the *decode capability* assertion — the app told every server
+it could handle HEVC/4K/10-bit because the author's television can. The device publishes its own
+decoder table (`/etc/umediaserver/device_codec_capability_config.json` — verified present on
+webOS 4.5, listing per-codec max resolution/framerate/bitrate); the profile now derives from it
+(`rust-modules/src/devcaps.rs`, read once at boot): HEVC on/off and its resolution ceiling, the
+direct-play audio list, and `route.rs`'s local decode gate all read one caps snapshot, with the
+49SM9000PLA constants kept only as the loudly-logged fallback for an unreadable table. The one
+claim the table cannot express is bit depth, so `bitDepth=10` remains a commented constant — and
+`getSystemInfo`'s `UHD` flag / the config service's HDR keys stay unused until a panel that
+disagrees with its codec table is actually observed.
 
 ## What only the reviewer can confirm
 

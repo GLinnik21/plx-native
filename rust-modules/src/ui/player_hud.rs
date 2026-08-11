@@ -463,7 +463,96 @@ fn readout_frame() -> Rect {
 /// exists to prevent. A read-out is not transport chrome.
 pub(crate) fn draw_readout(busy: Busy, now: u32) {
     let Busy::Readout(kind, caption) = busy else { return };
+    if kind == StatusKind::Failed {
+        // The failure read-out has its own composed layout (`Plex Pass Awareness.dc.html`
+        // deliverable C) — glyph, fixed verdict, a reason slot, a hint — rather than the shared
+        // spinner overlay. The caption is not drawn here: the verdict line is constant by design
+        // ("lands at the same y in all three variants, so a user who has seen it once recognises
+        // it before reading") and the caption's suffix is re-derived as the reason.
+        return draw_failed_readout(Painter::root());
+    }
     StatusOverlay::new(readout_frame(), caption, kind).phase(now).draw(&hud_env(), Painter::root());
+}
+
+// ---- the failure read-out (`Plex Pass Awareness.dc.html`, deliverable C) --------------------
+//
+// One layout with one optional line. Anchored from the TOP, not centred: the glyph and the
+// verdict never move, and the reason sits in a slot that reserves two BODY lines, so a
+// zero-, one- or two-element reason leaves the hint at the same y. All on the video ground —
+// pure black by the time an error is up — so there is no card chrome.
+const FR_GLYPH_S: f32 = 96.0;
+const FR_GLYPH_TOP: f32 = 372.0;
+const FR_VERDICT_TOP: f32 = FR_GLYPH_TOP + FR_GLYPH_S + 44.0;
+const FR_REASON_TOP: f32 = FR_VERDICT_TOP + 48.0 + 24.0;
+/// two BODY lines' worth of slot, reserved whether or not anything is in it
+const FR_REASON_SLOT: f32 = 84.0;
+const FR_HINT_TOP: f32 = FR_REASON_TOP + FR_REASON_SLOT + 56.0;
+
+/// One line of centred text with its cap TOP at `top`; returns nothing — the layout is fixed.
+fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col: [f32; 4]) {
+    let (cap_top, _) = crate::text::text_cap_band(sz, bold);
+    let w = crate::text::text_width(text.as_ptr(), sz, bold);
+    p.text(text.as_ptr(), (SCR_W - w) * 0.5, top - cap_top, sz, col, 0, bold);
+}
+
+fn draw_failed_readout(p: Painter) {
+    let e = crate::player::error_now();
+    // glyph: the same triangle as the facts row at 96, secondary ink — outline, because a solid
+    // triangle at this size reads as an error state we do not have (the verdict is the words)
+    let gx = (SCR_W - FR_GLYPH_S) * 0.5;
+    crate::ui::icons::draw(p, crate::ui::icons::Icon::Alert, Rect::new(gx, FR_GLYPH_TOP, FR_GLYPH_S, FR_GLYPH_S), theme::TEXT_SECONDARY);
+    fr_line(p, c"Playback failed", FR_VERDICT_TOP, theme::size::TITLE, 1, theme::TEXT_PRIMARY);
+    // the reason slot: line one is the reason; line two, only ever on a known-free server, is
+    // the subscription FACT — words + the filled capsule (the one place it fills: on pure black
+    // an outline capsule has no ground to sit on and reads as a hole)
+    if !e.readout.is_empty() {
+        if let Ok(c) = std::ffi::CString::new(e.readout) {
+            fr_line(p, &c, FR_REASON_TOP, theme::size::BODY, 0, theme::TEXT_SECONDARY);
+        }
+    }
+    if e.no_pass {
+        let words = c"This server has no";
+        let ww = crate::text::text_width(words.as_ptr(), theme::size::BODY, 0);
+        let cw = crate::ui::widgets::pass_capsule_w();
+        const GAP: f32 = 16.0;
+        let x = (SCR_W - (ww + GAP + cw)) * 0.5;
+        let line_top = FR_REASON_TOP + 42.0; // the slot's second BODY line
+        let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
+        p.text(words.as_ptr(), x, line_top - cap_top, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
+        let cy = line_top + (baseline - cap_top) * 0.5;
+        crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, None);
+    }
+    // the hint, with BACK as a key cap — the cap is what survives a phone photo
+    draw_hint_with_keycap(p, c"Press", c"BACK", c"to return", FR_HINT_TOP);
+}
+
+/// "{pre} [KEY] {post}", centred at cap-top `top` — CAPTION tertiary prose around a keyline cap
+/// (min-w 74, h 36, r 8), the cap's label MICRO bold. The keyline is a knockout on the video
+/// ground, which is black here by construction.
+fn draw_hint_with_keycap(p: Painter, pre: &std::ffi::CStr, key: &std::ffi::CStr, post: &std::ffi::CStr, top: f32) {
+    const CAP_H: f32 = 36.0;
+    const CAP_MIN_W: f32 = 74.0;
+    const CAP_PAD: f32 = 12.0;
+    const GAP: f32 = 14.0;
+    let sz = theme::size::CAPTION;
+    let pw = crate::text::text_width(pre.as_ptr(), sz, 0);
+    let ow = crate::text::text_width(post.as_ptr(), sz, 0);
+    let kw = (crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1) + 2.0 * CAP_PAD).max(CAP_MIN_W);
+    let total = pw + GAP + kw + GAP + ow;
+    let x = (SCR_W - total) * 0.5;
+    let (cap_top, baseline) = crate::text::text_cap_band(sz, 0);
+    let ty = top - cap_top;
+    let cy = top + (baseline - cap_top) * 0.5;
+    p.text(pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
+    let kx = x + pw + GAP;
+    let kr = Rect::new(kx, cy - CAP_H * 0.5, kw, CAP_H);
+    const STROKE: f32 = 1.5;
+    p.rrect(kr, 8.0, 8.0, [1.0, 1.0, 1.0, 0.34]);
+    p.rrect(Rect::new(kr.x + STROKE, kr.y + STROKE, kr.w - 2.0 * STROKE, kr.h - 2.0 * STROKE), 8.0 - STROKE, 8.0 - STROKE, [0.0, 0.0, 0.0, 1.0]);
+    let kty = crate::text::text_vcenter_y(theme::size::MICRO, 1, cy);
+    let ktw = crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1);
+    p.text(key.as_ptr(), kx + (kw - ktw) * 0.5, kty, theme::size::MICRO, theme::TEXT_SECONDARY, 0, 1);
+    p.text(post.as_ptr(), kx + kw + GAP, ty, sz, theme::TEXT_TERTIARY, 0, 0);
 }
 
 /// x of control button `idx`, left to right: 0 = Subtitles, 1 = Audio, 2 = More.

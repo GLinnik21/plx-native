@@ -68,9 +68,12 @@
 //!
 //! The enforcement is structural: every row is built by [`left_column`]/[`right_column`] out of a
 //! single [`crate::player::Diag`], whose fields are all numbers, booleans and enums — plus the
-//! compositor's own `windowId`, which is a bounded `char[64]` assigned by the TV. There is no path
-//! by which code elsewhere can push a string onto this panel, so adding a field is a deliberate
-//! edit to the one file that carries these rules.
+//! compositor's own `windowId`, which is a bounded `char[64]` assigned by the TV, and ONE
+//! server-derived string: the PMS release number on the Server row, which identifies a software
+//! RELEASE shared by every install of it, not a household (the same reasoning that lets the
+//! header print the app's own version). There is no path by which code elsewhere can push a
+//! string onto this panel, so adding a field is a deliberate edit to the one file that carries
+//! these rules.
 use crate::ui::label::Label;
 use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
@@ -372,6 +375,16 @@ fn frames_str(d: &crate::player::Diag, now: u32) -> String {
 fn right_column(d: &crate::player::Diag) -> Vec<Field> {
     let mut v = Vec::with_capacity(COLUMN_ROWS);
     v.push(Field::section("STREAM"));
+    // What the server IS: release + Plex Pass — issue #22's blind spot (docs/plex-pass-audit.md).
+    // "Server sent audio only" is a different report on a server that CANNOT encode video than on
+    // one that should have, and this row is what lets a photograph make that distinction. Never a
+    // fault tone in any state: a free server is a fact about the server, not an error — and
+    // "not yet queried" is boot ordering, not a failure. (Name/address/machineIdentifier stay
+    // banned; a release number + one subscription bit identify nothing.)
+    v.push(Field::new(
+        "Server",
+        server_line(&crate::plex::serverinfo::version(), crate::plex::serverinfo::subscription()),
+    ));
     v.push(Field::new("Source", match (crate::route::is_transcoding(), crate::route::is_remux()) {
         (false, _) => "direct play",
         (true, true) => "remux (copy)",
@@ -482,6 +495,41 @@ fn chain(src: String, sent: String, payload: &str) -> String {
         format!("{src} → {payload}")
     } else {
         format!("{src} → {sent} → {payload}")
+    }
+}
+
+/// The Server row's value: "<release> · Plex Pass" / "<release> · no Plex Pass", or
+/// "not yet queried" while the `GET /` worker has not landed (an empty version IS that state —
+/// `serverinfo` stores the two fields together).
+///
+/// A server that answered but never named its subscription (a PMS predating the field) shows its
+/// release alone: the row must not claim a Pass state the server did not state. Pure so every arm
+/// is host-testable without touching the process-global store.
+fn server_line(version: &str, sub: crate::plex::serverinfo::Subscription) -> String {
+    use crate::plex::serverinfo::Subscription as S;
+    if version.is_empty() {
+        return "not yet queried".to_string();
+    }
+    let v = short_version(version);
+    match sub {
+        S::Yes => format!("{v} · Plex Pass"),
+        S::No => format!("{v} · no Plex Pass"),
+        S::Unknown => v.to_string(),
+    }
+}
+
+/// The PMS release triplet ("1.43.3.10861-cd85035e7" → "1.43.3"). The panel prints THIS, not the
+/// build string, and the reason is measured, not aesthetic: the value column elides at 292 px
+/// from the RIGHT, and the full form ("PMS 1.43.3.10861-… · no Plex Pass", 444 px in the deployed
+/// font at `size::BODY`) would elide away exactly the Pass verdict the row exists to carry, while
+/// the triplet form (277 px) fits whole. The build+hash carry no support signal a release number
+/// does not — and the event log's `pms: version=…` line keeps the full string for anyone who
+/// needs it.
+fn short_version(version: &str) -> &str {
+    let numeric = version.split('-').next().unwrap_or(version);
+    match numeric.match_indices('.').nth(2) {
+        Some((i, _)) => &numeric[..i],
+        None => numeric,
     }
 }
 
@@ -730,6 +778,10 @@ mod tests {
     /// stall. Without this distinction the panel cries wolf on every single playback.
     #[test]
     fn a_freshly_completed_load_with_no_frames_yet_is_not_a_fault() {
+        // Serialized: `frames_str` reads the process-wide `player::TX.paused`, which the paused
+        // test below toggles under this same lock — without it, this test can observe the paused
+        // branch ("none yet") where it asserts the running clock ("none in 0 s") and flake.
+        let _g = crate::testlock::serial();
         let d = crate::player::Diag { load_completed: true, load_at: 1_000, ..Default::default() };
         let fresh = left_column(&d, (0, 0, 0), 1_100);
         let f = fresh.iter().find(|f| f.key == "Frames").unwrap();
@@ -847,6 +899,41 @@ mod tests {
         assert_eq!(chain("hevc".into(), "h264".into(), "H265"), "hevc → h264 → H265");
         // and nothing known yet must not render as blank gaps around arrows
         assert_eq!(chain(String::new(), String::new(), "—"), "— → —");
+    }
+
+    /// The Server row's three arms (issue #22's blind spot made visible). A free server is a FACT
+    /// the row states plainly — the fault-tone assertion lives with the row builder test below —
+    /// and a server that never named its subscription must not be assigned one either way.
+    #[test]
+    fn the_server_row_states_the_pass_tristate_without_guessing() {
+        use crate::plex::serverinfo::Subscription as S;
+        assert_eq!(server_line("1.43.3.10861-cd85035e7", S::Yes), "1.43.3 · Plex Pass");
+        assert_eq!(server_line("1.43.3.10861-cd85035e7", S::No), "1.43.3 · no Plex Pass");
+        // fetch never landed: version and subscription are stored together, so empty = unqueried
+        assert_eq!(server_line("", S::Unknown), "not yet queried");
+        // answered, but a PMS old enough not to carry the field: the release alone, no claim
+        assert_eq!(server_line("0.9.12.4", S::Unknown), "0.9.12");
+    }
+
+    /// The truncation exists for the elide (see [`short_version`]) and must survive whatever
+    /// shape a server's version string takes — a short form must pass through, never panic.
+    #[test]
+    fn the_version_triplet_survives_every_shape() {
+        assert_eq!(short_version("1.43.3.10861-cd85035e7"), "1.43.3");
+        assert_eq!(short_version("1.43.3"), "1.43.3");
+        assert_eq!(short_version("1.43"), "1.43");
+        assert_eq!(short_version("1.43-beta.2.1"), "1.43");
+    }
+
+    /// A free server reads as a fact, never a fault: the danger tint is reserved for rows that say
+    /// "something broke", and `no Plex Pass` is the server working exactly as sold. (The value
+    /// itself depends on the process-global store this test deliberately does not touch — the
+    /// tone is a property of the ROW, fixed at build time, so it is assertable regardless.)
+    #[test]
+    fn the_server_row_is_never_a_fault() {
+        let d = crate::player::Diag::default();
+        let row = right_column(&d).into_iter().find(|f| f.key == "Server").expect("Server row");
+        assert_ne!(row.tone, crate::ui::widgets::Tone::Fault);
     }
 
     #[test]

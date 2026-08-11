@@ -255,6 +255,18 @@ pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 pub const WASH_WARM: [f32; 4] = [0.914, 0.902, 0.878, 1.0];
 /// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent). `#fab82e`.
 pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
+/// Plex's own "Plex Pass" gold, `#e5a00d` — a BRAND REFERENCE, not a palette member
+/// (`Plex Pass Awareness.dc.html`, "the amber decision"). Two ambers exist ON PURPOSE and stay
+/// two tokens: [`RESUME_FILL`] is ours and tunable; this one names somebody else's colour and
+/// must not drift when the first is retuned. They never meet — progress fill lives on card art,
+/// pass-gold lives in facts rows and the error read-out — and the rule that keeps them apart is
+/// stronger than the tokens: **a line may carry exactly one gold thing, and it is always the
+/// PLEX PASS capsule** ([`crate::ui::widgets::pass_capsule`], its only consumer besides ink).
+/// Warning severity is therefore never amber; it is carried by glyph, stroke and contrast.
+pub const PASS_GOLD: [f32; 4] = [0.898, 0.627, 0.051, 1.0];
+/// Near-black ink over a [`PASS_GOLD`] fill — the error read-out's FILLED capsule, the one place
+/// the capsule fills (on pure black an outline has no ground and reads as a hole). `#1a1204`.
+pub const PASS_GOLD_INK: [f32; 4] = [0.102, 0.071, 0.016, 1.0];
 /// Unfilled track behind the Continue-Watching resume bar — the full-bleed card-bottom rail. A
 /// hair lighter than the player scrubber's so the amber reads against a bright poster.
 pub const RESUME_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.22];

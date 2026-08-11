@@ -159,6 +159,10 @@ pub fn install(host: &str, port: i32, token: &str) {
         }
         Some(c) => c.set_token(token),
     }
+    // Every session path funnels through here — boot, QR login, profile switch — so this is the
+    // one place that keeps the server's self-description (version + Plex Pass, issue #22's blind
+    // spot) fresh without each caller remembering to. A worker fetch; nothing waits on it.
+    super::serverinfo::refresh();
 }
 /// The process-wide `Client`. Panics if `install` was never called.
 pub fn client() -> &'static Client {

@@ -378,6 +378,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // hardware nobody here owns is worth far more when its opening line names the firmware — see
     // `webos`'s module doc. Reads one file; cannot fail the boot.
     crate::webos::probe();
+    // And what it DECODES, from the device's own codec table — the capability profile and the
+    // direct-play gate derive from this instead of asserting the dev TV's abilities as universal
+    // (issue #22's bug class; docs/plex-pass-audit.md's closing section). Same contract as
+    // above: one file read, cannot fail the boot, falls back to the profile that always shipped.
+    crate::devcaps::probe();
     // THE main-thread token, minted once — this function IS the SDL main thread. Everything that
     // touches the ACB/Starfish seam or the Engine slot takes it by reference, and `&MainThread` is
     // !Send, so `task::spawn` rejects any closure that captured one. See `task::MainThread`.

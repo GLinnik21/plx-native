@@ -489,6 +489,11 @@ pub(crate) struct Detail {
     pub(crate) width: i64,               // stored frame size, not the resolution class (1918x802
     pub(crate) height: i64,              // is a 1080p scope movie) — badge off video_resolution
     pub(crate) bitrate: i64,             // kbps, whole-stream
+    /// the video stream is HDR (PQ/HLG transfer or Dolby Vision) — with [`Self::hdr`] true AND
+    /// the item not direct-playable AND the server known Pass-less, the facts row warns that the
+    /// transcode will be HDR→SDR without tone-mapping (a Plex Pass server feature; see
+    /// docs/plex-pass-audit.md). Any weaker combination shows nothing.
+    pub(crate) hdr: bool,
     pub(crate) art: String,
     pub(crate) thumb: String,
     /// The item's own `UltraBlurColors` corners (tl, tr, br, bl — the ring order
@@ -672,6 +677,7 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
         width: 0,
         height: 0,
         bitrate: 0,
+        hdr: false,
         art: it.art.clone(),
         thumb: it.thumb.clone(),
         blur: blur.unwrap_or_default(),
@@ -759,10 +765,14 @@ fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
     out
 }
 
-/// Convert a part's Stream[] into (audio, subs, video_fps) — the ONE plex::Stream → Stream
-/// mapping (the detail parse and the playing-tracks store both use it).
-fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>, f64) {
+/// Convert a part's Stream[] into (audio, subs, video_fps, video_is_hdr) — the ONE
+/// plex::Stream → Stream mapping (the detail parse and the playing-tracks store both use it).
+/// HDR is the video stream's transfer characteristic (PQ or HLG) or a Dolby Vision flag — the
+/// input to the facts row's "HDR → SDR without tone-mapping" warning, which only matters where
+/// the item would transcode on a server that cannot tone-map.
+fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>, f64, bool) {
     let (mut audio, mut subs, mut fps) = (Vec::new(), Vec::new(), 0.0);
+    let mut hdr = false;
     for s in streams {
         let st = Stream {
             id: s.id,
@@ -783,13 +793,18 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
             selected: s.selected != 0,
         };
         match s.stream_type {
-            1 => fps = s.frame_rate, // e.g. 23.976 — for the Load esInfo
+            1 => {
+                fps = s.frame_rate; // e.g. 23.976 — for the Load esInfo
+                // PQ (HDR10) or HLG transfer, or Dolby Vision — the dev PMS sends
+                // colorTrc=smpte2084 on its HDR10 items (probed live 2026-08-11)
+                hdr = matches!(s.color_trc.as_str(), "smpte2084" | "arib-std-b67") || s.dovi_present != 0;
+            }
             2 => audio.push(st),
             3 => subs.push(st),
             _ => {}
         }
     }
-    (audio, subs, fps)
+    (audio, subs, fps, hdr)
 }
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
@@ -804,9 +819,10 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
         d.bitrate = m.bitrate;
     }
     if let Some(p) = it.first_part() {
-        let (audio, subs, fps) = convert_streams(&p.stream);
+        let (audio, subs, fps, hdr) = convert_streams(&p.stream);
         d.audio = audio;
         d.subs = subs;
+        d.hdr = hdr;
         if fps > 0.0 {
             d.video_fps = fps;
         }
@@ -830,6 +846,13 @@ pub(crate) struct PlayingItem {
     pub(crate) audio: Vec<Stream>,
     pub(crate) subs: Vec<Stream>,
     pub(crate) video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
+    /// The source's stored frame size, `Media[0]` (0 = unknown). `route.rs`'s local direct-play
+    /// gate tests it against the device table's bound: the smart-DP branch never asks PMS, so
+    /// the profile's `*`-scoped width/height limitation cannot stop a 4K source from reaching a
+    /// 1080p-bounded decoder unless the client also checks it here (issue #22's over-claim
+    /// class — docs/plex-pass-audit.md, closing section).
+    pub(crate) width: i64,
+    pub(crate) height: i64,
     pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
 }
@@ -873,6 +896,8 @@ pub(crate) fn cached_playing(rk: &str) -> Option<PlayingItem> {
         audio: d.audio.clone(),
         subs: d.subs.clone(),
         video_fps: d.video_fps,
+        width: d.width,
+        height: d.height,
         markers: d.markers.clone(),
         chapters: d.chapters.clone(),
     })
@@ -889,11 +914,17 @@ pub(crate) fn fetch_playing_item(rk: &str) -> Option<PlayingItem> {
     // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
     let markers = it.as_ref().map(|it| convert_markers(&it.marker)).unwrap_or_default();
     let chapters = it.as_ref().map(|it| convert_chapters(&it.chapter)).unwrap_or_default();
-    let (audio, subs, video_fps) = it
+    let (audio, subs, video_fps, _hdr) = it
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
-    Some(PlayingItem { rk: rk.to_string(), audio, subs, video_fps, markers, chapters })
+    // the frame size rides the same PRIMARY version the streams come from (route.rs's
+    // direct-play gate tests it against the device bound — see the field doc)
+    let (width, height) = it
+        .as_ref()
+        .and_then(|it| it.primary_media().map(|m| (m.width, m.height)))
+        .unwrap_or((0, 0));
+    Some(PlayingItem { rk: rk.to_string(), audio, subs, video_fps, width, height, markers, chapters })
 }
 
 /// Retire BOTH descriptions of the item that was playing, together.

@@ -139,26 +139,81 @@ pub(crate) fn state() -> shared::PlaybackState {
 /// wrappers below feed it the globals (main thread only — `route::is_transcoding` reads
 /// main-thread state).
 ///
+/// `sub` is `plex::serverinfo`'s Plex Pass tristate, an explicit parameter for the same purity.
+/// It sharpens the WORDING of the transcode arm and nothing more — and on a KNOWN-free server it
+/// appends the subscription as a support FACT, never as the cause. The distinction is the
+/// codebase's own audit: docs/plex-pass-audit.md row 1 says h264 encoding is free everywhere,
+/// and the profile's target chain ends in h264 precisely so a free server always HAS a usable
+/// video target — so reaching this arm on one means something ELSE failed (a source the server's
+/// ffmpeg cannot decode, transcoding disabled server-side), and "it cannot encode video without
+/// Plex Pass" was asserting a cause the profile had already ruled out, pointing the user at a
+/// purchase that would fix nothing. Known-true or unknown keeps the neutral wording alone: a
+/// subscription the app cannot prove absent must never even be named. (And wording is as far as
+/// subscription state may ever reach into playback — see `serverinfo::subscription`'s doc for
+/// why it is not a routing input.)
+///
 /// The (no-video, not-transcoding) arm — an audio-only DIRECT-PLAYED file — is worded for the
 /// file because that is the truth there: route only direct-plays when PMS metadata names an
 /// h264/hevc video track, so reaching it means the file disagrees with its own metadata.
-fn error_shape(no_video: bool, transcoding: bool) -> (&'static std::ffi::CStr, &'static str) {
+/// One error, three surfaces — the HUD caption, the diagnostics panel's verdict line, and the
+/// full-screen read-out (`Plex Pass Awareness.dc.html` deliverable C) — shaped in ONE place so
+/// they can never disagree about what happened. `no_pass` is the read-out's cue to draw the
+/// filled PLEX PASS capsule: a support FACT beside the reason, never the cause (see the arm
+/// comment above).
+pub(crate) struct ErrorShape {
+    pub caption: &'static std::ffi::CStr,
+    /// the diagnostics panel's verdict suffix ("" = no reason known) — includes the
+    /// subscription fact in words, because the panel is plain text
+    pub panel: &'static str,
+    /// the read-out's reason line — sentence case, subscription fact NOT baked in (the
+    /// read-out states it as its own line, with the capsule)
+    pub readout: &'static str,
+    /// true only when the failure is the audio-only transcode AND the server is known to have
+    /// no Plex Pass — the one case the capsule appears
+    pub no_pass: bool,
+}
+fn error_shape(
+    no_video: bool,
+    transcoding: bool,
+    sub: crate::plex::serverinfo::Subscription,
+) -> ErrorShape {
+    let no_pass = sub == crate::plex::serverinfo::Subscription::No;
     match (no_video, transcoding) {
-        (true, true) => (
-            c"Playback failed — server sent audio only",
-            "server sent audio only — it found no usable video transcode target",
-        ),
-        (true, false) => (c"Playback failed — no video in the file", "the stream carries no video track"),
-        _ => (c"Playback failed", ""),
+        (true, true) => ErrorShape {
+            caption: c"Playback failed — server sent audio only",
+            panel: if no_pass {
+                "server sent audio only — it found no usable video transcode target (server has no Plex Pass)"
+            } else {
+                "server sent audio only — it found no usable video transcode target"
+            },
+            readout: "The server sent audio only — it found no usable video transcode target",
+            no_pass,
+        },
+        (true, false) => ErrorShape {
+            caption: c"Playback failed — no video in the file",
+            panel: "the stream carries no video track",
+            readout: "This file has no video track",
+            no_pass: false,
+        },
+        _ => ErrorShape { caption: c"Playback failed", panel: "", readout: "", no_pass: false },
     }
+}
+/// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding`
+/// reads main-thread state).
+pub(crate) fn error_now() -> ErrorShape {
+    error_shape(
+        SHARED.demux_no_video.load(Relaxed),
+        crate::route::is_transcoding(),
+        crate::plex::serverinfo::subscription(),
+    )
 }
 /// HUD caption for `PlaybackState::Error` (main thread).
 pub(crate) fn error_caption() -> &'static std::ffi::CStr {
-    error_shape(SHARED.demux_no_video.load(Relaxed), crate::route::is_transcoding()).0
+    error_now().caption
 }
 /// The same answer for the diagnostics panel's verdict line ("" = no reason known).
 pub(crate) fn error_reason() -> &'static str {
-    error_shape(SHARED.demux_no_video.load(Relaxed), crate::route::is_transcoding()).1
+    error_now().panel
 }
 /// Test-only: drive the derived playback state, returning the previous raw value to restore.
 ///
@@ -648,22 +703,49 @@ mod tests {
     use super::*;
 
     /// Issue #22: the error must NAME an audio-only stream, and name the right party. On a
-    /// transcode it is the server's doing (no usable video target); direct-played it is the
-    /// file's. And the reason must never invent itself — no flag, no blame, whatever the route
-    /// says. Drives the pure shape, so no globals move and nothing here can race the HUD test
-    /// that reads the real (default-false) flags.
+    /// transcode it is the server's doing — and on a KNOWN-free server the reason appends the
+    /// subscription as a FACT, never as the cause: the audit's row 1 says h264 encoding is free
+    /// everywhere and the profile's target chain ends in h264, so a missing Pass cannot be WHY
+    /// the video is gone, and asserting it would point the user at a purchase that fixes nothing
+    /// (the confident wrong answer this arm exists to prevent). Known-true or UNKNOWN keeps the
+    /// neutral wording alone: a subscription the app cannot prove absent is never even named.
+    /// Direct-played, the fault is the file's whatever the subscription says. Drives the pure
+    /// shape only, so no globals move and nothing here can race the HUD test that reads the real
+    /// (default-false) flags.
     #[test]
     fn an_audio_only_stream_is_blamed_on_whoever_sent_it() {
-        let (cap, why) = error_shape(true, true);
-        assert!(cap.to_str().unwrap().contains("server sent audio only"), "{cap:?}");
-        assert!(why.contains("no usable video transcode target"), "{why:?}");
-        let (cap, why) = error_shape(true, false);
-        assert!(cap.to_str().unwrap().contains("no video in the file"), "{cap:?}");
-        assert!(why.contains("no video track"), "{why:?}");
-        for transcoding in [false, true] {
-            let (cap, why) = error_shape(false, transcoding);
-            assert_eq!(cap.to_str().unwrap(), "Playback failed", "no reason may be invented");
-            assert_eq!(why, "");
+        use crate::plex::serverinfo::Subscription as Sub;
+        // transcode on a known-free server: the Pass appears as a parenthetical fact on the
+        // panel, as the capsule flag for the read-out…
+        let e = error_shape(true, true, Sub::No);
+        assert!(e.caption.to_str().unwrap().contains("server sent audio only"), "{:?}", e.caption);
+        assert!(e.panel.contains("no usable video transcode target"), "{}", e.panel);
+        assert!(e.panel.contains("server has no Plex Pass"), "{}", e.panel);
+        assert!(e.no_pass, "the read-out draws the capsule from this flag");
+        // …and never as a cause — h264 encoding is free everywhere (audit row 1). The read-out
+        // reason carries no Pass words at all: the capsule line states the fact separately.
+        assert!(!e.panel.contains("cannot encode"), "causation may not be asserted: {}", e.panel);
+        assert!(!e.readout.contains("Plex Pass"), "the capsule, not prose, names the Pass: {}", e.readout);
+        // known-Pass'd or never-heard-from: today's wording, and no Pass blame anywhere in it
+        for sub in [Sub::Yes, Sub::Unknown] {
+            let e = error_shape(true, true, sub);
+            assert!(e.caption.to_str().unwrap().contains("server sent audio only"), "{:?}", e.caption);
+            assert!(e.panel.contains("no usable video transcode target"), "{} ({sub:?})", e.panel);
+            assert!(!e.panel.contains("Plex Pass"), "an unproven subscription must not be blamed ({sub:?})");
+            assert!(!e.no_pass, "the capsule may not appear on an unproven subscription ({sub:?})");
+        }
+        for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
+            let e = error_shape(true, false, sub);
+            assert!(e.caption.to_str().unwrap().contains("no video in the file"), "{:?}", e.caption);
+            assert!(e.panel.contains("no video track"), "direct play blames the file, not the server");
+            assert!(!e.no_pass, "an audio-only FILE is not a subscription story");
+            for transcoding in [false, true] {
+                let e = error_shape(false, transcoding, sub);
+                assert_eq!(e.caption.to_str().unwrap(), "Playback failed", "no reason may be invented");
+                assert_eq!(e.panel, "");
+                assert_eq!(e.readout, "");
+                assert!(!e.no_pass);
+            }
         }
     }
 
