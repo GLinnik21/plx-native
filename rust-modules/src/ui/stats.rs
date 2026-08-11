@@ -340,6 +340,15 @@ const STALL_MS: u32 = 8_000;
 /// The frame count with its clock. `frames` is SEEK-scoped, so "0" has three meanings and the
 /// panel has to say which.
 fn frames_str(d: &crate::player::Diag, now: u32) -> String {
+    // Paused, the frame count SHOULD stop moving. Reporting that as "frozen" sends a reader after
+    // a fault that is just the pause button — the verdict line already disarms its own stall clock
+    // for exactly this reason, and this row has to agree with it or the panel contradicts itself.
+    if crate::player::TX.paused.load(Ordering::Relaxed) {
+        return match d.frames {
+            0 if !d.seen_frame => "none yet".to_string(),
+            n => n.to_string(),
+        };
+    }
     let stuck = since(d.frame_at.max(d.load_at), now) / 1000;
     match (d.frames, d.seen_frame) {
         (0, false) if d.load_completed => format!("none in {stuck} s"),
@@ -401,9 +410,14 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
 /// AUs per second per lane since the previous sample, as ` · +24/+0 /s`. Empty until there IS a
 /// previous sample, and empty if the clock went backwards (an SDL tick wrap) rather than printing
 /// a negative rate that would read as a fault.
+/// The video half is AUs per second, which for video IS the frame rate — so it is labelled `fps`
+/// and a reader can check it against the content without knowing anything about this app. The
+/// audio half is fixed by the codec (AC3 packs 1536 samples, so ~31/s at 48 kHz), not by the
+/// content, so it gets no unit that would imply otherwise. It read `AU/s` until someone outside
+/// the project asked what an AU was.
 fn fed_rate(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> String {
     match fed_rates(d, prev, now) {
-        Some((rv, ra)) => format!("+{rv} / +{ra} AU/s"),
+        Some((rv, ra)) => format!("{rv} fps · {ra}/s"),
         None => "—".to_string(),
     }
 }
@@ -573,7 +587,7 @@ fn draw_chart(p: Painter, r: Rect) {
     let peak = hv.iter().chain(ha.iter()).copied().max().unwrap_or(0).max(1) as f32;
 
     let lab_h = 22.0;
-    if let Ok(cs) = CString::new(format!("FED AU/s — LAST {}s", HIST_N * SAMPLE_MS as usize / 1000)) {
+    if let Ok(cs) = CString::new(format!("FEED RATE — LAST {}s", HIST_N * SAMPLE_MS as usize / 1000)) {
         Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
             .bold()
             .draw(p, Rect::new(r.x, r.y, r.w, lab_h));
@@ -693,7 +707,7 @@ mod tests {
         };
         let rows = left_column(&d, (4_400, 4_000, 500), 1_000);
         let rate = rows.iter().find(|f| f.key == "Feed rate").expect("Feed rate row");
-        assert_eq!(rate.val.as_deref(), Some("+1200 / +0 AU/s"), "the rate must show the dead lane");
+        assert_eq!(rate.val.as_deref(), Some("1200 fps · 0/s"), "the rate must show the dead lane");
         let fed = rows.iter().find(|f| f.key == "Fed v/a").expect("Fed row");
         assert_ne!(fed.tone, crate::ui::widgets::Tone::Fault, "video IS feeding — that row is not the fault");
 
@@ -717,6 +731,27 @@ mod tests {
         let f = stalled.iter().find(|f| f.key == "Frames").unwrap();
         assert_eq!(f.tone, crate::ui::widgets::Tone::Fault, "12 s after Load with no frame IS");
         assert_eq!(f.val.as_deref(), Some("none in 12 s"));
+    }
+
+    /// A paused picture is not a stalled one. The verdict line disarms its stall clock while
+    /// paused; this pins that the Frames row agrees, because a panel that contradicts itself sends
+    /// its reader after a fault that is just the pause button. Reported from the wild on 0.2.1.
+    #[test]
+    fn a_paused_stream_does_not_report_its_frames_as_frozen() {
+        let _g = crate::testlock::serial();
+        let d = crate::player::Diag {
+            load_completed: true, seen_frame: true, frames: 190, frame_at: 1_000, ..Default::default()
+        };
+        let long_after = 1_000 + STALL_MS + 8_000;
+
+        crate::player::TX.paused.store(true, Ordering::Relaxed);
+        let paused = left_column(&d, (0, 0, 0), long_after);
+        crate::player::TX.paused.store(false, Ordering::Relaxed);
+        let playing = left_column(&d, (0, 0, 0), long_after);
+
+        let f = |v: &Vec<Field>| v.iter().find(|f| f.key == "Frames").unwrap().val.clone().unwrap();
+        assert_eq!(f(&paused), "190", "paused: just the count");
+        assert!(f(&playing).contains("frozen"), "playing and not advancing IS frozen: {}", f(&playing));
     }
 
     /// The transport row splits a class the panel could not previously see at all: no connection,

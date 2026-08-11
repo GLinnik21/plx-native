@@ -233,12 +233,18 @@ impl Diag {
     ///
     /// `queue empty` vs `BufferFull` is the row's whole point — a dead PRODUCER and a dead SINK
     /// look identical from every other field on the panel and want opposite fixes.
+    ///
+    /// The throttle state is worded as what it IS, not as what it is waiting for. It was
+    /// "waiting for a frame", which is the literal truth and reads as a stall — and it is the
+    /// state a healthy playback sits in most of the time, because the feeder deliberately stays
+    /// within `MAX_FEED_AHEAD_NS` of the presented position. The first person to see the panel in
+    /// the wild asked why playback was stuck; it was not.
     pub fn feed_state_str(&self) -> &'static str {
         match self.feed_state {
             1 => "accepting",
             2 => "BufferFull (sink is full)",
             3 => "REFUSED",
-            4 => "waiting for a frame",
+            4 => "holding ~1.6 s ahead",
             5 => "queue empty (no data)",
             _ => "— nothing fed yet",
         }
