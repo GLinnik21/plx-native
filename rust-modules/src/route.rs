@@ -640,11 +640,14 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // video-downscaling transcode). Falls back to the server /decision (then the local codec
     // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
     let video_dp = matches!(vcodec, "h264" | "hevc");
-    // Our buffer-feed demuxer streams MKV/Matroska (sequential clusters). MP4/MOV need per-sample
-    // random seeks our reopen-per-seek HTTP AVIO can't sustain — it dies after AU#0 (black screen).
-    // So a direct-playable codec in a non-MKV container is NOT direct-played; it goes to Plex for a
-    // container-only REMUX to progressive MKV (copy the codecs, no re-encode — keeps 4K/HDR).
-    let streamable = part_is_mkv(part);
+    // MKV and MP4 both direct-play. MP4 once died after AU#0 (b1002de) because the mov demuxer's
+    // random access needed seeks the then-unseekable AVIO could not serve; `ff.rs::seek_cb` has
+    // reopened with a byte Range since, and mp4 was re-measured on-device 2026-08-11: sequential
+    // play, a 140s in-place seek and the harness's rapid burst all pass (issue #22 — the mkv-only
+    // gate was sending every mp4 to the transcoder, which a server without Plex Pass then failed).
+    // Anything else (.mov/.avi/…) still goes to Plex for a container-only REMUX to progressive
+    // MKV (copy the codecs, no re-encode — keeps 4K/HDR).
+    let streamable = part_is_streamable(part);
     // snapshot the track list on the MAIN thread and pass it by reference — the resolve worker
     // (step 7) gets an owned copy instead, and never touches the `&'static` store.
     let tracks = plan.playing.as_ref().map(|p| p.audio.as_slice()).unwrap_or(&[]);
@@ -860,13 +863,16 @@ fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
     Some((subs[i].id, ord))
 }
 
-/// True when the part's container is MKV/Matroska — the only container our buffer-feed demuxer
-/// streams reliably (sequential clusters). Non-MKV (mp4/mov/…) is sent to Plex for a container
-/// remux instead of direct-play. Matches the container extension in the part-key filename.
-fn part_is_mkv(part_key: &str) -> bool {
+/// True when the part's container is one the buffer-feed demuxer streams over HTTP: MKV, or
+/// MP4/M4V since the AVIO became seekable (see the `streamable` note at the decision site — the
+/// old mkv-only gate was measured obsolete on-device 2026-08-11). Other containers (mov/avi/…)
+/// are sent to Plex for a container remux instead of direct-play. Matches the container
+/// extension in the part-key filename; the m4v spelling is the same mov demuxer and the same
+/// `container=mp4` in PMS metadata.
+fn part_is_streamable(part_key: &str) -> bool {
     let name = part_key.rsplit('/').next().unwrap_or(part_key);
     let name = name.split('?').next().unwrap_or(name);
-    name.ends_with(".mkv")
+    name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".m4v")
 }
 
 /// Extract the numeric Part id from a Plex part key (/library/parts/{id}/…/file.mkv).
@@ -1401,15 +1407,19 @@ mod tests {
         assert_eq!(part_id_of("/library/parts/notanumber/file.mkv"), 0);
     }
 
-    /// The direct-play gate: only an MKV part is fed to the demuxer untouched — everything else
-    /// takes the remux branch, which is why the mis-targeted PUT hit every mp4 item.
+    /// The direct-play gate: MKV and MP4/M4V parts are fed to the demuxer untouched — everything
+    /// else takes the remux branch. mp4 moved sides on 2026-08-11 (issue #22): the mkv-only gate
+    /// dated from an unseekable AVIO, and on a server that cannot transcode it turned every mp4
+    /// into a failure.
     #[test]
-    fn only_an_mkv_part_is_direct_playable() {
-        assert!(part_is_mkv("/library/parts/1/2/movie.mkv"));
-        assert!(part_is_mkv("/library/parts/1/2/movie.mkv?x=1"), "the query must not defeat it");
-        assert!(!part_is_mkv("/library/parts/1/2/movie.mp4"));
-        assert!(!part_is_mkv("/library/parts/1/2/movie.mov"));
-        assert!(!part_is_mkv(""));
-        assert!(!part_is_mkv("/library/parts/1/2/mkv.avi"), "the extension, not a substring");
+    fn mkv_and_mp4_parts_are_direct_playable() {
+        assert!(part_is_streamable("/library/parts/1/2/movie.mkv"));
+        assert!(part_is_streamable("/library/parts/1/2/movie.mkv?x=1"), "the query must not defeat it");
+        assert!(part_is_streamable("/library/parts/1/2/movie.mp4"));
+        assert!(part_is_streamable("/library/parts/1/2/movie.m4v"));
+        assert!(!part_is_streamable("/library/parts/1/2/movie.mov"), "mov still remuxes");
+        assert!(!part_is_streamable(""));
+        assert!(!part_is_streamable("/library/parts/1/2/mkv.avi"), "the extension, not a substring");
+        assert!(!part_is_streamable("/library/parts/1/2/mp4.avi"), "the extension, not a substring");
     }
 }

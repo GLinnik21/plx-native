@@ -25,9 +25,12 @@ pub fn is_dp_audio(codec: &str) -> bool {
 }
 
 /// Capability profile (X-Plex-Client-Profile-Extra, raw form — the QueryBuilder encodes it):
-/// direct-play an MKV whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS, up to
-/// 4K — plus a transcode target so a source we can't direct-play is re-encoded, at native
-/// resolution (the panel decodes HEVC 4K natively) instead of downscaled H264 1080p.
+/// direct-play an MKV or MP4 whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS,
+/// up to 4K — plus a transcode target so a source we can't direct-play is re-encoded, at native
+/// resolution (the panel decodes HEVC 4K natively) instead of downscaled H264 1080p. The
+/// container list must agree with `route.rs::part_is_streamable` (the client-side gate): a
+/// container the app streams but the profile omits makes every MDE answer for it a
+/// contradiction of what the app then does.
 ///
 /// The target's codec lists are FALLBACK CHAINS, not single choices, and the order encodes the
 /// whole free-vs-Plex-Pass story (issue #22, found on a reviewer's server):
@@ -56,7 +59,7 @@ pub fn is_dp_audio(codec: &str) -> bool {
 /// path relies on (ff.rs keeps it).
 fn profile_extra() -> String {
     format!(
-        "add-direct-play-profile(type=videoProfile&container=mkv&videoCodec=h264,hevc\
+        "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec=h264,hevc\
          &audioCodec={DP_AUDIO_CODECS}&subtitleCodec=srt,subrip,ass,ssa)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\

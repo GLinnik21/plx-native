@@ -403,15 +403,14 @@
       }
     },
     {
-      "name": "transcode_mp4_container",
+      "name": "dp_mp4_container",
       "item": "movie_hevc_aac_mp4",
       "kind": "movie",
-      "title": "movie · hevc/aac in an mp4 container · sidecar subs · transcode-expected",
+      "title": "movie · hevc/aac in an mp4 container · sidecar subs · direct-play",
       "covers": [
         "hevc+aac",
         "mp4-container",
-        "sidecar-subs",
-        "decision-output-codecs"
+        "sidecar-subs"
       ],
       "run_secs": 60,
       "operations": [
@@ -420,8 +419,8 @@
         }
       ],
       "expect": {
-        "_note": "mp4 containers deliberately go to the server (b1002de: the reopen-per-seek AVIO cannot stream mp4); PMS converts this one to hevc+ac3, and the Load payload must pick the OUTPUT codecs up from the /decision response (the old directplay expectation predated the container gate).",
-        "decision": "transcode",
+        "_note": "mp4 direct-plays since 2026-08-11 (issue #22; the transcode expectation dated from b1002de's unseekable AVIO, re-measured obsolete). This case is the mov-demuxer-over-HTTP coverage: raw AAC needs ADTS reframing and the container index drives the seeks. NB the REMUX flavor (h264/hevc in a container we do not stream) now has no library case — only .mov/.avi would trigger it; transcode+decision-output-codecs coverage lives in the av1 pair.",
+        "decision": "directplay",
         "codec": "hevc",
         "min_video_width": 1900,
         "min_timeline_climb_s": 15,

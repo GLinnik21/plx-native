@@ -645,12 +645,17 @@ def op_audio_transcode(lines):
     if re_t is None or rl_t is None:
         return False, f"missing transcode-switch logs (re-transcode={bool(re_t)} reload_transcode={bool(rl_t)})"
     cs = codec_ids(lines)
-    # the transcode target is HEVC (keeps 4K + HDR10), so an audio-forced re-transcode
-    # re-encodes the video to HEVC. NB: a future "audio-only transcode" that COPIES the video
-    # would leave it at the source codec instead — update this expectation if that lands.
-    if cs and cs[-1][0] != "hevc":
-        return False, f"codec after transcode switch = {cs[-1][0]}, expected hevc (target) :: {cs[-1][3].strip()}"
-    return True, f"transcode switch OK :: {rl_t.strip()}"
+    # The audio-forced re-transcode must not cost the VIDEO anything: since the transcode
+    # target became a chain (hevc,h264 — issue #22, 2026-08-11), the server direct-streams
+    # (copies) an h264/hevc source and re-encodes only the audio, so the codec after the
+    # switch is the codec before it. The old expectation here was the inverse — video
+    # re-encoded to hevc, the only member of the then single-entry target — and this
+    # assertion's own NB predicted today's flip. A copy-incapable path (source over the
+    # profile caps) would legitimately re-encode, but this case's item is fixed h264 1080p.
+    if len(cs) >= 2 and cs[-1][0] != cs[0][0]:
+        return False, (f"video was RE-ENCODED across the audio switch ({cs[0][0]} -> {cs[-1][0]}); "
+                       f"expected a copy :: {cs[-1][3].strip()}")
+    return True, f"transcode switch OK (video copied, {cs[-1][0] if cs else '?'}) :: {rl_t.strip()}"
 
 
 def op_subtitle(lines):

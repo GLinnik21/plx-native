@@ -176,10 +176,10 @@ Base playback (decision + codec + not-stuck), one case each:
 | `dp_hevc_eac3_4k_hdr10` | `episode_hevc_4k_hdr10_eac3` | HEVC 4K **HDR10** + E-AC3 direct-play, TV episode |
 | `dp_hevc_truehd_ac3_sibling` | `movie_hevc_4k_hdr10_truehd` | **smart direct-play** (TrueHD default → AC3 sibling), HEVC 4K |
 | `dp_hevc_eac3_dovi_p8` | `movie_hevc_4k_dovi_p8` | HEVC 4K **Dolby Vision P8** + E-AC3 direct-play |
-| `transcode_mp4_container` | `movie_hevc_aac_mp4` | HEVC + AAC, **mp4 container**, sidecar subs |
+| `dp_mp4_container` | `movie_hevc_aac_mp4` | HEVC + AAC, **mp4 container** direct-play (mov demuxer over HTTP, AAC→ADTS), sidecar subs |
 | `dp_h264_aac_episode` | `episode_h264_aac` | H264 + AAC direct-play, TV episode, no subs |
 | `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (DTS/vorbis present) |
-| `transcode_av1_no_dp_audio` | `movie_av1_no_dp_audio` | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 (needs server pref `TranscoderHEVCEncodingMode=always`; else video drops to audio-only) |
+| `transcode_av1_no_dp_audio` | `movie_av1_no_dp_audio` | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 on this Plex-Pass server (the target chain ends in h264 since issue #22, so a server that cannot encode HEVC re-encodes to h264 instead of dropping video) |
 
 Operation cases (each also re-checks not-stuck / no-error afterward):
 
