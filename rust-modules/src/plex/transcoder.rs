@@ -26,13 +26,34 @@ pub fn is_dp_audio(codec: &str) -> bool {
 
 /// Capability profile (X-Plex-Client-Profile-Extra, raw form — the QueryBuilder encodes it):
 /// direct-play an MKV whose video is H264 or HEVC and audio AAC/AC3/EAC3, subs SRT/ASS, up to
-/// 4K — plus an HEVC/AC3 transcode target so a source we can't direct-play (AV1/VP9/…) is
-/// re-encoded to HEVC at native resolution (the panel decodes HEVC 4K natively) instead of
-/// downscaled H264 1080p. NB: the SERVER must have HEVC encoding enabled for non-HEVC sources
-/// (Settings → Transcoder → "Enable HEVC video Encoding = Always"); otherwise PMS drops the
-/// video (audio-only) for an HEVC-only target. The bitDepth=10 upper bound declares 10-bit
-/// support so PMS keeps HDR10 through the transcode (HEVC Main10, BT.2020+PQ in-bitstream) —
-/// the same in-band static HDR10 SEI the direct-play path relies on (ff.rs keeps it).
+/// 4K — plus a transcode target so a source we can't direct-play is re-encoded, at native
+/// resolution (the panel decodes HEVC 4K natively) instead of downscaled H264 1080p.
+///
+/// The target's codec lists are FALLBACK CHAINS, not single choices, and the order encodes the
+/// whole free-vs-Plex-Pass story (issue #22, found on a reviewer's server):
+///
+/// * `videoCodec=hevc,h264` — HEVC encoding sits behind Plex Pass. When this list held only
+///   `hevc`, a free server found no usable video target and **dropped the video track**: the
+///   transcoder job carried a single audio `-map`, the demuxer correctly said
+///   `ff: no video stream`, and every MP4 in the library "failed to play" on every firmware.
+///   (`TranscoderHEVCEncoding=1` does not help — the subscription gate sits behind the
+///   preference.) With h264 in the list PMS always has a working encode, and — just as
+///   important — an H.264 source reaching this path for its *container* alone (mp4 → mkv remux)
+///   can now be **direct-streamed** (copied) instead of failing: direct-stream requires the
+///   source codec to appear in the target list. A Plex Pass server with "Enable HEVC video
+///   Encoding = Always" still picks hevc — verified live; order expresses preference.
+/// * `audioCodec=ac3,eac3,aac` — same rule on the audio lane: MDE logged "Cannot direct stream
+///   audio stream due to codec aac when profile only allows ac3" and re-encoded audio that the
+///   pipeline decodes natively. All three are in `DP_AUDIO_CODECS`, so anything copied is
+///   something we play; a track that genuinely needs encoding (TrueHD/DTS) goes to ac3, the
+///   first entry.
+///
+/// The Load payload cannot drift whatever PMS chooses: `route.rs` reads the OUTPUT codecs off
+/// the /decision response (`decision_codecs`) and describes those, not the profile's wish.
+///
+/// The bitDepth=10 upper bound declares 10-bit support so PMS keeps HDR10 through the transcode
+/// (HEVC Main10, BT.2020+PQ in-bitstream) — the same in-band static HDR10 SEI the direct-play
+/// path relies on (ff.rs keeps it).
 fn profile_extra() -> String {
     format!(
         "add-direct-play-profile(type=videoProfile&container=mkv&videoCodec=h264,hevc\
@@ -41,7 +62,7 @@ fn profile_extra() -> String {
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
          +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
-         &container=matroska&videoCodec=hevc&audioCodec=ac3)",
+         &container=matroska&videoCodec=hevc,h264&audioCodec=ac3,eac3,aac)",
     )
 }
 
@@ -142,5 +163,32 @@ impl Client {
             .str("session", session)
             .str("X-Plex-Client-Identifier", &self.client_id);
         self.get_void(&q.build());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Issue #22: with `videoCodec=hevc` alone, a server without Plex Pass has no legal video
+    /// target — it drops the video track and sends audio only, so every non-MKV item "fails to
+    /// play" on every firmware. The target lists are fallback CHAINS and each must end in
+    /// something a free server can produce: h264 (encode) for video, and for audio every codec
+    /// we direct-play, so a source track we could decode is copied rather than re-encoded.
+    #[test]
+    fn the_transcode_target_never_strands_a_server_without_plex_pass() {
+        let p = super::profile_extra();
+        let target = p.split("add-transcode-target").nth(1).expect("profile declares a transcode target");
+        let list_of = |key: &str| -> Vec<String> {
+            let v = target.split(key).nth(1).expect(key).split('&').next().unwrap_or("");
+            v.trim_end_matches(')').split(',').map(str::to_string).collect()
+        };
+        let video = list_of("videoCodec=");
+        assert!(video.contains(&"h264".to_string()),
+            "no subscription-free video fallback in {video:?} — a free server drops the video track");
+        assert_eq!(video.first().map(String::as_str), Some("hevc"),
+            "hevc must stay FIRST: order is preference, and hevc is what keeps 4K+HDR10 through a re-encode");
+        for c in super::DP_AUDIO_CODECS.split(',') {
+            assert!(list_of("audioCodec=").contains(&c.to_string()),
+                "{c} is direct-playable but absent from the target — the server would re-encode a track we decode natively");
+        }
     }
 }
