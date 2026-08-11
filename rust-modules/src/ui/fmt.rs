@@ -57,6 +57,14 @@ pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
     format!("S{season}, E{index}")
 }
 
+/// An episode's address SPELLED OUT — `"Season 2, Episode 3"`: the long register of
+/// [`episode_ordinal`], for a surface with room to be prose (the post-play card's meta line,
+/// where the abbreviation would read as a database field beside the duration clause). One
+/// vocabulary, two registers — both live here so they cannot drift apart.
+pub(crate) fn episode_address(season: i64, index: i64) -> String {
+    format!("Season {season}, Episode {index}")
+}
+
 /// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
 /// it. ONE formatter, because this string is drawn by the transport HUD (the now-playing item), the
 /// route's pre-roll ctx line and the Up Next caption, and the whole point of the last two is that

@@ -1830,6 +1830,12 @@ pub enum ControlStyle {
     Primary,
     /// caller supplies the exact fill + ink.
     Custom { fill: [f32; 4], ink: [f32; 4] },
+    /// The **keyline** pill — idle, a hairline outline ([`theme::PILL_KEYLINE`]) knocked out over
+    /// a translucent near-black interior ([`theme::PILL_KEYLINE_BG`]), for a secondary action
+    /// sitting on SCRIMMED VIDEO (the post-play card's "Watch credits"), where [`Accent`]'s solid
+    /// idle plate reads as a hole in the picture. Focused it takes the standard Accent treatment,
+    /// so focus reads identically across every control in the family.
+    Keyline,
 }
 impl ControlStyle {
     /// (fill, ink) for this style at the given focus state.
@@ -1839,6 +1845,8 @@ impl ControlStyle {
             ControlStyle::Accent => (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK),
             ControlStyle::Primary => (theme::FILL_PRIMARY, theme::INK_ON_PRIMARY),
             ControlStyle::Custom { fill, ink } => (fill, ink),
+            ControlStyle::Keyline if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
+            ControlStyle::Keyline => (theme::PILL_KEYLINE_BG, theme::TEXT_HEADING),
         }
     }
 }
@@ -1863,6 +1871,8 @@ const BTN_ICON_RATIO: f32 = 1.15;
 const BTN_ICON_GAP: f32 = 12.0;
 /// Total horizontal air a pill carries around its icon+label run.
 const BTN_PILL_AIR: f32 = 68.0;
+/// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
+const BTN_KEYLINE_W: f32 = 1.5;
 
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
@@ -1917,7 +1927,17 @@ impl Button {
     fn plate(&self, p: Painter, bg: [f32; 4]) {
         let r = self.frame;
         let rad = r.h * 0.5;
-        p.rrect(r, rad, rad, bg);
+        if matches!(self.style, ControlStyle::Keyline) && !self.focused {
+            // the knockout: stroke colour first, then the interior inset by it — the SDF has no
+            // stroke-only mode (`keyline_chip` / `pass_capsule`'s construction); `bg` here is
+            // `colors()`'s translucent interior, not a repaint of the ground (there is none over
+            // live video — see `theme::PILL_KEYLINE_BG`)
+            p.rrect(r, rad, rad, theme::PILL_KEYLINE);
+            let s = BTN_KEYLINE_W;
+            p.rrect(Rect::new(r.x + s, r.y + s, r.w - 2.0 * s, r.h - 2.0 * s), rad - s, rad - s, bg);
+        } else {
+            p.rrect(r, rad, rad, bg);
+        }
         let Some(frac) = self.progress else { return };
         let w = r.w * frac.clamp(0.0, 1.0);
         if w <= 0.0 {
@@ -1997,11 +2017,13 @@ const BADGE_ICON_GAP: f32 = theme::space::XS;
 //
 // The name set in type — deliberately NO logo artwork: this is an unofficial client, and the
 // badge is a referential use of the words alone (the same reasoning `plex::identity` documents
-// for the product name). Height matches [`BADGE_H`] so it shares the badge row's optical line,
+// for the product name). Height matches [`BADGE_H`] so it shares a badge row's optical line,
 // but the radius is the full pill, deliberately unlike the 4K chip's 6px — a different shape
-// marks a different class of thing: brand reference, not technical fact. Non-interactive
-// everywhere it appears; it is [`theme::PASS_GOLD`]'s only consumer and the one gold thing its
-// line may carry (see that token's doc for the two-ambers decision).
+// marks a different class of thing: brand reference, not technical fact. **Two product
+// surfaces, both places the name changes what the user does next** (see `theme::PASS_GOLD`'s
+// doc for the docs-derived rule): FILLED in the playback-failed read-out (pure black ground),
+// OUTLINE in the detail facts row's HDR→SDR warning. Non-interactive in both; it is
+// [`theme::PASS_GOLD`]'s only consumer.
 
 /// Letter-tracking for the capsule label: the design's `.12em` of MICRO 22. The text renderer
 /// has no letter-spacing, so the label is drawn per character; nine one-char strings are a

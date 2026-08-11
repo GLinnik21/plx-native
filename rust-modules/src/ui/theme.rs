@@ -55,6 +55,11 @@ pub mod size {
     use std::os::raw::c_int;
     /// Full-bleed hero title — the home + detail hero headline.
     pub const HERO: c_int = 72;
+    /// Full-card display title — the post-play (Up Next) card's episode name
+    /// (`Plex Pass Awareness.dc.html` deliverable D): a one-line headline for a card that owns
+    /// the FRAME but not the page, one ~1.2× ladder step past [`TITLE`] without [`HERO`]'s
+    /// billboard weight (a 72px line over live credits would read as a new screen, not a prompt).
+    pub const DISPLAY: c_int = 48;
     /// Screen / panel title — the in-player Info card title, the scrolled compact title, About column heads.
     pub const TITLE: c_int = 40;
     /// Section headers ("Related", "Cast & Crew") + list-row titles.
@@ -258,11 +263,14 @@ pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
 /// Plex's own "Plex Pass" gold, `#e5a00d` — a BRAND REFERENCE, not a palette member
 /// (`Plex Pass Awareness.dc.html`, "the amber decision"). Two ambers exist ON PURPOSE and stay
 /// two tokens: [`RESUME_FILL`] is ours and tunable; this one names somebody else's colour and
-/// must not drift when the first is retuned. They never meet — progress fill lives on card art,
-/// pass-gold lives in facts rows and the error read-out — and the rule that keeps them apart is
-/// stronger than the tokens: **a line may carry exactly one gold thing, and it is always the
-/// PLEX PASS capsule** ([`crate::ui::widgets::pass_capsule`], its only consumer besides ink).
-/// Warning severity is therefore never amber; it is carried by glyph, stroke and contrast.
+/// must not drift when the first is retuned. They never meet: progress fill lives on card art;
+/// pass-gold appears in exactly TWO places, both derived from Plex's own Pass docs (the owner's
+/// directive — design as visual baseline, logic from the docs): the failure read-out's filled
+/// capsule, and the detail facts row's HDR→SDR warning (`detail::hdr_degrades`, the docs-derived
+/// truth table — tone mapping is the Pass-gated step). Every use of the name is load-bearing,
+/// which is the trademark position. [`crate::ui::widgets::pass_capsule`] is its only consumer
+/// besides ink; a line carries at most one gold thing, and warning severity is never amber — it
+/// is carried by glyph, stroke and contrast.
 pub const PASS_GOLD: [f32; 4] = [0.898, 0.627, 0.051, 1.0];
 /// Near-black ink over a [`PASS_GOLD`] fill — the error read-out's FILLED capsule, the one place
 /// the capsule fills (on pure black an outline has no ground and reads as a hole). `#1a1204`.
@@ -304,6 +312,18 @@ pub const TAB_PLATE_IDLE: [f32; 4] = [1.0, 1.0, 1.0, 0.08];
 pub const OVERLAY_FOCUS_SOFT: [f32; 4] = [1.0, 1.0, 1.0, 0.07];
 /// Outlined-badge / meta-badge border.
 pub const OVERLAY_BORDER: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
+/// The keyline PILL's stroke — a secondary action outlined over scrimmed video (the post-play
+/// card's "Watch credits"; `Plex Pass Awareness.dc.html` deliverable D: stroke 1.5, white .38).
+/// Deliberately a step quieter than [`OVERLAY_BORDER`]: that value is tuned for a 2px chip border
+/// on a panel, and at .55 a 60px capsule outline over a ~.85 black scrim becomes the row's
+/// brightest object, outshining the filled primary beside it.
+pub const PILL_KEYLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.38];
+/// The keyline pill's knockout interior. The SDF has no stroke-only mode, so the outline is a
+/// knockout (stroke colour, then the interior inset by it — `keyline_chip`'s construction) — but
+/// over LIVE VIDEO there is no ground colour to repaint, so the interior is a translucent
+/// near-black that keeps the scrimmed credits part of the surface instead of punching an opaque
+/// hole in them (and doubles as the quiet plate [`TEXT_HEADING`] ink needs).
+pub const PILL_KEYLINE_BG: [f32; 4] = scrim_black(0.55);
 /// Filled metadata chip (the About column's CC/SDH/AD accessibility badges).
 pub const BADGE_FILL: [f32; 4] = [0.86, 0.88, 0.92, 0.20];
 /// No-op texture tint (structural: draw an RGBA texture unmodified).

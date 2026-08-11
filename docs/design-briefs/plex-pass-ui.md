@@ -1,5 +1,14 @@
 # Design brief — Plex Pass awareness in the player UI
 
+> **Resolution (2026-08-11, owner's directive): the design is the VISUAL baseline; the logic
+> follows Plex's own Pass documentation.** The design's second revision cut deliverable B's
+> third state on a premise the docs contradict ("a server without Plex Pass cannot convert at
+> all" — h264 software encoding is free; only HEVC/hardware transcode and HDR tone mapping are
+> Pass-gated). So: the HDR→SDR warning STANDS (chip + capsule, `detail.rs::hdr_degrades` is
+> the docs-derived truth table), the two quiet states stand, and the mock's C-variant wording
+> ("cannot encode video without PLEX PASS") was not adopted — the read-out keeps the causally
+> honest reason with the capsule as a separately stated fact.
+
 Paste this whole brief into the Claude Design project. Deliverables come back as preview cards
 (HTML mockups + a short spec each) so they can be pulled into the codebase via design-sync, the
 same flow the Continue Watching cards used.

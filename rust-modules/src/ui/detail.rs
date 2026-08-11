@@ -1867,34 +1867,49 @@ fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f
     bx - x
 }
 
-/// "How this plays" — the facts row's playback preview (`Plex Pass Awareness.dc.html`,
-/// deliverable B), flowed after the media chips at `x`; returns the width consumed.
+/// "How this plays" — the facts row's playback preview (`Plex Pass Awareness.dc.html` as the
+/// visual baseline, states derived from Plex's own Pass documentation — the owner's directive
+/// after the design's second revision briefly cut the warning on a wrong premise), flowed
+/// after the media chips at `x`; returns the width consumed.
 ///
-/// Three states, one ever shown. States 1–2 are PLAIN FACTS — dot separator, tertiary CAPTION,
-/// no chip — reading as part of "year · runtime · how it plays". State 3 is the one warning:
-/// an HDR item that will transcode on a server known to have no Plex Pass gets tone-mapping
-/// nowhere, so the picture arrives washed-out — the only degradation in the Pass audit that
-/// code cannot fix and must therefore say (docs/plex-pass-audit.md). Its severity is carried by
-/// the alert glyph and the chip's keyline, never by hue: the only gold on the line is the
-/// capsule, per `theme::PASS_GOLD`'s one-gold rule. The mock composes state 3 as a second row
-/// because its hero column is 900px; this hero's facts line is wider and already elides the
-/// trailing credit, so the fragment rides the same line and the credit yields.
+/// Three states, one ever shown. States 1–2 are PLAIN FACTS — dot separator, tertiary
+/// CAPTION, no chip — "year · runtime · how it plays"; both are reachable on every server,
+/// because h264 SOFTWARE encoding is subscription-free (the second revision's "a Pass-less
+/// server cannot convert at all" is not what Plex's docs say, and the issue-#22 target-chain
+/// fix depends on the opposite). State 3 is the one warning the docs make real: **HDR tone
+/// mapping is a Plex Pass server feature** (support.plex.tv, Transcoder), so an HDR item that
+/// must convert on a server *known* to have no Pass arrives washed-out, and nothing
+/// client-side can fix it — only say it before Play. Severity is carried by the alert glyph
+/// and the chip's keyline, never by hue: the only gold on the line is the capsule. Unknown
+/// subscription → no warning (an unproven absence must not be asserted). The mock composes
+/// state 3 as a second row because its hero column is 900px; this facts line is wider and the
+/// trailing credit already yields, so the fragment rides the same line.
+/// The state-3 gate, pure: warn exactly when the conversion is real, the source is HDR, and
+/// the server's missing Pass is PROVEN — per Plex's docs, tone mapping is the Pass-gated step,
+/// so all three together mean a washed-out picture and any two alone mean nothing. `Unknown`
+/// must stay silent: asserting an unproven absence is issue #22's bug with the polarity
+/// flipped.
+fn hdr_degrades(
+    pv: crate::route::Preview,
+    hdr: bool,
+    sub: crate::plex::serverinfo::Subscription,
+) -> bool {
+    pv == crate::route::Preview::Converts && hdr && sub == crate::plex::serverinfo::Subscription::No
+}
+
 fn draw_play_mode(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f32 {
     let Some(pv) = crate::route::playback_preview(d) else { return 0.0 };
-    let dim = theme::TEXT_TERTIARY;
     let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
     let cy = text_y + (cap_top + baseline) * 0.5;
     let mut bx = x;
-    let warn = pv == crate::route::Preview::Converts
-        && d.hdr
-        && crate::plex::serverinfo::subscription() == crate::plex::serverinfo::Subscription::No;
+    let warn = hdr_degrades(pv, d.hdr, crate::plex::serverinfo::subscription());
     if !warn {
         let label = match pv {
             crate::route::Preview::DirectPlay => c"\u{b7}    Direct Play",
             crate::route::Preview::Converts => c"\u{b7}    Converts on server",
         };
         bx += theme::space::MD;
-        bx += p.text(label.as_ptr(), bx, text_y, theme::size::CAPTION, dim, 0, 0);
+        bx += p.text(label.as_ptr(), bx, text_y, theme::size::CAPTION, theme::TEXT_TERTIARY, 0, 0);
         return bx - x;
     }
     // state 3: [⚠ HDR → SDR] tone-mapping needs [PLEX PASS]
@@ -3263,6 +3278,25 @@ fn draw_about(p: Painter) {
 
 #[cfg(test)]
 mod tests {
+    /// The docs-derived truth table for the facts row's one warning (Plex Pass docs: tone
+    /// mapping is the Pass-gated step of an HDR re-encode). All three conditions or nothing —
+    /// and Unknown NEVER warns, because an unproven missing subscription must not be asserted.
+    #[test]
+    fn the_hdr_warning_needs_all_three_facts_proven() {
+        use crate::plex::serverinfo::Subscription as Sub;
+        use crate::route::Preview as Pv;
+        assert!(super::hdr_degrades(Pv::Converts, true, Sub::No));
+        for (pv, hdr, sub) in [
+            (Pv::DirectPlay, true, Sub::No),      // direct play: pixels arrive untouched
+            (Pv::Converts, false, Sub::No),       // SDR source: nothing to tone-map
+            (Pv::Converts, true, Sub::Yes),       // the server tone-maps
+            (Pv::Converts, true, Sub::Unknown),   // unproven absence stays silent
+            (Pv::DirectPlay, false, Sub::Unknown),
+        ] {
+            assert!(!super::hdr_degrades(pv, hdr, sub), "{pv:?} hdr={hdr} {sub:?} must not warn");
+        }
+    }
+
     use super::*;
 
     fn item(directors: &[&str]) -> metadata::Detail {

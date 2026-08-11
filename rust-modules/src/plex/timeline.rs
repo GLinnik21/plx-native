@@ -95,6 +95,10 @@ pub struct QueueRow {
     pub season: i64,
     pub index: i64,
     pub thumb: String,
+    /// `grandparentThumb` — the SHOW's portrait poster (empty for a movie). Retained beside
+    /// `thumb` because the two are different SHAPES: an episode's `thumb` is a landscape still,
+    /// and the post-play card's 250×375 frame wants the portrait art.
+    pub poster: String,
     pub dur_ms: i64,
     /// `viewOffset` — the resume point, 0 = unwatched/from the start
     pub resume_ms: i64,
@@ -127,6 +131,7 @@ impl QueueRow {
             season: m.parent_index,
             index: m.index,
             thumb: m.thumb,
+            poster: m.grandparent_thumb,
             dur_ms: m.duration,
             resume_ms: m.view_offset,
             part,

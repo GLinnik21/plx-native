@@ -403,8 +403,24 @@ pub(crate) struct UpNext {
     pub(crate) season: i64,
     pub(crate) index: i64,
     pub(crate) thumb: String,
+    /// `grandparentThumb` — the SHOW's portrait poster; empty when the queue row had none.
+    pub(crate) poster: String,
     pub(crate) dur_ms: i64,
     pub(crate) resume_ms: i64,
+}
+
+impl UpNext {
+    /// The art the post-play card draws in its 250×375 portrait frame: the show POSTER (the right
+    /// shape), falling back to the episode still — which the PMS image transcoder's `minSize=1`
+    /// fill crops into the portrait frame server-side. ONE rule, so the warm in [`apply_plan`] and
+    /// the draw in `ui::up_next` can never fetch two different slots.
+    pub(crate) fn card_art(&self) -> &str {
+        if self.poster.is_empty() {
+            &self.thumb
+        } else {
+            &self.poster
+        }
+    }
 }
 
 /// What the queue told us, as owned data for `apply_plan` to install. `machine_id` is `""` when
@@ -474,6 +490,7 @@ fn up_next_of(r: &crate::plex::QueueRow) -> Option<UpNext> {
         season: r.season,
         index: r.index,
         thumb: r.thumb.clone(),
+        poster: r.poster.clone(),
         dur_ms: r.dur_ms,
         resume_ms: r.resume_ms,
     })
@@ -909,7 +926,7 @@ fn video_direct_plays(vcodec: &str, src_w: i64, src_h: i64, caps: &crate::devcap
 /// when no DP audio track is found), so this leans the same way that fallback usually lands.
 /// It exists for `Plex Pass Awareness.dc.html`'s facts row and must stay a READ-ONLY preview —
 /// nothing in the playback path may branch on it (the path re-derives for itself).
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub(crate) enum Preview {
     DirectPlay,
     Converts,
@@ -1067,14 +1084,15 @@ fn apply_plan(plan: Plan, rk: &str) {
         *addr_of_mut!(UP_NEXT) = plan.up_next;
         *addr_of_mut!(QUEUE) = plan.queue;
     }
-    // Warm the next episode's still NOW rather than at first draw. The URL has been known since
+    // Warm the post-play card's art NOW rather than at first draw. The URL has been known since
     // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
-    // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
+    // it here costs nothing and spares the card a skeleton for one image-transcode round trip at
     // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
     // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
-    // evict-protection a draw takes (see `posters::poster_warm`).
+    // evict-protection a draw takes (see `posters::poster_warm`). `card_art` at the card's own
+    // 250×375 — `(path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
     if let Some(u) = up_next() {
-        crate::ui::widgets::warm_tex(&u.thumb, 480, 270, 0);
+        crate::ui::widgets::warm_tex(u.card_art(), 250, 375, 0);
     }
     if !plan.vcodec.is_empty() {
         set_stream_codecs(&plan.vcodec, &plan.acodec); // the pair is only ever set together

@@ -320,10 +320,15 @@ impl ControlSlot {
         }
     }
     /// Pointer hit-test for whatever occupies the row — ONE entry point, so the click path can
-    /// never consult geometry belonging to a control that is not on screen.
+    /// never consult geometry belonging to a control that is not on screen. The Up Next arm is
+    /// additionally gated on the CARD being active: a BACK-dismissed card leaves the slot saying
+    /// `UpNext` (that identity is what holds its per-segment latches) while nothing of it is
+    /// drawn, and a click must then fall through to the transport underneath.
     pub(crate) fn hit(self, cx: f32, cy: f32) -> bool {
         match self {
-            ControlSlot::UpNext(_) => crate::ui::up_next::hit(cx, cy),
+            ControlSlot::UpNext(_) => {
+                crate::ui::up_next::card_active(self) && crate::ui::up_next::hit(cx, cy).is_some()
+            }
             ControlSlot::Skip(pr) => crate::ui::skip_pill::rect(pr).contains(cx, cy),
             ControlSlot::Discs => false,
         }
@@ -634,6 +639,17 @@ fn draw_clock(p: Painter, text: &str, cx: f32, y: f32, sz: i32, col: [f32; 4], l
 /// transport draws its inline spinner only when it is [`Busy::Transport`], and the centred read-out
 /// is [`draw_readout`]'s, drawn by the caller AFTER this.
 pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab: i32, now: u32, transport: bool) {
+    // The post-play card OWNS the frame while it is up: nothing of the transport draws — no
+    // scrim, no scrubber, no title chrome, no tabs. The card is still HUD furniture (playback
+    // runs underneath, `app.rs` pins the HUD while it is active), so this is a branch inside the
+    // HUD draw rather than an overlay route. The Skip-pill stand-in below is untouched.
+    // Gated on `transport` too: with the Info card / Chapters strip open (the one caller passes
+    // false exactly then) the panel fills the middle, and the card's full-screen scrim + poster +
+    // countdown must not render UNDER it — that state draws only the bottom scrim + tabs below,
+    // the same frame it drew before the card existed.
+    if transport && crate::ui::up_next::card_active(slot) {
+        return crate::ui::up_next::draw(Painter::root(), now);
+    }
     let p = Painter::root();
     let e = hud_env();
 
@@ -667,7 +683,11 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     // The right control row, from the slot the CALLER resolved — so what is drawn and what a
     // keypress activates are the same value, not two derivations of it.
     match slot {
-        ControlSlot::UpNext(_) => crate::ui::up_next::draw(p, focus == 1, now),
+        // A BACK-dismissed card (the active case returned at the top): the row stays EMPTY for
+        // the rest of the segment. Deliberately not the discs — the slot still answers `UpNext`,
+        // so `activate_ctrl_row` would not open their menus, and a drawn control that cannot be
+        // activated is exactly the half-wired state `ControlSlot` exists to prevent.
+        ControlSlot::UpNext(_) => {}
         ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(p, pr, focus == 1),
         ControlSlot::Discs => {
             for i in 0..BTN_N {
