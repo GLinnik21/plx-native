@@ -214,6 +214,11 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   mid-flight. Point the app at it by editing `PMS_PORT` in the gitignored `src/config.local.h` and
   `make deploy` (host/port are compiled into `main.c`). **Pick a port Plex is not already on** — it
   binds `127.0.0.1:32401` itself, and the more specific bind wins, so the proxy is silently bypassed.
+  **And the macOS application firewall silently drops the TV's connections to the ad-hoc python
+  listener** (verified 2026-08-11: netcond up, mode armed, zero requests logged, the TV's probe gets
+  an empty read) — the "allow incoming connections?" GUI prompt must be clicked once per python
+  path, so start netcond BEFORE going headless, and treat "netcond logs nothing" as this, not as a
+  quiet TV.
   Measured with it 2026-07-29: teardown's join of the `/:/timeline` reporter parked the main loop
   **6974 ms**; after moving that join onto the scrobble worker, BACK→teardown is **0.5 s**. NB a
   request occasionally fails through the proxy that succeeds direct (seen once on `POST /playQueues`)
