@@ -84,7 +84,7 @@ pub fn draw() {
 fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     // QR on a bright card (the white border is the scan quiet-zone). Plex's own PNG → we just show it.
     let card = Rect::new(360.0, 330.0, 400.0, 400.0);
-    p.rrect(card, 24.0, 24.0, theme::FILL_PRIMARY);
+    p.rrect(card, 24.0, 24.0, theme::SURFACE_QR_PLATE);
     ensure_qr_tex(s);
     if s.qr_tex != 0 {
         let pad = 30.0;

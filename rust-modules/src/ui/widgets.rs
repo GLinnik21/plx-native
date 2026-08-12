@@ -568,7 +568,13 @@ pub(crate) fn profile_chip(p: Painter, r: Rect, expand: f32) {
             closed + (open - closed) * e,
             d + 2.0 * TAB_TRACK_PAD,
         );
-        p.rect_sheened(cap, cap.h * 0.5, theme::scrim_black(0.72 * e), theme::scrim_black(0.82 * e));
+        // the tab track's own material, faded in with the unfurl — one pair of weights for both
+        p.rect_sheened(
+            cap,
+            cap.h * 0.5,
+            theme::scrim_black(theme::TAB_TRACK_A_TOP * e),
+            theme::scrim_black(theme::TAB_TRACK_A_BOT * e),
+        );
         // the name rides in on the TAIL of the widening, so the glyphs land in a capsule that has
         // already made room for them instead of smearing across the grow
         let na = ((e - 0.55) / 0.45).clamp(0.0, 1.0);
@@ -1789,9 +1795,10 @@ pub(crate) fn draw_tab_row(p: Painter) {
             view_w + 2.0 * TAB_TRACK_PAD,
             TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
         );
-        // dark-material weight: light enough to keep a hint of the art, dark enough that the
-        // TEXT_TERTIARY plain segments hold contrast even over near-white art
-        p.rect_sheened(track, track.h * 0.5, theme::scrim_black(0.72), theme::scrim_black(0.82));
+        // dark-material weight (`theme::TAB_TRACK_TOP` holds the reasoning): light enough to keep a
+        // hint of the art, dark enough that the TEXT_TERTIARY plain segments hold contrast even over
+        // near-white art
+        p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
         // scissor case (see the ui/CLAUDE.md clipping rule): a pill leaving the row is cut at the
         // pill area's edge — which is also the "there is more over there" affordance. Paired below.
@@ -1840,14 +1847,19 @@ pub(crate) fn draw_tab_row(p: Painter) {
 }
 
 /// Which colour treatment a control (Button / CircleButton) wears. One control widget, three looks —
-/// so the hero Play CTA, the focus-driven detail/info buttons, and one-off cases all share code.
+/// the focus-driven default (every pill and disc in the app, the hero Play button included), a
+/// caller-coloured one-off, and the keyline pill for a secondary action over video.
+///
+/// There used to be a fourth, `Primary`: an always-filled cool-white CTA. It went with
+/// `theme::FILL_PRIMARY` in the 2026-08-13 palette sync — **nothing is filled by rank, only by
+/// focus**, so a control that lights up while the remote is elsewhere is a lie about where you are,
+/// and at ten feet its white was indistinguishable from [`theme::ACCENT`] anyway. It had no callers
+/// by then; the hero Play pill has been `Accent` for months.
 #[derive(Clone, Copy)]
 pub enum ControlStyle {
-    /// focus-driven: focused → warm ACCENT + dark ink; idle → solid dark disc + white ink. The
+    /// focus-driven: focused → ACCENT + dark ink; idle → solid dark disc + white ink. The
     /// default, and the shared look of the transport buttons / info-card actions / detail buttons.
     Accent,
-    /// always the cool-white primary CTA (never darkens) — the hero Play button.
-    Primary,
     /// caller supplies the exact fill + ink.
     Custom { fill: [f32; 4], ink: [f32; 4] },
     /// The **keyline** pill — idle, a hairline outline ([`theme::PILL_KEYLINE`]) knocked out over
@@ -1863,7 +1875,6 @@ impl ControlStyle {
         match self {
             ControlStyle::Accent if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
             ControlStyle::Accent => (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK),
-            ControlStyle::Primary => (theme::FILL_PRIMARY, theme::INK_ON_PRIMARY),
             ControlStyle::Custom { fill, ink } => (fill, ink),
             ControlStyle::Keyline if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
             ControlStyle::Keyline => (theme::PILL_KEYLINE_BG, theme::TEXT_HEADING),

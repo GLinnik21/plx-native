@@ -32,6 +32,19 @@ behind its own checkpoints. Three carve-outs stay immediate-mode on purpose (§D
 
 ## (A) TOKEN TABLE
 
+> **This table is the ORIGINAL migration inventory (what each token replaced, at that day's line
+> numbers) — not the current palette.** `theme.rs` is. Several values below were superseded on the
+> device long ago (`SURFACE_APP` `[0.10,0.10,0.115]` → the Apple-TV shelf gray `#2c2c2e`, and with it
+> `CLEAR_RGB`), and the **2026-08-13 palette sync** with the `PlxNative Design System` project
+> changed five more: `ACCENT` went from the mockup's warm "Snow" `#e9e6e0` to Cool 0 `#f7fafc` and
+> the second control white went away with it (`FILL_PRIMARY`/`INK_ON_PRIMARY` and
+> `ControlStyle::Primary` are **gone** — nothing is filled by rank, only by focus; the cool plate
+> survives as `SURFACE_QR_PLATE`, a scan surface on the sign-in screen); `CONTROL_SPENT_FILL` is now
+> that accent mixed toward the shelf rather than a warm grey; `PANEL_TOP` is `SURFACE_PANEL`'s own
+> stop at .985; `SKELETON_TOP` is `CARD_PLACEHOLDER`'s stop, so both lean blue. `theme.rs` is also
+> two-layered now (private primitives → public roles, mirroring the design project's
+> `primitives.css` + `colors.css`), which is where a new shade goes.
+
 New module `rust-modules/src/ui/theme.rs`. Colors are `pub const [f32; 4]` unless noted.
 `ACCENT` / `ACCENT_INK` move here from `mod.rs:28-29` and are **re-exported** from `mod.rs`
 (`pub use theme::{ACCENT, ACCENT_INK};`) so existing `crate::ui::ACCENT` imports in

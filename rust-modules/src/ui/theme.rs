@@ -1,31 +1,93 @@
-//! `theme` — the single palette for the whole UI.
+//! `theme` — the single palette for the whole UI, in TWO LAYERS.
 //!
-//! Every color the UI paints comes from a named token here. The values are the player screen's
-//! literals promoted to canonical (it is the one screen with a coherent design language); the
-//! two *lossy* collapses (several near-white primaries → [`TEXT_PRIMARY`]; several dim greys →
-//! [`TEXT_SECONDARY`]/[`TEXT_TERTIARY`]) are deliberate and only visible on-device — see
-//! `docs/ui-system-migration.md` §A. Colors are `[f32; 4]` (r,g,b,a); scrims supply their alpha
-//! per call via [`scrim`]/[`scrim_black`].
+//! **Primitives** (private, at the top of this file) are the palette itself: the only place a colour
+//! CODE is written down. **Roles** (`pub`, everything after them) are the JOBS — [`TEXT_PRIMARY`],
+//! [`ACCENT`], [`HAIRLINE`] — and every role resolves to a primitive, never to a fresh literal. A
+//! screen may only ever name a role; that is the other end of `ui/CLAUDE.md`'s "never write a raw
+//! colour literal" rule. The design project mirrors this split exactly (`tokens/primitives.css` +
+//! `tokens/colors.css`), so a palette decision is one edit here and one there.
+//!
+//! Two roles may resolve to the SAME primitive and still stay two roles — [`ACCENT`] and
+//! [`TEXT_PRIMARY`] are both `COOL_0`, [`TEXT_TERTIARY`] and [`RATING_MUTED`] both `COOL_400` —
+//! because sharing a value is not sharing a job: retuning the focus fill must not restyle every
+//! title on the screen. They are values on one stop for that reason, not `pub use` aliases of each
+//! other.
+//!
+//! The values began as the player screen's literals promoted to canonical (it was the one screen
+//! with a coherent design language); the two *lossy* collapses (several near-whites → `COOL_0`;
+//! several dim greys → [`TEXT_SECONDARY`]/[`TEXT_TERTIARY`]) are deliberate and only visible
+//! on-device — see `docs/ui-system-migration.md` §A. Colors are `[f32; 4]` (r,g,b,a); scrims supply
+//! their alpha per call via [`scrim`]/[`scrim_black`].
 //!
 //! `ACCENT`/`ACCENT_INK` live here and are re-exported from `ui` (`mod.rs`) so the existing
 //! `crate::ui::ACCENT` call sites keep compiling unchanged.
 #![allow(dead_code)]
 
+// ── PRIMITIVES — the palette. PRIVATE: nothing outside this module may name a stop ───────────
+// Families are by hue, stops by lightness (0 = lightest). Every stop is an EXACT 8-bit code, which
+// is load-bearing rather than tidy: the panel is plain 888 with no sRGB framebuffer anywhere in the
+// tree, so a token value IS an sRGB code — and a FRACTIONAL one hands `GL_DITHER` (on by default in
+// GLES2) a half-code to alternate on across a large flat fill, which banded the app ground visibly
+// before it was snapped. So write the code and let `rgb8` do the division; never a decimal guess.
+/// An 8-bit sRGB code as an opaque token value. `rgb8(0x2c, 0x2c, 0x2e)` is `#2c2c2e`.
+const fn rgb8(r: u8, g: u8, b: u8) -> [f32; 4] {
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+}
+
+// Cool — blue-leaning: everything that is text, and artwork that has not loaded.
+const COOL_0: [f32; 4] = rgb8(0xf7, 0xfa, 0xfc);
+const COOL_50: [f32; 4] = rgb8(0xeb, 0xf0, 0xf7);
+const COOL_150: [f32; 4] = rgb8(0xdb, 0xe0, 0xeb);
+const COOL_200: [f32; 4] = rgb8(0xcd, 0xd3, 0xdd);
+const COOL_300: [f32; 4] = rgb8(0xb8, 0xbf, 0xcc);
+const COOL_400: [f32; 4] = rgb8(0x94, 0x99, 0xa3);
+const COOL_850: [f32; 4] = rgb8(0x1f, 0x21, 0x29);
+const COOL_900: [f32; 4] = rgb8(0x14, 0x17, 0x1c);
+
+// Neutral — achromatic: the shelf, panels, control plates, inks.
+const NEUTRAL_500: [f32; 4] = rgb8(0x2c, 0x2c, 0x2e);
+const NEUTRAL_600: [f32; 4] = rgb8(0x25, 0x25, 0x27);
+const NEUTRAL_650: [f32; 4] = rgb8(0x22, 0x22, 0x24);
+const NEUTRAL_750: [f32; 4] = rgb8(0x1b, 0x1b, 0x1d);
+const NEUTRAL_850: [f32; 4] = rgb8(0x14, 0x14, 0x16);
+const NEUTRAL_950: [f32; 4] = rgb8(0x08, 0x08, 0x0a);
+const NEUTRAL_1000: [f32; 4] = rgb8(0x05, 0x05, 0x08);
+const WHITE: [f32; 4] = rgb8(0xff, 0xff, 0xff);
+const BLACK: [f32; 4] = rgb8(0x00, 0x00, 0x00);
+
+// Sand — one warm off-white, and it has exactly one job: the ambient wash's resting cast.
+const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
+
+// Semantic — amber / red / green: state and verdict, never decoration.
+const AMBER_300: [f32; 4] = rgb8(0xfa, 0xb8, 0x2e);
+const AMBER_400: [f32; 4] = rgb8(0xf0, 0xb4, 0x29);
+const AMBER_500: [f32; 4] = rgb8(0xe5, 0xa0, 0x0d);
+const AMBER_950: [f32; 4] = rgb8(0x1a, 0x12, 0x04);
+const RED_400: [f32; 4] = rgb8(0xeb, 0x52, 0x4a);
+const RED_500: [f32; 4] = rgb8(0xf5, 0x34, 0x1a);
+const GREEN_400: [f32; 4] = rgb8(0x3e, 0xc9, 0x6b);
+const GREEN_500: [f32; 4] = rgb8(0x2f, 0xae, 0x5b);
+
+// The two ALPHA ramps are `WHITE`/`BLACK` at a measured weight, spelled `with_a(WHITE, .20)` at the
+// role: a new overlay is a weight on that ramp, never a new hue. `NEUTRAL_900` (#0c0c0d) is not a
+// primitive here because its one role — the tab track — is a translucent GRADIENT in this renderer;
+// see `TAB_TRACK_TOP`.
+
 // ── Text ────────────────────────────────────────────────────────────────────
 /// Primary reading text / high-emphasis title. Collapses the 3-4 near-whites.
-pub const TEXT_PRIMARY: [f32; 4] = [0.97, 0.98, 0.99, 1.0];
+pub const TEXT_PRIMARY: [f32; 4] = COOL_0;
 /// Section headings ("Related", "Cast & Crew", About headings) — a touch below primary.
-pub const TEXT_HEADING: [f32; 4] = [0.92, 0.94, 0.97, 1.0];
+pub const TEXT_HEADING: [f32; 4] = COOL_50;
 /// Secondary text: metadata lines, idle row titles.
-pub const TEXT_SECONDARY: [f32; 4] = [0.72, 0.75, 0.80, 1.0];
+pub const TEXT_SECONDARY: [f32; 4] = COOL_300;
 /// **Reading copy** — a multi-line paragraph someone actually reads through, one step brighter than
 /// the label grey above it (`#cdd3dd`, `Details Screen.dc.html`). Its one job today is the detail
 /// hero's synopsis, which is the longest run of text on the page and sits over the backdrop scrim;
 /// at [`TEXT_SECONDARY`] it read as fine print rather than as the blurb. A one-line metadata VALUE
 /// stays secondary — the distinction is paragraph-vs-label, not importance.
-pub const TEXT_READING: [f32; 4] = [0.804, 0.827, 0.867, 1.0];
+pub const TEXT_READING: [f32; 4] = COOL_200;
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
-pub const TEXT_TERTIARY: [f32; 4] = [0.58, 0.60, 0.64, 1.0];
+pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
 /// The `·` between fine-print facts, and **only** that — a step below the words it separates.
 /// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is
 /// worth keeping: a dot at the full ink of its neighbours joins the list instead of punctuating
@@ -155,57 +217,74 @@ pub mod logo {
 }
 
 // ── Accent / control ─────────────────────────────────────────────────────────
-/// The mockup's "Snow": warm off-white focus fill (#e9e6e0). Focused controls fill this.
-pub const ACCENT: [f32; 4] = [0.914, 0.902, 0.878, 1.0];
+/// **The focus fill — and the only fill a control can light up with.** `COOL_0`: the same near-white
+/// [`TEXT_PRIMARY`] is, and the same the tab bar inks a selected label in, because a control lights
+/// up for exactly one reason — the remote is on it. Nothing is filled by RANK, so there is no
+/// always-filled primary CTA: the hero Play pill sits idle like everything else until focus reaches
+/// it.
+///
+/// It was the mockup's warm "Snow" `#e9e6e0` until the 2026-08-13 palette sync, alongside a second,
+/// cooler control white for the "primary" CTA (`FILL_PRIMARY`/`INK_ON_PRIMARY`, and
+/// `ControlStyle::Primary` with them). At ten feet nobody could tell the two whites apart, so the
+/// pair collapsed onto this one. Both survivors of that collapse are elsewhere and neither is a
+/// control: the warm off-white is [`WASH_WARM`], a page ground; the cool plate is
+/// [`SURFACE_QR_PLATE`], a scan surface.
+pub const ACCENT: [f32; 4] = COOL_0;
 /// Near-black ink/glyphs drawn over [`ACCENT`].
-pub const ACCENT_INK: [f32; 4] = [0.03, 0.03, 0.04, 1.0];
-/// Alias for [`ACCENT_INK`] read from the "ink over accent" intent.
+pub const ACCENT_INK: [f32; 4] = NEUTRAL_950;
+/// Alias for [`ACCENT_INK`] read from the "ink over accent" intent. The one legitimate alias in this
+/// file: it is the same ROLE under a second name, not a second role that happens to share a stop.
 pub const INK_ON_ACCENT: [f32; 4] = ACCENT_INK;
 /// The *spent* portion of a control that is counting down ([`Button::progress`](crate::ui::widgets::Button::progress)).
-/// A dimmed [`ACCENT`], NOT a different hue: the control stays focused-looking end to end, so the
-/// sweep reads as time passing rather than as the focus state changing. Deliberately close enough
-/// to `ACCENT` that [`ACCENT_INK`] stays legible on BOTH sides — the first version flipped the ink
-/// at the sweep line and cut the label in half mid-word.
-pub const CONTROL_SPENT_FILL: [f32; 4] = [0.749, 0.739, 0.720, 1.0];
+/// [`ACCENT`] mixed a quarter of the way to the shelf ([`SURFACE_APP`]), NOT a different hue: the
+/// control stays focused-looking end to end, so the sweep reads as time passing rather than as the
+/// focus state changing. Deliberately close enough to `ACCENT` that [`ACCENT_INK`] stays legible on
+/// BOTH sides — the first version flipped the ink at the sweep line and cut the label in half
+/// mid-word.
+pub const CONTROL_SPENT_FILL: [f32; 4] = mix(COOL_0, NEUTRAL_500, 0.24);
 
 /// Idle (unfocused) control disc/pill fill — solid dark, faintly translucent.
-pub const CONTROL_IDLE_FILL: [f32; 4] = [0.145, 0.145, 0.153, 0.92];
+pub const CONTROL_IDLE_FILL: [f32; 4] = with_a(NEUTRAL_600, 0.92);
 /// White glyph/label over an idle control.
-pub const CONTROL_IDLE_INK: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-/// Primary-CTA cool-white *fill* (a control surface, not text) — e.g. the hero Play pill.
-pub const FILL_PRIMARY: [f32; 4] = [0.97, 0.98, 0.99, 1.0];
-/// Near-black ink over [`FILL_PRIMARY`].
-pub const INK_ON_PRIMARY: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
+pub const CONTROL_IDLE_INK: [f32; 4] = WHITE;
 
 // ── Surfaces / backgrounds ───────────────────────────────────────────────────
 /// Flat shelf/app base (both gradient stops) — Apple TV's shelf gray **#2C2C2E (44,44,46)**. A
 /// MEDIUM gray, deliberately not near-black: the focused-card drop-shadow only reads against a base
-/// this light (on the old near-black 25,25,29 a black shadow had almost nothing to darken). Snapped
-/// to exact 8-bit codes (44/44/46 are all integers) so `GL_DITHER` — on by default in GLES2 — has no
-/// half-code to alternate on across this large flat fill (a half-code banded the old value visibly).
-pub const SURFACE_APP: [f32; 4] = [44.0 / 255.0, 44.0 / 255.0, 46.0 / 255.0, 1.0];
-/// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). The app's DEFAULT base: the same
-/// `#2C2C2E` shelf gray as [`SURFACE_APP`], so every non-player screen clears to the Apple-TV gray
-/// (the player clears transparent separately). Home overdraws it with `SURFACE_APP` (identical gray).
-pub const CLEAR_RGB: (f32, f32, f32) = (44.0 / 255.0, 44.0 / 255.0, 46.0 / 255.0);
+/// this light (on the old near-black 25,25,29 a black shadow had almost nothing to darken).
+pub const SURFACE_APP: [f32; 4] = NEUTRAL_500;
+/// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). The app's DEFAULT base, and
+/// [`SURFACE_APP`] itself rather than a second copy of its code: every non-player screen clears to
+/// the Apple-TV gray (the player clears transparent separately), which is what makes a route change
+/// read as a seamless dip. Home overdraws it with `SURFACE_APP` (the identical gray).
+pub const CLEAR_RGB: (f32, f32, f32) = (SURFACE_APP[0], SURFACE_APP[1], SURFACE_APP[2]);
 /// Opaque menu panel / fade mask / badge knockout interior.
-pub const SURFACE_PANEL: [f32; 4] = [0.133, 0.133, 0.141, 1.0];
-/// Near-opaque sheet/card gradient — top stop.
-pub const PANEL_TOP: [f32; 4] = [0.129, 0.129, 0.137, 0.985];
+pub const SURFACE_PANEL: [f32; 4] = NEUTRAL_650;
+/// Near-opaque sheet/card gradient — top stop. [`SURFACE_PANEL`]'s own stop at .985, so the sheet
+/// and its opaque twin are one material rather than two greys a hair apart.
+pub const PANEL_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.985);
 /// Near-opaque sheet gradient — bottom stop (kept distinct; the gradient is deliberate).
-pub const PANEL_BOT: [f32; 4] = [0.106, 0.106, 0.114, 0.985];
+pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
+/// The sign-in **QR card's** quiet-zone plate (`login.rs`) — a bright cool-white whose job is SCAN
+/// CONTRAST for a phone camera, not focus. It is a SURFACE, not a control fill, which is the whole
+/// reason it outlived the second control white it used to be (`FILL_PRIMARY`): a plate under a
+/// black-tinted QR texture, and the only place in the app where the app paints something this
+/// bright on purpose.
+pub const SURFACE_QR_PLATE: [f32; 4] = COOL_0;
 /// Poster/thumb skeleton flat placeholder.
-pub const CARD_PLACEHOLDER: [f32; 4] = [0.12, 0.13, 0.16, 1.0];
-/// Loading-skeleton gradient — top.
-pub const SKELETON_TOP: [f32; 4] = [0.13, 0.14, 0.17, 1.0];
+pub const CARD_PLACEHOLDER: [f32; 4] = COOL_850;
+/// Loading-skeleton gradient — top. The same `COOL_850` stop as [`CARD_PLACEHOLDER`]: a card whose
+/// artwork is on the way and one with none to load are the same object at rest. Both lean BLUE,
+/// away from the neutral panel greys, so a missing poster never reads as a panel.
+pub const SKELETON_TOP: [f32; 4] = COOL_850;
 /// Loading-skeleton gradient — bottom.
-pub const SKELETON_BOT: [f32; 4] = [0.08, 0.09, 0.11, 1.0];
+pub const SKELETON_BOT: [f32; 4] = COOL_900;
 
 // ── Scrims (near-black; alpha supplied per call) ─────────────────────────────
 /// Hero/scroll scrim ink; use via [`scrim`].
-pub const SCRIM_INK: [f32; 3] = [0.02, 0.02, 0.03];
+pub const SCRIM_INK: [f32; 3] = [NEUTRAL_1000[0], NEUTRAL_1000[1], NEUTRAL_1000[2]];
 /// Pure-black scrim ink (HUD bottom, subtitle outline, modal); use via [`scrim_black`].
-pub const SCRIM_BLACK_INK: [f32; 3] = [0.0, 0.0, 0.0];
+pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 
 /// The **text-legibility floor** for copy drawn straight onto ARTWORK: the scrim alpha at which
 /// [`TEXT_PRIMARY`]/[`TEXT_SECONDARY`] hold ≥4.5:1 over a bright backdrop (an encoded 0.85
@@ -218,10 +297,11 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [0.0, 0.0, 0.0];
 /// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
 /// ~0.29: it needs 0.655 total, so the wedge must carry ~0.51 there and rather more at the title.
 ///
-/// The same weight `draw_tab_row`'s track capsule already uses for the same job over the same
-/// artwork — one value per role, arrived at independently twice. An alpha rather than a colour,
-/// like [`CARD_SHADOW_REST_A`]: the ink is [`SCRIM_INK`], only the weight is the decision. **This is
-/// the one knob** if the treatment reads heavy — 0.60 still clears 3:1 everywhere.
+/// The same weight the tab bar's own track capsule already uses for the same job over the same
+/// artwork ([`TAB_TRACK_A_TOP`]) — one value per role, arrived at independently twice. An alpha
+/// rather than a colour, like [`CARD_SHADOW_REST_A`]: the ink is [`SCRIM_INK`], only the weight is
+/// the decision. **This is the one knob** if the treatment reads heavy — 0.60 still clears 3:1
+/// everywhere.
 pub const SCRIM_TEXT_A: f32 = 0.72;
 
 /// Near-black scrim at alpha `a` — hero/scroll dimming.
@@ -232,14 +312,17 @@ pub const fn scrim(a: f32) -> [f32; 4] {
 pub const fn scrim_black(a: f32) -> [f32; 4] {
     [SCRIM_BLACK_INK[0], SCRIM_BLACK_INK[1], SCRIM_BLACK_INK[2], a]
 }
-/// Splat a token's rgb with an overridden alpha (e.g. the `env.sp`-baked hub title).
+/// Splat a token's rgb with an overridden alpha (e.g. the `env.sp`-baked hub title). Also how a role
+/// spells a stop on the white/black **alpha ramps**: `with_a(WHITE, 0.20)`.
 pub const fn with_a(c: [f32; 4], a: f32) -> [f32; 4] {
     [c[0], c[1], c[2], a]
 }
 /// Blend `a` toward `b` by `t` (rgb only; keeps `a`'s alpha) — for a token that is a *mix* of two
 /// roles rather than one of them, e.g. an ambient wash sitting `t` of the way from [`SURFACE_APP`]
-/// to an item's artwork colour. A screen that lerps channels in a loop wants this instead.
-pub fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+/// to an item's artwork colour. A screen that lerps channels in a loop wants this instead. `const`
+/// so a ROLE can be spelled as a mix of two primitives ([`CONTROL_SPENT_FILL`]) — the design
+/// project's `color-mix(in srgb, …)`.
+pub const fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3]]
 }
 /// Scale a token's rgb by `k` toward black, keeping its alpha — e.g. folding a scroll-darken into a
@@ -250,11 +333,11 @@ pub const fn dim(c: [f32; 4], k: f32) -> [f32; 4] {
 
 // ── Rails / overlays / accents ───────────────────────────────────────────────
 /// Unfilled progress/scrubber track.
-pub const RAIL_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
+pub const RAIL_TRACK: [f32; 4] = with_a(WHITE, 0.20);
 /// Buffered-ahead / resume-track band.
-pub const RAIL_BUFFERED: [f32; 4] = [1.0, 1.0, 1.0, 0.28];
+pub const RAIL_BUFFERED: [f32; 4] = with_a(WHITE, 0.28);
 /// Played/filled portion of a rail.
-pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
+pub const RAIL_FILL: [f32; 4] = with_a(WHITE, 0.95);
 /// An intro/credits SEGMENT on the player scrubber — a band lit a step above the track, drawn
 /// between the track and the fill so the played part of a segment reads as played. Stays inside the
 /// rail's monochrome language on purpose: a hue here would compete with the amber resume fill for
@@ -264,12 +347,12 @@ pub const RAIL_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 // information. See the "the rail carries NO marks" note in ui/player_hud.rs.)
 /// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
 /// keying it (the person page's header state, `Person Screen v2.dc.html`'s
-/// `rgba(233,230,224,.10)`). Its own token rather than [`ACCENT`], which it is a hair from: ACCENT
-/// is a *focus fill* ("focused controls fill this"), and borrowing it here would mean retuning the
-/// focus colour silently restyles a page background — one value per role.
-pub const WASH_WARM: [f32; 4] = [0.914, 0.902, 0.878, 1.0];
+/// `rgba(233,230,224,.10)`). The palette's one warm stop, and the only survivor of the warm "Snow"
+/// [`ACCENT`] used to be: a page GROUND, never a control. Its own role rather than a borrowed one,
+/// so retuning a focus colour can never silently restyle a page background.
+pub const WASH_WARM: [f32; 4] = SAND_100;
 /// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent). `#fab82e`.
-pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
+pub const RESUME_FILL: [f32; 4] = with_a(AMBER_300, 0.95);
 /// Plex's own "Plex Pass" gold, `#e5a00d` — a BRAND REFERENCE, not a palette member
 /// (`Plex Pass Awareness.dc.html`, "the amber decision"). Two ambers exist ON PURPOSE and stay
 /// two tokens: [`RESUME_FILL`] is ours and tunable; this one names somebody else's colour and
@@ -283,30 +366,51 @@ pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
 /// which is the trademark position. [`crate::ui::widgets::pass_capsule`] is its only consumer
 /// besides ink; a line carries at most one gold thing, and warning severity is never amber — it
 /// is carried by glyph, stroke and contrast.
-pub const PASS_GOLD: [f32; 4] = [0.898, 0.627, 0.051, 1.0];
+pub const PASS_GOLD: [f32; 4] = AMBER_500;
 /// Near-black ink over a [`PASS_GOLD`] fill — the error read-out's FILLED capsule, the one place
 /// the capsule fills (on pure black an outline has no ground and reads as a hole). `#1a1204`.
-pub const PASS_GOLD_INK: [f32; 4] = [0.102, 0.071, 0.016, 1.0];
+pub const PASS_GOLD_INK: [f32; 4] = AMBER_950;
 /// Unfilled track behind the Continue-Watching resume bar — the full-bleed card-bottom rail. A
 /// hair lighter than the player scrubber's so the amber reads against a bright poster.
-pub const RESUME_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.22];
+pub const RESUME_TRACK: [f32; 4] = with_a(WHITE, 0.22);
 /// Ink over [`RESUME_FILL`] when the amber is a SURFACE rather than a mark — the dark check knocked
 /// out of the episode still's watched disc (`Details Screen.dc.html`'s `#141416`). Distinct from
 /// [`ACCENT_INK`]: that one is tuned against the near-white [`ACCENT`], and at that value it
 /// disappeared into the amber rather than reading as a knockout.
-pub const INK_ON_RESUME: [f32; 4] = [0.078, 0.078, 0.086, 1.0];
+pub const INK_ON_RESUME: [f32; 4] = NEUTRAL_850;
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
-pub const DANGER: [f32; 4] = [0.92, 0.32, 0.29, 1.0];
+pub const DANGER: [f32; 4] = RED_400;
 /// Section divider hairline.
-pub const HAIRLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.10];
+pub const HAIRLINE: [f32; 4] = with_a(WHITE, 0.10);
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).
-pub const OVERLAY_FOCUS_PILL: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
+pub const OVERLAY_FOCUS_PILL: [f32; 4] = with_a(WHITE, 0.14);
+/// The shared top tab bar's **TRACK** — the recessed near-black capsule the tab pills sit in, and
+/// the one thing that owns their legibility over bright hero art (inside it a plain segment can stay
+/// bare [`TEXT_TERTIARY`] text, and the wedge above deliberately stops short of it: see
+/// `widgets::HERO_BASE_SCRIM_Y0`). Dark-material weight — light enough to keep a hint of the
+/// artwork, dark enough that tertiary ink holds over near-white art — and a GRADIENT: this top stop
+/// plus [`TAB_TRACK_BOT`].
+///
+/// The design project flattens the pair to one opaque code (`--tab-track-fill`, Neutral 900
+/// `#0c0c0d`) because CSS cannot say "black at .72 over whatever happens to be behind it". That code
+/// IS this stop composited over [`SURFACE_APP`] (44 × 0.28 ≈ 12), which is what makes the two
+/// descriptions one material rather than two decisions.
+pub const TAB_TRACK_TOP: [f32; 4] = scrim_black(TAB_TRACK_A_TOP);
+/// The track's bottom stop — see [`TAB_TRACK_TOP`].
+pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
+/// The track material's two weights, exposed as alphas because the focused **profile chip** wears
+/// the same material and FADES it in with its unfurl (`scrim_black(A * e)`) — one material and one
+/// pair of weights whether it is painted at full strength or on the way in, which is what keeps the
+/// chip's capsule and the tab track reading as one band on the top chrome line.
+pub const TAB_TRACK_A_TOP: f32 = 0.72;
+/// See [`TAB_TRACK_A_TOP`].
+pub const TAB_TRACK_A_BOT: f32 = 0.82;
 /// A PLATED tab segment's fill — the detail page's season tabs, which sit bare on the backdrop rather
 /// than inside the top bar's track and so provide their own ground
 /// ([`crate::ui::widgets::TabPill::plated`], `Details Screen.dc.html`). The selected one is a step up
 /// from [`OVERLAY_FOCUS_PILL`]: at .14 against a plated neighbour at .08 the two read as the same pill.
-pub const TAB_PLATE_SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
+pub const TAB_PLATE_SELECTED: [f32; 4] = with_a(WHITE, 0.20);
 /// The selected-segment plate as a **travelling capsule** over a plated strip
 /// ([`crate::ui::widgets::TabStrip`]). It is deliberately not [`TAB_PLATE_SELECTED`]: that value
 /// assumed the selected plate REPLACED the idle one, whereas a capsule *slides over* the idle plates
@@ -317,19 +421,25 @@ pub const TAB_PLATE_SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.20];
 ///
 /// The top tab row needs no such value: its pills sit bare inside the tab-bar track (which already
 /// is their ground) and its selection capsule uses [`OVERLAY_FOCUS_PILL`] unchanged.
-pub const TAB_PLATE_SELECTED_OVER: [f32; 4] = [1.0, 1.0, 1.0, 0.13];
+pub const TAB_PLATE_SELECTED_OVER: [f32; 4] = with_a(WHITE, 0.13);
 /// An unselected plated segment — present, but only just: it says "this is a control" and nothing more.
-pub const TAB_PLATE_IDLE: [f32; 4] = [1.0, 1.0, 1.0, 0.08];
-/// Softer selection panel.
-pub const OVERLAY_FOCUS_SOFT: [f32; 4] = [1.0, 1.0, 1.0, 0.07];
+pub const TAB_PLATE_IDLE: [f32; 4] = with_a(WHITE, 0.08);
+/// Softer selection panel — the lightest weight on the overlay ramp.
+///
+/// Held at **.07**, which is where the design project disagrees with itself: its `tokens/colors.css`
+/// resolves this role to the ramp's .08 stop, while its own overlay specimen card and its readme
+/// both label it .07 (the product's value, and what the ramp was built from). A 1/255 white is
+/// invisible either way, so the tie is broken by what is documented twice — do not let it become .08
+/// as a side effect of a sync.
+pub const OVERLAY_FOCUS_SOFT: [f32; 4] = with_a(WHITE, 0.07);
 /// Outlined-badge / meta-badge border.
-pub const OVERLAY_BORDER: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
+pub const OVERLAY_BORDER: [f32; 4] = with_a(WHITE, 0.55);
 /// The keyline PILL's stroke — a secondary action outlined over scrimmed video (the post-play
 /// card's "Watch credits"; `Plex Pass Awareness.dc.html` deliverable D: stroke 1.5, white .38).
 /// Deliberately a step quieter than [`OVERLAY_BORDER`]: that value is tuned for a 2px chip border
 /// on a panel, and at .55 a 60px capsule outline over a ~.85 black scrim becomes the row's
 /// brightest object, outshining the filled primary beside it.
-pub const PILL_KEYLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.38];
+pub const PILL_KEYLINE: [f32; 4] = with_a(WHITE, 0.38);
 /// The keyline pill's knockout interior — and here the knockout is the DESIGN, not a limitation.
 /// (`Painter::rring` draws a genuinely hollow outline now, which is what `keyline_chip` and the
 /// PLEX PASS capsule use.) This pill sits over LIVE VIDEO, where a hollow ring would leave the
@@ -337,10 +447,11 @@ pub const PILL_KEYLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.38];
 /// keeps the scrimmed credits part of the surface instead of punching an opaque hole in them (and
 /// doubles as the quiet plate [`TEXT_HEADING`] ink needs).
 pub const PILL_KEYLINE_BG: [f32; 4] = scrim_black(0.55);
-/// Filled metadata chip (the About column's CC/SDH/AD accessibility badges).
-pub const BADGE_FILL: [f32; 4] = [0.86, 0.88, 0.92, 0.20];
+/// Filled metadata chip (the About column's CC/SDH/AD accessibility badges). A COOL tint rather than
+/// plain white at a weight, so a chip reads as a plate rather than as a gap in the panel.
+pub const BADGE_FILL: [f32; 4] = with_a(COOL_150, 0.20);
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
-pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+pub const TINT_WHITE: [f32; 4] = WHITE;
 
 // ── Review-score marks (detail hero ratings row) ─────────────────────────────
 // These used to be the ONE place the palette borrowed someone else's colour, justified by the
@@ -354,23 +465,24 @@ pub const TINT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 // the UI. The row's captions and scores use the ordinary TEXT_* tokens, which is the point: the
 // only colour left in the row is the verdict.
 /// The ripe tomato's body — `#f5341a`.
-pub const RATING_FRESH: [f32; 4] = [0.961, 0.204, 0.102, 1.0];
+pub const RATING_FRESH: [f32; 4] = RED_500;
 /// The Certified body — `#f0b429`. The SAME fruit struck in gold rather than a separate seal:
 /// a rarer bar reads as a richer version of the thing, and a seal was the one shape here that was
 /// unmistakably somebody's award rather than a piece of fruit.
-pub const RATING_CERTIFIED: [f32; 4] = [0.941, 0.706, 0.161, 1.0];
+pub const RATING_CERTIFIED: [f32; 4] = AMBER_400;
 /// The audience crowd when the verdict is good — `#3ec96b`. Note the polarity across the row is
 /// deliberately NOT uniform: critics go red-for-good (a ripe tomato), audience goes green-for-good
 /// (a healthy crowd). Each mark is read against itself, not against its neighbour.
-pub const RATING_AUDIENCE: [f32; 4] = [0.243, 0.788, 0.420, 1.0];
+pub const RATING_AUDIENCE: [f32; 4] = GREEN_400;
 /// The **calyx** green — the tomato's leaf-and-stem, on a fresh or certified body. `#2fae5b`, and
 /// deliberately not [`RATING_AUDIENCE`]: they are two marks' greens that land close, and folding
 /// them would let an audience tweak silently restyle a leaf.
-pub const RATING_LEAF: [f32; 4] = [0.184, 0.682, 0.357, 1.0];
-/// The drained state, for both a hollow tomato and a negated crowd — an ALIAS of
-/// [`TEXT_TERTIARY`], not a copy, because the negation is literally "this has the weight of a
-/// caption now". An alias so the two can never drift apart.
-pub const RATING_MUTED: [f32; 4] = TEXT_TERTIARY;
+pub const RATING_LEAF: [f32; 4] = GREEN_500;
+/// The drained state, for both a hollow tomato and a negated crowd — `COOL_400`, the same stop
+/// [`TEXT_TERTIARY`] resolves to, because the negation is literally "this has the weight of a
+/// caption now". Its own role ON that stop rather than an alias OF the text token: a verdict mark
+/// and a runtime label are two jobs, and retuning one must not restyle the other.
+pub const RATING_MUTED: [f32; 4] = COOL_400;
 
 // ── Card-glow geometry (the glow *color* is shader-baked in gfx.rs's FS_SRC/FS_IMG; only geometry
 // is tunable). The hero-grid card's wide glow pad is `consts::GLOW_PAD` (shared with off-screen
@@ -384,13 +496,13 @@ pub const CARD_RING_RAD: f32 = 14.0;
 // The edge-sheen is a single thin rounded-rect stroke flush around the whole perimeter (following the
 // corner radius), CONSTANT strength on every tile — NOT a gloss/wash over the card face.
 /// The 1px perimeter edge-highlight on a tile (white, faintly translucent).
-pub const CARD_SHEEN: [f32; 4] = [1.0, 1.0, 1.0, 0.22];
+pub const CARD_SHEEN: [f32; 4] = with_a(WHITE, 0.22);
 /// Stroke width (px) of the perimeter edge-highlight.
 pub const CARD_SHEEN_W: f32 = 1.0;
 /// Drop-shadow ink under a raised card — pure black (the design's `rgba(0,0,0,…)`), alpha supplied per
 /// call (× the resting→lifted focus ramp). Only the alpha/rgb matter for the folded card shadow (the
 /// rgb is used by the chip's standalone shadow); its own token (not `scrim_black`) so it can be tuned alone.
-pub const CARD_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.40];
+pub const CARD_SHADOW: [f32; 4] = with_a(BLACK, 0.40);
 /// Focused (LIFTED) card drop-shadow penumbra (px) and downward offset (px) — the CAPS on the
 /// tile-scaled values. Kept subtle: on the `SURFACE_APP` gray shelf a tight, close shadow already
 /// reads, so this is a gentle lift, not the design's oversized `0 30px 70px` pool.

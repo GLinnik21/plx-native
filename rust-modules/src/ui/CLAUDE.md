@@ -18,6 +18,14 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    doesn't exist yet? **Add a token to `theme.rs`** (with a doc line saying what it's for) and use
    that — don't inline `[0.9, 0.9, 0.9, 1.0]`. If your shade is within a hair of an existing token,
    use the existing one; the point is one value per role, not a value per call site.
+   `theme.rs` is **two layers**, so "add a token" has two halves: a new token is a **role** (a job:
+   what is this colour *for*) and it resolves to a **primitive** (a stop on the palette, private to
+   that module) — reach for an existing stop first, and only add one when the palette genuinely has
+   no such shade, as an exact 8-bit code via `rgb8`. Two roles landing on one stop is expected and
+   stays two roles (`ACCENT` and `TEXT_PRIMARY` are both Cool 0): retuning the focus fill must not
+   restyle every title on screen. Overlays are `with_a(WHITE, a)` on the measured alpha ramp — a new
+   overlay is a weight, never a new hue. The layering mirrors the `PlxNative Design System` project
+   (`tokens/primitives.css` + `tokens/colors.css`), so a palette decision is one edit in each.
 
 2. **Never write a raw text size — every text size in the UI is a `theme::size` token.** The named
    rungs are `size::HERO` 72 / `size::DISPLAY` 48 / `size::TITLE` 40 / `size::HEADLINE` 32 /
@@ -51,7 +59,7 @@ one: an undocumented module is one the next person re-implements.
 
 | File | Owns |
 |---|---|
-| `theme.rs` | **all color tokens** + the **`size` type scale** (HERO…MICRO, legibility floor CAPTION 24) + the **`space` gap scale** (`XS` 8 / `SM` 16 / `MD` 24 / `LG` 40 / `XL` 64 — the sibling axis of `size`; a gap between stacked blocks comes from a rung, never a hand-tuned offset) + `scrim`/`scrim_black`/`with_a`/`dim`/`mix` helpers + focus-ring geometry consts, + the **`logo` presence ladder** (`logo::HERO_AREA`/`HERO_H_MIN`/`HERO_H_MAX` and the COMPACT trio — how big a clearLogo is DRAWN, the third size axis: the rule is constant AREA, not constant height, because under a height clamp a 5:1 wordmark covered 5× the ink of a 1:1 emblem). The single palette + type/space/logo ladders. |
+| `theme.rs` | **all color tokens, in two layers** (private PRIMITIVES — the palette, the only place a colour code is written down — then public ROLES that resolve to them; see rule 1) + the **`size` type scale** (HERO…MICRO, legibility floor CAPTION 24) + the **`space` gap scale** (`XS` 8 / `SM` 16 / `MD` 24 / `LG` 40 / `XL` 64 — the sibling axis of `size`; a gap between stacked blocks comes from a rung, never a hand-tuned offset) + `scrim`/`scrim_black`/`with_a`/`dim`/`mix` helpers + focus-ring geometry consts, + the **`logo` presence ladder** (`logo::HERO_AREA`/`HERO_H_MIN`/`HERO_H_MAX` and the COMPACT trio — how big a clearLogo is DRAWN, the third size axis: the rule is constant AREA, not constant height, because under a height clamp a 5:1 wordmark covered 5× the ink of a 1:1 emblem). The single palette + type/space/logo ladders. |
 | `mod.rs` | the retui core: `Painter` (cascading alpha/translate — draw through it, never call `gfx::*` directly from a screen; `ambient` is the four-corner field that writes OPAQUE pixels and `grad4` its per-corner-alpha twin, the only 2-D gradient the renderer has — `rect`'s is vertical only. `ambient` does honour the cascade, but as the only thing an opaque full-screen field can mean by it: an alpha below 1 mixes its corners toward `theme::SURFACE_APP`, so a page wash dips to the app's own ground for `nav`'s route transition instead of sitting there at full strength while everything else fades), `Rect` (+`cover`, the `background-size: cover` fit every full-bleed backdrop needs because `tex` maps UV 0..1 across the rect and would otherwise SQUASH a source that is not the frame's aspect)/`Size`/`Spring`/`Env`, the `View` trait, and the shared screen primitives `on_axis` (the ONE off-screen cull test the scroll flow uses to skip off-frame children — culling, not the `Painter::clip` scissor) / `hero_alpha` (the ONE hero-fade curve both screens call) / `ScrollColumn`+`Column` (the scroll-into-content container detail's below-hero flow is composed from). |
 | `label.rs` | `Label` — single-run cap-band text (the layout ≠ paint primitive). Also `HAlign`/`VAlign`. |
 | `text_view.rs` | `TextView` — multi-line cap-band text: pixel word-wrap + ellipsis + `measure_h`, wrap-cached. |

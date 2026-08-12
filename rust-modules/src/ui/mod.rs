@@ -44,8 +44,8 @@ pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
 
-/// Player HUD accent palette — the mockup's "Snow": a warm off-white focus fill with near-black
-/// ink/icons over it. The focused control (button, pill, menu row) fills ACCENT; its label/glyph
+/// The focus fill — a near-white with near-black ink/icons over it, and the only fill a control
+/// lights up with. The focused control (button, pill, menu row) fills ACCENT; its label/glyph
 /// draws in ACCENT_INK. Idle controls use a faint white fill + white ink.
 /// Canonical values now live in [`theme`]; re-exported so existing `crate::ui::ACCENT` sites hold.
 pub use theme::{ACCENT, ACCENT_INK};
