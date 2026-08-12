@@ -597,12 +597,23 @@ gh release view "v$V" --repo $REPO --json body -q .body | grep -oE 'https?://[^ 
   | xargs -n1 -I{} sh -c 'printf "%s " {}; curl -o /dev/null -s -w "%{http_code}\n" -L {}'
 ```
 
-**13 — the published body is the committed file.**
+**13 — the published body is the committed file, with only the five sentinels filled.**
 
 ```sh
-diff <(gh release view "v$V" --repo $REPO --json body -q .body) docs/release-notes/v$V.md
-# only GitHub's appended "**Full Changelog**" line may differ
+diff <(gh release view "v$V" --repo $REPO --json body -q .body) \
+     <(sed -e "s|__IPK_SHA256__|$(shasum -a 256 com.beb.plxnative_${V}_arm.ipk | cut -d' ' -f1)|" \
+           -e "s|__COMMIT__|$(git rev-parse "v$V")|" \
+           -e 's|__RUN_URL__|.*|' -e 's|__IPK_SIZE__|.*|' -e 's|__INSTALLED_SIZE__|.*|' \
+           docs/release-notes/v$V.md)
+# only GitHub's appended "**Full Changelog**" line, and the three .* lines, may differ
 ```
+
+Five values cannot exist in a committed file — the artifact's sha256, the commit, the run URL and
+the two sizes — so the note carries `__IPK_SHA256__`, `__COMMIT__`, `__RUN_URL__`, `__IPK_SIZE__`
+and `__INSTALLED_SIZE__`, and `release.yml`'s publish job fills them from the artifacts before
+publishing. That is not a loophole in "no number a human typed" — it is the enforcement of it:
+`ci/check-package.py` refuses a note that lost a sentinel, and refuses one that carries a literal
+64-hex hash beside them (which would be a stale hash from a previous release, or a typed one).
 
 ---
 
@@ -653,10 +664,18 @@ the directory, which is also where the notes are.
 
 **Each release:** `docs/release-notes/vX.Y.Z.md`, committed in the same `release: X.Y.Z` commit
 `ci/bump-version.py` already creates, and published with `body_path:` (plus `append_body: true` to
-keep GitHub's compare-link tail). Today the prose is pasted onto an already-published release by
-hand: it exists nowhere under review, `releases/latest` briefly carries a one-line body, and the
-documented `rebuild_tag:` path re-publishes without it. Committing it makes the record reviewable
-in a diff and identical on a rebuild — and removes the last argument for a `CHANGELOG.md`.
+keep GitHub's compare-link tail). **Wired up 2026-08-12, for v0.3.0** — before that the prose was
+pasted onto an already-published release by hand: it existed nowhere under review,
+`releases/latest` briefly carried a one-line body, and the documented `rebuild_tag:` path
+re-published without it. Committing it makes the record reviewable in a diff and identical on a
+rebuild — and removes the last argument for a `CHANGELOG.md`. The five values that cannot be
+committed are sentinels CI substitutes; see §6 item 13.
+
+Two other things were found dead when that step was written, both never exercised because no
+release had ever gone through the `publish` job: it had no `actions/checkout`, so its own last
+step (`ci/verify-published.sh`) was a path that did not exist, and that script's note-quotes-the-
+hash assertion could not have passed against an auto-generated body anyway. A gate nothing has run
+is a gate you do not have.
 
 **Rewriting a published note.** Owner decision, 11 August 2026, overriding the errata-only rule
 this section previously carried: when a note is wrong or predates this standard, **rewrite it to the

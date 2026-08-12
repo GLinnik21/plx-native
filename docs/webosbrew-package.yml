@@ -24,7 +24,7 @@ category: multimedia
 pool: main
 
 # Max 80 characters (schema-enforced).
-shortDescription: A native, Apple-TV-style Plex client for LG webOS 4.x — no browser
+shortDescription: A native, Apple-TV-style Plex client for LG webOS TVs — no browser
 
 requirements:
   # Passed VERBATIM to `webosbrew-ipk-verify --fw-releases`, the same tool and flag the release CI
@@ -52,15 +52,18 @@ requirements:
   # (docs/develop/guides/library-version.md). So the claim is "the whole goldilocks bucket looks
   # like the 4.4.2 we graded", which is their model, not ours.
   #
-  # What is still NOT proven is that a picture reaches the video plane on 5+. The exported-window
-  # path that replaces ACB there has never run on hardware. So the honesty lives in the
-  # description, where someone reads it before installing, rather than in a bound that would hide
-  # the app from the only people who can ever settle the question. A floor with no ceiling is also
-  # how every other package in this repository declares itself.
+  # AND IT IS SETTLED, 2026-08-11, in the affirmative. The exported-window path that replaces ACB
+  # on 5+ has now run on real hardware: mariotaku played six of eight items on an LG 65UP7560AUD
+  # (6.5.2) — H.264 1080p and 4K, HEVC, AAC, AC3, an episode, an item watched to the end
+  # (github.com/GLinnik21/plx-native/issues/22). His two failures were a server-side defect fixed
+  # in v0.3.0 and were firmware-independent. That is ONE firmware, so 5.x, 10 and 11 are still
+  # start-verified only and the description says so — but "playback does not start on 5+" is no
+  # longer a true sentence and must not be restated. A floor with no ceiling is also how every
+  # other package in this repository declares itself.
   webosRelease: '>=4.0'
 
 description: |
-  An unofficial, native Plex client for LG webOS 4.x televisions.
+  An unofficial, native Plex client for LG webOS televisions.
 
   The official Plex app on these sets runs in Chromium, and on older hardware it shows: shelves
   stutter, posters open a beat late. PlxNative draws its interface directly on the GPU and hands
@@ -81,14 +84,16 @@ description: |
   * **Movies and TV shows only.** No music, photos, live TV or DVR.
   * **A server on your local network.** The app connects only to a server it finds on the LAN;
     remote-only and relay servers will not connect, and there is nowhere to enter an address.
-  * **webOS 4.x is what is tested.** The app runs and the library browses on webOS 6 and 10, but
-    playback does not start there yet: webOS 5.0 replaced the LG library that binds decoded video
-    to the hardware plane, and the replacement is still being worked out. The app writes what it
-    chose to
-    `/tmp/plxnative-events.log`, and one of those settles it.
-  * **Codec capability is asserted, not probed.** The app tells your server it can handle HEVC,
-    4K and 10-bit because that is what the author's set does; on a lower-end webOS 4.x panel that
-    will be wrong.
+  * **Two televisions have been watched, out of every set this installs on.** Video is verified on
+    a 2019 LG (platform release 4.10.2) by the author, and reported working on a 2021 LG
+    65UP7560AUD (6.5.2) by a webosbrew reviewer. Everything from webOS 4.0 up is checked only for
+    whether the app *starts*, which says nothing about whether a picture appears. If you are on
+    5.x, 10 or 11, you are the first — and a report either way is welcome.
+  * **Seeking on webOS 5 and newer takes a slower route.** It reloads the stream rather than
+    moving within it. It works; it has not been watched on hardware.
+  * **Bit depth is asserted, not probed.** The app reads the codec table your television publishes
+    and reports the codecs and resolutions it actually lists — but that table has no column for
+    bit depth, so 10-bit is still claimed without asking.
 
   Your library never leaves your network. The app talks to your own Plex Media Server, to plex.tv
   to sign in, and to discover.provider.plex.tv for cast biographies. There is no analytics, no

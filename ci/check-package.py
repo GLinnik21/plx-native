@@ -119,6 +119,23 @@ check(note.exists(), f"docs/release-notes/v{appinfo['version']}.md exists (CI pu
 
 if note.exists():
     body = note.read_text()
+    # The three values that CANNOT be written by a person, because they do not exist until the
+    # release run does: the artifact's hash, the commit and the run. `release.yml`'s publish job
+    # fills these from the artifacts themselves, so the note carries sentinels — and a note that
+    # dropped one would publish a body with no hash in it at all, which `verify-published.sh`
+    # would only catch once the release was already public. This is the pre-publish half.
+    sentinels = ("__IPK_SHA256__", "__COMMIT__", "__RUN_URL__", "__IPK_SIZE__", "__INSTALLED_SIZE__")
+    missing = [s for s in sentinels if s not in body]
+    check(not missing, "the note carries the sentinels CI substitutes"
+                       + (f" (missing {', '.join(missing)})" if missing else ""))
+    # …and it must not carry a hand-typed one beside them. A literal 64-hex string in the committed
+    # file is either a stale hash from a previous release or a number somebody typed, and both are
+    # the defect class this standard exists to end (`docs/release-notes/README.md` §1.9).
+    typed = re.findall(r"\b[0-9a-f]{64}\b", body)
+    ffmpeg_sha = "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52"
+    stray = [h for h in typed if h != ffmpeg_sha]
+    check(not stray, "no hand-typed package hash in the note (only the pinned FFmpeg tarball's)"
+                     + (f" (found {stray[0][:12]}…)" if stray else ""))
     # Every firmware the note NAMES must be one this repo has evidence for. A past note asserted
     # support for a "webOS 26" that does not exist; this is that gate.
     evidence = (ROOT / "tools/fwcompat.py").read_text() + (ROOT / "docs/webos5-port.md").read_text()

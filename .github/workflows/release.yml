@@ -329,14 +329,62 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Checkout BEFORE download-artifact, not after: `actions/checkout` cleans the workspace by
+      # default and would delete `dist/`. This job had no checkout at all until now, which made its
+      # last step — `ci/verify-published.sh` — a file that does not exist; it has never run, because
+      # v0.2.1 was hand-published and nothing has been published through this job since.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.tag }}
       - uses: actions/download-artifact@v4
         with:
           name: release-assets
           path: dist
+      # The BODY is the committed note, not GitHub's auto-generated PR list. `check-package.py`
+      # already refuses to build without `docs/release-notes/vX.Y.Z.md`, and its comment has said
+      # "CI publishes the release body from this file" since it was written — this is the step that
+      # makes that true. Until now the prose was pasted onto an already-published release by hand,
+      # which meant `releases/latest` briefly carried a one-line body and a `rebuild_tag:` re-publish
+      # silently dropped the note entirely.
+      #
+      # Three values in it CANNOT exist in the committed file — the artifact's sha256, the commit
+      # and this run — so the note carries sentinels and they are filled HERE, from the artifacts
+      # themselves. That is the point: a hash nobody types cannot be the wrong hash, which is
+      # exactly the class of defect (`docs/release-notes/README.md` §1.9) this whole standard is
+      # about. Everything else in the body is the reviewed text, byte for byte.
+      - name: Render the release body from the committed note
+        run: |
+          set -euo pipefail
+          tag='${{ needs.guard.outputs.tag }}'
+          note="docs/release-notes/$tag.md"
+          [ -f "$note" ] || { echo "::error::$note is missing — the release would publish with no notes"; exit 1; }
+          ipk=$(ls dist/*.ipk)
+          sha=$(sha256sum "$ipk" | cut -d' ' -f1)
+          commit=$(git rev-parse HEAD)
+          run="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The two SIZES are sentinels for the same reason the hash is: they are measurable by the
+          # reader, they move with every build (the bundled FFmpeg's size depends on the build), and
+          # the standard's §1.9 defect was exactly a size somebody typed. Read from the manifest,
+          # which is the artifact the note tells the reader they came from.
+          size=$(python3 -c "import json;print(json.load(open('dist/com.beb.plxnative.manifest.json'))['ipkSize'])")
+          inst=$(python3 -c "import json;print(json.load(open('dist/com.beb.plxnative.manifest.json'))['installedSize'])")
+          # Every sentinel must be PRESENT before substituting: a note that lost one would publish
+          # a body with no hash at all, and `verify-published.sh` would only catch it after the
+          # release existed.
+          for s in __IPK_SHA256__ __COMMIT__ __RUN_URL__ __IPK_SIZE__ __INSTALLED_SIZE__; do
+            grep -q "$s" "$note" || { echo "::error::$note does not carry the $s sentinel"; exit 1; }
+          done
+          sed -e "s|__IPK_SHA256__|$sha|g" -e "s|__COMMIT__|$commit|g" -e "s|__RUN_URL__|$run|g" \
+              -e "s|__IPK_SIZE__|$size|g" -e "s|__INSTALLED_SIZE__|$inst|g" \
+              "$note" > dist/body.md
+          echo "body: $(wc -l < dist/body.md) lines, sha $sha" >> "$GITHUB_STEP_SUMMARY"
       - name: Create the release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
+          # the committed note, with GitHub's compare-link tail appended after it
+          body_path: dist/body.md
+          append_body: true
           # NEITHER of these may become true: both exclude the release from `releases/latest`,
           # which is the URL the webosbrew package YAML resolves the manifest through.
           draft: false

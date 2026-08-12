@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <fcntl.h>
+#include <sys/stat.h>   /* fchmod — the log sinks are created 0600, see open_log_0600 */
 
 FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by the
                        * crash handler here and by the starfish.c seam. Opened "w" each
@@ -140,11 +141,32 @@ static FILE *open_event_log(void) {
     return fd >= 0 ? fdopen(fd, "a") : NULL;
 }
 
+/* The other two log sinks, at the SAME 0600 — and they have to be opened this way rather than with
+ * `fopen`, which creates 0666 & ~umask and gave both files mode 0644 on the television (measured
+ * 2026-08-12, installing the v0.3.0 package). `/tmp` here is the SHARED system /tmp, mode 1777 in
+ * both jail profiles, so 0644 means every co-resident process can read them. Neither is known to
+ * carry a credential today — the crash log is a faulting PC and a /proc/self/maps line, stderr is
+ * whatever aborts print — but "what this file happens to contain" is the wrong thing to depend on,
+ * and it is the exact shape of this project's earlier token-in-a-world-readable-log incident.
+ *
+ * `open` + `fdopen` rather than `fopen` + `chmod`: a chmod after the fact leaves a window in which
+ * the file exists at 0644, and on a relaunch the crash log ALREADY exists, where O_CREAT's mode is
+ * ignored — hence the explicit `fchmod` on the existing file. */
+static FILE *open_log_0600(const char *path, int flags) {
+    int fd = open(path, flags | O_WRONLY | O_CREAT, 0600);
+    if (fd < 0) return NULL;
+    fchmod(fd, 0600); /* an append target that survived a previous run keeps its old mode */
+    return fdopen(fd, (flags & O_APPEND) ? "a" : "w");
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     elogf = open_event_log();
-    clogf = fopen("/tmp/plxnative-crash.log", "a");     /* append: keep prior crashes across relaunches */
-    freopen("/tmp/plxnative-stderr.log", "w", stderr); /* capture abort/assert text */
+    clogf = open_log_0600("/tmp/plxnative-crash.log", O_APPEND); /* append: keep prior crashes across relaunches */
+    /* stderr is REPLACED, so it must go through freopen — but create the file at 0600 first, and
+     * freopen's "a" then reuses that inode rather than making a fresh 0644 one. */
+    { FILE *s = open_log_0600("/tmp/plxnative-stderr.log", O_TRUNC); if (s) fclose(s); }
+    freopen("/tmp/plxnative-stderr.log", "a", stderr); /* capture abort/assert text */
     install_crash_tracer();
     /* request BACK key delivery from the webOS access policy (before SDL init) */
     setenv("SDL_WEBOS_ACCESS_POLICY_KEYS_BACK", "true", 1);
