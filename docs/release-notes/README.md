@@ -548,7 +548,8 @@ builds do not ship — fix the notice, not the note.)
 ls x/usr/palm/applications/com.beb.plxnative/*.so.*
 shasum -a 256 ffmpeg-9.0.tar.xz    # 7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
 grep -n '^SHA256=' build-ffmpeg.sh
-grep -c -- '--enable-gpl\|--enable-nonfree\|--enable-version3' build-ffmpeg.sh   # must be 0
+# must be 0 — and COMMENTS must be excluded, or the script's own "no --enable-gpl" note counts
+grep -vE '^\s*#' build-ffmpeg.sh | grep -c -- '--enable-gpl\|--enable-nonfree\|--enable-version3'
 ```
 
 **8 — the compatibility block was regenerated, not retyped.**
