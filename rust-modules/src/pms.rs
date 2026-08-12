@@ -32,18 +32,28 @@ pub struct PmsMovie {
     pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
     pub(crate) show_title: String, // episode only: grandparentTitle (the hero headlines the SHOW)
     pub(crate) ep_index: c_int,    // episode only: episode number within the season
-    /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves) — drives
-    /// the amber corner angle on cards. The angle and the resume bar are mutually exclusive by
-    /// the draw rule (angle only when `resume_ms == 0`): in-progress ≠ unwatched.
+    /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves). Read
+    /// NEGATED by the tile state mark: a poster carries the amber watched disc when this is false
+    /// and nothing at all when it is true, since most of a server has never been played and a mark
+    /// on every one of those tiles is noise rather than information (`ui::widgets::card` has the
+    /// full rule). The disc and the resume bar are mutually exclusive by that draw rule — a live
+    /// `resume_frac()` outranks a watched flag, because PMS reports both on a re-started item.
     pub(crate) unwatched: bool,
 }
 
 impl PmsMovie {
     /// Played fraction for the amber resume bar, or None when not in progress — THE one
     /// resume-bar rule, shared by the home shelves and the Library grid (it was copy-pasted
-    /// into both screens before).
+    /// into both screens before), and the definition of `PosterMark::InProgress`.
+    ///
+    /// **A resume point at or past the end is NOT in progress.** That is a finished item whose
+    /// `viewOffset` the server never cleared, and counting it as in-progress drew a 100%-full bar
+    /// that read as a rendering bug — and, once the poster's mark became the watched disc
+    /// (2026-08-13), also suppressed the disc that item should be wearing, so a finished movie could
+    /// end up with a full bar and no check. `ui::detail::ep_state` has always applied this rule to
+    /// an episode still; now a poster and the filmstrip beside it cannot describe one item two ways.
     pub(crate) fn resume_frac(&self) -> Option<f32> {
-        (self.resume_ms > 0 && self.dur_ns > 0)
+        (self.resume_ms > 0 && self.dur_ns > 0 && self.resume_ms * 1_000_000 < self.dur_ns)
             .then(|| (self.resume_ms as f32 * 1_000_000.0 / self.dur_ns as f32).clamp(0.0, 1.0))
     }
 }

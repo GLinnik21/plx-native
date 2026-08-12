@@ -84,21 +84,44 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             } else {
                 p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
             }
-            // The ONE progress language on every poster, drawn in this shared composite so Home
-            // shelves + the Library grid + Related all inherit it: amber corner ANGLE = fully
-            // unwatched; the amber resume BAR (card_row::resume_bar) = in progress. Never both —
-            // an in-progress item isn't unwatched (`resume_ms == 0` gate).
+            // The ONE state language on every poster, drawn in this shared composite so Home
+            // shelves + the Library grid + Related all inherit it: the amber WATCHED disc here
+            // (finished), the amber resume BAR (`card_row::resume_bar`) for in progress, and —
+            // deliberately — NOTHING for never started.
+            //
+            // **Amber means "you have watched this"**, one hue for one vocabulary. Until 2026-08-13
+            // this corner carried the opposite claim (an amber ANGLE marking a fully UNWATCHED
+            // item), and the inversion is the design system's (`ArtTile`: "most of the server is
+            // unwatched, so only a finished tile is marked — a bare tile means nothing has been
+            // seen"). The old polarity made a freshly-added library a wall of amber where the mark
+            // said nothing you could act on, and left the one item you had actually finished as the
+            // only clean tile on the shelf; it also made the poster disagree with the episode
+            // still beside it, whose `✓` has always meant watched.
+            //
+            // Never both marks. **In progress WINS over watched**, because PMS keeps a resume point
+            // on a finished-then-restarted item, so the wire says both — and being part-way through
+            // a re-watch is what the viewer is actually doing (`detail::ep_state` resolves the same
+            // three states for a still, and its table is the authority for all of them).
             if let Some(m) = m {
-                if m.unwatched && m.resume_ms == 0 {
-                    // quantize to 4px so the focus-pop animation reuses ~6 cached mask
-                    // textures instead of rasterizing+uploading one per rounded pixel
-                    let d = ((r.w * 0.176) / 4.0).round() * 4.0; // ≈44px on a 250-wide card
-                    crate::ui::icons::draw(
-                        p,
-                        crate::ui::icons::Icon::UnwatchedAngle,
-                        Rect::new(r.x + r.w - d, r.y, d, d),
-                        theme::RESUME_FILL,
+                if poster_mark(m) == PosterMark::Watched {
+                    // Quantized to 4px so the focus pop reuses ~6 cached check masks instead of
+                    // rasterizing + uploading one per rounded pixel (the same discipline the angle
+                    // needed), and proportional to the DRAWN tile so the mark rides the pop
+                    // instead of sitting still inside a growing poster.
+                    let d = ((r.w * WATCHED_DISC_RATIO) / 4.0).round() * 4.0; // 40px on a 250 card
+                    let ins = r.w * WATCHED_DISC_INSET;
+                    let disc = Rect::new(r.x + r.w - ins - d, r.y + ins, d, d);
+                    // A poster corner is raw artwork — amber on a bright one needs the separation
+                    // the still's version gets from `art_scrim`. The card system's resting shadow
+                    // ink at the mark's own scale, per the design's `0 2px 8px rgba(0,0,0,.34)`.
+                    p.shadow(
+                        disc,
+                        d * 0.5,
+                        d * WATCHED_DISC_BLUR,
+                        d * WATCHED_DISC_DY,
+                        theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A),
                     );
+                    watched_disc(p, disc);
                 }
             }
         }
@@ -136,6 +159,52 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
     }
 }
 
+/// Which state mark a poster wears — the pure half of [`card`]'s corner, split out for exactly the
+/// reason `detail::ep_state` is: the CHOICE is the behaviour, while drawing it needs a GL context no
+/// host test has. Nothing else inside `card` is assertable, and this is the part that can be wrong.
+///
+/// | state | mark | drawn by |
+/// |---|---|---|
+/// | never started | nothing — and most of a server is here | — |
+/// | in progress | the full-bleed resume BAR | the CALLER (`card_row::draw_tile`/`draw_focused`) |
+/// | watched | the amber corner DISC | [`card`] |
+///
+/// [`PosterMark::InProgress`] is *defined* as "[`PmsMovie::resume_frac`] has a value" — precisely
+/// when the caller draws the bar — so the two halves cannot disagree and put two marks on one tile.
+/// That is also the precedence: a re-watch in flight outranks the watched flag, because PMS reports
+/// both on a finished-then-restarted item and being part-way through the re-watch is what the viewer
+/// is doing. Same answer as the still's resolver, on the same item.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PosterMark {
+    None,
+    InProgress,
+    Watched,
+}
+
+/// Resolve [`PosterMark`] from a catalog row. Total and mutually exclusive by construction.
+pub(crate) fn poster_mark(m: &PmsMovie) -> PosterMark {
+    if m.resume_frac().is_some() {
+        return PosterMark::InProgress;
+    }
+    if m.unwatched {
+        PosterMark::None
+    } else {
+        PosterMark::Watched
+    }
+}
+
+/// The **watched** disc on a poster, as fractions of the tile's DRAWN width: diameter, then the
+/// corner inset, then the drop-shadow's penumbra and downward offset as fractions of that diameter.
+/// Anchored on the design system's `ArtTile` — a 40px disc inset 12px, under `0 2px 8px`, on a
+/// 250-wide poster — and held as ratios rather than pixels so the whole mark rides the focus pop as
+/// one object (a fixed 40px disc inside a tile growing to 1.09 visibly shrinks and drifts inward).
+/// The component's second rung (a 28px disc on a tile under 200 wide) has no poster in this product:
+/// every poster shelf, the Library grid and Related are all `consts::CARD_W` 250.
+const WATCHED_DISC_RATIO: f32 = 40.0 / 250.0;
+const WATCHED_DISC_INSET: f32 = 12.0 / 250.0;
+const WATCHED_DISC_BLUR: f32 = 8.0 / 40.0;
+const WATCHED_DISC_DY: f32 = 2.0 / 40.0;
+
 /// Person-glyph box as a fraction of a headshot tile — the [`Art::Person`] fallback's one ratio.
 /// Deliberately TIGHTER than [`DISC_ICON_RATIO`] (0.54, the ratio every disc *control* glyph uses,
 /// and what the profile chip's own fallback works out to): a headshot tile is 190px, and 0.54 of it
@@ -161,13 +230,18 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
 }
 
 /// The **watched** mark: an amber disc with the check knocked out of it in dark ink, drawn to fill
-/// `r`. The **done** state of the tile progress vocabulary (see [`card`]) — a filled disc rather than
-/// a dark one with an amber tick, because `Details Screen.dc.html` sets it INLINE at the head of the
-/// episode still's state line, at ~20px, where a dark disc reads as a hole in the artwork and the
-/// amber tick inside it is two shapes' worth of detail the size cannot carry. Filled, it is one
-/// confident amber dot that resolves at couch distance.
+/// `r`. The **done** state of the tile state vocabulary (see [`card`]), and the app's ONE watched
+/// mark at two sizes — a filled disc rather than a dark one with an amber tick, because
+/// `Details Screen.dc.html` sets it INLINE at the head of the episode still's state line at ~20px,
+/// where a dark disc reads as a hole in the artwork and the amber tick inside it is two shapes'
+/// worth of detail the size cannot carry. Filled, it is one confident amber dot that resolves at
+/// couch distance — which is also what lets the same mark scale up to the poster's 40px corner.
 ///
-/// Mutual exclusion is the CALLER's rule — PMS keeps a resume point on a re-started episode, so the
+/// Two callers, and the difference between them is the GROUND, not the mark: on a landscape still it
+/// rides `art_scrim` inside the state line, so it needs nothing behind it; on a POSTER it sits on
+/// raw artwork, so [`card`] lays the card system's resting shadow under it first.
+///
+/// Mutual exclusion is the CALLER's rule — PMS keeps a resume point on a re-started item, so the
 /// wire says both watched AND in-progress; see `ui::detail::ep_state`, which resolves the three
 /// states into one mark.
 pub(crate) fn watched_disc(p: Painter, r: Rect) {
@@ -2313,6 +2387,71 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── The poster's state mark: one vocabulary, one mark at a time ───────────────────────────
+    //
+    // `card` needs a GL context, so the CHOICE is what a host test can reach — and the choice is
+    // where this has been wrong before: the mark used to say "unwatched" in amber, which is the
+    // opposite claim, and the bar/disc precedence is only observable on an item PMS reports as both.
+
+    /// A catalog row at a given watched state. `dur_ns` is 100 min, so `resume_ms` reads as a
+    /// percentage of the way in.
+    fn row(unwatched: bool, resume_ms: i64) -> PmsMovie {
+        let mut m = PmsMovie::default();
+        m.dur_ns = 100 * 60 * 1000 * 1_000_000;
+        m.unwatched = unwatched;
+        m.resume_ms = resume_ms;
+        m
+    }
+
+    #[test]
+    fn a_poster_nobody_has_started_wears_no_mark_at_all() {
+        // the common case on any real server, and the whole reason the polarity inverted
+        assert_eq!(poster_mark(&row(true, 0)), PosterMark::None);
+    }
+
+    #[test]
+    fn a_finished_poster_wears_the_watched_disc() {
+        assert_eq!(poster_mark(&row(false, 0)), PosterMark::Watched);
+    }
+
+    #[test]
+    fn a_re_watch_in_flight_outranks_the_watched_flag() {
+        // PMS reports BOTH on a finished-then-restarted item; the bar wins, so the tile never
+        // wears two marks — and what it says is what the viewer is actually doing.
+        let m = row(false, 30 * 60 * 1000);
+        assert_eq!(poster_mark(&m), PosterMark::InProgress);
+        assert!(m.resume_frac().is_some(), "InProgress must be exactly when the caller draws the bar");
+    }
+
+    #[test]
+    fn a_part_watched_poster_that_was_never_finished_is_in_progress_too() {
+        assert_eq!(poster_mark(&row(true, 30 * 60 * 1000)), PosterMark::InProgress);
+    }
+
+    #[test]
+    fn an_offset_the_server_never_cleared_is_finished_not_in_progress() {
+        // resume AT or PAST the end: a full-width bar there read as a rendering bug, and it would
+        // now also hide the disc the item has earned. Both the mark and the bar must agree.
+        for resume in [100 * 60 * 1000, 200 * 60 * 1000] {
+            let m = row(false, resume);
+            assert_eq!(m.resume_frac(), None, "resume {resume} must not draw a bar");
+            assert_eq!(poster_mark(&m), PosterMark::Watched, "resume {resume}");
+        }
+    }
+
+    #[test]
+    fn a_row_with_no_runtime_cannot_be_in_progress() {
+        // dur_ns == 0 (the server sent no duration): a fraction is undefined, so there is no bar to
+        // draw and the watched flag alone decides.
+        let mut m = row(false, 30 * 60 * 1000);
+        m.dur_ns = 0;
+        assert_eq!(m.resume_frac(), None);
+        assert_eq!(poster_mark(&m), PosterMark::Watched);
+        let mut m = row(true, 30 * 60 * 1000);
+        m.dur_ns = 0;
+        assert_eq!(poster_mark(&m), PosterMark::None);
+    }
 
     // ── AmbientWash: the page GROUND's legibility contract ───────────────────────────────────
     //

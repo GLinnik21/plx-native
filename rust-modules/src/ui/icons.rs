@@ -43,8 +43,11 @@ pub enum Icon {
     /// Database's mark; TMDB is spelled in text now (as every provider is), so this shape carries
     /// no brand meaning and the chip is free to change without redrawing anyone's mark.
     Ring,
-    /// The amber unwatched corner mark (top-right of a poster): a right triangle whose outer
-    /// corner is pre-rounded to sit flush inside the card's 14px corner radius. Filled mask.
+    /// A right triangle whose outer corner is pre-rounded to sit flush inside a card's 14px corner
+    /// radius. Filled mask. **Drawn nowhere today:** it was the amber UNWATCHED corner mark until
+    /// 2026-08-13, when the poster's state mark inverted to the watched disc (`widgets::card` has
+    /// the reasoning) — amber now means watched, and never-started is unmarked. Kept because it is
+    /// a finished asset in the shared icon inventory, not because a state is waiting for it.
     UnwatchedAngle,
     Play,
     Pause,
