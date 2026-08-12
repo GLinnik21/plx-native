@@ -239,14 +239,52 @@ const SYN_LEAD: f32 = 36.0;
 const SYN_MIN_H: f32 = 34.0;
 /// Lines of blurb before it elides — the mock's own band. Past this the flow walks the Play pill down.
 const SYN_MAXLINES: usize = 3;
-// ---- the "Starring" block: a right-aligned wrapping caption in its own column beside the action row.
+// ---- the PEOPLE column: the crew credit over the cast, right-aligned beside the action row.
 /// Its column. Narrow on purpose — it must not reach the hero text column on its left, and wrapping to
 /// two lines inside 560px is what keeps three long names off the Play pill.
-pub(crate) const STARRING_W: f32 = 560.0;
-const STARRING_LEAD: f32 = 32.0;
-/// Its cap top relative to the action row's own top — a few px down, so the two read as level rather
-/// than as one hanging off the other.
-pub(crate) const STARRING_DY: f32 = 6.0;
+pub(crate) const PEOPLE_W: f32 = 560.0;
+/// Line pitch inside the column (`line-height: 32px`) — the block is measured in whole lines of it,
+/// which is what lets [`people_top`] speak for a block of any height.
+pub(crate) const PEOPLE_LEAD: f32 = 32.0;
+/// Lines ONE of the column's blocks may wrap to before it elides. Two, for both: three long cast
+/// names do not fit 560px on one line, and a multi-director credit is the same shape of problem.
+const PEOPLE_MAXLINES: usize = 2;
+/// Cast members named. Three is the mock's list, and it is a BILLING order, not a sample: PMS sends
+/// `Role[]` in credit order, so the first three are the top-billed ones.
+const PEOPLE_CAST: usize = 3;
+/// The tallest the whole column can get, in lines — both blocks wrapped to their own cap. The
+/// legibility table grades the top line of THIS block, because that is the worst case: the right
+/// wedge feathers in from its top, so the highest line of the column is the least darkened one.
+pub(crate) const PEOPLE_MAX_LINES: usize = 2 * PEOPLE_MAXLINES;
+/// The people column's ink — and the one thing on this page taken from the legibility contract
+/// rather than from `Details Screen.dc.html`, which sets the column `--text-tertiary`.
+///
+/// Bottom-anchoring the column moved its worst case (the top line of a fully wrapped credit over a
+/// fully wrapped cast list) 74px UP the frame, into a band where the ground is much weaker: the
+/// right wedge feathers in from y=702, so the composite scrim there falls from ≈0.71 to ≈0.59.
+/// At `TEXT_TERTIARY` that is 2.37:1 over bright artwork — **under the design's own stated 3:1
+/// floor**, and the honest reading is that the port took the mock's ink without the mock's ground
+/// (the mock's bottom ramp reaches .72 by a third of the way up the frame, where this page's single
+/// linear stop is at .55). One step brighter clears it at 3.67:1 with the ground unchanged, which is
+/// the cheap half of that trade: retuning `base_scrim_a` is a whole-frame decision only a panel can
+/// judge, and reaching 3:1 at TERTIARY would need the right wedge at .80 from y=600 — 60% stronger
+/// over a band the component's own doc flags as its banding risk.
+///
+/// The mock's INTENT — the column is quiet fine print, a caption and not a control — is carried by
+/// its size (`CAPTION`, two rungs under the identity line beside it) rather than by an ink that
+/// cannot be read over a bright still. `widgets`' hero-scrim anchor table grades this row and holds
+/// it to the ordinary 3.0/2.5 floors again.
+pub(crate) const PEOPLE_INK: [f32; 4] = theme::TEXT_SECONDARY;
+/// The facts row's hard RIGHT bound — the people column's own left edge, less a rung of air.
+///
+/// The two are LEVEL: the facts line sits one `BTN_DY` above the button row and the column bottoms
+/// out on the same row and grows upward, so at three lines the column's top line and the facts
+/// line share a band to within a few pixels. Nothing stops them meeting except this, and the row
+/// has no natural ceiling — the worst case (an air date, `3 seasons, 30 episodes`, and the "hardware
+/// conversion needs \[PLEX PASS\]" fragment) measures past 1360 on the shipped font, ~95px INSIDE
+/// the column. The deleted "Directed by" tail carried exactly this guard; the fragment that replaced
+/// it inherited none, which is the regression this const is.
+const FACTS_R: f32 = SCR_W - MARGIN_X - PEOPLE_W - theme::space::SM;
 /// Share of the hero text column the blurb's bold `S2, E3 · Laura:` prefix may claim before the
 /// episode title inside it starts eliding. It shares line 1 with the start of the blurb, so it cannot
 /// have the whole width — see `hero_blurb`.
@@ -534,14 +572,59 @@ fn is_episode(d: &metadata::Detail) -> bool {
     d.kind == "episode"
 }
 
-/// Does the hero carry its right-aligned "Starring" block? ONE test, because two places have to
-/// agree about it: [`draw_hero`] draws the block only for an item the server sent a `Role[]` for,
-/// and [`draw_backdrop`] asks `widgets::hero_scrim` for its mirrored RIGHT wedge only when there is
-/// copy in that corner to darken for — that wedge exists for this block and for nothing else
-/// (`HERO_SCRIM_R_*`'s own doc says so). Unconditional it was 700×378 = 264,600 blended fragments a
-/// frame shading an empty corner on every item with no cast.
+/// Does the people column carry its "Starring" line? The server sent a `Role[]`, or it did not.
 fn has_starring(d: &metadata::Detail) -> bool {
     !d.cast.is_empty()
+}
+
+/// The hero's crew credit as `(label, names)` — the people column's FIRST line, and `None` when the
+/// server credited nobody.
+///
+/// The label follows what the item is, because the two credits are not the same claim:
+/// * a **movie** (or an episode's own page) is *Directed by* its `Director[]` tags — what PMS
+///   populates on a leaf, and what this hero has always drawn;
+/// * a **series** is *Created by*, and "created by" is a WRITING credit, not a directing one. So it
+///   is read off the show container's own `Writer[]`, which arrives here inside
+///   [`metadata::Detail::crew`] (that vec folds `Director[]` + `Writer[]` and carries each person's
+///   job in `role`). Deliberately NOT the show's `Director[]`: where an agent sends one at all it
+///   names a director, and labelling a director "Created by" states a credit the server never gave.
+///
+/// A series whose agent supplied no writer simply has no credit line — the column degrades one line
+/// at a time, exactly as an item with no cast drops its "Starring" line.
+fn hero_credit(d: &metadata::Detail) -> Option<(&'static str, Vec<&str>)> {
+    if d.is_show {
+        let names: Vec<&str> =
+            d.crew.iter().filter(|c| c.role.contains("Writer")).map(|c| c.tag.as_str()).collect();
+        return (!names.is_empty()).then_some(("Created by", names));
+    }
+    let names: Vec<&str> = d.directors.iter().map(|s| s.as_str()).collect();
+    (!names.is_empty()).then_some(("Directed by", names))
+}
+
+/// Does the hero carry its right-aligned people column at all? ONE test, because two places have to
+/// agree about it: [`draw_people`] draws nothing for an item with neither credit nor cast, and
+/// [`draw_backdrop`] asks `widgets::hero_scrim` for its mirrored RIGHT wedge only when there is copy
+/// in that corner to darken for — that wedge exists for this column and for nothing else
+/// (`HERO_SCRIM_R_*`'s own doc says so). Unconditional it was 700×378 = 264,600 blended fragments a
+/// frame shading an empty corner.
+fn has_people(d: &metadata::Detail) -> bool {
+    has_starring(d) || hero_credit(d).is_some()
+}
+
+/// The people column's BOTTOM edge: the action row's own bottom. `Details Screen.dc.html` pins the
+/// block at `bottom: 10px` inside a 920-tall hero whose buttons run 850..910 — i.e. level with the
+/// buttons, which is the relationship worth keeping when the chain above is MEASURED rather than
+/// fixed. Bottom-anchored, so the block grows UPWARD: a top-anchored one would walk down into the
+/// section flow every time the cast list took a second line.
+pub(crate) fn people_bottom(btn_y: f32) -> f32 {
+    btn_y + CD
+}
+
+/// The cap top of the column's TOPMOST line for a block `lines` lines tall — the y `widgets`'
+/// hero-scrim legibility table grades, since the right wedge feathers in from its top and the
+/// column's highest line is therefore its least-darkened one.
+pub(crate) fn people_top(btn_y: f32, lines: usize) -> f32 {
+    people_bottom(btn_y) - lines as f32 * PEOPLE_LEAD
 }
 
 /// The PMS image path the hero backdrop is keyed on — the ladder [`draw_backdrop`] resolves into a
@@ -1226,17 +1309,9 @@ fn hero_blurb(m: Option<&PmsMovie>) -> (String, String) {
     (String::new(), own)
 }
 
-/// The loaded item's director credits, or None when the server sent no `Director[]` — the ONE
-/// rule for whether the hero carries a "Directed by …" line. The flow (`hero_layout`) reserves the
-/// line's band on it and the paint (`draw_hero`) formats it, so the two cannot disagree. Borrowed
-/// rather than formatted: `hero_layout` runs twice a frame and has no business allocating.
-fn directors() -> Option<&'static [String]> {
-    metadata::current().map(|d| d.directors.as_slice()).filter(|v| !v.is_empty())
-}
-
 /// Whether the loaded item has any review score to badge — the ONE rule for whether the hero
-/// reserves the ratings band. Paired with [`directors`]: both are conditional bands, and both are
-/// answered from the same place the paint reads so the flow and the pixels agree.
+/// reserves the ratings band. Answered from the same place the paint reads, so the flow and the
+/// pixels agree about a band that comes and goes with the metadata.
 fn has_ratings() -> bool {
     metadata::current().map(|d| !d.ratings.is_empty()).unwrap_or(false)
 }
@@ -1254,13 +1329,13 @@ fn has_ratings() -> bool {
 /// contrast of each hero line at the y this chain puts it, rather than re-typing 596/646/700/800 —
 /// so moving a pitch here updates the contract instead of silently invalidating it.
 pub(crate) struct HeroChain {
-    /// "TV Show · Drama · TV-MA".
+    /// The IDENTITY line: "TV Show · Drama · TV-MA" and, riding its end, the media chips.
     pub(crate) meta_y: f32,
     /// The review-score row. Only meaningful, and only given a band, when [`has_ratings`].
     pub(crate) ratings_y: f32,
     pub(crate) syn_y: f32,
-    /// The one fine-print line: air date · extent-or-runtime · media chips · the "Directed by" credit,
-    /// all of it — plus, right-aligned on the same line, the "Starring" credit.
+    /// The one fine-print line: air date · extent-or-runtime · how it plays. The right-aligned
+    /// PEOPLE column is not on it — it is bottom-anchored on the button row below ([`people_bottom`]).
     pub(crate) facts_y: f32,
     pub(crate) btn_y: f32,
 }
@@ -1287,10 +1362,10 @@ pub(crate) fn hero_chain(syn_h: f32, has_ratings: bool) -> HeroChain {
     // the gap instead of leaving the band empty
     let syn_y = if has_ratings { ratings_y } else { meta_y } + SYN_DY;
     let facts_y = syn_y + syn_h.max(SYN_MIN_H) + FACTS_DY;
-    // The "Directed by" credit used to claim a BAND of its own here, one air rung under the facts line
-    // and reserved only when the item had directors. It is now the tail of the facts line itself
-    // (`Details Screen.dc.html` runs date · extent · chips · credit as ONE row), so the chain has one
-    // fewer conditional band and the button row hangs off the facts line for every item.
+    // The crew credit claims no band here at all. It was a conditional line of its own, then the tail
+    // of the facts row; `Details Screen.dc.html` now puts it in the right-hand PEOPLE column beside
+    // the buttons, where it is BOTTOM-anchored ([`people_bottom`]) and so costs the chain nothing —
+    // the button row hangs off the facts line for every item, whatever the credits say.
     HeroChain { meta_y, ratings_y, syn_y, facts_y, btn_y: facts_y + BTN_DY }
 }
 
@@ -1631,12 +1706,12 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
             0.0,
         );
         // PART TWO: the corners the text is actually IN. `right` — this hero has TWO text corners,
-        // the column at `MARGIN_X` and the right-aligned "Starring" block at x 1270..1830
+        // the column at `MARGIN_X` and the right-aligned PEOPLE column at x 1270..1830
         // (`draw_hero`'s last block), which the left wedge by definition cannot reach. Asked for on
-        // exactly the condition that block is DRAWN on ([`has_starring`]): the mirrored wedge exists
-        // for it alone, and an item PMS returned no cast for was paying a quarter of a million
-        // blended fragments a frame to darken an empty corner.
-        crate::ui::widgets::hero_scrim(p, hero_vis, metadata::current().map(has_starring).unwrap_or(false));
+        // exactly the condition that column is DRAWN on ([`has_people`]): the mirrored wedge exists
+        // for it alone, and an item PMS returned no cast and no crew for was paying a quarter of a
+        // million blended fragments a frame to darken an empty corner.
+        crate::ui::widgets::hero_scrim(p, hero_vis, metadata::current().map(has_people).unwrap_or(false));
     }
     // (Nothing follows. The shelf gray that used to fade in here — so the below-hero rows sat on the
     // app's base gray whatever the item's artwork was — is the GROUND's job now: the wash above is
@@ -1702,8 +1777,20 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     }
     // the whole y-chain below comes from the ONE shared layout (also feeds the scroll flow)
     let ch = hero_layout(m);
+    // The media chips ride the END of this line rather than the fine print below it. That is the
+    // mock's own rule, and its reason: **type, genre, rating, resolution and accessibility all answer
+    // "what IS this"** — dates, counts and how it plays are a different question, answered one line
+    // down. One question per line, so neither line is a list of unrelated facts.
+    let mut mx = tx;
     if let Ok(mc) = CString::new(parts.join("   \u{b7}   ")) {
-        p.text(mc.as_ptr(), tx, ch.meta_y, theme::size::BODY, d_a, 0, 0);
+        mx += p.text(mc.as_ptr(), tx, ch.meta_y, theme::size::BODY, d_a, 0, 0);
+    }
+    if let Some(d) = d {
+        if mx > tx {
+            mx += theme::space::SM; // the words → chips gap (the mock's 16px flex gap)
+        }
+        // the chips centre on THIS line's cap band, so they must be told which type size they ride
+        draw_media_badges(p, d, mx, ch.meta_y, theme::size::BODY);
     }
 
     // ---- review scores, on their own line under the meta row (see `draw_ratings`) ----
@@ -1716,67 +1803,96 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         hero_synopsis(&body, &lead).draw(p, Rect::new(tx, ch.syn_y, HERO_TEXT_W, 0.0));
     }
 
-    // ---- air date · season/episode counts (a show) or runtime (a movie) · media chips ----
+    // ---- air date · season/episode counts (a show) or runtime (a movie) · how it plays ----
+    // Three facts of ONE kind: what you get if you press Play. The media chips moved up to the
+    // identity line and the credit moved to the people column, which is what leaves this row a
+    // sentence rather than a pile.
     if let Some(d) = d {
-        let (mut info, extent) = hero_facts(d);
-        if let Some(extent) = extent {
-            if !info.is_empty() {
-                info.push_str("    \u{b7}    ");
+        let (date, extent) = hero_facts(d);
+        let joined = |a: &str, b: &str| {
+            if a.is_empty() || b.is_empty() {
+                format!("{a}{b}")
+            } else {
+                format!("{a}    \u{b7}    {b}")
             }
-            info.push_str(&extent);
+        };
+        let full = joined(&date, extent.as_deref().unwrap_or(""));
+        // The fragment on the right is measured FIRST and the clause on the left yields to it —
+        // see [`FACTS_R`] for why the row needs a bound at all, and `hero_facts`' own doc for why
+        // the extent is what gives way (it is series information the season tabs directly below
+        // already carry). The credit tail this replaced had the same ladder and the same reason:
+        // a member of this row goes entirely before it goes garbled.
+        let mode_w = play_mode_w(d, !full.is_empty());
+        let budget = FACTS_R - tx - mode_w;
+        let mut info = full;
+        let mut w = run_w(&info);
+        if w > budget {
+            info = date.clone(); // …the extent goes first, whole
+            w = run_w(&info);
+        }
+        if w > budget {
+            // and only a date that cannot fit on its own is elided — the last rung
+            info = crate::text::elide(&info, budget.max(0.0), theme::size::CAPTION, 0, false);
         }
         let mut bx = tx;
         if let Ok(ic) = CString::new(info) {
-            let w = p.text(ic.as_ptr(), tx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
-            if w > 0.0 {
-                bx += w + theme::space::MD;
-            }
+            bx += p.text(ic.as_ptr(), tx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
         }
-        bx += draw_media_badges(p, d, bx, ch.facts_y);
-        bx += draw_play_mode(p, d, bx, ch.facts_y);
-        // …and the crew credit closes the row. Inline rather than on a line of its own: it is the same
-        // KIND of fine print as everything left of it, and a second row of it under the first read as a
-        // stray sentence. Elided to whatever the right-aligned Starring column leaves.
-        if let Some(names) = directors() {
-            let budget = SCR_W - MARGIN_X - STARRING_W - theme::space::LG - bx;
-            // A budget too small for "Directed by" plus ONE name elides to a bare "…" — a stray
-            // tail, not a credit (seen live once the play-mode fragment joined the row). The
-            // credit is the row's most yielding member: it goes entirely before it goes garbled.
-            if budget >= 260.0 {
-                let line = crate::text::elide(
-                    &format!("    \u{b7}    Directed by {}", names.join(", ")),
-                    budget,
-                    theme::size::CAPTION,
-                    0,
-                    false,
-                );
-                if let Ok(dc) = CString::new(line) {
-                    p.text(dc.as_ptr(), bx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
-                }
-            }
-        }
+        draw_play_mode(p, d, bx, ch.facts_y, bx > tx);
     }
 
     // ---- buttons (btn_y from hero_layout) ----
     draw_buttons(p, env, ch.btn_y);
 
-    // ---- "Starring …" — a right-aligned WRAPPING block in its own column, level with the action row.
-    // It reads as a caption to the hero rather than a control because the word "Starring" is a rung
-    // dimmer than the names it introduces, which is the mock's own device for keeping a full-size line
-    // of type from competing with the Play pill beside it. ----
-    if let Some(d) = d.filter(|d| has_starring(d)) {
-        let names: Vec<String> = d.cast.iter().take(3).map(|c| c.tag.clone()).collect();
-        // One colour for the whole run: the mock sets the word "Starring" a rung dimmer than the
-        // names, which needs a RIGHT-aligned lead run, and `TextView::lead` is left-aligned only
-        // (it anchors at the column's left edge, which on a right-aligned block would strand the
-        // word far from the names it introduces).
-        let line = format!("Starring {}", names.join(", "));
-        TextView::new(&line, theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .leading(STARRING_LEAD)
-            .max_lines(2)
-            .h(crate::ui::label::HAlign::Right)
-            .draw(p, Rect::new(SCR_W - MARGIN_X - STARRING_W, ch.btn_y + STARRING_DY, STARRING_W, 0.0));
+    // ---- the people column, bottom-anchored on the button row ----
+    if let Some(d) = d {
+        draw_people(p, d, ch.btn_y);
     }
+}
+
+/// The hero's **people column** — the crew credit over the cast, right-aligned in its own column
+/// beside the action row (`Details Screen.dc.html`).
+///
+/// The two lines are one block because they are one KIND of fact. That is also the mock's stated
+/// reason for the move that created this function: a bare "Converts on server" parked above these
+/// two read as a third credit, so the playback state went down to the facts line and the crew credit
+/// came up here off it.
+///
+/// **Bottom-anchored, growing UPWARD** ([`people_bottom`]): the last line sits level with the
+/// buttons for every item, and a cast list that takes a second line grows into the air above instead
+/// of walking down toward the section flow.
+///
+/// One colour for the whole run. The mock sets each lead word ("Created by" / "Starring") a step
+/// dimmer than the names it introduces, which needs a RIGHT-aligned lead run — and `TextView::lead`
+/// is left-aligned only (it anchors at the column's left edge, which on a right-aligned block would
+/// strand the word far from its names).
+///
+/// **[`PEOPLE_INK`], not the mock's `--text-tertiary`** — the one place this column departs from
+/// the design, and it is the ground, not the ink, that forces it. See that const.
+fn draw_people(p: Painter, d: &metadata::Detail, btn_y: f32) {
+    let x = SCR_W - MARGIN_X - PEOPLE_W;
+    let mut bottom = people_bottom(btn_y);
+    // the cast is the column's LAST line, so it is placed first and everything else stacks above it
+    if has_starring(d) {
+        let names: Vec<&str> = d.cast.iter().take(PEOPLE_CAST).map(|c| c.tag.as_str()).collect();
+        bottom -= people_line(p, &format!("Starring {}", names.join(", ")), x, bottom);
+    }
+    if let Some((label, names)) = hero_credit(d) {
+        people_line(p, &format!("{label} {}", names.join(", ")), x, bottom);
+    }
+}
+
+/// One block of the people column, placed by its BOTTOM edge; returns the height it consumed so the
+/// caller can stack the next block above it. Wrapping is what makes the height vary, which is
+/// exactly why the column is measured from the bottom rather than laid out from a top.
+fn people_line(p: Painter, text: &str, x: f32, bottom: f32) -> f32 {
+    let v = TextView::new(text, theme::size::CAPTION, PEOPLE_INK)
+        .leading(PEOPLE_LEAD)
+        .max_lines(PEOPLE_MAXLINES)
+        .h(HAlign::Right);
+    let h = v.measure_h(PEOPLE_W);
+    v.draw(p, Rect::new(x, bottom - h, PEOPLE_W, 0.0));
+    h
 }
 
 /// The hero facts line's `(date, middle clause)` — and it describes **whatever the hero is about**,
@@ -1822,18 +1938,21 @@ fn hero_facts(d: &metadata::Detail) -> (String, Option<String>) {
 }
 
 /// The hero's media chips, flowed left→right from `x` and cap-band-centred on the text line drawn
-/// at `text_y` (so they sit ON the date/runtime line, not near it). Returns the width consumed.
+/// at `text_y` in `line_sz` (so they sit ON that line, not near it). Returns the width consumed.
+///
+/// They ride the IDENTITY line — "TV Show · Drama · TV-MA  \[4K\] \[CC\]\[SDH\]\[AD\]" — because
+/// resolution and accessibility answer the same question the words before them do. That is why
+/// `line_sz` is a parameter rather than a constant: the chips sat on the CAPTION fine print until
+/// 2026-08-12 and now sit on a BODY run, and a chip centred on the wrong band sits visibly high.
 ///
 /// They describe the item's PRIMARY version — `Media[0]`, see `plex::Metadata::primary_media` — so
 /// a multi-version item (the dev library has episodes with both a 4k and a 1080 version) is badged
-/// by whichever one PMS lists first, until there is a version picker to choose with. Today the row
-/// is the resolution alone; the audio/subtitle chips the reference client shows beside it are the
-/// same `badge` leaf and belong here when they land.
-fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f32 {
+/// by whichever one PMS lists first, until there is a version picker to choose with.
+fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32, line_sz: c_int) -> f32 {
     let mut bx = x;
     // cap-band centre of the line drawn at `text_y` (the inverse of text::text_vcenter_y), computed
     // once — every chip below sits on it
-    let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+    let (cap_top, baseline) = crate::text::text_cap_band(line_sz, 0);
     let cy = text_y + (cap_top + baseline) * 0.5;
     // the FILLED chip: what the picture IS (its resolution class)
     for text in [crate::ui::fmt::resolution(&d.video_resolution, d.width, d.height)].into_iter().flatten() {
@@ -1849,84 +1968,225 @@ fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f
     // come from the episode `Detail` borrows its media from (see the struct's note), i.e. they describe
     // an episode's file rather than the series.
     //
-    // **No `CC` chip** (owner call): the mock has one, but "has subtitles at all" is true of very
-    // nearly every item in a library, so the chip was on constantly and told a viewer nothing. `SDH`
-    // (a track flagged hearing-impaired) and `AD` (audio description) are rare and are the ones that
-    // actually answer "is this watchable for me".
+    // **`CC` is back** (2026-08-12, the design's own revision, and flagged for re-decision rather
+    // than silently re-dropped): it had been cut here on an owner call — "has subtitles at all" is
+    // true of very nearly every item in a library, so the chip was on constantly and told a viewer
+    // nothing, while `SDH` (a track flagged hearing-impaired) and `AD` (audio description) are rare
+    // and are the ones that answer "is this watchable for me". The mock reinstates all three, and the
+    // design is the visual baseline.
+    let cc = !d.subs.is_empty();
     let sdh = d.subs.iter().any(|s| s.sdh);
     let ad = d.audio.iter().any(|s| s.ad);
-    for (on, label) in [(sdh, "SDH"), (ad, "AD")] {
+    for (on, label) in [(cc, "CC"), (sdh, "SDH"), (ad, "AD")] {
         if !on {
             continue;
         }
         if bx > x {
             bx += theme::space::XS;
         }
-        bx += crate::ui::widgets::keyline_chip(p, bx, cy, label, theme::TEXT_SECONDARY, theme::SURFACE_APP);
+        bx += crate::ui::widgets::keyline_chip(p, bx, cy, label, theme::TEXT_SECONDARY);
     }
     bx - x
 }
 
-/// "How this plays" — the facts row's playback preview (`Plex Pass Awareness.dc.html` as the
-/// visual baseline, states derived from Plex's own Pass documentation — the owner's directive
-/// after the design's second revision briefly cut the warning on a wrong premise), flowed
-/// after the media chips at `x`; returns the width consumed.
+/// Which "how this plays" sentence the facts row carries (`Details Screen.dc.html`; the states are
+/// derived from Plex's own Pass documentation, per the owner's standing directive — the design is
+/// the visual baseline, the LOGIC follows the docs).
 ///
-/// Three states, one ever shown. States 1–2 are PLAIN FACTS — dot separator, tertiary
-/// CAPTION, no chip — "year · runtime · how it plays"; both are reachable on every server,
-/// because h264 SOFTWARE encoding is subscription-free (the second revision's "a Pass-less
-/// server cannot convert at all" is not what Plex's docs say, and the issue-#22 target-chain
-/// fix depends on the opposite). State 3 is the one warning the docs make real: **HDR tone
-/// mapping is a Plex Pass server feature** (support.plex.tv, Transcoder), so an HDR item that
-/// must convert on a server *known* to have no Pass arrives washed-out, and nothing
-/// client-side can fix it — only say it before Play. Severity is carried by the alert glyph
-/// and the chip's keyline, never by hue: the only gold on the line is the capsule. Unknown
-/// subscription → no warning (an unproven absence must not be asserted). The mock composes
-/// state 3 as a second row because its hero column is 900px; this facts line is wider and the
-/// trailing credit already yields, so the fragment rides the same line.
-/// The state-3 gate, pure: warn exactly when the conversion is real, the source is HDR, and
-/// the server's missing Pass is PROVEN — per Plex's docs, tone mapping is the Pass-gated step,
-/// so all three together mean a washed-out picture and any two alone mean nothing. `Unknown`
-/// must stay silent: asserting an unproven absence is issue #22's bug with the polarity
-/// flipped.
-fn hdr_degrades(
+/// The whole point of resolving it as a value is that the row shows exactly ONE of these, and the
+/// precedence between the two Pass-gated ones is a judgement worth stating in one place instead of
+/// re-deriving at a paint site: **a wrong picture outranks a slower one.**
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PlayNote {
+    /// The plain fact, in the row's own fine print: "Direct Play" / "Direct Stream" / "Converts on
+    /// server". Every server reaches it, because h264 SOFTWARE encoding is subscription-free (the
+    /// design revision that assumed "a Pass-less server cannot convert at all" is not what Plex's
+    /// docs say, and the issue-#22 target-chain fix depends on the opposite). It is also what an
+    /// Unknown subscription gets, always: an absence the app cannot prove must not be named — and
+    /// what a container-only REMUX gets on ANY subscription, because no encoder runs.
+    Quiet,
+    /// "Converts on server · hardware conversion needs \[PLEX PASS\]" — **no alert glyph, quiet
+    /// register.** It will convert and the server is PROVEN Pass-less, so hardware conversion is
+    /// unavailable: certain, and a SERVER fact rather than a prediction about this item (which track
+    /// converts, and whether the server would reach for a hardware encoder, are both unknown before
+    /// Play). A slower conversion is not a wrong picture, which is why it gets no severity mark and
+    /// the capsule is the only gold on the line.
+    Soft,
+    /// "⚠ HDR → SDR · tone-mapping needs \[PLEX PASS\]" — the one warning the docs make real. **HDR
+    /// tone mapping is a Plex Pass server feature** (support.plex.tv, Transcoder), so an HDR item
+    /// that must convert on a server *known* to have no Pass arrives washed-out and nothing
+    /// client-side can fix it; the only useful moment to say so is before Play. Same sentence shape
+    /// as [`PlayNote::Soft`] — `fact · requirement needs [capsule]` — and the ONE difference is the
+    /// alert glyph: severity by mark, never by hue or by a second shape.
+    Warn,
+}
+
+/// The three-state gate, pure — the truth table the tests exercise and the paint obeys.
+///
+/// `Warn` needs all three facts proven (a real conversion, an HDR source, and a *proven* missing
+/// subscription); `Soft` is the same minus the HDR, because hardware conversion is Pass-gated
+/// whatever the source is; everything else is [`PlayNote::Quiet`]. `Unknown` and `Yes` are silent
+/// about the subscription by construction — asserting an unproven absence is issue #22's bug with
+/// the polarity flipped.
+///
+/// **`converts` is the RE-ENCODE, not "not direct play".** Both Pass-gated states are claims about
+/// an ENCODER — hardware conversion is one, HDR tone mapping is a step inside one — so a
+/// [`crate::route::Preview::Remux`] earns neither: the server copies the codecs into MKV, the
+/// picture arrives 4K/HDR10 intact, and no server-side encode happens for a subscription to gate.
+/// Reading the gate as "anything that is not direct play" put the flagship HDR warning on a 4K HDR
+/// HEVC file in a `.mov`, and the soft note on every mkv whose only fault was an audio track that
+/// had to be converted — pointing the user at a purchase that would fix nothing, which is the one
+/// thing `player::error_shape`'s own rule forbids.
+fn play_note(
     pv: crate::route::Preview,
     hdr: bool,
     sub: crate::plex::serverinfo::Subscription,
-) -> bool {
-    pv == crate::route::Preview::Converts && hdr && sub == crate::plex::serverinfo::Subscription::No
+) -> PlayNote {
+    let converts = pv == crate::route::Preview::Converts;
+    let no_pass = sub == crate::plex::serverinfo::Subscription::No;
+    if converts && no_pass && hdr {
+        PlayNote::Warn // a wrong picture outranks a slower one
+    } else if converts && no_pass {
+        PlayNote::Soft
+    } else {
+        PlayNote::Quiet
+    }
 }
 
-fn draw_play_mode(p: Painter, d: &metadata::Detail, x: f32, text_y: f32) -> f32 {
-    let Some(pv) = crate::route::playback_preview(d) else { return 0.0 };
+/// The alert glyph's box on the facts row — the line's own type size, which is the 24-unit svg the
+/// mock inlines on a CAPTION line.
+const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
+
+/// One element of the "how this plays" fragment.
+///
+/// The fragment is **measured and drawn from the same list**, which is the whole reason it is a
+/// list rather than a run of `bx +=` statements: the facts clause to its left has to reserve room
+/// for it (see [`FACTS_R`]), and a second hand-written width expression is exactly how a reserved
+/// width and a painted width come to differ.
+#[derive(Clone, Copy)]
+enum Bit {
+    /// a run of the row's fine print — `(text, ink, bold)`
+    Word(&'static core::ffi::CStr, [f32; 4], c_int),
+    /// the `·` separator with `gap` px of air either side
+    Sep(f32),
+    /// the bare alert triangle, at the line's own type size
+    Glyph,
+    /// plain air
+    Air(f32),
+    /// the non-interactive PLEX PASS capsule
+    Capsule,
+}
+
+/// The longest fragment [`play_mode_bits`] builds is the warning's seven; eight leaves one spare.
+const FACTS_BITS: usize = 8;
+
+/// The fragment's content, as the list both the measure and the paint walk. `after` says whether
+/// anything precedes it on the row — a separator introduces the fragment, and an item PMS sent no
+/// air date and no extent for would otherwise open the line with an orphan `·`.
+fn play_mode_bits(d: &metadata::Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
+    let mut bits = [Bit::Air(0.0); FACTS_BITS];
+    let mut n = 0;
+    let Some(pv) = crate::route::playback_preview(d) else { return (bits, 0) };
+    let mut push = |b: Bit| {
+        bits[n] = b;
+        n += 1;
+    };
+    let dim = theme::TEXT_TERTIARY;
+    let sec = theme::TEXT_SECONDARY;
+    if after {
+        // the row-level separator, at the same air the date/extent pair either side of it uses
+        push(Bit::Sep(theme::space::MD));
+    }
+    match play_note(pv, d.hdr, crate::plex::serverinfo::subscription()) {
+        PlayNote::Quiet => push(Bit::Word(
+            match pv {
+                crate::route::Preview::DirectPlay => c"Direct Play",
+                // Plex's own name for a container-only remux, and the same word
+                // `info_panel::playback_now` reports for the LIVE session — the picture is copied,
+                // so calling it a conversion would state that the server touched the pixels.
+                crate::route::Preview::Remux => c"Direct Stream",
+                crate::route::Preview::Converts => c"Converts on server",
+            },
+            dim,
+            0,
+        )),
+        PlayNote::Soft => {
+            push(Bit::Word(c"Converts on server", dim, 0));
+            // inside the fragment the air closes one rung: these clauses are one sentence, where the
+            // row-level dots separate three independent facts
+            push(Bit::Sep(theme::space::SM));
+            push(Bit::Word(c"hardware conversion needs", sec, 0));
+            push(Bit::Air(theme::space::SM));
+            push(Bit::Capsule);
+        }
+        PlayNote::Warn => {
+            // The glyph stands BARE beside the words, not inside a keyline chip: the mock's warning
+            // row is a plain run, and boxing the severity mark made it read as one more metadata
+            // chip in a row that already has several.
+            push(Bit::Glyph);
+            push(Bit::Air(theme::space::SM));
+            push(Bit::Word(c"HDR \u{2192} SDR", sec, 1));
+            push(Bit::Sep(theme::space::SM));
+            push(Bit::Word(c"tone-mapping needs", sec, 0));
+            push(Bit::Air(theme::space::SM));
+            push(Bit::Capsule);
+        }
+    }
+    (bits, n)
+}
+
+/// Drawn width of one CAPTION fine-print run — the facts clause's own measure (0 for a run the
+/// text layer cannot measure, which is the same "unmeasurable → 0" contract `text_width` keeps).
+fn run_w(s: &str) -> f32 {
+    CString::new(s).ok().map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 0)).unwrap_or(0.0)
+}
+
+fn bit_w(b: Bit) -> f32 {
+    match b {
+        Bit::Word(c, _, bold) => crate::text::text_width(c.as_ptr(), theme::size::CAPTION, bold),
+        Bit::Sep(gap) => 2.0 * gap + crate::text::text_width(c"\u{b7}".as_ptr(), theme::size::CAPTION, 0),
+        Bit::Glyph => FACTS_GLYPH_D,
+        Bit::Air(g) => g,
+        Bit::Capsule => crate::ui::widgets::pass_capsule_w(),
+    }
+}
+
+/// The width "how this plays" will occupy — the layout companion the facts clause measures against.
+fn play_mode_w(d: &metadata::Detail, after: bool) -> f32 {
+    let (bits, n) = play_mode_bits(d, after);
+    bits[..n].iter().copied().map(bit_w).sum()
+}
+
+/// "How this plays", flowed after the date/extent clause at `x`; returns the width consumed.
+fn draw_play_mode(p: Painter, d: &metadata::Detail, x: f32, text_y: f32, after: bool) -> f32 {
     let (cap_top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
     let cy = text_y + (cap_top + baseline) * 0.5;
+    let (bits, n) = play_mode_bits(d, after);
     let mut bx = x;
-    let warn = hdr_degrades(pv, d.hdr, crate::plex::serverinfo::subscription());
-    if !warn {
-        let label = match pv {
-            crate::route::Preview::DirectPlay => c"\u{b7}    Direct Play",
-            crate::route::Preview::Converts => c"\u{b7}    Converts on server",
-        };
-        bx += theme::space::MD;
-        bx += p.text(label.as_ptr(), bx, text_y, theme::size::CAPTION, theme::TEXT_TERTIARY, 0, 0);
-        return bx - x;
+    for b in &bits[..n] {
+        match *b {
+            Bit::Word(c, col, bold) => {
+                bx += p.text(c.as_ptr(), bx, text_y, theme::size::CAPTION, col, 0, bold);
+            }
+            Bit::Sep(gap) => {
+                // dimmed against the words either side (`theme::TEXT_SEPARATOR`) — both mocks set
+                // every separator dot to .45, so it punctuates the row instead of joining it
+                p.text(c"\u{b7}".as_ptr(), bx + gap, text_y, theme::size::CAPTION, theme::TEXT_SEPARATOR, 0, 0);
+                bx += bit_w(*b);
+            }
+            Bit::Glyph => {
+                crate::ui::icons::draw(
+                    p,
+                    crate::ui::icons::Icon::Alert,
+                    Rect::new(bx, cy - FACTS_GLYPH_D * 0.5, FACTS_GLYPH_D, FACTS_GLYPH_D),
+                    theme::TEXT_SECONDARY,
+                );
+                bx += FACTS_GLYPH_D;
+            }
+            Bit::Air(g) => bx += g,
+            Bit::Capsule => bx += crate::ui::widgets::pass_capsule(p, bx, cy, false),
+        }
     }
-    // state 3: [⚠ HDR → SDR] tone-mapping needs [PLEX PASS]
-    bx += theme::space::MD;
-    bx += crate::ui::widgets::badge(
-        p,
-        bx,
-        cy,
-        "HDR \u{2192} SDR",
-        Some(crate::ui::icons::Icon::Alert),
-        crate::ui::widgets::BadgeStyle::Outlined { col: theme::TEXT_SECONDARY, bg: theme::SURFACE_APP },
-    );
-    bx += theme::space::SM;
-    let words = c"tone-mapping needs";
-    bx += p.text(words.as_ptr(), bx, text_y, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
-    bx += theme::space::SM;
-    bx += crate::ui::widgets::pass_capsule(p, bx, cy, Some(theme::SURFACE_APP));
     bx - x
 }
 
@@ -2241,8 +2501,7 @@ fn draw_episodes(p: Painter) {
                 let w = pe.text(dc.as_ptr(), x, ty + date_y, theme::size::MICRO, dimc, 0, 0);
                 // the episode's own content rating, as a fine-print keyline chip after the date — the
                 // mock's `18+`. `keyline_chip`, not `badge`: this has to be the dimmest thing on the
-                // tile, and at badge's band and weight it outweighed the episode title above it. `bg`
-                // is the surface actually behind it, since the outline is a knockout.
+                // tile, and at badge's band and weight it outweighed the episode title above it.
                 if !ep.rating.is_empty() {
                     let (ct, cb) = crate::text::text_cap_band(theme::size::MICRO, 0);
                     crate::ui::widgets::keyline_chip(
@@ -2251,7 +2510,6 @@ fn draw_episodes(p: Painter) {
                         ty + date_y + (ct + cb) * 0.5,
                         &ep.rating,
                         dimc,
-                        theme::SURFACE_APP,
                     );
                 }
             }
@@ -3278,23 +3536,126 @@ fn draw_about(p: Painter) {
 
 #[cfg(test)]
 mod tests {
-    /// The docs-derived truth table for the facts row's one warning (Plex Pass docs: tone
-    /// mapping is the Pass-gated step of an HDR re-encode). All three conditions or nothing —
-    /// and Unknown NEVER warns, because an unproven missing subscription must not be asserted.
+    /// The docs-derived truth table for the facts row's "how this plays" state, in FULL: every one
+    /// of the 2×2×3 input combinations, so the table is a specification rather than a spot check.
+    ///
+    /// Two Pass-gated states, and both are docs-derived: hardware conversion and HDR tone mapping
+    /// are Plex Pass server features, so a PROVEN Pass-less server that will convert gets the soft
+    /// note, and an HDR source on top of that gets the warning instead (a wrong picture outranks a
+    /// slower one). Everything else is quiet — including every `Unknown` row, because an unproven
+    /// missing subscription must not be asserted, and every `Yes` row, because there is nothing to
+    /// say. Direct play is quiet whatever the source and the server are: the pixels arrive untouched.
     #[test]
-    fn the_hdr_warning_needs_all_three_facts_proven() {
+    fn how_it_plays_resolves_the_full_docs_truth_table() {
+        use super::PlayNote::{Quiet, Soft, Warn};
         use crate::plex::serverinfo::Subscription as Sub;
         use crate::route::Preview as Pv;
-        assert!(super::hdr_degrades(Pv::Converts, true, Sub::No));
-        for (pv, hdr, sub) in [
-            (Pv::DirectPlay, true, Sub::No),      // direct play: pixels arrive untouched
-            (Pv::Converts, false, Sub::No),       // SDR source: nothing to tone-map
-            (Pv::Converts, true, Sub::Yes),       // the server tone-maps
-            (Pv::Converts, true, Sub::Unknown),   // unproven absence stays silent
-            (Pv::DirectPlay, false, Sub::Unknown),
+        for (pv, hdr, sub, want) in [
+            // a RE-ENCODE on a server PROVEN to have no Pass — the only two non-quiet rows
+            (Pv::Converts, true, Sub::No, Warn),
+            (Pv::Converts, false, Sub::No, Soft),
+            // …the same conversion where the subscription is known-good or simply unknown
+            (Pv::Converts, true, Sub::Yes, Quiet),
+            (Pv::Converts, false, Sub::Yes, Quiet),
+            (Pv::Converts, true, Sub::Unknown, Quiet),
+            (Pv::Converts, false, Sub::Unknown, Quiet),
+            // A container-only REMUX is the row this table could not see while `Preview` had two
+            // values, and it is the one that made the claims FALSE: the server copies the codecs
+            // into MKV, so the picture arrives 4K/HDR10 intact and no encoder runs. Both Pass-gated
+            // states are properties of an encode, so a proven-Pass-less server changes nothing here
+            // — "HDR → SDR · tone-mapping needs [PLEX PASS]" on a 4K HDR HEVC file in a .mov was a
+            // factually wrong claim, and the soft note named an encoder that never starts.
+            (Pv::Remux, true, Sub::No, Quiet),
+            (Pv::Remux, false, Sub::No, Quiet),
+            (Pv::Remux, true, Sub::Yes, Quiet),
+            (Pv::Remux, false, Sub::Yes, Quiet),
+            (Pv::Remux, true, Sub::Unknown, Quiet),
+            (Pv::Remux, false, Sub::Unknown, Quiet),
+            // direct play: nothing is re-encoded, so no server feature is in play at all
+            (Pv::DirectPlay, true, Sub::No, Quiet),
+            (Pv::DirectPlay, false, Sub::No, Quiet),
+            (Pv::DirectPlay, true, Sub::Yes, Quiet),
+            (Pv::DirectPlay, false, Sub::Yes, Quiet),
+            (Pv::DirectPlay, true, Sub::Unknown, Quiet),
+            (Pv::DirectPlay, false, Sub::Unknown, Quiet),
         ] {
-            assert!(!super::hdr_degrades(pv, hdr, sub), "{pv:?} hdr={hdr} {sub:?} must not warn");
+            assert_eq!(super::play_note(pv, hdr, sub), want, "{pv:?} hdr={hdr} {sub:?}");
         }
+    }
+
+    /// The hero's crew credit: a series is *Created by* its writers, a movie *Directed by* its
+    /// directors, and an item the server credited nobody for carries no line at all rather than a
+    /// label with nothing after it. The show arm deliberately ignores `Director[]` — labelling a
+    /// director "Created by" would state a credit the server never gave.
+    #[test]
+    fn the_crew_credit_names_the_right_job_for_the_kind_of_item() {
+        let _l = crate::testlock::serial();
+        let mut movie = item(&["Jane Doe", "Ann Other"]);
+        movie.is_show = false;
+        assert_eq!(
+            super::hero_credit(&movie),
+            Some(("Directed by", vec!["Jane Doe", "Ann Other"]))
+        );
+
+        let mut show = item(&["Pilot Director"]);
+        show.is_show = true;
+        show.crew = vec![credit("Pilot Director", "Director"), credit("Kerry Ehrin", "Writer")];
+        assert_eq!(super::hero_credit(&show), Some(("Created by", vec!["Kerry Ehrin"])));
+
+        // …and a show whose agent sent no writer has no creator to name
+        show.crew = vec![credit("Pilot Director", "Director")];
+        assert_eq!(super::hero_credit(&show), None);
+        assert!(!super::has_people(&show), "no credit and no cast → no right-hand column at all");
+        show.cast = vec![credit("Anne Actor", "Herself")];
+        assert!(super::has_people(&show), "a cast alone still earns the column (and its wedge)");
+    }
+
+    /// The facts row and the people column are LEVEL, so the thing that keeps them apart is a
+    /// width bound and nothing else.
+    ///
+    /// Bottom-anchoring the column let it grow up into the facts line's own cap band at three
+    /// lines — the ordinary case, a one-line credit over a cast list that wraps — and the right end
+    /// of that facts line is where the PLEX PASS capsule sits. Vertically they are allowed to
+    /// share the band (the mock's own hero does exactly that); what must never happen is the two
+    /// runs of ink MEETING, and the only thing that can prevent it is the row stopping short of
+    /// the column's left edge. `draw_play_mode` carried no budget at all, and the worst case
+    /// measures ~95px inside the column on the shipped font.
+    #[test]
+    fn the_facts_row_stops_short_of_the_people_column() {
+        let _l = crate::testlock::serial();
+        use crate::ui::consts::{MARGIN_X, SCR_W};
+        assert!(
+            super::FACTS_R < SCR_W - MARGIN_X - super::PEOPLE_W,
+            "the facts row's bound must sit LEFT of the column it is bounded against"
+        );
+        // …and the reason the bound is load-bearing: at three lines the column's top line is inside
+        // the facts line's band (a CAPTION cap band is ~17px on the shipped font).
+        let ch = super::hero_chain(76.0, true);
+        assert!(
+            super::people_top(ch.btn_y, 3) < ch.facts_y + 17.0,
+            "three lines puts the column's top line level with the facts row — that is the case the \
+             width bound exists for"
+        );
+    }
+
+    /// The people column is anchored by its BOTTOM, so its last line sits on the action row's
+    /// bottom edge however many lines the block takes — and each extra line grows UPWARD, into the
+    /// hero's air, never down into the section flow below.
+    #[test]
+    fn the_people_column_grows_upward_off_the_button_row() {
+        let _l = crate::testlock::serial();
+        let btn_y = 846.0;
+        let bottom = super::people_bottom(btn_y);
+        assert_eq!(bottom, btn_y + super::CD);
+        let one = super::people_top(btn_y, 1);
+        let four = super::people_top(btn_y, super::PEOPLE_MAX_LINES);
+        assert_eq!(one, bottom - super::PEOPLE_LEAD);
+        assert!(four < one, "a taller block starts higher, not lower");
+        // The below-hero flow is measured from this same edge (`update`: btn_y + CD +
+        // BTN_CONTENT_GAP), so however tall the column grows it can never push the sections down —
+        // which is the whole reason it hangs off the buttons rather than off a top.
+        assert!(bottom <= btn_y + super::CD + super::BTN_CONTENT_GAP);
+        assert!(four < bottom, "the block is measured upward from its bottom edge");
     }
 
     use super::*;

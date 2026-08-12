@@ -293,6 +293,35 @@ impl Painter {
         let c = self.c(col);
         crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
     }
+    /// A rounded-rect **OUTLINE with nothing inside it** — a `w`-px inset ring in `col`, and the
+    /// background composites straight through the middle.
+    ///
+    /// This is the primitive the SDF was said not to have, and the absence cost real fidelity: an
+    /// outlined chip was drawn as a KNOCKOUT (the ring colour, then the interior repainted in a
+    /// colour the caller swore was the ground), which is exact on a flat panel and simply wrong
+    /// over artwork — the hero's identity line composites a backdrop plus two scrim ramps, so the
+    /// "ground" a caller can name is nothing like what is actually behind the chip, and each chip
+    /// read as a dark box rather than a hairline. Both mocks spell these `box-shadow: inset 0 0 0
+    /// Npx <colour>` with no `background` at all; this is that.
+    ///
+    /// It rides `fs_src.frag`'s existing rim path (`u_rimw`/`u_rimcol`, the focus edge-sheen's own
+    /// band) with a **fully transparent BLACK** fill. Both halves of that colour matter: the shader
+    /// premultiplies the fill by coverage alone (`rgb = fill.rgb * aFill`) and not by `fill.a`, so a
+    /// transparent WHITE would still add white — the alpha-0 rgb has to be 0 too.
+    ///
+    /// Two properties of that shared path are worth knowing before reaching for this.
+    /// **`rad` must be ≥ 0.5**: below it the fragment shader takes its flat fast-path and returns
+    /// the (transparent) fill without ever evaluating the rim, so a square ring draws nothing.
+    /// And the rim folds `u_rimcol.a` into its coverage term, so a partly-faded ring composites at
+    /// roughly α² rather than α — it reads a touch thin mid-fade and is exact at either end. That is
+    /// the sheen's own long-standing behaviour and cannot be corrected here without re-tuning every
+    /// card's edge sheen; against a knockout that is wrong while the screen is STILL, it is the far
+    /// better trade.
+    pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
+        let c = self.c(col);
+        const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, HOLLOW.as_ptr(), w, c.as_ptr());
+    }
     /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
     /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {

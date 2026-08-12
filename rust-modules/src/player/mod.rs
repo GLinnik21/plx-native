@@ -130,6 +130,14 @@ pub(crate) fn state() -> shared::PlaybackState {
     if crate::route::play_pending() {
         return shared::PlaybackState::Resolving;
     }
+    // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
+    // byte of video moves, so the plan fails with no URL, no engine is ever built, and the pump
+    // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
+    // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
+    // resolve check because a fresh resolve is the thing that retires the last verdict.
+    if crate::route::play_refused() {
+        return shared::PlaybackState::Error;
+    }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
 }
 
@@ -156,7 +164,8 @@ pub(crate) fn state() -> shared::PlaybackState {
 /// file because that is the truth there: route only direct-plays when PMS metadata names an
 /// h264/hevc video track, so reaching it means the file disagrees with its own metadata.
 /// One error, three surfaces — the HUD caption, the diagnostics panel's verdict line, and the
-/// full-screen read-out (`Plex Pass Awareness.dc.html` deliverable C) — shaped in ONE place so
+/// full-screen read-out (`Player Screen.dc.html`, the spec that superseded the retired
+/// `Plex Pass Awareness.dc.html` for this screen) — shaped in ONE place so
 /// they can never disagree about what happened. `no_pass` is the read-out's cue to draw the
 /// filled PLEX PASS capsule: a support FACT beside the reason, never the cause (see the arm
 /// comment above).
@@ -168,6 +177,22 @@ pub(crate) struct ErrorShape {
     /// the read-out's reason line — sentence case, subscription fact NOT baked in (the
     /// read-out states it as its own line, with the capsule)
     pub readout: &'static str,
+    /// The SERVER's own sentence, quoted VERBATIM under the reason ("" = none). The one field
+    /// here whose text is not OURS: it arrives at runtime off `/decision` and is reproduced
+    /// unedited — not sentence-cased, not re-worded — since its wording is the server's. Only the
+    /// pre-flight arm ever fills it; every other arm's reason is something the app worked out
+    /// itself.
+    ///
+    /// A `Cow`, and borrowed in practice: `route::play_verdict` hands out a `&'static str` off the
+    /// main-thread static, and this whole shape is rebuilt 2–3× per frame while a read-out is up
+    /// (HUD caption, read-out, diagnostics panel), two of those only to read a `&'static` field.
+    ///
+    /// **It deliberately does NOT reach `panel`.** The diagnostics panel is a PHOTOGRAPH — its
+    /// module doc bans URLs, paths and item titles from it, and a PMS decision sentence is
+    /// untrusted free text that can carry a filename. So the viewer's own screen quotes the
+    /// server and the shared support surface names only what the app decided; the asymmetry is
+    /// the redaction rule, not an oversight.
+    pub detail: std::borrow::Cow<'static, str>,
     /// true only when the failure is the audio-only transcode AND the server is known to have
     /// no Plex Pass — the one case the capsule appears
     pub no_pass: bool,
@@ -176,8 +201,31 @@ fn error_shape(
     no_video: bool,
     transcoding: bool,
     sub: crate::plex::serverinfo::Subscription,
+    verdict: Option<&'static str>,
 ) -> ErrorShape {
     let no_pass = sub == crate::plex::serverinfo::Subscription::No;
+    // FIRST, because it is the earliest thing that can fail and the most certain thing we can say:
+    // the server adjudicated the request at `/decision` and refused BOTH lanes before any of the
+    // signals below could exist (no engine ran, so `no_video` is simply false here). The two lines
+    // it produces are different KINDS of sentence — ours states what happened, mapped from the
+    // decision CODE; the server's is quoted verbatim beneath it.
+    //
+    // `no_pass` is FALSE on this arm on purpose, and it stays false on a server we KNOW has no Plex
+    // Pass and even when the encoder the server names happens to be HEVC. The server told us the
+    // cause; naming a subscription beside it would be exactly the speculation the tristate rule
+    // forbids — and it would be wrong twice over, since the arm is reachable for any source the
+    // server's own ffmpeg cannot decode, which no subscription changes.
+    if let Some(v) = verdict {
+        return ErrorShape {
+            caption: c"Playback failed — the server cannot play or convert this file",
+            // The panel's line is ours and static; the server's sentence rides on `detail`, whose
+            // surface (the full-screen read-out) is the one that can hold a whole sentence.
+            panel: "the server refused the item at /decision — it can neither direct play nor convert it",
+            readout: "The server cannot play or convert this file",
+            detail: std::borrow::Cow::Borrowed(v),
+            no_pass: false,
+        };
+    }
     match (no_video, transcoding) {
         (true, true) => ErrorShape {
             caption: c"Playback failed — server sent audio only",
@@ -187,24 +235,33 @@ fn error_shape(
                 "server sent audio only — it found no usable video transcode target"
             },
             readout: "The server sent audio only — it found no usable video transcode target",
+            detail: std::borrow::Cow::Borrowed(""),
             no_pass,
         },
         (true, false) => ErrorShape {
             caption: c"Playback failed — no video in the file",
             panel: "the stream carries no video track",
             readout: "This file has no video track",
+            detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
-        _ => ErrorShape { caption: c"Playback failed", panel: "", readout: "", no_pass: false },
+        _ => ErrorShape {
+            caption: c"Playback failed",
+            panel: "",
+            readout: "",
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        },
     }
 }
-/// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding`
-/// reads main-thread state).
+/// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
+/// `route::play_verdict` read main-thread state).
 pub(crate) fn error_now() -> ErrorShape {
     error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(),
         crate::plex::serverinfo::subscription(),
+        crate::route::play_verdict(),
     )
 }
 /// HUD caption for `PlaybackState::Error` (main thread).
@@ -717,7 +774,7 @@ mod tests {
         use crate::plex::serverinfo::Subscription as Sub;
         // transcode on a known-free server: the Pass appears as a parenthetical fact on the
         // panel, as the capsule flag for the read-out…
-        let e = error_shape(true, true, Sub::No);
+        let e = error_shape(true, true, Sub::No, None);
         assert!(e.caption.to_str().unwrap().contains("server sent audio only"), "{:?}", e.caption);
         assert!(e.panel.contains("no usable video transcode target"), "{}", e.panel);
         assert!(e.panel.contains("server has no Plex Pass"), "{}", e.panel);
@@ -726,27 +783,60 @@ mod tests {
         // reason carries no Pass words at all: the capsule line states the fact separately.
         assert!(!e.panel.contains("cannot encode"), "causation may not be asserted: {}", e.panel);
         assert!(!e.readout.contains("Plex Pass"), "the capsule, not prose, names the Pass: {}", e.readout);
+        assert!(e.detail.is_empty(), "only the server's own verdict fills the detail line");
         // known-Pass'd or never-heard-from: today's wording, and no Pass blame anywhere in it
         for sub in [Sub::Yes, Sub::Unknown] {
-            let e = error_shape(true, true, sub);
+            let e = error_shape(true, true, sub, None);
             assert!(e.caption.to_str().unwrap().contains("server sent audio only"), "{:?}", e.caption);
             assert!(e.panel.contains("no usable video transcode target"), "{} ({sub:?})", e.panel);
             assert!(!e.panel.contains("Plex Pass"), "an unproven subscription must not be blamed ({sub:?})");
             assert!(!e.no_pass, "the capsule may not appear on an unproven subscription ({sub:?})");
         }
         for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
-            let e = error_shape(true, false, sub);
+            let e = error_shape(true, false, sub, None);
             assert!(e.caption.to_str().unwrap().contains("no video in the file"), "{:?}", e.caption);
             assert!(e.panel.contains("no video track"), "direct play blames the file, not the server");
             assert!(!e.no_pass, "an audio-only FILE is not a subscription story");
             for transcoding in [false, true] {
-                let e = error_shape(false, transcoding, sub);
+                let e = error_shape(false, transcoding, sub, None);
                 assert_eq!(e.caption.to_str().unwrap(), "Playback failed", "no reason may be invented");
                 assert_eq!(e.panel, "");
                 assert_eq!(e.readout, "");
+                assert!(e.detail.is_empty());
                 assert!(!e.no_pass);
             }
         }
+    }
+
+    /// The PRE-FLIGHT arm: `/decision` refused the item before a byte of video moved, so the reason
+    /// is the SERVER's and not our inference. Three things are asserted and each was a way to get
+    /// this wrong. (1) The reason line is ours and fixed, while the detail is the server's sentence
+    /// **verbatim** — not sentence-cased, not re-worded, because its wording is not ours and it is
+    /// the line a maintainer photographs. (2) The capsule NEVER appears here, on any subscription
+    /// state, including a proven-free server and including a verdict that names HEVC — the server
+    /// named the cause, so naming a subscription beside it is the speculation the tristate rule
+    /// forbids. (3) The arm OUTRANKS the demux-derived ones: nothing was ever demuxed, so a stale
+    /// `no_video` from a previous session must not re-word a refusal.
+    #[test]
+    fn a_refused_decision_quotes_the_server_and_never_names_a_subscription() {
+        use crate::plex::serverinfo::Subscription as Sub;
+        const VP9: &str = "Cannot convert this item. Implementation for video encoder 'vp9' not found.";
+        for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
+            // graded with `no_video`/`transcoding` BOTH set — the arm that would otherwise win
+            let e = error_shape(true, true, sub, Some(VP9));
+            assert_eq!(e.readout, "The server cannot play or convert this file", "({sub:?})");
+            assert_eq!(e.detail, VP9, "the server's sentence is reproduced unedited ({sub:?})");
+            assert!(!e.no_pass, "no capsule on this arm, ever — the server named the cause ({sub:?})");
+            assert!(!e.readout.contains("Plex Pass") && !e.panel.contains("Plex Pass"), "({sub:?})");
+            assert!(e.caption.to_str().unwrap().starts_with("Playback failed"), "{:?}", e.caption);
+        }
+        // an HEVC verdict on a server PROVEN to have no Pass is the temptation, and still no capsule
+        let e = error_shape(false, true, Sub::No, Some("Implementation for video encoder 'hevc' not found."));
+        assert!(!e.no_pass);
+        // a server that refused without saying why: the reason still lands, the quote line does not
+        let e = error_shape(false, true, Sub::No, Some(""));
+        assert_eq!(e.readout, "The server cannot play or convert this file");
+        assert!(e.detail.is_empty(), "an empty verdict draws no quote line at all");
     }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> SubRect {

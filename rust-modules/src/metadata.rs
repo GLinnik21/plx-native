@@ -63,7 +63,9 @@ impl Cast {
     }
 }
 
-#[derive(Clone)]
+// `Default` is for TESTS: every field is a zero/empty that means "PMS did not say", so a fixture
+// can name the two or three fields its case is about instead of the fifteen it is not.
+#[derive(Clone, Default)]
 pub(crate) struct Stream {
     pub(crate) id: i64, // Plex stream id (for &audioStreamID / &subtitleStreamID)
     pub(crate) index: i64, // PMS stream index (container order) — the ordinal mapping sorts by it
@@ -490,9 +492,11 @@ pub(crate) struct Detail {
     pub(crate) height: i64,              // is a 1080p scope movie) — badge off video_resolution
     pub(crate) bitrate: i64,             // kbps, whole-stream
     /// the video stream is HDR (PQ/HLG transfer or Dolby Vision) — with [`Self::hdr`] true AND
-    /// the item not direct-playable AND the server known Pass-less, the facts row warns that the
-    /// transcode will be HDR→SDR without tone-mapping (a Plex Pass server feature; see
-    /// docs/plex-pass-audit.md). Any weaker combination shows nothing.
+    /// the item facing a real RE-ENCODE (`route::Preview::Converts`, **not** merely "not
+    /// direct-playable": a container-only remux copies the picture and keeps HDR10 intact) AND the
+    /// server known Pass-less, the facts row warns that the transcode will be HDR→SDR without
+    /// tone-mapping (a Plex Pass server feature; see docs/plex-pass-audit.md). Any weaker
+    /// combination shows nothing.
     pub(crate) hdr: bool,
     pub(crate) art: String,
     pub(crate) thumb: String,

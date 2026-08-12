@@ -1962,6 +1962,28 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         continue;
                     }
+                    // A playback FAILURE owns the whole frame (`player_hud::transport_hidden`):
+                    // `draw_hud` returns before painting anything and the overlay panels below are
+                    // gated the same way, so the scrubber, the control row, the bottom tabs and any
+                    // panel that happened to be open are all absent from the picture. Nothing that
+                    // is not drawn may be driven — the rule `ControlSlot::UpNext` states and
+                    // `up_next::card_active` already keeps for the post-play card.
+                    //
+                    // BACK is the exception, and it is not optional: the read-out's own hint says
+                    // "Press BACK to return", and a single screen with every other key swallowed
+                    // has nowhere else to go. It closes a panel the failure landed on top of (so the
+                    // route agrees with the frame again) and otherwise leaves the player.
+                    if matches!(route, Route::Player { .. }) && crate::ui::player_hud::transport_hidden() {
+                        if is_back(sym, wcode) {
+                            if matches!(modal_of(route), Modal::None) {
+                                exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at, &mut trail);
+                            } else {
+                                close_player_overlays();
+                                route = Route::Player { overlay: Overlay::None };
+                            }
+                        }
+                        continue;
+                    }
                     // the in-player track menu is modal — it swallows every key while open
                     if matches!(route, Route::Player { overlay: Overlay::Menu }) {
                         if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
@@ -2525,6 +2547,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
+                    // …and the pointer's half of the same rule: the hit-tests below consult
+                    // geometry (`icon_hit`, `scrub_hit`, the tab row) that a failure has erased from
+                    // the frame. The key path's BACK exception has no pointer twin — there is no
+                    // BACK to click — so a click on a failed read-out is simply nothing.
+                    if matches!(route, Route::Player { .. }) && crate::ui::player_hud::transport_hidden() {
+                        continue;
+                    }
                     if matches!(route, Route::Player { .. }) {
                         // Sample HUD visibility BEFORE re-arming it: a click must only act on
                         // transport geometry the user can SEE (the key path's vis gate — a
@@ -3727,16 +3756,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // transport, so it is never dimmed by the scrim; BEFORE the overlay panels
                         // below, so an open Info card / Chapters strip still covers it.
                         crate::ui::player_hud::draw_readout(busy, now);
-                        if matches!(route, Route::Player { overlay: Overlay::Menu }) {
+                        // …and the panels are gated on the SAME failure the transport is, from the
+                        // one resolved `busy`: `Player Screen.dc.html` sets `infoDisplay` and
+                        // `panelDisplay` to none on the failed variant. A panel open when the
+                        // failure landed (`busy_surface` resolves Error to Failed over a held frame
+                        // too) would otherwise draw over the read-out — a card of stale facts about
+                        // a stream that never started. The key/pointer arms refuse the same state,
+                        // so this can never hide something the user can still drive.
+                        let panels = !crate::ui::player_hud::transport_hidden();
+                        if panels && matches!(route, Route::Player { overlay: Overlay::Menu }) {
                             crate::ui::track_menu::draw();
                         }
-                        if matches!(route, Route::Player { overlay: Overlay::Info }) {
+                        if panels && matches!(route, Route::Player { overlay: Overlay::Info }) {
                             crate::ui::info_panel::draw();
                         }
-                        if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
+                        if panels && matches!(route, Route::Player { overlay: Overlay::Chapters }) {
                             crate::ui::chapters_panel::draw();
                         }
-                        if matches!(route, Route::Player { overlay: Overlay::More }) {
+                        if panels && matches!(route, Route::Player { overlay: Overlay::More }) {
                             crate::ui::more_menu::draw();
                         }
                         // LAST, over everything including the centred "Buffering…" read-out whose

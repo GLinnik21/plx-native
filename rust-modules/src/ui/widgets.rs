@@ -251,25 +251,23 @@ pub(crate) fn keyline_chip_w(text: &str) -> f32 {
 }
 
 /// Draw a fine-print keyline chip with its LEFT edge at `x`, centred on `cy`; returns its width.
-/// `bg` must be the surface actually BEHIND the chip: the SDF has no stroke-only mode, so the outline
-/// is a knockout (keyline colour, then the interior inset by it) rather than a hollow ring.
-pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], bg: [f32; 4]) -> f32 {
+///
+/// **A real hollow ring** ([`Painter::rring`]), so whatever is behind it shows through the middle —
+/// the mock's `box-shadow: inset 0 0 0 1.5px …` with no `background`. It used to be a KNOCKOUT
+/// (stroke colour, then the interior repainted in a `bg` the caller named), which is exact on a
+/// flat panel and wrong over artwork: on the detail hero's identity line the ground is a backdrop
+/// plus two scrim ramps, so a chip claiming `SURFACE_APP` read as a dark box over a bright still
+/// instead of a hairline. The parameter is gone rather than defaulted — there was no honest value
+/// for it, which is the point.
+pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4]) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
         Err(_) => return 0.0,
     };
     let w = keyline_chip_w(text);
     let h = crate::text::cap_h(theme::size::CAPTION, 0) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band, not a fixed band
-    let r = Rect::new(x, cy - h * 0.5, w, h);
-    p.rrect(r, KEYLINE_RAD, KEYLINE_RAD, col);
-    let b = KEYLINE_W;
-    p.rrect(
-        Rect::new(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b),
-        (KEYLINE_RAD - b).max(0.0),
-        (KEYLINE_RAD - b).max(0.0),
-        bg,
-    );
-    p.text(lc.as_ptr(), r.x + KEYLINE_PAD_X, crate::text::text_vcenter_y(theme::size::CAPTION, 0, cy), theme::size::CAPTION, col, 0, 0);
+    p.rring(Rect::new(x, cy - h * 0.5, w, h), KEYLINE_RAD, KEYLINE_W, col);
+    p.text(lc.as_ptr(), x + KEYLINE_PAD_X, crate::text::text_vcenter_y(theme::size::CAPTION, 0, cy), theme::size::CAPTION, col, 0, 0);
     w
 }
 
@@ -2013,34 +2011,68 @@ const BADGE_ICON_GAP: f32 = theme::space::XS;
 /// pixel width [`badge`] will occupy for `text` (+ `icon`) — the layout companion (e.g. reserving
 /// the inline-chip run so a row label elides before it). The icon's band is added OUTSIDE the
 /// short-tag floor, so a bare "CC" still measures its minimum and a glyphed chip still fits both.
-// ---- The PLEX PASS capsule (`Plex Pass Awareness.dc.html`, deliverable A) -------------------
+// ---- The PLEX PASS capsule (`Details Screen.dc.html` / `Player Screen.dc.html`) --------------
 //
 // The name set in type — deliberately NO logo artwork: this is an unofficial client, and the
 // badge is a referential use of the words alone (the same reasoning `plex::identity` documents
-// for the product name). Height matches [`BADGE_H`] so it shares a badge row's optical line,
-// but the radius is the full pill, deliberately unlike the 4K chip's 6px — a different shape
-// marks a different class of thing: brand reference, not technical fact. **Two product
-// surfaces, both places the name changes what the user does next** (see `theme::PASS_GOLD`'s
-// doc for the docs-derived rule): FILLED in the playback-failed read-out (pure black ground),
-// OUTLINE in the detail facts row's HDR→SDR warning. Non-interactive in both; it is
-// [`theme::PASS_GOLD`]'s only consumer.
+// for the product name). Height matches [`BADGE_H`] so it shares a badge row's optical line.
+// **Two product surfaces, both places the name changes what the user does next** (see
+// `theme::PASS_GOLD`'s doc for the docs-derived rule): FILLED in the playback-failed read-out
+// (pure black ground), OUTLINE in the detail facts row's Pass-gated states. Non-interactive in
+// both; it is [`theme::PASS_GOLD`]'s only consumer.
+//
+// **Re-spec'd 2026-08-12** to the geometry BOTH mock files now carry (which is what makes it a
+// decision rather than a drift): an 8px rounded rect at a 2px stroke, `size::CAPTION` bold at
+// `.06em` — up from a full-pill silhouette, a 1.5px stroke and `size::MICRO` at `.12em`. The
+// silhouette is no longer what separates it from a technical chip; the GOLD is, and the label
+// now sits on the couch-legibility floor instead of below it. (The Player Screen's comment
+// beside the filled form still says "full pill radius" against its own `border-radius:8px` —
+// the CSS is the artifact and the comment is stale.)
 
-/// Letter-tracking for the capsule label: the design's `.12em` of MICRO 22. The text renderer
-/// has no letter-spacing, so the label is drawn per character; nine one-char strings are a
-/// rounding error against the 160-slot glyph cache and they never churn (the label is constant).
-const PASS_TRACK: f32 = 22.0 * 0.12;
+/// Letter-tracking for the capsule label: the design's `.06em` of [`theme::size::CAPTION`]. The
+/// text renderer has no letter-spacing, so the label is drawn per character.
+const PASS_TRACK: f32 = theme::size::CAPTION as f32 * 0.06;
+/// The label inset. The design states `padding: 0 13px 0 15px` and **that asymmetry does not
+/// port** — honouring the reasoning, not the literal. The mock is asymmetric because CSS emits a
+/// letter-space after the LAST character too, so it takes that trailing space off the right pad to
+/// keep the label optically centred; its own comment says exactly that. Our renderer tracks
+/// BETWEEN characters only ([`pass_label_w`] counts `n − 1` gaps), so there is no trailing space to
+/// compensate for, and copying 15/13 would push the ink 1px right of centre — off-centre in the
+/// opposite direction from the thing the design was correcting. 14/14 keeps the SUM, and therefore
+/// the drawn width and every layout measured from it, byte-identical.
 const PASS_PAD_X: f32 = 14.0;
-const PASS_TEXT: &str = "PLEX PASS";
+/// Corner radius and stroke — `border-radius: 8px`, `inset 0 0 0 2px`.
+const PASS_RAD: f32 = 8.0;
+const PASS_STROKE: f32 = 2.0;
+/// The label, "PLEX PASS", **pre-split into per-character `CStr` literals** — the tracking is
+/// applied by advancing the pen between them, so the label is nine one-character draws.
+/// Compile-time constants rather than nine `CString::new` allocations per call: `pass_capsule_w`
+/// alone walks them, and the capsule is now on the detail hero for every converting item on a
+/// proven-Pass-less server (not only an HDR one) as well as in the failure read-out, so this ran
+/// ~18 small allocations a frame for a string that never changes.
+const PASS_CHARS: [&std::ffi::CStr; 9] = [c"P", c"L", c"E", c"X", c" ", c"P", c"A", c"S", c"S"];
+
+/// The label's own drawn width, **memoised** — the pens below re-measure per character anyway, so
+/// only the total is worth holding. Main-thread only, like every other layout memo here.
+static mut PASS_W: f32 = 0.0;
 
 fn pass_label_w() -> f32 {
-    let mut w = 0.0;
-    let mut n = 0;
-    for ch in PASS_TEXT.chars() {
-        let c = std::ffi::CString::new(ch.to_string()).unwrap();
-        w += crate::text::text_width(c.as_ptr(), theme::size::MICRO, 1);
-        n += 1;
+    // `text_width` reads 0 until `init_text` has run — never cache a pre-init measurement (the
+    // same guard `ctrl_slot`'s width memo keeps, and for the same reason).
+    let memo = unsafe { PASS_W };
+    if memo > 0.0 {
+        return memo;
     }
-    w + PASS_TRACK * (n - 1) as f32
+    let mut w = 0.0;
+    for c in PASS_CHARS {
+        w += crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1);
+    }
+    if w <= 0.0 {
+        return 0.0;
+    }
+    w += PASS_TRACK * (PASS_CHARS.len() - 1) as f32;
+    unsafe { PASS_W = w };
+    w
 }
 
 /// Layout width of the capsule — for right-anchoring and row flow.
@@ -2050,37 +2082,31 @@ pub(crate) fn pass_capsule_w() -> f32 {
 
 /// Draw the capsule with its LEFT edge at `x`, centred on `cy`; returns its width.
 ///
-/// `bg: Some(ground)` is the OUTLINE form (stroke 1.5 pass-gold, gold label) — the default
-/// everywhere a surface sits behind it. Like [`keyline_chip`], the outline is a knockout (the
-/// SDF has no stroke-only mode), so `bg` must be the surface actually behind the capsule.
-/// `bg: None` is the FILLED form — pass-gold fill, near-black label — used in exactly one
-/// place, the playback-failed read-out, where the ground is pure black and an outline would
-/// read as a hole.
-pub(crate) fn pass_capsule(p: Painter, x: f32, cy: f32, bg: Option<[f32; 4]>) -> f32 {
+/// `filled: false` is the OUTLINE form — a [`PASS_STROKE`] ring of pass-gold with a gold label and
+/// **nothing inside it** ([`Painter::rring`]), which is the mock's `box-shadow: inset 0 0 0 2px
+/// var(--pass-gold)` with no `background`. It is the default everywhere a surface sits behind it,
+/// and it no longer has to be told what that surface is: the knockout it replaces painted the
+/// interior in a `bg` the caller named, which over the detail hero's backdrop meant a gold-ringed
+/// dark BOX rather than a hairline.
+///
+/// `filled: true` is the FILLED form — pass-gold fill, near-black label — used in exactly one
+/// place, the playback-failed read-out, where the ground is pure black and an outline would read
+/// as a hole.
+pub(crate) fn pass_capsule(p: Painter, x: f32, cy: f32, filled: bool) -> f32 {
     let w = pass_capsule_w();
     let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
-    let rad = BADGE_H * 0.5; // the full pill
-    let ink = match bg {
-        Some(ground) => {
-            const STROKE: f32 = 1.5;
-            p.rrect(r, rad, rad, theme::PASS_GOLD);
-            let inner = Rect::new(r.x + STROKE, r.y + STROKE, r.w - 2.0 * STROKE, r.h - 2.0 * STROKE);
-            p.rrect(inner, rad - STROKE, rad - STROKE, ground);
-            theme::PASS_GOLD
-        }
-        None => {
-            p.rrect(r, rad, rad, theme::PASS_GOLD);
-            theme::PASS_GOLD_INK
-        }
+    let ink = if filled {
+        p.rrect(r, PASS_RAD, PASS_RAD, theme::PASS_GOLD);
+        theme::PASS_GOLD_INK
+    } else {
+        p.rring(r, PASS_RAD, PASS_STROKE, theme::PASS_GOLD);
+        theme::PASS_GOLD
     };
-    // MICRO for a badge LABEL, not content — the token's ban is about prose (the design: "22px
-    // is a label"). Authored literally, so no shared style can ever recase the pair.
-    let ty = crate::text::text_vcenter_y(theme::size::MICRO, 1, cy);
+    let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 1, cy);
     let mut cx = x + PASS_PAD_X;
-    for ch in PASS_TEXT.chars() {
-        let c = std::ffi::CString::new(ch.to_string()).unwrap();
-        p.text(c.as_ptr(), cx, ty, theme::size::MICRO, ink, 0, 1);
-        cx += crate::text::text_width(c.as_ptr(), theme::size::MICRO, 1) + PASS_TRACK;
+    for c in PASS_CHARS {
+        p.text(c.as_ptr(), cx, ty, theme::size::CAPTION, ink, 0, 1);
+        cx += crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1) + PASS_TRACK;
     }
     w
 }
@@ -2613,11 +2639,18 @@ mod tests {
     /// instead on most items and paints higher than the knee, which is art riding the feather rather
     /// than an anchor this closed form can speak for (see [`HERO_SCRIM_KNEE`]).
     ///
-    /// The design floor is 3:1 over bright art. One row misses it and is listed anyway rather than
+    /// The design floor is 3:1 over bright art. ONE row misses it and is listed anyway rather than
     /// hidden: detail's **facts line** is `TEXT_TERTIARY` (L=0.317), which needs α≈0.79 for 4.5:1 —
     /// an essentially black corner. That is an INK decision, not a scrim one, and is deliberately
-    /// deferred; when the facts line and the Starring block move to `TEXT_SECONDARY` over artwork,
-    /// this row's floor becomes 3.0 like the rest.
+    /// deferred; when the facts line moves to `TEXT_SECONDARY` over artwork its floor becomes 3.0
+    /// like the rest.
+    ///
+    /// The people column was the second such row for exactly one day. Bottom-anchoring it moved its
+    /// worst case 74px up the frame, where the composite ground is ≈0.59 instead of ≈0.71, and at
+    /// tertiary that is 2.37:1 — so the row's floor was written down as 2.35 to match. **A contract
+    /// is not a measurement**: the entry below asserts the ordinary 3.0/2.5 again, and
+    /// `detail::PEOPLE_INK` is what meets it (one ink step, no scrim retune — the arithmetic for
+    /// why that is the cheap half of the trade is on that const).
     #[test]
     fn the_hero_text_reads_over_bright_artwork() {
         use crate::ui::consts::{MARGIN_X, SCR_W};
@@ -2630,7 +2663,7 @@ mod tests {
         let home_col_r = MARGIN_X + crate::ui::home::HERO_COL_W; // 750 — the column's right end
         let det_col_r = MARGIN_X + crate::ui::detail::HERO_TEXT_W; // 990 — the synopsis' wrap edge,
         // and since nit 2 the title band's column too: a very wide wordmark runs the same 990.
-        let starring_r = SCR_W - MARGIN_X; // 1830 — the right-aligned credit's own edge
+        let people_r = SCR_W - MARGIN_X; // 1830 — the right-aligned people column's own edge
 
         // (label, x, y, ink, right wedge?, floor over BRIGHT art, floor over BLOWN WHITE)
         let rows: [(&str, f32, f32, [f32; 4], bool, f32, f32); 9] = [
@@ -2643,7 +2676,22 @@ mod tests {
             ("detail synopsis", det_col_r, hc.syn_y, theme::TEXT_READING, true, 3.0, 2.5),
             // ⚠ the deferred ink decision — see the doc above
             ("detail facts", 1270.0, hc.facts_y, theme::TEXT_TERTIARY, true, 2.6, 2.1),
-            ("detail Starring", starring_r, hc.btn_y + crate::ui::detail::STARRING_DY, theme::TEXT_TERTIARY, true, 3.0, 2.5),
+            // The people column at its WORST case: the top line of the tallest block it can produce
+            // (a wrapped credit over a wrapped cast list), `PEOPLE_MAX_LINES` above the buttons —
+            // 74px higher than the old top-anchored block, where the right wedge is feathering in
+            // from y=702 and supplies about half the alpha it did (0.092 against 0.178). It clears
+            // the ordinary floor because its ink is `detail::PEOPLE_INK`, which is read from the
+            // screen rather than restated here, so an ink change here is a test failure and not a
+            // silent one.
+            (
+                "detail people (top line)",
+                people_r,
+                crate::ui::detail::people_top(hc.btn_y, crate::ui::detail::PEOPLE_MAX_LINES),
+                crate::ui::detail::PEOPLE_INK,
+                true,
+                3.0,
+                2.5,
+            ),
         ];
 
         for (label, x, y, ink, right, min_bright, min_white) in rows {

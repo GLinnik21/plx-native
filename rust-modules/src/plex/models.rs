@@ -48,6 +48,21 @@ pub struct MediaContainer {
     pub general_decision_code: Option<i64>,
     #[serde(rename = "mdeDecisionCode", default, deserialize_with = "de_opt_i64")]
     pub mde_decision_code: Option<i64>,
+    /// The TRANSCODE lane's own verdict, beside the general one above (`4007` = "cannot convert
+    /// this item"). Same `Option` discipline and for the same reason, doubled here: the pre-flight
+    /// refusal is graded on a CODE, and a defaulted 0 would be a code this server never sent.
+    #[serde(rename = "transcodeDecisionCode", default, deserialize_with = "de_opt_i64")]
+    pub transcode_decision_code: Option<i64>,
+    /// …and the two HUMAN sentences PMS pairs with those codes — "Cannot convert this item.
+    /// Implementation for video encoder 'vp9' not found." / "Neither direct play nor conversion is
+    /// available." (both probed live against PMS 1.43.3). They are the server's own wording, quoted
+    /// verbatim by the player's failure read-out, so they are read but never parsed: the CODE is
+    /// what the app decides on. Absent stays `""` — an empty sentence draws no line at all, which
+    /// is the honest reading of "the server named no reason".
+    #[serde(rename = "transcodeDecisionText", default, deserialize_with = "de_str")]
+    pub transcode_decision_text: String,
+    #[serde(rename = "generalDecisionText", default, deserialize_with = "de_str")]
+    pub general_decision_text: String,
     /// `?includeMeta=1` on a section listing — the server-driven Sort/Filter menus.
     #[serde(rename = "Meta", default)]
     pub meta: Option<Meta>,
@@ -648,6 +663,40 @@ mod tests {
         assert_eq!(v1.video_resolution, "1080");
         // the two versions therefore badge differently ("4K" vs "1080p" — see ui::fmt::resolution's
         // own tests), which is the whole reason the accessor has to name WHICH one it returned.
+    }
+
+    /// The `/decision` verdict block, in BOTH encodings PMS uses for it. This body is the one the
+    /// player quotes to the user when the server refuses an item before playback, so a strict field
+    /// here would not lose the sentence — it would fail the whole `MediaContainer` and turn a
+    /// server that told us exactly what was wrong into the generic failure this block exists to
+    /// end. The absent case is the third assertion: no code and no sentence, never a confident 0.
+    #[test]
+    fn the_decision_verdict_survives_both_encodings_and_stays_absent_when_unsent() {
+        // shaped on the live PMS 1.43.3 refusal (a VP9 source, no encoder for it)
+        let json = br#"{"MediaContainer":{"size":1,"generalDecisionCode":2000,
+            "generalDecisionText":"Neither direct play nor conversion is available.",
+            "transcodeDecisionCode":4007,
+            "transcodeDecisionText":"Cannot convert this item. Implementation for video encoder 'vp9' not found."}}"#;
+        let mc = serde_json::from_slice::<Envelope>(json).expect("lenient parse").media_container;
+        assert_eq!(mc.general_decision_code, Some(2000));
+        assert_eq!(mc.transcode_decision_code, Some(4007));
+        assert_eq!(mc.general_decision_text, "Neither direct play nor conversion is available.");
+        assert!(mc.transcode_decision_text.ends_with("'vp9' not found."));
+
+        // the same body with every number string-encoded (PMS does this per endpoint, not per field)
+        let json = br#"{"MediaContainer":{"generalDecisionCode":"2000","transcodeDecisionCode":"4007",
+            "transcodeDecisionText":"Cannot convert this item."}}"#;
+        let mc = serde_json::from_slice::<Envelope>(json).expect("lenient parse").media_container;
+        assert_eq!((mc.general_decision_code, mc.transcode_decision_code), (Some(2000), Some(4007)));
+        assert_eq!(mc.transcode_decision_text, "Cannot convert this item.");
+        assert_eq!(mc.general_decision_text, "", "a sentence the server never sent is empty, not invented");
+
+        // a healthy decision names no verdict at all — and absent must stay absent
+        let json = br#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"4"}]}}"#;
+        let mc = serde_json::from_slice::<Envelope>(json).expect("parse").media_container;
+        assert_eq!(mc.general_decision_code, None);
+        assert_eq!(mc.transcode_decision_code, None);
+        assert_eq!((mc.general_decision_text.as_str(), mc.transcode_decision_text.as_str()), ("", ""));
     }
 
     /// A show container carries no `Media` at all — the accessor must say so rather than panic,

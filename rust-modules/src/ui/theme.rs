@@ -26,6 +26,16 @@ pub const TEXT_SECONDARY: [f32; 4] = [0.72, 0.75, 0.80, 1.0];
 pub const TEXT_READING: [f32; 4] = [0.804, 0.827, 0.867, 1.0];
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
 pub const TEXT_TERTIARY: [f32; 4] = [0.58, 0.60, 0.64, 1.0];
+/// The `·` between fine-print facts, and **only** that — a step below the words it separates.
+/// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is
+/// worth keeping: a dot at the full ink of its neighbours joins the list instead of punctuating
+/// it, so a three-fact row reads as five things. Derived from [`TEXT_TERTIARY`] rather than
+/// spelled out, because it is that ink quietened, not a colour of its own.
+///
+/// Only reachable where the separator is its OWN draw run. A dot baked into a joined string
+/// (`"a   ·   b"`) is one run at one colour by construction; those are unchanged, and converting
+/// them is a per-site decision about whether the extra draw call is worth it.
+pub const TEXT_SEPARATOR: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 
 // ── Type scale ───────────────────────────────────────────────────────────────
 /// The one legibility-tuned ladder of text sizes for the whole UI — the *size* axis of the design
@@ -264,10 +274,12 @@ pub const RESUME_FILL: [f32; 4] = [0.98, 0.72, 0.18, 0.95];
 /// (`Plex Pass Awareness.dc.html`, "the amber decision"). Two ambers exist ON PURPOSE and stay
 /// two tokens: [`RESUME_FILL`] is ours and tunable; this one names somebody else's colour and
 /// must not drift when the first is retuned. They never meet: progress fill lives on card art;
-/// pass-gold appears in exactly TWO places, both derived from Plex's own Pass docs (the owner's
+/// pass-gold appears on exactly TWO surfaces, both derived from Plex's own Pass docs (the owner's
 /// directive — design as visual baseline, logic from the docs): the failure read-out's filled
-/// capsule, and the detail facts row's HDR→SDR warning (`detail::hdr_degrades`, the docs-derived
-/// truth table — tone mapping is the Pass-gated step). Every use of the name is load-bearing,
+/// capsule, and the detail facts row's two Pass-gated states (`detail::play_note`, the docs-derived
+/// truth table — hardware conversion and HDR tone mapping are both Pass-gated server features, and
+/// the warning outranks the soft note because a wrong picture outranks a slower one). Every use of
+/// the name is load-bearing,
 /// which is the trademark position. [`crate::ui::widgets::pass_capsule`] is its only consumer
 /// besides ink; a line carries at most one gold thing, and warning severity is never amber — it
 /// is carried by glyph, stroke and contrast.
@@ -318,11 +330,12 @@ pub const OVERLAY_BORDER: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
 /// on a panel, and at .55 a 60px capsule outline over a ~.85 black scrim becomes the row's
 /// brightest object, outshining the filled primary beside it.
 pub const PILL_KEYLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.38];
-/// The keyline pill's knockout interior. The SDF has no stroke-only mode, so the outline is a
-/// knockout (stroke colour, then the interior inset by it — `keyline_chip`'s construction) — but
-/// over LIVE VIDEO there is no ground colour to repaint, so the interior is a translucent
-/// near-black that keeps the scrimmed credits part of the surface instead of punching an opaque
-/// hole in them (and doubles as the quiet plate [`TEXT_HEADING`] ink needs).
+/// The keyline pill's knockout interior — and here the knockout is the DESIGN, not a limitation.
+/// (`Painter::rring` draws a genuinely hollow outline now, which is what `keyline_chip` and the
+/// PLEX PASS capsule use.) This pill sits over LIVE VIDEO, where a hollow ring would leave the
+/// label on whatever frame happens to be under it; the interior is a translucent near-black that
+/// keeps the scrimmed credits part of the surface instead of punching an opaque hole in them (and
+/// doubles as the quiet plate [`TEXT_HEADING`] ink needs).
 pub const PILL_KEYLINE_BG: [f32; 4] = scrim_black(0.55);
 /// Filled metadata chip (the About column's CC/SDH/AD accessibility badges).
 pub const BADGE_FILL: [f32; 4] = [0.86, 0.88, 0.92, 0.20];

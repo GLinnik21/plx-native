@@ -179,7 +179,11 @@ pub(crate) fn note_jump(changed: bool) {
 ///
 /// Call sites today — keep this list current, it is the module's correctness argument:
 /// - any SDL event dequeued, and any remote-FIFO token drained (`app.rs`)
-/// - `route::pump_play` / `metadata::pump_detail` landing (`app.rs`)
+/// - `metadata::pump_detail` landing (`app.rs`)
+/// - **any** play plan landing (`route::apply_plan`) — including one that carries the server's
+///   REFUSAL, which `app.rs` cannot see: `pump_play` returns false for a plan with no URL, so the
+///   caller's invalidate is skipped for exactly the landing that flips the player from Resolving
+///   to Error. It repainted anyway only because the player route bypasses this gate outright
 /// - a poster texture uploaded (`posters::poster_pump`)
 /// - a hub refetch committing (`pms::pump`)
 /// - a browse page landing (`browse::pump`)

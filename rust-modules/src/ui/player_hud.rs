@@ -435,6 +435,34 @@ pub(crate) fn busy_surface(st: crate::player::PlaybackState, seen_frame: bool) -
     }
 }
 
+/// PURE: does the read-out own the WHOLE frame, so [`draw_hud`] draws nothing at all?
+///
+/// **Only a failure**, and the asymmetry is the point. A `Failed` read-out is terminal: there is no
+/// picture and no position, so every piece of transport under it is a lie — `Player Screen.dc.html`
+/// hides both the transport (`hudDisplay:none`) and the bottom tabs (`tabsDisplay:none`) on that
+/// variant. A `Working` read-out is the opposite: the pipeline is mid-flight, the position is real,
+/// and the transport is what the user reads the moment the first frame lands. Hiding it there would
+/// blank the HUD through every cold start and every pre-roll — which is why this asks the KIND and
+/// not merely "is a read-out up".
+fn readout_owns_frame(busy: Busy) -> bool {
+    matches!(busy, Busy::Readout(StatusKind::Failed, _))
+}
+
+/// The same question for `app.rs`'s INPUT arms: is the transport (and every panel over it) absent
+/// from the frame right now?
+///
+/// A control that is not drawn must not be activatable — `ControlSlot::UpNext`'s rule, and the one
+/// `up_next::card_active` already gives the post-play card. Without this the failure was hidden but
+/// still drivable: `start_playback` stamps a ~4.5 s HUD linger on the way in, so a `/decision`
+/// refusal lands with `hud_visible` true and focus parked on the scrubber, and two blind presses
+/// (DOWN, OK) opened the Info card over the read-out from a tab row nothing had painted.
+///
+/// It resamples [`busy`] rather than taking one, because the event loop runs before the frame's
+/// single resolve exists; both reads are of the same main-thread state within one iteration.
+pub(crate) fn transport_hidden() -> bool {
+    readout_owns_frame(busy())
+}
+
 /// Sample the live globals ONCE and resolve the owner. Call this once per frame and pass the result
 /// to both [`draw_hud`] and [`draw_readout`] — the same discipline [`slot`] keeps, and for the same
 /// reason: two independent derivations of one three-way choice is how the two indicators drifted
@@ -469,8 +497,9 @@ fn readout_frame() -> Rect {
 pub(crate) fn draw_readout(busy: Busy, now: u32) {
     let Busy::Readout(kind, caption) = busy else { return };
     if kind == StatusKind::Failed {
-        // The failure read-out has its own composed layout (`Plex Pass Awareness.dc.html`
-        // deliverable C) — glyph, fixed verdict, a reason slot, a hint — rather than the shared
+        // The failure read-out has its own composed layout (`Player Screen.dc.html`, which
+        // superseded the retired `Plex Pass Awareness.dc.html` as the spec for this screen)
+        // — glyph, fixed verdict, a reason slot, a hint — rather than the shared
         // spinner overlay. The caption is not drawn here: the verdict line is constant by design
         // ("lands at the same y in all three variants, so a user who has seen it once recognises
         // it before reading") and the caption's suffix is re-derived as the reason.
@@ -479,7 +508,7 @@ pub(crate) fn draw_readout(busy: Busy, now: u32) {
     StatusOverlay::new(readout_frame(), caption, kind).phase(now).draw(&hud_env(), Painter::root());
 }
 
-// ---- the failure read-out (`Plex Pass Awareness.dc.html`, deliverable C) --------------------
+// ---- the failure read-out (`Player Screen.dc.html`) -----------------------------------------
 //
 // One layout with one optional line. Anchored from the TOP, not centred: the glyph and the
 // verdict never move, and the reason sits in a slot that reserves two BODY lines, so a
@@ -491,6 +520,15 @@ const FR_VERDICT_TOP: f32 = FR_GLYPH_TOP + FR_GLYPH_S + 44.0;
 const FR_REASON_TOP: f32 = FR_VERDICT_TOP + 48.0 + 24.0;
 /// two BODY lines' worth of slot, reserved whether or not anything is in it
 const FR_REASON_SLOT: f32 = 84.0;
+/// The slot's SECOND line — and there is only one of it, because its two possible occupants are
+/// mutually exclusive by construction: the server's quoted verdict belongs to the one arm that
+/// never sets `no_pass`, and the Pass line belongs to an arm that carries no verdict. They share
+/// the y so a user cannot tell which arm they are looking at by where the line sits.
+const FR_SLOT_LINE2: f32 = FR_REASON_TOP + 42.0;
+/// The quoted verdict's measure — the mock's `left:340px; right:340px` on a 1920 frame. It exists
+/// because the server's sentence is not ours to shorten: given the whole frame a long one runs
+/// margin to margin and reads as a paragraph, so it is wrapped to a column instead.
+const FR_DETAIL_W: f32 = 1240.0;
 const FR_HINT_TOP: f32 = FR_REASON_TOP + FR_REASON_SLOT + 56.0;
 
 /// One line of centred text with its cap TOP at `top`; returns nothing — the layout is fixed.
@@ -502,18 +540,39 @@ fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col:
 
 fn draw_failed_readout(p: Painter) {
     let e = crate::player::error_now();
+    // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`
+    // — a full-bleed opaque black — and it is one quad. Without it this layout stood on whatever the
+    // video plane happened to be holding: `app.rs` clears the graphics plane to alpha 0 on the player
+    // route, and the transport (whose bottom scrim used to back the lower half of this read-out) is
+    // no longer drawn at all under a failure. "The plane is black by the time an error is up" is
+    // usually true and not always — `busy_surface` resolves Error to Failed for BOTH values of
+    // `seen_frame`, i.e. a mid-playback failure over a held frame is a state the code contemplates.
+    p.rrect(Rect::FULL, 0.0, 0.0, theme::scrim_black(1.0));
     // glyph: the same triangle as the facts row at 96, secondary ink — outline, because a solid
     // triangle at this size reads as an error state we do not have (the verdict is the words)
     let gx = (SCR_W - FR_GLYPH_S) * 0.5;
     crate::ui::icons::draw(p, crate::ui::icons::Icon::Alert, Rect::new(gx, FR_GLYPH_TOP, FR_GLYPH_S, FR_GLYPH_S), theme::TEXT_SECONDARY);
     fr_line(p, c"Playback failed", FR_VERDICT_TOP, theme::size::TITLE, 1, theme::TEXT_PRIMARY);
-    // the reason slot: line one is the reason; line two, only ever on a known-free server, is
-    // the subscription FACT — words + the filled capsule (the one place it fills: on pure black
-    // an outline capsule has no ground to sit on and reads as a hole)
+    // the reason slot: line one is the reason; line two is EITHER the server's own sentence (a
+    // `/decision` refusal) or — only ever on a known-free server — the subscription FACT. Never
+    // both: see `FR_SLOT_LINE2`.
     if !e.readout.is_empty() {
         if let Ok(c) = std::ffi::CString::new(e.readout) {
             fr_line(p, &c, FR_REASON_TOP, theme::size::BODY, 0, theme::TEXT_SECONDARY);
         }
+    }
+    if !e.detail.is_empty() {
+        // The SERVER's sentence, quoted verbatim at CAPTION/tertiary: quieter than the reason above
+        // it because it is supporting evidence, and a size below it because it is the only line here
+        // whose length we do not control. `max_lines(2)` is the honest clamp — one wrap keeps the
+        // whole of a real verdict (the cause is at its END: "…encoder 'vp9' not found"), where a
+        // one-line elide would cut exactly the words worth reading. A second line paints past the
+        // reserved slot into the gap above the hint, which is paint, not layout: the hint's y is a
+        // constant and does not move.
+        crate::ui::text_view::TextView::new(&e.detail, theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .h(crate::ui::label::HAlign::Center)
+            .max_lines(2)
+            .draw(p, Rect::new((SCR_W - FR_DETAIL_W) * 0.5, FR_SLOT_LINE2, FR_DETAIL_W, 0.0));
     }
     if e.no_pass {
         let words = c"This server has no";
@@ -521,11 +580,11 @@ fn draw_failed_readout(p: Painter) {
         let cw = crate::ui::widgets::pass_capsule_w();
         const GAP: f32 = 16.0;
         let x = (SCR_W - (ww + GAP + cw)) * 0.5;
-        let line_top = FR_REASON_TOP + 42.0; // the slot's second BODY line
+        let line_top = FR_SLOT_LINE2; // the slot's second line — shared with the quoted verdict
         let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
         p.text(words.as_ptr(), x, line_top - cap_top, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
         let cy = line_top + (baseline - cap_top) * 0.5;
-        crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, None);
+        crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, true);
     }
     // the hint, with BACK as a key cap — the cap is what survives a phone photo
     draw_hint_with_keycap(p, c"Press", c"BACK", c"to return", FR_HINT_TOP);
@@ -639,6 +698,25 @@ fn draw_clock(p: Painter, text: &str, cx: f32, y: f32, sz: i32, col: [f32; 4], l
 /// transport draws its inline spinner only when it is [`Busy::Transport`], and the centred read-out
 /// is [`draw_readout`]'s, drawn by the caller AFTER this.
 pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab: i32, now: u32, transport: bool) {
+    // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,
+    // which cannot coexist with one but must not be the arm that decides so. `Player Screen.dc.html`
+    // sets `hudDisplay:none` AND `tabsDisplay:none` on the failed variant, and its read-out block
+    // says why in one line: "the transport is not drawn: with no picture and no position a
+    // live-looking scrubber at 0:00 is the historical bug this read-out exists to end."
+    //
+    // Without this the bug was only half-fixed. `Error` is not `is_busy()`, so it never pins the
+    // HUD — but it does not HIDE it either, so for the ~4.5 s of `app.rs`'s linger after entry the
+    // scrubber, clocks and tabs drew live at 0:00 UNDER the read-out, and only then went away. The
+    // read-out itself already outlives the linger (`draw_readout` is not transport chrome), so this
+    // is the missing half of that same rule rather than a new one.
+    //
+    // Gated on the resolved `busy` and not on `player::state()`: [`busy_surface`] is the ONE place
+    // the surfaces are divided, and re-reading the state here is exactly the second derivation its
+    // doc exists to forbid. Deliberately NOT gated on `transport` — the Info card / Chapters strip
+    // pass false and would otherwise put the bottom scrim + tabs back under a failure.
+    if readout_owns_frame(busy) {
+        return;
+    }
     // The post-play card OWNS the frame while it is up: nothing of the transport draws — no
     // scrim, no scrubber, no title chrome, no tabs. The card is still HUD furniture (playback
     // runs underneath, `app.rs` pins the HUD while it is active), so this is a branch inside the
@@ -1118,6 +1196,30 @@ mod tests {
         for seen in [false, true] {
             assert_eq!(busy_surface(S::Error, seen), Busy::Readout(StatusKind::Failed, c"Playback failed"));
         }
+    }
+
+    /// …and when it does, it owns the WHOLE frame: `draw_hud` draws nothing — no scrim, no
+    /// scrubber, no clocks, no bottom tabs (`Player Screen.dc.html` sets `hudDisplay:none` and
+    /// `tabsDisplay:none` on the failed variant, because a live-looking scrubber at 0:00 over a
+    /// black panel is the bug the read-out exists to end).
+    ///
+    /// The other half is the one that would be easy to break by simplifying this to "a read-out is
+    /// up": every WORKING read-out must leave the transport alone, or the HUD blanks through every
+    /// cold start, every reconnect and every pre-roll seek — states where the position is real and
+    /// the transport is what the user reads the instant the first frame lands.
+    #[test]
+    fn only_a_failure_takes_the_frame_away_from_the_transport() {
+        for seen in [false, true] {
+            assert!(readout_owns_frame(busy_surface(S::Error, seen)), "a failure hides the transport");
+        }
+        for st in [S::Resolving, S::Connecting, S::Buffering, S::Seeking] {
+            let b = busy_surface(st, false);
+            assert!(matches!(b, Busy::Readout(StatusKind::Working, _)), "{st:?} is a read-out");
+            assert!(!readout_owns_frame(b), "{st:?} is mid-flight — the transport stays up under it");
+        }
+        // and the two non-read-out surfaces are never a reason to blank the frame
+        assert!(!readout_owns_frame(busy_surface(S::Playing, true)));
+        assert!(!readout_owns_frame(busy_surface(S::Seeking, true)), "a seek over a live picture");
     }
 
     /// The geometry regression, guarding against a new `OVERLAY_BOTTOM`: the read-out centres on

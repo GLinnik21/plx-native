@@ -108,6 +108,69 @@ fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
     badge(p, x, cy, text, None, BadgeStyle::Outlined { col: theme::TEXT_HEADING, bg: theme::SURFACE_PANEL })
 }
 
+/// A VIDEO codec's display name. The sibling of [`metadata::friendly_codec`], which is the one
+/// AUDIO/subtitle map and spells h264 as "H264" — the dotted form is the one everybody else's
+/// player uses for the video lane, and this is the only place the app names a video codec to a
+/// user. An unknown codec is upper-cased rather than dropped: "Converting · AV1" is still the
+/// truth, and inventing a friendly name for a codec we have never seen would not be.
+fn video_codec_name(codec: &str) -> String {
+    match codec.to_ascii_lowercase().as_str() {
+        "h264" | "avc" | "avc1" => "H.264".to_string(),
+        "hevc" | "h265" | "hvc1" | "hev1" => "HEVC".to_string(),
+        other => other.to_uppercase(),
+    }
+}
+
+/// The live playback fact for the meta line: **what the server is actually sending**, read off the
+/// running stream and never predicted.
+///
+/// That distinction is the whole design of this line. Everything else on the row is a property of
+/// the ITEM (genre, year, runtime), knowable before Play; this is a property of THIS SESSION, and
+/// the only honest source for it is `route`'s own record of what was resolved — `stream_vcodec` is
+/// the codec the `/decision` OUTPUT named, not the one the profile asked for. Predicting it from
+/// the source file is how a client ends up telling the user it is direct playing a file the server
+/// quietly re-encoded.
+///
+/// Three answers, because the server has three behaviours and only one of them touches the pixels:
+/// a direct play (we pull the file), a container-only REMUX (the codecs are copied — Plex's own
+/// "Direct Stream"; the mock has no case for it because its model has only "direct play" and
+/// "converts", but calling a copy a conversion would state that the server re-encoded when it did
+/// not), and a real re-encode, which names the codec it is producing. Hardware vs software is
+/// deliberately NOT stated: that is the server's runtime choice and it reaches the client only in
+/// the live transcode session, so naming it would be a guess.
+///
+/// **No warning belongs on this line.** The tone-mapping case in particular lives on the DETAIL
+/// page, before Play: this card is behind a keypress, so a warning here is one the user finds only
+/// after watching a washed-out picture. That is `Player Screen.dc.html`'s own standing comment
+/// ("Warning before Play is the DETAIL page's job"), and it contradicts a bullet in the **design
+/// project's** `CLAUDE.md` — the Pass-rules file in the Claude Design project, NOT this repo's root
+/// `CLAUDE.md`, which says nothing about tone mapping — that lists this card beside the detail
+/// facts row. The mock is the later artifact and its reasoning matches the owner's standing rule
+/// that a warning exists to be seen BEFORE Play, so the code follows it; the two documents still
+/// need reconciling by the owner, and that is a docs edit, not a behaviour change.
+///
+/// PURE, so every arm is host-testable. `streaming` is "there is a resolved stream to describe".
+/// The caller composes it from `route::has_url()` **and** `!route::play_pending()`, and the second
+/// half is load-bearing rather than belt-and-braces: `request_play` does not clear `URL`,
+/// `TSESSION` or `CUR_REMUX` (only a real stop does, in `engine::teardown`), so on an item→item
+/// switch — Up Next, or Play from a detail page while a session is live — every one of those three
+/// still describes the PREVIOUS item for the whole resolve. Without the pending test this line
+/// would state the last session's fact as this one's.
+pub(crate) fn playback_now(streaming: bool, transcoding: bool, remux: bool, vcodec: &str) -> Option<String> {
+    if !streaming {
+        return None;
+    }
+    if !transcoding {
+        return Some("Direct Play".to_string());
+    }
+    if remux {
+        return Some("Direct Stream".to_string());
+    }
+    let name = video_codec_name(vcodec);
+    // a re-encode whose output codec we somehow do not know still converted — say that much
+    Some(if name.is_empty() { "Converting".to_string() } else { format!("Converting \u{b7} {name}") })
+}
+
 pub(crate) fn draw() {
     if !is_open() {
         return;
@@ -202,12 +265,24 @@ pub(crate) fn draw() {
     let dim = theme::TEXT_SECONDARY;
 
     let info_title = if is_ep { ep_name.clone() } else { big_title.clone() };
+    // What the server is actually sending, straight off the resolved route — see `playback_now`.
+    // `has_url`, not `!url().is_empty()`: this card sits on the one route exempt from the idle
+    // present gate, so it draws at ~60/s, and `url()` clones the longest string in the app (a
+    // universal-transcode `start.mkv` query is several hundred bytes) purely to test emptiness.
+    // The `play_pending` half is the resolve window — see the doc.
+    let now_fact = playback_now(
+        crate::route::has_url() && !crate::route::play_pending(),
+        crate::route::is_transcoding(),
+        crate::route::is_remux(),
+        &crate::route::stream_vcodec(),
+    );
     let has_tags = year > 0
         || dur_ms > 0
         || !rating.is_empty()
         || d.map(|x| !x.genres.is_empty()).unwrap_or(false)
         || !subs.is_empty()
         || audio.iter().any(|s| s.ad)
+        || now_fact.is_some()
         || audio.first().and_then(|s| audio_badge(&s.codec)).is_some();
 
     // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
@@ -252,12 +327,32 @@ pub(crate) fn draw() {
             meta.push(crate::ui::fmt::dur_short(dur_ms));
         }
         let mut mx = tx;
+        let ly = crate::text::text_vcenter_y(theme::size::CAPTION, 1, my);
         if !meta.is_empty() {
             let line = meta.join("   ·   ");
             if let Ok(cs) = CString::new(line) {
-                let ly = crate::text::text_vcenter_y(theme::size::CAPTION, 1, my);
                 mx += p.text(cs.as_ptr(), tx, ly, theme::size::CAPTION, white, 0, 1);
             }
+        }
+        // …then the live playback fact, closing the line in its own quieter ink. It is drawn as a
+        // separate run rather than joined into `meta` because it is a different KIND of statement —
+        // a fact about this session, not a property of the item — and tertiary is what says so.
+        // No chip and no capsule: a conversion that worked is not a warning.
+        //
+        // REGULAR weight, unlike the item run beside it, and that is the mock's: its whole meta line
+        // is `font-weight:400` at `--text-tertiary`. The item run's bold/primary is this screen's own
+        // long-standing deviation (the card is read over live video, not over a panel); repeating it
+        // on a run the mock has no bold in would make the quiet fine print the loudest thing on the
+        // row. Its own `ly` because a cap band is weight-dependent — one y for both would sit the
+        // lighter run visibly off the line.
+        if let Some(fact) = &now_fact {
+            let run = if meta.is_empty() { fact.clone() } else { format!("   \u{b7}   {fact}") };
+            if let Ok(cs) = CString::new(run) {
+                let fy = crate::text::text_vcenter_y(theme::size::CAPTION, 0, my);
+                mx += p.text(cs.as_ptr(), mx, fy, theme::size::CAPTION, theme::TEXT_TERTIARY, 0, 0);
+            }
+        }
+        if !meta.is_empty() || now_fact.is_some() {
             mx += 18.0;
         }
         // badges: rating (from the leaf), top-audio Dolby tag, CC/SDH/AD (from the loaded streams)
@@ -277,6 +372,41 @@ pub(crate) fn draw() {
             mx += meta_badge(p, mx, my, "AD") + 12.0;
         }
         let _ = mx;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::playback_now;
+
+    /// The meta line's live fact, arm by arm. It is the one thing on that row the app could get
+    /// wrong by GUESSING, so each arm pins a different way of guessing:
+    ///   * a direct play says so and names no codec — there is no conversion to describe;
+    ///   * a container remux is NOT a conversion (the codecs are copied), and calling it one would
+    ///     state that the server touched the pixels when it did not — `route::is_remux`'s own doc
+    ///     is that these are different facts;
+    ///   * a re-encode names the codec the server is actually PRODUCING (`route::stream_vcodec` is
+    ///     the `/decision` OUTPUT), spelled the way a viewer reads it, and HEVC output is reachable
+    ///     only on a Pass server — which this function neither knows nor asks, because it reports
+    ///     what happened rather than what was allowed;
+    ///   * and with no stream resolved there is no fact at all: during the resolve window nothing
+    ///     has been sent yet, and stating a fact about it would be exactly the prediction the whole
+    ///     line refuses to make.
+    #[test]
+    fn the_meta_lines_playback_fact_describes_the_stream_that_is_running() {
+        assert_eq!(playback_now(true, false, false, "hevc").as_deref(), Some("Direct Play"));
+        // remux: `vcodec` is the SOURCE codec copied through, and it is still not a conversion
+        assert_eq!(playback_now(true, true, true, "hevc").as_deref(), Some("Direct Stream"));
+        assert_eq!(playback_now(true, true, false, "h264").as_deref(), Some("Converting \u{b7} H.264"));
+        assert_eq!(playback_now(true, true, false, "hevc").as_deref(), Some("Converting \u{b7} HEVC"));
+        // a codec map we have never met is upper-cased, not dropped and not renamed
+        assert_eq!(playback_now(true, true, false, "av1").as_deref(), Some("Converting \u{b7} AV1"));
+        // a re-encode whose output codec never landed still converted
+        assert_eq!(playback_now(true, true, false, "").as_deref(), Some("Converting"));
+        // nothing resolved yet → no fact, on every combination of the flags
+        for (t, r) in [(false, false), (true, false), (true, true)] {
+            assert!(playback_now(false, t, r, "h264").is_none(), "no stream, no fact");
+        }
     }
 }
 

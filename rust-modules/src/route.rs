@@ -11,6 +11,17 @@ use std::ptr::{addr_of, addr_of_mut};
 // stream URL + transcode session (empty = direct-play).
 static mut URL: String = String::new();
 static mut TSESSION: String = String::new();
+/// The server's PRE-FLIGHT refusal for the last resolve, or None.
+///
+/// `Some(sentence)` means `/decision` answered "neither direct play nor conversion is available"
+/// (`generalDecisionCode` 2000) BEFORE a byte of video moved, so this playback never got a URL —
+/// see [`refusal`]. The String is the server's OWN sentence, carried so the player's read-out can
+/// quote it verbatim; it is `""` when the server named a code but no reason, which is why the
+/// refusal itself lives in the `Option` and not in the emptiness of the text.
+///
+/// Main thread only, and written exactly where every other route static is: [`apply_plan`] installs
+/// it and [`request_play`] retires it, so it always describes the item the player is showing.
+static mut PLAY_VERDICT: Option<String> = None;
 // this playback's transcode flavor: true = container-only remux, false = re-encode. A seek or
 // retranscode rebuilds the identical start.mkv query from (CUR_RK, SESS, CUR_*_SID, this flag)
 // via plex::TranscodeSpec — replaces the old stored offset-free TBASE query string.
@@ -59,6 +70,13 @@ static mut CTXLINE: [c_char; 96] = [0; 96];
 pub(crate) fn url() -> String {
     unsafe { (*addr_of!(URL)).clone() }
 }
+/// Is there a stream URL at all? The in-place twin of [`url`], for the callers that only want the
+/// emptiness — [`is_transcoding`]'s idiom, and for the same reason: a universal-transcode
+/// `start.mkv` URL is several hundred bytes, and the player route is exempt from the idle present
+/// gate, so a `!url().is_empty()` in a draw is a heap allocation and a memcpy at ~60/s.
+pub(crate) fn has_url() -> bool {
+    unsafe { !(&*addr_of!(URL)).is_empty() }
+}
 pub(crate) fn set_url(s: &str) {
     unsafe { *addr_of_mut!(URL) = s.to_owned() }
 }
@@ -72,6 +90,31 @@ pub(crate) fn transcode_session() -> String {
 /// in-place check — the pump polls it every tick, so no String clone here.
 pub(crate) fn is_transcoding() -> bool {
     unsafe { !(&*addr_of!(TSESSION)).is_empty() }
+}
+/// Did the server REFUSE this item at `/decision`, before playback? Cheap in-place check —
+/// `player::state()` derives `Error` from it on every frame of the player route.
+pub(crate) fn play_refused() -> bool {
+    unsafe { (*addr_of!(PLAY_VERDICT)).is_some() }
+}
+/// The refusal's own sentence for the read-out to quote — `None` when the server did not refuse,
+/// `Some("")` when it refused without saying why. MAIN THREAD (see [`PLAY_VERDICT`]).
+///
+/// Borrowed, not cloned: the read-out asks for this 2–3× on every frame of a failure (the HUD
+/// caption, the read-out itself, and the diagnostics panel when it is open), and every one of them
+/// only reads it. The borrow lives until the next main-thread write, which is `apply_plan` or
+/// `request_play` — neither of which can run inside a frame's draw.
+pub(crate) fn play_verdict() -> Option<&'static str> {
+    unsafe { (*addr_of!(PLAY_VERDICT)).as_deref() }
+}
+/// Retire the refusal — "this playback request is withdrawn", the one thing besides a fresh
+/// resolve that ends a verdict's life. [`request_play`] clears it because a NEW item is being
+/// resolved; this is the other half, for leaving the player entirely.
+///
+/// Without it a refusal outlived the player: `player::state()` derives `Error` from this static
+/// and takes no route, so a verdict left standing described the item the user walked away from —
+/// on Home, in the Library, on any detail page — until they happened to start something else.
+fn clear_play_verdict() {
+    unsafe { *addr_of_mut!(PLAY_VERDICT) = None }
 }
 /// select the subtitle to BURN into any transcode of the current item (0 = none). This
 /// is the transcode path; direct-play uses the client renderer (player::request_subtitle).
@@ -343,6 +386,41 @@ fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(String, String)>
     match (vc, ac) { (Some(v), Some(a)) => Some((v, a)), _ => None }
 }
 
+/// `generalDecisionCode` 2000 — "Neither direct play nor conversion is available." The server has
+/// adjudicated the whole request and can serve NEITHER lane; there is nothing left for the client
+/// to try, which is what makes it a stop rather than another fallback.
+const DECISION_UNPLAYABLE: i64 = 2000;
+
+/// PURE: the server's pre-flight refusal, or None.
+///
+/// `/decision` is asked BEFORE a byte of video moves, and it can answer "no" — verified live
+/// against PMS 1.43.3 on a VP9 source: `generalDecisionCode 2000` beside
+/// `transcodeDecisionCode 4007, "Cannot convert this item. Implementation for video encoder 'vp9'
+/// not found."`. The app used to parse `general_decision_code` and only LOG it, then hand
+/// `start.mkv` to the pipeline anyway — so a server that had already said no produced "Buffering…"
+/// followed by a generic failure, and the one sentence that explained it was in a log the user
+/// cannot reach.
+///
+/// **The CODE is authoritative and the text is only the human sentence.** Grading on the text would
+/// be grading on server copy that is localised, versioned and free to change; grading on the code
+/// is why a server that refuses without saying why still stops us (`Some("")`).
+///
+/// Of the two sentences the body carries, the TRANSCODE one is preferred: `generalDecisionText`
+/// restates the code ("Neither direct play nor conversion is available") while
+/// `transcodeDecisionText` names the actual cause. The general one is the fallback for a server
+/// that sends only it.
+fn refusal(mc: &crate::plex::MediaContainer) -> Option<String> {
+    if mc.general_decision_code != Some(DECISION_UNPLAYABLE) {
+        return None;
+    }
+    let text = if !mc.transcode_decision_text.is_empty() {
+        &mc.transcode_decision_text
+    } else {
+        &mc.general_decision_text
+    };
+    Some(text.trim().to_string())
+}
+
 fn apply_decision_codecs(mc: &crate::plex::MediaContainer) {
     if let Some((vc, ac)) = decision_codecs(mc) {
         set_stream_codecs(&vc, &ac);
@@ -596,6 +674,12 @@ pub(crate) struct Plan {
     pub sub_render_ordinal: Option<i32>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
     pub playing: Option<crate::metadata::PlayingItem>,
+    /// The server's PRE-FLIGHT refusal (see [`refusal`]), when `/decision` said it can neither
+    /// direct play nor convert this item. A plan carrying one has an EMPTY `url` by construction —
+    /// that is how it fails, on the same path as every other unresolvable plan — and the sentence
+    /// rides along so the read-out can quote the server instead of guessing. `None` on every other
+    /// plan, including one that simply failed to reach the server.
+    pub verdict: Option<String>,
     /// the episode queued after this one, straight off the `continuous=1` PlayQueue
     pub up_next: Option<UpNext>,
     /// that same PlayQueue's whole returned window, projected on the worker (see `QUEUE`)
@@ -768,6 +852,18 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     put_selection(plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
     let sp = transcode_spec(rk, &session, video_dp, -1, env.audio_sid, env.sub_sid);
     if let Some(mc) = client.transcode_decision(&sp) {
+        // The server has already answered, and it is allowed to answer NO. Stop here rather than
+        // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
+        // the ordinary "this did not resolve" failure — and carries the verdict so the read-out can
+        // quote the server's own sentence instead of the generic "Playback failed" this used to be.
+        if let Some(v) = refusal(&mc) {
+            crate::player::log(&format!(
+                "decision: REFUSED general={:?} transcode={:?} — {v}",
+                mc.general_decision_code, mc.transcode_decision_code
+            ));
+            plan.verdict = Some(v);
+            return plan;
+        }
         // the Load payload must match the server's ACTUAL output codecs
         if let Some((v, a)) = decision_codecs(&mc) {
             plan.vcodec = v;
@@ -924,11 +1020,25 @@ fn video_direct_plays(vcodec: &str, src_w: i64, src_h: i64, caps: &crate::devcap
 /// [`part_is_streamable`], one direct-playable audio track), asked of the loaded `Detail`.
 /// An approximation by design: the real decision can still consult the server (`server_decision`
 /// when no DP audio track is found), so this leans the same way that fallback usually lands.
-/// It exists for `Plex Pass Awareness.dc.html`'s facts row and must stay a READ-ONLY preview —
+/// It exists for `Details Screen.dc.html`'s facts row and must stay a READ-ONLY preview —
 /// nothing in the playback path may branch on it (the path re-derives for itself).
+///
+/// **THREE answers, not two, and the third is the one a two-valued preview got wrong.** "The
+/// server has to do something" and "the server has to re-encode the picture" are different facts
+/// (`is_remux`'s doc says so for the LIVE session; this is the same distinction before Play), and
+/// the UI hangs a Plex Pass claim on the difference: hardware conversion and HDR tone mapping are
+/// both properties of an ENCODE, so naming either one for a stream where no encoder runs points
+/// the user at a purchase that would fix nothing — `player::error_shape`'s own rule, and the
+/// polarity issue #22 is about.
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub(crate) enum Preview {
     DirectPlay,
+    /// Container-only REMUX — Plex's own "Direct Stream". The video (and usually the audio) is
+    /// COPIED into progressive MKV because the container is not one the demuxer streams, or
+    /// because no audio track direct-plays; the pixels arrive untouched, 4K and HDR10 intact.
+    /// `build_stream` spells this exact case `plan.remux = video_dp` on the transcode branch.
+    Remux,
+    /// A real re-encode: the server decodes and re-encodes the video.
     Converts,
 }
 pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
@@ -937,7 +1047,16 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
     }
     let video = video_direct_plays(&d.vcodec, d.width, d.height, crate::devcaps::caps());
     let audio = d.audio.iter().any(|a| crate::plex::is_dp_audio(&a.codec));
-    Some(if video && part_is_streamable(&d.part) && audio { Preview::DirectPlay } else { Preview::Converts })
+    // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
+    // and only once it has passed do the container and the audio decide between pulling the file
+    // ourselves and asking the server to repackage it.
+    Some(if !video {
+        Preview::Converts
+    } else if part_is_streamable(&d.part) && audio {
+        Preview::DirectPlay
+    } else {
+        Preview::Remux
+    })
 }
 
 /// True when the part's container is one the buffer-feed demuxer streams over HTTP: MKV, or
@@ -997,6 +1116,11 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
         // same reason and because a fresh `Vec` also hands their strings back to the allocator.
         *addr_of_mut!(UP_NEXT) = None;
         *addr_of_mut!(QUEUE) = Vec::new();
+        // …and the PREVIOUS item's refusal, for the same reason and one more: `player::state()`
+        // derives `Error` from it, so a verdict left standing would put the failure read-out over
+        // the item now being resolved. `play_pending()` outranks it for this frame either way, but
+        // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
+        *addr_of_mut!(PLAY_VERDICT) = None;
     }
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
@@ -1057,6 +1181,12 @@ pub(crate) fn cancel_play() {
     PLAY_GEN.fetch_add(1, Ordering::SeqCst);
     PLAY_BUSY.store(false, Ordering::SeqCst);
     *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // …and the refusal, because this is the statement that the withdrawn request is over. It is
+    // the ONLY place that can retire one: a refused plan builds no engine, so `scrobble_stop` —
+    // where the rest of the session state is cleared — is never reached (teardown returns at
+    // `engine_take`). Both callers are exactly "playback is being abandoned": `exit_player` and
+    // the app-switch to background.
+    clear_play_verdict();
 }
 
 /// MAIN THREAD, once a frame. Returns true when a fresh plan was installed and playback should
@@ -1083,6 +1213,10 @@ fn apply_plan(plan: Plan, rk: &str) {
     unsafe {
         *addr_of_mut!(UP_NEXT) = plan.up_next;
         *addr_of_mut!(QUEUE) = plan.queue;
+        // Installed on EVERY landing, not only a refusing one: a plan that resolved is itself the
+        // statement that the last refusal is over, and assigning unconditionally is what makes that
+        // true without a second clear anyone can forget.
+        *addr_of_mut!(PLAY_VERDICT) = plan.verdict;
     }
     // Warm the post-play card's art NOW rather than at first draw. The URL has been known since
     // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
@@ -1128,6 +1262,13 @@ fn apply_plan(plan: Plan, rk: &str) {
         crate::player::log(&format!("server-selected subtitle: sid={} render_idx={ord}", plan.sub_sid));
         crate::player::request_subtitle(ord);
     }
+    // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
+    // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller
+    // (`app.rs`'s pump) invalidates only when `pump_play` returns TRUE, and a REFUSING plan returns
+    // false by construction (empty url) while flipping the player from Resolving to Error. That it
+    // still repainted was an accident of the player route bypassing the gate entirely; here it is
+    // the rule instead.
+    crate::ui::idle::invalidate();
 }
 
 /// Re-transcode the current item (CUR_RK) at `offset_secs`, carrying the CURRENT audio +
@@ -1536,5 +1677,90 @@ mod tests {
         assert!(!part_is_streamable(""));
         assert!(!part_is_streamable("/library/parts/1/2/mkv.avi"), "the extension, not a substring");
         assert!(!part_is_streamable("/library/parts/1/2/mp4.avi"), "the extension, not a substring");
+    }
+
+    /// The preview's THIRD answer, which is the one the UI hangs a Plex Pass claim on.
+    ///
+    /// While `Preview` had two values, everything that was not a direct play collapsed into
+    /// `Converts` — and `detail::play_note` read that as "the server re-encodes the picture", which
+    /// is false for the two cases below: `build_stream` answers both of them with
+    /// `plan.remux = video_dp`, i.e. ask Plex to copy the codecs into MKV. So a 4K HDR HEVC file in
+    /// a `.mov`, and any mkv whose only fault is an audio track that must be converted, drew
+    /// "HDR → SDR · tone-mapping needs \[PLEX PASS\]" on a proven-Pass-less server while the picture
+    /// arrived HDR10 intact. This grades the SPLIT; the truth table it feeds is `detail.rs`'s.
+    ///
+    /// The device table is `Caps::assumed` here (nothing in the host suite calls `devcaps::probe`),
+    /// so h264 at 3840×2160 clears the codec and resolution gates and the container/audio halves
+    /// are what move.
+    #[test]
+    fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
+        fn item(vcodec: &str, part: &str, acodec: &str) -> crate::metadata::Detail {
+            crate::metadata::Detail {
+                vcodec: vcodec.to_string(),
+                part: part.to_string(),
+                width: 3840,
+                height: 2160,
+                audio: vec![crate::metadata::Stream { codec: acodec.to_string(), ..Default::default() }],
+                ..Default::default()
+            }
+        }
+        const MKV: &str = "/library/parts/1/2/file.mkv";
+        const MOV: &str = "/library/parts/1/2/file.mov";
+        // we pull the file ourselves — nothing on the server touches it
+        assert_eq!(playback_preview(&item("h264", MKV, "aac")), Some(Preview::DirectPlay));
+        // the container is one the buffer-feed demuxer cannot stream → the server REPACKAGES it
+        assert_eq!(playback_preview(&item("h264", MOV, "aac")), Some(Preview::Remux));
+        // …and so it does for a streamable container whose only audio track has to be converted
+        assert_eq!(playback_preview(&item("h264", MKV, "truehd")), Some(Preview::Remux));
+        // a codec the pipeline cannot decode at all is the only real re-encode
+        assert_eq!(playback_preview(&item("vp9", MKV, "aac")), Some(Preview::Converts));
+        // …including when the container and the audio would otherwise have been fine
+        assert_eq!(playback_preview(&item("vp9", MOV, "truehd")), Some(Preview::Converts));
+        // nothing playable loaded (a show still resolving its episode) answers nothing at all
+        assert_eq!(playback_preview(&item("h264", "", "aac")), None);
+    }
+
+    /// The pre-flight refusal, graded off a real `/decision` body. Four properties, and each one is
+    /// a way the old "parse it and only log it" behaviour went wrong:
+    ///   * a `2000` verdict IS a refusal, and it hands back the TRANSCODE sentence — the one that
+    ///     names the cause — rather than the general text that merely restates the code;
+    ///   * a healthy decision (`1001`, "conversion OK") is not one, or every transcode in the
+    ///     library would stop;
+    ///   * a body with no verdict at all is not one either — absent is not a refusal, and it is
+    ///     what an older server and every failed/unparseable fetch look like;
+    ///   * a refusal with no sentence still refuses. The CODE is the decision; the text is only
+    ///     the human line, and a server that stays quiet must not thereby become playable.
+    #[test]
+    fn a_2000_decision_is_a_refusal_and_quotes_the_reason_the_server_named() {
+        fn mc(json: &[u8]) -> crate::plex::MediaContainer {
+            serde_json::from_slice::<crate::plex::Envelope>(json).expect("parse").media_container
+        }
+        // the live PMS 1.43.3 answer for a VP9 source
+        let refused = mc(br#"{"MediaContainer":{"generalDecisionCode":2000,
+            "generalDecisionText":"Neither direct play nor conversion is available.",
+            "transcodeDecisionCode":4007,
+            "transcodeDecisionText":"Cannot convert this item. Implementation for video encoder 'vp9' not found."}}"#);
+        assert_eq!(
+            refusal(&refused).as_deref(),
+            Some("Cannot convert this item. Implementation for video encoder 'vp9' not found."),
+            "the transcode sentence names the cause; the general one only restates the code"
+        );
+
+        // only the general sentence came back — quote that instead of nothing
+        let general_only = mc(br#"{"MediaContainer":{"generalDecisionCode":"2000",
+            "generalDecisionText":"Neither direct play nor conversion is available."}}"#);
+        assert_eq!(refusal(&general_only).as_deref(), Some("Neither direct play nor conversion is available."));
+
+        // refused, and said nothing about why: still a stop, with no line to quote
+        let silent = mc(br#"{"MediaContainer":{"generalDecisionCode":2000}}"#);
+        assert_eq!(refusal(&silent).as_deref(), Some(""), "the CODE is the decision, not the text");
+
+        // "Direct play not available; Conversion OK." — the ordinary transcode, which must proceed
+        let ok = mc(br#"{"MediaContainer":{"generalDecisionCode":1001,"transcodeDecisionCode":1001,
+            "transcodeDecisionText":"Direct play not available; Conversion OK."}}"#);
+        assert!(refusal(&ok).is_none());
+
+        // no verdict block at all (an older server, or a body we could not parse into one)
+        assert!(refusal(&mc(br#"{"MediaContainer":{"size":1}}"#)).is_none(), "absent is not a refusal");
     }
 }
