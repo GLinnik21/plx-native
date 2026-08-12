@@ -143,23 +143,76 @@ if note.exists():
     check(not unknown, "every webOS version the note names has evidence in the repo"
                        + (f" (no evidence for {', '.join(unknown)})" if unknown else ""))
 
+# WHICH CONFIGURATION produced what is in pkg/, which the two gates below both need. The Makefile
+# writes `features:$(RUST_FEATFLAGS)` into this stamp at PARSE time, and it is the same witness
+# `release.yml` greps to prove RELEASE=1 took. Matched WHOLE, not by substring: the "shots" recipe
+# in the Makefile's header is `--no-default-features --features devtriggers`, which a substring
+# test would grade as a release build and then fail for carrying exactly the surface it asked for.
+# Only the two configurations this project actually ships are graded; anything else says so.
+# NB the stamp moves at make PARSE time, so any bare `make <target>` after a RELEASE=1 build flips
+# it to dev while ipkroot still holds the release binary. Both workflows build, package and check
+# in one shot so they never see that; a by-hand run on a stale tree can, and the disagreement it
+# then reports is true — repackage before believing anything else about that tree.
+_stamp = ROOT / "pkg/.build-config"
+BUILD = {"features:": "dev", "features:--no-default-features": "release"}.get(
+    _stamp.read_text().strip() if _stamp.exists() else "")
+
 # THIRD-PARTY-NOTICES must name exactly the libraries that ship. RELEASE=1 drops swscale, and the
 # notices claimed it for two releases — an LGPL document describing a file that is not in the box.
+#
+# The grade is against the DISTRIBUTED set, which is not what `pkg/` holds: `ci.yml` packages a DEV
+# build deliberately (a PR artifact you can sideload with the /tmp trigger surface on) and a dev
+# build stages one library more. Grading pkg/ verbatim against a document written for the release
+# payload is what turned every push to main red from 2026-08-10 to 2026-08-12 — the notices were
+# corrected and the gate added in the same commit, and only the release job ever built the
+# configuration the pair describes. Subtracting the dev-only set keeps ONE rule for both
+# configurations, with no build-flag sniffing: a new library still has to be documented, and a
+# documented one that stopped shipping still fails. Whether a RELEASE build really dropped them is
+# the separate, narrower check below.
+DEV_ONLY_SONAMES = {"libswscale-plx.so.10"}   # the dev capture stream's scaler; RELEASE=1 drops it
 shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")}
 if shipped:
     named = set(re.findall(r"`(lib[a-z]+-plx\.so\.\d+)`", (ROOT / "THIRD-PARTY-NOTICES.md").read_text()))
-    check(shipped == named,
-          "THIRD-PARTY-NOTICES names exactly the shipped libraries"
-          + (f" (shipped-not-named={sorted(shipped-named)} named-not-shipped={sorted(named-shipped)})"
-             if shipped != named else ""))
+    distributed = shipped - DEV_ONLY_SONAMES
+    check(distributed == named,
+          "THIRD-PARTY-NOTICES names exactly the distributed libraries"
+          + (f" (shipped-not-named={sorted(distributed-named)} named-not-shipped={sorted(named-distributed)})"
+             if distributed != named else ""))
+    # ...and a RELEASE build must carry none of the dev-only ones at all, which is the half the
+    # subtraction above cannot see.
+    if BUILD == "release":
+        extra = sorted(shipped & DEV_ONLY_SONAMES)
+        check(not extra, "a RELEASE build ships none of the dev-only libraries"
+                         + (f" (found {', '.join(extra)})" if extra else ""))
 
 # A dev build carries the /tmp trigger surface. `RELEASE=1` must be on EVERY make invocation, and
 # any make without it deletes the release artifacts at parse time — so this is worth asserting on
 # the bytes rather than trusting the command line that produced them.
+#
+# The witness has to be a string only a `devtriggers` build emits, and almost none are: `dev.rs`
+# builds every trigger path with `format!("/tmp/plxnative-{name}")`, so no full trigger path is a
+# literal anywhere. The previous witness here was b"plxnative-autoplay" and it matched NOTHING —
+# in EITHER configuration — so from the day it was written this printed "ok — the packaged binary
+# is a RELEASE build" over CI's dev build on every run, while release.yml's stamp grep carried the
+# property alone. `dev.rs`'s DIAG list is the one place the full names are literals, it is
+# `#[cfg(feature = "devtriggers")]`, and `plxnative-noidle` is not one of the four logs `main.c`
+# writes unconditionally. Measured on the two shipped artifacts — published v0.3.0 .ipk: 0
+# occurrences; CI's dev .ipk for 8827d32c: 2.
+#
+# GRADED FROM BOTH SIDES, which is the repair for the defect class rather than for the one string:
+# a witness that cannot fail is not a gate. The dev leg asserts the marker is still emitted, so the
+# day DIAG is renamed CI fails on the next push instead of quietly going vacuous again.
+DEV_WITNESS = b"plxnative-noidle"
 binary = ROOT / "ipkroot/data/usr/palm/applications/com.beb.plxnative/plxnative"
-if binary.exists():
-    check(b"plxnative-autoplay" not in binary.read_bytes(),
-          "the packaged binary is a RELEASE build (no dev triggers compiled in)")
+if binary.exists() and BUILD:
+    has_dev = DEV_WITNESS in binary.read_bytes()
+    if BUILD == "release":
+        check(not has_dev, "the packaged binary is a RELEASE build (no dev triggers compiled in)")
+    else:
+        check(has_dev, "the packaged binary is the DEV build the stamp records — which is also what"
+                       f" proves `{DEV_WITNESS.decode()}` still witnesses the trigger surface")
+elif binary.exists():
+    print("  SKIP — pkg/.build-config is neither shipped configuration; not grading the binary")
 
 # The checksum file has to verify where a USER stands: they download it beside the .ipk, so a
 # `pkg/` prefix in the line makes `shasum -a 256 -c` fail for everyone. It did, through v0.2.1.
