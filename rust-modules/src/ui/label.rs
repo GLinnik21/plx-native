@@ -16,7 +16,7 @@ use crate::ui::{Painter, Rect};
 use std::os::raw::{c_char, c_int};
 
 /// Horizontal placement of the run within its frame.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HAlign {
     Left,
     Center,

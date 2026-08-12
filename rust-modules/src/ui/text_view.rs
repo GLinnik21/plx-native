@@ -65,12 +65,14 @@ pub struct TextView<'a> {
     /// separately-drawn label because the wrap has to know about it: line 0's available width is
     /// reduced by the run, every later line gets the full column. Drawn bold in its own colour.
     lead: Option<(&'a str, [f32; 4])>,
+    /// is the lead run drawn BOLD (`lead`) or at the block's own weight (`lead_quiet`)
+    lead_bold: bool,
     fade_last: f32, // px reserved at the wrap width's right edge; >0 fades a truncated last line out before it
 }
 
 impl<'a> TextView<'a> {
     pub fn new(text: &'a str, sz: c_int, col: [f32; 4]) -> Self {
-        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None, lead: None, fade_last: 0.0 }
+        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None, lead: None, lead_bold: true, fade_last: 0.0 }
     }
     pub fn bold(mut self) -> Self {
         self.bold = 1;
@@ -98,9 +100,18 @@ impl<'a> TextView<'a> {
         self
     }
     /// Inline BOLD run before the first word, in its own colour — see [`TextView::lead`] the field.
-    /// Left-aligned blocks only (it is positioned at the column's left edge).
     pub fn lead(mut self, run: &'a str, col: [f32; 4]) -> Self {
         self.lead = Some((run, col));
+        self.lead_bold = true;
+        self
+    }
+    /// [`TextView::lead`] at the block's OWN weight — a lead that differs from its text only in
+    /// colour, which is what a label word before its value is ("Starring" before the names,
+    /// `Details Screen.dc.html`'s people column). Bolding it there would make the quiet word the
+    /// loudest thing in the block, which is the opposite of what dimming it is for.
+    pub fn lead_quiet(mut self, run: &'a str, col: [f32; 4]) -> Self {
+        self.lead = Some((run, col));
+        self.lead_bold = false;
         self
     }
     /// The bold lead run's pixel width plus the space after it, or 0 with no lead. Line 0 wraps into
@@ -108,7 +119,7 @@ impl<'a> TextView<'a> {
     fn lead_w(&self) -> f32 {
         self.lead
             .and_then(|(r, _)| CString::new(r).ok())
-            .map(|c| crate::text::text_width(c.as_ptr(), self.sz, 1) + self.measure(" "))
+            .map(|c| crate::text::text_width(c.as_ptr(), self.sz, i32::from(self.lead_bold)) + self.measure(" "))
             .unwrap_or(0.0)
     }
     /// Reserve `px` at the wrap width's right edge for an OUT-OF-FLOW affordance sitting on the last
@@ -152,7 +163,13 @@ impl<'a> TextView<'a> {
 
     /// greedy word-wrap to `width` px; the last line is ellipsized if `max_lines` truncates the text.
     fn wrap_uncached(&self, width: f32) -> Wrapped {
-        let words: Vec<&str> = self.text.split_whitespace().collect();
+        // Split on whitespace EXCEPT U+00A0. A no-break space is the typographic instruction
+        // "these two words are one atom", and `split_whitespace` honours the Unicode White_Space
+        // property, which includes it — so the standard glue character silently did nothing.
+        // `detail`'s people column is the case: the atoms of "Starring A B, C D" are the PEOPLE,
+        // and a break inside one puts a surname alone on the next line.
+        let words: Vec<&str> =
+            self.text.split(|c: char| c.is_whitespace() && c != '\u{a0}').filter(|w| !w.is_empty()).collect();
         let mut lines: Vec<String> = Vec::new();
         let mut cur = String::new();
         let mut i = 0;
@@ -237,11 +254,21 @@ impl<'a> TextView<'a> {
         let lead_w = self.lead_w();
         if let Some((r, lc)) = self.lead {
             if let Ok(cs) = CString::new(r) {
-                Label::new(cs.as_ptr(), self.sz, lc)
-                    .bold()
-                    .h(HAlign::Left)
-                    .v(VAlign::CapTop)
-                    .draw(p, Rect::new(frame.x, frame.y, frame.w, 0.0));
+                // A RIGHT-aligned block puts the lead immediately left of line 0's text, not at
+                // the column's left edge: line 0 hugs the right margin, so anchoring the lead to
+                // the far edge would strand the label word across the whole slack of the line
+                // with its own value nowhere near it. Left/centre keep the column edge.
+                let lx = if self.align == HAlign::Right {
+                    let w0 = lines.first().map(|l| self.measure_c(l)).unwrap_or(0.0);
+                    frame.x + frame.w - w0 - lead_w
+                } else {
+                    frame.x
+                };
+                let mut lab = Label::new(cs.as_ptr(), self.sz, lc).h(HAlign::Left).v(VAlign::CapTop);
+                if self.lead_bold {
+                    lab = lab.bold();
+                }
+                lab.draw(p, Rect::new(lx, frame.y, frame.w, 0.0));
             }
         }
         for (i, ln) in lines.iter().enumerate() {

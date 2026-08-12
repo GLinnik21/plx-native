@@ -275,6 +275,13 @@ pub(crate) const PEOPLE_MAX_LINES: usize = 2 * PEOPLE_MAXLINES;
 /// cannot be read over a bright still. `widgets`' hero-scrim anchor table grades this row and holds
 /// it to the ordinary 3.0/2.5 floors again.
 pub(crate) const PEOPLE_INK: [f32; 4] = theme::TEXT_SECONDARY;
+/// The LABEL word's ink ("Starring", "Directed by") — one rung under the names beside it, which is
+/// the mock's own relationship (#7B818A against #949AA3, a factor of ~0.83) transposed onto the
+/// brighter ink [`PEOPLE_INK`] had to take. The label is scaffolding and the name is the content,
+/// so the name wins the contrast; dimming by a whole rung rather than by a bespoke value keeps the
+/// column on the ladder. Its own floor is the row's LOWER one — it is a predictable word read by
+/// shape, not a string anyone has to decipher.
+pub(crate) const PEOPLE_LABEL_INK: [f32; 4] = theme::TEXT_TERTIARY;
 /// The facts row's hard RIGHT bound — the people column's own left edge, less a rung of air.
 ///
 /// The two are LEVEL: the facts line sits one `BTN_DY` above the button row and the column bottoms
@@ -293,6 +300,15 @@ const LEAD_BUDGET: f32 = 0.55;
 /// (24) let four marks in four different silhouettes crowd into one texture, and `LG` (40) broke the
 /// row into four unrelated islands. 32 is the mock's, and it reads as one row of four things.
 const RATING_ROW_GAP: f32 = 32.0;
+/// Air either side of a separator `\u{b7}` on the identity line and on the facts line. It used to
+/// be spelled as literal spaces inside the joined string ("   \u{b7}   "), which is what forced the
+/// dot to share the words' ink; [`dotted_run`] draws it as its own run, so the air is a number.
+/// Both take the `SM` rung: the mock spells 16px on the identity line and 20px on the facts line,
+/// and 4px at `CAPTION` is under the threshold of that difference being visible — one rung for
+/// both keeps the row on the spacing ladder rather than carrying a bespoke number to express
+/// something the eye cannot see.
+const META_SEP_PAD: f32 = theme::space::SM;
+const FACTS_SEP_PAD: f32 = theme::space::SM;
 
 // Below-the-hero content is ONE vertical scroll of stacked blocks, driven by the shared retui
 // `ScrollColumn` (`impl Column for DetailView`): its `child_top` COMPUTES each block's pre-scroll top
@@ -1782,8 +1798,8 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     // "what IS this"** — dates, counts and how it plays are a different question, answered one line
     // down. One question per line, so neither line is a list of unrelated facts.
     let mut mx = tx;
-    if let Ok(mc) = CString::new(parts.join("   \u{b7}   ")) {
-        mx += p.text(mc.as_ptr(), tx, ch.meta_y, theme::size::BODY, d_a, 0, 0);
+    {
+        mx += dotted_run(p, &parts, tx, ch.meta_y, theme::size::BODY, d_a, META_SEP_PAD);
     }
     if let Some(d) = d {
         if mx > tx {
@@ -1809,35 +1825,26 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     // sentence rather than a pile.
     if let Some(d) = d {
         let (date, extent) = hero_facts(d);
-        let joined = |a: &str, b: &str| {
-            if a.is_empty() || b.is_empty() {
-                format!("{a}{b}")
-            } else {
-                format!("{a}    \u{b7}    {b}")
-            }
-        };
-        let full = joined(&date, extent.as_deref().unwrap_or(""));
         // The fragment on the right is measured FIRST and the clause on the left yields to it —
         // see [`FACTS_R`] for why the row needs a bound at all, and `hero_facts`' own doc for why
         // the extent is what gives way (it is series information the season tabs directly below
         // already carry). The credit tail this replaced had the same ladder and the same reason:
         // a member of this row goes entirely before it goes garbled.
-        let mode_w = play_mode_w(d, !full.is_empty());
+        let ext = extent.as_deref().unwrap_or("");
+        let mode_w = play_mode_w(d, !(date.is_empty() && ext.is_empty()));
         let budget = FACTS_R - tx - mode_w;
-        let mut info = full;
-        let mut w = run_w(&info);
-        if w > budget {
-            info = date.clone(); // …the extent goes first, whole
-            w = run_w(&info);
+        // The yield ladder, unchanged: the whole clause, then the extent goes entirely (it is
+        // series information the season tabs directly below already carry), then — and only then —
+        // a date that cannot fit alone is elided.
+        let mut parts: Vec<String> = vec![date.clone(), ext.to_string()];
+        if dotted_run_w(&[&parts[0], &parts[1]], theme::size::CAPTION, FACTS_SEP_PAD) > budget {
+            parts = vec![date.clone()];
         }
-        if w > budget {
-            // and only a date that cannot fit on its own is elided — the last rung
-            info = crate::text::elide(&info, budget.max(0.0), theme::size::CAPTION, 0, false);
+        if dotted_run_w(&[&parts[0]], theme::size::CAPTION, FACTS_SEP_PAD) > budget {
+            parts = vec![crate::text::elide(&date, budget.max(0.0), theme::size::CAPTION, 0, false)];
         }
-        let mut bx = tx;
-        if let Ok(ic) = CString::new(info) {
-            bx += p.text(ic.as_ptr(), tx, ch.facts_y, theme::size::CAPTION, dim, 0, 0);
-        }
+        let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+        let bx = tx + dotted_run(p, &refs, tx, ch.facts_y, theme::size::CAPTION, dim, FACTS_SEP_PAD);
         draw_play_mode(p, d, bx, ch.facts_y, bx > tx);
     }
 
@@ -1848,6 +1855,42 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     if let Some(d) = d {
         draw_people(p, d, ch.btn_y);
     }
+}
+
+/// Draw `parts` as one line joined by the row's **dimmed** `\u{b7}`, from `x`; returns the width.
+///
+/// The separator is its OWN run at [`theme::TEXT_SEPARATOR`] because a dot sharing the ink of the
+/// words either side JOINS them instead of punctuating them — both mocks set every separator to
+/// .45, and a single-colour string cannot express that. Empty parts are skipped, so a missing
+/// clause takes its dot with it instead of leaving a dangling one.
+fn dotted_run(p: Painter, parts: &[&str], x: f32, y: f32, sz: c_int, col: [f32; 4], pad: f32) -> f32 {
+    let mut bx = x;
+    for part in parts.iter().filter(|s| !s.is_empty()) {
+        if bx > x {
+            bx += pad;
+            if let Ok(dc) = CString::new("\u{b7}") {
+                bx += p.text(dc.as_ptr(), bx, y, sz, theme::TEXT_SEPARATOR, 0, 0);
+            }
+            bx += pad;
+        }
+        if let Ok(pc) = CString::new(*part) {
+            bx += p.text(pc.as_ptr(), bx, y, sz, col, 0, 0);
+        }
+    }
+    bx - x
+}
+
+/// [`dotted_run`]'s width, without drawing — the facts row measures before it commits to a clause.
+fn dotted_run_w(parts: &[&str], sz: c_int, pad: f32) -> f32 {
+    let n = parts.iter().filter(|s| !s.is_empty()).count();
+    let dots = n.saturating_sub(1) as f32
+        * (2.0 * pad + CString::new("\u{b7}").map(|c| crate::text::text_width(c.as_ptr(), sz, 0)).unwrap_or(0.0));
+    parts
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|t| CString::new(*t).map(|c| crate::text::text_width(c.as_ptr(), sz, 0)).unwrap_or(0.0))
+        .sum::<f32>()
+        + dots
 }
 
 /// The hero's **people column** — the crew credit over the cast, right-aligned in its own column
@@ -1862,10 +1905,11 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
 /// buttons for every item, and a cast list that takes a second line grows into the air above instead
 /// of walking down toward the section flow.
 ///
-/// One colour for the whole run. The mock sets each lead word ("Created by" / "Starring") a step
-/// dimmer than the names it introduces, which needs a RIGHT-aligned lead run — and `TextView::lead`
-/// is left-aligned only (it anchors at the column's left edge, which on a right-aligned block would
-/// strand the word far from its names).
+/// The lead word is a step dimmer than the names ([`PEOPLE_LABEL_INK`]), the mock's own hierarchy:
+/// the label is scaffolding, the name is the content. That needed a RIGHT-aligned lead run, which
+/// `TextView::lead` could not do — it anchored at the column's left edge, which on a right-aligned
+/// block strands the word across the line's whole slack — so `TextView` learned to place a lead
+/// beside line 0's text instead, and to draw it at the block's own weight (`lead_quiet`).
 ///
 /// **[`PEOPLE_INK`], not the mock's `--text-tertiary`** — the one place this column departs from
 /// the design, and it is the ground, not the ink, that forces it. See that const.
@@ -1875,21 +1919,26 @@ fn draw_people(p: Painter, d: &metadata::Detail, btn_y: f32) {
     // the cast is the column's LAST line, so it is placed first and everything else stacks above it
     if has_starring(d) {
         let names: Vec<&str> = d.cast.iter().take(PEOPLE_CAST).map(|c| c.tag.as_str()).collect();
-        bottom -= people_line(p, &format!("Starring {}", names.join(", ")), x, bottom);
+        bottom -= people_line(p, "Starring", &names, x, bottom);
     }
     if let Some((label, names)) = hero_credit(d) {
-        people_line(p, &format!("{label} {}", names.join(", ")), x, bottom);
+        people_line(p, label, &names, x, bottom);
     }
 }
 
 /// One block of the people column, placed by its BOTTOM edge; returns the height it consumed so the
 /// caller can stack the next block above it. Wrapping is what makes the height vary, which is
 /// exactly why the column is measured from the bottom rather than laid out from a top.
-fn people_line(p: Painter, text: &str, x: f32, bottom: f32) -> f32 {
-    let v = TextView::new(text, theme::size::CAPTION, PEOPLE_INK)
+fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32) -> f32 {
+    // Each PERSON is one wrap atom: their name parts are joined with a no-break space, so a line
+    // can break between people but never inside one ("Jennifer" stranded above "Aniston" is the
+    // defect this exists to stop — owner-reported). `TextView`'s tokeniser honours the glue.
+    let names = names.iter().map(|n| n.replace(' ', "\u{a0}")).collect::<Vec<_>>().join(", ");
+    let v = TextView::new(&names, theme::size::CAPTION, PEOPLE_INK)
         .leading(PEOPLE_LEAD)
         .max_lines(PEOPLE_MAXLINES)
-        .h(HAlign::Right);
+        .h(HAlign::Right)
+        .lead_quiet(label, PEOPLE_LABEL_INK);
     let h = v.measure_h(PEOPLE_W);
     v.draw(p, Rect::new(x, bottom - h, PEOPLE_W, 0.0));
     h

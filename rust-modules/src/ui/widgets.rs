@@ -241,12 +241,14 @@ const KEYLINE_PAD_X: f32 = 7.0;
 const KEYLINE_PAD_Y: f32 = 6.0;
 const KEYLINE_RAD: f32 = 5.0;
 const KEYLINE_W: f32 = 1.5;
+/// The chip's label weight — the mock's `font-weight:600`. See [`keyline_chip`] for why it is bold.
+const KEYLINE_BOLD: std::os::raw::c_int = 1;
 
 /// The width [`keyline_chip`] will occupy for `text` — the measure-first companion.
 pub(crate) fn keyline_chip_w(text: &str) -> f32 {
     std::ffi::CString::new(text)
         .ok()
-        .map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 0) + 2.0 * KEYLINE_PAD_X)
+        .map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, KEYLINE_BOLD) + 2.0 * KEYLINE_PAD_X)
         .unwrap_or(0.0)
 }
 
@@ -259,15 +261,32 @@ pub(crate) fn keyline_chip_w(text: &str) -> f32 {
 /// plus two scrim ramps, so a chip claiming `SURFACE_APP` read as a dark box over a bright still
 /// instead of a hairline. The parameter is gone rather than defaulted — there was no honest value
 /// for it, which is the point.
+/// The RING is drawn a step under its own label, not in the label's ink ([`theme::KEYLINE_RIM`] vs
+/// the `col` passed in): both mocks spell the chip as a `rgba(255,255,255,.34)` hairline around
+/// `--text-secondary` type, and the difference is the whole reading. Painted in one colour the
+/// solid 1.5px ring outweighs the antialiased letters inside it, so the eye lands on a BOX with
+/// something in it; with the ring receding, it lands on **CC** and the box is just its bound.
+///
+/// The label is BOLD for the same reason the mock sets `font-weight:600` on it: two or three caps
+/// at `CAPTION` inside a ring have to hold their own against it, and regular weight is what made
+/// this chip read as an empty frame in the first device photograph of the identity line.
 pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4]) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
         Err(_) => return 0.0,
     };
     let w = keyline_chip_w(text);
-    let h = crate::text::cap_h(theme::size::CAPTION, 0) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band, not a fixed band
-    p.rring(Rect::new(x, cy - h * 0.5, w, h), KEYLINE_RAD, KEYLINE_W, col);
-    p.text(lc.as_ptr(), x + KEYLINE_PAD_X, crate::text::text_vcenter_y(theme::size::CAPTION, 0, cy), theme::size::CAPTION, col, 0, 0);
+    let h = crate::text::cap_h(theme::size::CAPTION, KEYLINE_BOLD) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band, not a fixed band
+    p.rring(Rect::new(x, cy - h * 0.5, w, h), KEYLINE_RAD, KEYLINE_W, theme::KEYLINE_RIM);
+    p.text(
+        lc.as_ptr(),
+        x + KEYLINE_PAD_X,
+        crate::text::text_vcenter_y(theme::size::CAPTION, KEYLINE_BOLD, cy),
+        theme::size::CAPTION,
+        col,
+        0,
+        KEYLINE_BOLD,
+    );
     w
 }
 

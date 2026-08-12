@@ -36,6 +36,12 @@ pub const TEXT_TERTIARY: [f32; 4] = [0.58, 0.60, 0.64, 1.0];
 /// (`"a   ·   b"`) is one run at one colour by construction; those are unchanged, and converting
 /// them is a per-site decision about whether the extra draw call is worth it.
 pub const TEXT_SEPARATOR: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
+/// The hairline around a keyline chip (CC / SDH / AD / an age rating) — `rgba(255,255,255,.34)`
+/// in both mocks, and deliberately NOT the label's own ink: a solid ring in the same colour as
+/// the antialiased caps inside it outweighs them, and the chip reads as a box rather than as its
+/// letters. Its own token because it is a RIM, not text — [`with_a`] on a text colour would tie
+/// the two together again, which is exactly the coupling this separates.
+pub const KEYLINE_RIM: [f32; 4] = [1.0, 1.0, 1.0, 0.34];
 
 // ── Type scale ───────────────────────────────────────────────────────────────
 /// The one legibility-tuned ladder of text sizes for the whole UI — the *size* axis of the design
