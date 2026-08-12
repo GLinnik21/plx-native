@@ -96,8 +96,10 @@ pub struct QueueRow {
     pub index: i64,
     pub thumb: String,
     /// `grandparentThumb` — the SHOW's portrait poster (empty for a movie). Retained beside
-    /// `thumb` because the two are different SHAPES: an episode's `thumb` is a landscape still,
-    /// and the post-play card's 250×375 frame wants the portrait art.
+    /// `thumb` because the two are different SHAPES: an episode's `thumb` is a landscape still.
+    /// Nothing draws it today — the Up Next tile shows the STILL, since the successor is another
+    /// episode of the show the viewer is already watching — so this is the queue row's honest
+    /// parse of the container and not a promise about a screen.
     pub poster: String,
     pub dur_ms: i64,
     /// `viewOffset` — the resume point, 0 = unwatched/from the start

@@ -93,6 +93,17 @@ with a fill-sweep countdown. A richer end-of-episode treatment (poster, title, c
 "watch credits" escape) in the Apple TV style is welcome as a proposal — the mechanics exist,
 this is purely presentational. Not required.
 
+> **Resolution (2026-08-12, owner's call): the TILE stays, with a second button.** The card came
+> back as proposed and shipped at `84ff9328`; the owner then set the weight rule — *interruption
+> weight matches event weight*. The next episode of the show you are already watching is a small
+> event and a corner tile is enough; a full-screen poster to say "S2E4 next" shows you the show
+> you have been looking at for an hour. `Player Screen.dc.html`'s update is what is in the tree:
+> the tile plus **Watch Credits**, so declining is a thing you can press. The countdown is the
+> button's fill sweep, not a ring — the owner's line was that the app already has one visual
+> language for a timer. The full card survives at `84ff9328` for the CROSS-SHOW case (a finished
+> show, a different one queued), which has no trigger: `continuous=1` is per-show and a final
+> episode returns `totalCount=1`, so sourcing it from Continue Watching is an open decision.
+
 ## Out of scope
 
 The diagnostics ("Stats for nerds") panel — deliberately undesigned, debug surface. Server rows

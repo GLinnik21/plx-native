@@ -300,7 +300,19 @@ impl ControlSlot {
     pub(crate) fn items(self) -> c_int {
         match self {
             ControlSlot::Discs => BTN_N,
-            _ => 1,
+            // Watch Credits + Next Episode — the one stand-in with a pair
+            ControlSlot::UpNext(_) => 2,
+            ControlSlot::Skip(_) => 1,
+        }
+    }
+    /// Where the focus ring parks when this row APPEARS. It is 0 everywhere except Up Next, whose
+    /// primary is drawn on the RIGHT — and getting that wrong is not cosmetic: the countdown's
+    /// cancel rule is a steady state (`up_next::countdown_may_run`), so parking on item 0 there
+    /// would disarm the timer on the frame after it armed.
+    pub(crate) fn primary_btn(self) -> c_int {
+        match self {
+            ControlSlot::UpNext(_) => crate::ui::up_next::PRIMARY_BTN,
+            _ => 0,
         }
     }
     /// whether the Subtitles/Audio discs are the current occupant
@@ -320,17 +332,15 @@ impl ControlSlot {
         }
     }
     /// Pointer hit-test for whatever occupies the row — ONE entry point, so the click path can
-    /// never consult geometry belonging to a control that is not on screen. The Up Next arm is
-    /// additionally gated on the CARD being active: a BACK-dismissed card leaves the slot saying
-    /// `UpNext` (that identity is what holds its per-segment latches) while nothing of it is
-    /// drawn, and a click must then fall through to the transport underneath.
-    pub(crate) fn hit(self, cx: f32, cy: f32) -> bool {
+    /// never consult geometry belonging to a control that is not on screen. It answers with the
+    /// ITEM index rather than a bool because Up Next has two: the click has to park `hud_nav.btn`
+    /// before dispatching, or the shared `activate_ctrl_row` would act on wherever the ring
+    /// happened to be rather than on what was clicked.
+    pub(crate) fn hit(self, cx: f32, cy: f32) -> Option<c_int> {
         match self {
-            ControlSlot::UpNext(_) => {
-                crate::ui::up_next::card_active(self) && crate::ui::up_next::hit(cx, cy).is_some()
-            }
-            ControlSlot::Skip(pr) => crate::ui::skip_pill::rect(pr).contains(cx, cy),
-            ControlSlot::Discs => false,
+            ControlSlot::UpNext(_) => crate::ui::up_next::hit(cx, cy),
+            ControlSlot::Skip(pr) => crate::ui::skip_pill::rect(pr).contains(cx, cy).then_some(0),
+            ControlSlot::Discs => None,
         }
     }
 }
@@ -451,8 +461,8 @@ fn readout_owns_frame(busy: Busy) -> bool {
 /// The same question for `app.rs`'s INPUT arms: is the transport (and every panel over it) absent
 /// from the frame right now?
 ///
-/// A control that is not drawn must not be activatable — `ControlSlot::UpNext`'s rule, and the one
-/// `up_next::card_active` already gives the post-play card. Without this the failure was hidden but
+/// A control that is not drawn must not be activatable — the rule [`ControlSlot::hit`] keeps for
+/// the pointer, at the row's own altitude. Without this the failure was hidden but
 /// still drivable: `start_playback` stamps a ~4.5 s HUD linger on the way in, so a `/decision`
 /// refusal lands with `hud_visible` true and focus parked on the scrubber, and two blind presses
 /// (DOWN, OK) opened the Info card over the read-out from a tab row nothing had painted.
@@ -717,17 +727,6 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     if readout_owns_frame(busy) {
         return;
     }
-    // The post-play card OWNS the frame while it is up: nothing of the transport draws — no
-    // scrim, no scrubber, no title chrome, no tabs. The card is still HUD furniture (playback
-    // runs underneath, `app.rs` pins the HUD while it is active), so this is a branch inside the
-    // HUD draw rather than an overlay route. The Skip-pill stand-in below is untouched.
-    // Gated on `transport` too: with the Info card / Chapters strip open (the one caller passes
-    // false exactly then) the panel fills the middle, and the card's full-screen scrim + poster +
-    // countdown must not render UNDER it — that state draws only the bottom scrim + tabs below,
-    // the same frame it drew before the card existed.
-    if transport && crate::ui::up_next::card_active(slot) {
-        return crate::ui::up_next::draw(Painter::root(), now);
-    }
     let p = Painter::root();
     let e = hud_env();
 
@@ -761,11 +760,7 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     // The right control row, from the slot the CALLER resolved — so what is drawn and what a
     // keypress activates are the same value, not two derivations of it.
     match slot {
-        // A BACK-dismissed card (the active case returned at the top): the row stays EMPTY for
-        // the rest of the segment. Deliberately not the discs — the slot still answers `UpNext`,
-        // so `activate_ctrl_row` would not open their menus, and a drawn control that cannot be
-        // activated is exactly the half-wired state `ControlSlot` exists to prevent.
-        ControlSlot::UpNext(_) => {}
+        ControlSlot::UpNext(_) => crate::ui::up_next::draw(p, focus == 1, btn, now),
         ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(p, pr, focus == 1),
         ControlSlot::Discs => {
             for i in 0..BTN_N {
@@ -970,17 +965,26 @@ mod tests {
         // no segment under the playhead → the ordinary Subtitles + Audio pair
         assert!(slot_for(None, false).is_discs());
         assert!(slot_for(None, true).is_discs(), "a queued successor alone changes nothing");
-        assert_eq!(slot_for(None, true).items(), BTN_N, "the discs are the only multi-item row");
+        assert_eq!(slot_for(None, true).items(), BTN_N);
+        assert_eq!(slot_for(None, true).primary_btn(), 0, "the discs open on Subtitles");
 
         // an intro is always Skip, successor or not — "what's next" is an end-of-episode idea
         for has_next in [false, true] {
             let slot = slot_for(Some(marker(MarkerKind::Intro, false)), has_next);
             assert!(matches!(slot, ControlSlot::Skip(p) if p.kind == MarkerKind::Intro));
-            assert_eq!(slot.items(), 1, "a stand-in is the row's only item");
+            assert_eq!(slot.items(), 1, "a Skip pill is the row's only item");
+            assert_eq!(slot.primary_btn(), 0, "…so it is also the one focus lands on");
         }
 
         // credits WITH somewhere to go → Up Next outranks Skip Credits…
-        assert!(matches!(slot_for(Some(marker(MarkerKind::Credits, true)), true), ControlSlot::UpNext(_)));
+        let up = slot_for(Some(marker(MarkerKind::Credits, true)), true);
+        assert!(matches!(up, ControlSlot::UpNext(_)));
+        // …and it is the ONE stand-in with a pair, whose primary is the RIGHT-hand item. Asserted
+        // together because they are one fact: an `items()` of 2 with a `primary_btn()` of 0 would
+        // park the ring on Watch Credits, and `up_next::countdown_may_run` would then disarm the
+        // countdown on the frame after it armed — a timer that visibly never runs.
+        assert_eq!(up.items(), 2, "Watch Credits + Next Episode");
+        assert_eq!(up.primary_btn(), crate::ui::up_next::BTN_NEXT);
         // …and WITHOUT (a show's last episode) it stays Skip Credits, which is the whole reason
         // both still exist
         assert!(matches!(

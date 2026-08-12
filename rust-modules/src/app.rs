@@ -1324,17 +1324,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             use crate::ui::player_hud::ControlSlot;
             use crate::ui::skip_pill::SkipAction;
             match slot {
+                // The row's two items, off the cursor the caller already parked (a click sets it
+                // from the hit-test, a key press moved it). *Next Episode* starts the successor;
+                // *Watch Credits* does nothing beyond the cancel the frame block below performs
+                // for it — the button exists so that "let it run" is a THING YOU CAN PRESS rather
+                // than an absence, which on a countdown is the difference between choosing and
+                // being caught out.
                 ControlSlot::UpNext(_) => {
-                    // OK on the CARD, dispatched through its own key table: Play now starts the
-                    // successor; OK on Watch credits is nothing beyond the cancel that focusing
-                    // it already performed. A BACK-dismissed card has nothing on screen, so OK
-                    // falls through to nothing rather than blind-starting the next episode.
-                    if crate::ui::up_next::card_active(slot)
-                        && crate::ui::up_next::handle_key(crate::ui::up_next::CardKey::Ok)
-                    {
-                        play_up_next(mt, HUD_LINGER_MS, route, played_from_detail, hud_nav);
-                        true
+                    if hud_nav.btn == crate::ui::up_next::BTN_NEXT {
+                        play_up_next(mt, HUD_LINGER_MS, route, played_from_detail, hud_nav)
                     } else {
+                        crate::ui::up_next::cancel();
                         false
                     }
                 }
@@ -2129,11 +2129,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // press on a hidden HUD just reveals it (focused on the scrubber); pressing UP
                     // with nothing focusable above (the buttons row) hides the HUD again.
                     if matches!(route, Route::Player { .. }) && (sym == SDLK_UP || sym == SDLK_DOWN) {
-                        // The post-play card owns the screen and has one row: UP/DOWN are nothing
-                        // (the card's key table), not a walk to a transport that is not drawn.
-                        if crate::ui::up_next::card_active(ctrl) {
-                            continue;
-                        }
                         let vis = hud_visible(last_input, hud_until(), paused(), hud_dismissed);
                         let mut hide = false;
                         if !vis {
@@ -2142,13 +2137,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // vertical stack, top → bottom: control row, scrubber, tabs. Both
                             // marker stand-ins live IN the control row, so the ring is unchanged.
                             match hud_nav.focus {
-                                // A BACK-dismissed card (the active case continued above) leaves
-                                // the slot answering `UpNext` while draw_hud renders row 1 EMPTY
-                                // for the rest of the segment — focus must not park on an
-                                // invisible row where OK dispatches to nothing. UP from the
-                                // scrubber is then the hide step, exactly as if nothing were
-                                // above (the same refusal `ControlSlot::hit` gives the pointer).
-                                0 if crate::ui::up_next::is_shown(ctrl) => hide = true,
                                 0 => hud_nav.focus = 1, // scrubber → control row
                                 2 => hud_nav.focus = 0, // tabs → scrubber
                                 _ => {
@@ -2352,16 +2340,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if !vis {
                             hud_nav.focus = 0; // first LEFT/RIGHT reveals the HUD on the scrubber
                         }
-                        if crate::ui::up_next::card_active(ctrl) {
-                            // The post-play card's two buttons, through its key table — the
-                            // design's own line: LEFT reaches Watch credits (and reaching it IS
-                            // the cancel), RIGHT returns to Play now and never re-arms.
-                            crate::ui::up_next::handle_key(if fwd {
-                                crate::ui::up_next::CardKey::Right
-                            } else {
-                                crate::ui::up_next::CardKey::Left
-                            });
-                        } else if hud_nav.focus == 1 {
+                        if hud_nav.focus == 1 {
                             // the row's occupant says how many items it has — no magic pin
                             hud_nav.btn = (hud_nav.btn + if fwd { 1 } else { -1 }).clamp(0, ctrl.items() - 1);
                         } else if hud_nav.focus == 2 {
@@ -2425,19 +2404,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // "what BACK would otherwise do" is exit the app.)
                         if nav_cancel(route, &mut nav_pending) {
                         } else if matches!(route, Route::Player { .. }) {
-                            // BACK on the post-play CARD dismisses the card — this segment's
-                            // hide latch + the cancel, playback running on underneath (the
-                            // credits were the point). Gated on exactly "the card is up": in
-                            // every other player state BACK still stops playback, and a second
-                            // BACK after the dismissal is that ordinary BACK.
-                            if crate::ui::up_next::card_active(ctrl)
-                                && hud_visible(last_input, hud_until(), paused(), hud_dismissed)
-                            {
-                                crate::ui::up_next::handle_key(crate::ui::up_next::CardKey::Back);
-                                hud_nav = HudNav::HOME; // the transport returns parked on the scrubber
-                            } else {
-                                exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at, &mut trail);
-                            }
+                            exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at, &mut trail);
                         } else if matches!(route, Route::Detail | Route::Person) {
                             // The two stacking screens, through the page transition. All three
                             // halves of the pop — the outgoing page's teardown, the trail move and
@@ -2485,19 +2452,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if matches!(route, Route::Player { .. }) {
                         hud_dismissed = false;
                         extend_hud(last_input, HUD_LINGER_MS);
-                        // The card arm is scoped to a BARE player, like every other card input
-                        // path (the click path's modal arms shield it; `draw_hud` hides it under
-                        // Info/Chapters): with a panel open, waving the pointer across the
-                        // invisible Watch-credits rect must not park the card's cursor there and
-                        // silently cancel the auto-advance through a panel that owns the screen.
-                        if matches!(route, Route::Player { overlay: Overlay::None })
-                            && crate::ui::up_next::card_active(ctrl)
-                        {
-                            // hover moves the card's own cursor over its two buttons (the
-                            // `more_menu::pointer_focus` idiom — a miss moves nothing); reaching
-                            // Watch credits cancels, exactly as focusing it by key does
-                            crate::ui::up_next::pointer_focus(mx, my);
-                        } else if ptr_drag && dur() > 0 {
+                        if ptr_drag && dur() > 0 {
                             let frac = crate::ui::player_hud::scrub_frac_x(mx) as f64;
                             set_scrub((frac * dur() as f64) as i64);
                         }
@@ -2562,6 +2517,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         let hud_vis = hud_visible(last_input, hud_until(), paused(), hud_dismissed);
                         hud_dismissed = false;
                         let (cx, cy) = ptr_xy(&ev);
+                        // Which control-row ITEM the click landed on, resolved ONCE: the arm below
+                        // both guards on it and parks the ring with it, and re-asking would be two
+                        // derivations of one answer — the thing `ControlSlot` exists to prevent.
+                        // `None` for the discs, whose own `icon_hit` is consulted further down.
+                        let ctrl_click = if hud_vis { ctrl.hit(cx, cy) } else { None };
                         // An open panel owns the click: dismiss it and STOP. The transport is
                         // partly hidden while a panel is up (draw_hud gets transport:false), so
                         // its rects must not be consulted — mirrors the modal key arms above.
@@ -2585,22 +2545,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 apply_more_action(crate::ui::more_menu::click(cx, cy));
                                 route = Route::Player { overlay: Overlay::None };
                             }
-                            // The post-play card owns the whole frame while it is up: a click on
-                            // one of its two buttons parks the card's cursor there and is OK on
-                            // it (`pointer_press` → the same `activate_ctrl_row` dispatch as the
-                            // key); a click anywhere else is NOTHING — the transport is not
-                            // drawn, so the scrub band and the pause toggle below must not act
-                            // on invisible geometry.
-                            _ if hud_vis && crate::ui::up_next::card_active(ctrl) => {
-                                if crate::ui::up_next::pointer_press(cx, cy) {
-                                    activate_ctrl_row(mt, ctrl, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud_nav, &mut trail);
-                                }
-                            }
                             // The stand-ins are HUD furniture, so both are gated on the transport
                             // actually being on screen — `hud_vis` is sampled before the click
                             // re-arms it, exactly like the rects below. One shared dispatch with
-                            // the key path, from the same resolved slot.
-                            _ if hud_vis && !ctrl.is_discs() && ctrl.hit(cx, cy) => {
+                            // the key path, from the same resolved slot — and the click PARKS the
+                            // ring on what it hit first, because Up Next's row holds two items
+                            // and `activate_ctrl_row` reads the cursor, not the coordinates.
+                            _ if ctrl_click.is_some() => {
+                                hud_nav.focus = 1;
+                                hud_nav.btn = ctrl_click.unwrap_or(0);
                                 activate_ctrl_row(mt, ctrl, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud_nav, &mut trail);
                             }
                             _ => {
@@ -3261,7 +3214,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     extend_hud(now, HUD_LINGER_MS);
                     if hud_nav.focus == 0 {
                         hud_nav.focus = 1;
-                        hud_nav.btn = 0;
+                        // …on the row's PRIMARY, which is item 0 for a Skip pill and the RIGHT-hand
+                        // one for Up Next. Not cosmetic there: the countdown's cancel rule is a
+                        // steady state, so parking on Watch Credits would disarm the timer on the
+                        // frame after it armed and the tile would never count down at all.
+                        hud_nav.btn = ctrl.primary_btn();
                     }
                 } else if crate::ui::player_hud::standin_left_the_ring(ctrl_was_standin, ctrl, hud_nav.focus == 1) {
                     // The stand-in went away under the focus ring. Without this the row swaps back
@@ -3273,29 +3230,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     hud_nav = HudNav::HOME;
                 }
                 ctrl_was_standin = !ctrl.is_discs();
-                // The post-play CARD owns the screen while it is up: pin the HUD (the design's
-                // "leaves the card up until BACK" — it must not auto-hide out from under its own
-                // countdown, nor from under a user reading it after a cancel) and hold row focus
-                // on it, so OK can never fall through to the play/pause toggle while the card is
-                // what is on screen. UP/DOWN are swallowed at the key arm, so nothing fights this.
-                // `hud_dismissed` must clear too, not just the timer: a user who UP-hid the HUD
-                // and then touched nothing until the credits still carries the dismissal, which
-                // beats `extend_hud` in `hud_visible` — so the countdown would run over a card
-                // `draw_hud` never draws and auto-advance would fire out of nowhere (this pin
-                // holding focus on the row is exactly what kept the old focus-moved cancel from
-                // catching that case). UP cannot re-dismiss while the card is up (swallowed), so
-                // clearing every frame latches nothing on.
-                if crate::ui::up_next::card_active(ctrl) {
-                    hud_nav.focus = 1;
-                    hud_nav.btn = 0;
-                    hud_dismissed = false;
-                    extend_hud(now, HUD_LINGER_MS);
-                }
                 // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to
-                // the next episode out of nowhere. And if focus has moved off the row, the user is
-                // driving the transport: cancel rather than yank them into the next episode.
+                // the next episode out of nowhere. `hud_dismissed` has to clear with it, not just
+                // the timer: a user who UP-hid the HUD and then touched nothing until the credits
+                // still carries the dismissal, which BEATS `extend_hud` inside `hud_visible`, so
+                // the countdown would run behind a tile `draw_hud` never draws and the next
+                // episode would start out of nowhere. Whether they may re-dismiss it is the
+                // cancel's business, one line below — a dismissed HUD is focus off the row.
+                //
+                // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here
+                // rather than at each key arm because every way of taking hold of the row (arrows,
+                // a click, walking away to the tabs) ends up as a cursor position by the time this
+                // frame draws. Reading it as a steady state is what makes that true.
                 if crate::ui::up_next::armed() {
-                    if hud_nav.focus == 1 {
+                    if crate::ui::up_next::countdown_may_run(hud_nav.focus == 1, hud_nav.btn) {
+                        hud_dismissed = false;
                         extend_hud(now, HUD_LINGER_MS);
                     } else {
                         crate::ui::up_next::cancel();
