@@ -500,7 +500,14 @@ the perf gates), and `make test` = `deploy` + `run`.
   bisect knob), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
   server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
-  minutes of episode first), and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
+  minutes of episode first), `/tmp/plxnative-failtest[=verdict|audio|novideo|none]` (force one
+  variant of the full-screen **failure read-out** — the one screen that cannot be reached on
+  purpose, since it needs a server that refuses, and the one most meant to be LOOKED at: it is
+  shaped to survive a phone photograph in an issue thread. Live-read, so arming it mid-playback
+  swaps the frame at once; pair `audio` with `/tmp/plxnative-nopass` for the PLEX PASS capsule
+  line. It feeds the real `player::error_shape`, and forces the STATE only at
+  `player_hud::busy` — never at `player::state()`, which the pump acts on),
+  and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
   `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), plus
   `/tmp/plxnative-navosc[=<ratingKey>]` (bounce the ROUTE every 1400 ms through the real press path —

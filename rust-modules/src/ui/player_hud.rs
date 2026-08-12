@@ -478,6 +478,14 @@ pub(crate) fn transport_hidden() -> bool {
 /// reason: two independent derivations of one three-way choice is how the two indicators drifted
 /// apart in the first place.
 pub(crate) fn busy() -> Busy {
+    // dev: `/tmp/plxnative-failtest` forces the failure read-out — the other half of
+    // `player::failtest_arm`, which shapes WHICH failure. It is forced HERE, on the one impure
+    // sampler, rather than in `player::state()`: the pump acts on that state, and a dev switch
+    // that made the engine believe it had failed would be testing a different thing than the
+    // screen. `busy_surface` stays pure and ungated, so what draws is still the real rule.
+    if crate::dev::flag("failtest") {
+        return Busy::Readout(StatusKind::Failed, crate::player::error_caption());
+    }
     busy_surface(crate::player::state(), crate::player::seen_frame())
 }
 

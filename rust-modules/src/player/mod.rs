@@ -257,12 +257,45 @@ fn error_shape(
 /// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
 /// `route::play_verdict` read main-thread state).
 pub(crate) fn error_now() -> ErrorShape {
+    if let Some(arm) = failtest_arm() {
+        return arm;
+    }
     error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(),
         crate::plex::serverinfo::subscription(),
         crate::route::play_verdict(),
     )
+}
+
+/// A sample PMS refusal, for the `verdict` variant of the dev trigger below. Real wording: this is
+/// the sentence a server emits when the only encoder our profile asked for is one it does not have,
+/// which is issue #22's failure with the pre-#22 single-entry target chain.
+const FAILTEST_VERDICT: &str = "Cannot convert this item. Implementation for video encoder 'hevc' not found.";
+
+/// dev: `/tmp/plxnative-failtest=<arm>` — force one variant of the failure read-out.
+///
+/// The read-out is the one screen in the app that **cannot be reached on purpose**: it needs a
+/// server that refuses, which is exactly the state a working setup does not have. It is also the
+/// screen most designed to be looked at — `Player Screen.dc.html` shapes it to survive a phone
+/// photograph, because a maintainer triaging a report from someone else's television is its whole
+/// audience. So the arms are selectable, and there is no other way to grade them on a panel.
+///
+/// Arms: `verdict` (the pre-flight refusal, with the server's own sentence quoted), `audio` (the
+/// audio-only transcode — pair with `/tmp/plxnative-nopass` for the PLEX PASS capsule), `novideo`
+/// (an audio-only file that direct-played), `none` (a failure with no reason known). It feeds
+/// [`error_shape`] rather than short-circuiting it, so what is photographed is the real resolver.
+///
+/// `player_hud::busy` has the other half — the state itself — for the same reason.
+fn failtest_arm() -> Option<ErrorShape> {
+    let arm = crate::dev::read("failtest")?;
+    let sub = crate::plex::serverinfo::subscription();
+    Some(match arm.trim() {
+        "audio" => error_shape(true, true, sub, None),
+        "novideo" => error_shape(true, false, sub, None),
+        "none" => error_shape(false, false, sub, None),
+        _ => error_shape(false, true, sub, Some(FAILTEST_VERDICT)),
+    })
 }
 /// HUD caption for `PlaybackState::Error` (main thread).
 pub(crate) fn error_caption() -> &'static std::ffi::CStr {
