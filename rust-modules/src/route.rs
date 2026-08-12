@@ -1042,17 +1042,36 @@ pub(crate) enum Preview {
     Converts,
 }
 pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
-    if d.part.is_empty() {
+    // A SHOW's container carries no file of its own, so the page answers for the episode its Play
+    // button would start — the one the hero is already about. Its frame size and audio list are
+    // the show Detail's, which `fetch_item_streams` backfilled from that same episode.
+    let (part, vcodec) = match d.on_deck.as_ref().filter(|_| d.part.is_empty()) {
+        Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
+        None => (d.part.as_str(), d.vcodec.as_str()),
+    };
+    playback_preview_of(part, vcodec, d.width, d.height, &d.audio)
+}
+
+/// [`playback_preview`]'s pure core — the three-way answer from the fields it actually needs, so
+/// a caller holding an EPISODE's file and a show's stream list can ask the same question.
+pub(crate) fn playback_preview_of(
+    part: &str,
+    vcodec: &str,
+    width: i64,
+    height: i64,
+    audio_streams: &[crate::metadata::Stream],
+) -> Option<Preview> {
+    if part.is_empty() {
         return None; // nothing playable loaded (a show still resolving its episode)
     }
-    let video = video_direct_plays(&d.vcodec, d.width, d.height, crate::devcaps::caps());
-    let audio = d.audio.iter().any(|a| crate::plex::is_dp_audio(&a.codec));
+    let video = video_direct_plays(vcodec, width, height, crate::devcaps::caps());
+    let audio = audio_streams.iter().any(|a| crate::plex::is_dp_audio(&a.codec));
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
     // ourselves and asking the server to repackage it.
     Some(if !video {
         Preview::Converts
-    } else if part_is_streamable(&d.part) && audio {
+    } else if part_is_streamable(part) && audio {
         Preview::DirectPlay
     } else {
         Preview::Remux

@@ -1116,11 +1116,22 @@ fn fetch_full(rk: &str) -> Option<Detail> {
             // and Related still load, and there is no previous list here to protect
             d.episodes = fetch_episodes(&s0.rk).unwrap_or_default();
         }
-        // a show carries no streams itself — backfill the About footer's audio/
-        // subtitle tracks from the first episode (one extra round-trip)
-        let first_ep_rk = d.episodes.first().map(|e| e.rk.clone());
-        if let Some(ep_rk) = first_ep_rk {
+        // A show carries no streams itself — backfill from ONE episode: the one the hero is
+        // about, which is the one Play starts (`on_deck` when the show has been started, else
+        // its first). Everything downstream reads this as "the show's" media, so borrowing from
+        // a different episode than the button plays would have the chips, the About footer and
+        // "how this plays" describing a file the user is not about to watch.
+        let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
+        let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
+        if let Some(ep_rk) = ep {
             fetch_item_streams(&ep_rk, &mut d);
+            // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
+            // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
+            // play trigger reads it as "this is a show, take the episode's resume point instead",
+            // so filling it here would silently hand a show's duration to an episode's playback.
+            // A consumer that wants to know how the HERO's episode will play asks the episode
+            // (`ui::detail::draw_play_mode`), which is also the only place that knows which
+            // episode the button would start.
         }
     }
     d.related = fetch_related(rk);

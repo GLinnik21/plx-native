@@ -261,11 +261,14 @@ pub(crate) fn keyline_chip_w(text: &str) -> f32 {
 /// plus two scrim ramps, so a chip claiming `SURFACE_APP` read as a dark box over a bright still
 /// instead of a hairline. The parameter is gone rather than defaulted — there was no honest value
 /// for it, which is the point.
-/// The RING is drawn a step under its own label, not in the label's ink ([`theme::KEYLINE_RIM`] vs
-/// the `col` passed in): both mocks spell the chip as a `rgba(255,255,255,.34)` hairline around
-/// `--text-secondary` type, and the difference is the whole reading. Painted in one colour the
-/// solid 1.5px ring outweighs the antialiased letters inside it, so the eye lands on a BOX with
-/// something in it; with the ring receding, it lands on **CC** and the box is just its bound.
+/// The ring takes the LABEL'S OWN INK, and the mock's `rgba(255,255,255,.34)` deliberately does
+/// not port — it cannot. `Painter::rring` is the SDF's rim band, whose coverage is the product of
+/// two 1.5px-wide smoothsteps (`fs_src.frag`); at [`KEYLINE_W`] the window where both reach 1 is
+/// about a QUARTER of a pixel, so no pixel centre lands in it and a thin rim never resolves to
+/// more than a fraction of its stated alpha. Measured on the panel: `white .34` came out ~12
+/// levels above the ground where the arithmetic says ~87 — an outline nobody can see. The opaque
+/// ink is what makes a 1.5px ring exist at all here, and it is what shipped before this was
+/// briefly "corrected" to the mock's literal value.
 ///
 /// The label is BOLD for the same reason the mock sets `font-weight:600` on it: two or three caps
 /// at `CAPTION` inside a ring have to hold their own against it, and regular weight is what made
@@ -277,7 +280,7 @@ pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4
     };
     let w = keyline_chip_w(text);
     let h = crate::text::cap_h(theme::size::CAPTION, KEYLINE_BOLD) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band, not a fixed band
-    p.rring(Rect::new(x, cy - h * 0.5, w, h), KEYLINE_RAD, KEYLINE_W, theme::KEYLINE_RIM);
+    p.rring(Rect::new(x, cy - h * 0.5, w, h), KEYLINE_RAD, KEYLINE_W, col);
     p.text(
         lc.as_ptr(),
         x + KEYLINE_PAD_X,
