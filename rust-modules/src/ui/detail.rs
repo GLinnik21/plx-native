@@ -2037,11 +2037,11 @@ fn dotted_run(p: Painter, parts: &[&str], x: f32, y: f32, sz: c_int, col: [f32; 
     bx - x
 }
 
-/// The trailing SOURCE credit's words — `Shared by bamx23`, or **empty** for an item that lives on
+/// The trailing SOURCE credit's words — `Shared by friend`, or **empty** for an item that lives on
 /// the signed-in user's own server.
 ///
-/// **The person, never the machine.** `bamx23` is the same handle the shelf headings and the
-/// Sources list say; the server's own name (`bx23-ldn`) appears nowhere outside that list and the
+/// **The person, never the machine.** `friend` is the same handle the shelf headings and the
+/// Sources list say; the server's own name (`nas-home`) appears nowhere outside that list and the
 /// failure read-out, because "whose copy is this" is answered by a person and "what could not be
 /// reached" by a machine.
 ///
@@ -2122,7 +2122,7 @@ fn fit_credit<'a>(credit: &'a str, fit: FactsFit) -> &'a str {
 
 /// The hero's FACTS row, flowed left→right from the text margin: the date/extent clause joined by
 /// the row's dimmed `\u{b7}`, then the "how this plays" fragment, then — only for a BORROWED item —
-/// the trailing `\u{b7} Shared by bamx23`.
+/// the trailing `\u{b7} Shared by friend`.
 ///
 /// **The credit is LAST, after the facts about the item**, because it is a fact about where the
 /// item came from; and it is on this line at all, rather than in the badges row (those state what
@@ -4062,7 +4062,7 @@ mod tests {
 
     const DATE: &str = "13 Jun 2024";
     const EXT: &str = "1 hr 57 min";
-    const HANDLE: &str = "bamx23";
+    const HANDLE: &str = "friend";
 
     /// **The acceptance criterion for this unit.** On your own server the line is exactly what it
     /// is today — not an empty run, not a dangling separator, not a draw call that paints nothing.
@@ -4095,7 +4095,7 @@ mod tests {
     #[test]
     fn the_source_credit_is_the_last_run_on_the_line_after_the_play_mode_fragment() {
         let credit = super::shared_by(HANDLE);
-        assert_eq!(credit, "Shared by bamx23", "the person, never the machine");
+        assert_eq!(credit, "Shared by friend", "the person, never the machine");
 
         let (_, evs) = flow(&[DATE, EXT], &credit, 90.0);
         let Some(Ev::Mode(mode_dx, after)) = evs.iter().find(|e| matches!(e, Ev::Mode(..))).cloned() else {
@@ -4724,7 +4724,7 @@ mod tests {
     // variable-width control appearing in its middle.
 
     /// Arm the copy store with the design's own pair (your 1080p `Movies` copy and a friend's 4K
-    /// `LDN Films` one). The store is a crate global like `metadata::CURRENT`, so callers hold
+    /// `Film Club` one). The store is a crate global like `metadata::CURRENT`, so callers hold
     /// `testlock::serial()` — and must [`alt_clear`] before they end, or the next test's hero row
     /// inherits a control it never asked for.
     ///
@@ -4750,8 +4750,8 @@ mod tests {
                 },
                 AltCopy {
                     sid: theirs,
-                    library: "LDN Films".into(),
-                    owner: Some("bamx23".into()),
+                    library: "Film Club".into(),
+                    owner: Some("friend".into()),
                     rk: "318".into(),
                     dur_ms: 7_020_000,
                     res: "4k".into(),

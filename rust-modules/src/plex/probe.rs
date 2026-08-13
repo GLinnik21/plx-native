@@ -36,7 +36,7 @@
 //! - **Treat `401` as its own state, never as "unreachable"** ([`Outcome::Unauthorized`]). The
 //!   `accessToken` is per (user, server) and carries the sharing grant; when it stops working the
 //!   answer is to refetch `/api/v2/resources`, not to try the next address — every other address of
-//!   that server will fail identically, and reporting "can't reach bx23-ldn" for what is a token
+//!   that server will fail identically, and reporting "can't reach nas-home" for what is a token
 //!   problem sends the user to look at their friend's router.
 //!
 //! The racing itself (parallel dial, first good wins, cancel the rest) lands with the transport
@@ -90,9 +90,9 @@ pub struct ProbePlan {
     /// which authenticates to plex.tv only and gets a 401 from a share. A secret: never logged.
     pub token: String,
     pub owned: bool,
-    /// The machine name ("bx23-ldn") — settings surfaces only.
+    /// The machine name ("nas-home") — settings surfaces only.
     pub name: String,
-    /// The owner's plex.tv handle ("bamx23"), `None` on our own server. The one string the browsing
+    /// The owner's plex.tv handle ("friend"), `None` on our own server. The one string the browsing
     /// UI says about a shared source.
     pub source_title: Option<String>,
     /// In rank order, best first. Empty means the policy refused every advertised address, which is
@@ -270,15 +270,15 @@ mod tests {
     /// **over plain HTTP**, because the owner did not require secure connections.
     fn shared_server() -> Resource {
         parse(
-            r#"{"name":"bx23-ldn","clientIdentifier":"bbbb2222","provides":"server","owned":false,
-                "sourceTitle":"bamx23","ownerId":987654,"publicAddressMatches":false,
+            r#"{"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server","owned":false,
+                "sourceTitle":"friend","ownerId":987654,"publicAddressMatches":false,
                 "httpsRequired":false,"accessToken":"tok-share","connections":[
-                  {"protocol":"https","address":"172.20.4.7","port":32400,
+                  {"protocol":"https","address":"10.9.9.7","port":32400,
                    "uri":"https://172-20-4-7.hash2.plex.direct:32400","local":true,"relay":false,"IPv6":false},
-                  {"protocol":"https","address":"media.example.internal","port":26937,
-                   "uri":"https://media.example.internal:26937","local":false,"relay":false,"IPv6":false},
-                  {"protocol":"https","address":"203.0.113.9","port":26937,
-                   "uri":"https://203-0-113-9.hash2.plex.direct:26937","local":false,"relay":false,"IPv6":false}]}"#,
+                  {"protocol":"https","address":"media.example.internal","port":31234,
+                   "uri":"https://media.example.internal:31234","local":false,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"203.0.113.9","port":31234,
+                   "uri":"https://203-0-113-9.hash2.plex.direct:31234","local":false,"relay":false,"IPv6":false}]}"#,
         )
     }
 
@@ -317,7 +317,7 @@ mod tests {
             "the OWNER's LAN address is not ours to dial: {cs:#?}"
         );
         assert!(
-            cs.iter().any(|c| c.url == "http://203.0.113.9:26937" && c.scheme == Scheme::Http),
+            cs.iter().any(|c| c.url == "http://203.0.113.9:31234" && c.scheme == Scheme::Http),
             "the one connection measured as reachable from the TV: {cs:#?}"
         );
         // two surviving connections, each an https uri + an http twin
@@ -330,7 +330,7 @@ mod tests {
         // no resolvability term the tie fell through to that order and put an address the media
         // transport cannot open at the head of the list.
         assert_eq!(
-            cs[0].url, "http://203.0.113.9:26937",
+            cs[0].url, "http://203.0.113.9:31234",
             "the dialable address must lead, not merely appear: {cs:#?}"
         );
     }
@@ -344,12 +344,12 @@ mod tests {
         let pos = |u: &str| cs.iter().position(|c| c.url == u).unwrap_or_else(|| panic!("{u} absent: {cs:#?}"));
 
         assert!(
-            pos("http://203.0.113.9:26937") < pos("http://media.example.internal:26937"),
+            pos("http://203.0.113.9:31234") < pos("http://media.example.internal:31234"),
             "same tier and same scheme, so resolvability is the tiebreak: {cs:#?}"
         );
         // The hostname is ranked DOWN, never dropped: the curl control plane does resolve names,
         // so a hostname-only server must still be reachable once TLS lands.
-        assert!(cs.iter().any(|c| c.url == "http://media.example.internal:26937"));
+        assert!(cs.iter().any(|c| c.url == "http://media.example.internal:31234"));
     }
 
     #[test]
@@ -369,8 +369,8 @@ mod tests {
 
     #[test]
     fn the_host_of_an_origin_is_read_without_its_scheme_or_port() {
-        assert_eq!(host_of("http://203.0.113.9:26937"), "203.0.113.9");
-        assert_eq!(host_of("https://media.example.internal:26937"), "media.example.internal");
+        assert_eq!(host_of("http://203.0.113.9:31234"), "203.0.113.9");
+        assert_eq!(host_of("https://media.example.internal:31234"), "media.example.internal");
         assert_eq!(host_of("http://[2001:db8::1]:32400"), "[2001:db8::1]", "the port is not a v6 group");
     }
 
@@ -407,7 +407,7 @@ mod tests {
         let cs = candidates(&res);
 
         assert_eq!(cs[0].location, Location::Local, "the LAN address now leads: {cs:#?}");
-        assert!(cs.iter().any(|c| c.url == "http://172.20.4.7:32400"));
+        assert!(cs.iter().any(|c| c.url == "http://10.9.9.7:32400"));
         assert_eq!(cs.len(), 6, "three connections, two candidates each");
     }
 
@@ -500,8 +500,8 @@ mod tests {
         assert_eq!(p.machine_id, "bbbb2222", "what the probe response must equal");
         assert_eq!(p.token, "tok-share", "the sharing grant, not the account token");
         assert!(!p.owned);
-        assert_eq!(p.name, "bx23-ldn", "the machine name — settings surfaces only");
-        assert_eq!(p.source_title.as_deref(), Some("bamx23"), "the handle the rest of the UI says");
+        assert_eq!(p.name, "nas-home", "the machine name — settings surfaces only");
+        assert_eq!(p.source_title.as_deref(), Some("friend"), "the handle the rest of the UI says");
         assert_eq!(p.candidates.len(), 4);
     }
 }

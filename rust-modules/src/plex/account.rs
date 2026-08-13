@@ -153,7 +153,7 @@ pub struct Pin {
 /// Everything past `connections` is a **connection-policy input** rather than something drawn:
 /// `https_required` and `public_address_matches` decide which candidate URLs may exist at all
 /// (`probe.rs`), and `source_title` is the owner's plex.tv handle — the one string the UI ever says
-/// about a shared server ("Shared by bamx23"), the machine name staying in the sources list.
+/// about a shared server ("Shared by friend"), the machine name staying in the sources list.
 ///
 /// **No field here is strict, and that is the whole point.** plex.tv sends an explicit `null` for an
 /// absent value (`sourceTitle` is null on every owned server), and serde's `default` covers a field
@@ -291,14 +291,14 @@ mod tests {
               "uri":"https://192-168-0-10.hash1.plex.direct:32400","local":true,"relay":false,"IPv6":false},
              {"protocol":"https","address":"2001:db8::1","port":32400,
               "uri":"https://2001-db8--1.hash1.plex.direct:32400","local":true,"relay":false,"IPv6":true}]},
-          {"name":"bx23-ldn","clientIdentifier":"bbbb2222","provides":"server",
+          {"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server",
            "owned":false,"home":false,"presence":true,"publicAddressMatches":false,
-           "httpsRequired":false,"sourceTitle":"bamx23","ownerId":987654,"accessToken":"tok-share",
+           "httpsRequired":false,"sourceTitle":"friend","ownerId":987654,"accessToken":"tok-share",
            "connections":[
-             {"protocol":"https","address":"172.20.4.7","port":32400,
+             {"protocol":"https","address":"10.9.9.7","port":32400,
               "uri":"https://172-20-4-7.hash2.plex.direct:32400","local":true,"relay":false,"IPv6":false},
-             {"protocol":"https","address":"203.0.113.9","port":26937,
-              "uri":"https://203-0-113-9.hash2.plex.direct:26937","local":false,"relay":false,"IPv6":false}]}
+             {"protocol":"https","address":"203.0.113.9","port":31234,
+              "uri":"https://203-0-113-9.hash2.plex.direct:31234","local":false,"relay":false,"IPv6":false}]}
         ]"#;
         let rs: Vec<Resource> = serde_json::from_slice(json).expect("explicit nulls must not fail the array");
         assert_eq!(rs.len(), 2, "both servers survive — the null did not take the container with it");
@@ -314,7 +314,7 @@ mod tests {
         assert!(!share.owned && share.is_server());
         // the handle is the ONE string the browsing UI says about a share; the machine name
         // (`name`) stays in the sources list.
-        assert_eq!(share.source_title.as_deref(), Some("bamx23"));
+        assert_eq!(share.source_title.as_deref(), Some("friend"));
         assert_eq!(share.owner_id, 987_654);
         assert!(!share.public_address_matches, "their 172.20 LAN is not ours — the load-bearing flag");
         assert_eq!(share.access_token, "tok-share", "per-(user,server) grant, never the account token");

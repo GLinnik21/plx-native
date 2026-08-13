@@ -422,7 +422,7 @@ enum Reach {
     At(Candidate),
     /// A 401. A TOKEN problem, not a reachability one: the `accessToken` is per (user, server) and
     /// carries the sharing grant, so every other address of this server answers identically and
-    /// trying them buys nothing. Reporting "can't reach bx23-ldn" here would send the user to look
+    /// trying them buys nothing. Reporting "can't reach nas-home" here would send the user to look
     /// at their friend's router for a problem that lives in `/api/v2/resources`.
     Refused,
     /// Nothing answered as this server.
@@ -936,17 +936,17 @@ mod tests {
     /// (`docs/shared-servers.md` §2); the addresses are stand-ins, the arrangement is not.
     fn a_share() -> Resource {
         resource(
-            r#"{"name":"bx23-ldn","clientIdentifier":"bbbb2222","provides":"server","owned":false,
-                "sourceTitle":"bamx23","publicAddressMatches":false,"httpsRequired":false,
+            r#"{"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server","owned":false,
+                "sourceTitle":"friend","publicAddressMatches":false,"httpsRequired":false,
                 "accessToken":"tok-share","connections":[
-                  {"protocol":"https","address":"172.20.4.7","port":32400,
+                  {"protocol":"https","address":"10.9.9.7","port":32400,
                    "uri":"https://172-20-4-7.h.plex.direct:32400","local":true,"relay":false,"IPv6":false},
-                  {"protocol":"https","address":"media.example.internal","port":26937,
-                   "uri":"https://media.example.internal:26937","local":false,"relay":false,"IPv6":false},
-                  {"protocol":"https","address":"198.51.100.7","port":26937,
-                   "uri":"https://198-51-100-7.h.plex.direct:26937","local":false,"relay":false,"IPv6":false},
-                  {"protocol":"https","address":"203.0.113.9","port":26937,
-                   "uri":"https://203-0-113-9.h.plex.direct:26937","local":false,"relay":false,"IPv6":false}]}"#,
+                  {"protocol":"https","address":"media.example.internal","port":31234,
+                   "uri":"https://media.example.internal:31234","local":false,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"198.51.100.7","port":31234,
+                   "uri":"https://198-51-100-7.h.plex.direct:31234","local":false,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"203.0.113.9","port":31234,
+                   "uri":"https://203-0-113-9.h.plex.direct:31234","local":false,"relay":false,"IPv6":false}]}"#,
         )
     }
 
@@ -993,10 +993,10 @@ mod tests {
         ]);
 
         match probe_server(&plan, &|h, p| d.dial(h, p)) {
-            Reach::At(c) => assert_eq!((c.address.as_str(), c.port), ("203.0.113.9", 26937)),
+            Reach::At(c) => assert_eq!((c.address.as_str(), c.port), ("203.0.113.9", 31234)),
             _ => panic!("the second address answers as the right machine: {:?}", d.seen()),
         }
-        assert_eq!(d.seen(), vec!["198.51.100.7:26937", "203.0.113.9:26937"]);
+        assert_eq!(d.seen(), vec!["198.51.100.7:31234", "203.0.113.9:31234"]);
 
         // …and the same body from the wrong machine is never enough on its own
         assert_eq!(classify(200, &identity_json("zzzz9999"), "bbbb2222"), Outcome::WrongServer);
@@ -1009,7 +1009,7 @@ mod tests {
 
     /// **401 is a token problem, never "unreachable".** The `accessToken` is per (user, server) and
     /// carries the sharing grant, so every other address of that server answers identically —
-    /// trying them wastes 2 s each and then reports "can't reach bx23-ldn", sending the user to look
+    /// trying them wastes 2 s each and then reports "can't reach nas-home", sending the user to look
     /// at their friend's router for something that lives in `/api/v2/resources`.
     #[test]
     fn a_401_ends_the_server_rather_than_being_retried_as_a_dead_address() {
@@ -1023,7 +1023,7 @@ mod tests {
         let plan = probe::plan(&a_share());
         let d = Dialled::new(vec![("198.51.100.7", 401, Vec::new()), ("203.0.113.9", 200, identity_json("bbbb2222"))]);
         assert!(matches!(probe_server(&plan, &|h, p| d.dial(h, p)), Reach::Refused));
-        assert_eq!(d.seen(), vec!["198.51.100.7:26937"], "the remaining addresses are not dialled");
+        assert_eq!(d.seen(), vec!["198.51.100.7:31234"], "the remaining addresses are not dialled");
     }
 
     /// The 8-second trap, and the half of it the transport adds. Policy has already dropped the
@@ -1125,15 +1125,15 @@ mod tests {
     fn a_two_server_account() -> Vec<Resource> {
         serde_json::from_str(
             r#"[
-              {"name":"bx23-ldn","clientIdentifier":"bbbb2222","provides":"server","owned":false,
-               "sourceTitle":"bamx23","ownerId":987654,"publicAddressMatches":false,
+              {"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server","owned":false,
+               "sourceTitle":"friend","ownerId":987654,"publicAddressMatches":false,
                "httpsRequired":false,"accessToken":"tok-share","connections":[
-                 {"protocol":"https","address":"172.20.4.7","port":32400,
+                 {"protocol":"https","address":"10.9.9.7","port":32400,
                   "uri":"https://172-20-4-7.h.plex.direct:32400","local":true,"relay":false,"IPv6":false},
-                 {"protocol":"https","address":"media.example.internal","port":26937,
-                  "uri":"https://media.example.internal:26937","local":false,"relay":false,"IPv6":false},
-                 {"protocol":"https","address":"203.0.113.9","port":26937,
-                  "uri":"https://203-0-113-9.h.plex.direct:26937","local":false,"relay":false,"IPv6":false}]},
+                 {"protocol":"https","address":"media.example.internal","port":31234,
+                  "uri":"https://media.example.internal:31234","local":false,"relay":false,"IPv6":false},
+                 {"protocol":"https","address":"203.0.113.9","port":31234,
+                  "uri":"https://203-0-113-9.h.plex.direct:31234","local":false,"relay":false,"IPv6":false}]},
               {"name":"Mac mini","clientIdentifier":"aaaa1111","provides":"server","owned":true,
                "sourceTitle":null,"ownerId":null,"publicAddressMatches":false,"httpsRequired":false,
                "accessToken":"tok-own","connections":[
@@ -1181,17 +1181,17 @@ mod tests {
         assert!(!share.owned && share.machine_id == "bbbb2222");
         assert_eq!(
             (share.address.as_str(), share.port),
-            ("203.0.113.9", 26937),
+            ("203.0.113.9", 31234),
             "the owner's 172.20 LAN is not ours to dial, and their hostname does not resolve"
         );
         assert_eq!(share.token, "tok-share", "a share is a separate authority: OUR token gets a 401");
-        assert_eq!(share.shared_by, "bamx23");
+        assert_eq!(share.shared_by, "friend");
         assert!(roster.iter().all(|s| s.usable()), "every entry is dialable, so every one registers");
 
         // Exactly two dials: the relay is never tried (a 2 Mbit/s https-only tunnel), nor the
         // owner's LAN, nor the internal hostname, nor the v6 literal — none of which this transport
         // can speak to. And OURS is probed first, though plex.tv listed the share first.
-        assert_eq!(d.seen(), vec!["192.168.0.10:32400", "203.0.113.9:26937"]);
+        assert_eq!(d.seen(), vec!["192.168.0.10:32400", "203.0.113.9:31234"]);
     }
 
     /// The three ways discovery can come to nothing are three different things to say, and the one
@@ -1235,7 +1235,7 @@ mod tests {
         SourceRef {
             machine_id: machine_id.into(),
             name: machine_id.into(),
-            shared_by: if owned { String::new() } else { "bamx23".into() },
+            shared_by: if owned { String::new() } else { "friend".into() },
             owned,
             address: "10.0.0.1".into(),
             port: 32400,
@@ -1284,7 +1284,7 @@ mod tests {
         assert_eq!(next.len(), 2, "the un-granted server is gone, not left on a stale token");
         assert_eq!(next[0].token, "new-own");
         assert_eq!((next[1].machine_id.as_str(), next[1].token.as_str()), ("share-1", "new-share"));
-        assert_eq!(next[1].shared_by, "bamx23", "everything but the token is carried over");
+        assert_eq!(next[1].shared_by, "friend", "everything but the token is carried over");
         assert_eq!(next[1].address, "10.0.0.1", "including the address discovery probed");
 
         // a resource that came back WITHOUT a token for this profile is not a re-key either
