@@ -2640,36 +2640,25 @@ fn ep_state_line(p: Painter, card: Rect, st: &EpState) {
     let (ct, cb) = crate::text::text_cap_band(sz, 0);
     let ty = card.y + card.h - EP_LINE_BOT - cb;
     let mut lx = card.x + EP_MARK_INSET;
+    // Both glyphs are plain masks in ONE box now: the watched tick used to be a filled amber disc,
+    // and the 2026-08-13 evening sync took the disc off the poster too — amber belongs to the resume
+    // bar alone. It also takes the LINE's own ink rather than a hue, because a watched line is a
+    // statement about the past (`✓ 48 min`) while an unstarted one is an invitation (`▶ 48 min`),
+    // and only the invitation earns the amber.
     let icon = match st.glyph {
-        EpGlyph::Play => Some(crate::ui::icons::Icon::Play),
-        EpGlyph::Watched => None, // a filled disc, not a mask — drawn below
+        EpGlyph::Play => Some((crate::ui::icons::Icon::Play, theme::RESUME_FILL)),
+        EpGlyph::Watched => Some((crate::ui::icons::Icon::Check, theme::TEXT_SECONDARY)),
         EpGlyph::None => None,
     };
     let cy = ty + (ct + cb) * 0.5;
-    match st.glyph {
-        EpGlyph::Watched => {
-            crate::ui::widgets::watched_disc(
-                p,
-                Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D),
-            );
-            lx += EP_GLYPH_D + EP_LINE_GAP;
-        }
-        _ => {
-            if let Some(icon) = icon {
-                crate::ui::icons::draw(
-                    p,
-                    icon,
-                    Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D),
-                    theme::RESUME_FILL,
-                );
-                lx += EP_GLYPH_D + EP_LINE_GAP;
-            }
-        }
+    if let Some((icon, tint)) = icon {
+        crate::ui::icons::draw(p, icon, Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D), tint);
+        lx += EP_GLYPH_D + EP_LINE_GAP;
     }
     if st.label.is_empty() {
         return;
     }
-    // a watched episode's runtime steps back a rung: the disc beside it is the statement, and at full
+    // a watched episode's runtime steps back a rung: the tick beside it is the statement, and at full
     // primary the two competed
     let col = if st.glyph == EpGlyph::Watched { theme::TEXT_SECONDARY } else { theme::TEXT_PRIMARY };
     if let Ok(lc) = CString::new(st.label.as_str()) {

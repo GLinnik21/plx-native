@@ -373,11 +373,41 @@ pub const PASS_GOLD_INK: [f32; 4] = AMBER_950;
 /// Unfilled track behind the Continue-Watching resume bar — the full-bleed card-bottom rail. A
 /// hair lighter than the player scrubber's so the amber reads against a bright poster.
 pub const RESUME_TRACK: [f32; 4] = with_a(WHITE, 0.22);
-/// Ink over [`RESUME_FILL`] when the amber is a SURFACE rather than a mark — the dark check knocked
-/// out of the episode still's watched disc (`Details Screen.dc.html`'s `#141416`). Distinct from
+/// Ink over [`RESUME_FILL`] when the amber is a SURFACE rather than a mark. Distinct from
 /// [`ACCENT_INK`]: that one is tuned against the near-white [`ACCENT`], and at that value it
 /// disappeared into the amber rather than reading as a knockout.
+///
+/// **No consumer today** — its one user was the amber watched DISC, which the 2026-08-13 evening
+/// sync replaced with a bare tick over a veil ([`TILE_MARK_INK`]). Kept because the design system
+/// still carries the role, and because the next amber surface needs exactly this ink.
 pub const INK_ON_RESUME: [f32; 4] = NEUTRAL_850;
+
+// ── A list row's trailing VALUE read-out ─────────────────────────────────────
+/// The word at a row's trailing edge that says what it is SET to (`On`/`Off`, "English"), over the
+/// FOCUSED row's near-white pill. One step behind the label so the label is what you read and the
+/// value is what you check — and an ALPHA of the pill's own ink rather than a grey, because a grey
+/// over near-white goes muddy where black at a weight stays clean. Unfocused rows use
+/// [`TEXT_SECONDARY`] (and [`TEXT_TERTIARY`] when quietened), which need no token of their own.
+pub const ROW_VALUE_INK_ON: [f32; 4] = with_a(BLACK, 0.60);
+/// The same read-out a further step back — see [`ROW_VALUE_INK_ON`]. Derived from [`ACCENT_INK`]
+/// rather than black: at .38 the ink is thin enough that its HUE starts to show, and the pill's own
+/// near-black is the one this must not look tinted against.
+pub const ROW_VALUE_INK_ON_DIM: [f32; 4] = with_a(ACCENT_INK, 0.38);
+
+// ── The watched TICK on artwork (the tile's one state mark) ──────────────────
+/// The tick's ink: `COOL_0`, the same near-white a title is set in. **No disc, no plate** — the
+/// artwork stays visible and only the veil below touches it. (The mark was an amber disc with a
+/// knocked-out check for one day, 2026-08-13; the amber is now the resume bar's alone, so the two
+/// states cannot be mistaken for each other at a glance across a shelf.)
+pub const TILE_MARK_INK: [f32; 4] = COOL_0;
+/// The **veil**: a corner falloff under the tick, and the only thing that touches the picture. A
+/// white tick has no contrast of its own over a light frame — a snowfield, a white title card, the
+/// office's white backdrop — so this guarantees it reads without putting a plate on the artwork.
+/// Peak strength at the corner itself, gone by ~half the veil's box (`widgets::tile_mark_veil`).
+pub const TILE_MARK_VEIL: [f32; 4] = with_a(BLACK, 0.40);
+/// The tick's own soft drop shadow, INSIDE the veil — belt and braces on a bright frame, and what
+/// keeps the mark from dissolving into a busy one (the design's `drop-shadow(0 2px 7px …)`).
+pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = RED_400;
@@ -424,13 +454,10 @@ pub const TAB_PLATE_SELECTED: [f32; 4] = with_a(WHITE, 0.20);
 pub const TAB_PLATE_SELECTED_OVER: [f32; 4] = with_a(WHITE, 0.13);
 /// An unselected plated segment — present, but only just: it says "this is a control" and nothing more.
 pub const TAB_PLATE_IDLE: [f32; 4] = with_a(WHITE, 0.08);
-/// Softer selection panel — the lightest weight on the overlay ramp.
-///
-/// Held at **.07**, which is where the design project disagrees with itself: its `tokens/colors.css`
-/// resolves this role to the ramp's .08 stop, while its own overlay specimen card and its readme
-/// both label it .07 (the product's value, and what the ramp was built from). A 1/255 white is
-/// invisible either way, so the tie is broken by what is documented twice — do not let it become .08
-/// as a side effect of a sync.
+/// Softer selection panel — the lightest weight on the overlay ramp, and deliberately NOT
+/// [`TAB_PLATE_IDLE`]'s .08 one step up. The design project briefly resolved this role to that .08
+/// stop while its own specimen card and readme both said .07; holding the product at .07 was the
+/// right call, and the design has since added a .07 stop of its own and points here again.
 pub const OVERLAY_FOCUS_SOFT: [f32; 4] = with_a(WHITE, 0.07);
 /// Outlined-badge / meta-badge border.
 pub const OVERLAY_BORDER: [f32; 4] = with_a(WHITE, 0.55);

@@ -67,7 +67,9 @@ fn label(a: Action) -> &'static str {
     }
 }
 
-/// Whether a row draws its leading checkmark — i.e. whether the state it names is currently on.
+/// Whether the state a row names is currently on — it draws as a SWITCH (the ring/ticked-ring pair),
+/// not as a picker's checkmark: this menu's rows are things you turn on and off, and nothing here is
+/// "the active one of several".
 fn checked(a: Action) -> bool {
     match a {
         Action::ToggleStats => crate::ui::stats::enabled(),
@@ -80,7 +82,7 @@ pub fn open() {
     unsafe { addr_of_mut!(ROWS).write(rows) };
     let mut sec = Section::new("Options");
     for a in rows {
-        sec = sec.row(Row::new(label(*a)).checked(checked(*a)));
+        sec = sec.row(Row::new(label(*a)).toggle(checked(*a)));
     }
     table().compact = true; // a short action list — BODY labels, like the profile menu
     table().set_sections(vec![sec], 0, false);

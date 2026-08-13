@@ -790,10 +790,18 @@ fn build_sort_menu(keep: bool) {
 /// `keep` = re-entered from the Genre level via BACK (slide the pill, don't restart the fade).
 fn open_filter_menu(keep: bool) {
     let sec = Section::new("Filter")
-        .row(Row::new("Unwatched only").checked(view_unwatched()))
+        // A SWITCH, not one option among several: it says what it is set to in words at the trailing
+        // edge, and carries no mark at all in the leading column.
+        .row(Row::new("Unwatched only").toggle(view_unwatched()))
         .row(
+            // "All" / "Comedy" is a READ-OUT — what this row is set to — so it belongs in the same
+            // trailing slot as the switch above it, not on a sub-line. It was a sub-line until the
+            // 2026-08-13 sync, which put the two rows of this one menu in the odd position of
+            // answering "what is set" in two different places; a sub-line is for a DESCRIPTION
+            // (the track menu's "EAC3 · 5.1"), and it also costs the row 32px of height it was
+            // spending to say one word.
             Row::new("Genre")
-                .detail(crate::browse::genre_sel().map(|g| g.title.clone()).unwrap_or_else(|| "All".into()))
+                .value(crate::browse::genre_sel().map(|g| g.title.clone()).unwrap_or_else(|| "All".into()))
                 .chevron(true),
         );
     let sel = if keep { 1 } else { 0 };

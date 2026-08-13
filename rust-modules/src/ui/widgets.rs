@@ -104,24 +104,7 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             // three states for a still, and its table is the authority for all of them).
             if let Some(m) = m {
                 if poster_mark(m) == PosterMark::Watched {
-                    // Quantized to 4px so the focus pop reuses ~6 cached check masks instead of
-                    // rasterizing + uploading one per rounded pixel (the same discipline the angle
-                    // needed), and proportional to the DRAWN tile so the mark rides the pop
-                    // instead of sitting still inside a growing poster.
-                    let d = ((r.w * WATCHED_DISC_RATIO) / 4.0).round() * 4.0; // 40px on a 250 card
-                    let ins = r.w * WATCHED_DISC_INSET;
-                    let disc = Rect::new(r.x + r.w - ins - d, r.y + ins, d, d);
-                    // A poster corner is raw artwork — amber on a bright one needs the separation
-                    // the still's version gets from `art_scrim`. The card system's resting shadow
-                    // ink at the mark's own scale, per the design's `0 2px 8px rgba(0,0,0,.34)`.
-                    p.shadow(
-                        disc,
-                        d * 0.5,
-                        d * WATCHED_DISC_BLUR,
-                        d * WATCHED_DISC_DY,
-                        theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A),
-                    );
-                    watched_disc(p, disc);
+                    watched_mark(p, r, rad);
                 }
             }
         }
@@ -182,28 +165,99 @@ pub(crate) enum PosterMark {
 }
 
 /// Resolve [`PosterMark`] from a catalog row. Total and mutually exclusive by construction.
+///
+/// Keyed on `PmsMovie::watched` — **not** on `!unwatched`, which is a weaker claim for a container:
+/// a SHOW with one episode played is `!unwatched` but nowhere near done, and marking it watched is a
+/// statement the viewer can see is false. Partly-watched shows therefore land on [`PosterMark::None`]
+/// beside never-started ones; the true statement about a series mid-run is where its next episode
+/// stands, which a poster in a grid is not the place for.
 pub(crate) fn poster_mark(m: &PmsMovie) -> PosterMark {
     if m.resume_frac().is_some() {
         return PosterMark::InProgress;
     }
-    if m.unwatched {
-        PosterMark::None
-    } else {
+    if m.watched {
         PosterMark::Watched
+    } else {
+        PosterMark::None
     }
 }
 
-/// The **watched** disc on a poster, as fractions of the tile's DRAWN width: diameter, then the
-/// corner inset, then the drop-shadow's penumbra and downward offset as fractions of that diameter.
-/// Anchored on the design system's `ArtTile` — a 40px disc inset 12px, under `0 2px 8px`, on a
-/// 250-wide poster — and held as ratios rather than pixels so the whole mark rides the focus pop as
-/// one object (a fixed 40px disc inside a tile growing to 1.09 visibly shrinks and drifts inward).
-/// The component's second rung (a 28px disc on a tile under 200 wide) has no poster in this product:
-/// every poster shelf, the Library grid and Related are all `consts::CARD_W` 250.
-const WATCHED_DISC_RATIO: f32 = 40.0 / 250.0;
-const WATCHED_DISC_INSET: f32 = 12.0 / 250.0;
-const WATCHED_DISC_BLUR: f32 = 8.0 / 40.0;
-const WATCHED_DISC_DY: f32 = 2.0 / 40.0;
+/// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
+/// corner inset, then the veil's box. Anchored on the design system's `ArtTile` — a 26px tick inset
+/// 12px under a 104px corner veil, on a 250-wide poster — and held as ratios rather than pixels so
+/// the whole mark rides the focus pop as one object (a fixed 26px tick inside a tile growing to 1.09
+/// visibly shrinks and drifts inward). The component's second rung (20px/76px on a tile under 200
+/// wide) has no poster in this product: every poster shelf, the Library grid and Related are all
+/// `consts::CARD_W` 250.
+const TICK_RATIO: f32 = 26.0 / 250.0;
+const TICK_INSET: f32 = 12.0 / 250.0;
+const VEIL_RATIO: f32 = 104.0 / 250.0;
+/// The tick's drop shadow, as fractions of the TICK's box (the design's `0 2px 7px`).
+const TICK_SHADOW_BLUR: f32 = 7.0 / 26.0;
+const TICK_SHADOW_DY: f32 = 2.0 / 26.0;
+/// Where the veil's falloff reaches zero, as a fraction of its box — CSS
+/// `radial-gradient(72% 72% at 100% 0%, veil, transparent 70%)` resolves to `.72 × .70`.
+const VEIL_EXTENT: f32 = 0.72 * 0.70;
+/// The veil texture's resolution. A power of two (NPOT sampling is a documented Mali trap) and far
+/// finer than the ~52px of falloff it is stretched across, so the ramp is smooth under GL_LINEAR.
+const VEIL_TEX_PX: usize = 64;
+static mut VEIL_TEX: std::os::raw::c_uint = 0;
+
+/// The corner **veil** texture: white RGB with a radial alpha falloff peaking at the TOP-RIGHT
+/// corner, generated once and reused at every size. It is a texture rather than geometry because the
+/// renderer has no radial gradient, and the two alternatives both fail on this shape: a `grad4` quad
+/// is bilinear and, worse, square — it would spill past the tile's 14px corner ARC onto the shelf at
+/// full strength, exactly where the mark is strongest; and stepping it as N rounded-rect bands (the
+/// `art_scrim` trick) is what `hero_scrim`'s doc already rejected for a field this wide, at a visible
+/// alpha staircase with `GL_DITHER` off. `Painter::tex` takes a corner radius, so ONE draw of this
+/// gets the tile's own silhouette for free — the veil's other three corners live in fully
+/// transparent territory, so rounding them changes nothing.
+fn veil_tex() -> std::os::raw::c_uint {
+    unsafe {
+        let cached = *std::ptr::addr_of!(VEIL_TEX);
+        if cached != 0 {
+            return cached;
+        }
+        let n = VEIL_TEX_PX;
+        let mut px = vec![0u8; n * n * 4];
+        for y in 0..n {
+            for x in 0..n {
+                // distance from the top-right corner, in units of the box's width
+                let dx = (n - 1 - x) as f32 / (n - 1) as f32;
+                let dy = y as f32 / (n - 1) as f32;
+                let a = (1.0 - (dx * dx + dy * dy).sqrt() / VEIL_EXTENT).clamp(0.0, 1.0);
+                let i = (y * n + x) * 4;
+                px[i] = 255;
+                px[i + 1] = 255;
+                px[i + 2] = 255;
+                px[i + 3] = (a * 255.0).round() as u8;
+            }
+        }
+        let tex = crate::gfx::upload_rgba(0, n as std::os::raw::c_int, n as std::os::raw::c_int, px.as_ptr());
+        *std::ptr::addr_of_mut!(VEIL_TEX) = tex;
+        tex
+    }
+}
+
+/// The **watched** mark on a poster: a corner veil, then a bare tick over it. `card` is the rect
+/// actually drawn (the SCALED one while the tile is popped) and `rad` its corner radius, which the
+/// veil is masked to so nothing lands outside the tile's own silhouette.
+///
+/// No disc and no plate — the artwork stays visible and only the falloff touches it. The white tick
+/// carries no contrast of its own, so legibility is the veil's job with the tick's own soft shadow
+/// inside it; between them the mark holds on a snowfield and on a black-and-white title card, which
+/// is the case that decided against a bare tick alone.
+pub(crate) fn watched_mark(p: Painter, card: Rect, rad: f32) {
+    let v = card.w * VEIL_RATIO;
+    p.tex(veil_tex(), Rect::new(card.x + card.w - v, card.y, v, v), rad, theme::TILE_MARK_VEIL);
+    // Quantized to 4px so the focus pop reuses a handful of cached masks instead of rasterizing +
+    // uploading one per rounded pixel, and proportional to the DRAWN tile so the mark rides the pop.
+    let d = ((card.w * TICK_RATIO) / 4.0).round() * 4.0; // 24px on a 250 card (26 → nearest rung)
+    let ins = card.w * TICK_INSET;
+    let tick = Rect::new(card.x + card.w - ins - d, card.y + ins, d, d);
+    p.shadow(tick, d * 0.5, d * TICK_SHADOW_BLUR, d * TICK_SHADOW_DY, theme::TILE_MARK_SHADOW);
+    crate::ui::icons::draw(p, crate::ui::icons::Icon::Check, tick, theme::TILE_MARK_INK);
+}
 
 /// Person-glyph box as a fraction of a headshot tile — the [`Art::Person`] fallback's one ratio.
 /// Deliberately TIGHTER than [`DISC_ICON_RATIO`] (0.54, the ratio every disc *control* glyph uses,
@@ -227,33 +281,6 @@ pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int
     // pop factor from the caller's scale spring (0 at rest → 1 at full focus scale) drives the folded shadow
     let f = if focused { ((scale - 1.0) / (CARD_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
     card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
-}
-
-/// The **watched** mark: an amber disc with the check knocked out of it in dark ink, drawn to fill
-/// `r`. The **done** state of the tile state vocabulary (see [`card`]), and the app's ONE watched
-/// mark at two sizes — a filled disc rather than a dark one with an amber tick, because
-/// `Details Screen.dc.html` sets it INLINE at the head of the episode still's state line at ~20px,
-/// where a dark disc reads as a hole in the artwork and the amber tick inside it is two shapes'
-/// worth of detail the size cannot carry. Filled, it is one confident amber dot that resolves at
-/// couch distance — which is also what lets the same mark scale up to the poster's 40px corner.
-///
-/// Two callers, and the difference between them is the GROUND, not the mark: on a landscape still it
-/// rides `art_scrim` inside the state line, so it needs nothing behind it; on a POSTER it sits on
-/// raw artwork, so [`card`] lays the card system's resting shadow under it first.
-///
-/// Mutual exclusion is the CALLER's rule — PMS keeps a resume point on a re-started item, so the
-/// wire says both watched AND in-progress; see `ui::detail::ep_state`, which resolves the three
-/// states into one mark.
-pub(crate) fn watched_disc(p: Painter, r: Rect) {
-    p.rect(r, r.w * 0.5, theme::RESUME_FILL, theme::RESUME_FILL, 0.0);
-    // glyph on the shared round-control ratio, so the check sits in the disc like every other one
-    let i = (r.w * DISC_ICON_RATIO).round();
-    crate::ui::icons::draw(
-        p,
-        crate::ui::icons::Icon::Check,
-        Rect::new(r.cx() - i * 0.5, r.cy() - i * 0.5, i, i),
-        theme::INK_ON_RESUME,
-    );
 }
 
 /// How many flat bands [`art_scrim`] uses for its corner region — see there for why they exist. 3 is
@@ -2394,12 +2421,14 @@ mod tests {
     // where this has been wrong before: the mark used to say "unwatched" in amber, which is the
     // opposite claim, and the bar/disc precedence is only observable on an item PMS reports as both.
 
-    /// A catalog row at a given watched state. `dur_ns` is 100 min, so `resume_ms` reads as a
-    /// percentage of the way in.
-    fn row(unwatched: bool, resume_ms: i64) -> PmsMovie {
+    /// A MOVIE row at a given watched state. `dur_ns` is 100 min, so `resume_ms` reads as a
+    /// percentage of the way in. For a LEAF the two flags really are each other's negation — which
+    /// is exactly what stops being true for a container, hence the show cases below.
+    fn row(watched: bool, resume_ms: i64) -> PmsMovie {
         let mut m = PmsMovie::default();
         m.dur_ns = 100 * 60 * 1000 * 1_000_000;
-        m.unwatched = unwatched;
+        m.watched = watched;
+        m.unwatched = !watched;
         m.resume_ms = resume_ms;
         m
     }
@@ -2407,26 +2436,26 @@ mod tests {
     #[test]
     fn a_poster_nobody_has_started_wears_no_mark_at_all() {
         // the common case on any real server, and the whole reason the polarity inverted
-        assert_eq!(poster_mark(&row(true, 0)), PosterMark::None);
+        assert_eq!(poster_mark(&row(false, 0)), PosterMark::None);
     }
 
     #[test]
     fn a_finished_poster_wears_the_watched_disc() {
-        assert_eq!(poster_mark(&row(false, 0)), PosterMark::Watched);
+        assert_eq!(poster_mark(&row(true, 0)), PosterMark::Watched);
     }
 
     #[test]
     fn a_re_watch_in_flight_outranks_the_watched_flag() {
         // PMS reports BOTH on a finished-then-restarted item; the bar wins, so the tile never
         // wears two marks — and what it says is what the viewer is actually doing.
-        let m = row(false, 30 * 60 * 1000);
+        let m = row(true, 30 * 60 * 1000);
         assert_eq!(poster_mark(&m), PosterMark::InProgress);
         assert!(m.resume_frac().is_some(), "InProgress must be exactly when the caller draws the bar");
     }
 
     #[test]
     fn a_part_watched_poster_that_was_never_finished_is_in_progress_too() {
-        assert_eq!(poster_mark(&row(true, 30 * 60 * 1000)), PosterMark::InProgress);
+        assert_eq!(poster_mark(&row(false, 30 * 60 * 1000)), PosterMark::InProgress);
     }
 
     #[test]
@@ -2434,7 +2463,7 @@ mod tests {
         // resume AT or PAST the end: a full-width bar there read as a rendering bug, and it would
         // now also hide the disc the item has earned. Both the mark and the bar must agree.
         for resume in [100 * 60 * 1000, 200 * 60 * 1000] {
-            let m = row(false, resume);
+            let m = row(true, resume);
             assert_eq!(m.resume_frac(), None, "resume {resume} must not draw a bar");
             assert_eq!(poster_mark(&m), PosterMark::Watched, "resume {resume}");
         }
@@ -2444,13 +2473,28 @@ mod tests {
     fn a_row_with_no_runtime_cannot_be_in_progress() {
         // dur_ns == 0 (the server sent no duration): a fraction is undefined, so there is no bar to
         // draw and the watched flag alone decides.
-        let mut m = row(false, 30 * 60 * 1000);
+        let mut m = row(true, 30 * 60 * 1000);
         m.dur_ns = 0;
         assert_eq!(m.resume_frac(), None);
         assert_eq!(poster_mark(&m), PosterMark::Watched);
-        let mut m = row(true, 30 * 60 * 1000);
+        let mut m = row(false, 30 * 60 * 1000);
         m.dur_ns = 0;
         assert_eq!(poster_mark(&m), PosterMark::None);
+    }
+
+    #[test]
+    fn a_show_three_episodes_in_is_not_a_watched_show() {
+        // The device capture that caught this: a library filtered to `unwatchedLeaves=1` — every
+        // tile has an unseen episode by construction — had five posters wearing a watched disc,
+        // because `!unwatched` is true for a container the moment ONE episode is played. A show is
+        // marked only when it is DONE, so partly-watched sits with never-started under "no mark".
+        let mut m = PmsMovie::default();
+        m.kind = 1; // show
+        m.unwatched = false; // some episode has been played…
+        m.watched = false; // …but not all of them
+        assert_eq!(poster_mark(&m), PosterMark::None);
+        m.watched = true;
+        assert_eq!(poster_mark(&m), PosterMark::Watched, "every leaf seen IS the disc");
     }
 
     // ── AmbientWash: the page GROUND's legibility contract ───────────────────────────────────

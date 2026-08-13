@@ -39,16 +39,25 @@ pub enum Icon {
     // rasterizer draws untransformed, so direction is per-asset, not a rotation)
     ChevronDown,
     ChevronUp,
-    /// Hollow circle — the Unwatched toolbar chip's off state. It once doubled as The Movie
-    /// Database's mark; TMDB is spelled in text now (as every provider is), so this shape carries
-    /// no brand meaning and the chip is free to change without redrawing anyone's mark.
-    Ring,
-    /// A right triangle whose outer corner is pre-rounded to sit flush inside a card's 14px corner
-    /// radius. Filled mask. **Drawn nowhere today:** it was the amber UNWATCHED corner mark until
-    /// 2026-08-13, when the poster's state mark inverted to the watched disc (`widgets::card` has
-    /// the reasoning) — amber now means watched, and never-started is unmarked. Kept because it is
-    /// a finished asset in the shared icon inventory, not because a state is waiting for it.
-    UnwatchedAngle,
+    /// The watch-state ACTIONS, as **filled** discs: a check knocked out of one for "Mark as
+    /// Watched", a minus knocked out of one for "Mark as Unwatched" (`item_menu::state_rows`).
+    /// Filled is the rule, not a preference: it is what stops an ACTION being read as a STATE. The
+    /// leading column carries a picker's bare tick or an action's glyph and nothing else — a switch
+    /// states itself as a word at the row's trailing edge (`Row::toggle`), so a hollow circle here
+    /// would be a third grammar for the same column. (There was one, briefly, on 2026-08-13: a
+    /// ring/ticked-ring pair. The design system deleted both assets the same evening.)
+    ///
+    /// Both are one `<path>` with **`fill-rule="evenodd"`**, which is how the mark is knocked out of
+    /// the disc — the one place this set departs from the all-subpaths-wind-the-same-way rule above,
+    /// and it is load-bearing: under nonzero the knockout fills solid and the mark disappears.
+    /// Verified through `src/svg.c` itself at 26px and 4×, where the gap resolves clean.
+    CheckCircleFill,
+    /// See [`Icon::CheckCircleFill`].
+    MinusCircleFill,
+    /// A bare horizontal stroke — the "remove" half of the bare [`Icon::Check`], for a control that
+    /// is ALREADY a circle (a hero or detail disc button), where a filled disc inside a disc would
+    /// be two circles saying one thing.
+    Minus,
     Play,
     Pause,
     /// Counter-clockwise circular arrow (↺) — "play from the start", the detail hero's restart disc.
@@ -65,9 +74,6 @@ pub enum Icon {
     Episode,
     /// A stack of layers — the item menu's "Go to Show" leading glyph (a series of episodes).
     Show,
-    /// A check inside a circle — the item menu's watched-state ACTION (distinct from [`Icon::Check`],
-    /// which marks the already-active row in a picker).
-    CheckCircle,
     /// A play triangle behind a leading bar — "Play from Start" (restart, not resume).
     PlayStart,
     /// An X — "remove this" (the item menu's Remove from Continue Watching row).
@@ -116,8 +122,9 @@ fn src(id: Icon) -> &'static str {
         Icon::Chevron => include_str!("../../../assets/icons/chevron.svg"),
         Icon::ChevronDown => include_str!("../../../assets/icons/chevron-down.svg"),
         Icon::ChevronUp => include_str!("../../../assets/icons/chevron-up.svg"),
-        Icon::Ring => include_str!("../../../assets/icons/ring.svg"),
-        Icon::UnwatchedAngle => include_str!("../../../assets/icons/angle.svg"),
+        Icon::CheckCircleFill => include_str!("../../../assets/icons/check-circle-fill.svg"),
+        Icon::MinusCircleFill => include_str!("../../../assets/icons/minus-circle-fill.svg"),
+        Icon::Minus => include_str!("../../../assets/icons/minus.svg"),
         Icon::Play => include_str!("../../../assets/icons/play.svg"),
         Icon::Pause => include_str!("../../../assets/icons/pause.svg"),
         Icon::Restart => include_str!("../../../assets/icons/restart.svg"),
@@ -127,7 +134,6 @@ fn src(id: Icon) -> &'static str {
         Icon::Backspace => include_str!("../../../assets/icons/backspace.svg"),
         Icon::Episode => include_str!("../../../assets/icons/episode.svg"),
         Icon::Show => include_str!("../../../assets/icons/show.svg"),
-        Icon::CheckCircle => include_str!("../../../assets/icons/check-circle.svg"),
         Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
         Icon::More => include_str!("../../../assets/icons/more.svg"),

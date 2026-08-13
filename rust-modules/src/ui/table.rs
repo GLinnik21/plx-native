@@ -37,6 +37,17 @@ pub struct Row {
     pub detail: String, // optional sub-line ("" = none)
     pub badges: Vec<Badge>,
     pub checked: bool,  // shows the leading checkmark (the ACTIVE item)
+    /// A **switch** rather than a choice: `Some(on)` states itself as the word `On`/`Off` at the
+    /// row's TRAILING edge — never as a mark in the leading column. A mark says where you are, a
+    /// word says what is set, and no row is allowed to say both; the on/off PAIR of marks this once
+    /// drew (a ring, ticked when on) is gone from the design system, assets and all.
+    pub toggle: Option<bool>,
+    /// Any other trailing read-out, in the same slot and the same voice as [`Row::toggle`]'s
+    /// `On`/`Off` — a row whose value is a word rather than a state ("English", "Title"). Wins over
+    /// `toggle` if both are somehow set.
+    pub value: Option<String>,
+    /// Quieten the read-out a further step (the value is context rather than the point).
+    pub value_dim: bool,
     /// THE trailing accessory icon slot (an SVG asset, never a font glyph): the drill-in
     /// chevron (via the [`Row::chevron`] sugar) or e.g. the sort menu's direction chevron.
     pub ticon: Option<crate::ui::icons::Icon>,
@@ -56,14 +67,29 @@ pub struct Row {
 }
 impl Row {
     pub fn new(label: impl Into<String>) -> Self {
-        Self { label: label.into(), detail: String::new(), badges: Vec::new(),
-               checked: false, ticon: None, licon: None, dim: false, sep: false }
+        Self { label: label.into(), detail: String::new(), badges: Vec::new(), checked: false,
+               toggle: None, value: None, value_dim: false, ticon: None, licon: None, dim: false, sep: false }
     }
     /// The grouping hairline — a row that draws a rule and cannot be focused.
     pub fn separator() -> Self {
         Self { sep: true, ..Self::new("") }
     }
     pub fn checked(mut self, v: bool) -> Self { self.checked = v; self }
+    /// Mark this row a SWITCH at the given state — see [`Row::toggle`].
+    pub fn toggle(mut self, on: bool) -> Self { self.toggle = Some(on); self }
+    /// Give this row a trailing read-out — see [`Row::value`].
+    pub fn value(mut self, v: impl Into<String>) -> Self { self.value = Some(v.into()); self }
+    /// Quieten the read-out a step — see [`Row::value_dim`].
+    pub fn value_dim(mut self, v: bool) -> Self { self.value_dim = v; self }
+    /// The word this row's trailing slot shows, if any: an explicit [`Row::value`], else a switch's
+    /// `On`/`Off`. ONE resolver, so the two can never both be drawn.
+    fn readout(&self) -> Option<&str> {
+        match (&self.value, self.toggle) {
+            (Some(v), _) => Some(v.as_str()),
+            (None, Some(on)) => Some(if on { "On" } else { "Off" }),
+            (None, None) => None,
+        }
+    }
     pub fn detail(mut self, d: impl Into<String>) -> Self { self.detail = d.into(); self }
     pub fn badge(mut self, b: Badge) -> Self { self.badges.push(b); self }
     /// sugar: the "›" drill-in affordance is just the Chevron icon in the trailing slot
@@ -368,9 +394,11 @@ impl TableView {
             let row_bg = if focused { crate::ui::ACCENT } else { PANEL_BG };
             let cyc = sy + h * 0.5; // row vertical center
 
-            // leading column (SVG): the active row's checkmark, else this row's action glyph —
-            // one column, so an action list and a picker line their labels up identically
-            if let Some(li) = if row.checked { Some(crate::ui::icons::Icon::Check) } else { row.licon } {
+            // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
+            // never a switch. A mark here says WHERE YOU ARE; what a row is SET to is a word at the
+            // trailing edge (below), and no row is allowed to say both.
+            let lead = if row.checked { Some(crate::ui::icons::Icon::Check) } else { row.licon };
+            if let Some(li) = lead {
                 let cs = 26.0f32;
                 let cr = Rect::new(content_x + (CHECK_W - cs) * 0.5, cyc - cs * 0.5, cs, cs);
                 crate::ui::icons::draw(p, li, cr, base);
@@ -382,6 +410,25 @@ impl TableView {
                 let cr = Rect::new(text_right - cs, cyc - cs * 0.5, cs, cs);
                 crate::ui::icons::draw(p, ti, cr, base);
                 trailing = cs + 14.0;
+            }
+            // Trailing VALUE — the read-out that says what this row is set to ("On"/"Off" for a
+            // switch, or any word). One step behind the label in ink, so the label is what you read
+            // and the value is what you check; over the focused row's near-white pill that step is
+            // an alpha of the pill's own ink rather than a grey, which would go muddy on it.
+            if let Some(v) = row.readout() {
+                let ink = match (focused, row.value_dim) {
+                    (true, false) => theme::ROW_VALUE_INK_ON,
+                    (true, true) => theme::ROW_VALUE_INK_ON_DIM,
+                    (false, false) => theme::TEXT_SECONDARY,
+                    (false, true) => theme::TEXT_TERTIARY,
+                };
+                if let Ok(vc) = std::ffi::CString::new(v) {
+                    let vsz = theme::size::LABEL;
+                    let vy = crate::text::text_vcenter_y(vsz, 0, cyc);
+                    let vw = crate::text::text_width(vc.as_ptr(), vsz, 0);
+                    p.text(vc.as_ptr(), text_right - trailing, vy, vsz, ink, 2, 0);
+                    trailing += vw + 14.0;
+                }
             }
             // reserve the inline-badge run so the label elides before it
             let badge_reserve: f32 =

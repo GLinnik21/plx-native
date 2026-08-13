@@ -197,9 +197,17 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
 /// ONE builder, because these are the rows the menu exists for and they must read identically
 /// wherever it is opened — the label flips on `watched`, so the row is an exact toggle rather than
 /// two rows the user has to pick between.
+///
+/// **The glyph flips with it**, and both are FILLED discs: [`Icon::CheckCircleFill`] when the press
+/// will mark watched, [`Icon::MinusCircleFill`] when it will take that away. A ticked circle beside
+/// "Mark as Unwatched" states the outcome backwards, which is the one thing a destructive-ish row
+/// must not do — and filled is what separates an ACTION from a STATE: this column carries a picker's
+/// bare tick or an action's glyph, while a switch says what it is set to in words at the far edge.
 fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, watched: bool, leaf: bool) -> Section {
-    let mut sec = sec
-        .row(Row::new(if watched { "Mark as Unwatched" } else { "Mark as Watched" }).licon(Icon::CheckCircle));
+    let mut sec = sec.row(
+        Row::new(if watched { "Mark as Unwatched" } else { "Mark as Watched" })
+            .licon(if watched { Icon::MinusCircleFill } else { Icon::CheckCircleFill }),
+    );
     acts.push(Some(Action::MarkWatched(rk.to_string(), watched)));
     if leaf {
         sec = sec.row(Row::new("Play from Start").licon(Icon::PlayStart));

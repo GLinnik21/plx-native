@@ -32,13 +32,21 @@ pub struct PmsMovie {
     pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
     pub(crate) show_title: String, // episode only: grandparentTitle (the hero headlines the SHOW)
     pub(crate) ep_index: c_int,    // episode only: episode number within the season
-    /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves). Read
-    /// NEGATED by the tile state mark: a poster carries the amber watched disc when this is false
-    /// and nothing at all when it is true, since most of a server has never been played and a mark
-    /// on every one of those tiles is noise rather than information (`ui::widgets::card` has the
-    /// full rule). The disc and the resume bar are mutually exclusive by that draw rule — a live
-    /// `resume_frac()` outranks a watched flag, because PMS reports both on a re-started item.
+    /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves).
     pub(crate) unwatched: bool,
+    /// Fully **watched** — and deliberately NOT `!unwatched`, which is the trap this field exists to
+    /// close. For a movie or episode the two are the same thing, but for a SHOW or SEASON
+    /// `!unwatched` only means "at least one episode has been played", so a series you are three
+    /// episodes into satisfies it. The tile mark is a claim of DONE (`ui::widgets::poster_mark`), so
+    /// it needs `viewedLeafCount >= leafCount` instead: partly-watched sits with never-started under
+    /// "no mark", because the honest statement about a show mid-run is the resume state of its next
+    /// episode, which a poster in a grid does not have. Caught by a device capture — a library
+    /// filtered to `unwatchedLeaves=1` had five tiles wearing a watched disc.
+    ///
+    /// The comparison is the house rule, not a new one: it is `metadata::Season::watched`'s, and the
+    /// same one `fetch_detail` applies to a show — including the load-bearing `leaf_count > 0` half,
+    /// without which a container the server sent no counts for is `0 >= 0` and reads as watched.
+    pub(crate) watched: bool,
 }
 
 impl PmsMovie {
@@ -129,6 +137,12 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
     m.unwatched = match m.kind {
         1 | 2 => it.viewed_leaf_count == 0 && it.leaf_count > 0,
         _ => it.view_count == 0,
+    };
+    // …and DONE is its own question, not the negation of that one: for a container it takes ALL the
+    // leaves, so a show three episodes in is neither (see the `watched` field's doc).
+    m.watched = match m.kind {
+        1 | 2 => it.leaf_count > 0 && it.viewed_leaf_count >= it.leaf_count,
+        _ => it.view_count > 0,
     };
     m.title = clean(&it.title);
     m.year = it.year as c_int;
