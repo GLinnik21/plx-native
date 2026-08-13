@@ -15,8 +15,9 @@
 //! Client` is handed out live next door in [`super::servers`] — this file is the type, that
 //! file is the table.
 use super::models::{Envelope, MediaContainer};
+use super::probe::Location;
 use super::servers::ServerId;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
 use std::sync::RwLock;
 
 const ACCEPT_JSON: &str = "Accept: application/json\r\n";
@@ -67,6 +68,20 @@ pub struct Client {
     // share a value: a cache that only compares "did this number move" therefore also flushes
     // when `client()` starts answering with a different server.
     token_gen: AtomicU32,
+    /// HOW this server is reached — the tier of the connection that won the probe, or "nobody has
+    /// said yet" ([`LINK_UNKNOWN`]). A property of the SERVER, not of the request, which is why it
+    /// lives beside its address rather than being recomputed at a call site.
+    ///
+    /// It exists because one tier changes what playback may ask for: Plex's relay is a capped
+    /// tunnel, so a plan that streams the file's own bytes over it stalls. The policy that reads
+    /// this is [`super::transcoder::link_policy`] — this field is only the fact.
+    ///
+    /// Interior-mutable and lock-free: written once per activation (a cold path), read once per
+    /// playback resolve on a WORKER thread. `Relaxed` is enough because the value stands alone —
+    /// nothing else is published with it, and a resolve that raced an activation by a microsecond
+    /// would have read the old value a microsecond earlier anyway. A re-point does not carry it
+    /// over: a new address is a new tier, and whoever re-points is the one who knows it.
+    link: AtomicU8,
 }
 
 /// The source of every [`Client::token_gen`] value, process-wide. Only the UNIQUENESS matters
@@ -74,6 +89,31 @@ pub struct Client {
 static GEN_SEQ: AtomicU32 = AtomicU32::new(1);
 fn next_gen() -> u32 {
     GEN_SEQ.fetch_add(1, Relaxed)
+}
+
+/// [`Client::link`] before anything has told us how this server is reached — the state every
+/// client is in today, since nothing dials from a [`Location`] yet. Distinct from every real tier
+/// on purpose: "unknown" is not "local", and the policy treats the two differently.
+const LINK_UNKNOWN: u8 = 0;
+
+/// `Location` ⇄ `u8`, so the tier fits in an atomic. Written as two total matches rather than a
+/// cast: `Location`'s declaration ORDER is its preference order (`probe`'s derived `Ord` is the
+/// ranking), so a discriminant cast would silently tie the stored encoding to that ordering and
+/// break the moment a tier is inserted in the middle.
+fn link_code(l: Location) -> u8 {
+    match l {
+        Location::Local => 1,
+        Location::Remote => 2,
+        Location::Relay => 3,
+    }
+}
+fn link_of_code(c: u8) -> Option<Location> {
+    match c {
+        1 => Some(Location::Local),
+        2 => Some(Location::Remote),
+        3 => Some(Location::Relay),
+        _ => None,
+    }
 }
 
 /// The device facts of the playback identity. Shared with the plex.tv transport — see
@@ -103,6 +143,7 @@ impl Client {
             version: super::identity::VERSION.into(),
             platform: super::identity::PLATFORM.into(),
             token_gen: AtomicU32::new(next_gen()),
+            link: AtomicU8::new(LINK_UNKNOWN),
         }
     }
 
@@ -150,6 +191,27 @@ impl Client {
     /// The server's `machineIdentifier`, `""` if it has not been learned yet.
     pub fn machine_id(&self) -> &str {
         &self.machine_id
+    }
+    /// Record which tier of connection reached this server — for the code that ACTIVATES a
+    /// candidate (`probe::candidates` ranks them; racing and dialling them lands with the
+    /// transport work). Call it once the probe has answered and the address is the one in use;
+    /// until someone does, [`Client::link`] is `None` and playback policy is unrestricted.
+    ///
+    /// **ORDER MATTERS: register the address FIRST, then set the link on the client you get back**
+    /// (`let id = register(mid, host, port, tok); client_for(id).unwrap().set_link(l);`). A
+    /// `register` whose address differs RE-POINTS the slot — it publishes a fresh `Client`, which
+    /// starts at `LINK_UNKNOWN` — so a tier set before that call is simply gone, and the policy
+    /// silently reverts to unrestricted. That reset is deliberate rather than a wart: an address
+    /// change is exactly the event that can turn a LAN connection into a relay, so the old tier is
+    /// not evidence about the new one.
+    pub fn set_link(&self, l: Location) {
+        self.link.store(link_code(l), Relaxed);
+    }
+    /// How this server is reached, `None` while nothing has said. Feed it to
+    /// [`super::transcoder::link_policy`] rather than matching on it at a call site — a relay is
+    /// not the only fact a tier could ever carry, and the policy is the one place that decides.
+    pub fn link(&self) -> Option<Location> {
+        link_of_code(self.link.load(Relaxed))
     }
 
     // ---- transport choke points: the only code that touches crate::stream ----
@@ -323,6 +385,22 @@ mod tests {
             .contains("X-Plex-Client-Identifier=cid-42"));
         // a client built outside the registry says so rather than claiming slot 0
         assert!(!Client::new(ServerId::UNSET, "", "1.2.3.4", 32400, "t", "cid").id().is_set());
+    }
+
+    /// A fresh client knows nothing about how it is reached, and says so rather than guessing a
+    /// tier. That default is load-bearing: `transcoder::link_policy` reads `None` as "no
+    /// restriction", so every client built before an activation path exists plays exactly as it
+    /// did — and a client that IS told it is on a relay carries that fact to the resolve worker
+    /// without the worker having to ask a global which server is current.
+    #[test]
+    fn a_client_starts_with_no_known_link_and_remembers_the_one_it_is_told() {
+        let c = a_client("mach-A", "tok-a");
+        assert_eq!(c.link(), None, "nothing has probed anything yet");
+
+        for l in [Location::Local, Location::Remote, Location::Relay] {
+            c.set_link(l);
+            assert_eq!(c.link(), Some(l), "the tier must round trip through the atomic");
+        }
     }
 
     /// The token generation is per-CLIENT (it was a process-global `TOKEN_GEN`). Two properties
