@@ -173,7 +173,12 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 
 /// [`register`] with the device id supplied — the seam that keeps the session file out of the
 /// registry proper (and out of the tests).
-pub(super) fn register_with_client_id(machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> ServerId {
+///
+/// `pub(crate)` rather than `pub(super)` because tests OUTSIDE `plex/` need it too (`route.rs`
+/// grades which server a `/:/timeline` POST reaches, which takes two registered clients): the
+/// public [`register`] resolves the device id through `session::load`, which MINTS AND PERSISTS a
+/// uuid when there is none, and a host test must not write one.
+pub(crate) fn register_with_client_id(machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> ServerId {
     register_lazy(machine_id, host, port, token, &|| client_id.to_owned())
 }
 
@@ -237,8 +242,12 @@ pub fn install(host: &str, port: i32, token: &str) {
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
 /// (that is the ordinary lifecycle here, not a test-only wart) and must be called under
 /// [`crate::testlock::serial`] — the registry is a crate global.
+///
+/// `pub(crate)` for the same reason as [`register_with_client_id`]: a test outside `plex/` that
+/// registers a server owes the rest of the suite an empty table on the way out, or the next test
+/// to ask `client_opt()` gets `Some(a client whose port closed when that test returned)`.
 #[cfg(test)]
-pub(super) fn reset_for_test() {
+pub(crate) fn reset_for_test() {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     for s in SLOTS.iter() {
         s.store(std::ptr::null_mut(), Ordering::Release);
