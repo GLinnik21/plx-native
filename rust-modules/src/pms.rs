@@ -183,6 +183,14 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
 struct HubRow {
     title: String,
     hub_id: String, // locale-independent hubIdentifier ("home.continue", "home.movies.recent", …)
+    /// Which SERVER this shelf's items came from, as the owner's handle ("bamx23") — empty
+    /// whenever the row came from the signed-in user's own server, which is every row today.
+    /// Empty is the ABSENCE of an annotation, not an empty one: the home shelf heading draws no
+    /// separator and no second run at all for it (`ui::home::heading_flow`), so the annotation costs
+    /// a single-server library nothing — no gap, no dot, no draw call. (The heading's INK changed in
+    /// the same pass, which is a separate, deliberate harmonization; `heading_flow`'s doc has it.)
+    /// Populated by the multi-server data layer when it lands.
+    source: String,
     start: usize,
     len: usize,
 }
@@ -214,6 +222,12 @@ pub(crate) fn hub_count() -> usize {
 /// per-frame shelf-title draw shouldn't clone a String per row; HUBS only changes on a re-fetch).
 pub(crate) fn hub_title(i: usize) -> &'static str {
     hubs().get(i).map(|h| h.title.as_str()).unwrap_or("")
+}
+/// Handle of the server hub `i` came from ("bamx23"), or **empty** for the signed-in user's own
+/// server — see [`HubRow::source`]. Borrowed on the same terms as [`hub_title`]: main-thread only,
+/// valid until the next hub commit.
+pub(crate) fn hub_source(i: usize) -> &'static str {
+    hubs().get(i).map(|h| h.source.as_str()).unwrap_or("")
 }
 /// item count in hub `i`
 pub(crate) fn hub_len(i: usize) -> usize {
@@ -347,6 +361,10 @@ fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer
             new_hubs.push(HubRow {
                 title: title.clone(),
                 hub_id: hub_id.clone(),
+                // one server today: `/hubs` is asked of the machine we are signed in to, so every
+                // row it returns is that machine's. A shared source names itself only once the
+                // multi-server layer builds rows from more than one client.
+                source: String::new(),
                 start,
                 len: new_cat.len() - start,
             });
@@ -564,7 +582,8 @@ pub(crate) fn pump(dt: f32) {
 #[cfg(test)]
 fn build_test(n: usize) -> HubBuild {
     let cat: Vec<PmsMovie> = (0..n).map(|_| PmsMovie::default()).collect();
-    let hubs = vec![HubRow { title: "Continue Watching".into(), hub_id: "home.continue".into(), start: 0, len: n }];
+    let hubs =
+        vec![HubRow { title: "Continue Watching".into(), hub_id: "home.continue".into(), source: String::new(), start: 0, len: n }];
     (cat, hubs, Vec::new())
 }
 
