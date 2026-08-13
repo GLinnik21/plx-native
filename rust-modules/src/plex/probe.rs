@@ -20,7 +20,10 @@
 //! 2. **No plain-HTTP candidate when the owner set `httpsRequired`.** It is their setting; a plain
 //!    request to such a server is a refusal, not a connection.
 //! 3. **Rank local → remote → relay.** The order every Plex client with an order uses. Relay is a
-//!    2 Mbit/s tunnel the server transcodes down to fit: a last resort, never a preference.
+//!    2 Mbit/s tunnel the server transcodes down to fit: a last resort, never a preference. Inside a
+//!    tier, an address this client can actually dial comes first: IPv4 before IPv6, and a numeric
+//!    literal before a HOSTNAME (see [`is_numeric_address`] — the transport has no resolver at all,
+//!    and the measured share lists an unresolvable internal name ahead of the address that answers).
 //!
 //! ## What a real prober must still do (this module cannot)
 //!
@@ -158,9 +161,10 @@ fn host_for_url(address: &str) -> String {
     }
 }
 
-/// The host of a bare origin — what would actually be dialled, which for a `uri` candidate is NOT
-/// [`Candidate::address`]: plex.tv advertises the `plex.direct` hostname in `uri` while `address`
-/// stays the dotted quad behind it.
+/// The host of a bare origin — **what would actually be dialled**, which for a `uri` candidate is
+/// NOT [`Candidate::address`]: plex.tv advertises the `plex.direct` hostname in `uri` while
+/// `address` stays the dotted quad behind it. Ranking the `uri` candidate on `address` would score
+/// `https://203-0-113-9.hash.plex.direct:32400` as numeric when it is the very name that needs DNS.
 fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     if let Some(end) = rest.find(']') {
@@ -169,21 +173,26 @@ fn host_of(url: &str) -> &str {
     rest.split(':').next().unwrap_or(rest)
 }
 
-/// Is this host something the media transport can dial **without a resolver**? `stream.rs` takes a
-/// numeric address and speaks cleartext — it has no DNS at all — so a hostname is not merely slower
-/// here, it is undialable, exactly as an https origin is.
+/// Is this host a NUMERIC literal (v4 or v6) rather than a name that needs resolving?
 ///
-/// This is a ranking term rather than a filter for the same reason https is: the control plane
-/// (`net.rs`, libcurl) *does* resolve names, so a hostname-only server is still worth carrying —
-/// it just must never outrank an address that the byte path can open. Dropping this term is a
-/// silent bug, not a loud one: the tie falls through to plex.tv's order, so whether the app
-/// reaches a server depends on the order a remote service happened to list its connections in.
-fn numeric_host(host: &str) -> bool {
-    let h = host.strip_prefix('[').map_or(host, |h| h.strip_suffix(']').unwrap_or(h));
-    if h.contains(':') {
-        return true; // a v6 literal; the ipv6 term below is what demotes it
-    }
-    !h.is_empty() && h.split('.').all(|o| !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()))
+/// The fourth ranking axis, and it exists for the same reason `Scheme` is ranked at all: this app's
+/// transport has **no name resolution of any kind** — `stream.rs`'s `http_open` builds a
+/// `sockaddr_in` from four decimal octets and there is no `getaddrinfo` in the file — so a hostname
+/// candidate cannot be dialled however well it ranks. It is not hypothetical: the share measured on
+/// 2026-08-11 advertises a custom internal hostname that does not resolve from here at all, and it
+/// is listed BEFORE the public IPv4 that answers. Ranking it above a numeric address spends the
+/// first probe slot on a name that cannot resolve.
+///
+/// A hostname is not DROPPED, because it is the only form that can ever carry TLS validation (an
+/// https `plex.direct` origin is a name by construction) — it is merely ranked behind the addresses
+/// that can be dialled today, which is exactly the treatment IPv6 already gets.
+///
+/// **Exactly four octets**, because a name can be all-digits per label: `1.2.3` is not an address
+/// and must not be scored as one.
+fn is_numeric_address(a: &str) -> bool {
+    let a = a.strip_prefix('[').map_or(a, |h| h.strip_suffix(']').unwrap_or(h));
+    a.contains(':') // a v6 literal — colons cannot appear in a hostname
+        || (a.split('.').count() == 4 && a.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// Every address of `res` that policy allows, best first.
@@ -227,9 +236,9 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
     }
     // Stable, so plex.tv's own order survives inside a tier — it is the only tiebreak left once
     // location, scheme, resolvability and address family have spoken, and it is not ours to reorder.
-    // `!numeric_host` sorts a dialable address first; see that function for why a hostname losing
-    // this tie is the difference between reaching a server and not.
-    out.sort_by_key(|c| (c.location, c.scheme, !numeric_host(host_of(&c.url)), c.ipv6));
+    // Resolvability is read off the URL's own host, not `address` — see `host_of`, which is the
+    // difference between scoring the `plex.direct` uri and scoring the quad hiding behind it.
+    out.sort_by_key(|c| (c.location, c.scheme, !is_numeric_address(host_of(&c.url)), c.ipv6));
     out
 }
 
@@ -344,14 +353,18 @@ mod tests {
     }
 
     #[test]
-    fn a_host_is_numeric_only_when_every_label_is_digits() {
-        assert!(numeric_host("203.0.113.9"));
-        assert!(numeric_host("[2001:db8::1]"), "a v6 literal needs no resolver either");
-        assert!(!numeric_host("media.example.internal"));
+    fn a_host_is_numeric_only_when_it_is_four_digit_octets_or_a_v6_literal() {
+        assert!(is_numeric_address("203.0.113.9"));
+        assert!(is_numeric_address("[2001:db8::1]"), "a bracketed v6 literal needs no resolver");
+        assert!(!is_numeric_address("media.example.internal"));
         // the shape that makes this worth a function: plex.direct encodes the quad with DASHES,
         // so it CONTAINS an address while still requiring DNS to reach.
-        assert!(!numeric_host("203-0-113-9.hash2.plex.direct"));
-        assert!(!numeric_host(""));
+        assert!(!is_numeric_address("203-0-113-9.hash2.plex.direct"));
+        // exactly four octets — a label can be all-digits without the name being an address, and
+        // scoring `1.2.3` as dialable would put an unresolvable name at the head of its tier.
+        assert!(!is_numeric_address("1.2.3"));
+        assert!(!is_numeric_address("1.2.3.4.5"));
+        assert!(!is_numeric_address(""));
     }
 
     #[test]
@@ -359,6 +372,30 @@ mod tests {
         assert_eq!(host_of("http://203.0.113.9:26937"), "203.0.113.9");
         assert_eq!(host_of("https://media.example.internal:26937"), "media.example.internal");
         assert_eq!(host_of("http://[2001:db8::1]:32400"), "[2001:db8::1]", "the port is not a v6 group");
+    }
+
+    /// **A hostname ranks behind a numeric address**, and the share is the live case: plex.tv lists
+    /// the owner's internal name (`media.example.internal`, which does not resolve from here)
+    /// BEFORE the public IPv4 that answered in 115 ms. This client's transport has no resolver at
+    /// all, so ranking the name first spends the first probe slot proving that.
+    ///
+    /// It is ranked, not dropped — a name is the only thing TLS can validate, so it has to survive
+    /// for the curl transport to use later.
+    #[test]
+    fn a_hostname_ranks_behind_an_address_that_can_actually_be_dialled() {
+        let cs = candidates(&shared_server());
+        let http: Vec<&Candidate> = cs.iter().filter(|c| c.scheme == Scheme::Http).collect();
+
+        assert_eq!(http[0].address, "203.0.113.9", "the numeric address leads its tier: {cs:#?}");
+        assert_eq!(http[1].address, "media.example.internal", "the name is kept, just not first");
+        assert!(
+            cs.iter().any(|c| c.address == "media.example.internal" && c.scheme == Scheme::Https),
+            "and its https uri survives for the TLS transport: {cs:#?}"
+        );
+
+        assert!(is_numeric_address("203.0.113.9") && is_numeric_address("2001:db8::1"));
+        assert!(!is_numeric_address("media.example.internal"));
+        assert!(!is_numeric_address("203-0-113-9.hash2.plex.direct"), "a plex.direct name is a NAME");
     }
 
     /// A friend on our own LAN (Plex Home, or a share while visiting) is the case rule 1 must not
