@@ -748,7 +748,15 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // (step 7) gets an owned copy instead, and never touches the `&'static` store.
     let tracks = plan.playing.as_ref().map(|p| p.audio.as_slice()).unwrap_or(&[]);
     let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(tracks, acodec) };
-    let directplay = if !video_dp {
+    // What the CONNECTION to this server allows, beside what the pipeline can decode: a Plex
+    // relay is a ~2 Mbit/s tunnel, so neither of the two flavors that ship the file's own bytes
+    // (direct play, and the uncapped container remux) can be asked for over one. Unrestricted on
+    // every other tier and on a server whose link nobody has recorded, which is all of them today.
+    // The reasoning, and what is measured versus documented, is at `plex::link_policy`.
+    let link = crate::plex::link_policy(client.link());
+    let directplay = if !link.direct_play {
+        false
+    } else if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265,
         // and H265 only on a SoC whose table lists the decoder (devcaps). Anything else
         // (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's /decision
@@ -814,7 +822,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // profile_for). The guess below is only the /decision-unreachable fallback: decision_codecs
     // overrides it with the server's ACTUAL output, but the guess still tracks devcaps because
     // a payload naming hevc on a SoC without the decoder configures a pipeline that cannot start.
-    if video_dp {
+    // A direct-playable source means "ask Plex to REMUX" — unless the link forbids a copy, in
+    // which case this is a re-encode after all and every line below must agree (the payload guess,
+    // the stored flavor a seek rebuilds from, and the /decision query itself).
+    let remux = video_dp && link.remux;
+    if remux {
         let achosen = audio_sel.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_else(|| acodec.to_string());
         plan.vcodec = vcodec.to_string();
         plan.acodec = achosen;
@@ -831,9 +843,9 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         plan.audio_sid = *asid;
     }
     // keep the flavor so a later seek rebuilds the same query for start.mkv?...&offset=T
-    plan.remux = video_dp;
+    plan.remux = remux;
     put_selection(plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
-    let sp = transcode_spec(rk, &session, video_dp, -1, env.audio_sid, env.sub_sid);
+    let sp = transcode_spec(rk, &session, remux, -1, env.audio_sid, env.sub_sid);
     if let Some(mc) = client.transcode_decision(&sp) {
         // The server has already answered, and it is allowed to answer NO. Stop here rather than
         // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
