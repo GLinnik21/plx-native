@@ -769,14 +769,14 @@ const HERO_META_R: f32 = 0.60 * SCR_W; // 1152
 /// [`HERO_META_R`] in the meta flow's own coordinates, whose origin is the text column's left edge.
 const META_FLOW_W: f32 = HERO_META_R - MARGIN_X;
 
-/// The words the run is made of. "Shared by <peer-owner-1>" — the PERSON, not the machine: the same handle
+/// The words the run is made of. "Shared by friend" — the PERSON, not the machine: the same handle
 /// the shelf headings carry, never a server's own name.
 fn shared_by(source: &str) -> String {
     format!("Shared by {source}")
 }
 
 /// The hero meta line's SOURCE annotation, flowed onto the end of a line whose own facts have
-/// already been laid out to `base_w`: `· Shared by <peer-owner-1>`, after a middot at `TEXT_SEPARATOR`'s
+/// already been laid out to `base_w`: `· Shared by friend`, after a middot at `TEXT_SEPARATOR`'s
 /// .45, both runs on the line's own **BODY** rung and one step of ink under it.
 ///
 /// **With no source there is no flow at all** — no pad, no dot, no run, no draw call, and the meta
@@ -1130,7 +1130,7 @@ const SOURCE_PAD: f32 = theme::space::XS;
 
 /// The shelf heading, flowed left→right from the heading origin: the hub's title, and — only when
 /// the row came from ANOTHER server — a quiet `· handle` naming that source ("Recently Added in
-/// LDN Films · <peer-owner-1>").
+/// Film Club · friend").
 ///
 /// **With an empty source the annotation is ABSENT, not empty**: no gap, no dot, no second run, no
 /// draw call. That is the design's "with one source, none of this is drawn" implemented as absence
@@ -2133,8 +2133,8 @@ mod tests {
     /// untouched, and the flow grows by the dot, the handle and the two pads between them.
     #[test]
     fn a_shared_source_extends_the_heading_past_the_title() {
-        let (bare, _) = flow("Recently Added in LDN Films", "");
-        let (annotated, runs) = flow("Recently Added in LDN Films", "<peer-owner-1>");
+        let (bare, _) = flow("Recently Added in Film Club", "");
+        let (annotated, runs) = flow("Recently Added in Film Club", "friend");
         assert!(annotated > bare, "the annotation must extend the heading ({annotated} vs {bare})");
         assert_eq!(runs.len(), 3, "title, separator, handle");
         assert_eq!(runs[0].dx, 0.0, "the title still starts at the origin");
@@ -2142,7 +2142,7 @@ mod tests {
             annotated,
             bare + 2.0 * SOURCE_PAD
                 + width_of("\u{b7}", theme::size::BODY, 0)
-                + width_of("<peer-owner-1>", theme::size::BODY, 0),
+                + width_of("friend", theme::size::BODY, 0),
             "the growth is exactly the dot, the handle and one pad either side of the dot"
         );
         assert_eq!(runs[1].dx, bare + SOURCE_PAD, "the dot is one pad past the title");
@@ -2159,13 +2159,13 @@ mod tests {
     /// pins the alignment the host cannot measure.
     #[test]
     fn each_heading_run_carries_its_own_size_weight_and_ink() {
-        let (_, runs) = flow("Recently Added in LDN Films", "<peer-owner-1>");
+        let (_, runs) = flow("Recently Added in Film Club", "friend");
         assert_eq!((runs[0].sz, runs[0].bold), (theme::size::HEADLINE, 1), "the title is HEADLINE bold");
         assert_eq!(runs[0].ink, theme::TEXT_HEADING, "…in the shared section-heading ink");
         assert_eq!(runs[1].text, "\u{b7}");
         assert_eq!((runs[1].sz, runs[1].bold), (theme::size::BODY, 0), "the separator is measured at BODY regular");
         assert_eq!(runs[1].ink, theme::TEXT_SEPARATOR, "…at the separator token's own .45");
-        assert_eq!(runs[2].text, "<peer-owner-1>");
+        assert_eq!(runs[2].text, "friend");
         assert_eq!((runs[2].sz, runs[2].bold), (theme::size::BODY, 0), "the handle is BODY regular, not the title's");
         assert_eq!(runs[2].ink, theme::TEXT_TERTIARY);
         assert!(
@@ -2221,11 +2221,11 @@ mod tests {
     #[test]
     fn a_borrowed_hero_states_its_owner_as_the_last_run_on_the_line() {
         let base = 420.0;
-        let (w, runs) = meta_flow(base, "<peer-owner-1>");
+        let (w, runs) = meta_flow(base, "friend");
         assert_eq!(runs.len(), 2, "the separator and the run, and nothing else");
         assert_eq!(runs[0].text, "\u{b7}");
         assert_eq!(runs[0].dx, base + SOURCE_PAD, "the dot is one pad past the facts");
-        assert_eq!(runs[1].text, "Shared by <peer-owner-1>", "the person, not the machine");
+        assert_eq!(runs[1].text, "Shared by friend", "the person, not the machine");
         assert_eq!(
             runs[1].dx,
             runs[0].dx + width_of("\u{b7}", theme::size::BODY, 0) + SOURCE_PAD,
@@ -2235,7 +2235,7 @@ mod tests {
             w,
             base + 2.0 * SOURCE_PAD
                 + width_of("\u{b7}", theme::size::BODY, 0)
-                + width_of("Shared by <peer-owner-1>", theme::size::BODY, 0),
+                + width_of("Shared by friend", theme::size::BODY, 0),
             "the line grows by exactly the dot, the run and one pad either side of the dot"
         );
     }
@@ -2246,7 +2246,7 @@ mod tests {
     /// property of the run: a rung is a role, and only the ink step travels between the two screens.
     #[test]
     fn the_hero_source_run_keeps_the_lines_rung_and_takes_one_step_of_ink() {
-        let (_, runs) = meta_flow(420.0, "<peer-owner-1>");
+        let (_, runs) = meta_flow(420.0, "friend");
         for r in &runs {
             assert_eq!((r.sz, r.bold), (theme::size::BODY, 0), "'{}' left the meta line's own rung", r.text);
             assert_ne!(r.sz, theme::size::CAPTION, "the hero line is BODY — it is not E's line and must not shrink to it");
@@ -2279,7 +2279,7 @@ mod tests {
         // stated as a share of the line and not in pixels of text because the synthetic metric here
         // is roughly twice the shipped font's advance; the share is a claim about the geometry,
         // which is the part the host can actually speak for.
-        let (_, worst) = meta_flow(HERO_COL_W, "<peer-owner-1>");
+        let (_, worst) = meta_flow(HERO_COL_W, "friend");
         assert!(
             worst[1].budget >= 0.25 * META_FLOW_W,
             "a meta line whose facts fill the column leaves the run only {} of {META_FLOW_W}",

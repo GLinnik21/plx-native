@@ -470,10 +470,10 @@ pub(crate) struct Detail {
     /// hit, `pump_season`'s ownership test, `detail::reselect`, and the BACK trail's node.
     pub(crate) sid: crate::plex::ServerId,
     pub(crate) rk: String,
-    /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("<peer-owner-1>") — empty whenever
+    /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("friend") — empty whenever
     /// it came from the signed-in user's own server, which is every item today.
     ///
-    /// The person, never the machine: the machine's name (`<peer-name-2>`) belongs to the Sources list
+    /// The person, never the machine: the machine's name (`nas-home`) belongs to the Sources list
     /// and to a failure read-out, and appears nowhere else in the product. Empty is the ABSENCE of
     /// an attribution, not an empty one — the detail hero draws no separator and no run at all for
     /// it ([`crate::ui::detail`]'s facts row), so a single-server library pays nothing for the
