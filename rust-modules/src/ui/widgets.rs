@@ -2,6 +2,7 @@
 //! Button, CircleButton, TabPill, TransportButton, PageDots, Badge, plus the shared art-card
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
+use crate::plex::ServerId;
 use crate::pms::PmsMovie;
 use crate::ui::theme;
 use crate::ui::label::{HAlign, Label};
@@ -9,24 +10,36 @@ use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
-/// Build the transcode key for `path` on the stack. The ONE key builder the three resolvers below
-/// share, so a warm and the draw that follows it can never name two different slots — `(path, w, h,
-/// png)` IS the store key. Per-frame hot path (every visible tile): the NUL-terminated copy
-/// `poster_key` wants is made on the stack, no heap alloc.
-fn tex_key(path: &str, w: c_int, h: c_int, png: c_int) -> [u8; 352] {
+/// Build `srv`'s transcode key for `path` on the stack. The ONE key builder the resolvers below
+/// share, so a warm and the draw that follows it can never name two different slots — `(server,
+/// path, w, h, png)` IS the store key. Per-frame hot path (every visible tile): the
+/// NUL-terminated copy `poster_key` wants is made on the stack, no heap alloc.
+fn tex_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> [u8; 352] {
     let mut p = [0u8; 256];
     crate::cbuf::set_bytes(&mut p, path);
     let mut key = [0u8; 352];
-    crate::posters::poster_key(key.as_mut_ptr() as *mut c_char, key.len(), p.as_ptr() as *const c_char, w, h, png);
+    crate::posters::poster_key(srv, key.as_mut_ptr() as *mut c_char, key.len(), p.as_ptr() as *const c_char, w, h, png);
     key
 }
 
-/// build the transcode key on the stack and resolve it to a GL texture (0 until loaded).
+/// build the transcode key on the stack and resolve it to a GL texture (0 until loaded), for art
+/// on the server the user is browsing.
+///
+/// **A thumb path is only meaningful on the server that issued it** — rating keys are server-local
+/// integers from 1, so the same `/library/metadata/42/thumb/…` names a different film on a
+/// friend's share. This form says "the current server", which is the right answer for art that
+/// belongs to the screen (a section's own tiles, a person's headshot) and the wrong one for an
+/// item that came from somewhere else: those call [`resolve_tex_on`] with the item's own server.
 pub(crate) fn resolve_tex(path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
+    resolve_tex_on(crate::plex::current_server(), path, w, h, png)
+}
+
+/// [`resolve_tex`] for art belonging to a NAMED server.
+pub(crate) fn resolve_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
     if path.is_empty() {
         return 0;
     }
-    crate::posters::poster_get(tex_key(path, w, h, png).as_ptr() as *const c_char)
+    crate::posters::poster_get(srv, tex_key(srv, path, w, h, png).as_ptr() as *const c_char)
 }
 
 /// [`resolve_tex`] plus the DECODED pixel size of the texture — `(0, 0.0, 0.0)` until it is ready.
@@ -35,24 +48,35 @@ pub(crate) fn resolve_tex(path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
 /// just probed for the texture, so this is the SAME single lookup [`resolve_tex`] does — knowing the
 /// source aspect is free, and a screen never pays a second lock + key scan for it.
 pub(crate) fn resolve_tex_wh(path: &str, w: c_int, h: c_int, png: c_int) -> (u32, f32, f32) {
+    resolve_tex_wh_on(crate::plex::current_server(), path, w, h, png)
+}
+
+/// [`resolve_tex_wh`] for art belonging to a NAMED server.
+pub(crate) fn resolve_tex_wh_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> (u32, f32, f32) {
     if path.is_empty() {
         return (0, 0.0, 0.0);
     }
-    let key = tex_key(path, w, h, png);
-    let (tex, pw, ph) = crate::posters::poster_get_wh(key.as_ptr() as *const c_char);
+    let key = tex_key(srv, path, w, h, png);
+    let (tex, pw, ph) = crate::posters::poster_get_wh(srv, key.as_ptr() as *const c_char);
     (tex, pw as f32, ph as f32)
 }
 
 /// The prefetch twin of [`resolve_tex`]: build the same transcode key and hand it to
 /// [`posters::poster_warm`](crate::posters::poster_warm) — start the fetch, take no texture, take no
 /// LRU protection. Same arguments on purpose, so a screen warms EXACTLY the key it will later
-/// resolve; a warm at a different size is a different slot and buys nothing.
+/// resolve; a warm at a different size — or on a different server — is a different slot and buys
+/// nothing.
 pub(crate) fn warm_tex(path: &str, w: c_int, h: c_int, png: c_int) -> crate::posters::Warm {
+    warm_tex_on(crate::plex::current_server(), path, w, h, png)
+}
+
+/// [`warm_tex`] for art belonging to a NAMED server.
+pub(crate) fn warm_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> crate::posters::Warm {
     if path.is_empty() {
         return crate::posters::Warm::Known;
     }
-    let key = tex_key(path, w, h, png);
-    crate::posters::poster_warm(key.as_ptr() as *const c_char)
+    let key = tex_key(srv, path, w, h, png);
+    crate::posters::poster_warm(srv, key.as_ptr() as *const c_char)
 }
 
 /// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton), any

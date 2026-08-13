@@ -1226,7 +1226,7 @@ fn apply_plan(plan: Plan, rk: &str) {
     // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
     // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
     // evict-protection a draw takes (see `posters::poster_warm`). At the tile's OWN 480×270 —
-    // `(path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
+    // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
     if let Some(u) = up_next() {
         crate::ui::widgets::warm_tex(&u.thumb, 480, 270, 0);
     }
