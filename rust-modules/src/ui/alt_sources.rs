@@ -8,7 +8,7 @@
 //! | row | detail | badge |
 //! |---|---|---|
 //! | `Movies`    | `This account · 1 hr 57 min` | `1080p` |
-//! | `LDN Films` | `bamx23 · 1 hr 57 min`       | `4K`    |
+//! | `Film Club` | `friend · 1 hr 57 min`       | `4K`    |
 //!
 //! # The four calls this module implements, and why each is not the obvious thing
 //!
@@ -75,8 +75,8 @@ pub(crate) struct AltCopy {
     /// so a copy whose source is not registered carries [`ServerId::UNSET`] and can be listed but
     /// never navigated to.
     pub(crate) sid: ServerId,
-    /// The LIBRARY this copy is in, on that server ("Movies", "LDN Films") — the row's label.
-    /// Libraries are what a person browses; the machine name (`bx23-ldn`) belongs to the Sources
+    /// The LIBRARY this copy is in, on that server ("Movies", "Film Club") — the row's label.
+    /// Libraries are what a person browses; the machine name (`nas-home`) belongs to the Sources
     /// list and to a failure read-out, and appears nowhere else in the product.
     pub(crate) library: String,
     /// Who owns that server: `None` for the signed-in account's own, `Some(handle)` for a share —
@@ -108,7 +108,7 @@ pub(crate) enum Action {
 
 /// The panel's width — the design's `altPanelW`. Wide because the rows carry three things (a
 /// library, a sub-line naming a person and a runtime, and a class badge) and the sub-line is the
-/// one that must not elide: "bamx23 · 1 hr 57 min" is the answer to *whose copy is this*.
+/// one that must not elide: "friend · 1 hr 57 min" is the answer to *whose copy is this*.
 const PANEL_W: f32 = 700.0;
 /// The pinned ~20px corner radius, the item menu's.
 const PANEL_RAD: f32 = 20.0;
@@ -240,7 +240,7 @@ fn scan_lines(c: &AltCopy) -> i64 {
 pub(crate) struct AltRow {
     /// the library, on that source
     pub(crate) label: String,
-    /// `"This account · 1 hr 57 min"` / `"bamx23 · 1 hr 57 min"`
+    /// `"This account · 1 hr 57 min"` / `"friend · 1 hr 57 min"`
     pub(crate) detail: String,
     /// the resolution class, or `None` for a copy the server described no video for
     pub(crate) badge: Option<String>,
@@ -615,15 +615,15 @@ mod tests {
             "two copies on ONE server are still one source"
         );
         assert_eq!(
-            source_count(&[copy(0, "Movies", "", "4", "1080"), copy(1, "LDN Films", "bamx23", "318", "4k")]),
+            source_count(&[copy(0, "Movies", "", "4", "1080"), copy(1, "Film Club", "friend", "318", "4k")]),
             2
         );
         // and a third source counts once however many copies it contributes
         assert_eq!(
             source_count(&[
                 copy(0, "Movies", "", "4", "1080"),
-                copy(1, "LDN Films", "bamx23", "318", "4k"),
-                copy(1, "Films", "bamx23", "319", "1080"),
+                copy(1, "Film Club", "friend", "318", "4k"),
+                copy(1, "Films", "friend", "319", "1080"),
             ]),
             2
         );
@@ -635,16 +635,16 @@ mod tests {
     /// the canvas draws.
     #[test]
     fn the_copy_that_plays_comes_first_and_the_rest_rank_by_preference() {
-        let list = [copy(1, "LDN Films", "bamx23", "318", "4k"), copy(0, "Movies", "", "4", "1080")];
+        let list = [copy(1, "Film Club", "friend", "318", "4k"), copy(0, "Movies", "", "4", "1080")];
         let rs = rows(&list, sid(0), "4");
-        assert_eq!(labels(&rs), ["Movies", "LDN Films"], "the copy that plays leads, whatever its class");
+        assert_eq!(labels(&rs), ["Movies", "Film Club"], "the copy that plays leads, whatever its class");
         assert_eq!(rs[0].detail, "This account \u{b7} 1 hr 57 min");
-        assert_eq!(rs[1].detail, "bamx23 \u{b7} 1 hr 57 min");
+        assert_eq!(rs[1].detail, "friend \u{b7} 1 hr 57 min");
         assert_eq!(rs[0].badge.as_deref(), Some("1080p"));
         assert_eq!(rs[1].badge.as_deref(), Some("4K"), "the badge is the hero's own resolution vocabulary");
 
         // …and standing on the OTHER copy inverts only the first key, not the rest
-        assert_eq!(labels(&rows(&list, sid(1), "318")), ["LDN Films", "Movies"]);
+        assert_eq!(labels(&rows(&list, sid(1), "318")), ["Film Club", "Movies"]);
     }
 
     /// Below the copy that plays, quality decides — and only at EQUAL quality does "yours cannot go
@@ -654,13 +654,13 @@ mod tests {
     fn quality_outranks_ownership_and_ownership_breaks_the_tie() {
         let here = copy(9, "On now", "", "1", "720");
         let mine = copy(0, "Movies", "", "4", "1080");
-        let theirs_4k = copy(1, "LDN Films", "bamx23", "318", "4k");
+        let theirs_4k = copy(1, "Film Club", "friend", "318", "4k");
         let theirs_hd = copy(2, "Kino", "carol", "77", "1080");
 
         let rs = rows(&[here.clone(), mine.clone(), theirs_4k.clone(), theirs_hd.clone()], sid(9), "1");
         assert_eq!(
             labels(&rs),
-            ["On now", "LDN Films", "Movies", "Kino"],
+            ["On now", "Film Club", "Movies", "Kino"],
             "playing copy, then 4K, then the two 1080p with mine in front"
         );
 
@@ -700,7 +700,7 @@ mod tests {
     fn exactly_one_row_is_ever_ticked() {
         let ticked = |rs: &[AltRow]| rs.iter().filter(|r| r.checked).count();
 
-        let list = [copy(0, "Movies", "", "4", "1080"), copy(1, "LDN Films", "bamx23", "318", "4k")];
+        let list = [copy(0, "Movies", "", "4", "1080"), copy(1, "Film Club", "friend", "318", "4k")];
         let rs = rows(&list, sid(0), "4");
         assert_eq!(ticked(&rs), 1);
         assert!(rs[0].checked, "the tick is on the copy the page is standing on");
@@ -719,10 +719,10 @@ mod tests {
     /// dangling-clause rule the hero's facts row follows.
     #[test]
     fn a_copy_with_no_runtime_states_only_its_owner() {
-        let mut c = copy(1, "LDN Films", "bamx23", "318", "4k");
+        let mut c = copy(1, "Film Club", "friend", "318", "4k");
         c.dur_ms = 0;
         let rs = rows(&[c], sid(0), "4");
-        assert_eq!(rs[0].detail, "bamx23");
+        assert_eq!(rs[0].detail, "friend");
         // and one with no video at all carries no badge rather than an empty chip
         let mut n = copy(0, "Movies", "", "4", "");
         n.dur_ms = 0;
@@ -749,11 +749,11 @@ mod tests {
     /// rule put the copy that PLAYS above the better one.
     #[test]
     fn the_headless_stand_in_shows_the_case_the_ordering_rule_turns_on() {
-        let v = stand_in("bamx23", "Movies", "4", "1080", 7_020_000, sid(0), sid(1));
+        let v = stand_in("friend", "Movies", "4", "1080", 7_020_000, sid(0), sid(1));
         assert_eq!(source_count(&v), 2, "…or the gate would refuse the very panel it exists to show");
         assert_eq!(v[0].owner, None, "your copy is the real one, on the current server");
         assert_eq!((v[0].rk.as_str(), v[0].dur_ms), ("4", 7_020_000));
-        assert_eq!(v[1].owner.as_deref(), Some("bamx23"));
+        assert_eq!(v[1].owner.as_deref(), Some("friend"));
         assert_eq!(v[1].rk, v[0].rk, "the same film — the slot is what differs");
 
         let rs = rows(&v, sid(0), "4");

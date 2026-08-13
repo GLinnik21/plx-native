@@ -142,10 +142,10 @@ pub struct SourceRef {
     /// `machineIdentifier` — the ONLY stable identity, and the registry key. An address moves
     /// (LAN ↔ remote, DHCP, relay); this does not.
     pub machine_id: String,
-    /// The machine name ("bx23-ldn"). Settings surfaces only — a person is named by `shared_by`.
+    /// The machine name ("nas-home"). Settings surfaces only — a person is named by `shared_by`.
     pub name: String,
     /// The OWNER's plex.tv handle (`sourceTitle`), empty on our own server. The one string the
-    /// browsing UI ever says about a share: "Shared by bamx23".
+    /// browsing UI ever says about a share: "Shared by friend".
     pub shared_by: String,
     /// False ⇒ shared with us. A preference (ours sorts first, ours is `current`), never a wall.
     pub owned: bool,
@@ -430,8 +430,8 @@ mod tests {
             "sources":[
               {"machine_id":"aaaa1111","name":"Mac mini","shared_by":"","owned":true,
                "address":"192.168.0.10","port":32400,"token":"tok-own"},
-              {"machine_id":"bbbb2222","name":"bx23-ldn","shared_by":"bamx23","owned":false,
-               "address":"203.0.113.9","port":26937,"token":"tok-share"}],
+              {"machine_id":"bbbb2222","name":"nas-home","shared_by":"friend","owned":false,
+               "address":"203.0.113.9","port":31234,"token":"tok-share"}],
             "pinned":[{"machine_id":"bbbb2222","key":1}]}"#
     }
 
@@ -448,9 +448,9 @@ mod tests {
         assert!(own.shared_by.is_empty(), "an owned server has no owner to name");
 
         let share = s.source("bbbb2222").expect("keyed by machineIdentifier, not by index");
-        assert_eq!((share.address.as_str(), share.port), ("203.0.113.9", 26937));
+        assert_eq!((share.address.as_str(), share.port), ("203.0.113.9", 31234));
         assert_eq!(share.token, "tok-share", "the sharing grant, not the account token");
-        assert_eq!(share.shared_by, "bamx23");
+        assert_eq!(share.shared_by, "friend");
         assert!(!share.owned && share.usable());
         assert_eq!(s.shared_sources().count(), 1);
 
@@ -462,7 +462,7 @@ mod tests {
 
         // and the token is not printable by accident — `describe` is the only formatter there is
         assert!(!share.describe().contains("tok-share"), "{}", share.describe());
-        assert!(share.describe().contains("bamx23") && share.describe().contains("203.0.113.9"));
+        assert!(share.describe().contains("friend") && share.describe().contains("203.0.113.9"));
     }
 
     /// **The sign-out bug this list is shaped to avoid.** A `sources` array that is corrupt, the
@@ -476,8 +476,8 @@ mod tests {
         let mixed = r#"{"client_id":"cid-1","account_token":"acct",
             "server":{"name":"m","machine_id":"aaaa1111","address":"192.168.0.10","port":32400,"token":"t"},
             "sources":[{"machine_id":"aaaa1111","port":{"oops":true}},
-                       {"machine_id":"bbbb2222","name":"bx23-ldn","owned":false,
-                        "address":"203.0.113.9","port":26937,"token":"tok-share"}],
+                       {"machine_id":"bbbb2222","name":"nas-home","owned":false,
+                        "address":"203.0.113.9","port":31234,"token":"tok-share"}],
             "pinned":"not a list"}"#;
         let s: Session = serde_json::from_str(mixed).expect("a bad entry must not fail the file");
         assert_eq!(s.account_token, "acct", "the credentials are still here");

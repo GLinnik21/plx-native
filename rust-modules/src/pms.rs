@@ -211,7 +211,7 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
 struct HubRow {
     title: String,
     hub_id: String, // locale-independent hubIdentifier ("home.continue", "home.movies.recent", …)
-    /// Which SERVER this shelf's items came from, as the owner's handle ("bamx23") — empty
+    /// Which SERVER this shelf's items came from, as the owner's handle ("friend") — empty
     /// whenever the row came from the signed-in user's own server, which is every row today.
     /// Empty is the ABSENCE of an annotation, not an empty one: the home shelf heading draws no
     /// separator and no second run at all for it (`ui::home::heading_flow`), so the annotation costs
@@ -232,7 +232,7 @@ fn hubs() -> &'static Vec<HubRow> {
 const HERO_MAX: usize = 8;
 
 /// One page of the rotating billboard: a catalog index, plus the handle of the SERVER the shelf it
-/// was drawn from came from ("bamx23") — empty for the signed-in user's own, exactly as
+/// was drawn from came from ("friend") — empty for the signed-in user's own, exactly as
 /// [`HubRow::source`] means it.
 ///
 /// The handle is carried on the SLOT rather than looked up from the item's shelf at draw time, and
@@ -258,7 +258,7 @@ pub(crate) fn hero_pool_len() -> usize {
 pub(crate) fn hero_pool_item(i: usize) -> Option<&'static PmsMovie> {
     movie(pool().get(i)?.idx)
 }
-/// Handle of the server hero-pool page `i` came from ("bamx23"), or **empty** for the signed-in
+/// Handle of the server hero-pool page `i` came from ("friend"), or **empty** for the signed-in
 /// user's own — see [`HeroSlot`]. The hero's meta line draws no run at all for the empty case
 /// (`ui::home::meta_source_flow`), so a single-server library pays nothing for this. Borrowed on the
 /// same terms as [`hub_title`]: main-thread only, valid until the next hub commit.
@@ -298,7 +298,7 @@ pub(crate) fn hub_count() -> usize {
 pub(crate) fn hub_title(i: usize) -> &'static str {
     hubs().get(i).map(|h| h.title.as_str()).unwrap_or("")
 }
-/// Handle of the server hub `i` came from ("bamx23"), or **empty** for the signed-in user's own
+/// Handle of the server hub `i` came from ("friend"), or **empty** for the signed-in user's own
 /// server — see [`HubRow::source`]. Borrowed on the same terms as [`hub_title`]: main-thread only,
 /// valid until the next hub commit.
 pub(crate) fn hub_source(i: usize) -> &'static str {
@@ -849,9 +849,9 @@ mod tests {
     /// the tail, which is a filter wearing an ordering's clothes).
     #[test]
     fn a_borrowed_page_never_opens_the_door_while_we_have_one_of_our_own() {
-        let mut p = pool_of(&["bamx23", "bamx23", "", "", "ldn"]);
+        let mut p = pool_of(&["friend", "friend", "", "", "ldn"]);
         own_items_first(&mut p);
-        assert_eq!(sources_of(&p), ["", "bamx23", "bamx23", "", "ldn"], "one page is promoted, nothing else moves");
+        assert_eq!(sources_of(&p), ["", "friend", "friend", "", "ldn"], "one page is promoted, nothing else moves");
         assert_eq!(p.iter().map(|s| s.idx).collect::<Vec<_>>(), [2, 0, 1, 3, 4], "every page survives — this is not a filter");
     }
 
@@ -860,7 +860,7 @@ mod tests {
     /// page's source is empty, so the first page is ours and nothing is touched.)
     #[test]
     fn a_pool_that_already_opens_on_one_of_ours_is_left_exactly_alone() {
-        for spelling in [vec!["", "", ""], vec!["", "bamx23", ""], vec!["", "bamx23"]] {
+        for spelling in [vec!["", "", ""], vec!["", "friend", ""], vec!["", "friend"]] {
             let mut p = pool_of(&spelling);
             own_items_first(&mut p);
             assert_eq!(sources_of(&p), spelling, "an already-owned first page must not reorder the pool");
@@ -872,9 +872,9 @@ mod tests {
     /// made, which is the whole reason this is an ordering.
     #[test]
     fn a_borrowed_only_account_still_gets_a_hero_and_it_holds_the_first_rotation() {
-        let mut p = pool_of(&["bamx23", "ldn", "bamx23"]);
+        let mut p = pool_of(&["friend", "ldn", "friend"]);
         own_items_first(&mut p);
-        assert_eq!(sources_of(&p), ["bamx23", "ldn", "bamx23"], "nothing of ours to promote — leave the pool as it is");
+        assert_eq!(sources_of(&p), ["friend", "ldn", "friend"], "nothing of ours to promote — leave the pool as it is");
         assert_eq!(p.len(), 3, "and above all: do not empty the billboard");
     }
 

@@ -7,8 +7,31 @@ client libraries. §5's plan is sequenced; **§9 is the record of what has actua
 is the section to read before starting a step — several of them are now partly done, and one (the
 relay policy, step 9) is done ahead of the transport work that can exercise it.
 
-Addresses, tokens, machine identifiers and the owner's username are deliberately **not** recorded
-here — the same redaction rule `ui/stats.rs` applies to the diagnostics panel.
+**Anonymisation — read this before adding an example anywhere in the repo.** Addresses, ports,
+tokens, machine identifiers, the owner's username and their library names are deliberately **not**
+recorded here or in any fixture, doc comment, commit message or PR body — the same redaction rule
+`ui/stats.rs` applies to the diagnostics panel, and for a stronger reason: **this repository is
+public, and none of that data is ours.** It belongs to the person who shared their server.
+
+This paragraph stood here, in these words, while the repo published the friend's handle, their
+machine name, their library name, their real port and their LAN address across ~139 sites in
+committed code and four PR bodies (2026-08-14). Stating a rule is not applying it. The stand-ins
+now used throughout — and the only ones to use in new work — are:
+
+| real thing | stand-in |
+|---|---|
+| owner's plex.tv handle | `friend` |
+| server / machine name | `nas-home` |
+| their library name | `Film Club` |
+| their port | `31234` |
+| their LAN address | `10.9.9.7` (RFC1918, as the real one is) |
+| any public address | `203.0.113.9` / `198.51.100.7` (TEST-NET-3 / TEST-NET-2) |
+| a machine identifier | `aaaabbbb…` runs, never a real 40-hex id |
+
+Several are deliberately the **same character length** as what they replaced, because `ui/home.rs`
+asserts text widths against them. The live values live only in the gitignored
+`tests/manifest.local.json` and `src/config.local.h`, which is the whole reason those files are
+gitignored.
 
 ---
 
@@ -75,8 +98,8 @@ connection**, per-server `accessToken` present). The share advertises three conn
 | connection | `local` | reachable from our LAN? |
 |---|---|---|
 | `172.20.x.x:32400` | **`true`** | **NO — 8 s timeout.** It is the *owner's* LAN address |
-| `<custom hostname>:26937` | false | **NO — DNS does not resolve** (owner's internal name) |
-| `<public IPv4>:26937` | false | **YES — 200 in 115 ms** |
+| `<custom hostname>:31234` | false | **NO — DNS does not resolve** (owner's internal name) |
+| `<public IPv4>:31234` | false | **YES — 200 in 115 ms** |
 
 Three findings, each load-bearing:
 
@@ -98,7 +121,7 @@ useless as a token test but perfect as a reachability probe.)
 
 ```
 # on the TV
-wget -q -T 8 -O - http://<public-ip>:26937/identity
+wget -q -T 8 -O - http://<public-ip>:31234/identity
 → <MediaContainer size="0" … machineIdentifier="…" version="1.43.3"/>   in 1.2 s
 ```
 
@@ -240,11 +263,11 @@ and does so as a second text run on the same painter, absent rather than empty w
 **With one source, none of it is drawn** — not a bare suffix, not an empty slot. The Sources row is
 not built, the strip has three pills, the headings carry no annotation.
 
-**People in content, machines in settings.** The handle (`bamx23`) on every browsing surface; the
-machine name (`bx23-ldn`) only in the Sources list and the failure read-out.
+**People in content, machines in settings.** The handle (`friend`) on every browsing surface; the
+machine name (`nas-home`) only in the Sources list and the failure read-out.
 
 - **A — the Sources list is a LIBRARY TOOLBAR CHIP**, not a row in the account popover. `Library ·
-  LDN Films  bamx23 ▾`, opening a 640-wide panel with **two levels** switched by Browse / On Home
+  Film Club  friend ▾`, opening a 640-wide panel with **two levels** switched by Browse / On Home
   pills at the panel top (the track menu's own swap). **Browse** is a picker — one tick, OK closes.
   **On Home** is a toggle — the word `On`/`Off` at the trailing edge, OK flips, the panel stays open.
   Grouped by server: header = machine, accessory = person. The last pinned library uses `value_dim`;
@@ -254,15 +277,15 @@ machine name (`bx23-ldn`) only in the Sources list and the failure read-out.
 - **B — the tab strip carries NOTHING new.** A pill is a **type**, always bare; it grows by missing
   types (a friend sharing Music you do not own), never by people, so it is 447px constant at any
   number of friends. The width-map flag is withdrawn — the strip never sees an annotation.
-- **C — source lives in the shelf heading**: `Recently Added in LDN Films · bamx23`, one rung down,
+- **C — source lives in the shelf heading**: `Recently Added in Film Club · friend`, one rung down,
   regular against bold, tertiary, after a middot at .45. **Continue Watching merges across pinned
   sources and carries no annotation at all** — a shelf drawn from three servers cannot be named by
   one of them. Nothing on the tile, ever. The hero needs nothing: it *is* the shelf's focused tile.
 - **D — a dead source is absent from Home** (no shelf, no spinner) and its borrowed items leave
-  Continue Watching. Its library section draws the shared failure read-out: `Can't reach bx23-ldn`,
-  reason `Shared by bamx23 · your own server is fine.`, one action `Try again`, anchored in the
+  Continue Watching. Its library section draws the shared failure read-out: `Can't reach nas-home`,
+  reason `Shared by friend · your own server is fine.`, one action `Try again`, anchored in the
   content region with only the Source chip beside it — no sort/filter chips, no count, no A–Z rail.
-- **E — `Shared by bamx23`** as the last run on the detail hero's date/runtime line, plus an **Also
+- **E — `Shared by friend`** as the last run on the detail hero's date/runtime line, plus an **Also
   available** button in the actions row when a second pinned source holds the film. **OK navigates**
   to that server's page rather than swapping the copy in place, which is also what settles the
   per-server resume position.
@@ -388,7 +411,7 @@ them is 4's second half, the race and `activate_best`.
 
 **The screens and the harness**
 
-- **A shelf heading can name its source** (deliverable C): `Recently Added in LDN Films · bamx23`,
+- **A shelf heading can name its source** (deliverable C): `Recently Added in Film Club · friend`,
   a second run on the same painter so the annotation cannot detach from the title under the shelf's
   lift or snap fade, and **absent rather than empty** when there is no source — no gap, no dot, no
   draw call, which is what makes it free for the single-server install. `HubRow.source` is `""` at
