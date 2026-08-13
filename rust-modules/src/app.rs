@@ -465,6 +465,36 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             _ => String::new(),
         };
+        // dev: /tmp/plxnative-servers — credentials for a SECOND (third, …) server, so an automated
+        // run can reach a friend's SHARED server beside the one above. A shared server is its own
+        // authority: its own machineIdentifier, its own per-(user,server) access token, and a 401
+        // for anybody else's — which is precisely what ONE `plxnative-token` cannot express, and
+        // why no two-source state could be graded headlessly before this.
+        //
+        // ADDITIVE and nothing more. The primary is still `plxnative-token` (or the stored session)
+        // against the compiled-in host/port, byte for byte, so a run that names one server behaves
+        // exactly as it always did. `dev::servers()` is the accessor — memoized, so the harness's
+        // /tmp wipe cannot change what this boot was handed — and `dev::DevServer` is the shape.
+        //
+        // It is NOT on the DIAG exemption list (`dev.rs`), deliberately: unlike a log or the anim
+        // overlay, this file names a host AND the token to trust it with, so it must mark the boot
+        // automated and skip the who's-watching picker exactly as `plxnative-token` does. A run
+        // that landed on the picker instead of Home would grade the wrong screen.
+        //
+        // Tokens are never logged: `DevServer` has no `Debug`, and `describe()` prints all of it
+        // except the token.
+        match crate::dev::servers() {
+            Err(e) => log(&format!("servers: /tmp/plxnative-servers IGNORED — not valid JSON: {e}")),
+            Ok(v) if !v.is_empty() => {
+                let usable = v.iter().filter(|s| s.usable()).count();
+                for (i, s) in v.iter().enumerate() {
+                    let creds = if s.usable() { "ok" } else { "MISSING (empty host/port or token)" };
+                    log(&format!("servers: #{i} {} creds={creds}", s.describe()));
+                }
+                log(&format!("servers: {} extra server(s) injected, {usable} usable", v.len()));
+            }
+            Ok(_) => {}
+        }
         let host_s = std::ffi::CStr::from_ptr(pms_host).to_string_lossy().into_owned();
 
         // Install the PMS client (singleton — the read layer AND the playback path), then fetch
