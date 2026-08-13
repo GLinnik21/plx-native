@@ -179,6 +179,12 @@ pub struct Metadata {
     pub viewed_leaf_count: i64, // shows/seasons: episodes watched (watched = viewed >= leaf)
     #[serde(rename = "viewCount", default, deserialize_with = "de_i64")]
     pub view_count: i64, // present only once watched ≥1× (absent = unwatched)
+    /// Which library this item lives in — the section's key on the server that sent it. Carried
+    /// by hub and listing rows alike; **0 when absent**, which is "unknown", not section zero.
+    /// Half of a `pms::pin::LibKey` (the machine id is the other half — a section key is only
+    /// unique within one server), so it is what tells Home whether an item's library is pinned.
+    #[serde(rename = "librarySectionID", default, deserialize_with = "de_i64")]
+    pub library_section_id: i64,
     #[serde(default)]
     pub thumb: String,
     #[serde(default)]
