@@ -1,9 +1,11 @@
 # Shared (non-owned) Plex servers — how Plex structures them, and how to integrate one
 
-**Status:** design note, 2026-08-11. Written after being granted access to a friend's server.
-Everything in §2 was **measured live** against that server, from the dev Mac *and* from the TV
-itself. Everything in §1 is Plex's model as documented by its own client libraries. §5's plan is
-sequenced, and steps 0 and 4a have landed (see §9).
+**Status:** design note, 2026-08-11; landed-work section refreshed 2026-08-13. Written after being
+granted access to a friend's server. Everything in §2 was **measured live** against that server,
+from the dev Mac *and* from the TV itself. Everything in §1 is Plex's model as documented by its own
+client libraries. §5's plan is sequenced; **§9 is the record of what has actually landed**, and it
+is the section to read before starting a step — several of them are now partly done, and one (the
+relay policy, step 9) is done ahead of the transport work that can exercise it.
 
 Addresses, tokens, machine identifiers and the owner's username are deliberately **not** recorded
 here — the same redaction rule `ui/stats.rs` applies to the diagnostics panel.
@@ -80,9 +82,10 @@ Three findings, each load-bearing:
 
 **(a) `local: true` is a trap.** The flag means "this address is RFC1918", not "*you* are on that
 LAN" — `publicAddressMatches` is the field that means the latter, and it is `false` here. Our
-current selector (`auth.rs:396`) filters on exactly `c.local && !c.relay`, so if it ever reached
-this resource it would pick the owner's `172.20.x.x` and hang for 8 seconds — or, worse, reach a
-*different machine* on our own LAN at that address. This is why the probe must verify
+current selector (`auth::choose_local_connection`) filters on `c.local && !c.relay` (plus an IPv4
+guard added 2026-08-14, §9), so if it ever reached this resource it would pick the owner's
+`172.20.x.x` and hang for 8 seconds — or, worse, reach a *different machine* on our own LAN at that
+address. This is why the probe must verify
 `machineIdentifier`, and why non-owned `local` connections should be dropped outright.
 
 **(b) The per-server token is mandatory, and provably so.** Against the share's
@@ -114,40 +117,40 @@ Also measured, because they shape the playback story:
 
 ---
 
-## 3. What the app does today
+## 3. What the app did on 2026-08-11 — and what of it is still true
 
-**It already fetches the whole list, then throws it away.** `plex/account.rs:98-100` requests
-`?includeHttps=1&includeRelay=1`. `Resource` (`account.rs:145-159`) keeps six fields and drops
-`sourceTitle`, `ownerId`, `home`, `presence`, `publicAddressMatches`, `httpsRequired`.
-`Connection.protocol` and `Connection.uri` are parsed and **never read** by anything.
+*The first three paragraphs describe the app as this note found it. Two of them have since been
+answered (§9); they are kept because the collision table below is only readable against them.*
 
-**`owned` is already a preference, not a wall.** `auth.rs:389-400` tries owned servers first and
-falls back to any server — the real filter is `c.local && !c.relay && !c.address.is_empty()` on
-*both* passes (`auth.rs:396`). A remote server dies at `auth.rs:403` with *"No local Plex server
-found on this network."* `Resource::local_connection()` (`account.rs:166-171`), whose lenient
-fallback is the shape a remote server needs, is **dead code — zero callers**.
+**It already fetched the whole list, then threw it away.** `plex/account.rs` requested
+`?includeHttps=1&includeRelay=1`; `Resource` kept six fields and dropped `sourceTitle`, `ownerId`,
+`home`, `presence`, `publicAddressMatches`, `httpsRequired`; `Connection.protocol` and
+`Connection.uri` were parsed and never read. **Fixed** — the roster DTOs are widened and
+null-tolerant (§9).
 
-**One server, forever.** `plex/client.rs:149-162`:
+**`owned` is a preference, not a wall — and this part is STILL LIVE.** `auth.rs` tries owned servers
+first and falls back to any server, but the real filter is `c.local && !c.relay &&
+!c.address.is_empty()` on *both* passes (now `auth::choose_local_connection`, plus the IPv4 guard of
+§9), so a remote-only server dies with *"no server with a local connection (remote-only can't be
+reached)"*. `probe.rs` knows better and nothing calls it
+yet: **the 8-second trap of §2(a) is still what the running app would do.** This line is step 4's
+whole reason to exist.
 
-```rust
-static PLEX: OnceLock<Client> = OnceLock::new();
-pub fn install(host: &str, port: i32, token: &str) {
-    match PLEX.get() { None => { let _ = PLEX.set(Client::new(host, port, token)); }
-                       Some(c) => c.set_token(token), } }
-```
-
-Host and port freeze at first install; a second `install` with a *different* server is silently
-just a token swap. `client()` hands a `&'static Client` to ~30 sites outside `plex/`. **This
-singleton, not the UI, is the feature.**
+**One server, forever — FIXED.** `plex/client.rs` held a `static PLEX: OnceLock<Client>` whose host
+and port froze at the first `install`, so a second `install` naming a *different* server was
+silently just a token swap against the first one's address — a mis-target no call site could see.
+`servers.rs` replaced it with a registry keyed on `machineIdentifier` (§9); `client()` still hands a
+`&'static Client` to ~30 sites outside `plex/` and now means "the current server".
 
 The globals that would collide across two servers — each an equality test or a bare index with no
-server dimension:
+server dimension. **Line numbers are as of 2026-08-11 and have moved; the entries themselves were
+re-verified 2026-08-13 and all but one still hold:**
 
 | site | what collides |
 |---|---|
 | `pms.rs:66-68` `index_of_rk` | `position(\|m\| m.rk == rk)`; callers `app.rs:1664`, `app.rs:2801`, `ui/detail.rs:2754`, `:2761`. A detail page mounts the wrong item |
 | `posters.rs:449-452` | every poster fetched from the singleton's host — and this bypasses `client.rs`, contradicting its own module doc |
-| `posters.rs:124-128` | `KeyMemo` keyed `(path,w,h,png)`: no host, no token; flushed only on a *profile* switch |
+| `posters.rs:124-128` | `KeyMemo` keyed `(path,w,h,png)`: no host, no token. **Half-fixed:** it still carries no host, but token generations are now unique per `Client`, so the memo also flushes when `client()` starts answering with a different server — it used to flush only on a *profile* switch, which would have served server B its cards from A's memoised paths |
 | `metadata.rs:834-843` | `cached_playing(rk)` — server A's track list applied to server B's item |
 | `metadata.rs:1291-1307` | `pump_season`'s `d.rk != r.rk` ownership test |
 | `browse.rs:32-36` | `BrowseSection.key: i64` — **verified collision**: both servers have section `1` |
@@ -193,18 +196,22 @@ is all-or-nothing, so one missing libcurl symbol sets `CURL_OK=false` and kills 
 probe first, and put optional symbols in a **second** `dynlib!` table. And `plex/client.rs` has no
 test module at all, so any step touching `StreamUrl::parse` must bring its own tests.
 
+**Status is in the first cell of each row, and §9 is the account.** A step marked LANDED is done as
+described unless the cell says otherwise; the plan text itself is left as written, because what it
+asked for is how to read what shipped.
+
 | # | Step | Effort | What it buys |
 |---|---|---|---|
-| 0 | **Parse what plex.tv already sends.** Widen `Resource`/`Connection` (`account.rs:145-190`) with `sourceTitle`, `ownerId`, `home`, `presence`, `publicAddressMatches`, `httpsRequired`, `IPv6`; add `includeIPv6=1`; log one line per resource + connection. Selection untouched. **Every new string must be `Option<String>`** — plex.tv sends explicit `null`, serde's `default` does not cover it, and one nullable field fails the whole parse and kills sign-in (`account.rs:209-212` already records this trap). | ½ d | Observation |
-| 1 | **Server registry, one slot.** New `plex/servers.rs`: `ServerId(u16)`, `Server`, `Conn{scheme,…}`, a `CLIENTS` table + `CURRENT`. `install` registers slot 1; `client()`/`client_opt()` keep their signatures and now mean "the current server". `TOKEN_GEN` moves **into** `Client`. Zero call-site changes. Note `client()` is hot — `posters::poster_key` calls it three times per key per tile per frame, so use an atomic-pointer table, not an `RwLock`. | ½–1 d | Foundation |
-| 2 | **Thread `ServerId` through the stored structs** — `PmsMovie`, `BrowseSection`, `Detail`, `PlayingItem`, `Person`, `Pslot`, `trail::Node`, `ResolveEnv`/`Plan`, `UpNext`/`QueueRow`. Every rk equality test becomes a pair. The rule is **capture at the spawn site**, never read the current server inside a worker (`browse.rs:576` says so explicitly; `ResolveEnv` is the template). Behaviour change: none. | 2–3 d | The mechanical diff |
+| 0 **LANDED** | **Parse what plex.tv already sends.** Widen `Resource`/`Connection` (`account.rs:145-190`) with `sourceTitle`, `ownerId`, `home`, `presence`, `publicAddressMatches`, `httpsRequired`, `IPv6`; add `includeIPv6=1`; log one line per resource + connection. Selection untouched. **Every new string must be `Option<String>`** — plex.tv sends explicit `null`, serde's `default` does not cover it, and one nullable field fails the whole parse and kills sign-in (`account.rs:209-212` already records this trap). | ½ d | Observation |
+| 1 **LANDED** | **Server registry** — shipped with N slots rather than the one this row asked for; the ceiling is `MAX_SERVERS = 16`. New `plex/servers.rs`: `ServerId(u16)`, `Server`, `Conn{scheme,…}`, a `CLIENTS` table + `CURRENT`. `install` registers slot 1; `client()`/`client_opt()` keep their signatures and now mean "the current server". `TOKEN_GEN` moves **into** `Client`. Zero call-site changes. Note `client()` is hot — `posters::poster_key` calls it three times per key per tile per frame, so use an atomic-pointer table, not an `RwLock`. | ½–1 d | Foundation |
+| 2 | **Thread `ServerId` through the stored structs** — `PmsMovie`, `BrowseSection`, `Detail`, `PlayingItem`, `Person`, `Pslot`, `trail::Node`, `ResolveEnv`/`Plan`, `UpNext`/`QueueRow`. Every rk equality test becomes a pair. The rule is **capture at the spawn site**, never read the current server inside a worker (`ResolveEnv`'s doc is the template and gives the general form of it; the `browse.rs:576` citation this row gave does not survive — that line has moved and carries no such comment). Behaviour change: none. | 2–3 d | The mechanical diff |
 | 3 | **Move the ~30 call sites onto `client_for(sid)`.** `posters.rs:452` becomes `client_for(slot.sid)?.fetch_built(&key)` — **token-free**, because the poster key already ends in `with_token(…)` and `get_bytes` would append a second one. Ship gate: byte-identical event log across `tests/run.py`. | 1 d | Correctness |
-| 4 | **Probe + race.** New `plex/probe.rs`: drop `local` on `!owned` unless `publicAddressMatches` (§2a); drop http when `httpsRequired`; otherwise synthesize `http://{addr}:{port}` **— this is the step that makes the current share work**; rank local→remote→relay; probe in parallel; **verify `machineIdentifier`**; treat 401 as its own state. `auth.rs:379-418` becomes `ingest()` + `activate_best()`, keeping today's scan as a fallback. Pump it where `pms::pump` lives (route-gated), not beside `route::pump_play`, and call `ui::idle::invalidate()` on any landing that repaints. | 1–1½ d | **The share becomes reachable** |
+| 4 **HALF LANDED — the policy, not the race** | **Probe + race.** New `plex/probe.rs`: drop `local` on `!owned` unless `publicAddressMatches` (§2a); drop http when `httpsRequired`; otherwise synthesize `http://{addr}:{port}` **— this is the step that makes the current share work**; rank local→remote→relay; probe in parallel; **verify `machineIdentifier`**; treat 401 as its own state. `auth.rs:379-418` becomes `ingest()` + `activate_best()`, keeping today's scan as a fallback. Pump it where `pms::pump` lives (route-gated), not beside `route::pump_play`, and call `ui::idle::invalidate()` on any landing that repaints. | 1–1½ d | **The share becomes reachable** |
 | 5 | **Persist the registry; boot from the hint.** `session.rs` gains `servers: Vec<ServerRec>` + `current_machine_id`, every field `#[serde(default)]`, legacy `ServerRef` still written for one release. A corrupt `servers` array must not fail the whole `Session` parse — that is a silent sign-out at every boot. No timestamps: this TV's wall clock is ~3 h skewed. | 1 d | Fast boot |
 | 6 | **TLS control plane.** New `http.rs` façade — `Scheme::Http` → `stream.rs` unchanged, `Scheme::Https` → curl. Generalise `net.rs:131` `perform`: per-call timeout (its `TIMEOUT=25` is right for an API call and fatal for media), `CUSTOMREQUEST` for the PUT verb it has never had, persistent handle **only if** `HTTPHEADER`/`POSTFIELDS`/`POST` are explicitly cleared each call (`auth.rs:285` is a header-less call that would otherwise read freed memory). | 1–1½ d | Any https-only share browses |
 | 7 | **TLS media plane.** Second `dynlib!` table (`curl_multi_*`, all probed PRESENT); `AvioState` gains a source enum; `read_cb`/`seek_cb` dispatch; pump `curl_multi` **from inside `read_cb`** so the demux thread self-polls its abort flag and teardown collapses to "set the flag, join". Preserve the seek abort guard (`ff.rs:1288`) verbatim. The two existing abort-guard tests construct `AvioState` by literal, so this breaks them at compile time — extend them. | 2–4 d | Any share plays |
-| 8 | **N servers live** — the Sources list as a library-toolbar chip with a two-level panel (§6), `sourceTitle` as the row subtitle, attribution in **text not artwork** (a corner badge fails the one-mark-per-tile rule — see §6). Four structural hazards: `install_pms` fetches hubs and sections **blocking on the main thread**, so fanning out over N servers freezes boot; `pms::fetch_build` is an all-or-nothing `?` chain, so one dead share blanks Home; `ensure_sections` early-returns while non-empty, which is the only thing keeping the page mailbox sound; and `install_pms` must split into *identity change* (wipe all) vs *server activation* (wipe nothing). Continue Watching is the one shelf that should merge (by `lastViewedAt`, which `pms.rs:307` already sorts). | 2–4 d | The product |
-| 9 | **Relay policy.** There is no bitrate field to clamp: `TranscodeSpec` has none and `maxVideoBitrate` is a literal on the re-encode branch only. Respecting relay's 2 Mbps means **forcing a transcode decision** in `build_stream` — a policy change, not a parameter. | ½–1 d | Correctness on relay |
+| 8 **STARTED** — the shelf heading can name a source (deliverable C), and `HubRow.source` is `""` at both construction sites, so nothing is reachable until this step populates it | **N servers live** — the Sources list as a library-toolbar chip with a two-level panel (§6), `sourceTitle` as the row subtitle, attribution in **text not artwork** (a corner badge fails the one-mark-per-tile rule — see §6). Four structural hazards: `install_pms` fetches hubs and sections **blocking on the main thread**, so fanning out over N servers freezes boot; `pms::fetch_build` is an all-or-nothing `?` chain, so one dead share blanks Home; `ensure_sections` early-returns while non-empty, which is the only thing keeping the page mailbox sound; and `install_pms` must split into *identity change* (wipe all) vs *server activation* (wipe nothing). Continue Watching is the one shelf that should merge (by `lastViewedAt`, which `pms.rs:307` already sorts). | 2–4 d | The product |
+| 9 **LANDED, UNVERIFIABLE** | **Relay policy.** There is no bitrate field to clamp: `TranscodeSpec` has none and `maxVideoBitrate` is a literal on the re-encode branch only. Respecting relay's 2 Mbps means **forcing a transcode decision** in `build_stream` — a policy change, not a parameter. | ½–1 d | Correctness on relay |
 
 **Shortest path to seeing the share on screen: 0 → 1 → 4**, plus enough of 2/3 to keep the caches
 honest. Steps 6–7 are what make it robust for *any* share rather than this one.
@@ -220,8 +227,15 @@ because `OnceLock` cannot re-point at all.
 ## 6. How it appears in the UI — SUPERSEDED by the design
 
 **The design team answered this brief on 2026-08-13 and changed three of its five deliverables.**
-The canvas (`Shared Sources.dc.html`, project `3ec1f4af…`) is the source of truth; what follows is
-only its shape, so this doc does not point the next implementer the wrong way.
+The canvas (`Shared Sources.dc.html`, project `3ec1f4af…`) is the source of truth — **open it before
+building any of this**; what follows is only its shape, kept here so this doc does not point the
+next implementer the wrong way. Where the two disagree, the canvas wins. In particular the earlier
+draft of this section put the Sources list in the **account popover** and gave the **tab strip** a
+per-source annotation, and both are wrong: it is a library-toolbar chip, and the strip carries
+nothing new at any number of friends.
+
+**Deliverable C is the one with code behind it** (§9): a shelf heading can already name its source,
+and does so as a second text run on the same painter, absent rather than empty when there is none.
 
 **With one source, none of it is drawn** — not a bare suffix, not an empty slot. The Sources row is
 not built, the strip has three pills, the headings carry no annotation.
@@ -273,38 +287,62 @@ from "the unwatched angle", which `23f28ce6` replaced with the white tick over a
    at 31 Mbit/s; TrueHD is not in the direct-play audio set, so this goes down the transcode path
    over a WAN link measured at 38.8 Mbit/s. Expect this, not direct play, to be the common case —
    and it argues for a remote-aware bitrate policy well before relay does (step 9).
-2. **The harness cannot grade any of this yet.** `/tmp/plxnative-token` carries exactly one token,
-   so a second server's `accessToken` cannot be injected headlessly. Steps 4–8 are not gradeable by
-   `tests/run.py` until that overlay grows a second entry.
+2. ~~**The harness cannot grade any of this yet.**~~ **ANSWERED** (§9): `/tmp/plxnative-servers`
+   carries a JSON array of ADDITIONAL servers — host, port, machineIdentifier and the token to trust
+   them with — beside the unchanged `/tmp/plxnative-token`, and `run.py` resolves the second token
+   from `/api/v2/resources` so no new secret is stored. One limitation stands and is not a bug to
+   fix: there is **no managed-user token for someone else's server**, so a case that PLAYS from a
+   share plays as YOU there. `test_user` isolation stops at the account boundary.
 3. **plex.direct DNS from inside the app's jail** (curl uses c-ares; the jail's resolv view differs
    from the ssh shell's). Prove by logging the resolved address on the first remote request.
 4. **TLS on 256 KB stacks, concurrently** — `task::spawn_small`'s stack, with seven worker kinds
    each doing a handshake. Device-verify under a full Home + library scroll.
 5. **Relay end to end** has never been observed by this codebase: `includeRelay=1` has been
-   requested forever and every relay connection unconditionally discarded. The 2 Mbps cap and port
-   8443 are documentation, not measurement.
+   requested forever and every relay connection unconditionally discarded (`auth.rs:396`). The
+   2 Mbps cap and port 8443 are documentation, not measurement. **A policy now exists in code
+   anyway** (`plex::link_policy`, §9) and is unverified for exactly this reason — and it cannot be
+   verified from here even deliberately: **this account's share advertises no relay connection at
+   all** (§2), so there is nothing to dial. Confirming it needs a server that is genuinely
+   relay-only — an owner behind CGNAT, or one who turns their port forward off for an afternoon.
 
-## 8. Doc corrections this work turned up
+## 8. Doc corrections this work turned up — and where they stand
 
-All confirmed in code, all worth fixing at the source so the next reader is not misled:
+All were confirmed in code. **All four are now fixed at the source**, which is the point of listing
+them; they are kept here as a record of what the wrong text was costing, because that is the part a
+re-read cannot recover.
 
-- Root `CLAUDE.md` says `stream.rs` has "no chunked decoding". It has had chunked since
-  `stream.rs:116-147` / `:368-421`.
-- Root `CLAUDE.md` and `player/CLAUDE.md` describe `ff.rs` as "the TV's own libavformat", dlopen'd
-  by SONAME candidate list. FFmpeg is **bundled and pinned** (majors 63/63/61, `-plx` suffix,
-  loaded by absolute path). This is what makes "use FFmpeg's https protocol" a decided question
-  rather than an open one.
-- Root `CLAUDE.md` still claims the dual-FFmpeg-header ABI gate.
-- The host suite is **396** tests as of 2026-08-13 (386 before this note's two units), not the 284 recorded.
-  Re-derive it rather than trusting any number written down: `cargo test --lib -- --list | grep -c ': test'`.
+- Root `CLAUDE.md` said `stream.rs` had "no chunked decoding". It has decoded chunked since
+  `HttpStream`'s `chunked`/`chunk_left` and `hs_next_chunk`. **Fixed.** Left alone it made
+  `stream.rs` read as less capable than it is, and sent work to `net.rs`/curl that the raw socket
+  could already do.
+- Root `CLAUDE.md` and `player/CLAUDE.md` described `ff.rs` as "the TV's own libavformat", dlopen'd
+  by SONAME candidate list. FFmpeg is **bundled and pinned** (majors 63/63/61, `-plx` suffix, opened
+  by absolute path out of `paths::app_dir()`). **Fixed in both** — and on 2026-08-13 also in the
+  **Makefile itself**, whose `LIBS_REAL` comment still filed FFmpeg beside curl and ACB as "SONAME
+  moves, 55→57→58→59→60", a hundred lines above the rules that build and stage the pinned copy. That
+  is the wording that keeps "just use the TV's FFmpeg for https" coming back, when what we ship is
+  configured `--disable-network` and cannot open a URL at all.
+- Root `CLAUDE.md` claimed the dual-FFmpeg-header ABI gate (n3.3 + n4.0, "two ABI tables").
+  **Fixed:** one header tree, one table, and the vendored trees are gone — `vendor/` holds nanosvg
+  and nothing else, so anyone who went looking found nothing and had no way to tell which half of
+  the sentence was wrong.
+- The host suite is **424** tests as of 2026-08-14 — it was recorded as 284, then as 396 in this
+  note's own first draft, which was already stale when it was written. **Do not trust any number in
+  any document, including this one.** Re-derive:
+  `cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`.
 
 ---
 
-## 9. What has landed (2026-08-13)
+## 9. What has landed (2026-08-13 → 2026-08-14)
 
-Two host-testable units, no behaviour change, `make check` at **396 passed**. Neither has a caller
-yet: the live selector at `auth.rs:390-400` still filters on `c.local && !c.relay` on both passes, so
-the 8-second trap of §2(a) is **still live in the running app**. This is foundation, not the feature.
+Seven host-testable units, `make check` at **424 passed** and `make` (ARM) green throughout. **One
+sentence dominates all of it: none of this has a caller in the live sign-in path.**
+`auth::choose_local_connection` still filters `c.local && !c.relay` on both passes, so the 8-second
+trap of §2(a) is **exactly as live in the running app as it was on 2026-08-11**, and the app still
+browses one server. This is foundation plus a policy layer, not the feature — the step that connects
+them is 4's second half, the race and `activate_best`.
+
+**The data layer**
 
 - **`plex/account.rs` — the roster DTOs widened** to `sourceTitle`, `ownerId`, `home`, `presence`,
   `publicAddressMatches`, `httpsRequired` and `Connection.IPv6`, with `includeIPv6=1` on the query.
@@ -313,15 +351,63 @@ the 8-second trap of §2(a) is **still live in the running app**. This is founda
   `de_i64` — because `#[serde(default)]` covers an *absent* field and not a present `null`, and one
   strict field meeting one null fails the whole array and ends sign-in at "no server found".
   `Resource::local_connection()` (dead, zero callers) is deleted; `probe.rs` supersedes it.
+- **`plex/servers.rs` — the registry**, keyed on `machineIdentifier`, replacing the `OnceLock`
+  singleton whose host and port froze at the first `install`. `client()`/`client_opt()` keep their
+  signatures and mean "the current server", so ~30 call sites outside `plex/` read unchanged;
+  `client_for(id)`, `register`, `set_current` and `ServerId` are the additions. Why it is an
+  **atomic-pointer table** rather than a lock, why every slot's `Client` is **leaked**, and why
+  token generations come from a **process-global sequence** are all consequences of one fact —
+  `client()` is a hot path (`posters::poster_key` calls it three times per key, per visible tile,
+  per frame) — and the full account now lives where implementers will meet it, in
+  **`rust-modules/src/plex/CLAUDE.md`**.
 - **`plex/probe.rs` — the connection policy, pure.** No socket, no thread, no clock, so all of it is
   host-testable on Darwin. Builds and ranks candidate origins: drops a `local` connection on a
   non-owned server unless `publicAddressMatches`, suppresses every plain-http candidate when the
   owner set `httpsRequired`, and ranks local → remote → relay. It also carries, as doc, the two rules
   a real prober must honour and this module cannot: verify `machineIdentifier` on the response before
   accepting a connection, and treat `401` as its own state rather than "unreachable".
+- **The relay policy — `plex::link_policy`, plus `Client::set_link`/`link()` to carry the fact.**
+  A relay is a ~2 Mbit/s tunnel, so a plan that ships the file's own bytes over one stalls mid-film
+  with nothing on any surface saying why. The policy denies **direct play and the container remux**,
+  leaving the re-encode — the only flavor whose query lets the server pick a rate. Denying the
+  remux is the half that is easy to miss: it copies the codecs and deliberately sends no cap, so it
+  is the same 31 Mbit/s one layer down. It is a **branch, never a parameter** — `TranscodeSpec` has
+  no bitrate field, a cap is meaningless on direct play, and the server is the only party that knows
+  the tunnel's real ceiling. `route::build_stream` consults it beside the codec gates.
+  **Unverified against a real relay, and not verifiable from this account** — see §7 question 5;
+  what is asserted is the shape, not the 2 Mbps.
 
-Two of the tests are worth knowing about, because both were written after a mutation showed the
-suite could not see the bug:
+- **The sign-in chooser keeps to IPv4** (`auth::choose_local_connection`, extracted from
+  `discover_and_store` so the rule is gradeable at all). This one is a REGRESSION THIS WORK CAUSED
+  and did not notice for three commits: adding `includeIPv6=1` to the roster query means plex.tv now
+  offers v6 connections, and the live chooser takes the FIRST `local` match and **persists** it —
+  so a server listing its LAN v6 ahead of its v4 would have signed in "successfully" to an empty
+  Home and written that address into the session file, making every later boot start there too.
+  `stream.rs::http_open` parses a dotted quad by hand (`AF_INET`, no DNS), so a v6 literal is not
+  slower, it is undialable. Found by review, not by the suite; the suite can see it now.
+
+**The screens and the harness**
+
+- **A shelf heading can name its source** (deliverable C): `Recently Added in LDN Films · <peer-owner-1>`,
+  a second run on the same painter so the annotation cannot detach from the title under the shelf's
+  lift or snap fade, and **absent rather than empty** when there is no source — no gap, no dot, no
+  draw call, which is what makes it free for the single-server install. `HubRow.source` is `""` at
+  both construction sites, so nothing new is reachable until step 8 populates it. One visible change
+  rode along: shelf headings moved from `TEXT_PRIMARY` to the shared `TEXT_HEADING` ink.
+- **A failed browse page is a STATE** (`SecFetch { Loading, Ready, Failed }`), found while mapping
+  this work but a bug on the user's OWN server: a failed first page armed the retry cooldown and
+  nothing else, so `total` stayed `-1`, `loading_initial()` was `total < 0`, and the grid spun for
+  the rest of the session with nothing on screen admitting it. An EMPTY answer is `Ready`, never
+  `Failed`. A failed *sections* list still spins, one layer up in `ensure_sections`, and belongs
+  with deliverable D.
+- **The harness can hand the TV a second server** — `/tmp/plxnative-servers`, a JSON array of
+  additional servers beside the unchanged token file, deliberately **not** DIAG-exempt (it must
+  suppress the who's-watching picker like the token file, or a headless run grades the wrong
+  screen). Its own connection ranking does **not** copy the app's sign-in rule, for the reason §2(a)
+  gives: public wins for a non-owned server, dotted quads beat hostnames, relay last.
+
+Three tests are worth knowing about, because each was written after a mutation showed the suite
+could not see the bug:
 
 - The owned-server fixture carries **`publicAddressMatches: false`** — the value the live capture
   actually returns. With `true` there, deleting `&& !res.owned` from the drop rule passed the entire
@@ -329,7 +415,12 @@ suite could not see the bug:
 - An explicit `null` on every string and on `connections` itself is asserted to cost that field and
   never the roster — the second server in that fixture is a good one, and the test is really about
   it still arriving.
+- The relay policy is graded from **both ends**: the pure answer per tier, and a server whose only
+  advertised address is a relay, run through `probe::candidates` so that the ranking and the policy
+  are pinned to the same `Location` vocabulary. An unknown link is asserted to restrict **nothing** —
+  that is the case every play takes today, so a wrong answer there would be wrong for everybody.
 
-**Next**, in order: the server registry behind an unchanged `client()` (step 1), then threading
-`ServerId` through the stored structs (step 2). Nothing in the design's canvas can be drawn until
-those exist — the app can hold exactly one server (`plex/client.rs:149`).
+**Next**, in order: threading `ServerId` through the stored structs (step 2, the mechanical diff),
+then the probe RACE and `activate_best` (step 4's second half), which is the first change any of
+this will let a user see. Until then the registry holds one server because nobody registers a
+second one.
