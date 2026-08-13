@@ -35,8 +35,15 @@ full one-time setup + troubleshooting.
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
-- `make` — build `pkg/plxnative` (the ARM binary). Also compiles `ci/ffabi-assert.c` against BOTH
-  vendored FFmpeg header trees (n3.3 and n4.0), which is what proves `ff.rs`'s two ABI tables.
+- `make` — build `pkg/plxnative` (the ARM binary), and, first, the FFmpeg it ships
+  (`ci/build-ffmpeg.sh`; ~2 minutes cold, nothing after). Also compiles `ci/ffabi-assert.c` against
+  `vendor/ffmpeg-prefix/include` — **the headers the shipped libraries were built from**, installed
+  by the same invocation that produced them — which is what proves `ff.rs`'s ABI table. **One**
+  header tree, **one** table. This line long said BOTH vendored trees (n3.3 and n4.0) and *two*
+  tables, which was true while the app read the television's FFmpeg and had to select a table per
+  firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by asserting
+  `LIBAVFORMAT_VERSION_MAJOR == 63`), and the vendored trees are gone — so anyone who went looking
+  for them found `vendor/` holding nanosvg and nothing else.
 - `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
 - `make run` — close any running instance, wipe `/tmp/plxnative-events.log`, launch, keep alive
   `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
@@ -101,10 +108,11 @@ bundled in the NDK), so the Starfish C++ calls get real link-time symbol checkin
 those has the **same SONAME on every webOS release from 2.2.3 to 11.2.0**, which is what makes
 linking them normally the right call — check any of it with `tools/fwcompat.py --inventory`.
 
-**Three families are deliberately NOT linked**: FFmpeg (`libav*`, `libswscale`), `libcurl`, and
-`libAcbAPI`. Their SONAMEs move between releases — FFmpeg 55→57→58→59→60, curl `.so.5`→`.so.4`,
-and ACB is *deleted outright* at webOS 5.0 — and a `DT_NEEDED` entry is a hard requirement for one
-exact name, which cannot express "57 or 58". So they are **`dlopen`'d by SONAME candidate list**:
+**Two families are deliberately NOT linked because their SONAME MOVES**: `libcurl`
+(`.so.5`→`.so.4`) and `libAcbAPI` (*deleted outright* at webOS 5.0). A `DT_NEEDED` entry is a hard
+requirement for one exact name, which cannot express "either of these", and a name the device lacks
+kills the process at `exec()` — before `main`, before the event log exists. So they are
+**`dlopen`'d by SONAME candidate list**:
 
 - **`rust-modules/src/dynlib.rs`** is the one door. `dynlib!` takes a block shaped exactly like the
   `extern "C"` block it replaces and emits same-named wrappers, so call sites don't change.
@@ -116,6 +124,31 @@ exact name, which cannot express "57 or 58". So they are **`dlopen`'d by SONAME 
   picks between them (`vp_mode()`). The two are complementary across all 14 firmwares.
 - Adding a new FFmpeg/curl call means **adding it to the `dynlib!` block**. There is no link error
   to catch you any more — the failure is a logged `Incomplete` at boot and a refusal to demux.
+
+**FFmpeg is a third unlinked family, and it is no longer a version question at all: the app BUNDLES
+its own and PINS it.** This doc used to file FFmpeg beside curl and ACB as "SONAME moves,
+55→57→58→59→60", which is the wrong mental model to carry into any FFmpeg change today.
+`ci/build-ffmpeg.sh` cross-compiles FFmpeg **9.0** with the NDK — shared, LGPL-clean (no
+`--enable-gpl`), under a `-plx` build suffix: `libavutil-plx.so.61`, `libavcodec-plx.so.63`,
+`libavformat-plx.so.63`, plus `libswscale-plx.so.10` in dev builds only. `make deploy`/`make ipk`
+ship those `.so` files **beside the binary**, and `ff.rs::load_libraries` opens them by **absolute
+path out of `paths::app_dir()`**, in dependency order under `RTLD_GLOBAL` (they carry no rpath —
+FFmpeg's configure evals its flags and `$ORIGIN` does not survive), after which `boot()` refuses to
+demux unless the majors are exactly **63/63/61**. Both the suffix and the absolute path are
+load-bearing: webOS 11.2.0 ships FFmpeg 6 itself, so a bare SONAME could open the *television's*
+copy, and "which libavformat did we actually get" is precisely the question that cannot be answered
+over ssh. The reason to bundle was never the SONAME drift, which was survivable — it is that
+demuxers, parsers and bitstream filters live in a **registry, as data**, so no symbol table and no
+firmware inventory can answer "does this set's libavcodec have `h264_mp4toannexb`". Bundling makes
+both halves compile-time facts, and it is also webosbrew's published guidance.
+
+**One consequence settles a question that keeps getting re-opened: our FFmpeg has NO network.** It
+is configured `--disable-network` with `--enable-protocol=file` as the *only* protocol, so it
+cannot open a URL — http or https, on any firmware. Every byte reaches the demuxer through
+`stream.rs` and the custom AVIO, and that is not an accident of the current pipeline but a
+build-time fact you cannot route around. "Does the TV's FFmpeg have https?" is therefore not
+something to go and probe on a device; it is decided, and the answer is that no FFmpeg in this app
+has any transport of its own.
 
 **This replaced the old stub-`.so` trick, and `stub/` is deleted.** Empty `.so` files carrying the
 TV's SONAMEs got the link to succeed, but in doing so pinned the binary to webOS 4.x: on anything
@@ -167,8 +200,10 @@ threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Rea
 touching playback):** LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
 `BUFFERSTREAM` **buffer-feed** mode, the decoded sink bound to the hardware video plane via
 **`libAcbAPI` (ACB)** — in-process is what lets ACB bind the app-owned sink. The media pipeline
-is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`, the TV's own libavformat
-over a custom AVIO**) → AU queues with backpressure (`aq.rs`) → the pump `Feed()`s the Starfish
+is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`, over a custom AVIO on the
+FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
+`--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
+(`aq.rs`) → the pump `Feed()`s the Starfish
 pipeline. Two worker threads (demux, media/load) sit beside the main loop, which owns all
 ACB/Starfish control calls. Also linked and
 used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw-socket
@@ -176,15 +211,16 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Key files
 
-- `Makefile` — build/deploy/run/ipk; toolchain, the dual FFmpeg-ABI gate, TV ssh creds.
+- `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
+  (one header tree, not the old dual one), TV ssh creds.
 - `src/main.c` — the **boot shim** (crash tracer, event-log/stderr setup, process bring-up); calls
   the Rust `plex_run()`. `src/starfish.c` — the StarfishMediaAPIs C++/ACB seam. `src/svg.c` —
   nanosvg rasterizer. These three are the *entire* C side.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
-  playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the TV's own
-  libavformat), `stream.rs`/`aq.rs` (HTTP socket → AU pipeline), `net.rs` (libcurl/TLS), and the
-  Plex data layer.
+  playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
+  pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
+  → AU pipeline), `net.rs` (libcurl/TLS), and the Plex data layer.
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
@@ -192,14 +228,22 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
   `docs/ui-system-migration.md`.
-  (`rust-modules/src/stream.rs` — blocking HTTP/1.1 GET over a raw TCP socket: numeric IP,
-  Content-Length/close delimited, **no chunked decoding**, no DNS. `aq.rs` — one-producer/
+  (`rust-modules/src/stream.rs` — blocking HTTP/1.1 GET over a raw TCP socket: numeric IP, and a
+  body delimited by `Content-Length`, by close, **or by `Transfer-Encoding: chunked`, which it does
+  decode** (`HttpStream`'s `chunked`/`chunk_left`, the header match in `http_open`, and
+  `hs_next_chunk`). This line claimed "no chunked decoding" long after that stopped being true,
+  which makes `stream.rs` read as less capable than it is and sends work to `net.rs` that it would
+  have handled — its only real disqualifiers are **DNS and TLS**: it takes a numeric address and
+  speaks cleartext, nothing more. `aq.rs` — one-producer/
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
-- `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen` by SONAME candidate list) for
-  the three families whose SONAME moves between webOS releases: FFmpeg, curl, ACB. Replaced
-  `stub/`, which is deleted. `tools/fwcompat.py` grades the result; `docs/webos5-port.md` is the
-  full account.
+- `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
+  by absolute path). Two callers, for two different reasons: `net.rs` binds **curl** by candidate
+  list because its SONAME moves between releases, and `ff.rs` binds the **bundled FFmpeg** by
+  absolute path because ours ships beside the binary, on no library search path — not because any
+  version varies. (**ACB** is the same idea but not this module: `src/starfish.c` is C and does its
+  own `dlopen`.) Replaced `stub/`, which is deleted. `tools/fwcompat.py` grades the result;
+  `docs/webos5-port.md` is the full account.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
@@ -305,11 +349,18 @@ There **is** a host unit suite, and it is not the real gate — both halves matt
 them is how this section used to be wrong in three files at once.
 
 **Tier 1 — `make check` (host, sub-second).** `cd rust-modules && cargo test --lib` runs the whole
-host suite in **~0.3s** on the dev Mac, no TV involved (284 tests as of 2026-08-02, up from a
-documented 59 that was five times stale before anyone noticed — re-derive with
-`cargo test --lib -- --list | grep -c ': test'` rather than trusting this or the per-module counts
-below; the first version of this section was stale within one commit because two agents added tests
-to the same batch that documented it). **Run it with the same toolchain the Makefile does.** A bare
+host suite in **~0.3s** on the dev Mac, no TV involved. **Treat every test COUNT in this section as
+already wrong, including the one in this sentence.** 386 measured 2026-08-13; 284 on 2026-08-02; a
+documented 59 before that, which was five times stale before anyone noticed — and the first version
+of this paragraph was stale within one *commit*, because two agents were adding tests to the same
+batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
+count worth having is the one you take yourself, with
+`cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`. **The per-module counts
+below have the same disease and are worse**, because a stale one reads as precise rather than round
+— several were written when the module was a third its present size (`route.rs` and `ui/home.rs`
+are both well past the numbers they carry). Read those bullets as **what each module covers**,
+which is stable and is why they are here, and never as a census. **Run it with the same toolchain
+the Makefile does.** A bare
 `cargo test` uses the default toolchain; `make check` uses `cargo +$(RUST_NIGHTLY)`, and the two
 have disagreed — `task.rs`'s refused-spawn test passed 284/284 on stable while panicking inside
 `std` on nightly, which reads as flakiness and is not. Nightly is the gate, because `-Z build-std`
@@ -349,10 +400,12 @@ you get without waking a television. What it covers today, by module:
     so it is detected via inherent-vs-trait const resolution, with a `Send` control case).
 
   Three structural limits, all deliberate and all worth knowing before you trust a green run.
-  **(1) It cannot link the TV's libraries.** `ff.rs`'s four `#[link]` directives are
-  `cfg_attr(not(test))`-gated precisely so the crate's pure logic stays host-testable; the dev Mac
-  has no libavformat, so a test that actually *calls* FFmpeg or GL fails to link — that is the
-  intended boundary, not a bug. **(2) It runs on Darwin; the app runs on Linux, and they disagree**
+  **(1) It cannot run the native libraries, and it no longer fails by FAILING TO LINK.** `ff.rs`
+  used to carry four `cfg_attr(not(test))`-gated `#[link]` directives, so a host test that called
+  FFmpeg died at link time; those directives are gone (everything goes through `dynlib!` now), the
+  crate links unconditionally, and such a test instead takes `dlopen`'s `None` branch on Darwin.
+  Same boundary, quieter failure — a test that "passes" having never entered FFmpeg or GL is the
+  shape to watch for. **(2) It runs on Darwin; the app runs on Linux, and they disagree**
   — see `tools/sockprobe.c` above, where `shutdown`-during-`connect` behaves oppositely on the two
   kernels. A socket assertion that passes here is evidence about macOS, not about the TV.
   **(3) The app's async seams are process-wide**, so some tests are serialized rather than parallel:
