@@ -872,7 +872,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// always the Home pill). One word for both is why they were named apart: on the way
             /// back from the Library the selection moves to Home while focus stays on `Movies`.
             Home { focus_pill: Option<usize> },
-            /// the Library browse grid on section `sec` (0-based)
+            /// The Library browse grid on TAB `tab` (0-based, Home excluded — the strip prepends
+            /// it). A tab, not a section: the strip is a projection of the section table
+            /// (`browse::tabs`), so several libraries can share one pill and `browse::tab_section`
+            /// is what resolves this to the library that opens.
             Library(usize),
             /// A page that STACKS — a detail page or a person page. The [`Node`] is BOTH what
             /// mounts at the floor (through the very `enter_node` a BACK pop uses, whose re-open

@@ -333,7 +333,12 @@ pub(crate) fn reset() {
         *addr_of_mut!(SOURCES) = Vec::new();
         *addr_of_mut!(SECTIONS) = Vec::new();
         *addr_of_mut!(STATES) = Vec::new();
-        *addr_of_mut!(TABS) = Vec::new();
+        // TABS is deliberately NOT cleared here, only invalidated. It is a memo, and the ONE thing
+        // that decides whether the strip re-measures is [`tabs`] comparing the old row against the
+        // new one — so emptying it in advance makes that comparison `[] != []`, which is false, and
+        // the label cache keeps the PREVIOUS ACCOUNT's pills: `draw_tab_row` iterates the cache, so
+        // after a profile switch the strip would go on drawing and hit-testing libraries the new
+        // user cannot open, until some later landing happened to change the row.
         TABS_GEN = u32::MAX;
         CUR = 0;
         RETRY_CD = 0;
@@ -658,12 +663,26 @@ fn tabs() -> &'static Vec<usize> {
             .filter(|s| sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true))
             .map(|s| s.kind)
             .collect();
+        // A missing type earns ONE pill, not one per borrowed library of it. Two friends who both
+        // share Music are two libraries of a type you do not own, and admitting both puts two
+        // identically-titled *Music* pills in the row with nothing to tell them apart — which is
+        // the strip growing by PEOPLE, the one property this projection exists to prevent. The
+        // first one carries the type; the rest are reachable through the toolbar's Source chip,
+        // exactly as a borrowed library of a type you DO own already is.
+        let mut borrowed_kinds: Vec<SecKind> = Vec::new();
         let v: Vec<usize> = sections()
             .iter()
             .enumerate()
             .filter(|(_, s)| {
                 let owned = sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true);
-                owned || !owned_kinds.contains(&s.kind)
+                if owned {
+                    return true;
+                }
+                if owned_kinds.contains(&s.kind) || borrowed_kinds.contains(&s.kind) {
+                    return false;
+                }
+                borrowed_kinds.push(s.kind);
+                true
             })
             .map(|(i, _)| i)
             .collect();
@@ -1367,11 +1386,20 @@ fn maybe_spawn() {
         None => String::new(),
     };
     let mut filters: Vec<(String, String)> = Vec::new();
+    // The unwatched filter is a MOVIE/SHOW question, and only those two types answer it: shows
+    // advertise `unwatchedLeaves` (any unwatched episode), movies take a plain `unwatched=1`, and
+    // the comment this replaced already recorded that the plain form has odd semantics off type=1
+    // (verified live 2026-07-19). Sending it to a music or photo listing is asking a library that
+    // has no such state to filter by it — newly reachable, since those types now get a pill, so the
+    // Filter menu's switch is now one press away on them. Unset here rather than in the menu: the
+    // query is the one place that knows what it is asking, and a switch that changed nothing would
+    // be a worse answer than a switch that is simply not offered.
     if st.unwatched {
-        // shows advertise unwatchedLeaves (any unwatched episode); plain unwatched=1 has odd
-        // semantics on type=2 (verified live 2026-07-19)
-        let k = if sec.kind == SecKind::Show { "unwatchedLeaves" } else { "unwatched" };
-        filters.push((k.to_string(), "1".to_string()));
+        match sec.kind {
+            SecKind::Show => filters.push(("unwatchedLeaves".to_string(), "1".to_string())),
+            SecKind::Movie => filters.push(("unwatched".to_string(), "1".to_string())),
+            SecKind::Music | SecKind::Photo => {}
+        }
     }
     if let Some(g) = &st.genre {
         filters.push(("genre".to_string(), g.id.clone()));
@@ -1760,7 +1788,35 @@ mod tests {
         }
         assert_eq!(section_count(), 11, "eleven libraries…");
         assert_eq!(tab_count(), 2, "…and the two pills it started with");
+
+        // …and a type NOBODY owns grows the row by exactly one however many people share it. Every
+        // fixture above is a type we own, which is why this half needs saying separately: it is the
+        // only branch of the projection that can admit a borrowed library at all.
+        for src in 1..=3 {
+            append_sections(src, vec![(9, "Film Club".into(), SecKind::Music)]);
+        }
+        assert_eq!(tab_count(), 3, "three friends sharing music are ONE Music pill");
+        assert_eq!(row().len(), 3);
         reset();
+    }
+
+    /// A profile switch must not leave the previous account's pills on screen. `reset()` empties
+    /// the table, and the strip's generation is what the tab row's label cache keys on — so if the
+    /// projection's own memo were CLEARED here rather than merely invalidated, the comparison that
+    /// decides "did the row change" would be `[] != []`, i.e. false, and `draw_tab_row` (which
+    /// iterates the cache, not the live table) would go on drawing and hit-testing libraries the
+    /// new user cannot open until some later landing happened to change the row.
+    #[test]
+    fn a_profile_switch_re_measures_the_strip_instead_of_keeping_the_last_accounts_pills() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        let g0 = tabs_gen();
+        assert_eq!(tab_count(), 2);
+
+        reset(); // install_pms: a different account signs in
+        assert_eq!(tab_count(), 0, "the row is empty…");
+        assert_ne!(tabs_gen(), g0, "…and the strip MUST re-measure rather than keep the old pills");
     }
 
     /// The strip's own generation moves when the ROW changes and not when the TABLE does — which,
