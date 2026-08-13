@@ -9,9 +9,14 @@ pub const GAP: f32 = 30.0;
 pub const MARGIN_X: f32 = 90.0;
 pub const ROW_TITLE_H: f32 = 30.0;
 pub const ROW_PITCH: f32 = CARD_H + ROW_TITLE_H + 144.0; // 549: room for the shelf title above + the focused card's title AND caption below (clears the next shelf's title)
-/// Card top below the shelf's `row_y` origin (the hub title draws at `row_y − 34`): the air between
-/// a section title and its posters, held on magnification too because `title_lift` raises the title
-/// by the same amount the popped card's top rises.
+/// Hub-title cap top above the shelf's `row_y` origin — the heading draws at `row_y − TITLE_DY`,
+/// minus whatever `CardRow::lift` has raised it by. Named because it is a LAYOUT relationship two
+/// other constants here are derived against ([`CARD_DY`]'s air, [`GRID_TOP_Y`]'s clearance under the
+/// profile chip) and because the shelf heading is now a multi-run flow rather than one `p.text`.
+pub const TITLE_DY: f32 = 34.0;
+/// Card top below the shelf's `row_y` origin (the hub title draws at `row_y − `[`TITLE_DY`]): the air
+/// between a section title and its posters, held on magnification too because `title_lift` raises the
+/// title by the same amount the popped card's top rises.
 pub const CARD_DY: f32 = 26.0;
 pub const CONTENT_Y: f32 = 200.0;
 pub const GLOW_PAD: f32 = 48.0;
@@ -24,7 +29,7 @@ pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 /// the whole shelf by that much, so the peek is 17px shallower here to keep the composition the
 /// hero view was tuned to (828 → 811; card top = `PEEK_Y + CARD_DY` = 837, as the popped one was).
 pub const PEEK_Y: f32 = 811.0;
-// shelf top in grid view — leaves the first hub title (row_y − 34, lifted up to ~10 more when its
+// shelf top in grid view — leaves the first hub title (row_y − TITLE_DY, lifted up to ~10 more when its
 // leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 108)
 pub const GRID_TOP_Y: f32 = 176.0;
 

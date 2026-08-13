@@ -897,9 +897,16 @@ impl View for Grid {
             // moves under it and STAYS up until none is, rather than tracking the pop)
             if env.sp > 0.02 {
                 let lift = self.shelves[r].lift();
-                if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
-                    p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, theme::size::HEADLINE, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
-                }
+                // the snap fade rides the painter's cascade alpha, not the ink: `with_a` REPLACES a
+                // token's alpha rather than multiplying it, and the separator token carries .45 of
+                // its own — baking `env.sp` into the colour would throw that away.
+                draw_heading(
+                    p.alpha(env.sp),
+                    crate::pms::hub_title(r),
+                    crate::pms::hub_source(r),
+                    MARGIN_X,
+                    row_y - TITLE_DY - lift,
+                );
             }
             for c in 0..crate::pms::hub_len(r) {
                 if r == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
@@ -947,6 +954,70 @@ impl View for Grid {
             card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
         }
     }
+}
+
+/// Pad either side of the shelf heading's `·`, on the shared gap scale — the same "hairline gap
+/// between two things that belong to one line" rung `detail::dotted_run` spends on its own dots.
+const SOURCE_PAD: f32 = theme::space::XS;
+
+/// The shelf heading, flowed left→right from the heading origin: the hub's title, and — only when
+/// the row came from ANOTHER server — a quiet `· handle` naming that source ("Recently Added in
+/// LDN Films · bamx23").
+///
+/// **With an empty source the annotation is ABSENT, not empty**: no gap, no dot, no second run, no
+/// draw call. That is the design's "with one source, none of this is drawn" implemented as absence
+/// rather than as a branch that draws nothing visible — so the ANNOTATION costs a single-server
+/// library nothing at all, in geometry, in draw calls and in ink.
+///
+/// The heading is NOT unchanged overall, and the difference is deliberate: its ink moved from
+/// `TEXT_PRIMARY` (`#f7fafc`) to `TEXT_HEADING` (`#ebf0f7`) in the same pass. Every shelf heading on
+/// Home is ~4% darker as a result, today, with no source string anywhere. That is a harmonization,
+/// not a side effect — `TEXT_HEADING` is the shared section-heading ink that `detail.rs` and
+/// `person.rs` already use, and Home was the one screen still inking its headings as body text.
+///
+/// Two runs and not one string because they are two SIZES, two weights and three inks, and
+/// `Painter::text` can express exactly one of each per call (`theme::TEXT_SEPARATOR`'s doc: a dot
+/// baked into a joined string is one run at one colour by construction). They are BASELINE-aligned
+/// via `text::baseline_y` — a `BODY` run top-aligned against a `HEADLINE` one reads as a
+/// superscript.
+///
+/// `run(text, dx, sz, bold, ink) -> advance` is the seam: the draw passes a closure that paints and
+/// returns `Painter::text`'s advance, the host tests pass one that measures. The drawn flow and the
+/// graded one are therefore ONE expression, not `dotted_run`/`dotted_run_w`'s two that have to be
+/// kept agreeing. Returns the total advance.
+///
+/// The flow is PURE — it takes no font metric, which is also why the host suite can drive it: the
+/// per-run baseline drop is resolved in [`draw_heading`], from the very `sz`/`bold` handed out here.
+fn heading_flow(title: &str, source: &str, mut run: impl FnMut(&str, f32, c_int, c_int, [f32; 4]) -> f32) -> f32 {
+    let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING);
+    if source.is_empty() {
+        return dx; // one source: the heading is the title and nothing else
+    }
+    dx += SOURCE_PAD;
+    dx += run("\u{b7}", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR);
+    dx += SOURCE_PAD;
+    dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY);
+    dx
+}
+
+/// Draw [`heading_flow`] with its title's cap top at `(x, y)`. Every run rides the painter handed
+/// in, so the snap fade and the row's heading `lift` move the whole heading together — an
+/// annotation that detached from its title mid-scroll would read as two objects.
+///
+/// Each run drops onto the TITLE's baseline (`text::baseline_y`, a no-op for the title itself,
+/// which is measured against its own tokens): the annotation is a rung down, and top-aligning a
+/// `BODY` run against a `HEADLINE` one would read as a superscript. That one line is the only part
+/// of this heading the host suite cannot grade — it opens no SDL_ttf, so there are no cap bands to
+/// measure (the same boundary `widgets`' anchor table works within); what the tests DO pin is the
+/// tokens it resolves from.
+fn draw_heading(p: Painter, title: &str, source: &str, x: f32, y: f32) {
+    heading_flow(title, source, |s, dx, sz, bold, ink| {
+        // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
+        match CString::new(s) {
+            Ok(cs) => p.text(cs.as_ptr(), x + dx, crate::text::baseline_y(sz, bold, theme::size::HEADLINE, 1, y), sz, ink, 0, bold),
+            Err(_) => 0.0,
+        }
+    });
 }
 
 /// Metadata caption under the FOCUSED poster: episodes read "S1 • E8", movies their year — the
@@ -1844,5 +1915,95 @@ mod tests {
         assert_eq!(hero_logo_rk(&orphan), "42", "…falling back to its own when the server sent no parent");
         let movie = PmsMovie { kind: 0, rk: "42".into(), show_rk: "7".into(), ..Default::default() };
         assert_eq!(hero_logo_rk(&movie), "42", "a movie is never keyed to a stray parent");
+    }
+
+    // ---- the shelf heading's source annotation (Shared Sources, deliverable C) ----------------
+    //
+    // Pure flow arithmetic: no focus state, so these deliberately do NOT take the `FOCUS` mutex
+    // (the same call as `the_home_hero_logo_never_reaches_the_top_bar`). The host suite opens no
+    // SDL_ttf — `text_width` answers 0 for every string — so the flow is graded through a
+    // SYNTHETIC metric whose width depends on the size and weight a run was measured at. That
+    // dependence is the point: it is what makes "the annotation is measured at its own tokens, not
+    // at the title's" an assertion rather than an intention.
+
+    /// One run the flow asked for, as recorded by the measuring closure.
+    struct Run {
+        text: String,
+        dx: f32,
+        sz: c_int,
+        bold: c_int,
+        ink: [f32; 4],
+    }
+
+    /// Drive [`heading_flow`] with the synthetic metric; returns its total advance + every run.
+    fn flow(title: &str, source: &str) -> (f32, Vec<Run>) {
+        let mut runs: Vec<Run> = Vec::new();
+        let w = heading_flow(title, source, |s, dx, sz, bold, ink| {
+            runs.push(Run { text: s.to_string(), dx, sz, bold, ink });
+            width_of(s, sz, bold)
+        });
+        (w, runs)
+    }
+    /// A stand-in for `Painter::text`'s advance — monotone in length, size and weight.
+    fn width_of(s: &str, sz: c_int, bold: c_int) -> f32 {
+        s.chars().count() as f32 * (sz as f32 + 6.0 * bold as f32)
+    }
+
+    /// (a) **The acceptance criterion for the whole feature.** With no source the heading is ONE
+    /// run — the title, at the title's own tokens — and its width is the title's own advance with
+    /// nothing added. No dot, no pad, no empty second run: absence, not an empty annotation.
+    #[test]
+    fn a_shelf_with_no_source_draws_exactly_the_title_and_nothing_else() {
+        let (w, runs) = flow("Recently Added", "");
+        assert_eq!(runs.len(), 1, "an empty source must produce no further runs at all");
+        assert_eq!(runs[0].text, "Recently Added");
+        assert_eq!(runs[0].dx, 0.0, "the title starts at the heading origin");
+        assert_eq!(w, width_of("Recently Added", theme::size::HEADLINE, 1), "the title's own advance, exactly");
+    }
+
+    /// (b) A source annotation can only ADD to the heading — the title in front of it is
+    /// untouched, and the flow grows by the dot, the handle and the two pads between them.
+    #[test]
+    fn a_shared_source_extends_the_heading_past_the_title() {
+        let (bare, _) = flow("Recently Added in LDN Films", "");
+        let (annotated, runs) = flow("Recently Added in LDN Films", "bamx23");
+        assert!(annotated > bare, "the annotation must extend the heading ({annotated} vs {bare})");
+        assert_eq!(runs.len(), 3, "title, separator, handle");
+        assert_eq!(runs[0].dx, 0.0, "the title still starts at the origin");
+        assert_eq!(
+            annotated,
+            bare + 2.0 * SOURCE_PAD
+                + width_of("\u{b7}", theme::size::BODY, 0)
+                + width_of("bamx23", theme::size::BODY, 0),
+            "the growth is exactly the dot, the handle and one pad either side of the dot"
+        );
+        assert_eq!(runs[1].dx, bare + SOURCE_PAD, "the dot is one pad past the title");
+        assert_eq!(
+            runs[2].dx,
+            runs[1].dx + width_of("\u{b7}", theme::size::BODY, 0) + SOURCE_PAD,
+            "the handle is one pad past the dot"
+        );
+    }
+
+    /// (c) Each run is measured and inked at the tokens the design names for IT — the annotation is
+    /// a rung down, regular against the title's bold, tertiary ink after a `.45` separator. Those
+    /// tokens are also what `draw_heading` resolves each run's baseline drop from, so pinning them
+    /// pins the alignment the host cannot measure.
+    #[test]
+    fn each_heading_run_carries_its_own_size_weight_and_ink() {
+        let (_, runs) = flow("Recently Added in LDN Films", "bamx23");
+        assert_eq!((runs[0].sz, runs[0].bold), (theme::size::HEADLINE, 1), "the title is HEADLINE bold");
+        assert_eq!(runs[0].ink, theme::TEXT_HEADING, "…in the shared section-heading ink");
+        assert_eq!(runs[1].text, "\u{b7}");
+        assert_eq!((runs[1].sz, runs[1].bold), (theme::size::BODY, 0), "the separator is measured at BODY regular");
+        assert_eq!(runs[1].ink, theme::TEXT_SEPARATOR, "…at the separator token's own .45");
+        assert_eq!(runs[2].text, "bamx23");
+        assert_eq!((runs[2].sz, runs[2].bold), (theme::size::BODY, 0), "the handle is BODY regular, not the title's");
+        assert_eq!(runs[2].ink, theme::TEXT_TERTIARY);
+        assert!(
+            (runs[1].sz, runs[1].bold) == (runs[2].sz, runs[2].bold),
+            "the dot and the handle are one annotation: same rung, same weight, so they drop onto the title's baseline together"
+        );
+        assert!(runs[1].sz < runs[0].sz, "the annotation is a rung DOWN from the title — the drop is why it must be baseline-aligned");
     }
 }

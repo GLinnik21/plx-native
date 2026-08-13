@@ -2375,10 +2375,14 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
     let mut bx = x;
     // The caption sits on the SCORE's baseline, not on its own centre: the design aligns the row
     // by baseline (`align-items:baseline`), so a MICRO caption beside a LABEL number must share
-    // the number's baseline or it floats.
-    let base = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy)
-        + crate::text::text_cap_band(theme::size::LABEL, 1).1
-        - crate::text::text_cap_band(theme::size::MICRO, 1).1;
+    // the number's baseline or it floats. `text::baseline_y` is that rule, shared.
+    let base = crate::text::baseline_y(
+        theme::size::MICRO,
+        1,
+        theme::size::LABEL,
+        1,
+        crate::text::text_vcenter_y(theme::size::LABEL, 1, cy),
+    );
     p.text(cap.as_ptr(), bx, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0, 1);
     bx += crate::text::text_width(cap.as_ptr(), theme::size::MICRO, 1) + RATING_CAPTION_GAP;
 

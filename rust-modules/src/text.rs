@@ -480,6 +480,34 @@ pub(crate) fn text_vcenter_y(sz: c_int, bold: c_int, cy: f32) -> f32 {
     cy - (ct + cb) * 0.5
 }
 
+/// The draw-`y` at which text of `sz`/`bold` sits on the **baseline** of a run of `on_sz`/`on_bold`
+/// text drawn at `on_y` — the one-line twin of [`text_vcenter_y`], for two runs of DIFFERENT sizes
+/// on the same line.
+///
+/// Two such runs must align by baseline, never by top: a caption beside a number, a `·` and a
+/// handle beside a heading. Top-aligning them hangs the smaller run's whole cap band above the
+/// larger one's baseline, so it reads as a superscript; the design mocks say `align-items:baseline`
+/// for exactly this. The subtraction is the cap-band bottoms, which is a font metric and therefore
+/// string-independent (see [`text_cap_band`]).
+///
+/// The ONE place this arithmetic lives — `widgets::rating_group` had written it out inline, and the
+/// shelf heading's source annotation needs the same three lines.
+///
+/// The two band bottoms are subtracted from EACH OTHER before `on_y` is touched, deliberately: a
+/// run measured against its own tokens then returns `on_y` bit-for-bit, so a caller that resolves
+/// every run of a flow through this (`ui::home::draw_heading`) does not nudge its reference run by
+/// an ULP for the privilege.
+pub(crate) fn baseline_y(sz: c_int, bold: c_int, on_sz: c_int, on_bold: c_int, on_y: f32) -> f32 {
+    // The same-token case is the COMMON one — a flow resolves its own reference run through here
+    // too — and it is not free: `text_cap_band` rasterizes through the glyph cache, whose lookup is
+    // a linear scan of 160 entries. Twice per heading, per shelf, per frame, inside the grid draw
+    // loop, to compute a difference that is zero by construction. Take it as an identity instead.
+    if sz == on_sz && bold == on_bold {
+        return on_y;
+    }
+    on_y + (text_cap_band(on_sz, on_bold).1 - text_cap_band(sz, bold).1)
+}
+
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
 pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
     unsafe {
