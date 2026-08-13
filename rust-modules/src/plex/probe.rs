@@ -158,6 +158,34 @@ fn host_for_url(address: &str) -> String {
     }
 }
 
+/// The host of a bare origin — what would actually be dialled, which for a `uri` candidate is NOT
+/// [`Candidate::address`]: plex.tv advertises the `plex.direct` hostname in `uri` while `address`
+/// stays the dotted quad behind it.
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    if let Some(end) = rest.find(']') {
+        return &rest[..=end]; // bracketed v6 literal, port (if any) follows
+    }
+    rest.split(':').next().unwrap_or(rest)
+}
+
+/// Is this host something the media transport can dial **without a resolver**? `stream.rs` takes a
+/// numeric address and speaks cleartext — it has no DNS at all — so a hostname is not merely slower
+/// here, it is undialable, exactly as an https origin is.
+///
+/// This is a ranking term rather than a filter for the same reason https is: the control plane
+/// (`net.rs`, libcurl) *does* resolve names, so a hostname-only server is still worth carrying —
+/// it just must never outrank an address that the byte path can open. Dropping this term is a
+/// silent bug, not a loud one: the tie falls through to plex.tv's order, so whether the app
+/// reaches a server depends on the order a remote service happened to list its connections in.
+fn numeric_host(host: &str) -> bool {
+    let h = host.strip_prefix('[').map_or(host, |h| h.strip_suffix(']').unwrap_or(h));
+    if h.contains(':') {
+        return true; // a v6 literal; the ipv6 term below is what demotes it
+    }
+    !h.is_empty() && h.split('.').all(|o| !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Every address of `res` that policy allows, best first.
 ///
 /// Each surviving connection yields its advertised `uri` (verbatim — the `plex.direct` hostname's
@@ -198,8 +226,10 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
         }
     }
     // Stable, so plex.tv's own order survives inside a tier — it is the only tiebreak left once
-    // location, scheme and address family have spoken, and it is not ours to reorder.
-    out.sort_by_key(|c| (c.location, c.scheme, c.ipv6));
+    // location, scheme, resolvability and address family have spoken, and it is not ours to reorder.
+    // `!numeric_host` sorts a dialable address first; see that function for why a hostname losing
+    // this tie is the difference between reaching a server and not.
+    out.sort_by_key(|c| (c.location, c.scheme, !numeric_host(host_of(&c.url)), c.ipv6));
     out
 }
 
@@ -286,6 +316,49 @@ mod tests {
         assert!(cs.iter().all(|c| c.location == Location::Remote), "a share has no local tier here");
         // and http outranks https for now, because https is the one this app cannot dial yet
         assert_eq!(cs[0].scheme, Scheme::Http);
+        // FIRST, not merely present. This fixture carries a second http candidate — the custom
+        // hostname `media.example.internal`, which plex.tv lists BEFORE the public IPv4 — and with
+        // no resolvability term the tie fell through to that order and put an address the media
+        // transport cannot open at the head of the list.
+        assert_eq!(
+            cs[0].url, "http://203.0.113.9:26937",
+            "the dialable address must lead, not merely appear: {cs:#?}"
+        );
+    }
+
+    /// `stream.rs` has no resolver, so a hostname is as undialable as an https origin. plex.tv's
+    /// listing order decides this tie unless we rank it, which makes the failure depend on a remote
+    /// service's array order — reproducible for one account and not another.
+    #[test]
+    fn a_dotted_quad_outranks_a_hostname_that_plex_tv_listed_first() {
+        let cs = candidates(&shared_server());
+        let pos = |u: &str| cs.iter().position(|c| c.url == u).unwrap_or_else(|| panic!("{u} absent: {cs:#?}"));
+
+        assert!(
+            pos("http://203.0.113.9:26937") < pos("http://media.example.internal:26937"),
+            "same tier and same scheme, so resolvability is the tiebreak: {cs:#?}"
+        );
+        // The hostname is ranked DOWN, never dropped: the curl control plane does resolve names,
+        // so a hostname-only server must still be reachable once TLS lands.
+        assert!(cs.iter().any(|c| c.url == "http://media.example.internal:26937"));
+    }
+
+    #[test]
+    fn a_host_is_numeric_only_when_every_label_is_digits() {
+        assert!(numeric_host("203.0.113.9"));
+        assert!(numeric_host("[2001:db8::1]"), "a v6 literal needs no resolver either");
+        assert!(!numeric_host("media.example.internal"));
+        // the shape that makes this worth a function: plex.direct encodes the quad with DASHES,
+        // so it CONTAINS an address while still requiring DNS to reach.
+        assert!(!numeric_host("203-0-113-9.hash2.plex.direct"));
+        assert!(!numeric_host(""));
+    }
+
+    #[test]
+    fn the_host_of_an_origin_is_read_without_its_scheme_or_port() {
+        assert_eq!(host_of("http://203.0.113.9:26937"), "203.0.113.9");
+        assert_eq!(host_of("https://media.example.internal:26937"), "media.example.internal");
+        assert_eq!(host_of("http://[2001:db8::1]:32400"), "[2001:db8::1]", "the port is not a v6 group");
     }
 
     /// A friend on our own LAN (Plex Home, or a share while visiting) is the case rule 1 must not
