@@ -475,16 +475,19 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     }
 
     // progress reporter: post the play position to /:/timeline (updates resume + watched).
-    // rk is captured now (fixed for the session); skipped for the sample/demo (no rk).
+    // rk AND the server it is a key on are captured now — both fixed for the session, both moved
+    // into the worker by value. The server used to be re-read inside the report, which made every
+    // tick a question about what the user was browsing rather than about what was playing; see
+    // `threads::timeline_thread`. Skipped for the sample/demo (no rk).
     let report_stop = threads::ReportStop::new();
     let report_th = if stream {
-        let rk = crate::route::cur_rk();
+        let (sid, rk) = (crate::route::cur_sid(), crate::route::cur_rk());
         if rk.is_empty() {
             None
         } else {
             // best-effort: refused, the only loss is that the resume point stops being posted
             let st = report_stop.clone();
-            crate::task::spawn("timeline", move || threads::timeline_thread(rk, st))
+            crate::task::spawn("timeline", move || threads::timeline_thread(sid, rk, st))
         }
     } else {
         None
