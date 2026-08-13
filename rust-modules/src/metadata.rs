@@ -894,7 +894,23 @@ pub(crate) fn playing_chapters() -> &'static [Chapter] {
 /// when it IS this item, so playing from a detail page costs no extra GET. Snapshotted into
 /// `ResolveEnv` and handed to the worker; splitting the fetch out lost this and quietly added a
 /// PMS round trip to every play from a detail page.
-pub(crate) fn cached_playing(rk: &str) -> Option<PlayingItem> {
+///
+/// `sid` is the server the item being played came from — the other half of its identity, since a
+/// ratingKey only names an item within one server.
+///
+/// **TODO(shared-servers): the test below is still the rk ALONE, and that is the one hole left in
+/// the playback path's otherwise end-to-end server capture.** It cannot be closed here: `Detail`
+/// does not yet carry the server it was loaded from, and guessing (`sid == current_server()`) would
+/// be a different claim that the real field then has to unpick. What it costs once two sources can
+/// share a shelf: the detail page holds rk `1` from server A, the user starts rk `1` from B's
+/// shelf, this returns A's `PlayingItem`, and the `.or_else(fetch_playing_item)` that would have
+/// gone to B never runs — so B's playback carries A's audio/subtitle `Stream` ids (which
+/// `put_selection` and the timeline report then send to B), A's `video_fps` in the Load esInfo, A's
+/// frame size in the local direct-play gate, and A's markers and chapters. Silently. The fix is a
+/// `sid` on `Detail` and `d.sid == sid &&` on the filter; the parameter is already here so that
+/// change is one line.
+pub(crate) fn cached_playing(sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+    let _ = sid; // see the TODO above — the pair test needs a field `Detail` does not have yet
     current().filter(|d| d.rk == rk && !d.audio.is_empty()).map(|d| PlayingItem {
         rk: rk.to_string(),
         audio: d.audio.clone(),
@@ -907,11 +923,14 @@ pub(crate) fn cached_playing(rk: &str) -> Option<PlayingItem> {
     })
 }
 
-pub(crate) fn fetch_playing_item(rk: &str) -> Option<PlayingItem> {
+/// `sid` names the server `rk` is a key on. It runs on the resolve worker, so the server must
+/// arrive by value: `client_opt()` here would fetch whichever server is CURRENT, and a ratingKey
+/// that also exists there would come back with a different film's stream list.
+pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
     if rk.is_empty() {
         return None;
     }
-    let it = crate::plex::client_opt().and_then(|c| c.metadata(rk));
+    let it = crate::plex::client_for(sid).and_then(|c| c.metadata(rk));
     // Markers and chapters hang off the ITEM, streams off its first Part — so a part-less response
     // still yields both of those instead of discarding all three. `Client::metadata` already sends
     // `includeChapters=1` (plex/library.rs), so the Chapter[] is on the wire either way: taking it
