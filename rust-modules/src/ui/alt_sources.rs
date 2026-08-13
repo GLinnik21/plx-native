@@ -463,14 +463,21 @@ static mut STAND_RK: String = String::new();
 pub(crate) fn pump() {
     let for_rk = unsafe { (*addr_of!(FOR_RK)).as_str() };
     if for_rk.is_empty() || for_rk == unsafe { (*addr_of!(STAND_RK)).as_str() } {
+        return; // no page, or this one has already had its chance — two string compares
+    }
+    // Wait for the item, and do NOT mark the attempt until it is here: a mount keeps
+    // `metadata::current()` empty for the whole fetch, and spending the one chance during that
+    // window would mean no stand-in at all on the page it was armed for.
+    if crate::metadata::current().filter(|d| d.rk == for_rk).is_none() {
         return;
     }
-    let Some(list) = dev_stand_in(for_rk) else { return };
-    unsafe {
-        *addr_of_mut!(STAND_RK) = for_rk.to_string();
-        *addr_of_mut!(COPIES) = list;
+    // Marked whatever the outcome, so the ordinary build — where the trigger is not armed at all —
+    // opens the `/tmp` file ONCE per page rather than on every frame of it.
+    unsafe { *addr_of_mut!(STAND_RK) = for_rk.to_string() };
+    if let Some(list) = dev_stand_in(for_rk) {
+        unsafe { *addr_of_mut!(COPIES) = list };
+        crate::ui::idle::invalidate();
     }
-    crate::ui::idle::invalidate();
 }
 
 /// A DRAW-ONLY copy list for `/tmp/plxnative-shared=<handle>`, so this panel and the control that
