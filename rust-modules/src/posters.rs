@@ -3,8 +3,23 @@
 //! Mutex<Store> + Condvar + std::thread workers. The decoded-pixel pointer is
 //! stored as an address (usize) so the shared Store stays Send. GL calls
 //! (upload/delete) run only on the main thread (poster_pump / poster_get);
-//! workers only fetch (Rust http_get) + decode (Rust img) off the lock.
-use crate::{img, stream};
+//! workers only fetch (via the typed client) + decode (Rust img) off the lock.
+//!
+//! ## Every entry point names a SERVER, and none of them assumes one
+//!
+//! Artwork is per-server in the strongest sense: `/photo/:/transcode?url=…` is a path on ONE
+//! PMS, its `url=` is that server's own thumb key, and the token baked into it is that server's
+//! grant. With a friend's shared server merged into one Home, "the current server" is the wrong
+//! host for half the tiles on screen — so a [`ServerId`] rides every call, sits in the slot as
+//! the other half of its identity, and is what the worker dials. Nothing in this file reads
+//! `plex::client()`; a caller that genuinely means "the server I am browsing" says so by passing
+//! `plex::current_server()`, at the call site, where it is visible.
+//!
+//! The server is a FIELD on the slot, not a prefix on the key, deliberately: keys already run
+//! ~135 bytes into a fixed 256-byte array (see [`Pslot::key`]), and a `u16` compare is also the
+//! cheaper half of the per-frame identity scan, so it goes first.
+use crate::img;
+use crate::plex::ServerId;
 use std::os::raw::{c_char, c_int, c_uchar, c_uint};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -59,6 +74,11 @@ struct Pslot {
     // exact bug at 96 — fixed with klen there). Real keys run ~135 bytes today; if the path shape
     // ever grows past ~255, key this the klen way too.
     key: [u8; 256],
+    /// Which server this art was asked of — the OTHER half of the slot's identity, and what the
+    /// worker dials. Two servers can hand out the same `/photo/:/transcode?url=/library/metadata/
+    /// 42/thumb/…` path (their rating keys are both server-local integers from 1), so a key alone
+    /// names a slot only while there is one server.
+    srv: ServerId,
     tex: c_uint,
     pw: c_int,
     ph: c_int,
@@ -69,7 +89,19 @@ struct Pslot {
     frame: c_uint, // last frame poster_get touched it (evict-protect)
 }
 impl Pslot {
-    const ZERO: Pslot = Pslot { key: [0; 256], tex: 0, pw: 0, ph: 0, px: 0, state: P_EMPTY, use_: 0, gen: 0, frame: 0 };
+    const ZERO: Pslot =
+        Pslot { key: [0; 256], srv: ServerId::UNSET, tex: 0, pw: 0, ph: 0, px: 0, state: P_EMPTY, use_: 0, gen: 0, frame: 0 };
+}
+
+/// Does this slot hold the art `srv` was asked for under `key`?
+///
+/// The store's whole identity rule, extracted because it is the one thing a second server can
+/// break invisibly: with the key alone, server B's card is served from A's slot — same texture,
+/// wrong picture, and the wrong token on the fetch that filled it. The `u16` compare goes first
+/// because this runs for every slot of every probe of every visible tile, and it is the half that
+/// can reject without touching the 256-byte array.
+fn slot_matches(s: &Pslot, srv: ServerId, key: &[u8]) -> bool {
+    s.state != P_EMPTY && s.srv == srv && key_bytes(s) == key
 }
 
 struct Store {
@@ -116,44 +148,81 @@ fn set_key(s: &mut Pslot, key: &str) {
     crate::cbuf::set_bytes(&mut s.key, key);
 }
 
-// (path, w, h, png) → built transcode path, memoised. resolve_tex re-derives the key for every
-// visible art tile every frame (~25-40 tiles × 60fps); the QueryBuilder + token clone behind
+// (server, path, w, h, png) → built transcode path, memoised. resolve_tex re-derives the key for
+// every visible art tile every frame (~25-40 tiles × 60fps); the QueryBuilder + token clone behind
 // image_transcode_path was ~15k heap allocs/sec of steady-state waste for keys that never change.
-// MAIN-thread only (all poster_key callers are draw paths). Invalidated when the client token
-// changes (profile switch — the token is baked into the path).
+// MAIN-thread only (all poster_key callers are draw paths).
+//
+// The SERVER is part of the key and the token generation is part of the VALUE. Both matter, and
+// neither is bookkeeping: the built path carries a token, so keying without the server would let
+// server B's card be built from A's memoised, token-bearing path — a request to B carrying A's
+// grant, which is a 401 at best. And the generation was one number for the whole memo, flushed
+// when "the" token changed; with a table of servers there is no such number, so each entry
+// remembers the generation it was built at and is rebuilt when THAT server's token moves.
+type MemoKey = (u16, String, c_int, c_int, bool);
 struct KeyMemo {
-    token_gen: u32,
-    map: std::collections::HashMap<(String, c_int, c_int, bool), String>,
+    map: std::collections::HashMap<MemoKey, (u32, String)>,
+}
+/// Entries kept before the memo is emptied wholesale. A ceiling, not a working set: a screen's
+/// live keys are dozens, and this only bounds a session that browses thousands of tiles.
+const MEMO_CAP: usize = 1024;
+
+impl KeyMemo {
+    /// The memo's whole rule, as a pure function of what it holds — so the two ways it can serve
+    /// the wrong path are host-testable without a registry, a socket or a GL context: an entry
+    /// belongs to ONE server, and it survives only as long as the token generation it was built
+    /// at. `build` is called exactly when neither holds.
+    fn get_or_build(
+        &mut self,
+        srv: u16,
+        path: &str,
+        w: c_int,
+        h: c_int,
+        png: bool,
+        gen: u32,
+        build: impl FnOnce() -> String,
+    ) -> &str {
+        use std::collections::hash_map::Entry;
+        if self.map.len() > MEMO_CAP {
+            self.map.clear();
+        }
+        match self.map.entry((srv, path.to_owned(), w, h, png)) {
+            Entry::Occupied(o) => {
+                let e = o.into_mut();
+                if e.0 != gen {
+                    *e = (gen, build());
+                }
+                &e.1
+            }
+            Entry::Vacant(v) => &v.insert((gen, build())).1,
+        }
+    }
 }
 static mut KEY_MEMO: Option<KeyMemo> = None;
 
-/// Build the transcode request path (also the store key). png=1 -> transparent clearLogo.
-/// The path (and token) come from the typed client's `image_transcode_path` — the one place
-/// that assembles a /photo/:/transcode request — so this stays the LRU key AND the fetch path.
-pub(crate) fn poster_key(dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
+/// Build `srv`'s transcode request path (also the store key). png=1 -> transparent clearLogo.
+/// The path (and token) come from that server's own `image_transcode_path` — the one place that
+/// assembles a /photo/:/transcode request — so this stays the LRU key AND the fetch path.
+///
+/// A server the registry does not know writes an EMPTY key, which every store entry point reads
+/// as "nothing to fetch": there is no address to dial and no token to sign with, and a claimed
+/// slot for a key that can never resolve is a tile that stays a skeleton forever while holding
+/// one of [`PT_CAP`].
+pub(crate) fn poster_key(srv: ServerId, dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
     if dst.is_null() || cap == 0 {
         return;
     }
+    let Some(c) = crate::plex::client_for(srv) else {
+        unsafe { crate::cbuf::set(dst, cap, "") };
+        return;
+    };
     unsafe {
-        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo {
-            token_gen: crate::plex::client().token_gen(),
-            map: std::collections::HashMap::new(),
+        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo { map: std::collections::HashMap::new() });
+        let path = cstr(src_path);
+        let s = memo.get_or_build(srv.raw(), &path, w, h, png != 0, c.token_gen(), || {
+            c.image_transcode_path(&path, w as i64, h as i64, png != 0)
         });
-        let gen = crate::plex::client().token_gen();
-        if memo.token_gen != gen || memo.map.len() > 1024 {
-            memo.token_gen = gen;
-            memo.map.clear();
-        }
-        let k = (cstr(src_path), w, h, png != 0);
-        let s = memo
-            .map
-            .entry(k)
-            .or_insert_with_key(|k| crate::plex::client().image_transcode_path(&k.0, w as i64, h as i64, png != 0));
-        let out = std::slice::from_raw_parts_mut(dst as *mut u8, cap);
-        let b = s.as_bytes();
-        let n = b.len().min(cap - 1);
-        out[..n].copy_from_slice(&b[..n]);
-        out[n] = 0;
+        crate::cbuf::set(dst, cap, s);
     }
 }
 
@@ -165,24 +234,24 @@ const LOGO_REQ_W: c_int = 600;
 const LOGO_REQ_H: c_int = 240;
 
 /// The ONE clearLogo store key ([`LOGO_REQ_W`]×[`LOGO_REQ_H`] transparent PNG). Its own fn because
-/// the PREFETCH must warm the exact key the draw will later resolve — `(path, w, h, png)` IS the
-/// store key, so a warm at a different size is a different slot and buys nothing. `None` for an item
-/// with no ratingKey.
-fn logo_key(rk: &str) -> Option<[u8; 352]> {
+/// the PREFETCH must warm the exact key the draw will later resolve — `(server, path, w, h, png)`
+/// IS the store key, so a warm at a different size (or against a different server) is a different
+/// slot and buys nothing. `None` for an item with no ratingKey.
+fn logo_key(srv: ServerId, rk: &str) -> Option<[u8; 352]> {
     if rk.is_empty() {
         return None;
     }
     let lpath = std::ffi::CString::new(format!("/library/metadata/{rk}/clearLogo")).ok()?;
     let mut key = [0u8; 352];
-    poster_key(key.as_mut_ptr() as *mut c_char, key.len(), lpath.as_ptr(), LOGO_REQ_W, LOGO_REQ_H, 1);
+    poster_key(srv, key.as_mut_ptr() as *mut c_char, key.len(), lpath.as_ptr(), LOGO_REQ_W, LOGO_REQ_H, 1);
     Some(key)
 }
 
 /// The prefetch twin of [`logo_src`] — starts the same fetch, takes no texture and no LRU
 /// protection. A hero page whose logo misses draws its title as HERO TEXT and then pops to the
 /// logotype the moment it lands; warming kills that pop the same way it kills the backdrop's.
-pub(crate) fn logo_warm(rk: &str) -> Warm {
-    logo_key(rk).map(|k| poster_warm(k.as_ptr() as *const c_char)).unwrap_or(Warm::Known)
+pub(crate) fn logo_warm(srv: ServerId, rk: &str) -> Warm {
+    logo_key(srv, rk).map(|k| poster_warm(srv, k.as_ptr() as *const c_char)).unwrap_or(Warm::Known)
 }
 
 /// Resolve an item's clearLogo (transparent PNG) to a GL texture plus its TRUE PIXEL SIZE.
@@ -197,9 +266,9 @@ pub(crate) fn logo_warm(rk: &str) -> Warm {
 ///
 /// NB it claims a slot even for an item that HAS no logo — the 404 lands as `P_FAILED` and holds it
 /// — so every hero page costs two of the store's [`PT_CAP`] slots, backdrop plus logo.
-pub(crate) fn logo_src(rk: &str) -> Option<(c_uint, f32, f32)> {
-    let key = logo_key(rk)?;
-    let (tex, lw, lh) = poster_get_wh(key.as_ptr() as *const c_char);
+pub(crate) fn logo_src(srv: ServerId, rk: &str) -> Option<(c_uint, f32, f32)> {
+    let key = logo_key(srv, rk)?;
+    let (tex, lw, lh) = poster_get_wh(srv, key.as_ptr() as *const c_char);
     if tex == 0 || lw <= 0 || lh <= 0 {
         return None;
     }
@@ -244,11 +313,11 @@ type Hit = (c_uint, c_int, c_int);
 /// MAIN thread. The one store lookup behind [`poster_get`], [`poster_get_wh`] and [`poster_warm`]:
 /// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
 /// difference between the paths, and it is entirely about the LRU bookkeeping.
-fn lookup(key_s: &str, touch: Touch) -> (Hit, Warm) {
+fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     let mut g = store();
     // hit?
     for i in 0..PT_CAP {
-        if g.slots[i].state != P_EMPTY && key_bytes(&g.slots[i]) == key_s.as_bytes() {
+        if slot_matches(&g.slots[i], srv, key_s.as_bytes()) {
             if touch == Touch::Draw {
                 g.clock = g.clock.wrapping_add(1);
                 let (c, f) = (g.clock, g.frame);
@@ -283,6 +352,7 @@ fn lookup(key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.px = 0;
         s.gen = s.gen.wrapping_add(1);
         set_key(s, key_s);
+        s.srv = srv; // captured HERE, on the main thread — the worker asks no one which server
         s.state = P_WANT;
         s.use_ = use_;
         s.frame = frame;
@@ -301,20 +371,23 @@ fn lookup(key_s: &str, touch: Touch) -> (Hit, Warm) {
     ((0, 0, 0), Warm::Claimed)
 }
 
-/// MAIN thread. READY texture for key, else 0 (claim a slot + enqueue fetch on miss).
-pub(crate) fn poster_get(key: *const c_char) -> c_uint {
-    poster_get_wh(key).0
+/// MAIN thread. READY texture for `srv`'s `key`, else 0 (claim a slot + enqueue fetch on miss).
+pub(crate) fn poster_get(srv: ServerId, key: *const c_char) -> c_uint {
+    poster_get_wh(srv, key).0
 }
 
 /// [`poster_get`] plus the texture's DECODED pixel size — `(0, 0, 0)` until it is READY. Art that
 /// must be FIT or COVERED into its frame (a clearLogo, a hero backdrop) needs the source aspect, and
 /// the store is the only thing that knows it. Same one probe as `poster_get`: the size rides along.
-pub(crate) fn poster_get_wh(key: *const c_char) -> Hit {
+pub(crate) fn poster_get_wh(srv: ServerId, key: *const c_char) -> Hit {
     if key.is_null() {
         return (0, 0, 0);
     }
     let key_s = unsafe { cstr(key) };
-    lookup(&key_s, Touch::Draw).0
+    if key_s.is_empty() {
+        return (0, 0, 0); // no path was built for this server — see [`poster_key`]
+    }
+    lookup(srv, &key_s, Touch::Draw).0
 }
 
 /// MAIN thread. Ensure `key` is being fetched WITHOUT drawing it — the prefetch path (the texture
@@ -328,12 +401,18 @@ pub(crate) fn poster_get_wh(key: *const c_char) -> Hit {
 ///  * it never bumps `use_`, so a warmed slot stays at LRU age 0, permanently the first victim.
 ///
 /// Prefetched art is by construction the cheapest thing in the store to throw away.
-pub(crate) fn poster_warm(key: *const c_char) -> Warm {
+pub(crate) fn poster_warm(srv: ServerId, key: *const c_char) -> Warm {
     if key.is_null() {
         return Warm::Known;
     }
     let key_s = unsafe { cstr(key) };
-    lookup(&key_s, Touch::Warm).1
+    if key_s.is_empty() {
+        // Nothing to enqueue and nothing spent: `Known` is what lets the caller's prefetch loop
+        // walk on to the next candidate instead of retiring this frame's one warm on a key that
+        // can never resolve.
+        return Warm::Known;
+    }
+    lookup(srv, &key_s, Touch::Warm).1
 }
 
 /// Pure half of [`store_idle`] — split so the gate is host-testable without mutating the store
@@ -419,7 +498,7 @@ pub(crate) fn poster_pump(budget: c_int) {
 /// BACKGROUND worker: claim a P_WANT slot, fetch+decode off-lock, publish P_DECODED.
 fn poster_worker() {
     loop {
-        let (idx, key_s, gen) = {
+        let (idx, key_s, srv, gen) = {
             let mut g = store();
             let idx = loop {
                 if g.quit {
@@ -439,17 +518,24 @@ fn poster_worker() {
                 g = res.map(|(guard, _)| guard).unwrap_or_else(|e| e.into_inner().0);
             };
             let key_s = String::from_utf8_lossy(key_bytes(&g.slots[idx])).into_owned();
-            let sgen = g.slots[idx].gen;
+            let (srv, sgen) = (g.slots[idx].srv, g.slots[idx].gen);
             g.slots[idx].state = P_LOADING;
-            (idx, key_s, sgen)
+            (idx, key_s, srv, sgen)
         };
 
-        // fetch (Rust http_get boxes the stream off-stack) + decode — no GL here. host/port
-        // come from the typed client singleton (the key_s path already carries the token).
-        let c = crate::plex::client();
+        // Fetch + decode off the lock — no GL here.
+        //
+        // The address is THIS SLOT's server, resolved from the id the main thread wrote when it
+        // claimed the slot; the worker never asks what the current server is, because with two
+        // registered it is the wrong host for half the tiles on screen. And the fetch goes
+        // through `fetch_built`, not `get_bytes`: `key_s` IS the store key and already ends in
+        // that server's token, so the ordinary path would append a second one. (Going through
+        // the client at all is the point — `crate::stream` used to be called from here, behind
+        // the back of the layer whose module doc claims to be the only code that touches it.)
         let mut w = 0i32;
         let mut h = 0i32;
-        let px = match stream::http_get(c.host(), c.port(), &key_s, None) {
+        let body = crate::plex::client_for(srv).and_then(|c| c.fetch_built(&key_s));
+        let px = match body {
             Some(b) if !b.is_empty() => img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h),
             _ => std::ptr::null_mut(),
         };
@@ -472,8 +558,9 @@ fn poster_worker() {
     }
 }
 
-/// Spawn the poster workers. Host/port/token are read from the typed client singleton
-/// (`crate::plex::install` must run first), so no config is threaded in here.
+/// Spawn the poster workers. No config is threaded in: each request carries its own server
+/// (the slot's [`Pslot::srv`]), and the address behind it comes from the registry
+/// (`crate::plex::install` or a `register` must have run before a fetch can resolve).
 pub(crate) fn posters_init() {
     {
         let mut g = store();
@@ -586,6 +673,69 @@ mod tests {
             let slots = [Pslot { state: st, use_: 0, frame: 0, ..Pslot::ZERO }; PT_CAP];
             assert_eq!(victim(&slots, 7), None, "state {st} must not be evictable");
         }
+    }
+
+    /// **The two-server identity rule.** Rating keys are server-local integers from 1, so our own
+    /// server and a friend's share hand out the SAME `/photo/:/transcode?url=/library/metadata/
+    /// 42/thumb/…` path for two different films. With the key alone deciding a hit, the second
+    /// one drawn shows the first one's picture — from a slot that was filled using the other
+    /// server's token.
+    #[test]
+    fn two_servers_asking_for_the_same_art_path_do_not_share_a_slot() {
+        const KEY: &str = "/photo/:/transcode?width=250&height=375&minSize=1&url=%2Flibrary%2Fmetadata%2F42%2Fthumb%2F1";
+        let (a, b) = (ServerId::from_raw(0), ServerId::from_raw(1));
+        let mut s = Pslot { state: P_READY, srv: a, ..Pslot::ZERO };
+        set_key(&mut s, KEY);
+
+        assert!(slot_matches(&s, a, KEY.as_bytes()), "the server that asked for it");
+        assert!(!slot_matches(&s, b, KEY.as_bytes()), "the same path on another server is another slot");
+        assert!(!slot_matches(&s, ServerId::UNSET, KEY.as_bytes()), "and an unknown server matches nothing");
+        assert!(!slot_matches(&s, a, b"/photo/:/transcode?width=250&height=375&minSize=1&url=%2Fother"));
+
+        // eviction only flips the state — the key bytes and the server stay behind, so an EMPTY
+        // slot must be rejected before either is even compared
+        let evicted = Pslot { state: P_EMPTY, ..s };
+        assert!(!slot_matches(&evicted, a, KEY.as_bytes()));
+    }
+
+    /// The memo's twin of the rule above, plus the generation half. Both are about serving a path
+    /// that carries a TOKEN: keyed without the server, server B's card is built from A's memoised
+    /// path — B's host asked with A's grant, which is a 401 — and with one shared generation
+    /// number, A's profile switch either flushes B's entries or (worse, once `client()` answers
+    /// with a different server) reports that nothing changed at all.
+    #[test]
+    fn a_memo_entry_belongs_to_one_server_and_one_token_generation() {
+        const PATH: &str = "/library/metadata/42/thumb/1755000000";
+        let mut m = KeyMemo { map: std::collections::HashMap::new() };
+        let builds = std::cell::Cell::new(0u32);
+        let mut key = |m: &mut KeyMemo, srv: u16, w: c_int, gen: u32, built: &str| -> String {
+            m.get_or_build(srv, PATH, w, 375, false, gen, || {
+                builds.set(builds.get() + 1);
+                built.to_owned()
+            })
+            .to_owned()
+        };
+
+        assert_eq!(key(&mut m, 0, 250, 7, "A?token=a"), "A?token=a");
+        assert_eq!(key(&mut m, 0, 250, 7, "never built"), "A?token=a", "a hit does not rebuild");
+        assert_eq!(builds.get(), 1);
+
+        assert_eq!(key(&mut m, 1, 250, 9, "B?token=b"), "B?token=b", "server B builds its own");
+        assert_eq!(key(&mut m, 0, 250, 7, "never built"), "A?token=a", "…and did not displace A's");
+        assert_eq!(builds.get(), 2);
+
+        // a profile switch on A: A's entry is rebuilt at the new generation, B's stands
+        assert_eq!(key(&mut m, 0, 250, 8, "A?token=a2"), "A?token=a2");
+        assert_eq!(key(&mut m, 1, 250, 9, "never built"), "B?token=b", "B's generation never moved");
+        assert_eq!(builds.get(), 3);
+        assert_eq!(key(&mut m, 0, 250, 8, "never built"), "A?token=a2", "the rebuild replaced, not appended");
+        assert_eq!(builds.get(), 3);
+
+        // the request box is still part of the key — a warm at one size and a draw at another are
+        // two different store slots, so they must be two different entries here too
+        assert_eq!(key(&mut m, 0, 1280, 8, "A-backdrop"), "A-backdrop");
+        assert_eq!(key(&mut m, 0, 250, 8, "never built"), "A?token=a2");
+        assert_eq!(builds.get(), 4);
     }
 
     /// The prefetch gate sees every stage of a fetch. If this ever loosens, the prefetch quietly

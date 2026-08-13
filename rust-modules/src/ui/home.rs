@@ -668,7 +668,9 @@ fn prefetch_hero_neighbours() {
         if crate::ui::widgets::warm_tex(&m.art, 1280, 720, 0) == Warm::Claimed {
             return;
         }
-        if crate::posters::logo_warm(hero_logo_rk(m)) == Warm::Claimed {
+        // the same server the draw will resolve against (`hero_logo`), or the warm names a
+        // different slot and buys nothing
+        if crate::posters::logo_warm(crate::plex::current_server(), hero_logo_rk(m)) == Warm::Claimed {
             return;
         }
     }
