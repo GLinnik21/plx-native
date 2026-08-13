@@ -4836,6 +4836,99 @@ mod tests {
 
         alt_clear();
         assert_eq!(hero_btns(), 3, "the control leaves with the copies that justified it");
+
+        // …and the NEGATIVE the gate is really about: a copy list that names only the source you
+        // are already on adds nothing. That is also how "not pinned" reads from here — the store
+        // holds the copies on PINNED sources and nothing else, so a source nobody pinned cannot
+        // put a control on this row however many copies of the film it has.
+        mount(Some(movie(0, 7_200_000)), 0);
+        use crate::ui::alt_sources::{install, reset, AltCopy};
+        reset("m1");
+        install(
+            "m1",
+            vec![
+                AltCopy { sid: crate::plex::current_server(), library: "Movies".into(), rk: "m1".into(), ..Default::default() },
+                AltCopy { sid: crate::plex::current_server(), library: "4K Movies".into(), rk: "9".into(), ..Default::default() },
+            ],
+        );
+        assert_eq!(hero_btns(), 2, "two copies on ONE source are not 'also available elsewhere'");
+
+        alt_clear();
+        mount(None, 0);
+    }
+
+    /// **The decisive property, proven through the real press path**: OK on another copy asks to
+    /// open THAT SERVER's page for the film, and leaves the page you are on completely alone.
+    ///
+    /// This is the call the design is built around, and the one a device capture could most easily
+    /// appear to confirm without it being true — a route change is a route change whoever caused
+    /// it. So it is pinned here instead, at both ends: the request names the OTHER server and that
+    /// server's own ratingKey, and NOTHING about the current page moves — no in-place swap, no
+    /// second navigation request, no change of mounted item. (The switch and the mount are
+    /// `app.rs`'s, deliberately: re-pointing `client()` invalidates every per-server store.)
+    #[test]
+    fn ok_on_another_copy_asks_for_that_servers_page_and_leaves_this_one_alone() {
+        let _serial = crate::testlock::serial();
+
+        mount(Some(movie(0, 7_200_000)), 0);
+        alt_arm("m1");
+        focus(); // spend the set change, so parking on the control below is deliberate
+
+        // press OK on the control: it asks for the panel and commits nothing
+        let alt = index_of(hero_set(), HeroCtl::Alt).expect("the control is up");
+        view().col = alt;
+        assert_eq!(hero_action(focus()), HeroAction::Alt);
+        assert!(!on_ok(), "opening a list never starts playback");
+        assert!(take_alt_request(), "the press asked app.rs to present the panel");
+        assert!(take_alt_open().is_none(), "…and chose no copy yet");
+
+        // app.rs presents it beside the control's drawn rect (any rect here — the host measures no
+        // pills, which is why `alt_sources::open` takes the anchor rather than finding it)
+        crate::ui::alt_sources::open(Rect::new(300.0, 812.0, 300.0, 60.0));
+        assert!(crate::ui::alt_sources::is_open());
+        assert!(!focus_is_card(), "nothing behind an open panel is pressable");
+
+        // it opens on the copy you are ON, so one DOWN reaches the other one
+        crate::ui::alt_sources::move_focus(SDLK_DOWN as c_int);
+        assert!(!on_ok(), "committing a row never starts playback either");
+        assert!(!crate::ui::alt_sources::is_open(), "…and the panel closed behind it");
+
+        let (sid, rk) = take_alt_open().expect("the press chose the other copy");
+        assert_ne!(sid, crate::plex::current_server(), "the destination is the OTHER server");
+        assert_eq!(rk, "318", "…addressed by ITS ratingKey, not this server's");
+
+        // and the page you are standing on is untouched: the copy was not swapped under you, and
+        // no ordinary open request was raised alongside (which would be a second navigation)
+        assert!(take_open_request().is_none(), "the copy must not be switched in place");
+        assert_eq!(mounted_rk(), "m1", "this page stays this page until app.rs navigates");
+        assert_eq!(hero_btns(), 3, "…control set and all");
+
+        alt_clear();
+        mount(None, 0);
+    }
+
+    /// The other half of the same press: OK on the copy you are ALREADY on asks for nothing. It is
+    /// a picker whose tick already answered the question, so the panel simply dismisses rather than
+    /// re-mounting the page under itself.
+    #[test]
+    fn ok_on_the_copy_you_are_on_dismisses_and_navigates_nowhere() {
+        let _serial = crate::testlock::serial();
+
+        mount(Some(movie(0, 7_200_000)), 0);
+        alt_arm("m1");
+        crate::ui::alt_sources::open(Rect::new(300.0, 812.0, 300.0, 60.0));
+        assert!(!on_ok());
+        assert!(take_alt_open().is_none(), "the row you are on is not a destination");
+        assert!(take_open_request().is_none());
+        assert!(!crate::ui::alt_sources::is_open(), "…but the press is still spent on dismissing");
+
+        // BACK dismisses it too, and is reported as SPENT so app.rs does not also pop the trail
+        crate::ui::alt_sources::open(Rect::new(300.0, 812.0, 300.0, 60.0));
+        assert!(back(), "a panel the page has open takes the BACK press");
+        assert!(!crate::ui::alt_sources::is_open());
+        assert!(!back(), "…and with nothing open the page hands BACK back to app.rs");
+
+        alt_clear();
         mount(None, 0);
     }
 
