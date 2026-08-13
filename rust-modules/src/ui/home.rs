@@ -160,8 +160,16 @@ fn g_fc() -> c_int {
 // Home grid is now N hub shelves of varying length (not the old fixed ROWS×COLS).
 // The Grid's CardRow array + each row's cell springs are sized to these maxima; the
 // *actual* counts come from pms::hub_count()/hub_len().
-const MAX_HUBS: usize = 16; // Continue Watching, On Deck, Recently Added, collections…
-const MAX_ITEMS: usize = 24; // cards per shelf
+// Continue Watching, On Deck, Recently Added, collections… — and, with a second server, whatever
+// the shares contribute. The number lives in `pms`, which BUDGETS against it: the shelf allowance
+// is divided between the sources there, so the two must be one constant or a share can be truncated
+// away by a cap the data layer never heard of.
+const MAX_HUBS: usize = crate::pms::MAX_SHELVES;
+// Cards per shelf. In `pms` for the same reason MAX_HUBS is: it is where the merged Continue
+// Watching shelf is TRUNCATED to it, and this file clamps the drawn focus to it while `col()` — the
+// index OK acts on — clamps only to the shelf's real length. One constant, so the ring and the
+// press can never disagree about which card is focused.
+const MAX_ITEMS: usize = crate::pms::MAX_SHELF_ITEMS;
 
 /// Rows the grid can actually address: the server's hub count clamped to the fixed `shelves`
 /// array. **Every `shelves[]` index site must go through this** — a server with 3-4 libraries
