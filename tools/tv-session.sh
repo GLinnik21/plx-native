@@ -68,7 +68,15 @@ stop_viewers() {
 
 tv_host() {
   [ -n "${TV:-}" ] && { echo "$TV"; return; }
-  make -C "$REPO" -pn 2>/dev/null | sed -n 's/^TV *= *//p' | head -1
+  # `.tv-host` FIRST, because it is the source the Makefile itself reads (`TV ?= $(strip $(shell cat
+  # .tv-host))`). Asking make for the value with `-pn` does NOT work and used to be what this did:
+  # `-p` prints the DEFINITION, and a recursive `=` variable's definition is the literal
+  # `$(strip $(shell cat .tv-host ...))` text — so HOST became that string, every ssh failed with
+  # "hostname contains invalid characters", and `up` reported **"TV unreachable"** on a television
+  # that was awake and answering. Precisely the mimicry the header warns about, from the driver.
+  [ -f "$REPO/.tv-host" ] && { tr -d '[:space:]' < "$REPO/.tv-host"; return; }
+  # a hardcoded `TV = 1.2.3.4` in the Makefile, for a checkout with no .tv-host
+  sed -n 's/^TV *[?:]*= *\([0-9a-zA-Z.:_-]\{1,\}\) *$/\1/p' "$REPO/Makefile" | head -1
 }
 HOST="$(tv_host)"
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
