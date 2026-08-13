@@ -21,7 +21,7 @@
 //! visible art tile, every frame (~25–40 tiles × 60 fps). An `RwLock` there buys nothing and
 //! costs an atomic RMW pair per call plus a fairness stall whenever a login writes; an `Arc`
 //! clone would be a refcount bump per call on top of changing every call site's type. So a read
-//! is: one relaxed load of `CURRENT`, one acquire load of a slot pointer, deref. No lock, no
+//! is: one acquire load of `CURRENT`, one acquire load of a slot pointer, deref. No lock, no
 //! refcount, no allocation. Writers (login, profile switch, adding a server) serialize on
 //! `WRITE`, which no reader ever touches.
 //!
@@ -97,8 +97,16 @@ pub fn client_for(id: ServerId) -> Option<&'static Client> {
 }
 
 /// Which server `client()` answers with. `UNSET` before the first install.
+///
+/// **`Acquire`, and the pair with [`set_current`]'s `Release` is load-bearing on the TV.** The
+/// invariant every reader depends on is *"if you can see this id, the slot it names is published"*
+/// — `client_opt` reads this and then the slot, and `client()` PANICS on a null one. Relaxed on
+/// both sides states no such ordering: ARMv7 is weakly ordered, so a poster worker calling
+/// `client()` per art tile per frame could observe an id stored by the auth worker's `install`
+/// before that thread's slot-pointer store landed, and take the panic. x86 would never show it,
+/// which is exactly why it is spelled out here rather than left to a host test to catch.
 pub fn current() -> ServerId {
-    ServerId(CURRENT.load(Ordering::Relaxed) as u16)
+    ServerId(CURRENT.load(Ordering::Acquire) as u16)
 }
 
 /// Point `client()` at another registered server. `false` (and no change) for an id that names
@@ -106,7 +114,9 @@ pub fn current() -> ServerId {
 pub fn set_current(id: ServerId) -> bool {
     let ok = client_for(id).is_some();
     if ok {
-        CURRENT.store(id.0 as u32, Ordering::Relaxed);
+        // Release, pairing with `current()`'s Acquire: publishes the slot store that
+        // `client_for` above just proved visible TO US, so it is visible to every later reader.
+        CURRENT.store(id.0 as u32, Ordering::Release);
     }
     ok
 }
@@ -211,7 +221,9 @@ fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id
     // and the event log is what users send us.
     crate::log(&format!("plex: server slot {} registered at {host}:{port}", id.0));
     if !current().is_set() {
-        CURRENT.store(id.0 as u32, Ordering::Relaxed);
+        // Release: this store is what makes the `publish` above reachable through `client()`, so it
+        // must not be seen before it (see `current()`).
+        CURRENT.store(id.0 as u32, Ordering::Release);
     }
     id
 }
@@ -244,7 +256,7 @@ pub(super) fn reset_for_test() {
         s.store(std::ptr::null_mut(), Ordering::Release);
     }
     COUNT.store(0, Ordering::Release);
-    CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Relaxed);
+    CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
 }
 
 #[cfg(test)]
