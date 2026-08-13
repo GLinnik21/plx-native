@@ -899,7 +899,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             fn select_pill(&self) -> Option<usize> {
                 match self {
                     Nav::Home { .. } => Some(0),
-                    Nav::Library(sec) => Some(sec + 1),
+                    // a TAB index, not a section index: the strip is a projection of the table
+                    // (`browse::tabs`), so `+1` here is only the Home pill leading the row
+                    Nav::Library(tab) => Some(tab + 1),
                     Nav::Open { .. } | Nav::Back { .. } => None,
                 }
             }
@@ -3485,7 +3487,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     Route::Detail => nav_back(route, &trail, &mut nav_pending),
                     Route::Home => nav_to(route, Nav::Library(0), &mut nav_pending),
-                    // pill 1 is that same first section: Home comes back in the hero view with the
+                    // pill 1 is that same first TAB — not "the first section", which stopped being
+                    // the same thing when the strip became a projection of the table (`browse::tabs`):
+                    // several libraries can share one pill. Home comes back in the hero view with the
                     // top band on the pill the round trip started from, so the scene is a loop
                     Route::Library => nav_to(route, Nav::Home { focus_pill: Some(1) }, &mut nav_pending),
                     _ => {}

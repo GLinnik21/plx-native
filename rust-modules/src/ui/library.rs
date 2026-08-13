@@ -392,7 +392,9 @@ struct ChipStrs {
 /// which is the one moment its label is the only thing on screen that changed.
 static mut CHIP_CACHE: Option<(String, Vec<ChipStrs>)> = None;
 static mut RAIL_LABELS: Option<(u32, usize, Vec<CString>)> = None; // (sections_gen, section, labels)
-static mut COUNT_C: Option<(i64, bool, CString)> = None;
+// (total, the section TYPE's noun, the rendered string) — keyed on the noun rather than on a
+// movie/show boolean, because a section is one of four types now (`browse::SecKind`)
+static mut COUNT_C: Option<(i64, &'static str, CString)> = None;
 // letter rail: focused letter + the per-letter rects recorded at draw (pointer hit-testing)
 const MAX_LETTERS: usize = 34; // A–Z + digits/# buckets
 static mut RAIL_F: usize = 0;
@@ -1598,11 +1600,10 @@ pub(crate) fn draw() {
     // item count, right-aligned on the toolbar line (cached — changes only on re-query)
     let tot = crate::browse::total();
     if tot >= 0 {
-        let is_show = crate::browse::section_is_show(crate::browse::cur());
+        let noun = crate::browse::section_kind(crate::browse::cur()).map(|k| k.noun()).unwrap_or("items");
         let cache = unsafe { &mut *addr_of_mut!(COUNT_C) };
-        if cache.as_ref().map(|(ct, cshow, _)| *ct != tot || *cshow != is_show).unwrap_or(true) {
-            let noun = if is_show { "shows" } else { "films" };
-            *cache = Some((tot, is_show, CString::new(format!("{tot} {noun}")).unwrap_or_default()));
+        if cache.as_ref().map(|(ct, cn, _)| *ct != tot || *cn != noun).unwrap_or(true) {
+            *cache = Some((tot, noun, CString::new(format!("{tot} {noun}")).unwrap_or_default()));
         }
         let cs = &cache.as_ref().unwrap().2;
         let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, TOOL_Y + TOOL_H * 0.5);
