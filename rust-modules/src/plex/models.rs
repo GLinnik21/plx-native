@@ -30,6 +30,13 @@ pub struct MediaContainer {
     /// GET /identity — the server's stable id (the PlayQueue `server://{id}/…` uri needs it).
     #[serde(rename = "machineIdentifier", default)]
     pub machine_identifier: String,
+    /// GET / — what the server calls ITSELF ("bx23-ldn"). The MACHINE name, and so the one string
+    /// the Sources list heads a server's group with; the app says the owner's HANDLE everywhere
+    /// else ("people in content, machines in settings"). Read off the PMS rather than plex.tv on
+    /// purpose: a server that answers can always name itself, including on a boot that never
+    /// reached plex.tv at all.
+    #[serde(rename = "friendlyName", default, deserialize_with = "de_str")]
+    pub friendly_name: String,
     /// POST /playQueues response ids (0 = absent) — the timeline's playQueueID/playQueueItemID.
     #[serde(rename = "playQueueID", default, deserialize_with = "de_i64")]
     pub play_queue_id: i64,

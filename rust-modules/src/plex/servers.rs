@@ -75,9 +75,33 @@ impl Default for ServerId {
     }
 }
 
+/// What the ROSTER says ABOUT a registered server, as opposed to the address a request dials:
+/// whose it is and what it is called. Set by whoever ingested the roster (plex.tv
+/// `/api/v2/resources`, the `plxnative-servers` dev trigger, or a server naming itself through
+/// `Client::friendly_name`), read by the Sources list.
+///
+/// Deliberately NOT fields on `Client`: a `Client` is re-pointed whenever the address moves, and
+/// a re-point must not forget whose server it is. Published by the same leak-and-store the client
+/// slots use, so [`facts`] hands out `&'static` on exactly the same terms as [`client_for`].
+pub struct ServerFacts {
+    /// The MACHINE name — "bx23-ldn". "People in content, machines in settings": this is drawn
+    /// only where the grant itself is the subject, i.e. the Sources list's group headers.
+    pub name: String,
+    /// The owner's plex.tv handle — "bamx23". **Empty on your own server**, and empty is the
+    /// ABSENCE of an owner rather than an anonymous one: every surface that annotates a source
+    /// draws nothing at all for it, no separator and no empty run.
+    pub handle: String,
+    /// This account owns the server (`account::Resource.owned`). Not derivable from an empty
+    /// handle: a share whose `sourceTitle` plex.tv did not send is still a share.
+    pub owned: bool,
+}
+
 /// The table. A null slot is unpopulated; a non-null one is a leaked `Client` that is never
 /// freed (see the module doc), which is what makes the `unsafe` deref in [`client_for`] sound.
 static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
+/// [`ServerFacts`] per slot, published and leaked exactly as `SLOTS` is. A null slot is a server
+/// nobody has described yet — which is the honest state on a boot that never reached plex.tv.
+static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
 /// Slots populated so far. Only writers and the match scan read it; `client_for` does not.
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The current/primary server as a raw `ServerId` — what `client()` answers with.
@@ -126,6 +150,48 @@ pub fn client_opt() -> Option<&'static Client> {
 /// How many servers are registered.
 pub fn count() -> usize {
     COUNT.load(Ordering::Acquire)
+}
+
+/// Every registered slot, in registration order — **the granted roster**, since a server is only
+/// registered once the account was granted it. Registration order matters to the one caller
+/// (`browse`'s section table appends in it, and the session server registers first), so this is an
+/// ordered walk and not a set.
+pub fn ids() -> impl Iterator<Item = ServerId> {
+    (0..count() as u16).map(ServerId)
+}
+
+/// What the roster says about one server, `None` until something has described it.
+pub fn facts(id: ServerId) -> Option<&'static ServerFacts> {
+    let p = FACTS.get(id.index()?)?.load(Ordering::Acquire);
+    // SAFETY: identical to `client_for`'s — a slot holds null or a `Box::into_raw` pointer that is
+    // never freed, published Release and read Acquire.
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// Record what the roster says about a server. Idempotent and additive: a field given as empty
+/// KEEPS whatever was already known, so a later describer that learned only the machine name (the
+/// server naming itself over `GET /`) cannot blank an owner handle plex.tv already supplied — and
+/// the two ingest paths can land in either order.
+///
+/// A no-op for an id that names no client: describing a slot nothing dials would leave a row in
+/// the Sources list that cannot be browsed.
+pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else { return };
+    let old = facts(id);
+    let merged = ServerFacts {
+        name: pick(name, old.map(|f| f.name.as_str())),
+        handle: pick(handle, old.map(|f| f.handle.as_str())),
+        // `owned` has no "unknown", so the newest answer wins — but a describer that only learned
+        // a name passes the flag it read back, which is what makes that a no-op rather than a lie.
+        owned,
+    };
+    FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+}
+
+/// `new` when it says something, else whatever was already known.
+fn pick(new: &str, old: Option<&str>) -> String {
+    if new.is_empty() { old.unwrap_or_default().to_owned() } else { new.to_owned() }
 }
 
 // ---- writes: registration ----
@@ -243,6 +309,9 @@ pub(super) fn reset_for_test() {
     for s in SLOTS.iter() {
         s.store(std::ptr::null_mut(), Ordering::Release);
     }
+    for f in FACTS.iter() {
+        f.store(std::ptr::null_mut(), Ordering::Release);
+    }
     COUNT.store(0, Ordering::Release);
     CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Relaxed);
 }
@@ -254,10 +323,22 @@ mod tests {
     /// Every test here mutates the ONE registry, so they hold the crate-wide serialization lock
     /// (`lib.rs`'s `testlock`) rather than a module-local one: `client()` is reachable from other
     /// modules' tests too.
-    fn fresh() -> std::sync::MutexGuard<'static, ()> {
+    ///
+    /// It empties the registry on the way OUT as well as on the way in, and that half is
+    /// load-bearing rather than tidy: `browse::pump` adopts every registered slot as a source and
+    /// then spawns a discovery worker for it, so servers left behind here would have another
+    /// module's tests dialling `10.0.0.1` on a background thread. The reset happens while the lock
+    /// is still held (a struct's own `Drop` runs before its fields').
+    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    impl Drop for Fresh {
+        fn drop(&mut self) {
+            reset_for_test();
+        }
+    }
+    fn fresh() -> Fresh {
         let g = crate::testlock::serial();
         reset_for_test();
-        g
+        Fresh(g)
     }
 
     /// The token as the wire would carry it — `with_token` is the only reader of the field.
@@ -357,6 +438,36 @@ mod tests {
         reg("mach-A", "10.0.0.1", "tok-a2");
         assert_ne!(client_for(a).unwrap().token_gen(), ga, "A's token changed");
         assert_eq!(client_for(b).unwrap().token_gen(), gb, "B's did not");
+    }
+
+    /// The roster half: [`ids`] walks every registered slot in registration order (that IS the
+    /// granted roster), and [`describe`] MERGES rather than replaces — the two ingest paths (plex.tv,
+    /// which knows the owner, and the server naming itself over `GET /`, which knows only the machine
+    /// name) land in either order without either one blanking the other's field.
+    #[test]
+    fn the_roster_walks_in_registration_order_and_describing_it_never_blanks_a_known_field() {
+        let _g = fresh();
+        let a = reg("mach-A", "10.0.0.1", "tok-a");
+        let b = reg("mach-B", "10.0.0.2", "tok-b");
+        assert_eq!(ids().collect::<Vec<_>>(), vec![a, b], "registration order, the session server first");
+        assert!(facts(a).is_none(), "nothing has described it yet — not an empty-named server");
+
+        // plex.tv first (owner known, no machine name in this path), then the server itself
+        describe(b, "", "bamx23", false);
+        describe(b, "bx23-ldn", "", false);
+        let f = facts(b).expect("described");
+        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("bx23-ldn", "bamx23", false));
+
+        // and the other order, on the other slot
+        describe(a, "mac-mini", "", true);
+        describe(a, "", "", true);
+        let f = facts(a).expect("described");
+        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("mac-mini", "", true));
+
+        // a slot nothing dials is never described — a Sources row you cannot browse
+        describe(ServerId::from_raw(9), "ghost", "nobody", false);
+        assert!(facts(ServerId::from_raw(9)).is_none());
+        assert!(facts(ServerId::UNSET).is_none(), "the reserved value must never resolve");
     }
 
     /// A slot registered by address only (what `install` can do) is ADOPTED once the machine id

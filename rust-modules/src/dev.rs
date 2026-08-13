@@ -110,6 +110,12 @@ pub(crate) struct DevServer {
     /// `plxnative-token` cannot express two servers. A SECRET — never logged.
     #[serde(default)]
     pub(crate) token: String,
+    /// The owner's plex.tv handle (`sourceTitle` on the wire) — "bamx23". EMPTY means **your own
+    /// server**, which is what the Sources list draws as the absence of an owner rather than as an
+    /// anonymous one, so a harness overlay that omits it injects an owned server by definition.
+    /// Public, like the machine name: it is the string every browsing surface says out loud.
+    #[serde(default, alias = "sourceTitle", alias = "source_title")]
+    pub(crate) handle: String,
 }
 
 fn default_port() -> i64 {
@@ -125,7 +131,7 @@ impl DevServer {
         if self.machine_id.chars().nth(8).is_some() {
             mid.push_str("..");
         }
-        format!("name={:?} {}:{} mid={}", self.name, self.host, self.port, mid)
+        format!("name={:?} handle={:?} {}:{} mid={}", self.name, self.handle, self.host, self.port, mid)
     }
     /// Are these credentials complete enough to reach the server at all?
     pub(crate) fn usable(&self) -> bool {
@@ -267,22 +273,34 @@ mod tests {
     }
 
     /// The harness's payload, verbatim — `tests/run.py::shared_servers_json` emits exactly this
-    /// (compact, an array of one, these five keys). It is the only automated link between the two
+    /// (compact, an array of one, these SIX keys). It is the only automated link between the two
     /// halves of the mechanism: rename a field on either side and this fails instead of a device
     /// run quietly booting with one server.
+    ///
+    /// **`handle` is the load-bearing one**, and it is the reason this assertion is worth more than
+    /// it looks. `app.rs` derives `owned = handle.is_empty()` from it, which decides whether the
+    /// injected server's libraries are pinned to Home and whether they get tab pills of their own
+    /// (`browse::tabs`). Drop or rename it on the Python side and every injected server silently
+    /// becomes one of YOURS — a friend's libraries pinned and pilled — with nothing else failing.
     #[test]
     fn servers_parse_the_harness_payload_verbatim() {
         let payload = concat!(
-            r#"[{"name":"Bob's Plex","machine_id":"friend222","host":"10.0.0.9","#,
+            r#"[{"name":"Bob's Plex","machine_id":"friend222","handle":"bob","host":"10.0.0.9","#,
             r#""port":32400,"token":"FRIENDTOK"}]"#
         );
         let v = super::parse_servers(payload).expect("the harness payload must parse");
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "Bob's Plex");
         assert_eq!(v[0].machine_id, "friend222");
+        assert_eq!(v[0].handle, "bob", "the owner's handle — an empty one means YOUR OWN server");
         assert_eq!(v[0].host, "10.0.0.9");
         assert_eq!(v[0].port, 32400);
         assert!(v[0].usable());
+
+        // …and the wire spelling plex.tv itself uses, so a hand-written file copied straight off a
+        // /api/v2/resources row works too
+        let wire = r#"[{"sourceTitle":"bob","host":"10.0.0.9","token":"t"}]"#;
+        assert_eq!(super::parse_servers(wire).unwrap()[0].handle, "bob");
     }
 
     /// `address` is what `plex::session::ServerRef` calls the host field, so a file written by
