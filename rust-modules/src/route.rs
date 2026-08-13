@@ -605,6 +605,10 @@ fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> QueueInfo {
 /// non-atomic i64s, which on armv7 is a tearable two-word load.
 #[derive(Clone, Default)]
 pub(crate) struct ResolveEnv {
+    /// WHICH SERVER this playback's item lives on — the scope for every server-local key the
+    /// resolve then uses (`rk`, `Part.key`, `Stream.id`). Captured on the main thread with
+    /// everything else here, because the resolve worker must not read the current server itself.
+    pub sid: crate::plex::ServerId,
     pub machine_id: String,
     pub audio_sid: i64,
     pub sub_sid: i64,
@@ -615,11 +619,18 @@ pub(crate) struct ResolveEnv {
 impl ResolveEnv {
     /// MAIN THREAD ONLY.
     fn snapshot(rk: &str) -> ResolveEnv {
+        // The current server is the right answer for every play the app can start TODAY (a play is
+        // always raised from a page of the server we are signed in to). Once an item can be started
+        // from a shelf merged across servers, this has to come from the item being played — the
+        // `PmsMovie`/`UpNext`/`Detail` that raised the request all carry it now — which is what
+        // `request_play`'s own unit threads through.
+        let sid = crate::plex::current_server();
         ResolveEnv {
+            sid,
             machine_id: unsafe { (*addr_of!(MACHINE_ID)).clone() },
             audio_sid: cur_audio_sid(),
             sub_sid: cur_sub_sid(),
-            cached_item: crate::metadata::cached_playing(rk),
+            cached_item: crate::metadata::cached_playing(sid, rk),
         }
     }
 }
@@ -711,7 +722,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
     // loaded detail can be a different item (show page / straight-from-Home play)
     // detail already had this item's streams — no GET
-    plan.playing = env.cached_item.clone().or_else(|| crate::metadata::fetch_playing_item(rk));
+    plan.playing = env.cached_item.clone().or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. Falls back to the local codec test if the server returns no usable
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.

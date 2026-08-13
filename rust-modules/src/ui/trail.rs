@@ -25,19 +25,35 @@
 //! Main-thread only — an `app.rs` run-loop LOCAL, exactly like the booleans it replaces. Navigation
 //! history belongs to the loop that navigates, not to a static.
 
+use crate::plex::ServerId;
 use crate::ui::detail::Spot;
 
 /// One page in the trail — everything needed to put it back WITHOUT the screen that pushed it.
 ///
 /// The payloads are the arguments each screen's own entry point already takes, so re-entry is a
-/// call rather than a reconstruction: [`Node::Person`]'s four fields are `ui::person::reopen`'s
+/// call rather than a reconstruction: [`Node::Person`]'s fields are `ui::person::reopen`'s
 /// parameters (the header the cast row handed over — name and headshot — which is why a re-opened
-/// person page renders before its fetch lands), and [`Node::Detail`]'s `rk` is `detail::open_rk`'s.
+/// person page renders before its fetch lands), and [`Node::Detail`]'s `(sid, rk)` is
+/// `detail::open_rk`'s.
 ///
 /// **Identity, never an index.** A hub refetch rebuilds the catalog wholesale (Continue Watching
 /// re-sorts by `lastViewedAt`), so an index stored here would name a different movie by the time
 /// BACK is pressed — the bug `detail::reselect` exists for. `detail::mount_rk` re-derives the row
 /// from the rk through `pms::index_of_rk` at re-entry instead.
+///
+/// **…and identity is SERVER-SCOPED.** A ratingKey and a `personId` are both server-local integers
+/// dense from 1, so once a shared server is registered a bare key names a page on no machine in
+/// particular: browse the share, open one of its items, go deeper, press BACK — and the rk alone
+/// re-opens *our* item with that number, a page the user has never seen. Every node therefore
+/// carries the `ServerId` its key belongs to, and identity is asked through [`Node::same_page`].
+///
+/// That per-node `sid` is deliberately the answer to a question [`Trail::reset`] raises: its doc
+/// calls a truncation the profile-switch guard, because "a new identity must never be able to walk
+/// back into the previous one's pages". A SERVER switch has the same shape — but not the same
+/// remedy, because the trail's other rule is that a cycle is a HISTORY (`a_cycle_is_a_history…`)
+/// and a source switch does not revoke access to what is behind you. Scoping each node keeps the
+/// history walkable and still lands every pop on the page it names; wiping it would spend the
+/// user's history for a change of source they may undo in one press.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum Node {
     /// The root, and the only node BACK never leaves — see [`Trail::back`].
@@ -46,16 +62,61 @@ pub(crate) enum Node {
     /// the profile does, so re-entry is a route flip (`library::enter` would re-query and lose it).
     Library,
     Person {
+        /// the server `key` is a `personId` on — `crate::person::Person::sid`
+        sid: ServerId,
         /// the LOCAL `personId` — `crate::person::Person::key`
         key: String,
-        /// the `tagKey` guid plex.tv answers to
+        /// the `tagKey` guid plex.tv answers to. **Global**, unlike `key`: it is the metadata
+        /// provider's id, identical on every server that ever heard of this person, which is why
+        /// [`Node::same_page`] prefers it whenever both sides have one.
         guid: String,
         name: String,
         thumb: String,
     },
     /// `spot` is where the page stood when the user navigated deeper — `Spot::default()` for a page
     /// that has been entered and not yet left (see [`Trail::set_top_spot`]).
-    Detail { rk: String, spot: Spot },
+    Detail { sid: ServerId, rk: String, spot: Spot },
+}
+
+impl Node {
+    /// Do two nodes name the SAME PAGE? Not `==`: a node also carries state that identity does not
+    /// depend on (a [`Node::Detail`]'s `spot`, a [`Node::Person`]'s handed-over header), so a
+    /// derived equality would answer "different page" for the same page scrolled elsewhere.
+    ///
+    /// **A person is matched by `guid` first.** The `tagKey` is plex.tv's and is global, so it
+    /// identifies the person across every server that lists them — and it is the id that survives
+    /// the same actor being `personId` 45 on one machine and 812 on another. Only when either side
+    /// lacks one (the credit row carried no `tagKey`) does it fall back to the LOCAL `(sid, key)`
+    /// pair, which is the server-scoped half.
+    pub(crate) fn same_page(&self, other: &Node) -> bool {
+        match (self, other) {
+            (Node::Home, Node::Home) | (Node::Library, Node::Library) => true,
+            (Node::Detail { sid: a, rk: x, .. }, Node::Detail { sid: b, rk: y, .. }) => {
+                crate::plex::same_item((*a, x), (*b, y))
+            }
+            (
+                Node::Person { sid: a, key: x, guid: ga, .. },
+                Node::Person { sid: b, key: y, guid: gb, .. },
+            ) => same_person((*a, x, ga), (*b, y, gb)),
+            _ => false,
+        }
+    }
+}
+
+/// The PERSON-identity rule, as `(server, personId, tagKey)` on each side — pulled out of
+/// [`Node::same_page`] so `app.rs`'s "is this person already loaded?" guard can ask it about the
+/// live `person::Person` store without first building a throwaway [`Node`], and so the two can
+/// never come to disagree.
+///
+/// The guid wins whenever BOTH sides have one (see [`Node::same_page`]); otherwise the local id
+/// decides, scoped to its server. Comparing a present guid against a missing one is deliberately
+/// NOT a match by guid — every guid-less credit row would then be the same person as every other.
+pub(crate) fn same_person(a: (ServerId, &str, &str), b: (ServerId, &str, &str)) -> bool {
+    if !a.2.is_empty() && !b.2.is_empty() {
+        a.2 == b.2
+    } else {
+        crate::plex::same_item((a.0, a.1), (b.0, b.1))
+    }
 }
 
 /// The trail, top = the page on screen.
@@ -129,13 +190,15 @@ impl Trail {
 
     /// Make the trail agree with a detail page we landed on WITHOUT navigating — the player exit and
     /// the Info card's jump-to-detail, neither of which is a trail node. Idempotent: no push when
-    /// the top already names `rk`, so an exit back onto the page playback started from does not
-    /// double it.
-    pub(crate) fn ensure_detail(&mut self, rk: &str) {
-        if matches!(self.stack.last(), Some(Node::Detail { rk: t, .. }) if t == rk) {
+    /// the top already names `(sid, rk)`, so an exit back onto the page playback started from does
+    /// not double it. The server is part of that test for the reason [`Node`]'s doc gives — with a
+    /// share registered, "the top already names this rk" can be true of the wrong page.
+    pub(crate) fn ensure_detail(&mut self, sid: ServerId, rk: &str) {
+        let want = Node::Detail { sid, rk: rk.to_string(), spot: Spot::default() };
+        if self.stack.last().map(|t| t.same_page(&want)).unwrap_or(false) {
             return;
         }
-        self.push(Node::Detail { rk: rk.to_string(), spot: Spot::default() });
+        self.push(want);
     }
 }
 
@@ -147,11 +210,22 @@ mod tests {
     //! was left; that is `detail.rs`'s `Spot` tests plus a device capture.
     use super::*;
 
+    /// Two registry slots, never installed — [`ServerId::from_raw`] is a plain value, so the
+    /// identity rules below are gradeable without a registry, a socket or the serial lock.
+    const A: ServerId = ServerId::from_raw(0);
+    const B: ServerId = ServerId::from_raw(1);
+
     fn det(rk: &str) -> Node {
-        Node::Detail { rk: rk.to_string(), spot: Spot::default() }
+        det_on(A, rk)
+    }
+    fn det_on(sid: ServerId, rk: &str) -> Node {
+        Node::Detail { sid, rk: rk.to_string(), spot: Spot::default() }
     }
     fn person(key: &str) -> Node {
-        Node::Person { key: key.into(), guid: String::new(), name: String::new(), thumb: String::new() }
+        Node::Person { sid: A, key: key.into(), guid: String::new(), name: String::new(), thumb: String::new() }
+    }
+    fn person_guid(sid: ServerId, key: &str, guid: &str) -> Node {
+        Node::Person { sid, key: key.into(), guid: guid.into(), name: String::new(), thumb: String::new() }
     }
 
     /// The executable form of "BACK at the Home root EXITS THE APP": the trail declines, and the arm
@@ -257,7 +331,7 @@ mod tests {
         let mut t = Trail::new();
         t.push(det("a"));
         t.set_top_spot(s.clone());
-        assert_eq!(t.stack.last(), Some(&Node::Detail { rk: "a".into(), spot: s }));
+        assert_eq!(t.stack.last(), Some(&Node::Detail { sid: A, rk: "a".into(), spot: s }));
     }
 
     /// The player exit and the Info card's jump both LAND on a detail page without navigating to it.
@@ -267,19 +341,85 @@ mod tests {
     fn ensure_detail_is_idempotent_for_the_page_already_on_top() {
         let mut t = Trail::new();
         t.push(det("a"));
-        t.ensure_detail("a");
-        t.ensure_detail("a");
+        t.ensure_detail(A, "a");
+        t.ensure_detail(A, "a");
         assert_eq!(t.stack.len(), 2, "the page playback started from is already the top");
 
-        t.ensure_detail("b");
+        t.ensure_detail(A, "b");
         assert_eq!(t.stack.len(), 3);
         assert_eq!(t.back(), Some(det("a")));
 
         // …and over a non-Detail top it always pushes: there is nothing there to be the same page.
         let mut t = Trail::new();
         t.push(person("p1"));
-        t.ensure_detail("a");
+        t.ensure_detail(A, "a");
         assert_eq!(t.back(), Some(person("p1")));
+    }
+
+    /// The reported shape of the shared-server bug, as a value: browse the SHARE, open its item 42,
+    /// press BACK — and land on a page you have never seen, because *our* server also has a 42. A
+    /// trail node names `(server, key)`, so the two are two pages and the stack keeps both.
+    #[test]
+    fn one_rating_key_on_two_servers_is_two_pages_in_the_history() {
+        let (ours, theirs) = (det_on(A, "42"), det_on(B, "42"));
+        assert!(!ours.same_page(&theirs), "the same key on two servers is not the same page");
+        assert!(ours.same_page(&det_on(A, "42")));
+        assert!(!ours.same_page(&det_on(A, "43")));
+
+        let mut t = Trail::new();
+        t.push(ours.clone());
+        t.push(theirs.clone());
+        assert_eq!(t.stack.len(), 3, "two pages, not one");
+        assert_eq!(t.back(), Some(ours), "BACK returns to OUR 42, the page it was opened from");
+
+        // …and the same rule through `ensure_detail`: landing on the share's 42 while ours is the
+        // top must PUSH, not read as "already here" and leave the trail describing the wrong page.
+        let mut t = Trail::new();
+        t.push(det_on(A, "42"));
+        t.ensure_detail(B, "42");
+        assert_eq!(t.stack.len(), 3);
+        assert_eq!(t.back(), Some(det_on(A, "42")));
+    }
+
+    /// A person is matched by the plex.tv `tagKey` when both sides have one — it is GLOBAL, so the
+    /// same actor is one page whichever server's credit row opened them (their local `personId`
+    /// differs per machine). With no guid the fallback is the server-scoped `(sid, key)` pair, and
+    /// two servers' person 45 are then two different people.
+    #[test]
+    fn a_person_is_the_same_page_by_guid_and_a_local_id_is_server_scoped() {
+        let g = "5d77682aeb5d26001f1de4b0";
+        assert!(
+            person_guid(A, "45", g).same_page(&person_guid(B, "812", g)),
+            "one guid is one person, whatever each server numbers them"
+        );
+        assert!(!person_guid(A, "45", g).same_page(&person_guid(A, "45", "other-guid")));
+        // no guid on either side → the LOCAL id decides, and it only means anything per server
+        assert!(person_guid(A, "45", "").same_page(&person_guid(A, "45", "")));
+        assert!(!person_guid(A, "45", "").same_page(&person_guid(B, "45", "")));
+        // one side missing a guid falls back too — comparing "" to a real guid would make every
+        // guid-less credit row the same person as every other
+        assert!(person_guid(A, "45", "").same_page(&person_guid(A, "45", g)));
+        assert!(!person_guid(A, "45", "").same_page(&person_guid(B, "45", g)));
+    }
+
+    /// `same_page` is about the PAGE, not about the node's other state: a detail page scrolled
+    /// somewhere else is the same page (which is what makes `ensure_detail` idempotent after a
+    /// player exit), and two different KINDS of page never match.
+    #[test]
+    fn same_page_ignores_the_place_and_never_crosses_kinds() {
+        let scrolled = Node::Detail {
+            sid: A,
+            rk: "a".into(),
+            spot: Spot { section: 3, col: 2, ..Default::default() },
+        };
+        assert!(det("a").same_page(&scrolled), "a spot is where you were, not which page it is");
+        assert_ne!(det("a"), scrolled, "…and `==` still separates them, which is why both exist");
+
+        assert!(Node::Home.same_page(&Node::Home));
+        assert!(Node::Library.same_page(&Node::Library));
+        for other in [Node::Home, Node::Library, person("a")] {
+            assert!(!det("a").same_page(&other), "a detail page is not {other:?}");
+        }
     }
 
     /// [`Trail::under`] must answer exactly what the [`Trail::back`] that follows it will return —
@@ -326,6 +466,6 @@ mod tests {
         t.push(det("show"));
         t.set_top_spot(s.clone());
         t.push(det("episode"));
-        assert_eq!(t.back(), Some(Node::Detail { rk: "show".into(), spot: s }));
+        assert_eq!(t.back(), Some(Node::Detail { sid: A, rk: "show".into(), spot: s }));
     }
 }
