@@ -50,6 +50,37 @@ pub(crate) struct GenreEntry {
     pub(crate) title: String,
 }
 
+/// What the last page fetch for a section produced — Loading / Ready / **Failed**, per SECTION
+/// because that is the grain this store's state already has.
+///
+/// The irony is worth recording once: `pms.rs`'s hub fetch runs this same three-state machine and
+/// its own doc says it was "Modelled on `browse.rs`'s page store, deliberately, because it already
+/// learned both lessons this needed" — the copy took the two lessons (a failed fetch must never
+/// overwrite a populated store; a fast-failing network is held off by a countdown) and then added
+/// the state the ORIGINAL never had. Without it a failed first page left [`SecState::total`] at -1
+/// and armed nothing but the cooldown, so [`loading_initial`] stayed true forever and the Library
+/// grid spun with no way out — on the user's own server, for any failed fetch.
+///
+/// `Failed` describes the last FETCH, not the store: a mid-scroll page failure on a populated
+/// section is Failed with items still on screen, which is why the screen's read-out projects the
+/// pair (see [`failed_initial`]) rather than the state alone — the same rule `pms::HubState` and
+/// `StatusKind::Empty` state, that an empty answer is an answer and only a fault is a fault.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SecFetch {
+    /// no page fetch for this section's current query has produced an ANSWER yet.
+    ///
+    /// Not "a fetch is in flight": once a query has failed the state stays `Failed` while
+    /// `RETRY_CD` counts down AND while the retry itself is out, so the user reads one steady
+    /// "couldn't load this" rather than a spinner blinking back every two seconds. `Loading` is
+    /// therefore the FIRST attempt only, and a query returns to it exactly once — at `requery`.
+    Loading,
+    /// the server answered — the store is whatever it says, possibly legitimately empty
+    Ready,
+    /// the fetch failed (network/parse/panic); whatever was already in the store is untouched
+    /// and [`maybe_spawn`] is counting `RETRY_CD` down to the next automatic attempt
+    Failed,
+}
+
 /// Per-section browse state: the current query, the server-driven menus, the sparse item
 /// store, and the remembered view (focus/scroll survive leaving the screen — state amnesia
 /// is the official app's loudest complaint).
@@ -68,7 +99,8 @@ struct SecState {
     letters: Vec<(String, i64)>,
     letters_done: bool,
     // data
-    total: i64, // -1 = unknown (first fetch of this query still out)
+    fetch: SecFetch, // what the last page fetch for this section did
+    total: i64,      // -1 = unknown (first fetch of this query still out)
     items: Vec<Option<PmsMovie>>,
     // remembered view
     focus: usize,
@@ -87,6 +119,7 @@ impl Default for SecState {
             genres_done: false,
             letters: Vec::new(),
             letters_done: false,
+            fetch: SecFetch::Loading,
             total: -1,
             items: Vec::new(),
             focus: 0,
@@ -160,6 +193,9 @@ fn bump_gen() -> u32 {
 fn requery() {
     bump_gen();
     if let Some(st) = state_mut(cur()) {
+        // a replaced query has no answer yet, whatever the last one produced — including a
+        // failure, which must not outlive the query it belonged to
+        st.fetch = SecFetch::Loading;
         st.total = -1;
         st.items.clear();
         st.focus = 0;
@@ -280,10 +316,26 @@ pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
 pub(crate) fn want(lo: usize, hi: usize) {
     unsafe { WANT = (lo, hi) };
 }
+/// What the current section's last page fetch did — the Library screen's read-out is a projection
+/// of this and the store, never of the store alone.
+pub(crate) fn fetch_state() -> SecFetch {
+    cur_state().map(|s| s.fetch).unwrap_or(SecFetch::Loading)
+}
 /// True while the current query has no data yet (first page in flight) — the grid's
 /// full-screen spinner state.
+///
+/// Reads the STATE, not `total < 0`: those two agreed for every path that ends in an answer, and
+/// disagreed for the one that doesn't. A failed first page leaves `total` at -1 forever, so this
+/// used to spin forever with it.
 pub(crate) fn loading_initial() -> bool {
-    cur_state().map(|s| s.total < 0).unwrap_or(true)
+    fetch_state() == SecFetch::Loading
+}
+/// The failure the SCREEN can see: the last fetch failed **and** there is nothing to show for this
+/// query. A mid-scroll page failure on a populated section is deliberately not this — the grid
+/// still has its items, `RETRY_CD` is already counting, and blanking a working screen over one
+/// missing page is the bug the failure branch of [`pump`] exists to avoid.
+pub(crate) fn failed_initial() -> bool {
+    cur_state().map(|s| s.fetch == SecFetch::Failed && s.total < 0).unwrap_or(false)
 }
 
 // ---- public surface: sort menu --------------------------------------------------------------
@@ -499,8 +551,20 @@ pub(crate) fn pump() -> bool {
             // off before retrying (a wiped-to-"empty" store here was a review-confirmed bug:
             // one wifi hiccup blanked a populated grid permanently)
             unsafe { RETRY_CD = 120 }; // ~2s at 60fps
+            // …but SAY SO. The store staying put is why nothing else in this landing can record
+            // the failure, and for a first page that meant `total` stayed -1 and the grid spun
+            // forever. Blamed on the same generation gate as a success: a landing from a query the
+            // user has already replaced describes a listing nobody is looking at any more.
+            if r.gen == GEN.load(Ordering::SeqCst) {
+                if let Some(st) = state_mut(r.sec) {
+                    st.fetch = SecFetch::Failed;
+                }
+            }
         } else if r.gen == GEN.load(Ordering::SeqCst) {
             if let Some(st) = state_mut(r.sec) {
+                // the server answered: Ready even at totalSize 0 — an empty library is an answer,
+                // never a fault (`StatusKind::Empty`'s rule, and `SecFetch`'s)
+                st.fetch = SecFetch::Ready;
                 if let Some(sorts) = r.sorts {
                     if st.sorts.is_empty() {
                         st.sorts = sorts;
@@ -637,6 +701,7 @@ mod tests {
     /// early forever and the Library is a spinner until the app is killed.
     #[test]
     fn reset_clears_the_single_flight_flags_with_the_mailboxes() {
+        let _g = crate::testlock::serial();
         FETCHING.store(true, Ordering::SeqCst);
         GENRE_FETCHING.store(true, Ordering::SeqCst);
         LETTERS_FETCHING.store(true, Ordering::SeqCst);
@@ -653,8 +718,113 @@ mod tests {
     /// user's cooldown and stalls the first page fetch for up to ~2s.
     #[test]
     fn reset_clears_the_retry_backoff() {
+        // Takes the crate lock for the same reason the fetch-machine tests below do — see the note
+        // there. `reset()` is the most destructive call in this module, and a test that makes it
+        // without the lock is not testing concurrently, it is CORRUPTING whoever is.
+        let _g = crate::testlock::serial();
         unsafe { RETRY_CD = 120 };
         reset();
         assert_eq!(unsafe { RETRY_CD }, 0);
+    }
+
+    // ---- the three-state fetch machine ---------------------------------------------------------
+    //
+    // These drive `pump`, which reports to `ui::idle`'s process-global flag — the exact obligation
+    // `ui/xfade.rs` inherited when its `tick` started doing the same — so they take the CRATE-wide
+    // serial lock, not a module-local one. They also leave no section table behind them: with
+    // `STATES` seeded and `SECTIONS` empty, `maybe_spawn` returns before it can reach the network,
+    // so nothing here spawns a worker.
+
+    /// One default section state, no section table (see above), and the mailbox emptied.
+    fn seed_one_section() {
+        reset();
+        *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        unsafe { *addr_of_mut!(STATES) = vec![SecState::default()] };
+    }
+    /// Land what a worker would post for the CURRENT query: `total < 0` is the failure sentinel.
+    fn land_page(total: i64, items: usize) {
+        let r = PageResult {
+            gen: GEN.load(Ordering::SeqCst),
+            sec: 0,
+            start: 0,
+            items: (0..items).map(|_| PmsMovie::default()).collect(),
+            total,
+            sorts: None,
+        };
+        *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+        pump();
+    }
+
+    /// THE bug: a failed first page armed the retry cooldown and nothing else, so `total` stayed
+    /// -1, `loading_initial()` stayed true and the Library grid spun with no way out — for the
+    /// rest of the session, on the user's own server. The failure must now be a STATE the screen
+    /// can see, and the spinner must stop.
+    #[test]
+    fn a_failed_first_page_leaves_the_section_failed_and_not_loading() {
+        let _g = crate::testlock::serial();
+        seed_one_section();
+        land_page(-1, 0);
+        assert_eq!(fetch_state(), SecFetch::Failed);
+        assert!(!loading_initial(), "the grid must stop spinning on a failure");
+        assert!(failed_initial(), "…and the screen must be able to see that it failed");
+        reset();
+    }
+
+    /// A served page is Ready, and stays the plain "here are your items" state.
+    #[test]
+    fn a_served_page_leaves_the_section_ready() {
+        let _g = crate::testlock::serial();
+        seed_one_section();
+        land_page(3, 3);
+        assert_eq!(fetch_state(), SecFetch::Ready);
+        assert!(!loading_initial() && !failed_initial());
+        assert_eq!(total(), 3);
+        reset();
+    }
+
+    /// An EMPTY answer is an answer — `Ready`, never `Failed`. The library really does hold
+    /// nothing (an unwatched filter that matches none, a section still being scanned), and the
+    /// grid's own "Nothing here matches" line is the right read-out. This is `StatusKind::Empty`'s
+    /// rule, stated in the state machine so a screen cannot get it wrong.
+    #[test]
+    fn an_empty_but_successful_listing_is_ready_not_failed() {
+        let _g = crate::testlock::serial();
+        seed_one_section();
+        land_page(0, 0);
+        assert_eq!(fetch_state(), SecFetch::Ready);
+        assert!(!failed_initial(), "an empty library is an answer, not a fault");
+        assert!(!loading_initial());
+        reset();
+    }
+
+    /// A failure belongs to the query it was fetched for. Re-query (a sort/filter/section change
+    /// wipes the store) and the section is Loading again, not stuck wearing the old failure —
+    /// otherwise the read-out would blame a listing the user has already replaced.
+    #[test]
+    fn a_requery_clears_a_previous_failure() {
+        let _g = crate::testlock::serial();
+        seed_one_section();
+        land_page(-1, 0);
+        assert_eq!(fetch_state(), SecFetch::Failed);
+        requery();
+        assert_eq!(fetch_state(), SecFetch::Loading);
+        assert!(loading_initial() && !failed_initial());
+        reset();
+    }
+
+    /// A failure landing from a SUPERSEDED query must not blame the current one: the user has
+    /// already changed sort/filter/section, a fresh fetch is on its way, and marking the new query
+    /// Failed would show a failure read-out over a listing that is still perfectly healthy.
+    #[test]
+    fn a_stale_failure_landing_does_not_blame_the_current_query() {
+        let _g = crate::testlock::serial();
+        seed_one_section();
+        let stale = GEN.load(Ordering::SeqCst);
+        bump_gen(); // the query moved on under the in-flight fetch
+        let r = PageResult { gen: stale, sec: 0, start: 0, items: Vec::new(), total: -1, sorts: None };
+        *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+        pump();
+        assert_eq!(fetch_state(), SecFetch::Loading, "the current query has not answered yet — it has not failed");
+        reset();
     }
 }

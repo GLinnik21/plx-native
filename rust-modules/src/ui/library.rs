@@ -1076,6 +1076,15 @@ pub(crate) fn draw() {
         Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
             .phase(unsafe { addr_of!(PHASE_MS).read() } as u32)
             .draw(&Env::inert(), p);
+    } else if crate::browse::failed_initial() {
+        // A failed first page now STOPS the spinner (`browse::SecFetch`), so this line is what the
+        // user sees instead of a grid that spins forever. It is a placeholder for the real failure
+        // read-out — caption, reason, Try again — which lands with the `StatusOverlay` treatment;
+        // it draws on `p`, not `pg`, for the reason the spinner does: a status must stay legible
+        // while the content band is dark. `browse` keeps retrying underneath it.
+        Label::new(c"Couldn't load this library".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
+            .h(crate::ui::label::HAlign::Center)
+            .draw(p, Rect::new(0.0, SCR_H * 0.5 - 20.0, SCR_W, 40.0));
     } else if t == 0 {
         Label::new(c"Nothing here matches".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
             .h(crate::ui::label::HAlign::Center)
