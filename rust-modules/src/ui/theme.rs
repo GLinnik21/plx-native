@@ -411,6 +411,17 @@ pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = RED_400;
+/// **A source we cannot reach right now, drawn at one alpha** — a whole group of rows and its
+/// header together (`table::Section::dim`).
+///
+/// An ALPHA and not an ink, which is the entire point of it being here: a row's `dim` swaps text to
+/// [`TEXT_TERTIARY`], and a section HEADER is already drawn in that grey, so an ink swap says
+/// nothing about a header at all. Unreachability is also not a property of any one line — it is a
+/// fact about the whole group — and a weight is how the design system states a state that applies
+/// to a block rather than to a word. It keeps its place in the list at full geometry: a share you
+/// cannot reach on the evening you set the app up is still a share, and hiding it would make the
+/// list change shape every time a server sleeps.
+pub const UNREACHABLE_A: f32 = 0.52;
 /// Section divider hairline.
 pub const HAIRLINE: [f32; 4] = with_a(WHITE, 0.10);
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).

@@ -98,6 +98,13 @@ pub(crate) struct DevServer {
     /// from the primary once both are installed. Public, not a secret.
     #[serde(default)]
     pub(crate) machine_id: String,
+    /// Whose server this is — plex.tv's `sourceTitle`, i.e. the owner's handle. Cosmetic and
+    /// public, and the one field a SHARE has that an owned server does not: every browsing surface
+    /// in the app names the person rather than the machine, so without it a headless capture of one
+    /// can only say "shared with you". Empty for an owned server, and absent from older payloads —
+    /// `source_title` is accepted as an alias because that is what plex.tv calls it.
+    #[serde(default, alias = "source_title", alias = "sourceTitle")]
+    pub(crate) owner: String,
     /// Address reachable **from the TV**. `address` is accepted as an alias because that is what
     /// `plex::session::ServerRef` calls the same field, and copying one into the other by hand is
     /// the obvious way to write this file.
@@ -125,7 +132,7 @@ impl DevServer {
         if self.machine_id.chars().nth(8).is_some() {
             mid.push_str("..");
         }
-        format!("name={:?} {}:{} mid={}", self.name, self.host, self.port, mid)
+        format!("name={:?} owner={:?} {}:{} mid={}", self.name, self.owner, self.host, self.port, mid)
     }
     /// Are these credentials complete enough to reach the server at all?
     pub(crate) fn usable(&self) -> bool {
@@ -267,22 +274,30 @@ mod tests {
     }
 
     /// The harness's payload, verbatim — `tests/run.py::shared_servers_json` emits exactly this
-    /// (compact, an array of one, these five keys). It is the only automated link between the two
+    /// (compact, an array of one, these six keys). It is the only automated link between the two
     /// halves of the mechanism: rename a field on either side and this fails instead of a device
     /// run quietly booting with one server.
     #[test]
     fn servers_parse_the_harness_payload_verbatim() {
         let payload = concat!(
-            r#"[{"name":"Bob's Plex","machine_id":"friend222","host":"10.0.0.9","#,
+            r#"[{"name":"Bob's Plex","owner":"bamx23","machine_id":"friend222","host":"10.0.0.9","#,
             r#""port":32400,"token":"FRIENDTOK"}]"#
         );
         let v = super::parse_servers(payload).expect("the harness payload must parse");
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "Bob's Plex");
+        assert_eq!(v[0].owner, "bamx23", "whose server it is — the person every screen names");
         assert_eq!(v[0].machine_id, "friend222");
         assert_eq!(v[0].host, "10.0.0.9");
         assert_eq!(v[0].port, 32400);
         assert!(v[0].usable());
+        // an overlay written before the owner existed, and one written by hand from plex.tv's own
+        // field name, must both still parse — the field is cosmetic and can never be a hard
+        // requirement of a credentials file
+        let older = super::parse_servers(r#"[{"name":"B","host":"10.0.0.9","token":"t"}]"#).unwrap();
+        assert_eq!(older[0].owner, "");
+        let wire = super::parse_servers(r#"[{"sourceTitle":"kate.w","host":"h","token":"t"}]"#).unwrap();
+        assert_eq!(wire[0].owner, "kate.w");
     }
 
     /// `address` is what `plex::session::ServerRef` calls the host field, so a file written by

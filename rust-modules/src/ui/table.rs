@@ -109,13 +109,21 @@ pub struct Section {
     pub header: String,    // "" = no header row
     pub accessory: String, // right-aligned header accessory, e.g. "Dolby Atmos"
     pub rows: Vec<Row>,
+    /// The whole group is drawn at [`theme::UNREACHABLE_A`] — **header included**, which is the
+    /// reason this is a section flag and not `dim` on every row: a header is already tertiary grey,
+    /// so [`Row::dim`]'s ink swap cannot say anything about it. Its rows stay SELECTABLE at full
+    /// geometry (a server that is asleep tonight still grants what it grants), and the focus pill
+    /// keeps its own strength — focus is focus, whatever it is resting on.
+    pub dim: bool,
 }
 impl Section {
     pub fn new(header: impl Into<String>) -> Self {
-        Self { header: header.into(), accessory: String::new(), rows: Vec::new() }
+        Self { header: header.into(), accessory: String::new(), rows: Vec::new(), dim: false }
     }
     pub fn accessory(mut self, a: impl Into<String>) -> Self { self.accessory = a.into(); self }
     pub fn row(mut self, r: Row) -> Self { self.rows.push(r); self }
+    /// Draw this whole group at the unreachable weight — see [`Section::dim`].
+    pub fn dim(mut self, v: bool) -> Self { self.dim = v; self }
 }
 
 /// A [`Row::separator`]'s row height. The hairline sits on its centre line, so this IS the gap
@@ -147,6 +155,20 @@ pub struct TableView {
     /// compact size class: BODY regular row labels + CAPTION headers (the small account popover;
     /// the default HEADLINE-bold rows overwhelmed a 440px panel of one-word actions).
     pub compact: bool,
+    /// What an EMPTY list says, or `None` for one whose HEADERS are its content while it fills.
+    /// A picker with nothing to pick is a real, final state and says so; a grouped roster that has
+    /// not heard back from its servers yet is not empty, it is early.
+    pub empty_note: Option<&'static str>,
+    /// Does the RING live in this list right now? `true` for every popover, which is modal and owns
+    /// the frame; `false` when a screen puts the list beside a control that can also hold focus (the
+    /// first-run route's *Start watching* action).
+    ///
+    /// The selected row is still marked either way — a list that forgets where you were is a list
+    /// you have to re-read on the way back — but with the FAINT plate the tab strip marks its
+    /// selected pill with, not the accent fill it marks the focused one with. That distinction is
+    /// the whole reason this exists: two accent fills on one screen is two rings, and the user has
+    /// to press a key to find out which one is real.
+    pub focused: bool,
     // the highlight pill's top and bottom edges spring INDEPENDENTLY (content coords), so moving
     // to a taller/shorter row morphs the pill smoothly instead of snapping its height.
     hl_top: Spring,
@@ -159,6 +181,8 @@ impl TableView {
             sections: Vec::new(),
             sel: 0,
             compact: false,
+            empty_note: Some("No tracks"),
+            focused: true,
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
             scroll: Spring::at(0.0),
@@ -206,8 +230,12 @@ impl TableView {
 
     /// the full drawn height of the content (headers + rows + top/bottom padding) — the owner
     /// sizes its panel to this (clamped) so the panel hugs the list, tvOS-style.
+    ///
+    /// A list with SECTIONS but no rows measures its headers, which are its content in that state
+    /// (a roster whose servers have not answered yet). Only a list with nothing in it at all falls
+    /// back to the placeholder's own height.
     pub fn measured_height(&self) -> f32 {
-        if self.n_rows() == 0 {
+        if self.sections.is_empty() {
             return 120.0;
         }
         self.content_h() + TOP_PAD + BOT_PAD
@@ -331,8 +359,17 @@ impl TableView {
 
     pub fn draw(&self, p: Painter, frame: Rect) {
         if self.n_rows() == 0 {
-            Label::new(c"No tracks".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, frame);
-            return;
+            // A picker with nothing to pick says so. A GROUPED list whose groups have no rows yet
+            // does not: its headers are what it has to say (each one a server, listed before it has
+            // answered), and a note across them would claim the whole list is empty.
+            if let Some(note) = self.empty_note {
+                let cs = CString::new(note).unwrap_or_default();
+                Label::new(cs.as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, frame);
+                return;
+            }
+            if self.sections.is_empty() {
+                return;
+            }
         }
         // Hard-clip everything below to the panel frame: the list overflows, so a partial edge row is
         // cut cleanly at the frame instead of poking over the video / control buttons — and, unlike the
@@ -352,16 +389,24 @@ impl TableView {
         let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
 
         // ---- sliding pill (under the rows) — warm off-white; top/bottom edges morph independently ----
+        // Its FACE says whether the ring is here: the accent fill when this list holds focus, the
+        // faint selected plate when the focus is on a control beside it (`TableView::focused`).
+        let pill_face = if self.focused { crate::ui::ACCENT } else { theme::OVERLAY_FOCUS_PILL };
         let py0 = top0 + self.hl_top.pos - scroll;
         let py1 = top0 + self.hl_bot.pos - scroll;
         let pill = Rect::new(frame.x + SIDE, py0, frame.w - 2.0 * SIDE, (py1 - py0).max(1.0));
-        if pill.y + pill.h > vis_top && pill.y < vis_bot {
-            p.rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
+        // …and no pill at all when there is no row to mark: the springs rest at 0/0, so a
+        // header-only list would draw a stray 1px bar across the top of its first group.
+        if self.n_rows() > 0 && pill.y + pill.h > vis_top && pill.y < vis_bot {
+            p.rrect(pill, PILL_RAD, PILL_RAD, pill_face);
         }
 
         // ---- headers + rows ----
         self.walk(|cy, gi, si| {
             let sy = top0 + cy - scroll;
+            // An unreachable group's whole block — its header and every row in it — rides one
+            // painter at [`theme::UNREACHABLE_A`]. The focus pill above is deliberately outside it.
+            let p = if self.sections[si].dim { p.alpha(theme::UNREACHABLE_A) } else { p };
             if gi == -1 {
                 // panel/section header (+ hairline divider above later sections); scissor-clipped to `frame`
                 if sy + HDR_H > vis_top && sy < vis_bot {
@@ -370,8 +415,20 @@ impl TableView {
                         p.rect(Rect::new(content_x, sy - DIV_H * 0.5, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
                             0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                     }
-                    if let Ok(cs) = CString::new(sec.header.as_str()) {
-                        let hsz = if self.compact { theme::size::CAPTION } else { theme::size::HEADLINE };
+                    let hsz = if self.compact { theme::size::CAPTION } else { theme::size::HEADLINE };
+                    // The header's right-hand ACCESSORY — the other half of one line: what this
+                    // group IS on the left, whose it is on the right (the first-run route's machine
+                    // name + person). Measured first, so a long header elides against it instead of
+                    // running underneath it.
+                    let mut acc_w = 0.0f32;
+                    if let Ok(ac) = CString::new(sec.accessory.as_str()) {
+                        if !sec.accessory.is_empty() {
+                            acc_w = crate::text::text_width(ac.as_ptr(), hsz, 0) + GAP;
+                            p.text(ac.as_ptr(), text_right, sy + 8.0, hsz, dimc, 2, 0);
+                        }
+                    }
+                    let hdr = crate::text::elide(&sec.header, text_right - content_x - acc_w, hsz, 0, false);
+                    if let Ok(cs) = CString::new(hdr) {
                         p.text(cs.as_ptr(), content_x, sy + 8.0, hsz, dimc, 0, 0);
                     }
                 }
@@ -389,7 +446,10 @@ impl TableView {
                     0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                 return;
             }
-            let focused = gi == self.sel;
+            // "Is this row's ink sitting ON the near-white pill" — which is the selected row only
+            // while the ring is actually in this list. Under the faint plate the row keeps its
+            // ordinary ink, or a selected row would be near-black text on a dark panel.
+            let focused = gi == self.sel && self.focused;
             let base = if focused { ink } else if row.dim { dimc } else { white };
             let row_bg = if focused { crate::ui::ACCENT } else { PANEL_BG };
             let cyc = sy + h * 0.5; // row vertical center
@@ -495,8 +555,47 @@ impl TableView {
                 n += 1;
             }
         }
-        // unreachable for a valid gi (draw early-returns when there are no rows)
+        // Unreachable for a valid gi: every caller reaches this from a `walk` that yields a row
+        // index only for a row that exists, so a list with no rows never asks.
         self.sections.iter().flat_map(|s| s.rows.iter()).next().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A list whose GROUPS have arrived but whose rows have not is early, not empty — the state a
+    /// roster of servers is in for the first few hundred milliseconds of the first-run question.
+    /// It must measure its headers (a 120px placeholder height would scissor two of three groups
+    /// off the bottom of the frame) and it must not draw the "nothing here" note over them.
+    #[test]
+    fn a_list_of_headers_with_no_rows_measures_its_headers() {
+        let mut t = TableView::new();
+        t.empty_note = None;
+        t.set_sections(vec![Section::new("mac-mini"), Section::new("bx23-ldn"), Section::new("kate-nas")], 0, false);
+        assert_eq!(t.n_rows(), 0);
+        let h = t.measured_height();
+        assert!(h > 3.0 * HDR_H, "three headers and two dividers, not a placeholder: {h}");
+        assert!(h < 3.0 * HDR_H + 2.0 * DIV_H + PAD_V + ROW_H, "…and nothing beyond them: {h}");
+        // a list with nothing in it at all is still the placeholder's own height
+        assert_eq!(TableView::new().measured_height(), 120.0);
+        // and no row can be focused or hit in it — the guard the pill and `rows_at` both rely on
+        assert_eq!(t.hit_row(Rect::new(0.0, 0.0, 900.0, 600.0), 100.0, 100.0), None);
+        t.move_sel(1);
+        assert_eq!(t.sel, 0);
+    }
+
+    /// The two states a selected row can be in, as data: the ring is here (accent fill, ink over
+    /// it) or it is on a control beside the list (faint plate, ordinary ink). Only the flag is
+    /// host-testable — what it selects is a colour handed to the renderer — so this pins the
+    /// default, which is what every existing popover depends on.
+    #[test]
+    fn a_list_holds_the_ring_unless_told_otherwise() {
+        assert!(TableView::new().focused, "every popover owns its frame");
+        let mut t = TableView::new();
+        t.focused = false;
+        assert!(!t.focused);
     }
 }
 

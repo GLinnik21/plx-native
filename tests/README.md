@@ -93,8 +93,13 @@ server is needed, never *which*):
 
 - With `shared_server` configured, the runner resolves it **before touching the TV** and writes
   `/tmp/plxnative-servers` for those cases only — a JSON array of
-  `{name, machine_id, host, port, token}` — beside `plxnative-token`. Value never on stdout; the
-  printed line is `plxnative-servers: <bx23-ldn @ 10.0.0.9:32400, token redacted>`.
+  `{name, owner, machine_id, host, port, token}` — beside `plxnative-token`. Value never on stdout;
+  the printed line is `plxnative-servers: <bx23-ldn @ 10.0.0.9:32400, token redacted>`.
+  `owner` is plex.tv's `sourceTitle`, i.e. **whose** server it is; the runner fills it in from the
+  same `/resources` lookup and never from the overlay. It is what every shared-source screen shows
+  in place of the machine name (people in content, machines in settings), so without it a capture
+  can only say "shared with you". Public, not a secret, and optional: an older overlay or a
+  hand-written file with no `owner` still parses.
 - Without it, those cases are **SKIPPED**, with the reason, and appear as `[SKIP]` in the summary —
   an installation with no friend's server is a normal installation. Anything unresolvable *is* a
   loud exit that names it (server no longer shared, no `accessToken`, no address).
@@ -106,7 +111,7 @@ server is needed, never *which*):
 On the device the app parses the file in `dev::servers()` (`rust-modules/src/dev.rs`) and logs
 
 ```
-servers: #0 name="bx23-ldn" 10.0.0.9:32400 mid=a348a464.. creds=ok
+servers: #0 name="bx23-ldn" owner="bamx23" 10.0.0.9:32400 mid=a348a464.. creds=ok
 servers: 1 extra server(s) injected, 1 usable
 ```
 

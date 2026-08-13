@@ -15,6 +15,7 @@ pub mod card_row;
 pub mod chapters_panel;
 pub mod consts;
 pub mod detail;
+pub mod first_run; // the first-run "What goes on your Home?" question (only with >1 source)
 pub mod fmt; // shared duration/clock display formatters
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod home;

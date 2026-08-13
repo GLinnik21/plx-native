@@ -517,6 +517,43 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log(&format!("pms: nmovies={nmov} nsections={nsec}"));
         };
 
+        // Who the first-run question is ABOUT (`ui::first_run`): the roster of sources this
+        // identity can reach. Called after every install — the boot gate below and the login/profile
+        // landing in the loop — because the current server is what "your own" means and a profile
+        // switch can change it.
+        //
+        // The OWN server is whatever the registry currently points at; its machineIdentifier can
+        // legitimately be empty here (the address-keyed `install` path does not know one), and the
+        // library fetch resolves it from `/identity` before any answer is recorded against it. The
+        // NAME comes from the persisted session when it describes that same address — a friendly
+        // name is a plex.tv fact we only have after a real sign-in — and falls back to the address,
+        // which is the only other honest way to name a machine.
+        let note_sources = || {
+            let Some(c) = crate::plex::client_opt() else { return };
+            let sess = crate::plex::session::peek();
+            let named = sess.server.address == c.host() && !sess.server.name.is_empty();
+            let name = if named { sess.server.name.clone() } else { c.host().to_string() };
+            crate::ui::first_run::add_source(crate::plex::current_server(), c.machine_id(), &name, "", true);
+            // dev: the servers `/tmp/plxnative-servers` handed this boot become REGISTERED sources
+            // beside it. `register` never steals `current` from an established server, so the
+            // primary above stays the one `client()` answers with — these are reachable by id only,
+            // which is exactly what a second authority is until something routes to it.
+            let own = crate::plex::current_server();
+            for s in crate::dev::servers().unwrap_or_default().iter().filter(|s| s.usable()) {
+                let sid = crate::plex::register(&s.machine_id, &s.host, s.port as c_int, &s.token);
+                // A registration that came back as the CURRENT slot is not a second source: either
+                // it named the server we are already on, or the registry was full and handed back
+                // `current` as its refusal. Adding it would overwrite the own source's identity
+                // with a friend's — and with `own: false`, which would silently unpin your own
+                // libraries by default.
+                if sid == own {
+                    log(&format!("servers: {} is the server we are already on — not a second source", s.describe()));
+                    continue;
+                }
+                crate::ui::first_run::add_source(sid, &s.machine_id, &s.name, &s.owner, false);
+            }
+        };
+
         // UI infra + poster workers always come up — the login/profiles screens use them too.
         crate::posters::posters_init();
         crate::capture::init(); // dev live UI capture stream (no-op without /tmp/plxnative-capture)
@@ -550,6 +587,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
         let mut pick_user: Option<usize> = crate::dev::read("pickuser").and_then(|s| s.parse().ok());
         let session = crate::plex::session::load();
+        // What this install already decided about which libraries reach Home, and whether it has
+        // been asked at all — read BEFORE the gate below, which is the one thing that consults it.
+        crate::ui::first_run::restore(&session);
         let boot_to = if crate::dev::flag("login") {
             crate::auth::start_login();
             log("boot: /tmp/plxnative-login — starting QR login");
@@ -578,6 +618,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log("boot: no session — starting QR sign-in");
             BootTo::Login
         };
+        // After the install, whichever branch performed one: a source is a server we can reach, and
+        // before an install there is none. (The Login branch adds them when its landing installs.)
+        note_sources();
         crate::player::acb_init(mt);
         crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/plxnative-ffprobe ABI probe
         // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
@@ -791,6 +834,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         enum Route {
             Login,    // plex.tv sign-in (QR) — shown when there's no usable session
             Profiles, // "who's watching" Plex Home picker
+            /// The first-run "What goes on your Home?" question (`ui::first_run`) — the third and
+            /// last boot gate, between the profile picker and Home, and only when the roster holds
+            /// more than one source. Like the two above it, nothing ever transitions TO it: the
+            /// gate assigns the route outright, and answering it assigns Home.
+            FirstRun,
             Home,
             Account,  // Home + the top-left profile menu popover (change profile / sign out)
             /// `over` + the press-and-hold context menu popover (ui/item_menu.rs)
@@ -927,7 +975,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Home | Route::Library => true,
                 Route::Account => true,
                 Route::ItemMenu { over } => matches!(over, MenuHost::Home),
-                Route::Login | Route::Profiles | Route::Detail | Route::Person | Route::Player { .. } => false,
+                Route::Login | Route::Profiles | Route::FirstRun => false,
+                Route::Detail | Route::Person | Route::Player { .. } => false,
             }
         }
         /// The PAGE a trail node names — the ONE Node→[`Route`] mapping in the loop. Both things
@@ -983,9 +1032,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Person => Some(crate::ui::person::leave as fn()),
                 // Nothing loaded that outlives the page. Home and the Library keep their stores for
                 // as long as the profile does (`browse.rs` is re-ENTERED, never re-queried — that is
-                // why `Node::Library` carries no payload), Login/Profiles are boot gates the app
-                // leaves once, and a player session is torn down by its own exit path.
-                Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Player { .. } => None,
+                // why `Node::Library` carries no payload), Login/Profiles/FirstRun are boot gates the
+                // app leaves once, and a player session is torn down by its own exit path.
+                Route::Home | Route::Library | Route::Login | Route::Profiles | Route::FirstRun => None,
+                Route::Player { .. } => None,
                 // Unreachable: `page_of` has already resolved a popover onto the screen it sits on,
                 // so neither of these ever arrives here. Listed rather than swept into a `_` so the
                 // exhaustiveness above is real.
@@ -1051,10 +1101,26 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             did
         }
 
+        // The one place "we have an identity — now what screen" is answered, shared by the boot gate
+        // and by the login/profile landing inside the loop. Home, unless someone has shared a
+        // library with this account and nobody has been asked what to do about it yet.
+        //
+        // It is a fn and not two copies of the same `if` for the reason the boot gate itself is one
+        // ordered list: the two paths into Home are the boot gate and `take_ready`, and a question
+        // asked on only one of them is a question the who's-watching users never see.
+        fn landing_route(automated: bool) -> Route {
+            if crate::ui::first_run::should_show(automated) {
+                crate::ui::first_run::enter();
+                Route::FirstRun
+            } else {
+                Route::Home
+            }
+        }
+
         // Initial route from the boot gate: Login when we have no usable creds, Profiles for the
-        // boot who's-watching picker, else Home.
+        // boot who's-watching picker, else Home — through the first-run question when there is one.
         let mut route = match boot_to {
-            BootTo::Home => Route::Home,
+            BootTo::Home => landing_route(automated_boot()),
             BootTo::Login => Route::Login,
             BootTo::Profiles => Route::Profiles,
         };
@@ -1926,6 +1992,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         cur_hidden = true;
                         mot_accum = 0.0;
                     }
+                    // The first-run question owns every fresh key for the same reason the two screens
+                    // below it do: nothing is behind it. Both of its exits — the action and BACK —
+                    // report "answered", and the ROUTE change is made here, never by the screen.
+                    if matches!(route, Route::FirstRun) {
+                        if crate::ui::first_run::key(sym, wcode) {
+                            route = Route::Home;
+                        }
+                        continue;
+                    }
                     // onboarding screens (login / who's-watching) own every fresh key — nothing is
                     // behind them, so route the key to the active screen and skip all other handlers.
                     if matches!(route, Route::Login | Route::Profiles) {
@@ -2494,7 +2569,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         dpad_mode = false;
                     }
-                    if matches!(route, Route::Profiles) {
+                    if matches!(route, Route::FirstRun) {
+                        crate::ui::first_run::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Profiles) {
                         crate::ui::profiles::pointer_focus(mx, my);
                     } else if matches!(route, Route::Account) {
                         crate::ui::account_menu::pointer_focus(mx, my);
@@ -2737,6 +2814,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         let act = crate::ui::item_menu::click(cx, cy);
                         route = over.route();
                         apply_item_action(mt, act, over, &mut route, &mut played_from_detail, &mut trail, &mut hud_nav, &mut nav_pending);
+                    } else if matches!(route, Route::FirstRun) {
+                        let (cx, cy) = ptr_xy(&ev);
+                        // a click on the action answers, a click on a row flips its switch — the
+                        // pointer's twin of the key arm, and the same one-way exit
+                        if crate::ui::first_run::click(cx, cy) {
+                            route = Route::Home;
+                        }
                     } else if matches!(route, Route::Profiles) {
                         let (cx, cy) = ptr_xy(&ev);
                         crate::ui::profiles::click(cx, cy);
@@ -3429,13 +3513,25 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(route, Route::Login | Route::Profiles) {
                 if let Some(c) = crate::auth::take_ready() {
                     install_pms(&c.host, c.port, &c.token);
+                    // The roster this identity can reach, now that there IS one — and it is a new
+                    // identity's roster, so the previous account's sources must not survive into it.
+                    // The ANSWER is re-read for the same reason and in the same breath: signing into
+                    // a second account in one session would otherwise inherit the first account's
+                    // "already asked" and write the first account's pins into the second's session
+                    // file. The session on disk is the one auth has just written for this identity.
+                    crate::ui::first_run::reset_sources();
+                    crate::ui::first_run::restore(&crate::plex::session::peek());
+                    note_sources();
                     // the fourth store an identity change must not survive, beside the
                     // `browse`/`pms`/`person` resets `install_pms` performs: a new user must never
                     // be able to walk BACK into the previous one's pages. Reset at the CALL SITE
                     // because `install_pms` is a closure that cannot also hold `&mut trail`.
                     trail.reset();
                     log("login: server installed — entering Home");
-                    route = Route::Home;
+                    // …through the first-run question when this account has more than one source
+                    // and has never been asked. The picker's own users reach Home only here, which
+                    // is why the gate is a shared fn rather than a boot-only branch.
+                    route = landing_route(automated_boot());
                 } else {
                     match crate::auth::phase() {
                         crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
@@ -3546,7 +3642,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
             }
 
-            if matches!(route, Route::Login) {
+            if matches!(route, Route::FirstRun) {
+                // its own pump: the per-source library fetches land here (and call
+                // `ui::idle::invalidate` from the worker, so a landing repaints)
+                crate::ui::first_run::update(dt);
+            } else if matches!(route, Route::Login) {
                 crate::ui::login::update(dt);
             } else if matches!(route, Route::Profiles) {
                 crate::ui::profiles::update(dt);
@@ -3764,6 +3864,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::login::draw();
                         } else if matches!(route, Route::Profiles) {
                             crate::ui::profiles::draw();
+                        } else if matches!(route, Route::FirstRun) {
+                            crate::ui::first_run::draw();
                         } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
                             // the page stays live UNDER its context menu — the popover is anchored beside
                             // the episode still it acts on, which has to still be there to be beside
@@ -3825,6 +3927,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let rn = match route {
                 Route::Login => "login",
                 Route::Profiles => "profiles",
+                Route::FirstRun => "firstrun",
                 Route::Account => "account",
                 Route::ItemMenu { .. } => "itemmenu",
                 Route::Library => "library",

@@ -66,6 +66,29 @@ pub(crate) fn episode_kicker(season: i64, index: i64, title: &str) -> String {
     format!("{} \u{b7} {title}", episode_ordinal(season, index))
 }
 
+/// How big a LIBRARY is, in its own units — `"412 films"` / `"238 shows"` / `"1 film"`.
+///
+/// The sub-line under a library's name wherever the app lists libraries rather than items (the
+/// first-run question, and the Sources list beside it). It says the KIND as well as the number
+/// because "412" alone answers a question nobody asked: what the row promises is a shelf of films
+/// or a shelf of shows, and those are different offers.
+///
+/// A negative count is **absent, not zero** — a section whose size we have not been told yet — and
+/// renders as nothing at all, so the row simply has no sub-line rather than claiming an empty
+/// library. (A genuinely empty one says "0 films", which is an answer.)
+pub(crate) fn library_count(n: i64, is_show: bool) -> String {
+    if n < 0 {
+        return String::new();
+    }
+    let unit = match (is_show, n == 1) {
+        (true, true) => "show",
+        (true, false) => "shows",
+        (false, true) => "film",
+        (false, false) => "films",
+    };
+    format!("{n} {unit}")
+}
+
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no
 /// video (a show container, a music item, an unparsed response).
 ///
@@ -135,6 +158,20 @@ mod tests {
         assert_eq!(resolution("", 1024, 576).as_deref(), resolution("576", 1024, 576).as_deref());
         assert_eq!(resolution("", 0, 1080).as_deref(), Some("1080p")); // width absent → from height
         assert_eq!(resolution("", 0, 0), None); // no video at all (a show container) → no badge
+    }
+
+    /// A library's size says what KIND of thing it holds, agrees with itself at one, and — the case
+    /// that matters on a first boot — says NOTHING at all while the count is still unknown, rather
+    /// than reporting a library we haven't been told the size of as empty.
+    #[test]
+    fn library_count_names_the_kind_and_stays_silent_when_unknown() {
+        use super::library_count;
+        assert_eq!(library_count(412, false), "412 films");
+        assert_eq!(library_count(238, true), "238 shows");
+        assert_eq!(library_count(1, false), "1 film");
+        assert_eq!(library_count(1, true), "1 show");
+        assert_eq!(library_count(0, false), "0 films", "an empty library is an answer");
+        assert_eq!(library_count(-1, false), "", "not yet known is not a number");
     }
 }
 

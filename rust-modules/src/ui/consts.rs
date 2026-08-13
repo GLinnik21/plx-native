@@ -33,6 +33,40 @@ pub const PEEK_Y: f32 = 811.0;
 // leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 108)
 pub const GRID_TOP_Y: f32 = 176.0;
 
+// ---- the ROUTE frame (a full screen that asks one question and ends) -------------------------
+// The design system's own `screens.css` route tokens, which had no equivalent here because the
+// first-run question (`ui/first_run.rs`) is the first screen built to them. Sign-in and the
+// who's-watching picker predate the frame and still centre their own compositions.
+//
+// The shape is two columns on the app's own ground: what this is and the single action on the
+// LEFT, the list itself on the RIGHT. No panel under either — a panel's depth claims there is a
+// screen behind it, and a route has none.
+
+/// **ONE top guide, and both columns hang from it** (`--route-top`). The design canvas draws two
+/// separate `--route-copy-top` / `--route-list-top` vars that the design system never defines;
+/// its own route-screen card uses this single line for the copy column's `top` and the list
+/// column's `padding-top`, which is what this follows.
+pub const ROUTE_TOP: f32 = 150.0;
+/// Left edge of both the copy column and its action — the shared page margin, not a second number
+/// (`--route-copy-x` IS `--margin-x` in the design system).
+pub const ROUTE_COPY_X: f32 = MARGIN_X;
+/// Width of the copy column (`--route-copy-w`): the measure the heading and the paragraph wrap to.
+pub const ROUTE_COPY_W: f32 = 760.0;
+/// Gap from the bottom of the frame to the action's BOTTOM edge (`--route-action-bottom`). The copy
+/// sits at the top of its column and the action at the foot of it, so the two ends of the screen
+/// are the two things you do: read it once, then leave.
+pub const ROUTE_ACTION_BOTTOM: f32 = 74.0;
+/// The action pill's height — the app's one control height, as every other `Button` frame uses.
+pub const ROUTE_ACTION_H: f32 = 60.0;
+/// Left edge of the list column (`--route-list-x`). Its right edge is the page margin, so the
+/// column is [`ROUTE_LIST_W`] wide.
+pub const ROUTE_LIST_X: f32 = 930.0;
+/// The list column's width — derived, never a second literal: right edge at the page margin.
+pub const ROUTE_LIST_W: f32 = SCR_W as f32 - ROUTE_LIST_X - MARGIN_X;
+/// The tallest a route's list may draw: from the shared top guide down to the action's own bottom
+/// line, so a long list is cut level with the control rather than running off the frame.
+pub const ROUTE_LIST_H_MAX: f32 = SCR_H as f32 - ROUTE_TOP - ROUTE_ACTION_BOTTOM;
+
 // SDL keycodes (scancode | SDLK_SCANCODE_MASK, or ASCII)
 pub const SDLK_RIGHT: c_uint = 79 | (1 << 30);
 pub const SDLK_LEFT: c_uint = 80 | (1 << 30);

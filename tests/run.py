@@ -347,6 +347,11 @@ def resolve_shared_server(admin_token, spec):
                   f"reach that.")
     return {
         "name": spec.get("name") or hit.get("name") or "shared",
+        # plex.tv's `sourceTitle`: the owner's handle, which is what "shared" looks like on the wire
+        # and what every browsing surface in the app names instead of the machine. Public, not a
+        # secret -- and without it a headless capture of a shared-source screen can only say
+        # "shared with you" where the design says a person's name.
+        "owner": hit.get("sourceTitle") or "",
         "machine_id": hit.get("clientIdentifier") or want_mid or "",
         "host": host,
         "port": int(port or 32400),

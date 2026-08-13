@@ -596,12 +596,21 @@ the perf gates), and `make test` = `deploy` + `run`.
   `plxnative-remote`/`plxnative-capture`/`plxnative-noidle`) marks the boot as
   automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
   stored session entirely — so headless runs always land on a deterministic Home.
-  `/tmp/plxnative-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.
+  `/tmp/plxnative-pickuser=<index>` forces the picker anyway and auto-picks that roster tile, and
+  `/tmp/plxnative-firstrun` does the same for the **first-run question** (`ui::first_run`, the third
+  boot gate — "What goes on your Home?", between the picker and Home, drawn only when the roster
+  holds more than one source and only until it is answered). Both exist for the same reason: a
+  screen a given television shows exactly ONCE cannot otherwise be photographed twice, and the
+  automated-boot rule would skip it. Pair it with `/tmp/plxnative-servers`, or there is only one
+  source and the screen has nothing to ask about.
 - **The binary carries NO credentials** (no compiled PMS token, no demo URL). PMS access comes
   from the signed-in session (QR login) or, for automated runs only, `/tmp/plxnative-token` — which
   `tests/run.py` always injects (it reads the owner token from the gitignored
   `src/config.local.h` on the HOST; that macro is never compiled in). An interactive boot with
   no session lands on the QR sign-in screen.
-- Normal interactive flow: who's-watching picker (multi-user) → Home; D-pad/pointer to focus a
-  card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
-  scrub-seek, **BACK/Stop** returns.
+- Normal interactive flow: who's-watching picker (multi-user) → **the first-run question, once, and
+  only when someone has shared a library with this account** (`ui/first_run.rs`) → Home; D-pad/pointer
+  to focus a card → **OK** opens the detail page → Play starts playback; OK toggles play/pause,
+  LEFT/RIGHT scrub-seek, **BACK/Stop** returns. The three boot gates (sign-in, picker, first run) all
+  ASSIGN the route rather than transitioning to it, which is why none of them carries a
+  `ui::nav` page fade.

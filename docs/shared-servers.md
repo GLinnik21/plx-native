@@ -333,3 +333,28 @@ suite could not see the bug:
 **Next**, in order: the server registry behind an unchanged `client()` (step 1), then threading
 `ServerId` through the stored structs (step 2). Nothing in the design's canvas can be drawn until
 those exist — the app can hold exactly one server (`plex/client.rs:149`).
+
+### Deliverable F — the first-run question (`ui/first_run.rs`)
+
+The screen §6's F bullet describes, plus the one piece of state the whole design turns on.
+
+- **The route.** `Route::FirstRun`, assigned by the boot gate and by the login/profile landing —
+  the two ways into Home, which is why the gate is one shared `landing_route()` and not two copies
+  of an `if`. Shown when the roster holds **more than one source** and the question has never been
+  answered; an automated boot skips it exactly as it skips the picker, and
+  `/tmp/plxnative-firstrun` forces it for a capture. Drawn to the design system's route frame
+  (`consts::ROUTE_*` — new: those tokens had no repo equivalent) on the app's own ground.
+- **PINNING is now a thing the app holds.** `first_run::is_pinned(machine_id, key, own)` is the ONE
+  place the recorded decision and the arrival default meet: an entry when somebody decided, `own`
+  when nobody has. That is what makes "a share that arrives later appears unpinned" true with no
+  extra state, and it is the function Home's shelf merge (step 8) should read. Persisted as
+  `session::PinRef { machine_id, key, on }` — **keyed by machineIdentifier + section key**, because
+  §2 measured both servers calling their first library `1`.
+- **The roster comes from `app.rs::note_sources`**, which registers the current server plus every
+  `/tmp/plxnative-servers` entry and hands them to `first_run::add_source`. That is the seam the
+  plex.tv roster (step 4/5) replaces: it supplies the machine name, the person (`sourceTitle`) and
+  the `ServerId`, and nothing else about the screen changes when it lands. Each source's libraries
+  are fetched by one worker per server (`/library/sections`, plus one `Container-Size 0` listing per
+  section for its count, which `/library/sections` does not carry).
+- The harness's second-server payload gained an `owner` field for the same reason (`sourceTitle`);
+  without it a headless capture can only say "shared with you" where the design says a name.

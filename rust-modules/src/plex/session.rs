@@ -60,6 +60,36 @@ pub struct Session {
     /// render instantly on every boot (and offline) instead of waiting on a plex.tv round-trip.
     #[serde(default)]
     pub home_users: Vec<HomeUserRef>,
+    /// **Which libraries are on Home** — the answer to the first-run question (`ui::first_run`),
+    /// one entry per library the user has been shown. A library with no entry takes its arrival
+    /// default (your own server's On, a friend's Off), so this file only ever has to carry what
+    /// somebody actually decided.
+    ///
+    /// Pinning governs HOME and nothing else: what is browsable comes from the grant, which is not
+    /// a setting of ours.
+    #[serde(default)]
+    pub home_pins: Vec<PinRef>,
+    /// Has the first-run question been ASKED? Its own flag rather than `!home_pins.is_empty()`,
+    /// because an honest answer can be "none of the shares" — which records nothing new and would
+    /// otherwise re-open the screen on every boot. Only a real answer (either exit: the action or
+    /// BACK) sets it; the roster growing past one source later does not clear it.
+    #[serde(default)]
+    pub home_pins_asked: bool,
+}
+
+/// One library's Home pin — its server's `machineIdentifier` (the identity that survives an address
+/// change) plus that server's own section key, which is only unique WITHIN it: both servers in the
+/// live capture call their first library `1`.
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
+pub struct PinRef {
+    #[serde(default)]
+    pub machine_id: String,
+    #[serde(default)]
+    pub key: i64,
+    /// On Home. Persisted for the OFF case too — an explicit "not this one" is a decision, and
+    /// dropping it would let the arrival default put a library back on Home at the next boot.
+    #[serde(default)]
+    pub on: bool,
 }
 
 /// One persisted who's-watching tile (avatar + PIN flag; no tokens live here).
