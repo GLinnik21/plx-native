@@ -41,7 +41,11 @@ use std::sync::Mutex;
 
 /// Slot ceiling. A Plex account's server list is a handful (own + shared); past this, a
 /// registration is refused and logged rather than growing a table the hot path indexes.
-const MAX_SERVERS: usize = 16;
+///
+/// `pub(super)` because [`super::serverinfo`] holds one entry PER SERVER in a flat array indexed
+/// by [`ServerId::raw`], and a second, independent ceiling there is a silent out-of-bounds
+/// waiting to happen: this is the number that decides which ids can ever exist.
+pub(super) const MAX_SERVERS: usize = 16;
 
 /// A registry slot — a small `Copy` handle that names a server without borrowing it. Stable for
 /// the life of the process, so it can sit in UI state, a route, or a queued job.
@@ -178,7 +182,16 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
     // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
     // commonest call here by far is the profile switch, which only swaps a token; the singleton
     // this replaced read the file exactly once, and so does this.
-    register_lazy(machine_id, host, port, token, &|| super::session::load().client_id)
+    let id = register_lazy(machine_id, host, port, token, &|| super::session::load().client_id);
+    // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
+    // seam below is the test one and deliberately does not), so it is the single place that keeps
+    // each server's self-description — version + Plex Pass, issue #22's blind spot — fresh
+    // without every caller remembering to. It used to sit in `install`, which reached only the
+    // CURRENT server; a shared server registered beside it would have stayed permanently
+    // `Unknown`, and the failure read-out blames a missing Pass on a known-free server only.
+    // A worker fetch, single-flighted per server; nothing waits on it.
+    super::serverinfo::refresh(id);
+    id
 }
 
 /// [`register`] with the device id supplied — the seam that keeps the session file out of the
@@ -245,10 +258,7 @@ fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id
 pub fn install(host: &str, port: i32, token: &str) {
     let id = register("", host, port, token);
     set_current(id); // the session path always retargets: this is now the server we are using
-    // Every session path funnels through here — boot, QR login, profile switch — so this is the
-    // one place that keeps the server's self-description (version + Plex Pass, issue #22's blind
-    // spot) fresh without each caller remembering to. A worker fetch; nothing waits on it.
-    super::serverinfo::refresh();
+    // (`register` already refreshed this server's self-description — see its doc.)
 }
 
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
