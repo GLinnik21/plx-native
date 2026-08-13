@@ -202,16 +202,63 @@ fn hubs() -> &'static Vec<HubRow> {
 
 // ---- rotating hero pool: curated catalog indices (Continue Watching then Recently Added) ----
 const HERO_MAX: usize = 8;
-static mut HERO_POOL: Vec<usize> = Vec::new();
+
+/// One page of the rotating billboard: a catalog index, plus the handle of the SERVER the shelf it
+/// was drawn from came from ("bamx23") — empty for the signed-in user's own, exactly as
+/// [`HubRow::source`] means it.
+///
+/// The handle is carried on the SLOT rather than looked up from the item's shelf at draw time, and
+/// that is the point of the type existing at all: the pool is the one place in the app that lifts
+/// items OUT of their shelf order ([`own_items_first`] promotes an owned page to the front), so a
+/// pool entry that only knew its catalog index would have to find its way back to a hub through a
+/// range scan to answer "whose is this" — for a fact the build already had in its hand.
+struct HeroSlot {
+    idx: usize,
+    source: String,
+}
+static mut HERO_POOL: Vec<HeroSlot> = Vec::new();
+
+fn pool() -> &'static Vec<HeroSlot> {
+    unsafe { &*std::ptr::addr_of!(HERO_POOL) }
+}
 
 /// number of items in the rotating hero pool
 pub(crate) fn hero_pool_len() -> usize {
-    unsafe { std::ptr::addr_of!(HERO_POOL).as_ref().map(|v| v.len()).unwrap_or(0) }
+    pool().len()
 }
 /// hero-pool item `i`, or None
 pub(crate) fn hero_pool_item(i: usize) -> Option<&'static PmsMovie> {
-    let idx = unsafe { std::ptr::addr_of!(HERO_POOL).as_ref() }.and_then(|v| v.get(i)).copied()?;
-    movie(idx)
+    movie(pool().get(i)?.idx)
+}
+/// Handle of the server hero-pool page `i` came from ("bamx23"), or **empty** for the signed-in
+/// user's own — see [`HeroSlot`]. The hero's meta line draws no run at all for the empty case
+/// (`ui::home::meta_source_flow`), so a single-server library pays nothing for this. Borrowed on the
+/// same terms as [`hub_title`]: main-thread only, valid until the next hub commit.
+pub(crate) fn hero_pool_source(i: usize) -> &'static str {
+    pool().get(i).map(|s| s.source.as_str()).unwrap_or("")
+}
+
+/// **Own items first — an ORDERING, not a filter** (Shared Sources, deliverable C).
+///
+/// A borrowed item may not hold the FIRST rotation while the owner contributes at least one, so the
+/// app's front door opens on your own library and a friend's film arrives one 8-second flip in,
+/// attributed. Everything else about the pool is untouched: it stays merged, in the order the
+/// shelves produced it, and the promoted page is lifted out and re-inserted rather than sorted, so
+/// `[B1, B2, O1, O2, B3]` becomes `[O1, B1, B2, O2, B3]` — one page moves, nothing is dropped and
+/// nothing else is reordered.
+///
+/// Filtering instead would leave a borrowed-only account with **no hero at all**, and would overrule
+/// a pin the user made; that is why a pool with nothing of our own in it is left exactly as it is and
+/// opens on a borrowed page. This is also why the rule needs no switch of its own: the pool is built
+/// from included sources only, so a borrowed hero is always the consequence of a pin.
+fn own_items_first(pool: &mut Vec<HeroSlot>) {
+    if pool.first().map(|s| s.source.is_empty()).unwrap_or(true) {
+        return; // nothing pooled, or one of ours already opens the door
+    }
+    if let Some(k) = pool.iter().position(|s| s.source.is_empty()) {
+        let own = pool.remove(k);
+        pool.insert(0, own);
+    }
 }
 
 /// number of home hubs
@@ -281,7 +328,7 @@ pub(crate) fn pms_fetch_hubs() -> c_int {
 
 /// The catalog/hubs/pool triple a fetch produces, before it is committed. Owned data only, so
 /// the off-thread refetch can build it on a worker and hand it over through a mailbox.
-type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<usize>);
+type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<HeroSlot>);
 
 /// GET /hubs and project it — the whole fetch, minus the commit. `None` = the request failed
 /// (transport, HTTP, or parse), which is NOT the same as a server with no hubs (`Some` with an
@@ -302,7 +349,7 @@ fn fetch_build() -> Option<HubBuild> {
 fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer) -> HubBuild {
     let mut new_cat: Vec<PmsMovie> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
-    let mut new_pool: Vec<usize> = Vec::new();
+    let mut new_pool: Vec<HeroSlot> = Vec::new();
     const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
 
     // Build the display shelves as ordered lists of item refs.
@@ -390,12 +437,15 @@ fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer
             if m.art.is_empty() || m.kind == 2 {
                 continue; // need landscape art; skip seasons
             }
-            if new_pool.iter().any(|&j| new_cat[j].rk == m.rk) {
+            if new_pool.iter().any(|s| new_cat[s.idx].rk == m.rk) {
                 continue; // dedup by ratingKey
             }
-            new_pool.push(idx);
+            new_pool.push(HeroSlot { idx, source: hub.source.clone() });
         }
     }
+    // …and only now is the order decided: the pool is assembled shelf by shelf, so which server
+    // opens the door is not knowable until every shelf has contributed.
+    own_items_first(&mut new_pool);
     (new_cat, new_hubs, new_pool)
 }
 
@@ -728,6 +778,71 @@ mod tests {
         assert_eq!(hub_len(0), 2, "the stale build must not replace the current catalog");
         assert_eq!(hub_state(), HubState::Ready, "nor be counted as a failure of the current one");
         reset();
+    }
+
+    // ---- own-items-first: which server opens the front door (Shared Sources, deliverable C) ----
+    //
+    // Pure list arithmetic over `HeroSlot`, so these touch no static and take no lock. The pool is
+    // spelled as a source string per page — "" is ours, anything else a friend's handle — which is
+    // exactly what `build_hubs` hands `own_items_first` after every shelf has contributed.
+
+    /// A pool from a source-per-page spelling, and the spelling back out of one.
+    fn pool_of(sources: &[&str]) -> Vec<HeroSlot> {
+        sources.iter().enumerate().map(|(i, s)| HeroSlot { idx: i, source: s.to_string() }).collect()
+    }
+    fn sources_of(pool: &[HeroSlot]) -> Vec<&str> {
+        pool.iter().map(|s| s.source.as_str()).collect()
+    }
+
+    /// **The rule.** A borrowed film may not be the first thing the app shows while the owner has
+    /// contributed one — the door opens on your own library and a friend's arrives one flip in.
+    /// And it is an ORDERING: the pool stays merged, exactly one page moves, and everything else
+    /// keeps the order the shelves produced it in (a sort would have swept every borrowed page to
+    /// the tail, which is a filter wearing an ordering's clothes).
+    #[test]
+    fn a_borrowed_page_never_opens_the_door_while_we_have_one_of_our_own() {
+        let mut p = pool_of(&["bamx23", "bamx23", "", "", "ldn"]);
+        own_items_first(&mut p);
+        assert_eq!(sources_of(&p), ["", "bamx23", "bamx23", "", "ldn"], "one page is promoted, nothing else moves");
+        assert_eq!(p.iter().map(|s| s.idx).collect::<Vec<_>>(), [2, 0, 1, 3, 4], "every page survives — this is not a filter");
+    }
+
+    /// Already ours at the front: the rule must be a no-op, not a re-shuffle that happens to look
+    /// the same. (It is also the ONE-SERVER case, where the whole feature must be invisible: every
+    /// page's source is empty, so the first page is ours and nothing is touched.)
+    #[test]
+    fn a_pool_that_already_opens_on_one_of_ours_is_left_exactly_alone() {
+        for spelling in [vec!["", "", ""], vec!["", "bamx23", ""], vec!["", "bamx23"]] {
+            let mut p = pool_of(&spelling);
+            own_items_first(&mut p);
+            assert_eq!(sources_of(&p), spelling, "an already-owned first page must not reorder the pool");
+        }
+    }
+
+    /// A borrowed-ONLY account keeps its borrowed hero, first rotation and all. Filtering instead
+    /// would leave the front door with no billboard at all — and would overrule a pin the user
+    /// made, which is the whole reason this is an ordering.
+    #[test]
+    fn a_borrowed_only_account_still_gets_a_hero_and_it_holds_the_first_rotation() {
+        let mut p = pool_of(&["bamx23", "ldn", "bamx23"]);
+        own_items_first(&mut p);
+        assert_eq!(sources_of(&p), ["bamx23", "ldn", "bamx23"], "nothing of ours to promote — leave the pool as it is");
+        assert_eq!(p.len(), 3, "and above all: do not empty the billboard");
+    }
+
+    /// The degenerate ends, because this runs on every commit: an empty pool must not index into
+    /// nothing, and a single borrowed page must survive (it is the borrowed-only account's whole
+    /// billboard).
+    #[test]
+    fn the_ordering_holds_at_the_empty_and_single_page_ends() {
+        let mut empty: Vec<HeroSlot> = Vec::new();
+        own_items_first(&mut empty);
+        assert!(empty.is_empty());
+        for one in [vec![""], vec!["bamx23"]] {
+            let mut p = pool_of(&one);
+            own_items_first(&mut p);
+            assert_eq!(sources_of(&p), one);
+        }
     }
 
     /// `reset` is the profile-switch wipe: the previous user's shelves must not survive it, and
