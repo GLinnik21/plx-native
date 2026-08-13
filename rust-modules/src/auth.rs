@@ -8,8 +8,9 @@
 //! All network happens on spawned threads; the UI only reads snapshots through the accessors here.
 //! Tokens live in the working [`Session`] and are never logged.
 #![allow(dead_code)]
-use crate::plex::account::{AccountClient, HomeUser};
-use crate::plex::session::{self, ServerRef, Session, UserRef};
+use crate::plex::account::{AccountClient, HomeUser, Resource};
+use crate::plex::probe::{self, Candidate, Outcome, ProbePlan, Scheme};
+use crate::plex::session::{self, ServerRef, Session, SourceRef, UserRef};
 use std::sync::Mutex;
 
 /// Which stage the flow is in — the Login/Profiles screens switch on this each frame.
@@ -190,21 +191,35 @@ pub fn submit_pin(index: usize, pin: &str) {
 
 /// Main-loop hook: when the flow has resolved credentials, return them ONCE (and persist the
 /// session) so the caller installs them on the main thread. `None` on every other frame.
+///
+/// The returned creds are the PRIMARY server's, unchanged. The rest of the roster is registered
+/// here too — every path that resolves credentials passes through this one function (sign-in, a
+/// profile pick, and `cancel`'s resume of the stored session), and a share that is not in the
+/// registry is a share nothing can browse.
 pub fn take_ready() -> Option<ReadyCreds> {
-    with_ctl(|c| {
+    let (sources, creds) = with_ctl(|c| {
         if c.phase == Phase::Ready && c.apply_pending {
             c.apply_pending = false;
             session::save(&c.session);
             session::set_current(Some(c.session.user.clone())); // drives the Home profile chip
-            Some(ReadyCreds {
-                host: c.session.server.address.clone(),
-                port: c.session.server.port as i32,
-                token: c.session.pms_token().to_owned(),
-            })
+            Some((
+                c.session.sources.clone(),
+                ReadyCreds {
+                    host: c.session.server.address.clone(),
+                    port: c.session.server.port as i32,
+                    token: c.session.pms_token().to_owned(),
+                },
+            ))
         } else {
             None
         }
-    })
+    })?;
+    // Outside the CTL lock: registering touches the server registry (and, on a cold slot, reads
+    // the session file for the device id), and nothing here needs the flow state held while it
+    // does. `None` for the primary — the caller's own `plex::install` of these creds is what
+    // retargets `current`, and an owned entry registers first regardless.
+    install_roster(&sources, None);
+    Some(creds)
 }
 
 /// Open the "who's watching" picker: the boot gate (picker-at-start) and the Home profile menu's
@@ -217,6 +232,11 @@ pub fn start_switch() {
     if sess.account_token.is_empty() {
         return set_error("You're signed out — sign in to use profiles.");
     }
+    // The boot picker reaches this before any profile is chosen, so it is the earliest point on
+    // the resumed-session path where the stored roster can go back into the registry. Idempotent,
+    // and it does not touch `current` — a "Change profile" from Home lands here too, by which time
+    // everything is registered already and this is a no-op.
+    install_stored_roster(&sess);
     with_ctl(|c| {
         c.error.clear();
         if c.users.is_empty() {
@@ -315,8 +335,17 @@ fn login_thread() {
         return log("auth: sign-in was cancelled while the pin poll was in flight — token dropped");
     }
     let ac = AccountClient::new(&cid, Some(&token));
-    if !discover_and_store(&ac) {
-        return set_error("No local Plex server found on this network.");
+    // The failure copy is per outcome, and it used to be one line — "No local Plex server found on
+    // this network." — for every one of them. That sentence was the discovery POLICY talking: a
+    // server reached over the internet was a failure by construction, so the message named the LAN.
+    // It now describes what actually happened, and none of the three sends the user to the wrong
+    // place: a token refusal is not a router problem, and an account with no server is not an
+    // outage.
+    match discover_and_store(&ac) {
+        Discovery::Ok => {}
+        Discovery::NoServers => return set_error("This Plex account has no server yet."),
+        Discovery::Refused => return set_error("Your Plex server refused the connection — check its network access settings."),
+        Discovery::Silent => return set_error("Couldn't reach any Plex server — check the connection."),
     }
     // Install the PMS client now (server/owner token) so the who's-watching avatars can proxy
     // through the server's photo transcoder. The per-user token is swapped in on profile pick.
@@ -373,74 +402,406 @@ fn poll_for_token(ac: &AccountClient, id: i64, expires_in: i64) -> Option<String
     None
 }
 
-/// An OWNED server's `local` connection, else any server's — the live sign-in rule, pulled out of
-/// [`discover_and_store`] so it can be graded on the host. `plex::probe` is the richer version of
-/// this and supersedes it at step 4 of `docs/shared-servers.md`; until something calls that, THIS
-/// is what every sign-in runs, so its two limits are the app's limits.
-///
-/// **A dialable address here means an IPv4 LITERAL on our own LAN**, and both halves are transport
-/// facts rather than preferences:
-///
-/// * `stream.rs::http_open` parses the host as a dotted quad by hand (`AF_INET`, no DNS), so a v6
-///   literal is not slower — it cannot be dialled at all. Since the roster query started sending
-///   `includeIPv6=1`, plex.tv will happily offer one, and this chooser takes the FIRST match and
-///   PERSISTS it: without the guard, a server advertising its LAN v6 ahead of its v4 signs in
-///   "successfully" to an empty Home *and* writes that address to the session file, so every later
-///   boot starts there too. `probe.rs` ranks v6 last for the same reason.
-/// * `local` is required because a remote address needs DNS/TLS this socket does not have. Note
-///   what §2(a) of the shared-servers note proves about that flag on a SHARED server: it means
-///   "RFC1918", not "your LAN", so this rule reaching a share would pick the owner's `172.20.x.x`
-///   and hang for 8 s. That is the trap `probe.rs` exists to close, and it is still open here.
-fn choose_local_connection(
-    resources: &[crate::plex::account::Resource],
-) -> Option<(&crate::plex::account::Resource, &crate::plex::account::Connection)> {
-    let find = |owned_only: bool| {
-        resources
-            .iter()
-            .filter(|r| r.is_server() && (!owned_only || r.owned))
-            .find_map(|r| {
-                r.connections
-                    .iter()
-                    .find(|c| {
-                        c.local && !c.relay && !c.address.is_empty() && !c.ipv6 && !c.address.contains(':')
-                    })
-                    .map(|c| (r, c))
-            })
-    };
-    find(true).or_else(|| find(false))
+// ---- server discovery ----
+//
+// **Every server the account can reach, not the first one that looks local.** What this replaced
+// filtered both of its passes on `c.local && !c.relay`, kept exactly one server, and threw the rest
+// of the account away. Against a real share that filter is worse than useless: `Connection.local`
+// means "this address is RFC1918", not "you are on that LAN", so it selected the OWNER's
+// `172.20.x.x` — 8 s of timeout from here, and the *worse* outcome is that it succeeds against
+// somebody else's box at that address on our own LAN (`docs/shared-servers.md` §2a).
+//
+// So the shape is: ranked candidates from `plex::probe` (pure policy — it is what drops that
+// address), then dial them in order and **verify identity on the answer** before believing it.
+
+/// How far one server got. Only [`Reach::At`] is a server we can use; the other two are the
+/// distinction `probe.rs`'s module doc refuses to let a caller collapse, because they send the
+/// user to two different places.
+enum Reach {
+    /// This address answered `/identity` **as the server we asked for**.
+    At(Candidate),
+    /// A 401. A TOKEN problem, not a reachability one: the `accessToken` is per (user, server) and
+    /// carries the sharing grant, so every other address of this server answers identically and
+    /// trying them buys nothing. Reporting "can't reach bx23-ldn" here would send the user to look
+    /// at their friend's router for a problem that lives in `/api/v2/resources`.
+    Refused,
+    /// Nothing answered as this server.
+    No,
 }
 
-/// Pick an OWNED server with a `local` connection (offline-capable, numeric address the plain-HTTP
-/// PMS socket can reach), else any server with one, and store it in the working session. A
-/// remote-only server is unusable here — the PMS socket does no DNS/TLS — so we require a local one.
-fn discover_and_store(ac: &AccountClient) -> bool {
+/// What discovery concluded. Three outcomes rather than a bool, because "this account owns no
+/// server", "your servers are silent" and "a server answered and refused us" are three different
+/// things to tell a user, and only the middle one is about the network.
+enum Discovery {
+    Ok,
+    /// `/api/v2/resources` named no server at all. NOT the case where it could not be fetched —
+    /// that is [`Discovery::Silent`], because a request that never arrived says nothing about what
+    /// the account owns.
+    NoServers,
+    /// Servers exist; none of them answered (or plex.tv itself did not).
+    Silent,
+    /// At least one answered **401**, and none was reachable. Something in front of that server
+    /// refuses unauthenticated requests — an auth proxy, or `allowedNetworks` excluding this
+    /// subnet. It is not a network fault and not a dead server, so it must not be worded as one.
+    Refused,
+}
+
+/// The probe path. **Unauthenticated on purpose** — `/identity` answers 200 to anybody, which
+/// makes it useless as a token test and perfect as a reachability + identity one.
+///
+/// The token is deliberately NOT sent. A probe can land on a *different machine* (that is rule 1
+/// of `probe.rs`, and the reason identity is verified at all), and a request that carried the
+/// per-(user, server) token would hand that stranger a live credential before we had any reason to
+/// believe who they are.
+///
+/// **So discovery does not, and cannot, prove the token works.** A per-(user, server) grant revoked
+/// between the `/api/v2/resources` fetch and now still probes as [`Outcome::Reachable`] here — the
+/// server really is reachable; it is the credential that is dead, and this request never shows it
+/// one. That 401 surfaces on the first AUTHENTICATED request instead, where the answer is to refetch
+/// `/api/v2/resources` (`probe.rs`'s module doc) rather than to look for a network fault. The
+/// [`Outcome::Unauthorized`] arm below is not dead code for that: a PMS behind an auth proxy, or one
+/// whose `allowedNetworks` refuses this subnet, answers 401 to the probe itself, and *that* must not
+/// be reported as an unreachable address.
+const IDENTITY: &str = "/identity";
+
+/// Can this app's transport dial that candidate **today**? `stream.rs` speaks plain HTTP to a
+/// dotted quad: no TLS, and no name resolution of any kind (`stream.rs`'s `http_open` builds the
+/// `sockaddr_in` by hand from four decimal octets). An https `plex.direct` origin and the owner's
+/// custom hostname are therefore not "unreachable" — they are unspoken, and saying otherwise would
+/// blame a server for a gap in this client. They come back when the curl control plane lands
+/// (`docs/shared-servers.md` §5 step 6), which is why `probe::candidates` already emits them.
+fn dialable(c: &Candidate) -> bool {
+    c.scheme == Scheme::Http && is_ipv4_literal(&c.address)
+}
+
+/// Four decimal octets and nothing else — the exact address shape `stream.rs` can turn into a
+/// `sockaddr_in`. Anything else (a hostname, a v6 literal, a five-part typo) would be handed to
+/// `http_open` only to be rejected there after a `CString` round trip.
+fn is_ipv4_literal(a: &str) -> bool {
+    let mut parts = 0;
+    for p in a.split('.') {
+        if p.is_empty() || p.len() > 3 || !p.bytes().all(|b| b.is_ascii_digit()) || p.parse::<u8>().is_err() {
+            return false;
+        }
+        parts += 1;
+    }
+    parts == 4
+}
+
+/// The `machineIdentifier` in an `/identity` body, read out of **either** encoding.
+///
+/// PMS answers JSON only for an explicit `Accept: application/json` and XML for anything else
+/// (`plex/CLAUDE.md`), and a probe is exactly the request most likely to meet a proxy, a cache or
+/// an older build that ignores the header — so the one field that decides whether we trust the
+/// connection is scanned for rather than deserialized. The two forms differ only in the
+/// punctuation between the name and the value: `"machineIdentifier":"abc"` and
+/// `machineIdentifier="abc"`.
+fn machine_id_in(body: &[u8]) -> Option<String> {
+    const NAME: &[u8] = b"machineIdentifier";
+    let after = body.windows(NAME.len()).position(|w| w == NAME)? + NAME.len();
+    let rest = &body[after..];
+    let start = rest.iter().position(|b| !matches!(b, b'"' | b':' | b'=' | b' ' | b'\t' | b'\r' | b'\n'))?;
+    let rest = &rest[start..];
+    let end = rest
+        .iter()
+        .position(|b| matches!(b, b'"' | b'\'' | b'<' | b',' | b'}' | b' '))
+        .unwrap_or(rest.len());
+    let v = &rest[..end];
+    (!v.is_empty()).then(|| String::from_utf8_lossy(v).into_owned())
+}
+
+/// Turn one probe response into the outcome the caller must not collapse. Pure, so the acceptance
+/// policy is gradeable on the dev Mac — which is the only tier that can grade it, since the
+/// failures it prevents are "a stranger's server answered" and "a token problem reported as a dead
+/// router".
+fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
+    if status == 401 {
+        // 401 ONLY. PMS refuses a credential with 401; a 403 is an endpoint saying "not for you"
+        // (the owner-only surfaces), which is not something re-fetching `/resources` can fix.
+        return Outcome::Unauthorized;
+    }
+    if !(200..300).contains(&status) {
+        return Outcome::Unreachable;
+    }
+    if want_machine_id.is_empty() {
+        // Nothing to verify against, so nothing is verified. plex.tv sent a resource with no
+        // `clientIdentifier`; accepting whatever answered would be accepting an unnamed machine.
+        return Outcome::WrongServer;
+    }
+    match machine_id_in(body) {
+        Some(id) if id == want_machine_id => Outcome::Reachable,
+        _ => Outcome::WrongServer,
+    }
+}
+
+/// One unauthenticated `GET http://host:port/identity`, as (status, body).
+///
+/// Uses the raw stream primitives rather than `stream::http_get` because the STATUS is half the
+/// answer: `http_get` folds every non-2xx into `None`, which is precisely the collapse of 401 into
+/// "unreachable" that this module exists to avoid. `http_open` already closed the socket on a
+/// non-2xx (and `http_close` is a no-op the second time, by `take_fd`'s swap), so the status
+/// survives on the stream while the body does not.
+fn get_identity(host: &str, port: i32) -> (i32, Vec<u8>) {
+    let (Ok(h), Ok(p)) = (std::ffi::CString::new(host), std::ffi::CString::new(IDENTITY)) else {
+        return (0, Vec::new());
+    };
+    let accept = c"Accept: application/json\r\n";
+    let mut hs = crate::stream::http_stream_boxed();
+    let opened = crate::stream::http_open(&mut *hs, h.as_ptr(), port, p.as_ptr(), accept.as_ptr(), "GET");
+    let status = crate::stream::hs_status(&*hs);
+    let mut body = Vec::new();
+    if opened == 0 {
+        let mut chunk = vec![0u8; 8192];
+        loop {
+            let n = crate::stream::http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as i32);
+            if n <= 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n as usize]);
+            // `/identity` is one empty MediaContainer. Anything past this is not an answer to the
+            // question, and a probe must not be a way to make us read an unbounded body.
+            if body.len() >= 64 * 1024 {
+                break;
+            }
+        }
+    }
+    crate::stream::http_close(&mut *hs);
+    (status, body)
+}
+
+/// Dial one server's candidates in rank order, stopping at the first that answers **as it**.
+///
+/// `dial` is injected so the whole acceptance policy — identity verified before a connection is
+/// accepted, a wrong machine discarded rather than retried, a 401 ending the server instead of the
+/// candidate — is host-testable without a socket.
+///
+/// Sequential, not parallel. `stream.rs` bounds a handshake at 2 s (`CONNECT_TIMEOUT_MS`), the
+/// dialable list is short (policy has already dropped the owner's LAN address and this client
+/// cannot speak to the https/hostname ones), and this runs on the login worker behind a spinner —
+/// so racing would buy a couple of seconds at the price of N threads that each have to capture
+/// their inputs at the spawn site. It is the trade `docs/shared-servers.md` §5 step 4 leaves open.
+fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&str, i32) -> (i32, Vec<u8>)) -> Reach {
+    let mut tried = 0;
+    for c in plan.candidates.iter().filter(|c| dialable(c)) {
+        tried += 1;
+        let (status, body) = dial(&c.address, c.port as i32);
+        match classify(status, &body, &plan.machine_id) {
+            Outcome::Reachable => return Reach::At(c.clone()),
+            Outcome::Unauthorized => {
+                log(&format!("auth: '{}' answered 401 at {} — a token problem, not the network", plan.name, c.address));
+                return Reach::Refused;
+            }
+            Outcome::WrongServer => {
+                // Rule 1, live: something answered and it is not this server. Discarded, never
+                // retried — and never registered, which is the point of verifying at all.
+                log(&format!("auth: '{}' — {}:{} answered as a DIFFERENT machine", plan.name, c.address, c.port));
+            }
+            Outcome::Unreachable => {}
+        }
+    }
+    let skipped = plan.candidates.len() - tried;
+    log(&format!("auth: '{}' did not answer ({tried} address(es) tried, {skipped} not dialable)", plan.name));
+    Reach::No
+}
+
+/// What probing a whole `/api/v2/resources` response came to.
+enum Resolved {
+    /// The response named no server at all — nothing was dialled, and this is a fact about the
+    /// account rather than about the network.
+    NoServers,
+    /// Servers were probed and none was accepted. `refused` distinguishes "at least one answered
+    /// 401" from "silence", which are two different things to tell the user.
+    None { refused: bool },
+    /// The roster, **ours first**, each entry carrying the address that actually answered.
+    Reached(Vec<SourceRef>),
+}
+
+/// The whole of discovery except the two impure edges — fetching `/resources` and holding a socket.
+///
+/// Everything that decides what the app ends up talking to lives here: which servers are tried and
+/// in what order, which of a server's addresses is accepted, and what is written down about it. It
+/// takes the response and a `dial`, so a full sign-in against a two-server account is a host test
+/// rather than a screenshot — which matters because this function is the gate on the whole feature:
+/// register the wrong connection and no other unit's work is reachable, however correct it is.
+fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&str, i32) -> (i32, Vec<u8>)) -> Resolved {
+    let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
+    if servers.is_empty() {
+        return Resolved::NoServers;
+    }
+    // Ours first — it is what becomes `current`, what Home is built from, and the one whose silence
+    // the user can actually do something about. `sort_by_key` is stable, so plex.tv's own order
+    // survives inside each group.
+    servers.sort_by_key(|r| !r.owned);
+
+    let mut found: Vec<SourceRef> = Vec::new();
+    let mut refused = false;
+    for r in servers {
+        let plan = probe::plan(r);
+        match probe_server(&plan, dial) {
+            Reach::At(c) => {
+                let s = SourceRef {
+                    machine_id: plan.machine_id.clone(),
+                    name: plan.name.clone(),
+                    shared_by: plan.source_title.clone().unwrap_or_default(),
+                    owned: plan.owned,
+                    // The address that ANSWERED, never the first advertised — and it got here only
+                    // by being dialable, which is what keeps a v6 literal or a hostname out of the
+                    // session file.
+                    address: c.address,
+                    port: c.port,
+                    // That server's OWN grant. Our own server's token gets a 401 from a share, so
+                    // there is no such thing as one token for the roster.
+                    token: plan.token.clone(),
+                };
+                log(&format!("auth: reached {}", s.describe()));
+                found.push(s);
+            }
+            Reach::Refused => refused = true,
+            Reach::No => {}
+        }
+    }
+    if found.is_empty() {
+        Resolved::None { refused }
+    } else {
+        Resolved::Reached(found)
+    }
+}
+
+/// Discover **every** server this identity can use — ours and each share — and store the roster.
+///
+/// Each resource that `provides` a server is turned into ranked candidates by `plex::probe`, dialled
+/// in order, and accepted only when the answer's `machineIdentifier` matches. Each one that answers
+/// is registered with the [server registry](crate::plex::register) under its **real machine id** and
+/// its **own** per-(user, server) `accessToken` — a share is a separate authority and answers 401 to
+/// our own server's token. Our own server stays `current`: a share is browsable, never the default.
+///
+/// The primary [`ServerRef`] is written exactly as before, so a single-server account produces the
+/// same session file it always did (plus a one-entry roster beside it).
+fn discover_and_store(ac: &AccountClient) -> Discovery {
     let resources = match ac.resources() {
         Some(r) => r,
         None => {
+            // No response, or one that would not deserialize: plex.tv is unreachable from here.
+            // NOT `NoServers` — that copy tells the user their account owns no server, which is a
+            // statement about their account made on the strength of never having heard from it.
             log("auth: resources request FAILED (no response/deser)");
-            return false;
+            return Discovery::Silent;
         }
     };
-    let servers = resources.iter().filter(|r| r.is_server()).count();
-    log(&format!("auth: resources n={} servers={}", resources.len(), servers));
-    let (r, conn) = match choose_local_connection(&resources) {
-        Some(x) => x,
-        None => {
-            log("auth: no server with a local connection (remote-only can't be reached)");
-            return false;
-        }
+    log(&format!(
+        "auth: resources n={} servers={}",
+        resources.len(),
+        resources.iter().filter(|r| r.is_server()).count()
+    ));
+    let resolved = resolve_roster(&resources, &get_identity);
+    let found = match resolved {
+        Resolved::NoServers => return Discovery::NoServers,
+        Resolved::None { refused: true } => return Discovery::Refused,
+        Resolved::None { refused: false } => return Discovery::Silent,
+        Resolved::Reached(f) => f,
     };
-    log(&format!("auth: chose server '{}' {}:{}", r.name, conn.address, conn.port));
+
+    let primary = primary_index(&found);
+    log(&format!("auth: {} server(s) reached, primary '{}'", found.len(), found[primary].name));
+    install_roster(&found, Some(primary));
+    let p = &found[primary];
+    let server = ServerRef {
+        name: p.name.clone(),
+        machine_id: p.machine_id.clone(),
+        address: p.address.clone(),
+        port: if p.port != 0 { p.port } else { 32400 },
+        token: p.token.clone(),
+    };
     with_ctl(|c| {
-        c.session.server = ServerRef {
-            name: r.name.clone(),
-            machine_id: r.client_identifier.clone(),
-            address: conn.address.clone(),
-            port: if conn.port != 0 { conn.port } else { 32400 },
-            token: r.access_token.clone(),
-        };
+        c.session.server = server;
+        c.session.sources = found;
     });
-    true
+    Discovery::Ok
+}
+
+/// Register a roster with the [server registry](crate::plex::register), optionally naming which
+/// entry is the current server.
+///
+/// The registry is keyed on `machineIdentifier`, so this is idempotent: re-running discovery
+/// re-points a server that moved rather than adding a second slot for it, and a re-registration at
+/// the same address just swaps the token in place — which is what the ~30 call sites holding a
+/// `&'static Client` rely on.
+///
+/// Owned entries are registered FIRST even when `primary` is `None` — see [`registration_order`].
+fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> usize {
+    let order = registration_order(sources);
+    for &i in &order {
+        let s = &sources[i];
+        let id = crate::plex::register(&s.machine_id, &s.address, s.port as i32, &s.token);
+        if primary == Some(i) {
+            crate::plex::set_current(id);
+        }
+    }
+    order.len()
+}
+
+/// Which roster entries to register, and in what order: the ones that can actually be dialled,
+/// **ours first**.
+///
+/// The order is load-bearing, not tidiness. The registry makes the FIRST registration current when
+/// nothing is current yet (`servers.rs`), which is exactly the state a boot is in — so a roster
+/// that happens to list a share first would silently come up pointed at the friend's server, and
+/// Home would be built from their library. Stable, so plex.tv's own order survives inside each
+/// group.
+fn registration_order(sources: &[SourceRef]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..sources.len()).filter(|&i| sources[i].usable()).collect();
+    order.sort_by_key(|&i| !sources[i].owned);
+    order
+}
+
+/// Which reached server is the primary: ours if it answered, else the first that did. A friend's
+/// library is a better app than "no server found" when our own box is off.
+fn primary_index(sources: &[SourceRef]) -> usize {
+    sources.iter().position(|s| s.owned).unwrap_or(0)
+}
+
+/// Register the persisted roster — the BOOT twin of discovery, for the path that resumes a stored
+/// session instead of signing in. Only the primary server comes back through
+/// [`take_ready`]/`plex::install`; without this the shares stay unregistered until the next
+/// sign-in, and a boot that resumed a session could browse only our own server.
+///
+/// Leaves `current` alone (an owned entry sorts first, so the registry's own "first registration
+/// wins" already points at ours); the caller's `plex::install` of the primary is what retargets.
+///
+/// **Called from [`start_switch`], which covers the boot picker and every later "Change profile".
+/// The one path it does NOT cover is `app.rs`'s straight-to-Home boot** — a stored session with a
+/// single Plex Home user, or any automated run — which installs the primary itself and never
+/// enters this module. That boot needs one line beside its `install_pms`:
+/// `crate::auth::install_stored_roster(&session);`.
+pub fn install_stored_roster(sess: &Session) -> usize {
+    let n = install_roster(&sess.sources, None);
+    if n > 0 {
+        log(&format!("auth: roster restored — {n} server(s) registered"));
+    }
+    n
+}
+
+/// Re-key a stored roster to a newly switched profile.
+///
+/// `accessToken` is per **(user, server)**, so switching profile invalidates every stored token at
+/// once, not only the primary's — a share left on the previous profile's token answers 401 to
+/// everything. The switch already fetches `/api/v2/resources` as the new user to find the primary's
+/// token, so this re-keys the whole roster from that same response: no extra round trip.
+///
+/// A source the response no longer names is DROPPED — that profile has not been granted it. A brand
+/// new share is not added here: it has no probed address yet, and inventing one is what discovery
+/// is for.
+/// An entry with no machine id is dropped too: it cannot be identified, so it cannot be re-keyed,
+/// and an empty id must never be allowed to match a resource that also happens to have none.
+fn retoken(sources: &[SourceRef], resources: &[Resource]) -> Vec<SourceRef> {
+    sources
+        .iter()
+        .filter(|s| !s.machine_id.is_empty())
+        .filter_map(|s| {
+            let r = resources.iter().find(|r| r.is_server() && r.client_identifier == s.machine_id)?;
+            (!r.access_token.is_empty()).then(|| SourceRef { token: r.access_token.clone(), ..s.clone() })
+        })
+        .collect()
 }
 
 fn switch_thread(index: usize, pin: Option<String>) {
@@ -492,18 +853,31 @@ fn switch_thread(index: usize, pin: Option<String>) {
         // managed users (the admin's happens to double as one). Re-discover with the switched user's
         // token to get THIS user's per-user server access token (the /resources `accessToken` the PMS
         // accepts), scoped to what that profile is allowed to see.
-        let mid = with_ctl(|c| c.session.server.machine_id.clone());
-        let stok = AccountClient::new(&cid, Some(&u.auth_token))
-            .resources()
-            .and_then(|rs| {
-                rs.into_iter()
-                    .find(|r| r.is_server() && (mid.is_empty() || r.client_identifier == mid))
-                    .map(|r| r.access_token)
-            })
+        let (mid, roster) = with_ctl(|c| (c.session.server.machine_id.clone(), c.session.sources.clone()));
+        let resources = AccountClient::new(&cid, Some(&u.auth_token)).resources().unwrap_or_default();
+        let stok = resources
+            .iter()
+            .find(|r| r.is_server() && (mid.is_empty() || r.client_identifier == mid))
+            .map(|r| r.access_token.clone())
             .filter(|t| !t.is_empty());
+        // The per-(user, server) token is per server, so EVERY entry of the roster has just gone
+        // stale, not only the primary's — a share left on the previous profile's token answers 401
+        // to everything. This response is the one already being fetched, so re-keying costs nothing.
+        //
+        // COMPUTED here, APPLIED only on the success branch below. `retoken` drops what the new
+        // profile was not granted, and a switch that then fails leaves the user on the picker with
+        // their old profile still signed in — persisting a roster re-keyed for a profile we did not
+        // switch to would delete their shares from disk the next time anything saved the session.
+        // Guarded on the response naming at least one server, so a failed fetch cannot read as
+        // "this profile has been un-shared everything" either.
+        let rekeyed = resources.iter().any(|r| r.is_server()).then(|| retoken(&roster, &resources));
         match stok {
             Some(token) => {
                 log(&format!("auth: switch '{}' -> ok (per-user server token)", tile.title));
+                if let Some(next) = rekeyed {
+                    with_ctl(|c| c.session.sources = next.clone());
+                    install_roster(&next, None);
+                }
                 with_ctl(|c| {
                     c.session.user = UserRef {
                         id: u.id,
@@ -548,57 +922,376 @@ fn set_error(msg: &str) {
 
 #[cfg(test)]
 mod tests {
-    use crate::plex::account::Resource;
+    use super::*;
+    use std::cell::RefCell;
 
-    fn roster(json: &str) -> Vec<Resource> {
+    fn resource(json: &str) -> Resource {
         serde_json::from_str(json).expect("fixture parses")
     }
 
-    /// The address this picks is PERSISTED, so picking an undialable one is not a slow sign-in — it
-    /// is a permanently empty Home, on every boot after it too. `stream.rs` speaks IPv4 literals
-    /// only, and the roster query asks plex.tv for `includeIPv6=1`, so a server listing its LAN v6
-    /// FIRST is the shape that breaks: this chooser takes the first match. It must step past the v6
-    /// to the v4 behind it.
-    #[test]
-    fn a_lan_ipv6_is_stepped_over_for_the_ipv4_behind_it() {
-        let rs = roster(
-            r#"[{"name":"mine","clientIdentifier":"aaaa1111","provides":"server","owned":true,
-                 "connections":[
-                   {"address":"2001:db8::1","port":32400,"local":true,"relay":false,"IPv6":true},
-                   {"address":"192.168.0.10","port":32400,"local":true,"relay":false,"IPv6":false}]}]"#,
-        );
-        let (_, c) = super::choose_local_connection(&rs).expect("a dialable connection");
-        assert_eq!(c.address, "192.168.0.10", "the v6 literal cannot be dialled by stream.rs at all");
-
-        // …and a v6 whose flag is absent is caught by the address itself. The roster flags are
-        // null-tolerant now, so `IPv6:false` on a colon-bearing address must not be believed.
-        let rs = roster(
-            r#"[{"name":"mine","clientIdentifier":"aaaa1111","provides":"server","owned":true,
-                 "connections":[{"address":"fd00::5","port":32400,"local":true,"relay":false,"IPv6":false}]}]"#,
-        );
-        assert!(super::choose_local_connection(&rs).is_none(), "nothing dialable is None, not a v6");
+    /// A share with FOUR advertised addresses, which between them cover every case the probe loop
+    /// has to get right: the owner's LAN address (policy drops it), a hostname this transport
+    /// cannot resolve, and two public IPv4s so "the first one answered as somebody else" has a
+    /// second one to fall through to. Shaped on the live capture of 2026-08-11
+    /// (`docs/shared-servers.md` §2); the addresses are stand-ins, the arrangement is not.
+    fn a_share() -> Resource {
+        resource(
+            r#"{"name":"bx23-ldn","clientIdentifier":"bbbb2222","provides":"server","owned":false,
+                "sourceTitle":"bamx23","publicAddressMatches":false,"httpsRequired":false,
+                "accessToken":"tok-share","connections":[
+                  {"protocol":"https","address":"172.20.4.7","port":32400,
+                   "uri":"https://172-20-4-7.h.plex.direct:32400","local":true,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"media.example.internal","port":26937,
+                   "uri":"https://media.example.internal:26937","local":false,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"198.51.100.7","port":26937,
+                   "uri":"https://198-51-100-7.h.plex.direct:26937","local":false,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"203.0.113.9","port":26937,
+                   "uri":"https://203-0-113-9.h.plex.direct:26937","local":false,"relay":false,"IPv6":false}]}"#,
+        )
     }
 
-    /// The two passes, unchanged by the guard above: an owned server wins even when a shared one is
-    /// listed first and looks perfectly good, and a relay is never a "local" connection. (What this
-    /// rule still gets wrong on a SHARE — `local` meaning RFC1918 rather than "your LAN", §2(a) of
-    /// `docs/shared-servers.md` — is `probe.rs`'s job and is not asserted here, because nothing
-    /// calls probe yet and this is a pin of the LIVE behaviour.)
-    #[test]
-    fn an_owned_server_outranks_a_shared_one_and_a_relay_is_never_chosen() {
-        let rs = roster(
-            r#"[{"name":"theirs","clientIdentifier":"bbbb2222","provides":"server","owned":false,
-                 "connections":[{"address":"172.20.4.7","port":32400,"local":true,"relay":false,"IPv6":false}]},
-                {"name":"mine","clientIdentifier":"aaaa1111","provides":"server","owned":true,
-                 "connections":[{"address":"192.168.0.10","port":32400,"local":true,"relay":false,"IPv6":false}]}]"#,
-        );
-        let (r, c) = super::choose_local_connection(&rs).expect("the owned server");
-        assert_eq!((r.name.as_str(), c.address.as_str()), ("mine", "192.168.0.10"));
+    /// A JSON `/identity` body naming `mid` — what a PMS answers a probe with.
+    fn identity_json(mid: &str) -> Vec<u8> {
+        format!(r#"{{"MediaContainer":{{"size":0,"machineIdentifier":"{mid}","version":"1.43.3"}}}}"#).into_bytes()
+    }
 
-        let rs = roster(
-            r#"[{"name":"relayed","clientIdentifier":"cccc3333","provides":"server","owned":true,
-                 "connections":[{"address":"10.0.0.9","port":8443,"local":true,"relay":true,"IPv6":false}]}]"#,
+    /// A recording dial. Returns whatever the script says for an address, and remembers the order
+    /// it was asked — which is how "it stopped" and "it never tried that one" become assertions.
+    struct Dialled {
+        seen: RefCell<Vec<String>>,
+        answers: Vec<(&'static str, i32, Vec<u8>)>,
+    }
+    impl Dialled {
+        fn new(answers: Vec<(&'static str, i32, Vec<u8>)>) -> Dialled {
+            Dialled { seen: RefCell::new(Vec::new()), answers }
+        }
+        fn dial(&self, host: &str, port: i32) -> (i32, Vec<u8>) {
+            self.seen.borrow_mut().push(format!("{host}:{port}"));
+            match self.answers.iter().find(|(h, _, _)| *h == host) {
+                Some((_, s, b)) => (*s, b.clone()),
+                None => (0, Vec::new()), // nothing answered at that address
+            }
+        }
+        fn seen(&self) -> Vec<String> {
+            self.seen.borrow().clone()
+        }
+    }
+
+    /// **Identity is verified before a connection is accepted.** A candidate that answers is not
+    /// the server we asked for: rule 1 of `probe.rs` is a live account of how a stranger's box on
+    /// our own LAN answers a probe, and accepting it would register their machine under our
+    /// friend's name and browse it.
+    ///
+    /// The wrong machine is discarded and the NEXT candidate is tried — a mismatch is a fact about
+    /// that address, not about the server.
+    #[test]
+    fn a_response_from_the_wrong_machine_is_rejected_and_the_next_address_is_tried() {
+        let plan = probe::plan(&a_share());
+        let d = Dialled::new(vec![
+            ("198.51.100.7", 200, identity_json("zzzz9999")), // someone else entirely
+            ("203.0.113.9", 200, identity_json("bbbb2222")),  // the server we asked for
+        ]);
+
+        match probe_server(&plan, &|h, p| d.dial(h, p)) {
+            Reach::At(c) => assert_eq!((c.address.as_str(), c.port), ("203.0.113.9", 26937)),
+            _ => panic!("the second address answers as the right machine: {:?}", d.seen()),
+        }
+        assert_eq!(d.seen(), vec!["198.51.100.7:26937", "203.0.113.9:26937"]);
+
+        // …and the same body from the wrong machine is never enough on its own
+        assert_eq!(classify(200, &identity_json("zzzz9999"), "bbbb2222"), Outcome::WrongServer);
+        assert_eq!(classify(200, &identity_json("bbbb2222"), "bbbb2222"), Outcome::Reachable);
+        // a 200 that says nothing we can check is not an acceptance either
+        assert_eq!(classify(200, b"<html>router login</html>", "bbbb2222"), Outcome::WrongServer);
+        // nor is a resource plex.tv sent without an identity to verify against
+        assert_eq!(classify(200, &identity_json("bbbb2222"), ""), Outcome::WrongServer);
+    }
+
+    /// **401 is a token problem, never "unreachable".** The `accessToken` is per (user, server) and
+    /// carries the sharing grant, so every other address of that server answers identically —
+    /// trying them wastes 2 s each and then reports "can't reach bx23-ldn", sending the user to look
+    /// at their friend's router for something that lives in `/api/v2/resources`.
+    #[test]
+    fn a_401_ends_the_server_rather_than_being_retried_as_a_dead_address() {
+        assert_eq!(classify(401, b"", "bbbb2222"), Outcome::Unauthorized);
+        // and it is the ONLY status that means this: a refusal of the endpoint, a dead gateway and
+        // no answer at all are all just "try the next address"
+        for s in [403, 404, 500, 502, 0] {
+            assert_eq!(classify(s, b"", "bbbb2222"), Outcome::Unreachable, "status {s}");
+        }
+
+        let plan = probe::plan(&a_share());
+        let d = Dialled::new(vec![("198.51.100.7", 401, Vec::new()), ("203.0.113.9", 200, identity_json("bbbb2222"))]);
+        assert!(matches!(probe_server(&plan, &|h, p| d.dial(h, p)), Reach::Refused));
+        assert_eq!(d.seen(), vec!["198.51.100.7:26937"], "the remaining addresses are not dialled");
+    }
+
+    /// The 8-second trap, and the half of it the transport adds. Policy has already dropped the
+    /// share's `local` address (the OWNER's LAN); this asserts the probe loop never dials it — and
+    /// never dials the two candidates this client cannot speak to at all, which are unspoken rather
+    /// than unreachable and must not be counted as the server failing.
+    #[test]
+    fn only_addresses_this_transport_can_dial_are_ever_probed() {
+        let plan = probe::plan(&a_share());
+        assert_eq!(plan.candidates.len(), 6, "policy kept three connections, two candidates each");
+
+        let d = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
+        assert!(matches!(probe_server(&plan, &|h, p| d.dial(h, p)), Reach::At(_)));
+        let seen = d.seen();
+        assert!(!seen.iter().any(|s| s.starts_with("172.20")), "the owner's LAN address: {seen:?}");
+        assert!(!seen.iter().any(|s| s.contains("example.internal")), "no DNS in this transport: {seen:?}");
+        assert!(!seen.iter().any(|s| s.contains("plex.direct")), "no TLS in this transport: {seen:?}");
+
+        // the rule itself, stated on the candidates
+        let http_v4 = |a: &str| Candidate {
+            url: format!("http://{a}:32400"),
+            scheme: Scheme::Http,
+            location: probe::Location::Remote,
+            address: a.into(),
+            port: 32400,
+            ipv6: false,
+        };
+        assert!(dialable(&http_v4("203.0.113.9")));
+        assert!(!dialable(&Candidate { scheme: Scheme::Https, ..http_v4("203.0.113.9") }));
+        assert!(!dialable(&http_v4("media.example.internal")));
+        assert!(!dialable(&http_v4("2001:db8::1")));
+        assert!(!dialable(&http_v4("203.0.113")), "three octets is not an address");
+        assert!(!dialable(&http_v4("203.0.113.999")), "999 is not an octet");
+    }
+
+    /// **The address that reaches the session file is one this transport can dial — never an IPv6
+    /// literal, never a hostname.** This is the property that replaced `choose_local_connection`'s
+    /// v6 guard: the foundation's `includeIPv6=1` made plex.tv offer v6 connections, and the chooser
+    /// this file used to end in took the FIRST `local` match and PERSISTED it, so one v6 address
+    /// wrote an undialable server to disk and broke every later boot, not just that one.
+    ///
+    /// Here the guard is structural rather than a filter that can be forgotten: nothing but a
+    /// `dialable` candidate is ever dialled, and only a candidate that ANSWERED becomes a
+    /// `SourceRef`. So an address can only be persisted after it has been connected to.
+    #[test]
+    fn only_an_address_this_transport_can_dial_is_ever_chosen_and_stored() {
+        // our own server, v6 first — and the second v6 lies about its flag, which is why the shape
+        // of the address is what decides rather than `IPv6`
+        let res = resource(
+            r#"{"name":"Mac mini","clientIdentifier":"aaaa1111","provides":"server","owned":true,
+                "publicAddressMatches":false,"httpsRequired":false,"accessToken":"tok-own",
+                "connections":[
+                  {"protocol":"https","address":"2001:db8::1","port":32400,
+                   "uri":"https://2001-db8--1.h.plex.direct:32400","local":true,"relay":false,"IPv6":true},
+                  {"protocol":"https","address":"fd00::5","port":32400,"uri":"","local":true,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"192.168.0.10","port":32400,
+                   "uri":"https://192-168-0-10.h.plex.direct:32400","local":true,"relay":false,"IPv6":false}]}"#,
         );
-        assert!(super::choose_local_connection(&rs).is_none(), "a relay is not a local connection");
+        let plan = probe::plan(&res);
+        let d = Dialled::new(vec![
+            // every one of them answers, correctly — so nothing but the ORDER and the dialable
+            // filter can keep the v6 addresses out
+            ("2001:db8::1", 200, identity_json("aaaa1111")),
+            ("fd00::5", 200, identity_json("aaaa1111")),
+            ("192.168.0.10", 200, identity_json("aaaa1111")),
+        ]);
+
+        match probe_server(&plan, &|h, p| d.dial(h, p)) {
+            Reach::At(c) => assert_eq!(c.address, "192.168.0.10", "a v6 literal is not dialable here"),
+            _ => panic!("the LAN IPv4 answers: {:?}", d.seen()),
+        }
+        assert_eq!(d.seen(), vec!["192.168.0.10:32400"], "the v6 addresses are never even tried");
+        // …and the flag being false does not make a colon-bearing address dialable
+        assert!(!is_ipv4_literal("fd00::5") && !is_ipv4_literal("2001:db8::1"));
+    }
+
+    /// The one field that decides whether we trust a connection is scanned for, not deserialized:
+    /// PMS answers XML unless an explicit JSON Accept survives to it, and a probe is the request
+    /// most likely to meet a proxy that rewrites headers.
+    #[test]
+    fn the_machine_identifier_is_read_from_json_and_from_xml_alike() {
+        assert_eq!(machine_id_in(&identity_json("abc123")).as_deref(), Some("abc123"));
+        assert_eq!(
+            machine_id_in(br#"<MediaContainer size="0" machineIdentifier="abc123" version="1.43.3"/>"#).as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(machine_id_in(br#"{"MediaContainer":{"machineIdentifier" : "abc123"}}"#).as_deref(), Some("abc123"));
+        // an empty value is no value — it must not read as "the next field"
+        assert_eq!(machine_id_in(br#"{"machineIdentifier":"","size":0}"#), None);
+        assert_eq!(machine_id_in(b"nothing here"), None);
+        assert_eq!(machine_id_in(b""), None);
+    }
+
+    /// The account this feature exists for, as `/api/v2/resources` really returns it: OUR server
+    /// (owned, LAN + public + relay) and the SHARE (not owned, the owner's 172.20 LAN, an internal
+    /// hostname, and one public IPv4). Shaped on the live capture of 2026-08-11
+    /// (`docs/shared-servers.md` §2) — the addresses are stand-ins, the arrangement is not, and the
+    /// share is listed FIRST because plex.tv's order is not ours to rely on.
+    fn a_two_server_account() -> Vec<Resource> {
+        serde_json::from_str(
+            r#"[
+              {"name":"bx23-ldn","clientIdentifier":"bbbb2222","provides":"server","owned":false,
+               "sourceTitle":"bamx23","ownerId":987654,"publicAddressMatches":false,
+               "httpsRequired":false,"accessToken":"tok-share","connections":[
+                 {"protocol":"https","address":"172.20.4.7","port":32400,
+                  "uri":"https://172-20-4-7.h.plex.direct:32400","local":true,"relay":false,"IPv6":false},
+                 {"protocol":"https","address":"media.example.internal","port":26937,
+                  "uri":"https://media.example.internal:26937","local":false,"relay":false,"IPv6":false},
+                 {"protocol":"https","address":"203.0.113.9","port":26937,
+                  "uri":"https://203-0-113-9.h.plex.direct:26937","local":false,"relay":false,"IPv6":false}]},
+              {"name":"Mac mini","clientIdentifier":"aaaa1111","provides":"server","owned":true,
+               "sourceTitle":null,"ownerId":null,"publicAddressMatches":false,"httpsRequired":false,
+               "accessToken":"tok-own","connections":[
+                 {"protocol":"https","address":"2001:db8::1","port":32400,
+                  "uri":"https://2001-db8--1.h.plex.direct:32400","local":true,"relay":false,"IPv6":true},
+                 {"protocol":"https","address":"192.168.0.10","port":32400,
+                  "uri":"https://192-168-0-10.h.plex.direct:32400","local":true,"relay":false,"IPv6":false},
+                 {"protocol":"https","address":"plex-relay.example.net","port":8443,
+                  "uri":"https://plex-relay.example.net:8443","local":false,"relay":true,"IPv6":false}]},
+              {"name":"someone's iPad","clientIdentifier":"cccc3333","provides":"player,controller",
+               "accessToken":"tok-pad","connections":[]}
+            ]"#,
+        )
+        .expect("fixture parses")
+    }
+
+    /// **What a real sign-in must produce.** The whole of discovery over the measured two-server
+    /// account, with only the socket faked: this is the assertion that stands in for a device run,
+    /// because everything downstream — Home, the library grid, playback — talks to whatever this
+    /// function decided.
+    ///
+    /// Two servers, OURS FIRST (plex.tv listed the share first), each settled on the one address
+    /// that answers from this TV: our LAN IPv4, and the share's PUBLIC IPv4 rather than the owner's
+    /// 172.20 LAN. Each carries its own grant, and the non-server resource is not in the roster.
+    #[test]
+    fn a_sign_in_to_a_two_server_account_settles_on_one_address_each_ours_first() {
+        let d = Dialled::new(vec![
+            ("192.168.0.10", 200, identity_json("aaaa1111")),
+            ("203.0.113.9", 200, identity_json("bbbb2222")),
+        ]);
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|h, p| d.dial(h, p)) else {
+            panic!("both servers answer: {:?}", d.seen())
+        };
+
+        assert_eq!(roster.len(), 2, "a player resource is not a server");
+        assert_eq!(primary_index(&roster), 0, "ours is the primary and becomes `current`");
+
+        let own = &roster[0];
+        assert!(own.owned && own.machine_id == "aaaa1111");
+        assert_eq!((own.address.as_str(), own.port), ("192.168.0.10", 32400), "the LAN v4, not the v6");
+        assert_eq!(own.token, "tok-own");
+        assert!(own.shared_by.is_empty(), "an owned server has no owner to name");
+
+        let share = &roster[1];
+        assert!(!share.owned && share.machine_id == "bbbb2222");
+        assert_eq!(
+            (share.address.as_str(), share.port),
+            ("203.0.113.9", 26937),
+            "the owner's 172.20 LAN is not ours to dial, and their hostname does not resolve"
+        );
+        assert_eq!(share.token, "tok-share", "a share is a separate authority: OUR token gets a 401");
+        assert_eq!(share.shared_by, "bamx23");
+        assert!(roster.iter().all(|s| s.usable()), "every entry is dialable, so every one registers");
+
+        // Exactly two dials: the relay is never tried (a 2 Mbit/s https-only tunnel), nor the
+        // owner's LAN, nor the internal hostname, nor the v6 literal — none of which this transport
+        // can speak to. And OURS is probed first, though plex.tv listed the share first.
+        assert_eq!(d.seen(), vec!["192.168.0.10:32400", "203.0.113.9:26937"]);
+    }
+
+    /// The three ways discovery can come to nothing are three different things to say, and the one
+    /// that used to be said for all of them ("No local Plex server found on this network") was the
+    /// old policy talking rather than a description of what happened.
+    #[test]
+    fn the_three_empty_outcomes_are_distinguished() {
+        let players = serde_json::from_str::<Vec<Resource>>(
+            r#"[{"name":"iPad","clientIdentifier":"cccc3333","provides":"player","connections":[]}]"#,
+        )
+        .unwrap();
+        assert!(matches!(resolve_roster(&players, &|_, _| (0, Vec::new())), Resolved::NoServers));
+
+        // servers that simply do not answer
+        let silent = Dialled::new(vec![]);
+        assert!(matches!(
+            resolve_roster(&a_two_server_account(), &|h, p| silent.dial(h, p)),
+            Resolved::None { refused: false }
+        ));
+
+        // …and one that answers 401: something in front of it refuses unauthenticated requests,
+        // which is not a network fault and must not be worded as one
+        let refused = Dialled::new(vec![("192.168.0.10", 401, Vec::new()), ("203.0.113.9", 401, Vec::new())]);
+        assert!(matches!(
+            resolve_roster(&a_two_server_account(), &|h, p| refused.dial(h, p)),
+            Resolved::None { refused: true }
+        ));
+
+        // a share that answers while OUR server is off still signs in — a friend's library beats
+        // "no server found" — and it becomes the primary because it is the only thing there is
+        let one = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|h, p| one.dial(h, p)) else {
+            panic!("the share answered")
+        };
+        assert_eq!(roster.len(), 1);
+        assert_eq!(primary_index(&roster), 0);
+        assert!(!roster[0].owned, "the primary is a share here, and that is the point");
+    }
+
+    fn source(machine_id: &str, owned: bool, token: &str) -> SourceRef {
+        SourceRef {
+            machine_id: machine_id.into(),
+            name: machine_id.into(),
+            shared_by: if owned { String::new() } else { "bamx23".into() },
+            owned,
+            address: "10.0.0.1".into(),
+            port: 32400,
+            token: token.into(),
+        }
+    }
+
+    /// Our own server registers first and is the primary, whatever order plex.tv listed the account
+    /// in — because the registry makes the first registration `current` when nothing is yet, so the
+    /// ordering is what stops a boot coming up pointed at a friend's server and building Home from
+    /// their library.
+    #[test]
+    fn our_own_server_leads_the_roster_however_plex_tv_ordered_it() {
+        let roster = vec![source("share-1", false, "t1"), source("ours", true, "t2"), source("share-2", false, "t3")];
+        assert_eq!(registration_order(&roster), vec![1, 0, 2], "ours first, then plex.tv's own order");
+        assert_eq!(primary_index(&roster), 1);
+
+        // an entry with no credential (or no address) cannot be dialled, so it is not registered —
+        // registering it would put a `Client` in the table that 401s everything asked of it
+        let mut half = roster.clone();
+        half[0].token.clear();
+        half[2].address.clear();
+        assert_eq!(registration_order(&half), vec![1]);
+
+        // a shares-only roster (our own box is off) still yields a primary rather than nothing:
+        // a friend's library is a better app than "no server found"
+        let shares = vec![source("share-1", false, "t1"), source("share-2", false, "t3")];
+        assert_eq!(primary_index(&shares), 0);
+        assert_eq!(registration_order(&shares), vec![0, 1]);
+    }
+
+    /// A profile switch re-keys the WHOLE roster, not just the primary. `accessToken` is per
+    /// (user, server), so the other profile's token on a share is a 401 waiting to happen — and a
+    /// server this profile has not been granted leaves the roster rather than lingering with a
+    /// credential that no longer works.
+    #[test]
+    fn switching_profile_re_keys_every_source_and_drops_the_ones_not_granted() {
+        let roster =
+            vec![source("ours", true, "old-own"), source("share-1", false, "old-share"), source("gone", false, "old-gone")];
+        let rs = vec![
+            resource(r#"{"clientIdentifier":"ours","provides":"server","owned":true,"accessToken":"new-own"}"#),
+            resource(r#"{"clientIdentifier":"share-1","provides":"server","owned":false,"accessToken":"new-share"}"#),
+        ];
+
+        let next = retoken(&roster, &rs);
+        assert_eq!(next.len(), 2, "the un-granted server is gone, not left on a stale token");
+        assert_eq!(next[0].token, "new-own");
+        assert_eq!((next[1].machine_id.as_str(), next[1].token.as_str()), ("share-1", "new-share"));
+        assert_eq!(next[1].shared_by, "bamx23", "everything but the token is carried over");
+        assert_eq!(next[1].address, "10.0.0.1", "including the address discovery probed");
+
+        // a resource that came back WITHOUT a token for this profile is not a re-key either
+        let empty = vec![resource(r#"{"clientIdentifier":"ours","provides":"server","accessToken":""}"#)];
+        assert!(retoken(&roster, &empty).is_empty());
+        // and an entry with no identity cannot be re-keyed, and must never match by emptiness
+        let anon = vec![source("", false, "old")];
+        assert!(retoken(&anon, &[resource(r#"{"provides":"server","accessToken":"x"}"#)]).is_empty());
     }
 }
