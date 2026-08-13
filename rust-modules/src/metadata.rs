@@ -464,6 +464,21 @@ fn convert_ratings(it: &crate::plex::Metadata) -> Vec<Rating> {
 #[derive(Default)]
 pub(crate) struct Detail {
     pub(crate) rk: String,
+    /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("bamx23") — empty whenever
+    /// it came from the signed-in user's own server, which is every item today.
+    ///
+    /// The person, never the machine: the machine's name (`bx23-ldn`) belongs to the Sources list
+    /// and to a failure read-out, and appears nowhere else in the product. Empty is the ABSENCE of
+    /// an attribution, not an empty one — the detail hero draws no separator and no run at all for
+    /// it ([`crate::ui::detail`]'s facts row), so a single-server library pays nothing for the
+    /// feature: no gap, no dot, no draw call.
+    ///
+    /// Captured at FETCH time and stored, rather than read from `plex::servers::current()` at paint
+    /// time: the page outlives the fetch, and the current server can move under it while a load is
+    /// in flight. Populated by the multi-server data layer when it lands (`docs/shared-servers.md`
+    /// step 2 threads `ServerId` through this struct); the roster field behind it is
+    /// `plex::account::Resource::source_title`.
+    pub(crate) source: String,
     pub(crate) is_show: bool,
     pub(crate) kind: String,       // this item's own type: movie | episode | show | season
     pub(crate) show_title: String, // grandparentTitle — the show name, when this item is an episode
@@ -652,6 +667,10 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
     let mut d = Detail {
         rk: rk.to_string(),
+        // one server today: this fetch went to the machine we are signed in to, so the item is our
+        // own and there is nobody to credit. A borrowed item names its owner only once the
+        // multi-server layer can say which server a fetch was made against (see `Detail::source`).
+        source: String::new(),
         is_show: it.kind == "show",
         kind: it.kind.clone(),
         show_title: it.grandparent_title.clone(),
