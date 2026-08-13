@@ -9,6 +9,16 @@
 /// `route::universal_base`: the CURRENT audio/subtitle selection rides every transcode of the
 /// item, and `session` is the per-playback id shared with the timeline
 /// (`X-Plex-Session-Identifier == session=`, byte-for-byte, so /status/sessions correlates).
+///
+/// **There is no bitrate field here, and a capped link is not answered by adding one.** The only
+/// bitrate literal in the whole spec is `maxVideoBitrate`, on the RE-ENCODE branch of
+/// `transcoder::transcode_query`; the [`remux`](Self::remux) branch deliberately sends no cap at
+/// all, because a resolution or bitrate cap is precisely what makes PMS re-encode instead of copy.
+/// And on the third path — direct play, this client's default and its whole point — a cap means
+/// nothing, since no encoder is running to obey it. So a link with a ceiling (Plex's 2 Mbit/s
+/// relay) is answered by choosing the FLAVOR — deny direct play, deny the remux, let the server
+/// pick a rate on the branch that has one — never by asking for a number:
+/// `transcoder::link_policy` is that decision, with the reasoning and the honesty note.
 pub struct TranscodeSpec<'a> {
     pub rating_key: &'a str,
     /// The per-playback opaque session id (`route::sess()`).
