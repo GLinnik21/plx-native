@@ -373,6 +373,43 @@ fn poll_for_token(ac: &AccountClient, id: i64, expires_in: i64) -> Option<String
     None
 }
 
+/// An OWNED server's `local` connection, else any server's — the live sign-in rule, pulled out of
+/// [`discover_and_store`] so it can be graded on the host. `plex::probe` is the richer version of
+/// this and supersedes it at step 4 of `docs/shared-servers.md`; until something calls that, THIS
+/// is what every sign-in runs, so its two limits are the app's limits.
+///
+/// **A dialable address here means an IPv4 LITERAL on our own LAN**, and both halves are transport
+/// facts rather than preferences:
+///
+/// * `stream.rs::http_open` parses the host as a dotted quad by hand (`AF_INET`, no DNS), so a v6
+///   literal is not slower — it cannot be dialled at all. Since the roster query started sending
+///   `includeIPv6=1`, plex.tv will happily offer one, and this chooser takes the FIRST match and
+///   PERSISTS it: without the guard, a server advertising its LAN v6 ahead of its v4 signs in
+///   "successfully" to an empty Home *and* writes that address to the session file, so every later
+///   boot starts there too. `probe.rs` ranks v6 last for the same reason.
+/// * `local` is required because a remote address needs DNS/TLS this socket does not have. Note
+///   what §2(a) of the shared-servers note proves about that flag on a SHARED server: it means
+///   "RFC1918", not "your LAN", so this rule reaching a share would pick the owner's `172.20.x.x`
+///   and hang for 8 s. That is the trap `probe.rs` exists to close, and it is still open here.
+fn choose_local_connection(
+    resources: &[crate::plex::account::Resource],
+) -> Option<(&crate::plex::account::Resource, &crate::plex::account::Connection)> {
+    let find = |owned_only: bool| {
+        resources
+            .iter()
+            .filter(|r| r.is_server() && (!owned_only || r.owned))
+            .find_map(|r| {
+                r.connections
+                    .iter()
+                    .find(|c| {
+                        c.local && !c.relay && !c.address.is_empty() && !c.ipv6 && !c.address.contains(':')
+                    })
+                    .map(|c| (r, c))
+            })
+    };
+    find(true).or_else(|| find(false))
+}
+
 /// Pick an OWNED server with a `local` connection (offline-capable, numeric address the plain-HTTP
 /// PMS socket can reach), else any server with one, and store it in the working session. A
 /// remote-only server is unusable here — the PMS socket does no DNS/TLS — so we require a local one.
@@ -386,18 +423,7 @@ fn discover_and_store(ac: &AccountClient) -> bool {
     };
     let servers = resources.iter().filter(|r| r.is_server()).count();
     log(&format!("auth: resources n={} servers={}", resources.len(), servers));
-    let find = |owned_only: bool| {
-        resources
-            .iter()
-            .filter(|r| r.is_server() && (!owned_only || r.owned))
-            .find_map(|r| {
-                r.connections
-                    .iter()
-                    .find(|c| c.local && !c.relay && !c.address.is_empty())
-                    .map(|c| (r, c))
-            })
-    };
-    let (r, conn) = match find(true).or_else(|| find(false)) {
+    let (r, conn) = match choose_local_connection(&resources) {
         Some(x) => x,
         None => {
             log("auth: no server with a local connection (remote-only can't be reached)");
@@ -518,4 +544,61 @@ fn set_error(msg: &str) {
         c.error = msg.to_owned();
         c.phase = Phase::Error;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::plex::account::Resource;
+
+    fn roster(json: &str) -> Vec<Resource> {
+        serde_json::from_str(json).expect("fixture parses")
+    }
+
+    /// The address this picks is PERSISTED, so picking an undialable one is not a slow sign-in — it
+    /// is a permanently empty Home, on every boot after it too. `stream.rs` speaks IPv4 literals
+    /// only, and the roster query asks plex.tv for `includeIPv6=1`, so a server listing its LAN v6
+    /// FIRST is the shape that breaks: this chooser takes the first match. It must step past the v6
+    /// to the v4 behind it.
+    #[test]
+    fn a_lan_ipv6_is_stepped_over_for_the_ipv4_behind_it() {
+        let rs = roster(
+            r#"[{"name":"mine","clientIdentifier":"aaaa1111","provides":"server","owned":true,
+                 "connections":[
+                   {"address":"2001:db8::1","port":32400,"local":true,"relay":false,"IPv6":true},
+                   {"address":"192.168.0.10","port":32400,"local":true,"relay":false,"IPv6":false}]}]"#,
+        );
+        let (_, c) = super::choose_local_connection(&rs).expect("a dialable connection");
+        assert_eq!(c.address, "192.168.0.10", "the v6 literal cannot be dialled by stream.rs at all");
+
+        // …and a v6 whose flag is absent is caught by the address itself. The roster flags are
+        // null-tolerant now, so `IPv6:false` on a colon-bearing address must not be believed.
+        let rs = roster(
+            r#"[{"name":"mine","clientIdentifier":"aaaa1111","provides":"server","owned":true,
+                 "connections":[{"address":"fd00::5","port":32400,"local":true,"relay":false,"IPv6":false}]}]"#,
+        );
+        assert!(super::choose_local_connection(&rs).is_none(), "nothing dialable is None, not a v6");
+    }
+
+    /// The two passes, unchanged by the guard above: an owned server wins even when a shared one is
+    /// listed first and looks perfectly good, and a relay is never a "local" connection. (What this
+    /// rule still gets wrong on a SHARE — `local` meaning RFC1918 rather than "your LAN", §2(a) of
+    /// `docs/shared-servers.md` — is `probe.rs`'s job and is not asserted here, because nothing
+    /// calls probe yet and this is a pin of the LIVE behaviour.)
+    #[test]
+    fn an_owned_server_outranks_a_shared_one_and_a_relay_is_never_chosen() {
+        let rs = roster(
+            r#"[{"name":"theirs","clientIdentifier":"bbbb2222","provides":"server","owned":false,
+                 "connections":[{"address":"172.20.4.7","port":32400,"local":true,"relay":false,"IPv6":false}]},
+                {"name":"mine","clientIdentifier":"aaaa1111","provides":"server","owned":true,
+                 "connections":[{"address":"192.168.0.10","port":32400,"local":true,"relay":false,"IPv6":false}]}]"#,
+        );
+        let (r, c) = super::choose_local_connection(&rs).expect("the owned server");
+        assert_eq!((r.name.as_str(), c.address.as_str()), ("mine", "192.168.0.10"));
+
+        let rs = roster(
+            r#"[{"name":"relayed","clientIdentifier":"cccc3333","provides":"server","owned":true,
+                 "connections":[{"address":"10.0.0.9","port":8443,"local":true,"relay":true,"IPv6":false}]}]"#,
+        );
+        assert!(super::choose_local_connection(&rs).is_none(), "a relay is not a local connection");
+    }
 }

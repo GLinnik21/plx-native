@@ -220,7 +220,11 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
-  → AU pipeline), `net.rs` (libcurl/TLS), and the Plex data layer.
+  → AU pipeline), `net.rs` (libcurl/TLS), and the Plex data layer (`plex/` — **its own
+  `rust-modules/src/plex/CLAUDE.md`**, which the rest of this file never pointed at: read it before
+  adding a PMS query, and before assuming there is one server. There is a REGISTRY behind
+  `client()` now — the app can hold a friend's shared server beside your own, each with its own
+  token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
