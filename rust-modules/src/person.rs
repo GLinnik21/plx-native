@@ -80,6 +80,11 @@ pub(crate) const NSHELF: usize = 2;
 /// One person's page: the header handed in by the cast row, the plex.tv biography fields, and the
 /// two shelves fetched from `/library/people/{key}/media`.
 pub(crate) struct Person {
+    /// WHICH SERVER [`Person::key`] is a `personId` ON. A personId is server-local exactly like a
+    /// ratingKey (docs/shared-servers.md §1), so `key` alone names a person on no machine in
+    /// particular once a share is registered — the pair is the identity, compared through
+    /// [`crate::plex::same_item`]. `guid` needs no such scoping: it is plex.tv's, and global.
+    pub(crate) sid: crate::plex::ServerId,
     /// the LOCAL `personId` this record was opened for (numeric tag id, or the guid when the
     /// server sent no number) — addresses `/library/people/{key}/media`
     pub(crate) key: String,
@@ -249,10 +254,16 @@ fn supersede() {
 /// already has — the cast row's name + headshot. MAIN THREAD, NON-BLOCKING: nothing is fetched
 /// here, [`pump`] spawns both requests on the next frame, so the page mounts on its header
 /// immediately and fills in around it.
-pub(crate) fn open(key: &str, guid: &str, name: &str, thumb: &str) {
+///
+/// `sid` is the server whose `/library/people/{key}/media` this page will read — the server the
+/// credit row came from, captured by the caller. The two ids are already documented as
+/// non-interchangeable (module doc); this is the third fact about `key`: it is only meaningful
+/// against one machine.
+pub(crate) fn open(sid: crate::plex::ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
     supersede();
     unsafe {
         *addr_of_mut!(CURRENT) = Some(Person {
+            sid,
             key: key.to_string(),
             guid: guid.to_string(),
             name: name.to_string(),
@@ -456,6 +467,9 @@ fn maybe_spawn(i: usize) {
     // the person's two ids ride along for the roles worker, which filters the batched response down
     // to their own credit per row — either id can be the one the response's tags actually carry
     let (id, guid) = (p.key.clone(), p.guid.clone());
+    // the page's server, captured here on the MAIN thread — the worker must neither read the
+    // current server nor stamp its rows with it (see `pms::parse_item`)
+    let sid = p.sid;
     let gen = GEN.load(Ordering::SeqCst);
     IN_FLIGHT[i].store(true, Ordering::SeqCst);
     let spawned = crate::task::spawn_small("person", move || {
@@ -464,8 +478,8 @@ fn maybe_spawn(i: usize) {
         let what = match i {
             F_MEDIA => Landing::Media(
                 catch_unwind(|| {
-                    let mc = crate::plex::client_opt()?.person_media(&key[0])?;
-                    Some(split_by_type(&mc))
+                    let mc = crate::plex::client_for(sid)?.person_media(&key[0])?;
+                    Some(split_by_type(&mc, sid))
                 })
                 .unwrap_or(None),
             ),
@@ -473,7 +487,7 @@ fn maybe_spawn(i: usize) {
             F_ROLES => Landing::Roles(
                 catch_unwind(|| {
                     let keys: Vec<&str> = key.iter().map(String::as_str).collect();
-                    let mc = crate::plex::client_opt()?.metadata_many(&keys)?;
+                    let mc = crate::plex::client_for(sid)?.metadata_many(&keys)?;
                     let pairs = roles_from(&mc, &id, &guid);
                     Some(RolesLanding { keys: key.clone(), pairs })
                 })
@@ -547,7 +561,7 @@ pub(crate) fn roles_from(
 /// over five movies AND one show. Anything that is neither a `movie` nor a `show` is dropped —
 /// the page has exactly two shelves and they are labelled, so silently filing an episode under
 /// "Shows" would put a landscape still in a portrait poster slot.
-pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer) -> [Shelf; NSHELF] {
+pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer, sid: crate::plex::ServerId) -> [Shelf; NSHELF] {
     let mut out: [Shelf; NSHELF] = Default::default();
     for it in &mc.metadata {
         let sh = match it.kind.as_str() {
@@ -557,7 +571,7 @@ pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer) -> [Shelf; NSHELF]
         };
         sh.total += 1;
         if sh.items.len() < SHELF_MAX {
-            sh.items.push(parse_item(it));
+            sh.items.push(parse_item(it, sid));
         }
     }
     out
@@ -609,7 +623,7 @@ mod tests {
             row("show", "1975", "A Show"),
             row("movie", "2", "Another Movie"),
         ];
-        let s = split_by_type(&mc);
+        let s = split_by_type(&mc, crate::plex::ServerId::UNSET);
         assert_eq!(s[0].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1", "2"]);
         assert_eq!(s[1].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1975"]);
         assert_eq!((s[0].total, s[1].total), (2, 1));
@@ -626,7 +640,7 @@ mod tests {
         }
         mc.metadata.push(row("episode", "e1", "an episode"));
         mc.metadata.push(row("season", "s1", "a season"));
-        let s = split_by_type(&mc);
+        let s = split_by_type(&mc, crate::plex::ServerId::UNSET);
         assert_eq!(s[0].items.len(), SHELF_MAX);
         assert_eq!(s[0].total, SHELF_MAX + 5, "the count is the RESPONSE's total, not the tile cap");
         assert!(s[1].items.is_empty(), "an episode/season is not a Show shelf tile");
@@ -656,9 +670,9 @@ mod tests {
     #[test]
     fn a_landing_from_the_previous_person_is_discarded_but_still_releases_the_fetch() {
         let _serial = crate::testlock::serial();
-        open("161", "5d776", "Idina Menzel", "");
+        open(crate::plex::ServerId::UNSET, "161", "5d776", "Idina Menzel", "");
         let stale = GEN.load(Ordering::SeqCst);
-        open("465", "5d777", "Cynthia Erivo", ""); // supersedes: the fetch above is now obsolete
+        open(crate::plex::ServerId::UNSET, "465", "5d777", "Cynthia Erivo", ""); // supersedes: the fetch above is now obsolete
 
         IN_FLIGHT[F_MEDIA].store(true, Ordering::SeqCst);
         hold_off();
@@ -678,7 +692,7 @@ mod tests {
     #[test]
     fn a_failed_fetch_keeps_the_shelves_and_backs_off_instead_of_publishing_empty() {
         let _serial = crate::testlock::serial();
-        open("161", "5d776", "Idina Menzel", "");
+        open(crate::plex::ServerId::UNSET, "161", "5d776", "Idina Menzel", "");
         let gen = GEN.load(Ordering::SeqCst);
         // seed a populated, landed page the honest way (through the pump)
         land(F_MEDIA, gen, media(vec![PmsMovie::default()], Vec::new()));
@@ -700,7 +714,7 @@ mod tests {
     #[test]
     fn close_clears_every_single_flight_flag_and_retry_backoff() {
         let _serial = crate::testlock::serial();
-        open("161", "5d776", "Idina Menzel", "");
+        open(crate::plex::ServerId::UNSET, "161", "5d776", "Idina Menzel", "");
         for i in 0..NFETCH {
             IN_FLIGHT[i].store(true, Ordering::SeqCst);
             unsafe { RETRY_CD[i] = RETRY_FRAMES };
@@ -720,7 +734,7 @@ mod tests {
     #[test]
     fn a_profile_landing_fills_the_header_without_touching_the_shelves() {
         let _serial = crate::testlock::serial();
-        open("6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
+        open(crate::plex::ServerId::UNSET, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
         let gen = GEN.load(Ordering::SeqCst);
         land(F_MEDIA, gen, media(vec![PmsMovie::default()], Vec::new()));
         hold_off();
@@ -745,7 +759,7 @@ mod tests {
     #[test]
     fn an_unknown_person_settles_the_profile_while_a_failure_backs_off() {
         let _serial = crate::testlock::serial();
-        open("6059", "0000000000000000000000ff", "Nobody", "");
+        open(crate::plex::ServerId::UNSET, "6059", "0000000000000000000000ff", "Nobody", "");
         let gen = GEN.load(Ordering::SeqCst);
         hold_off();
 
@@ -805,7 +819,7 @@ mod tests {
     #[test]
     fn a_roles_landing_captions_by_key_and_a_media_landing_resets_it() {
         let _serial = crate::testlock::serial();
-        open("6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
+        open(crate::plex::ServerId::UNSET, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
         let gen = GEN.load(Ordering::SeqCst);
         let movie = |rk: &str| PmsMovie { rk: rk.to_string(), ..Default::default() };
         land(F_MEDIA, gen, media(vec![movie("1971"), movie("2005")], vec![movie("1975")]));

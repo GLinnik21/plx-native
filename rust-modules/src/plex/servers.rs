@@ -64,7 +64,9 @@ impl ServerId {
     pub fn raw(self) -> u16 {
         self.0
     }
-    pub fn from_raw(v: u16) -> ServerId {
+    /// `const` so a fixed slot can name a server in a `const` — which is what lets the host tests
+    /// that grade the identity rules build one without a registry, a socket or the serial lock.
+    pub const fn from_raw(v: u16) -> ServerId {
         ServerId(v)
     }
     /// Slot index, `None` for UNSET — the one place the reserved value is turned away.
@@ -77,6 +79,29 @@ impl Default for ServerId {
     fn default() -> Self {
         Self::UNSET
     }
+}
+
+/// **THE item-identity rule**: do two server-scoped keys name the same item?
+///
+/// Every `ratingKey`, `librarySectionID`, `Part.key`, `Stream.id` and `personId` Plex issues is a
+/// server-local integer dense from 1, so with two servers registered a bare key names an item on
+/// *neither* of them in particular. Two servers colliding is therefore the NORMAL case, not an edge
+/// one — it is measured (docs/shared-servers.md §2): the share's only section key is `1`, exactly
+/// like our own `Movies`, and its ratingKeys start at 1 alongside ours. Anything that stores an
+/// item and later looks it up again — the home catalog, the loaded detail, the playing-item store,
+/// the BACK trail, a play queue — has to compare the PAIR, and they all compare it here so the
+/// answer cannot drift between them.
+///
+/// [`ServerId::UNSET`] matches only itself, and that is the pre-registry state rather than a
+/// wildcard: a row parsed before any server was installed (and every row a host test builds by
+/// literal) carries UNSET, so UNSET-vs-UNSET is the single-server app behaving exactly as it did.
+/// UNSET vs a real slot is deliberately NOT a match — a "server unknown" row must not be handed to
+/// a caller asking about a specific machine, because the whole failure this rule exists to stop is
+/// a confident answer about the wrong one. Every such miss degrades safely at its call site (a
+/// catalog miss opens the page off-catalog, a playing-item miss costs one PMS fetch), which is the
+/// property that makes strict equality the safe default here.
+pub fn same_item(a: (ServerId, &str), b: (ServerId, &str)) -> bool {
+    a.0 == b.0 && a.1 == b.1
 }
 
 /// The table. A null slot is unpopulated; a non-null one is a leaked `Client` that is never
@@ -388,6 +413,24 @@ mod tests {
         reg("mach-A", "10.0.0.1", "tok-a2");
         assert_ne!(client_for(a).unwrap().token_gen(), ga, "A's token changed");
         assert_eq!(client_for(b).unwrap().token_gen(), gb, "B's did not");
+    }
+
+    /// The identity rule the whole app's stored rows compare on. The case it exists for is the
+    /// FIRST assertion: the share's ratingKeys are dense from 1 exactly like ours, so a bare key
+    /// matching is the bug, not the feature. No registry state is touched, so no lock is needed.
+    #[test]
+    fn one_rating_key_on_two_servers_is_two_different_items() {
+        let (a, b) = (ServerId::from_raw(0), ServerId::from_raw(1));
+        assert!(!same_item((a, "1"), (b, "1")), "the same key on two servers is two items");
+        assert!(same_item((a, "1"), (a, "1")), "…and the same key on ONE server is one item");
+        assert!(!same_item((a, "1"), (a, "2")), "a different key is a different item");
+
+        // UNSET is the pre-registry / host-test state: it matches itself (the single-server app,
+        // unchanged) and nothing else — a row whose server is unknown must never answer for a
+        // named one.
+        assert!(same_item((ServerId::UNSET, "1"), (ServerId::UNSET, "1")));
+        assert!(!same_item((ServerId::UNSET, "1"), (a, "1")));
+        assert!(!same_item((a, "1"), (ServerId::UNSET, "1")));
     }
 
     /// A slot registered by address only (what `install` can do) is ADOPTED once the machine id
