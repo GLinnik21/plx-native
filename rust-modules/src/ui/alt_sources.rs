@@ -431,25 +431,11 @@ pub(crate) fn draw() {
 }
 
 // ---- the headless stand-in ---------------------------------------------------------------------
+//
+// Reached through `dev::read`, so the whole of it is absent from a `RELEASE=1` build at compile
+// time along with the rest of the `/tmp` surface. The trigger literal is
+// `/tmp/plxnative-shared`, spelled here for the catalog grep in the root `CLAUDE.md`.
 
-/// A DRAW-ONLY copy list for `/tmp/plxnative-altsources`, so this panel and the control that opens
-/// it can be captured on the television before the multi-server data layer exists.
-///
-/// The trigger's content is a JSON array of copies, e.g.
-///
-/// ```json
-/// [{"library":"Movies","res":"1080"},
-///  {"library":"LDN Films","owner":"<peer-owner-1>","res":"4k","slot":1,"rk":"318"}]
-/// ```
-///
-/// with three conveniences that keep one file usable on any item: an entry with **no `rk`** is the
-/// copy you are on (it takes the page's own ratingKey and the current server, so the tick lands on
-/// a real identity rather than a fabricated one), a missing `dur_ms` takes the loaded item's
-/// runtime, and a missing `slot` gets an id that names NO registered server — so OK on such a row
-/// reports nothing and logs, instead of navigating to a ratingKey on the wrong machine. Reached
-/// through `dev::read`, so it is absent from a `RELEASE=1` build at compile time along with the
-/// whole `/tmp` surface (the trigger literal is `/tmp/plxnative-altsources`, spelled here for the
-/// catalog grep in the root `CLAUDE.md`).
 /// Which item the stand-in has been built for, so it is built ONCE per page rather than every
 /// frame. Cleared by [`reset`] with the rest of the store.
 static mut STAND_RK: String = String::new();
