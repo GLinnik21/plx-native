@@ -17,6 +17,10 @@ mod client;
 pub(crate) mod identity; // ONE X-Plex-* identity for both transports (plex.tv headers + PMS query)
 mod models;
 mod params;
+// WHICH servers exist and which one is current. `client()`/`client_opt()` live here now (they
+// mean "the current server"); `client.rs` is just the type. See its module doc for why the hot
+// path is an atomic pointer table rather than a lock.
+mod servers;
 
 // Op files below only add `impl Client { … }` blocks (Rust allows multiple impls of one
 // type across a crate) — declared here so those methods compile onto `Client`.
@@ -37,6 +41,12 @@ pub(crate) mod serverinfo;
 pub(crate) mod account;
 pub(crate) mod session;
 
+// Which of a server's advertised addresses are worth dialling, and in what order. PURE policy over
+// an `account::Resource` — no socket, no thread — so the rules that decide reachability are gradeable
+// on the host, which is the only tier that can grade them at all: the failures they prevent are an
+// 8-second timeout and a probe that answers as the wrong machine.
+pub(crate) mod probe;
+
 // The plex.tv METADATA PROVIDER (`discover.provider.plex.tv`) — a third service, but one that
 // shares the account API's transport + identity headers exactly, so it only adds an
 // `impl AccountClient` block (same pattern as the PMS op files above).
@@ -44,7 +54,12 @@ pub(crate) mod discover;
 
 // The re-exports are the public surface the call sites import.
 #[allow(unused_imports)]
-pub use client::{client, client_opt, install, Client, StreamUrl};
+pub use client::{Client, StreamUrl};
+// The registry surface. `client`/`client_opt`/`install` keep the exact signatures they had as
+// singleton accessors, so every call site outside `plex/` reads unchanged; `client_for`,
+// `register`, `set_current` and `ServerId` are the multi-server additions.
+#[allow(unused_imports)]
+pub use servers::{client, client_for, client_opt, count as server_count, current as current_server, install, register, set_current, ServerId};
 #[allow(unused_imports)]
 pub use models::*;
 #[allow(unused_imports)]

@@ -550,7 +550,7 @@ fn de_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
 /// string-encoded int (PMS does this: e.g. `size:"40"`, `streamType:"2"`), dropping every
 /// item in the response. This keeps one field's-worth of degradation (and actually recovers a
 /// stringy int rather than zeroing it). Applied to every i64 in a parsed DTO.
-fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+pub(super) fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum IntFloatStrBool {
@@ -569,6 +569,43 @@ fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
         Some(IntFloatStrBool::S(s)) => s.trim().parse().unwrap_or(0),
         Some(IntFloatStrBool::B(b)) => b as i64,
         None => 0,
+    })
+}
+
+/// Lenient `Vec<T>`: a JSON array, or null → empty. Same trap as [`de_str`], one container up:
+/// `#[serde(default)]` fills an ABSENT field and does nothing for one that is present and `null`,
+/// and a strict `Vec` meeting a `null` fails the whole array it sits in. `connections` is the field
+/// that matters — a server with a null connection list must cost that server, never the roster.
+pub(super) fn de_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
+}
+
+/// Lenient bool: a JSON bool, the `1`/`0` (or `"1"`/`"0"`) forms Plex also uses, or null → false.
+///
+/// The PMS DTOs above keep their 0/1 flags as `i64` and test `!= 0`, because those fields are read
+/// once, near the wire. This adapter exists for the plex.tv **connection-policy** flags
+/// (`account.rs`'s `httpsRequired`/`publicAddressMatches`/`local`/`relay`/`IPv6`), which are read in
+/// boolean position by `probe.rs` on every candidate: folding the encodings here once beats
+/// spelling `!= 0` at every branch of a policy that has to stay readable to be trusted. Leniency
+/// itself is not optional — plex.tv sends these as real JSON bools today, and a strict `bool` that
+/// meets a `"1"` fails the WHOLE resources parse, which is a silent sign-in failure.
+pub(super) fn de_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolIntStr {
+        B(bool),
+        I(i64),
+        S(String),
+    }
+    Ok(match Option::<BoolIntStr>::deserialize(d)? {
+        Some(BoolIntStr::B(b)) => b,
+        Some(BoolIntStr::I(n)) => n != 0,
+        Some(BoolIntStr::S(s)) => matches!(s.trim(), "1" | "true" | "True"),
+        None => false,
     })
 }
 
@@ -597,7 +634,10 @@ fn de_opt_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::
 /// string on this server ("1080"/"4k", verified live) but reads like a number, and a strict
 /// `String` that meets one is a WHOLE-`MediaContainer` parse failure — the same blast radius
 /// `de_i64` exists to avoid, just pointing the other way. Use it for any stringly-typed number.
-fn de_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+///
+/// `pub(super)` because `account.rs` needs the null half of it: plex.tv sends an explicit `null` for
+/// an absent string, and there a whole-container failure is the account's whole server list.
+pub(super) fn de_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum StrIntFloatBool {

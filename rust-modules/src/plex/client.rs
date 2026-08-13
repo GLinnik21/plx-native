@@ -10,15 +10,30 @@
 //! Fields + helpers are `pub(super)` (visible inside the `plex` module tree only): the op
 //! files live in sibling submodules and add `impl Client` blocks, so they need to read the
 //! identity fields and call the helpers — but nothing OUTSIDE `plex` can reach them.
+//!
+//! A `Client` is ONE server. WHICH servers exist, which one is current, and how a `&'static
+//! Client` is handed out live next door in [`super::servers`] — this file is the type, that
+//! file is the table.
 use super::models::{Envelope, MediaContainer};
-use std::sync::{OnceLock, RwLock};
+use super::servers::ServerId;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::RwLock;
 
 const ACCEPT_JSON: &str = "Accept: application/json\r\n";
 
-/// Immutable after construction. Cheap to share by `&ref` across threads (poster workers,
-/// the timeline reporter, the detail loader all read it). `host` is a numeric dotted-quad —
-/// the raw socket does no DNS.
+/// Immutable after construction (apart from the token + its generation, both interior-mutable).
+/// Cheap to share by `&ref` across threads (poster workers, the timeline reporter, the detail
+/// loader all read it). `host` is a numeric dotted-quad — the raw socket does no DNS.
 pub struct Client {
+    /// This client's slot in the [server registry](super::servers) — a stable handle for the
+    /// life of the process, which is what lets a caller name a server without holding a
+    /// reference to it. `ServerId::UNSET` on a `Client` built outside the registry (tests).
+    pub(super) id: ServerId,
+    /// The server's `machineIdentifier` — the registry KEY, i.e. the identity that survives the
+    /// server changing address. `""` while it is not known yet: the legacy `install(host, port,
+    /// token)` has only an address to go on, and a later `register` that learns the id adopts
+    /// that slot rather than adding a second one for the same server.
+    pub(super) machine_id: String,
     pub(super) host: String,      // e.g. "192.0.2.10" (numeric; passed straight to http_get/http_open)
     pub(super) port: i32,         // 32400
     // X-Plex-Token value. Interior-mutable because the token changes at runtime after boot: it's
@@ -43,6 +58,22 @@ pub struct Client {
     pub(super) product: String,   // "PlxNative"
     pub(super) version: String,   // "0.1.0"
     pub(super) platform: String,  // "webOS"
+    // Token generation, PER SERVER. Bumped by `set_token`; read by caches keyed on a path that
+    // bakes the token in (`posters::poster_key`'s memo). This used to be a process-global
+    // `static TOKEN_GEN`, which cannot express "server B's token changed" — with a registry that
+    // would flush every server's cache on any server's profile switch, and (worse) would say
+    // NOTHING changed when the CURRENT server switched from A to B, handing B's requests A's
+    // memoised token. Seeded from a global sequence (see `next_gen`) so no two `Client`s ever
+    // share a value: a cache that only compares "did this number move" therefore also flushes
+    // when `client()` starts answering with a different server.
+    token_gen: AtomicU32,
+}
+
+/// The source of every [`Client::token_gen`] value, process-wide. Only the UNIQUENESS matters
+/// (see the field's note); it is never compared for order.
+static GEN_SEQ: AtomicU32 = AtomicU32::new(1);
+fn next_gen() -> u32 {
+    GEN_SEQ.fetch_add(1, Relaxed)
 }
 
 /// The device facts of the playback identity. Shared with the plex.tv transport — see
@@ -50,19 +81,28 @@ pub struct Client {
 use super::identity::{DEVICE, DEVICE_NAME, MODEL, PROVIDES};
 
 impl Client {
-    pub fn new(host: &str, port: i32, token: &str) -> Client {
+    /// Build a client for ONE server. `pub(super)`: a `Client` nobody can reach is useless, so
+    /// the only construction site is [`super::servers::register`], which leaks it into the slot
+    /// named by `id`.
+    ///
+    /// `client_id` is passed IN. It used to be resolved here as `session::load().client_id` —
+    /// but `session::load` reads a file and can WRITE one (it mints + persists the uuid on first
+    /// boot), which was tolerable behind a `OnceLock` singleton built exactly once and is not on
+    /// a registry that constructs a `Client` per server and re-points slots. The registry does
+    /// that read once per registration instead, so this constructor touches no filesystem and no
+    /// global but the generation counter.
+    pub(super) fn new(id: ServerId, machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> Client {
         Client {
+            id,
+            machine_id: machine_id.to_owned(),
             host: host.to_owned(),
             port,
             token: RwLock::new(token.to_owned()),
-            // Resolved HERE rather than passed in by each caller, so the three `install` sites
-            // cannot disagree and none of them has to know that the playback identity and the
-            // login identity are the same thing. `session::load` mints + persists on first boot,
-            // so this is never empty; it is one file read, once, behind the singleton.
-            client_id: super::session::load().client_id,
+            client_id: client_id.to_owned(),
             product: super::identity::PRODUCT.into(),
             version: super::identity::VERSION.into(),
             platform: super::identity::PLATFORM.into(),
+            token_gen: AtomicU32::new(next_gen()),
         }
     }
 
@@ -87,18 +127,29 @@ impl Client {
         if let Ok(mut g) = self.token.write() {
             *g = token.to_owned();
         }
-        TOKEN_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.token_gen.store(next_gen(), Relaxed);
     }
-    /// Monotonic token generation — bumped by [`Client::set_token`]; caches keyed on paths that
-    /// embed the token compare this to know when to flush.
+    /// Token generation for THIS server — moved by [`Client::set_token`]; caches keyed on paths
+    /// that embed the token compare this to know when to flush. Signature unchanged from the
+    /// process-global era on purpose: `posters.rs` reads it through `client()` and must keep
+    /// compiling untouched.
     pub fn token_gen(&self) -> u32 {
-        TOKEN_GEN.load(std::sync::atomic::Ordering::Relaxed)
+        self.token_gen.load(Relaxed)
     }
     pub fn host(&self) -> &str {
         &self.host
     }
     pub fn port(&self) -> i32 {
         self.port
+    }
+    /// This client's registry slot — pass it to [`super::servers::client_for`] to get back a
+    /// `&'static Client` from anywhere.
+    pub fn id(&self) -> ServerId {
+        self.id
+    }
+    /// The server's `machineIdentifier`, `""` if it has not been learned yet.
+    pub fn machine_id(&self) -> &str {
+        &self.machine_id
     }
 
     // ---- transport choke points: the only code that touches crate::stream ----
@@ -145,34 +196,10 @@ impl Client {
     }
 }
 
-// ---- shared singleton (built once in plex_run, read everywhere) ----
-static PLEX: OnceLock<Client> = OnceLock::new();
-static TOKEN_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Install for a (re)login / profile switch. First call sets the singleton; a later call keeps the
-/// same server (host/port are fixed once set) and just swaps the token — so the login flow can set
-/// the server token, then a Plex Home profile pick swaps in that user's token. Thread-safe.
-pub fn install(host: &str, port: i32, token: &str) {
-    match PLEX.get() {
-        None => {
-            let _ = PLEX.set(Client::new(host, port, token));
-        }
-        Some(c) => c.set_token(token),
-    }
-    // Every session path funnels through here — boot, QR login, profile switch — so this is the
-    // one place that keeps the server's self-description (version + Plex Pass, issue #22's blind
-    // spot) fresh without each caller remembering to. A worker fetch; nothing waits on it.
-    super::serverinfo::refresh();
-}
-/// The process-wide `Client`. Panics if `install` was never called.
-pub fn client() -> &'static Client {
-    PLEX.get().expect("plex::install not called")
-}
-/// Non-panicking accessor for paths that can legitimately run before login (playback teardown,
-/// the /tmp/plxnative-url + sample demo boots) — the old `route::CFG == None` guard semantics.
-pub fn client_opt() -> Option<&'static Client> {
-    PLEX.get()
-}
+// The singleton that used to live here — `static PLEX: OnceLock<Client>`, `TOKEN_GEN`, `install`,
+// `client`, `client_opt` — is now the registry in `servers.rs`. `client()`/`client_opt()` keep
+// their exact signatures there and mean "the CURRENT server", so no call site outside `plex`
+// changed.
 
 // ---- enc + QueryBuilder — the percent-encoding choke point ----
 
@@ -265,5 +292,53 @@ impl StreamUrl {
                 path: if rest.is_empty() { "/".into() } else { rest.into() },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_client(machine: &str, token: &str) -> Client {
+        Client::new(ServerId::from_raw(3), machine, "10.0.0.1", 32400, token, "cid-42")
+    }
+
+    /// A `Client` is one server's identity plus its token, and every piece of it now arrives
+    /// through the constructor — including the device id, which used to be read from the session
+    /// FILE in here (a read that can also write). Nothing is resolved behind the caller's back,
+    /// which is what makes the registry able to build one per server on a cold path.
+    #[test]
+    fn a_client_carries_the_identity_it_was_built_with() {
+        let c = a_client("mach-A", "tok-a");
+        assert_eq!((c.host(), c.port()), ("10.0.0.1", 32400));
+        assert_eq!(c.machine_id(), "mach-A");
+        assert_eq!(c.id(), ServerId::from_raw(3));
+        // the token choke point picks the right separator either way
+        assert_eq!(c.with_token("/library/sections"), "/library/sections?X-Plex-Token=tok-a");
+        assert_eq!(c.with_token("/x?a=1"), "/x?a=1&X-Plex-Token=tok-a");
+        // the device id that was passed in is the one that goes on the wire
+        assert!(c
+            .playback_identity(QueryBuilder::new("/p"))
+            .build()
+            .contains("X-Plex-Client-Identifier=cid-42"));
+        // a client built outside the registry says so rather than claiming slot 0
+        assert!(!Client::new(ServerId::UNSET, "", "1.2.3.4", 32400, "t", "cid").id().is_set());
+    }
+
+    /// The token generation is per-CLIENT (it was a process-global `TOKEN_GEN`). Two properties
+    /// matter to `posters::poster_key`'s token-baked memo, which is the only reader: a swap must
+    /// MOVE this server's number and no other's, and two servers must never share a value — the
+    /// memo compares one number, so identical generations across servers would let server B be
+    /// served server A's memoised, token-bearing paths.
+    #[test]
+    fn a_token_swap_moves_this_clients_generation_and_no_other() {
+        let (a, b) = (a_client("mach-A", "tok-a"), a_client("mach-B", "tok-b"));
+        let (ga, gb) = (a.token_gen(), b.token_gen());
+        assert_ne!(ga, gb, "distinct clients, distinct generations");
+
+        a.set_token("tok-a2");
+        assert_eq!(a.with_token("/x"), "/x?X-Plex-Token=tok-a2");
+        assert_ne!(a.token_gen(), ga, "the swapped client's generation moved");
+        assert_eq!(b.token_gen(), gb, "the other client's did not");
     }
 }
