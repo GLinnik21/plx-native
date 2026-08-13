@@ -111,6 +111,11 @@ struct DetailView {
     /// `open_rk`). Without this, a refetch landing inside that window left `selected` naming a
     /// different movie for the rest of the visit.
     mounted_rk: String,
+    /// The SERVER `mounted_rk` belongs to — the other half of that identity. A ratingKey is
+    /// server-local and both servers number from 1, so `pms::index_of_rk` takes the pair; mounting
+    /// on the key alone matched a colliding row on the other machine and gave the page its
+    /// backdrop, blur envelope and selection.
+    mounted_sid: crate::plex::ServerId,
     section: c_int, // 0=hero buttons, 1=season tabs, 2=episodes, 3=related, 4=cast, 5=about
     col: c_int,     // focused item within the section
     // the below-hero sections are a shared ScrollColumn: it owns the vertical scroll spring, the
@@ -165,6 +170,7 @@ impl DetailView {
         Self {
             selected: -1,
             mounted_rk: String::new(),
+            mounted_sid: crate::plex::ServerId::UNSET,
             section: 0,
             col: 0,
             column: ScrollColumn::new(CONTENT_TOP, TOP_MARGIN), // top re-derived per frame (update)
@@ -1119,10 +1125,13 @@ pub(crate) fn open(idx: c_int) {
     crate::ui::alt_sources::reset(""); // …until the row below names the item this page is about
     if idx >= 0 {
         if let Some(m) = crate::pms::movie(idx as usize) {
+            // the row's OWN server, never the current one — a merged shelf holds rows from more
+            // than one, and the row is the only thing that knows which
+            v.mounted_sid = m.sid;
             v.mounted_rk = m.rk.clone(); // keep the index reconcilable — see `reselect`
             crate::ui::alt_sources::reset(&m.rk);
             if !m.rk.is_empty() {
-                metadata::load_detail_now(&m.rk);
+                metadata::load_detail_now(m.sid, &m.rk);
             }
         }
     }
@@ -1157,6 +1166,7 @@ pub(crate) fn close() {
     let v = view();
     v.selected = -1;
     v.mounted_rk.clear(); // a closed page must not be reconciled by a late refetch
+    v.mounted_sid = crate::plex::ServerId::UNSET; // …and its server goes with it
 }
 
 pub(crate) fn move_focus(sym: c_int) {
@@ -3219,10 +3229,14 @@ pub(crate) fn on_ok() -> bool {
             // BOTH ids go through, because they address different services: `person_key` is the
             // LOCAL id for `/library/people/{id}/media`, while `tag_key` (the guid) is the only
             // one plex.tv's biography provider answers to. Passing one for the other 404s.
-            if let Some(c) = metadata::current().and_then(|d| d.credit(col.max(0) as usize)) {
+            // …and the LOCAL id is only meaningful against the server that issued it, so the
+            // page's own `sid` rides with it (`person::Person::sid`). The guid does not need it.
+            if let Some((sid, c)) =
+                metadata::current().and_then(|d| Some((d.sid, d.credit(col.max(0) as usize)?)))
+            {
                 let key = c.person_key();
                 if !key.is_empty() {
-                    crate::ui::person::open(&key, &c.tag_key, &c.tag, &c.thumb);
+                    crate::ui::person::open(sid, &key, &c.tag_key, &c.tag, &c.thumb);
                 }
             }
             false
@@ -3246,15 +3260,21 @@ pub(crate) fn on_ok() -> bool {
 /// to be, because five other navigations off a detail page (BACK, a cast headshot, a context-menu
 /// row, the top tab bar…) never come through here at all. The latch used to carry a second copy,
 /// taken from the same function on the same frame, that the drain destructured away unread.
-static mut OPEN_REQ: Option<String> = None;
+///
+/// The rk is carried WITH its server. Both arms that raise one (a Related tile, the filmstrip's
+/// metadata row) name an item on the page's OWN server — a related hub and a season are answered by
+/// the machine that was asked — and a bare key handed to `app.rs` would be re-resolved against
+/// whichever server is current, which on a share is a different film with the same number.
+static mut OPEN_REQ: Option<(crate::plex::ServerId, String)> = None;
 
-/// Raise [`OPEN_REQ`] for `rk`.
+/// Raise [`OPEN_REQ`] for `rk` on the loaded item's server.
 fn request_open(rk: String) {
-    unsafe { *addr_of_mut!(OPEN_REQ) = Some(rk) }
+    let sid = mounted_sid();
+    unsafe { *addr_of_mut!(OPEN_REQ) = Some((sid, rk)) }
 }
 
 /// Drain the request — `None` unless one is pending. One-shot, like `person::take_request`.
-pub(crate) fn take_open_request() -> Option<String> {
+pub(crate) fn take_open_request() -> Option<(crate::plex::ServerId, String)> {
     unsafe { (*addr_of_mut!(OPEN_REQ)).take() }
 }
 
@@ -3402,12 +3422,12 @@ pub(crate) fn focused_episode_rect() -> Option<Rect> {
 /// just toggled; the hero passes nothing) — see [`KEEP_EP`] for why the row would otherwise scroll
 /// itself away from the tile the user just acted on.
 pub(crate) fn refresh_view_state(keep_ep: &str) {
-    let Some((rk, season)) = metadata::current().map(|d| (d.rk.clone(), d.cur_season)) else {
+    let Some((sid, rk, season)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.cur_season)) else {
         return;
     };
     // BLOCKING: the season restore below reads the refreshed item, and a deferred landing would
     // install cur_season 0 on top of it — clobbering the season the user was browsing.
-    metadata::load_detail_now(&rk);
+    metadata::load_detail_now(sid, &rk);
     if season != 0 {
         // Armed BEFORE the request, so a landing can never beat the latch into place. Season 0
         // needs neither: `load_detail_now` already leaves the page on it, so no fetch lands and
@@ -3474,6 +3494,14 @@ pub(crate) fn mounted_rk() -> String {
     metadata::current().map(|d| d.rk.clone()).unwrap_or_else(|| view().mounted_rk.clone())
 }
 
+/// The SERVER that rk belongs to — read from exactly the same two places, in the same order, so the
+/// pair can never come from two different items. Callers ask both together and compare the pair
+/// (`Node::same_page`, `Trail::ensure_detail`): a bare rk names a page on neither server once a
+/// share is registered.
+pub(crate) fn mounted_sid() -> crate::plex::ServerId {
+    metadata::current().map(|d| d.sid).unwrap_or_else(|| view().mounted_sid)
+}
+
 /// Re-resolve the selected catalog row after a hub refetch rebuilt the catalog underneath an open
 /// detail page (indices move; the rk is the stable identity).
 pub(crate) fn reselect() {
@@ -3481,21 +3509,20 @@ pub(crate) fn reselect() {
     // that whole window on purpose, and a refetch landing inside it would otherwise leave
     // `selected` pointing into the OLD catalog's ordering. Re-pointing an index only ever needed
     // the item's identity, never its loaded detail.
-    let rk = metadata::current()
-        .map(|d| d.rk.clone())
-        .unwrap_or_else(|| view().mounted_rk.clone());
+    let (sid, rk) = (mounted_sid(), mounted_rk());
     if !rk.is_empty() {
-        view().selected = crate::pms::index_of_rk(&rk);
+        view().selected = crate::pms::index_of_rk(sid, &rk);
     }
 }
 
-/// Point the page at `rk` — catalog row (for the backdrop art/blur) + fresh focus/scroll. The
-/// two `open_rk*` twins share it so they cannot drift; only the fetch differs.
-fn mount_rk(rk: &str) {
-    let idx = crate::pms::index_of_rk(rk);
+/// Point the page at `(sid, rk)` — catalog row (for the backdrop art/blur) + fresh focus/scroll.
+/// The `open_rk*` twins share it so they cannot drift; only the fetch differs.
+fn mount_rk(sid: crate::plex::ServerId, rk: &str) {
+    let idx = crate::pms::index_of_rk(sid, rk);
     let v = view();
     v.selected = idx;
     v.mounted_rk = rk.to_string();
+    v.mounted_sid = sid;
     reset_view_state(v);
     // point the copy list at the new item — a store still describing the previous film would draw
     // its control on this hero and offer to navigate to its copies
@@ -3509,8 +3536,8 @@ fn mount_rk(rk: &str) {
 /// ASYNC: the page mounts this frame on the catalog row and the sections fill in when
 /// `metadata::pump_detail` lands the fetch. Callers that must read `metadata::current()` before
 /// the next statement want [`open_rk_now`] instead.
-pub(crate) fn open_rk(rk: &str) {
-    mount_rk(rk);
+pub(crate) fn open_rk(sid: crate::plex::ServerId, rk: &str) {
+    mount_rk(sid, rk);
     // DROP THE OLD ITEM FIRST. The page is now pointed at `rk`, but the fetch takes 2-5 round
     // trips — and for that whole window every `current()` reader would otherwise still see the
     // PREVIOUS item while the page claims to be this one. That is not cosmetic: `on_ok`'s Play
@@ -3524,16 +3551,16 @@ pub(crate) fn open_rk(rk: &str) {
     // ORDER MATTERS: `clear()` supersedes the detail generation, so it must run BEFORE the
     // request that establishes the new one, or it would cancel the fetch it is preparing for.
     metadata::clear();
-    metadata::request_detail(rk);
+    metadata::request_detail(sid, rk);
 }
 
 /// [`open_rk`] but BLOCKING — for the callers that act on the loaded item in the SAME frame:
 /// [`open_rk_season`] (its `load_season_now` indexes `d.seasons`), home_activate's play-a-show
 /// arm (gated on `current().rk == expect`), and the headless `plxnative-detail` trigger (which
 /// replays move_focus/on_ok immediately). Each of those is a deliberate freeze.
-pub(crate) fn open_rk_now(rk: &str) {
-    mount_rk(rk);
-    metadata::load_detail_now(rk);
+pub(crate) fn open_rk_now(sid: crate::plex::ServerId, rk: &str) {
+    mount_rk(sid, rk);
+    metadata::load_detail_now(sid, rk);
 }
 
 /// A focus placement waiting for its data. Both variants are the same two-stage wait — the item,
@@ -3557,8 +3584,8 @@ static mut PENDING: Option<Pending> = None;
 /// Open the SHOW detail page for `show_rk` with the episode `ep_rk` (in the season numbered
 /// `season`) revealed once the data lands — a season entry point routes to the show page, not to a
 /// standalone season page.
-pub(crate) fn open_show_at_episode(show_rk: &str, season: i64, ep_rk: &str) {
-    open_rk(show_rk);
+pub(crate) fn open_show_at_episode(sid: crate::plex::ServerId, show_rk: &str, season: i64, ep_rk: &str) {
+    open_rk(sid, show_rk);
     unsafe {
         *addr_of_mut!(PENDING) =
             Some(Pending::Episode { show_rk: show_rk.to_string(), season, ep_rk: ep_rk.to_string() })
@@ -3568,8 +3595,8 @@ pub(crate) fn open_show_at_episode(show_rk: &str, season: i64, ep_rk: &str) {
 /// [`open_rk`] plus a restore: mount the page and put the focus, season and scroll back where `spot`
 /// says once the fetch lands. The BACK twin of [`open_show_at_episode`], on the same pump — this is
 /// what makes a trail pop feel like a return rather than a fresh arrival.
-pub(crate) fn open_rk_at(rk: &str, spot: &Spot) {
-    open_rk(rk);
+pub(crate) fn open_rk_at(sid: crate::plex::ServerId, rk: &str, spot: &Spot) {
+    open_rk(sid, rk);
     unsafe { *addr_of_mut!(PENDING) = Some(Pending::Spot { rk: rk.to_string(), spot: spot.clone() }) }
 }
 
@@ -3682,8 +3709,8 @@ fn pump_pending() {
     }
 }
 
-pub(crate) fn open_rk_season(show_rk: &str, season_num: c_int) {
-    open_rk_now(show_rk); // BLOCKING: the season lookup below indexes the loaded item's seasons
+pub(crate) fn open_rk_season(sid: crate::plex::ServerId, show_rk: &str, season_num: c_int) {
+    open_rk_now(sid, show_rk); // BLOCKING: the season lookup below indexes the loaded item's seasons
     if let Some(d) = metadata::current() {
         if let Some(pos) = d.seasons.iter().position(|s| s.index as c_int == season_num) {
             // BLOCKING on purpose: home_activate's season arm plays episodes[0] right after this
@@ -5260,7 +5287,7 @@ mod tests {
         // fell past the show page onto Home.
         assert!(!on_ok(), "a link opens a page; it does not start playback");
         assert_eq!(
-            take_open_request().as_deref(),
+            take_open_request().map(|(_, rk)| rk).as_deref(),
             Some("e3"),
             "the text row must raise an open request for the focused episode"
         );
@@ -5312,7 +5339,11 @@ mod tests {
         v.col = 1;
 
         assert!(!on_ok());
-        assert_eq!(take_open_request().as_deref(), Some("r1"), "Related must raise an open request");
+        assert_eq!(
+            take_open_request().map(|(_, rk)| rk).as_deref(),
+            Some("r1"),
+            "Related must raise an open request"
+        );
         assert!(take_open_request().is_none(), "one press, one request");
 
         // a Related row PMS sent no ratingKey for is not a destination — the same belt the

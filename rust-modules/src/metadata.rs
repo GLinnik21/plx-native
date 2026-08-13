@@ -463,6 +463,12 @@ fn convert_ratings(it: &crate::plex::Metadata) -> Vec<Rating> {
 
 #[derive(Default)]
 pub(crate) struct Detail {
+    /// WHICH SERVER this item was fetched from — the other half of its identity. `rk` on its own
+    /// names an item on no machine in particular the moment a shared server is registered (both
+    /// number from 1; docs/shared-servers.md §2), and every equality test that reads this struct
+    /// therefore compares the pair through [`crate::plex::same_item`]: `cached_playing`'s cache
+    /// hit, `pump_season`'s ownership test, `detail::reselect`, and the BACK trail's node.
+    pub(crate) sid: crate::plex::ServerId,
     pub(crate) rk: String,
     /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("<peer-owner-1>") — empty whenever
     /// it came from the signed-in user's own server, which is every item today.
@@ -660,12 +666,18 @@ pub(crate) fn sync_now_playing() {
 }
 
 // ---- fetches (all via the typed crate::plex client; serde DTOs, no Value scraping) ----
-fn fetch_detail(rk: &str) -> Option<Detail> {
-    let it = crate::plex::client().metadata(rk)?;
+//
+// Every one of them takes the `ServerId` rather than reaching for `plex::client()`: they run on the
+// detail/season workers, and the house rule is that a worker reads no statics (`pms::parse_item`
+// carries the same note). It is also what stamps the row — an item fetched from slot 1 must be
+// recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
+fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
+    let it = crate::plex::client_for(sid)?.metadata(rk)?;
     let media0 = it.primary_media();
     // one read, both fields (see `Detail::blur`)
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
     let mut d = Detail {
+        sid,
         rk: rk.to_string(),
         // One server today: this fetch went to the machine we are signed in to, so the item is our
         // own and there is nobody to credit. A borrowed item names its owner only once the
@@ -870,6 +882,12 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
 
 #[derive(Clone)]
 pub(crate) struct PlayingItem {
+    /// The server the played leaf lives on. This is the store that feeds PLAYBACK — the track
+    /// menu's `Stream.id`s (which are PUT back to a server), the direct-play gate's frame size, the
+    /// esInfo fps, the chapters and the markers — so a bare-rk cache hit against a colliding item on
+    /// the other machine is the silent failure this field exists to stop: every one of those values
+    /// would be the wrong file's, with nothing on screen to say so.
+    pub(crate) sid: crate::plex::ServerId,
     pub(crate) rk: String,
     pub(crate) audio: Vec<Stream>,
     pub(crate) subs: Vec<Stream>,
@@ -919,23 +937,20 @@ pub(crate) fn playing_chapters() -> &'static [Chapter] {
 /// `ResolveEnv` and handed to the worker; splitting the fetch out lost this and quietly added a
 /// PMS round trip to every play from a detail page.
 ///
-/// `sid` is the server the item being played came from — the other half of its identity, since a
-/// ratingKey only names an item within one server.
+/// The hit test is the PAIR `(sid, rk)`, and this is the site where a bare key is most dangerous:
+/// it SKIPS the PMS fetch, so a collision here silently substitutes the loaded page's item for the
+/// one about to play — its audio/subtitle `Stream.id`s (then PUT to the other server), its frame
+/// size (so the direct-play gate reasons about the wrong resolution), its fps, chapters and
+/// markers. A miss costs one round trip; a false hit costs the whole playback.
 ///
-/// **TODO(shared-servers): the test below is still the rk ALONE, and that is the one hole left in
-/// the playback path's otherwise end-to-end server capture.** It cannot be closed here: `Detail`
-/// does not yet carry the server it was loaded from, and guessing (`sid == current_server()`) would
-/// be a different claim that the real field then has to unpick. What it costs once two sources can
-/// share a shelf: the detail page holds rk `1` from server A, the user starts rk `1` from B's
-/// shelf, this returns A's `PlayingItem`, and the `.or_else(fetch_playing_item)` that would have
-/// gone to B never runs — so B's playback carries A's audio/subtitle `Stream` ids (which
-/// `put_selection` and the timeline report then send to B), A's `video_fps` in the Load esInfo, A's
-/// frame size in the local direct-play gate, and A's markers and chapters. Silently. The fix is a
-/// `sid` on `Detail` and `d.sid == sid &&` on the filter; the parameter is already here so that
-/// change is one line.
+/// This closed a TODO that stood here through the foundation commits: `Detail` had no server, so
+/// the filter was the rk alone and the parameter was deliberately unused. `Detail.sid` is what
+/// made the pair test possible.
 pub(crate) fn cached_playing(sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
-    let _ = sid; // see the TODO above — the pair test needs a field `Detail` does not have yet
-    current().filter(|d| d.rk == rk && !d.audio.is_empty()).map(|d| PlayingItem {
+    current()
+        .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, rk)) && !d.audio.is_empty())
+        .map(|d| PlayingItem {
+        sid,
         rk: rk.to_string(),
         audio: d.audio.clone(),
         subs: d.subs.clone(),
@@ -971,7 +986,7 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
         .as_ref()
         .and_then(|it| it.primary_media().map(|m| (m.width, m.height)))
         .unwrap_or((0, 0));
-    Some(PlayingItem { rk: rk.to_string(), audio, subs, video_fps, width, height, markers, chapters })
+    Some(PlayingItem { sid, rk: rk.to_string(), audio, subs, video_fps, width, height, markers, chapters })
 }
 
 /// Retire BOTH descriptions of the item that was playing, together.
@@ -1048,14 +1063,14 @@ pub(crate) fn sub_render_ordinal(subs: &[Stream], i: usize) -> i32 {
 
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a
 /// show's first-episode audio/subtitle tracks (the show container carries none).
-fn fetch_item_streams(rk: &str, d: &mut Detail) {
-    if let Some(it) = crate::plex::client().metadata(rk) {
+fn fetch_item_streams(sid: crate::plex::ServerId, rk: &str, d: &mut Detail) {
+    if let Some(it) = crate::plex::client_for(sid).and_then(|c| c.metadata(rk)) {
         parse_streams(&it, d);
     }
 }
 
-fn fetch_seasons(rk: &str) -> Vec<Season> {
-    let mc = match crate::plex::client().children(rk) {
+fn fetch_seasons(sid: crate::plex::ServerId, rk: &str) -> Vec<Season> {
+    let mc = match crate::plex::client_for(sid).and_then(|c| c.children(rk)) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -1081,8 +1096,8 @@ fn fetch_seasons(rk: &str) -> Vec<Season> {
 /// NB its siblings `fetch_seasons`/`fetch_related` deliberately KEEP the degrade-to-empty: both are
 /// only ever called from `fetch_full`, which builds a Detail from nothing — there is no previous
 /// list there to protect, and neither is worth failing the whole page over.
-fn fetch_episodes(season_rk: &str) -> Option<Vec<Episode>> {
-    let mc = crate::plex::client().children(season_rk)?;
+fn fetch_episodes(sid: crate::plex::ServerId, season_rk: &str) -> Option<Vec<Episode>> {
+    let mc = crate::plex::client_for(sid)?.children(season_rk)?;
     Some(mc.metadata.iter().map(convert_episode).collect())
 }
 
@@ -1113,8 +1128,8 @@ fn convert_episode(x: &crate::plex::Metadata) -> Episode {
     }
 }
 
-fn fetch_related(rk: &str) -> Vec<Related> {
-    let mc = match crate::plex::client().related(rk) {
+fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
+    let mc = match crate::plex::client_for(sid).and_then(|c| c.related(rk)) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -1146,18 +1161,18 @@ fn fetch_related(rk: &str) -> Vec<Related> {
 /// on the main thread ([`load_detail_now`]) or on a worker ([`request_detail`]). Keep it that way:
 /// installing the result is the caller's job, and on the async path that must happen on the main
 /// thread (see the DETAIL_SLOT note).
-fn fetch_full(rk: &str) -> Option<Detail> {
+fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
     let t0 = std::time::Instant::now();
-    let mut d = fetch_detail(rk)?;
+    let mut d = fetch_detail(sid, rk)?;
     if d.is_show {
-        d.seasons = fetch_seasons(rk);
+        d.seasons = fetch_seasons(sid, rk);
         if let Some(s0) = d.seasons.first() {
             // a first-season failure is not worth failing the whole page over — the hero, cast
             // and Related still load, and there is no previous list here to protect
-            d.episodes = fetch_episodes(&s0.rk).unwrap_or_default();
+            d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_default();
         }
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
@@ -1167,7 +1182,7 @@ fn fetch_full(rk: &str) -> Option<Detail> {
         let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
         let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
         if let Some(ep_rk) = ep {
-            fetch_item_streams(&ep_rk, &mut d);
+            fetch_item_streams(sid, &ep_rk, &mut d);
             // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
             // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
             // play trigger reads it as "this is a show, take the episode's resume point instead",
@@ -1177,7 +1192,7 @@ fn fetch_full(rk: &str) -> Option<Detail> {
             // episode the button would start.
         }
     }
-    d.related = fetch_related(rk);
+    d.related = fetch_related(sid, rk);
     crate::player::log(&format!(
         "detail: rk={} '{}' show={} genres={} cast={} crew={} seasons={} eps={} related={} audio={} subs={} ms={}",
         d.rk, d.title, d.is_show, d.genres.len(), d.cast.len(), d.crew.len(), d.seasons.len(), d.episodes.len(),
@@ -1191,7 +1206,7 @@ fn fetch_full(rk: &str) -> Option<Detail> {
 /// play-a-show arm (which gates on `current().rk == expect`), and the headless `plxnative-play` /
 /// `plxnative-detail` triggers (which derive the leaf part/codecs, or replay move_focus/on_ok, in
 /// the same frame). Every remaining call of this is a deliberate freeze — hence the `_now` name.
-pub(crate) fn load_detail_now(rk: &str) {
+pub(crate) fn load_detail_now(sid: crate::plex::ServerId, rk: &str) {
     // this synchronous load wins over anything in flight — both the detail worker (whose landing
     // would otherwise overwrite it a beat later) and the season fetch (same show re-opened: a
     // stale landing would overwrite the fresh first-season episode list)
@@ -1199,7 +1214,7 @@ pub(crate) fn load_detail_now(rk: &str) {
     supersede_season();
     let rk = rk.to_string();
     let _ = catch_unwind(move || {
-        if let Some(d) = fetch_full(&rk) {
+        if let Some(d) = fetch_full(sid, &rk) {
             unsafe { *addr_of_mut!(CURRENT) = Some(d) }
             // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor
             sync_now_playing();
@@ -1249,7 +1264,11 @@ fn land_detail(gen: u32, d: Option<Detail>) {
 
 /// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and spawns the fetch; the result
 /// lands via [`pump_detail`]. The caller mounts the detail page this same frame.
-pub(crate) fn request_detail(rk: &str) {
+///
+/// `sid` names the server to ask and is captured by the CALLER, on the main thread — the worker
+/// must not read the current server (see the fetch block's note), and the page being opened may
+/// belong to a machine that is not the current one at all.
+pub(crate) fn request_detail(sid: crate::plex::ServerId, rk: &str) {
     use std::sync::atomic::Ordering;
     // drop any season fetch in flight for the OLD item — its landing would patch the new one
     supersede_season();
@@ -1261,7 +1280,7 @@ pub(crate) fn request_detail(rk: &str) {
     let spawned = crate::task::spawn_small("detail", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands (as None) —
         // otherwise detail_loading() would report an in-flight fetch forever
-        let d = catch_unwind(|| fetch_full(&rk)).unwrap_or(None);
+        let d = catch_unwind(|| fetch_full(sid, &rk)).unwrap_or(None);
         land_detail(gen, d);
     });
     if !spawned {
@@ -1312,6 +1331,11 @@ static SEASON_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 static SEASON_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 struct SeasonResult {
     gen: u32,
+    /// the SERVER the show is on — the other half of `rk`. Without it, hopping from server A's show
+    /// page to server B's page with the same rk while a `/children` fetch is in flight installs A's
+    /// episode list onto B's page: the generation guard cannot see it (the hop bumped nothing that
+    /// distinguishes them) and the rk test passes.
+    sid: crate::plex::ServerId,
     rk: String,  // the show the fetch was for
     idx: usize,  // the season it was for
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
@@ -1324,10 +1348,17 @@ static SEASON_RESULT: std::sync::Mutex<Option<SeasonResult>> = std::sync::Mutex:
 /// with it the SEASON_DONE catch-up, wedging the loading spinner on. Named rather than inlined in
 /// the worker closure for the same reason as `land_detail`: the guard is the one piece of this
 /// machinery a test cannot reach through `load_season`.
-fn land_season(gen: u32, rk: String, idx: usize, prev: usize, eps: Option<Vec<Episode>>) {
+fn land_season(
+    gen: u32,
+    sid: crate::plex::ServerId,
+    rk: String,
+    idx: usize,
+    prev: usize,
+    eps: Option<Vec<Episode>>,
+) {
     let mut slot = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
-        *slot = Some(SeasonResult { gen, rk, idx, prev, eps });
+        *slot = Some(SeasonResult { gen, sid, rk, idx, prev, eps });
     }
 }
 
@@ -1351,8 +1382,11 @@ pub(crate) fn load_season(idx: usize) {
     use std::sync::atomic::Ordering;
     // `prev` rides along so a FAILED fetch can put the tab back on the season whose episodes are
     // still listed (see `pump_season`) — the optimistic flip below is what has to be undone.
-    let (rk, season_rk, prev) = match current()
-        .and_then(|d| d.seasons.get(idx).map(|s| (d.rk.clone(), s.rk.clone(), d.cur_season)))
+    // the loaded show's own server, read here on the MAIN thread — a season belongs to the item it
+    // hangs off, so this is the one honest source for it (never `plex::current_server()`, which the
+    // user may have moved since the page was opened)
+    let (sid, rk, season_rk, prev) = match current()
+        .and_then(|d| d.seasons.get(idx).map(|s| (d.sid, d.rk.clone(), s.rk.clone(), d.cur_season)))
     {
         Some(t) => t,
         None => return,
@@ -1367,8 +1401,8 @@ pub(crate) fn load_season(idx: usize) {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a
         // FAILURE (None), not as an empty season: a panic is not "this season has no episodes",
         // and otherwise season_loading() would report an in-flight fetch forever
-        let eps = catch_unwind(|| fetch_episodes(&season_rk)).unwrap_or(None);
-        land_season(gen, rk, idx, prev, eps);
+        let eps = catch_unwind(|| fetch_episodes(sid, &season_rk)).unwrap_or(None);
+        land_season(gen, sid, rk, idx, prev, eps);
     });
     if !spawned {
         // no worker means nothing will ever land: catch DONE up or the episode row keeps its
@@ -1383,8 +1417,8 @@ pub(crate) fn load_season(idx: usize) {
 /// runs. Invalidates any in-flight async fetch so a stale landing can't overwrite this one.
 pub(crate) fn load_season_now(idx: usize) {
     let _ = catch_unwind(move || {
-        let season_rk = match current().and_then(|d| d.seasons.get(idx)) {
-            Some(s) => s.rk.clone(),
+        let (sid, season_rk) = match current().and_then(|d| d.seasons.get(idx).map(|s| (d.sid, s.rk.clone()))) {
+            Some(t) => t,
             None => return,
         };
         // `unwrap_or_default`, NOT propagation: this blocking twin still degrades to an empty
@@ -1392,7 +1426,7 @@ pub(crate) fn load_season_now(idx: usize) {
         // `open_rk_season`'s chained play of `episodes[0]` launches — the WRONG season's first
         // episode under the requested season's name — and that path has no host coverage and needs
         // the full on-device suite. Deferred deliberately.
-        let eps = fetch_episodes(&season_rk).unwrap_or_default();
+        let eps = fetch_episodes(sid, &season_rk).unwrap_or_default();
         supersede_season(); // drop any async fetch in flight; this synchronous list wins
         unsafe {
             if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
@@ -1427,7 +1461,11 @@ pub(crate) fn pump_season() -> bool {
     SEASON_DONE.store(r.gen, Ordering::SeqCst);
     unsafe {
         let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else { return false };
-        if d.rk != r.rk {
+        // OWNERSHIP, as the (server, key) PAIR. The rk alone was enough while one machine was
+        // reachable; with a share registered, hopping from A's show to B's show with the same rk
+        // while a `/children` is in flight passes an rk-only test and installs A's episodes onto
+        // B's page.
+        if !crate::plex::same_item((d.sid, &d.rk), (r.sid, &r.rk)) {
             return false; // the page moved to another item — not ours to patch
         }
         match r.eps {
@@ -1867,9 +1905,18 @@ mod tests {
     /// A two-season show with a populated episode row, as a landed detail fetch leaves it. Written
     /// straight into CURRENT rather than through `pump_detail` — that pump is the other test's
     /// subject, and routing through it would couple the two.
+    /// Two registry slots — plain values, so the identity rules are gradeable without a registry.
+    /// `SRV_A` stands in for the signed-in user's own server, `SRV_B` for a share.
+    const SRV_A: crate::plex::ServerId = crate::plex::ServerId::from_raw(0);
+    const SRV_B: crate::plex::ServerId = crate::plex::ServerId::from_raw(1);
+
     fn install_show(rk: &str, cur: usize, eps: &[&str]) {
+        install_show_on(SRV_A, rk, cur, eps);
+    }
+    fn install_show_on(sid: crate::plex::ServerId, rk: &str, cur: usize, eps: &[&str]) {
         unsafe {
             *addr_of_mut!(CURRENT) = Some(Detail {
+                sid,
                 rk: rk.to_string(),
                 is_show: true,
                 seasons: vec![
@@ -1924,7 +1971,7 @@ mod tests {
         let (gen, prev) = begin_switch(1);
         assert_eq!(selected_tab(), 1, "the tab flips optimistically while the fetch is in flight");
         assert!(season_loading(), "a bumped generation with DONE behind it reads as in flight");
-        land_season(gen, "show-1".to_string(), 1, prev, None);
+        land_season(gen, SRV_A, "show-1".to_string(), 1, prev, None);
         assert!(!pump_season(), "a failed fetch is not a new episode list");
         assert_eq!(listed_eps(), ["s1e1", "s1e2"], "the populated row survives the failure");
         assert_eq!(selected_tab(), 0, "the failed tab is released, so focusing it again refetches");
@@ -1935,14 +1982,14 @@ mod tests {
         // the new one is empty" fix passes the block above and leaves THIS one showing the
         // previous season's episodes under the new season's tab.
         let (gen, prev) = begin_switch(1);
-        land_season(gen, "show-1".to_string(), 1, prev, Some(Vec::new()));
+        land_season(gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new()));
         assert!(pump_season(), "an empty season is a successful fetch — the row did change");
         assert!(listed_eps().is_empty(), "and the previous season's episodes are gone");
         assert_eq!(selected_tab(), 1, "the tab stays on the season that answered");
 
         // the ordinary success path
         let (gen, prev) = begin_switch(0);
-        land_season(gen, "show-1".to_string(), 0, prev, Some(vec![episode("s1e1")]));
+        land_season(gen, SRV_A, "show-1".to_string(), 0, prev, Some(vec![episode("s1e1")]));
         assert!(pump_season());
         assert_eq!(listed_eps(), ["s1e1"]);
         assert_eq!(selected_tab(), 0);
@@ -1951,7 +1998,7 @@ mod tests {
         // generation — the fetch that was in flight for the old tab is dropped, not applied.
         let (old, prev) = begin_switch(1);
         supersede_season();
-        land_season(old, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
+        land_season(old, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
         assert!(!pump_season(), "a landing from a superseded generation is discarded");
         assert_eq!(listed_eps(), ["s1e1"], "and it must not touch the episode row");
 
@@ -1960,8 +2007,8 @@ mod tests {
         // SEASON_DONE catch-up, which wedged the loading spinner on.
         let (old, prev) = begin_switch(1);
         let (new, _) = begin_switch(1);
-        land_season(new, "show-1".to_string(), 1, prev, Some(vec![episode("fresh")]));
-        land_season(old, "show-1".to_string(), 1, prev, Some(vec![episode("stale")]));
+        land_season(new, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("fresh")]));
+        land_season(old, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("stale")]));
         assert!(pump_season(), "the newest season lands");
         assert_eq!(listed_eps(), ["fresh"], "the late older landing was refused");
 
@@ -1970,11 +2017,73 @@ mod tests {
         // the spinner — nothing else is going to.
         let (gen, prev) = begin_switch(1);
         install_show("show-2", 0, &["other-e1"]);
-        land_season(gen, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
+        land_season(gen, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
         assert!(!pump_season(), "a landing for a different item reports no change");
         assert_eq!(listed_eps(), ["other-e1"], "and leaves the item now on screen alone");
         assert!(!season_loading(), "but it still settles the spinner");
 
+        clear();
+    }
+
+    /// The SAME landing, refused because the page moved to the OTHER SERVER's show with the same
+    /// ratingKey. Nothing else can see it: the hop bumps no generation that distinguishes them (a
+    /// `request_detail` for a different item does, but this is a page mounted from the trail or a
+    /// merged shelf, and the rk test — the only ownership test there was — passes.) So the share's
+    /// show would have been listing our show's episodes, silently.
+    #[test]
+    fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
+        let _serial = crate::testlock::serial();
+
+        // our server's show 42, one season switch in flight
+        install_show_on(SRV_A, "42", 0, &["ours-e1"]);
+        let (gen, prev) = begin_switch(1);
+        // …and while it is out, the user lands on the SHARE's show 42
+        install_show_on(SRV_B, "42", 0, &["theirs-e1"]);
+        land_season(gen, SRV_A, "42".to_string(), 1, prev, Some(vec![episode("ours-s2e1")]));
+
+        assert!(!pump_season(), "our episodes are not news about the share's show");
+        assert_eq!(listed_eps(), ["theirs-e1"], "the page on screen keeps its own list");
+        assert!(!season_loading(), "…and the spinner still settles, as for any foreign landing");
+
+        // the control: the very same landing DOES install when the page is still ours
+        install_show_on(SRV_A, "42", 0, &["ours-e1"]);
+        let (gen, prev) = begin_switch(1);
+        land_season(gen, SRV_A, "42".to_string(), 1, prev, Some(vec![episode("ours-s2e1")]));
+        assert!(pump_season());
+        assert_eq!(listed_eps(), ["ours-s2e1"]);
+
+        clear();
+    }
+
+    /// `cached_playing` is the fast path that SKIPS the PMS fetch, so a false hit is the worst of
+    /// the five collisions: the whole `PlayingItem` — the `Stream.id`s that get PUT to a server, the
+    /// frame size the direct-play gate reasons about, the fps, the chapters, the markers — would be
+    /// the loaded page's item rather than the one about to play, with nothing on screen to say so.
+    #[test]
+    fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
+        let _serial = crate::testlock::serial();
+        let audio = vec![Stream { id: 7, ..Default::default() }];
+        set_current_for_test(Some(Detail {
+            sid: SRV_A,
+            rk: "42".into(),
+            audio: audio.clone(),
+            width: 3840,
+            height: 2160,
+            ..Default::default()
+        }));
+
+        let hit = cached_playing(SRV_A, "42").expect("the loaded page IS this item");
+        assert_eq!((hit.sid, hit.rk.as_str()), (SRV_A, "42"), "the store records where it came from");
+        assert_eq!(hit.audio.first().map(|s| s.id), Some(7));
+
+        assert!(cached_playing(SRV_B, "42").is_none(), "the SHARE's 42 is a different film");
+        assert!(cached_playing(SRV_A, "43").is_none());
+        assert!(cached_playing(crate::plex::ServerId::UNSET, "42").is_none(), "unscoped names neither");
+
+        // …and the pre-existing rule is untouched: a page with no streams is not a usable cache
+        // entry, whatever its identity says (it would hand playback an empty track list).
+        set_current_for_test(Some(Detail { sid: SRV_A, rk: "42".into(), ..Default::default() }));
+        assert!(cached_playing(SRV_A, "42").is_none(), "no streams loaded yet — go and fetch");
         clear();
     }
 

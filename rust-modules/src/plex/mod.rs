@@ -59,7 +59,10 @@ pub use client::{Client, StreamUrl};
 // singleton accessors, so every call site outside `plex/` reads unchanged; `client_for`,
 // `register`, `set_current` and `ServerId` are the multi-server additions.
 #[allow(unused_imports)]
-pub use servers::{client, client_for, client_opt, count as server_count, current as current_server, install, register, set_current, ServerId};
+pub use servers::{
+    client, client_for, client_opt, count as server_count, current as current_server, install, register, same_item,
+    set_current, ServerId,
+};
 // The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
 // `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
 // does — that call mints and PERSISTS a device uuid, which a host test has no business writing —

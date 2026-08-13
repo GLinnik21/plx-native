@@ -679,7 +679,10 @@ fn resolve_playqueue(c: &crate::plex::Client, rk: &str, session: &str, cached: &
 /// It is captured here, at the request, and every PMS call the worker makes is `client_for(sid)`.
 #[derive(Clone, Default)]
 pub(crate) struct ResolveEnv {
-    /// The server the item being played came from. Not "the current server" — see [`CUR_SID`].
+    /// WHICH SERVER this playback's item lives on — the scope for every server-local key the
+    /// resolve then uses (`rk`, `Part.key`, `Stream.id`). Not "the current server" (see
+    /// [`CUR_SID`]): captured on the main thread with everything else here, because the resolve
+    /// worker must not read the current server itself.
     pub sid: ServerId,
     /// `MACHINE_ID`, but only when it was learned from `sid`'s own server (`MACHINE_SID`);
     /// otherwise empty, so the worker re-asks rather than addressing a queue to the wrong machine.
@@ -692,6 +695,10 @@ pub(crate) struct ResolveEnv {
 
 impl ResolveEnv {
     /// MAIN THREAD ONLY.
+    /// `sid` arrives BY VALUE from the caller, which is the whole point: the item being played
+    /// carries the server it came from (`PmsMovie`/`UpNext`/`Detail` all hold one now), so a play
+    /// raised off a merged shelf resolves against the server that shelf's row belongs to rather
+    /// than whichever server happens to be current when the worker gets around to asking.
     fn snapshot(sid: ServerId, rk: &str) -> ResolveEnv {
         ResolveEnv {
             sid,
