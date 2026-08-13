@@ -371,6 +371,38 @@ fn commit_seek(target: i64, repause_at: &mut i64) {
 #[inline]
 fn is_started() -> bool { crate::player::is_started() }
 
+/// Register the SECOND authority this boot was handed credentials for, and tell the home layer
+/// whose it is — so Home is built from both servers instead of one.
+///
+/// The channel is `/tmp/plxnative-servers` (`dev::servers`), which is how the harness hands the TV a
+/// friend's SHARED server: its own `machineIdentifier`, its own per-(user, server) access token, and
+/// a 401 for anybody else's — which is precisely why one `plxnative-token` cannot express two
+/// servers. It is empty in a release build and on any boot without the trigger, so an ordinary run
+/// registers nothing, `pms` falls back to the CURRENT server as its only source, and every heading
+/// is unannotated exactly as before.
+///
+/// The display `name` stands in for the owner's plex.tv handle. Off the wire that is `sourceTitle`
+/// on `/api/v2/resources` (`plex::account::Resource`), which the roster layer will read; this file
+/// has only what the trigger was written with, and a hand-written name is what the person running
+/// the test expects to see in the shelf heading.
+fn register_extra_servers() {
+    let Ok(extra) = crate::dev::servers() else {
+        return; // the parse error was already logged, once, at boot
+    };
+    let usable: Vec<&crate::dev::DevServer> = extra.iter().filter(|s| s.usable()).collect();
+    if usable.is_empty() {
+        return; // one server: `pms` derives its own roster and nothing here has an opinion
+    }
+    // The primary is whatever `plex::install` just made current — captured here rather than looked
+    // up later, because it is also the source that must come FIRST.
+    let mut sources = vec![crate::pms::Source { sid: crate::plex::current_server(), handle: String::new() }];
+    for s in usable {
+        let sid = crate::plex::register(&s.machine_id, &s.host, s.port as c_int, &s.token);
+        sources.push(crate::pms::Source { sid, handle: s.name.clone() });
+    }
+    crate::pms::set_sources(sources);
+}
+
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     install_panic_logger();
@@ -511,6 +543,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // previous user's shelves on screen.
             crate::pms::reset();
             crate::person::reset(); // ditto for an open person page's shelves
+            register_extra_servers();
             let nmov = crate::pms::pms_fetch_hubs();
             // section discovery (one small GET) so Home's library tab pills carry real titles
             let nsec = crate::browse::ensure_sections();
