@@ -57,11 +57,11 @@ const SRC_RETRY_CD: u32 = 600; // ~10 s at 60 fps
 pub(crate) struct BrowseSource {
     /// The registry slot every fetch for this source's sections is issued through.
     pub(crate) sid: ServerId,
-    /// The MACHINE name ("<peer-name-2>") — the Sources list's group header, and the only place in the
+    /// The MACHINE name ("nas-home") — the Sources list's group header, and the only place in the
     /// app a machine is named. Learned from the roster, else from the server naming itself
     /// (`Client::friendly_name`); `""` until one of those lands.
     pub(crate) name: String,
-    /// The owner's plex.tv handle ("<peer-owner-1>"); **empty on your own server**, where the absence of an
+    /// The owner's plex.tv handle ("friend"); **empty on your own server**, where the absence of an
     /// owner is drawn as the absence of a run rather than as an empty one.
     pub(crate) handle: String,
     /// Did it ANSWER? One of the design's three orthogonal states — *granted* (the roster's
@@ -87,7 +87,11 @@ pub(crate) struct BrowseSection {
     pub(crate) src: usize,
     pub(crate) key: i64,
     pub(crate) title: String,
-    pub(crate) is_show: bool,
+    /// The library's TYPE. A real type and not the `is_show: bool` this replaced, because the tab
+    /// projection asks "does any owned library have this KIND" ([`tabs`]) — and with two values that
+    /// question cannot tell Music from Movies, so a friend's music library would fold onto your
+    /// *Movies* pill, which is the one case the projection exists to get right.
+    pub(crate) kind: SecKind,
     /// The library's own item count, unfiltered — the Sources row's "185 films". `-1` until the
     /// count probe lands. Deliberately NOT [`SecState::total`], which is the count of the CURRENT
     /// QUERY: with an unwatched filter on, that number describes what you are looking at and would
@@ -279,7 +283,7 @@ struct SrcLanding {
 enum SrcWhat {
     /// `GET /library/sections`. `None` is the FAILURE sentinel — the source is marked unreachable
     /// and whatever sections it had already contributed are left exactly where they are.
-    Sections(Option<Vec<(i64, String, bool)>>),
+    Sections(Option<Vec<(i64, String, SecKind)>>),
     /// The unfiltered item count per library, **by section KEY** rather than by index: the table
     /// may have grown between the spawn and the landing, and a key is stable inside one source.
     Counts(Vec<(i64, i64)>),
@@ -437,21 +441,73 @@ pub(crate) fn ensure_sections() -> usize {
     sections().len()
 }
 
-/// `MediaContainer.Directory[]` → the (key, title, is_show) rows this app can browse. The ONE
+/// `MediaContainer.Directory[]` → the (key, title, kind) rows this app can browse. The ONE
 /// projection, shared by the blocking discovery above and the worker below, so the two can never
 /// disagree about which sections exist.
-fn project_sections(mc: &crate::plex::MediaContainer) -> Vec<(i64, String, bool)> {
+///
+/// `artist`/`photo` are KEPT. They used to be dropped here as "not browsable", and that quietly
+/// disabled the one growth case the tab projection is written for: a friend sharing a type you do
+/// not own can only add a pill if that type reaches the table at all. They browse like any other
+/// section (the listing, its server-driven sorts and the A–Z rail are type-agnostic), and this
+/// account's own `/hubs` already puts a *Recently Added Music* shelf on Home, so the content was at
+/// the top level before it had a tab. What is still missing is the level BELOW the grid — an artist
+/// opens the movie detail page, which has nothing to play — and that belongs to whoever builds the
+/// music level, not to the strip.
+fn project_sections(mc: &crate::plex::MediaContainer) -> Vec<(i64, String, SecKind)> {
     mc.directory
         .iter()
         .filter_map(|d| {
-            let is_show = match d.kind.as_str() {
-                "movie" => false,
-                "show" => true,
-                _ => return None, // music/photo: not browsable here
-            };
-            d.key.parse::<i64>().ok().map(|k| (k, d.title.clone(), is_show))
+            let kind = SecKind::from_wire(&d.kind)?; // a type this product has no level for at all
+            d.key.parse::<i64>().ok().map(|k| (k, d.title.clone(), kind))
         })
         .collect()
+}
+
+/// A library section's TYPE — the product's closed type list, and the unit the tab projection
+/// ([`tabs`]) compares by.
+///
+/// It replaced an `is_show: bool`, and the reason is the projection rather than tidiness: "does any
+/// owned library have this kind" is the test that decides whether a friend's library gets its own
+/// pill, and with two values Music is indistinguishable from Movies — a friend's music library would
+/// silently ride your *Movies* pill and its content would be unreachable from the strip.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SecKind {
+    Movie,
+    Show,
+    Music,
+    Photo,
+}
+
+impl SecKind {
+    /// The wire's `Directory.type`, or `None` for a type this product draws no level for.
+    pub(crate) fn from_wire(s: &str) -> Option<SecKind> {
+        match s {
+            "movie" => Some(SecKind::Movie),
+            "show" => Some(SecKind::Show),
+            "artist" => Some(SecKind::Music),
+            "photo" => Some(SecKind::Photo),
+            _ => None,
+        }
+    }
+    /// The Sources row's count noun ("185 films") — plural, and the singular-less form the row
+    /// falls back to when no count has landed is [`SecKind::plural`].
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            SecKind::Movie => "films",
+            SecKind::Show => "shows",
+            SecKind::Music => "artists",
+            SecKind::Photo => "photos",
+        }
+    }
+    /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
+    pub(crate) fn plural(self) -> &'static str {
+        match self {
+            SecKind::Movie => "Films",
+            SecKind::Show => "TV shows",
+            SecKind::Music => "Music",
+            SecKind::Photo => "Photos",
+        }
+    }
 }
 
 /// APPEND one source's sections to the table, with their per-section states in lockstep.
@@ -460,11 +516,11 @@ fn project_sections(mc: &crate::plex::MediaContainer) -> Vec<(i64, String, bool)
 /// remembered view, and every in-flight page landing's `sec`) survive untouched, which is what
 /// makes a source arriving late safe at all. A source is only ever appended once, so a repeat call
 /// for it is a no-op rather than a duplicated library.
-fn append_sections(src: usize, list: Vec<(i64, String, bool)>) {
+fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
     // Only what this source does not already have. A re-discovery ("Check for new shares", or a
     // server that came back) therefore ADDS a library the owner has since created and leaves every
     // existing row — and every index — exactly where it was.
-    let fresh: Vec<(i64, String, bool)> = list
+    let fresh: Vec<(i64, String, SecKind)> = list
         .into_iter()
         .filter(|(k, _, _)| !sections().iter().any(|s| s.src == src && s.key == *k))
         .collect();
@@ -477,8 +533,8 @@ fn append_sections(src: usize, list: Vec<(i64, String, bool)>) {
     unsafe {
         let secs = &mut *addr_of_mut!(SECTIONS);
         let states = &mut *addr_of_mut!(STATES);
-        for (key, title, is_show) in fresh {
-            secs.push(BrowseSection { src, key, title, is_show, count: -1, pinned });
+        for (key, title, kind) in fresh {
+            secs.push(BrowseSection { src, key, title, kind, count: -1, pinned });
             states.push(SecState::default());
         }
     }
@@ -492,8 +548,9 @@ pub(crate) fn section_count() -> usize {
 pub(crate) fn section_title(i: usize) -> &'static str {
     sections().get(i).map(|s| s.title.as_str()).unwrap_or("")
 }
-pub(crate) fn section_is_show(i: usize) -> bool {
-    sections().get(i).map(|s| s.is_show).unwrap_or(false)
+/// The TYPE of section `i` — `None` for an index the table does not hold.
+pub(crate) fn section_kind(i: usize) -> Option<SecKind> {
+    sections().get(i).map(|s| s.kind)
 }
 /// The registry slot section `i` is browsed through. **Read this at the SPAWN SITE**; a worker
 /// that calls `client()` instead dials whichever server happens to be current when it runs.
@@ -586,30 +643,55 @@ fn mark_source_reachable(i: usize, ok: bool) {
 /// tab index → section index, rebuilt when the table's shape moves.
 static mut TABS: Vec<usize> = Vec::new();
 static mut TABS_GEN: u32 = u32::MAX;
+/// …and how many times the projection above actually CHANGED, which is a different question from
+/// how many times it was re-derived. See [`tabs_gen`].
+static mut TABS_SHAPE_GEN: u32 = 0;
 
 fn tabs() -> &'static Vec<usize> {
     let g = sections_gen();
     if unsafe { addr_of!(TABS_GEN).read() } != g {
-        let owned_kinds: Vec<bool> = sections()
+        // compared by real TYPE, not by `is_show`: with a boolean, "does an owned library have this
+        // kind" answers YES for a friend's MUSIC library on the strength of your films, so it would
+        // get no pill and nothing in it could be reached from the strip at all
+        let owned_kinds: Vec<SecKind> = sections()
             .iter()
             .filter(|s| sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true))
-            .map(|s| s.is_show)
+            .map(|s| s.kind)
             .collect();
         let v: Vec<usize> = sections()
             .iter()
             .enumerate()
             .filter(|(_, s)| {
                 let owned = sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true);
-                owned || !owned_kinds.contains(&s.is_show)
+                owned || !owned_kinds.contains(&s.kind)
             })
             .map(|(i, _)| i)
             .collect();
+        // The strip's own generation, bumped only when the projected PILL LIST changes. The section
+        // table's generation moves for things the strip cannot see — a source's counts landing, a
+        // second friend's libraries arriving that all fold onto pills already drawn — and the label
+        // cache downstream re-measures every pill in the row when it does. That is Home's hot path,
+        // and with sources landing one at a time it now happens several times a boot.
+        // BORROW, never `.read()`: that copies the `Vec` bitwise, and dropping the copy frees the
+        // buffer the static still points at — a double free that aborts the process, not a warning.
+        let changed = unsafe { (*addr_of!(TABS)).as_slice() != v.as_slice() };
         unsafe {
             *addr_of_mut!(TABS) = v;
             TABS_GEN = g;
+            if changed {
+                TABS_SHAPE_GEN += 1;
+            }
         }
     }
     unsafe { &*addr_of!(TABS) }
+}
+
+/// The generation of the strip's own SHAPE — moves only when the projected pill list actually
+/// changes, which is what the tab row's label + width cache keys on
+/// ([`widgets::with_tab_metrics`](crate::ui::widgets)).
+pub(crate) fn tabs_gen() -> u32 {
+    tabs(); // re-project first: a stale answer would name the generation of a row nobody has
+    unsafe { addr_of!(TABS_SHAPE_GEN).read() }
 }
 
 /// Pills in the strip (excluding Home, which the strip prepends itself).
@@ -631,8 +713,8 @@ pub(crate) fn tab_of_section(s: usize) -> usize {
     if let Some(p) = t.iter().position(|&i| i == s) {
         return p;
     }
-    let kind = section_is_show(s);
-    t.iter().position(|&i| section_is_show(i) == kind).unwrap_or(0)
+    let Some(kind) = section_kind(s) else { return 0 };
+    t.iter().position(|&i| section_kind(i) == Some(kind)).unwrap_or(0)
 }
 
 // ---- pinning: the ONE control, and it governs Home only --------------------------------------
@@ -724,7 +806,7 @@ pub(crate) fn source_rows() -> Vec<SrcRow> {
             src: s.src,
             section: i,
             title: s.title.clone(),
-            count_line: count_line(s.count, s.is_show),
+            count_line: count_line(s.count, s.kind),
             pinned: s.pinned,
             last_pinned: last && s.pinned,
             current: i == cur,
@@ -735,11 +817,11 @@ pub(crate) fn source_rows() -> Vec<SrcRow> {
 /// A library's sub-line: its size once the count has landed, else its TYPE. Never absent — a row
 /// that loses its second line changes height, and the panel is not allowed to resize under a level
 /// switch or a landing.
-fn count_line(count: i64, is_show: bool) -> String {
+fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
-        format!("{count} {}", if is_show { "shows" } else { "films" })
+        format!("{count} {}", kind.noun())
     } else {
-        (if is_show { "TV shows" } else { "Films" }).to_string()
+        kind.plural().to_string()
     }
 }
 
@@ -1288,7 +1370,7 @@ fn maybe_spawn() {
     if st.unwatched {
         // shows advertise unwatchedLeaves (any unwatched episode); plain unwatched=1 has odd
         // semantics on type=2 (verified live 2026-07-19)
-        let k = if sec.is_show { "unwatchedLeaves" } else { "unwatched" };
+        let k = if sec.kind == SecKind::Show { "unwatchedLeaves" } else { "unwatched" };
         filters.push((k.to_string(), "1".to_string()));
     }
     if let Some(g) = &st.genre {
@@ -1351,6 +1433,27 @@ fn maybe_spawn() {
 }
 
 // ---------------------------------------------------------------------------------------
+    /// A two-source table for tests OUTSIDE this module (`ui::home`'s focus walk): your Movies and
+    /// TV Shows, a friend's films and shows that fold onto them, and a friend's music that does not
+    /// — five libraries projecting to three pills. Writes crate globals, so the caller holds
+    /// [`crate::testlock::serial`] and `reset()`s afterwards.
+    #[cfg(test)]
+    pub(crate) fn seed_two_source_table_for_test() {
+        tests::seed_sources(vec![
+            tests::a_source("mac-mini", "", true),
+            tests::a_source("nas-home", "friend", true),
+        ]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(
+            1,
+            vec![
+                (1, "Film Club".into(), SecKind::Movie),
+                (2, "Film Club".into(), SecKind::Show),
+                (3, "Film Club".into(), SecKind::Music),
+            ],
+        );
+    }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1480,7 +1583,7 @@ mod tests {
     // no worker is spawned — the same discipline as the fetch-machine tests above, one layer up.
     // Their `sid` is `UNSET`, which resolves to no client, so even a spawn could reach no socket.
 
-    fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSource {
+    pub(super) fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSource {
         BrowseSource {
             sid: ServerId::UNSET,
             name: name.into(),
@@ -1491,7 +1594,7 @@ mod tests {
             retry_cd: 0,
         }
     }
-    fn seed_sources(srcs: Vec<BrowseSource>) {
+    pub(super) fn seed_sources(srcs: Vec<BrowseSource>) {
         reset();
         unsafe { *addr_of_mut!(SOURCES) = srcs };
     }
@@ -1502,18 +1605,18 @@ mod tests {
     #[test]
     fn two_servers_both_have_a_section_one_and_the_table_tells_them_apart() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("<peer-name-2>", "<peer-owner-1>", true)]);
-        append_sections(0, vec![(1, "Movies".into(), false), (2, "TV Shows".into(), true)]);
-        append_sections(1, vec![(1, "LDN Films".into(), false)]);
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
 
         assert_eq!(section_count(), 3);
         let ours = &sections()[0];
         let theirs = &sections()[2];
         assert_eq!((ours.key, ours.src), (1, 0), "our section 1, on source 0");
         assert_eq!((theirs.key, theirs.src), (1, 1), "THEIR section 1 — same key, different source");
-        assert_eq!((section_title(0), section_title(2)), ("Movies", "LDN Films"));
+        assert_eq!((section_title(0), section_title(2)), ("Movies", "Film Club"));
         // and the chip's annotation follows the section being browsed, not the account
-        assert_eq!(handle_of(2), "<peer-owner-1>");
+        assert_eq!(handle_of(2), "friend");
         assert_eq!(handle_of(0), "", "your own libraries carry no owner at all");
         reset();
     }
@@ -1525,12 +1628,12 @@ mod tests {
     #[test]
     fn a_source_arriving_late_appends_and_moves_no_existing_index() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("<peer-name-2>", "<peer-owner-1>", true)]);
-        append_sections(0, vec![(1, "Movies".into(), false), (2, "TV Shows".into(), true)]);
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
         set_cur(1);
         let before = (cur(), section_title(1).to_string(), states().len());
 
-        append_sections(1, vec![(1, "LDN Films".into(), false)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert_eq!(cur(), before.0, "the library being browsed is still the one at that index");
         assert_eq!(section_title(1), before.1);
         assert_eq!(states().len(), section_count(), "states stay in lockstep with the table");
@@ -1538,12 +1641,12 @@ mod tests {
 
         // A RE-discovery ("Check for new shares", or a server that came back) re-offers the same
         // list: every row is already there, so nothing is duplicated and nothing moves…
-        append_sections(1, vec![(1, "LDN Films".into(), false)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert_eq!(section_count(), 3);
         assert_eq!(cur(), before.0);
         // …while a library the owner has CREATED since is appended, at the end, where it cannot
         // disturb an index anything is already holding.
-        append_sections(1, vec![(1, "LDN Films".into(), false), (4, "LDN Shows".into(), true)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (4, "LDN Shows".into(), SecKind::Show)]);
         assert_eq!(section_count(), 4);
         assert_eq!(section_title(3), "LDN Shows");
         assert_eq!(section_title(1), before.1, "and the row we were browsing is untouched");
@@ -1556,9 +1659,9 @@ mod tests {
     #[test]
     fn a_friends_libraries_start_unpinned_and_the_last_pin_cannot_be_turned_off() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("<peer-name-2>", "<peer-owner-1>", true)]);
-        append_sections(0, vec![(1, "Movies".into(), false), (2, "TV Shows".into(), true)]);
-        append_sections(1, vec![(1, "LDN Films".into(), false)]);
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, false));
         assert_eq!(pinned_count(), 2);
 
@@ -1581,15 +1684,110 @@ mod tests {
     #[test]
     fn the_tab_strip_grows_by_types_and_never_by_people() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("<peer-name-2>", "<peer-owner-1>", true)]);
-        append_sections(0, vec![(1, "Movies".into(), false)]);
-        append_sections(1, vec![(1, "LDN Films".into(), false), (2, "Their Shows".into(), true)]);
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (2, "Their Shows".into(), SecKind::Show)]);
 
         assert_eq!(tab_count(), 2, "your Movies, plus the shows nobody of yours provides");
         assert_eq!((tab_title(0), tab_title(1)), ("Movies", "Their Shows"));
         assert_eq!(tab_section(1), 2);
         assert_eq!(tab_of_section(1), 0, "their films ride YOUR Movies pill — same type, one level");
         assert_eq!(tab_of_section(2), 1, "their shows have a pill of their own");
+        reset();
+    }
+
+    /// The case a BOOLEAN type could not express, and the reason [`SecKind`] exists. `is_show` has
+    /// two values, so "does an owned library have this kind" answered YES for a friend's MUSIC
+    /// library on the strength of your films: it got no pill, and nothing in it was reachable from
+    /// the strip at all. With a real type it gets exactly one, like any other missing type — and
+    /// `artist`/`photo` reaching the table at all is the other half of the same fix, since a type
+    /// dropped at discovery can never be missing from the projection either.
+    #[test]
+    fn a_friends_music_library_is_a_missing_type_and_not_a_second_films_pill() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (3, "Their Music".into(), SecKind::Music)]);
+
+        assert_eq!(tab_count(), 3, "your two, plus the music nobody of yours provides");
+        assert_eq!(tab_title(2), "Their Music");
+        assert_eq!(tab_of_section(3), 2, "their music is its own pill, NOT your Movies one");
+        assert_eq!(tab_of_section(2), 0, "…while their films still ride yours");
+        // and the wire types this product has a level for, including the two that used to be
+        // dropped before they could ever reach the projection
+        assert_eq!(SecKind::from_wire("artist"), Some(SecKind::Music));
+        assert_eq!(SecKind::from_wire("photo"), Some(SecKind::Photo));
+        assert_eq!(SecKind::from_wire("mixed"), None, "a type with no level is still refused");
+        reset();
+    }
+
+    /// **The deliverable, as an assertion**: the strip is a constant row however many friends
+    /// arrive. Its pill list — and therefore its width, which is a pure function of the labels —
+    /// does not move as the roster grows from one server to three, because every borrowed library
+    /// folds onto the pill of a type you already have. Only a MISSING type may widen it.
+    ///
+    /// The shape the design rejected is the control: a pill per section reaches eleven pills here,
+    /// which is what measured 2133px against a 1540px track at three friends.
+    #[test]
+    fn the_strip_is_the_same_row_at_one_friend_and_at_three() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+            a_source("nas-home", "friend", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        // OWNED, deliberately: `tab_title` hands back a `&'static str` borrowed out of the section
+        // table's own `String`s, and `append_sections` can reallocate that Vec — so a row captured
+        // as borrows and compared after the next source lands is reading freed memory. Every
+        // caller in the app consumes these inside one frame with no append in between, which is
+        // what makes the signature sound in the product and unsound in a test that spans landings.
+        let row = || (0..tab_count()).map(|t| tab_title(t).to_string()).collect::<Vec<_>>();
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        let alone = row();
+        assert_eq!(alone, vec!["Movies", "TV Shows"], "your own libraries, and nothing else");
+
+        for src in 1..=3 {
+            append_sections(
+                src,
+                vec![
+                    (1, "Film Club".into(), SecKind::Movie),
+                    (2, "Film Club".into(), SecKind::Show),
+                    (3, "Film Club".into(), SecKind::Movie),
+                ],
+            );
+            assert_eq!(row(), alone, "source {src} added a pill — the strip must not grow by people");
+        }
+        assert_eq!(section_count(), 11, "eleven libraries…");
+        assert_eq!(tab_count(), 2, "…and the two pills it started with");
+        reset();
+    }
+
+    /// The strip's own generation moves when the ROW changes and not when the TABLE does — which,
+    /// once a table is appended to one source at a time, are different questions. Every borrowed
+    /// library that folds onto a pill you already have bumps the table's generation and changes
+    /// nothing in the row, so keying the label + width cache on the table re-measured every pill in
+    /// the strip once per source, on Home's hot path, for a strip that had not moved.
+    #[test]
+    fn only_a_changed_row_costs_the_tab_cache_a_re_measure() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        let (g0, table0) = (tabs_gen(), sections_gen());
+
+        // two friends' film libraries land: both fold onto your Movies pill
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        append_sections(2, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        assert_ne!(sections_gen(), table0, "the TABLE's generation moved, twice");
+        assert_eq!(tabs_gen(), g0, "…and the row did not, so it must not re-measure");
+
+        // …while a MISSING type is exactly what must invalidate it
+        append_sections(2, vec![(9, "Their Music".into(), SecKind::Music)]);
+        assert_ne!(tabs_gen(), g0, "a gained pill MUST re-measure the row");
         reset();
     }
 
@@ -1601,9 +1799,9 @@ mod tests {
     #[test]
     fn a_page_fetch_is_what_keeps_reachability_honest_after_discovery() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("<peer-name-2>", "<peer-owner-1>", true)]);
-        append_sections(0, vec![(1, "Movies".into(), false)]);
-        append_sections(1, vec![(1, "LDN Films".into(), false)]);
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert!(sources()[1].sections_done, "discovery is done — it will never re-ask by itself");
 
         mark_source_reachable(1, false); // a page for THEIR library did not come back
@@ -1625,7 +1823,7 @@ mod tests {
     fn an_empty_count_landing_does_not_latch_the_probe_off() {
         let _g = crate::testlock::serial();
         seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(0, vec![(1, "Movies".into(), false)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
         if let Some(s) = source_mut(0) {
             s.counts_done = false;
         }
@@ -1653,7 +1851,7 @@ mod tests {
     fn one_source_leaves_the_strip_exactly_as_it_was() {
         let _g = crate::testlock::serial();
         seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(0, vec![(1, "Movies".into(), false), (2, "TV Shows".into(), true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
         assert_eq!(tab_count(), section_count());
         for i in 0..section_count() {
             assert_eq!(tab_section(i), i);

@@ -59,6 +59,11 @@ static mut CONTINUOUS: bool = false;
 /// The tab pill the destination SELECTS, or -1 for "no pending selection" (nothing in flight, or a
 /// destination with no tab bar). -1 rather than `Option<usize>` so it drops straight into the
 /// `c_int` the strip is placed from.
+///
+/// A PILL, and since the strip became a projection of the section table (`browse::tabs`) that is
+/// not the destination's section index plus one: several libraries can share one pill, so
+/// `app.rs`'s `Nav::Library` carries the TAB the press named and the `+1` here is only the Home
+/// pill leading the row.
 static mut TAB: c_int = -1;
 /// The OUTGOING page's teardown, waiting for the floor — see the module doc. `None` for a FORWARD
 /// navigation, which leaves the page it came from standing behind the destination (that is what the
