@@ -1739,7 +1739,8 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
 fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     let tx = MARGIN_X;
     let d_a = theme::TEXT_SECONDARY;
-    let dim = theme::TEXT_TERTIARY;
+    // (the facts row's own fine-print ink lives in `facts_flow`, which resolves it from the token
+    // itself — that is what makes the rung and the ink of every run on that line host-gradeable)
     let d = metadata::current();
 
     // ---- title: clearLogo (transparent PNG) if loaded, else bold text — one shared band, sized by
@@ -1819,33 +1820,49 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         hero_synopsis(&body, &lead).draw(p, Rect::new(tx, ch.syn_y, HERO_TEXT_W, 0.0));
     }
 
-    // ---- air date · season/episode counts (a show) or runtime (a movie) · how it plays ----
-    // Three facts of ONE kind: what you get if you press Play. The media chips moved up to the
-    // identity line and the credit moved to the people column, which is what leaves this row a
-    // sentence rather than a pile.
+    // ---- air date · season/episode counts (a show) or runtime (a movie) · how it plays · whose
+    // copy this is ----
+    // Facts of ONE kind: what you get if you press Play, and — for a borrowed item — where the copy
+    // came from. The media chips moved up to the identity line and the crew credit moved to the
+    // people column, which is what leaves this row a sentence rather than a pile.
     if let Some(d) = d {
         let (date, extent) = hero_facts(d);
-        // The fragment on the right is measured FIRST and the clause on the left yields to it —
-        // see [`FACTS_R`] for why the row needs a bound at all, and `hero_facts`' own doc for why
-        // the extent is what gives way (it is series information the season tabs directly below
-        // already carry). The credit tail this replaced had the same ladder and the same reason:
-        // a member of this row goes entirely before it goes garbled.
         let ext = extent.as_deref().unwrap_or("");
-        let mode_w = play_mode_w(d, !(date.is_empty() && ext.is_empty()));
-        let budget = FACTS_R - tx - mode_w;
-        // The yield ladder, unchanged: the whole clause, then the extent goes entirely (it is
-        // series information the season tabs directly below already carry), then — and only then —
-        // a date that cannot fit alone is elided.
-        let mut parts: Vec<String> = vec![date.clone(), ext.to_string()];
-        if dotted_run_w(&[&parts[0], &parts[1]], theme::size::CAPTION, FACTS_SEP_PAD) > budget {
-            parts = vec![date.clone()];
-        }
-        if dotted_run_w(&[&parts[0]], theme::size::CAPTION, FACTS_SEP_PAD) > budget {
-            parts = vec![crate::text::elide(&date, budget.max(0.0), theme::size::CAPTION, 0, false)];
-        }
-        let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-        let bx = tx + dotted_run(p, &refs, tx, ch.facts_y, theme::size::CAPTION, dim, FACTS_SEP_PAD);
-        draw_play_mode(p, d, bx, ch.facts_y, bx > tx);
+        // The item's SOURCE, last on the line — empty (and so absent entirely) on our own server.
+        let credit = shared_by(&d.source);
+        // Every candidate is measured through the VERY flow that draws it, so a reserved width and
+        // a painted one cannot come to differ. (The `dotted_run_w` this replaced was a second width
+        // expression that had to be kept agreeing with the first — `home::heading_flow`'s doc names
+        // that pair as the pattern to stop repeating.)
+        let width = |f: FactsFit| {
+            facts_flow(
+                &facts_parts(&date, ext, f),
+                fit_credit(&credit, f),
+                |s, _, sz, _| run_w(s, sz),
+                |_, after| play_mode_w(d, after),
+            )
+        };
+        let fit = facts_fit(!credit.is_empty(), FACTS_R - tx, width);
+        // The ladder's last rung: a date that does not fit even alone is ellipsised into whatever
+        // the fragment leaves it. Nothing else is on the row by then — `facts_fit` gave both the
+        // credit and the extent up before reaching here.
+        let elided: String;
+        let date_run: &str = if fit.elide {
+            let budget = (FACTS_R - tx - play_mode_w(d, true)).max(0.0);
+            elided = crate::text::elide(&date, budget, theme::size::CAPTION, 0, false);
+            &elided
+        } else {
+            &date
+        };
+        facts_flow(
+            &facts_parts(date_run, ext, fit),
+            fit_credit(&credit, fit),
+            |s, dx, sz, ink| match CString::new(s) {
+                Ok(c) => p.text(c.as_ptr(), tx + dx, ch.facts_y, sz, ink, 0, 0),
+                Err(_) => 0.0,
+            },
+            |dx, after| draw_play_mode(p, d, tx + dx, ch.facts_y, after),
+        );
     }
 
     // ---- buttons (btn_y from hero_layout) ----
@@ -1880,17 +1897,149 @@ fn dotted_run(p: Painter, parts: &[&str], x: f32, y: f32, sz: c_int, col: [f32; 
     bx - x
 }
 
-/// [`dotted_run`]'s width, without drawing — the facts row measures before it commits to a clause.
-fn dotted_run_w(parts: &[&str], sz: c_int, pad: f32) -> f32 {
-    let n = parts.iter().filter(|s| !s.is_empty()).count();
-    let dots = n.saturating_sub(1) as f32
-        * (2.0 * pad + CString::new("\u{b7}").map(|c| crate::text::text_width(c.as_ptr(), sz, 0)).unwrap_or(0.0));
-    parts
-        .iter()
-        .filter(|s| !s.is_empty())
-        .map(|t| CString::new(*t).map(|c| crate::text::text_width(c.as_ptr(), sz, 0)).unwrap_or(0.0))
-        .sum::<f32>()
-        + dots
+/// The trailing SOURCE credit's words — `Shared by bamx23`, or **empty** for an item that lives on
+/// the signed-in user's own server.
+///
+/// **The person, never the machine.** `bamx23` is the same handle the shelf headings and the
+/// Sources list say; the server's own name (`bx23-ldn`) appears nowhere outside that list and the
+/// failure read-out, because "whose copy is this" is answered by a person and "what could not be
+/// reached" by a machine.
+///
+/// An empty handle produces an empty string, and [`facts_flow`] draws nothing at all for one — no
+/// separator, no run, no draw call. That is the design's *"on your own server there is no run,
+/// not an empty one"* implemented as ABSENCE rather than as a branch that paints nothing visible,
+/// which is what makes the attribution free for the single-server install.
+fn shared_by(source: &str) -> String {
+    if source.is_empty() {
+        String::new()
+    } else {
+        format!("Shared by {source}")
+    }
+}
+
+/// Which members of the facts row survive its width bound — [`facts_fit`]'s answer, and the input
+/// that both the measure and the paint flow from, so the row that was graded is the row that is
+/// drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FactsFit {
+    /// draw the middle clause: a movie's runtime, or a show's `2 seasons, 20 episodes`
+    extent: bool,
+    /// draw the trailing `\u{b7} Shared by <handle>`
+    credit: bool,
+    /// the date does not fit even alone, and is ellipsised into what the fragment leaves it
+    elide: bool,
+}
+
+/// The facts row's YIELD LADDER, pure: what the row gives up when it would cross [`FACTS_R`].
+///
+/// `w(fit)` measures one candidate through the same [`facts_flow`] that draws it, which is what
+/// lets this decide in the row's real geometry while staying a pure function of widths — and what
+/// lets the host suite drive it, since no font is open there and every real measurement is 0.
+///
+/// The rule is this row's own, from the credit tail the fragment replaced: **a member goes entirely
+/// before it goes garbled.** The order is
+///
+/// 1. the TRAILING CREDIT first — it is the one run on the line that is not a fact about the item,
+///    so it yields ahead of the facts it follows;
+/// 2. then the EXTENT, entirely — series information the season tabs directly below already carry;
+/// 3. and only then is a date that cannot fit alone ellipsised.
+///
+/// The "how this plays" fragment never yields — it is measured first and the clause bends around it
+/// (see [`FACTS_R`]). The ladder is MONOTONE: a member given up is never reconsidered, so the row
+/// cannot win the credit back by dropping the extent. That is deliberate — the item's own facts
+/// outrank the attribution at every rung, not only at the first.
+fn facts_fit(has_credit: bool, budget: f32, mut w: impl FnMut(FactsFit) -> f32) -> FactsFit {
+    let mut fit = FactsFit { extent: true, credit: has_credit, elide: false };
+    if w(fit) <= budget {
+        return fit;
+    }
+    if fit.credit {
+        fit.credit = false;
+        if w(fit) <= budget {
+            return fit;
+        }
+    }
+    fit.extent = false;
+    fit.elide = w(fit) > budget;
+    fit
+}
+
+/// The row's text members for one fit — the date, and the middle clause while it survives.
+/// [`facts_flow`] skips an empty member, so a dropped extent takes its separator with it.
+fn facts_parts<'a>(date: &'a str, ext: &'a str, fit: FactsFit) -> [&'a str; 2] {
+    [date, if fit.extent { ext } else { "" }]
+}
+
+/// The credit for one fit, under the same absence rule: given up means empty, and empty means no
+/// run rather than an empty one.
+fn fit_credit<'a>(credit: &'a str, fit: FactsFit) -> &'a str {
+    if fit.credit {
+        credit
+    } else {
+        ""
+    }
+}
+
+/// The hero's FACTS row, flowed left→right from the text margin: the date/extent clause joined by
+/// the row's dimmed `\u{b7}`, then the "how this plays" fragment, then — only for a BORROWED item —
+/// the trailing `\u{b7} Shared by bamx23`.
+///
+/// **The credit is LAST, after the facts about the item**, because it is a fact about where the
+/// item came from; and it is on this line at all, rather than in the badges row (those state what
+/// the item IS — its resolution and accessibility class) or on a line of its own (a fifth line in
+/// the one column already fighting for height), because it is read once.
+///
+/// It joins at the line's own rung and the line's own ink — `CAPTION`/[`theme::TEXT_TERTIARY`],
+/// regular, like every other word here. It is dim because the LINE is dim, which is the lowest rung
+/// in the ladder; taking it lower would put it under the couch legibility floor.
+///
+/// `run(text, dx, sz, ink) -> advance` is the seam ([`crate::ui::home`]'s `heading_flow` pattern):
+/// the draw passes a closure that paints and returns `Painter::text`'s advance, the host tests one
+/// that measures, and `mode(dx, after) -> advance` is the same seam for the fragment, which is not
+/// text. The drawn row and the graded one are therefore ONE expression — and so is the row the
+/// ladder measures, which is the whole reason [`facts_fit`] takes a measure rather than owning one.
+///
+/// `after` reaches the fragment as "something has actually been emitted", not as "the item has an
+/// air date": an item PMS sent neither a date nor an extent for would otherwise open the line with
+/// an orphan dot, and so would a credit standing alone on it.
+fn facts_flow(
+    parts: &[&str],
+    credit: &str,
+    mut run: impl FnMut(&str, f32, c_int, [f32; 4]) -> f32,
+    mode: impl FnOnce(f32, bool) -> f32,
+) -> f32 {
+    /// The row's separator, drawn as its OWN run at [`theme::TEXT_SEPARATOR`] — a dot sharing the
+    /// ink of the words either side JOINS them instead of punctuating them (see [`dotted_run`],
+    /// whose join this tail-and-fragment flow cannot be expressed as).
+    fn sep(run: &mut impl FnMut(&str, f32, c_int, [f32; 4]) -> f32, dx: f32) -> f32 {
+        let sz = theme::size::CAPTION;
+        2.0 * FACTS_SEP_PAD + run("\u{b7}", dx + FACTS_SEP_PAD, sz, theme::TEXT_SEPARATOR)
+    }
+    let sz = theme::size::CAPTION;
+    let ink = theme::TEXT_TERTIARY;
+    let mut dx = 0.0;
+    let mut any = false;
+    for part in parts.iter().filter(|s| !s.is_empty()) {
+        if any {
+            dx += sep(&mut run, dx);
+        }
+        dx += run(part, dx, sz, ink);
+        any = true;
+    }
+    // The fragment reports what it consumed, and a non-zero advance is what "it drew" means here —
+    // the same test `draw_play_mode`'s caller used to make one level up. It matters for the credit
+    // behind it: an item with neither a date nor an extent still gets `Direct Play · Shared by …`
+    // rather than the two running together.
+    let mode_w = mode(dx, any);
+    dx += mode_w;
+    any |= mode_w > 0.0;
+    if !credit.is_empty() {
+        if any {
+            dx += sep(&mut run, dx);
+        }
+        dx += run(credit, dx, sz, ink);
+    }
+    dx
 }
 
 /// The hero's **people column** — the crew credit over the cast, right-aligned in its own column
@@ -2184,10 +2333,11 @@ fn play_mode_bits(d: &metadata::Detail, after: bool) -> ([Bit; FACTS_BITS], usiz
     (bits, n)
 }
 
-/// Drawn width of one CAPTION fine-print run — the facts clause's own measure (0 for a run the
-/// text layer cannot measure, which is the same "unmeasurable → 0" contract `text_width` keeps).
-fn run_w(s: &str) -> f32 {
-    CString::new(s).ok().map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 0)).unwrap_or(0.0)
+/// Drawn width of one fine-print run — the facts row's own measure, taking the `sz` [`facts_flow`]
+/// hands out rather than assuming one, so the measured row is the flowed row (0 for a run the text
+/// layer cannot measure, which is the same "unmeasurable → 0" contract `text_width` keeps).
+fn run_w(s: &str, sz: c_int) -> f32 {
+    CString::new(s).ok().map(|c| crate::text::text_width(c.as_ptr(), sz, 0)).unwrap_or(0.0)
 }
 
 fn bit_w(b: Bit) -> f32 {
@@ -3618,6 +3768,185 @@ mod tests {
             (Pv::DirectPlay, false, Sub::Unknown, Quiet),
         ] {
             assert_eq!(super::play_note(pv, hdr, sub), want, "{pv:?} hdr={hdr} {sub:?}");
+        }
+    }
+
+    // ---- the facts row's source credit (Shared Sources, deliverable E) ------------------------
+    //
+    // The whole unit is width arithmetic over a row of text, which is exactly the shape the host
+    // suite can grade: `facts_flow` hands its runs to a closure (the draw paints them, these
+    // measure them), so the tokens, the order and the yield ladder are all readable here. No font
+    // is open on the dev Mac — `text_width` answers 0 — which is why every width below is the
+    // test's own and why the flow takes a measure rather than calling one.
+
+    /// One thing the row emitted, in order — a text run with the tokens it was handed, or the
+    /// "how this plays" fragment, which is not text and so gets its own event.
+    #[derive(Clone, PartialEq, Debug)]
+    enum Ev {
+        Run(String, f32, c_int, [f32; 4]),
+        Mode(f32, bool),
+    }
+
+    /// Per-character width of the synthetic font these tests flow through.
+    const CW: f32 = 10.0;
+
+    /// Flow the facts row with synthetic widths, recording what it emitted. Returns the total
+    /// advance and the event list.
+    fn flow(parts: &[&str], credit: &str, mode_w: f32) -> (f32, Vec<Ev>) {
+        // one RefCell because both seams record into the same list, and two closures cannot hold
+        // one `&mut` between them
+        let evs = std::cell::RefCell::new(Vec::new());
+        let w = super::facts_flow(
+            parts,
+            credit,
+            |s, dx, sz, ink| {
+                evs.borrow_mut().push(Ev::Run(s.to_string(), dx, sz, ink));
+                CW * s.chars().count() as f32
+            },
+            |dx, after| {
+                evs.borrow_mut().push(Ev::Mode(dx, after));
+                mode_w
+            },
+        );
+        (w, evs.into_inner())
+    }
+
+    const DATE: &str = "13 Jun 2024";
+    const EXT: &str = "1 hr 57 min";
+    const HANDLE: &str = "bamx23";
+
+    /// **The acceptance criterion for this unit.** On your own server the line is exactly what it
+    /// is today — not an empty run, not a dangling separator, not a draw call that paints nothing.
+    /// The borrowed row is the same row with the credit ADDED to the end of it, which is what the
+    /// event lists being prefix-equal says.
+    #[test]
+    fn an_item_on_your_own_server_gets_no_source_run_at_all() {
+        assert_eq!(super::shared_by(""), "", "no owner to credit → no words, so no run");
+
+        let (own_w, own) = flow(&[DATE, EXT], "", 90.0);
+        assert_eq!(own.len(), 4, "date, separator, extent, fragment — and nothing else");
+        assert!(
+            !own.iter().any(|e| matches!(e, Ev::Run(s, ..) if s.is_empty())),
+            "absence is no run, never an empty one"
+        );
+
+        let credit = super::shared_by(HANDLE);
+        let (shared_w, shared) = flow(&[DATE, EXT], &credit, 90.0);
+        assert_eq!(&shared[..4], &own[..], "the credit may only ADD — every run before it is untouched");
+        assert_eq!(
+            shared_w - own_w,
+            2.0 * super::FACTS_SEP_PAD + CW + CW * credit.chars().count() as f32,
+            "the growth is exactly the dot, the handle's words, and one pad either side of the dot"
+        );
+    }
+
+    /// Where the credit goes and what it is drawn as: LAST on the line — after the facts about the
+    /// item and after the "how this plays" fragment — introduced by the row's own `·`, and on the
+    /// line's own rung and ink, because it is dim for the reason the line is dim.
+    #[test]
+    fn the_source_credit_is_the_last_run_on_the_line_after_the_play_mode_fragment() {
+        let credit = super::shared_by(HANDLE);
+        assert_eq!(credit, "Shared by bamx23", "the person, never the machine");
+
+        let (_, evs) = flow(&[DATE, EXT], &credit, 90.0);
+        let Some(Ev::Mode(mode_dx, after)) = evs.iter().find(|e| matches!(e, Ev::Mode(..))).cloned() else {
+            panic!("the fragment must be flowed");
+        };
+        assert!(after, "the fragment is introduced by a separator when facts precede it");
+        assert_eq!(evs.len(), 6, "date, ·, extent, fragment, ·, credit");
+
+        // the separator that introduces the credit, and then the credit itself
+        let (Ev::Run(dot, dot_dx, dot_sz, dot_ink), Ev::Run(words, words_dx, words_sz, words_ink)) =
+            (evs[4].clone(), evs[5].clone())
+        else {
+            panic!("the credit is a separator and a run, in that order");
+        };
+        assert_eq!(dot, "\u{b7}");
+        assert_eq!(dot_ink, theme::TEXT_SEPARATOR, "a dot in the words' own ink joins them instead of punctuating");
+        assert_eq!(dot_dx, mode_dx + 90.0 + super::FACTS_SEP_PAD, "one pad past the fragment");
+        assert_eq!(words, credit);
+        assert_eq!(words_dx, dot_dx + CW + super::FACTS_SEP_PAD, "one pad past the dot");
+
+        // …and it joins the line rather than sitting on a rung of its own
+        let Ev::Run(_, _, date_sz, date_ink) = evs[0].clone() else { panic!("the date leads the row") };
+        assert_eq!((words_sz, words_ink), (date_sz, date_ink), "same rung, same ink as the facts it follows");
+        assert_eq!((dot_sz, words_sz), (theme::size::CAPTION, theme::size::CAPTION), "the line's own rung");
+        assert_eq!(words_ink, theme::TEXT_TERTIARY, "the lowest rung of ink — the line is dim, so the run is");
+    }
+
+    /// A separator introduces the credit only when something is actually in front of it. An item
+    /// PMS sent no air date and no runtime for would otherwise open its facts line with an orphan
+    /// dot — and the fragment counts as "in front of it" even though it is not text.
+    #[test]
+    fn a_credit_with_nothing_in_front_of_it_opens_the_line_bare() {
+        let credit = super::shared_by(HANDLE);
+
+        let (_, alone) = flow(&["", ""], &credit, 0.0);
+        assert_eq!(alone.len(), 2, "the fragment reported nothing, so the credit is the only text");
+        assert!(matches!(&alone[1], Ev::Run(s, dx, ..) if s == &credit && *dx == 0.0), "no dot, and flush left");
+        assert!(matches!(alone[0], Ev::Mode(0.0, false)), "nothing precedes the fragment either");
+
+        let (_, after_mode) = flow(&["", ""], &credit, 90.0);
+        assert_eq!(after_mode.len(), 3, "fragment, ·, credit");
+        assert!(matches!(&after_mode[1], Ev::Run(s, ..) if s == "\u{b7}"), "a fragment that drew IS something in front");
+    }
+
+    /// The yield ladder, in the order the row gives things up: **the trailing credit first** (it is
+    /// the one run on the line that is not a fact about the item), then the extent entirely, and
+    /// only then a date elided into what is left. Monotone, so a row that had to drop its extent
+    /// can never win the credit back.
+    #[test]
+    fn the_trailing_credit_is_the_first_member_the_row_gives_up() {
+        use super::FactsFit;
+        const DATE_W: f32 = 110.0;
+        const EXT_W: f32 = 110.0;
+        const CREDIT_W: f32 = 160.0;
+        const MODE_W: f32 = 90.0;
+        const SEP: f32 = 2.0 * super::FACTS_SEP_PAD + CW;
+        // the same shape `facts_flow` measures: members joined by the row's separator, the
+        // fragment always present between the clause and the credit
+        let w = |f: FactsFit| {
+            DATE_W + if f.extent { SEP + EXT_W } else { 0.0 } + MODE_W + if f.credit { SEP + CREDIT_W } else { 0.0 }
+        };
+        let full = w(FactsFit { extent: true, credit: true, elide: false });
+        let no_credit = w(FactsFit { extent: true, credit: false, elide: false });
+        let bare = w(FactsFit { extent: false, credit: false, elide: false });
+
+        assert_eq!(
+            super::facts_fit(true, full, w),
+            FactsFit { extent: true, credit: true, elide: false },
+            "a row that fits keeps everything"
+        );
+        assert_eq!(
+            super::facts_fit(true, full - 1.0, w),
+            FactsFit { extent: true, credit: false, elide: false },
+            "one pixel short: the credit goes, and the item's own facts stay whole"
+        );
+        assert_eq!(
+            super::facts_fit(true, no_credit - 1.0, w),
+            FactsFit { extent: false, credit: false, elide: false },
+            "then the extent goes entirely — a member goes whole before it goes garbled"
+        );
+        assert_eq!(
+            super::facts_fit(true, bare - 1.0, w),
+            FactsFit { extent: false, credit: false, elide: true },
+            "and only a date that cannot fit alone is ellipsised"
+        );
+
+        // Two invariants across the whole budget range, not just at the four corners.
+        for i in 0..=((full as i32) + 40) {
+            let b = i as f32;
+            let fit = super::facts_fit(true, b, w);
+            assert!(!(fit.credit && !fit.extent), "the credit can never outlive the extent (budget {b})");
+            // …and an item on our OWN server decides exactly as it does today: the credit term is
+            // absent from the row entirely, so only the extent and the elide are ever in question.
+            let own = super::facts_fit(false, b, w);
+            let want_ext = no_credit <= b;
+            assert_eq!(
+                (own.extent, own.credit, own.elide),
+                (want_ext, false, !want_ext && bare > b),
+                "no source: the ladder is the two-rung one it has always been (budget {b})"
+            );
         }
     }
 
