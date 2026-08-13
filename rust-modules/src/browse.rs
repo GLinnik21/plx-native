@@ -639,6 +639,10 @@ fn maybe_spawn() {
     let gen = GEN.load(Ordering::SeqCst);
     let key = sec.key;
     let sec_idx = c; // captured on the main thread; the worker must not read the statics
+    // …and the SERVER this page will come from, for the same reason and stamped onto every row it
+    // parses: a section key is server-local (both servers here have a section `1`), so a row is
+    // only addressable as `(sid, rk)` — see `pms::PmsMovie::sid`.
+    let sid = crate::plex::current_server();
     FETCHING.store(true, Ordering::SeqCst);
     let spawned = crate::task::spawn_small("page", move || {
         let result = catch_unwind(|| {
@@ -650,11 +654,11 @@ fn maybe_spawn() {
                 size: PAGE as i64,
                 include_meta,
             };
-            let mc = crate::plex::client_opt().and_then(|cl| cl.section_items_query(&q));
+            let mc = crate::plex::client_for(sid).and_then(|cl| cl.section_items_query(&q));
             let Some(mc) = mc else {
                 return (Vec::new(), -1i64, None); // FAILURE sentinel — pump leaves the store alone
             };
-            let items: Vec<PmsMovie> = mc.metadata.iter().map(parse_item).collect();
+            let items: Vec<PmsMovie> = mc.metadata.iter().map(|m| parse_item(m, sid)).collect();
             // keep the item count authoritative even when PMS omits totalSize on an
             // unpaged-shaped response (paged queries carry it; belt and braces)
             let total = if mc.total_size > 0 { mc.total_size } else { start as i64 + items.len() as i64 };

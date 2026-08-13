@@ -59,7 +59,10 @@ pub use client::{Client, StreamUrl};
 // singleton accessors, so every call site outside `plex/` reads unchanged; `client_for`,
 // `register`, `set_current` and `ServerId` are the multi-server additions.
 #[allow(unused_imports)]
-pub use servers::{client, client_for, client_opt, count as server_count, current as current_server, install, register, set_current, ServerId};
+pub use servers::{
+    client, client_for, client_opt, count as server_count, current as current_server, install, register, same_item,
+    set_current, ServerId,
+};
 #[allow(unused_imports)]
 pub use models::*;
 #[allow(unused_imports)]
