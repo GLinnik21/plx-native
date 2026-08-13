@@ -2,7 +2,7 @@
 //!
 //! Layout (per the approved mock): the shared top bar (profile chip leading at the margin +
 //! CENTERED tab pills Home | \<sections\>, the tvOS tab-bar idiom — [`draw_tab_row`] is shared
-//! with Home), a toolbar of state-carrying chips (Sort · X / Filter · X / Unwatched + item
+//! with Home), a toolbar of two menu chips (Sort · X / Filter · X, the latter naming every active filter) + item
 //! count), and a 6-across vertical grid of [`card_row`] leaf tiles fed by the `browse` paged
 //! store. Menus are Popover + TableView (the track-menu components), their contents entirely
 //! server-driven (`browse::sorts()` from `includeMeta=1`; genres from the value list).
@@ -90,7 +90,7 @@ pub(crate) enum Action {
 
 static mut AREA: Area = Area::Grid;
 static mut TAB_F: usize = 1; // focused pill while AREA==Tabs (0 = Home)
-static mut TOOL_F: usize = 0; // focused toolbar chip (0 sort / 1 filter / 2 unwatched)
+static mut TOOL_F: usize = 0; // focused toolbar chip (0 sort / 1 filter — both open a menu)
 static mut GR: usize = 0; // grid focus row
 static mut GC: usize = 0; // grid focus col
 static mut SCROLL: Spring = Spring::at(0.0);
@@ -104,7 +104,7 @@ static mut TABLE: TableView = TableView::new();
 /// update() rebuilds the menu in place when the live server list outgrows this.
 static mut MENU_BUILT: usize = 0;
 static mut PHASE_MS: f32 = 0.0; // spinner phase accumulator
-static mut TOOL_RECTS: [Rect; 3] = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+static mut TOOL_RECTS: [Rect; 2] = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
 
 // ---- the grid's content cross-fade + its deferred reload -------------------------------------
 /// A grid reload the user has asked for but which has NOT been applied to the store yet: the
@@ -213,7 +213,7 @@ fn view_section() -> usize {
         _ => crate::browse::cur(),
     }
 }
-/// The unwatched-filter state the chip and the Filter menu's checkmark should show.
+/// The unwatched-filter state the Filter menu's checkmark and the Filter chip's value should show.
 fn view_unwatched() -> bool {
     match pending() {
         Pending::Unwatched(v) => v,
@@ -235,15 +235,32 @@ fn view_filter_label() -> &'static str {
         _ => crate::browse::filter_label(),
     }
 }
+
+/// What the **Filter chip** reads — every active filter, not just the genre: `All`, `Comedy`,
+/// `Unwatched`, or `Comedy · Unwatched`.
+///
+/// It folds both because the Filter MENU now owns both switches. The unwatched filter used to have
+/// its own capsule on this toolbar, so the chip beside it only ever had to name the genre; with that
+/// capsule gone the chip is the only thing on screen that can say the grid is filtered at all, and a
+/// filter with no visible sign of itself is a library that has silently lost half its titles.
+/// Middle dots separate the active ones, the same way every metadata run in the app does.
+fn view_filter_value() -> String {
+    let genre = view_filter_label();
+    match (genre, view_unwatched()) {
+        ("All", false) => "All".to_string(),
+        ("All", true) => "Unwatched".to_string(),
+        (g, false) => g.to_string(),
+        (g, true) => format!("{g} \u{b7} Unwatched"),
+    }
+}
 // ---- per-frame draw caches (rebuilt only when their source state changes; building CStrings
 // + re-measuring text every frame was a review-confirmed waste — same rationale as TAB_CACHE) --
 struct ChipStrs {
     name: CString,
     val: CString,
-    has_val: bool,
     w: f32,
 }
-static mut CHIP_CACHE: Option<(String, String, usize, [ChipStrs; 3])> = None;
+static mut CHIP_CACHE: Option<(String, String, usize, [ChipStrs; 2])> = None;
 static mut RAIL_LABELS: Option<(u32, usize, Vec<CString>)> = None; // (sections_gen, section, labels)
 static mut COUNT_C: Option<(i64, bool, CString)> = None;
 // letter rail: focused letter + the per-letter rects recorded at draw (pointer hit-testing)
@@ -394,7 +411,7 @@ fn restore_view() {
 }
 
 /// Reset the grid to the top — every re-query (sort/filter change) starts a fresh listing.
-/// Deliberately does NOT touch the focus band: toggling the Unwatched chip must leave focus
+/// Deliberately does NOT touch the focus band: toggling the unwatched filter must leave focus
 /// on that chip, not warp it into the grid.
 fn grid_reset() {
     unsafe {
@@ -579,7 +596,7 @@ pub(crate) fn move_focus(sym: c_uint) {
             Area::Toolbar => {
                 if sym == SDLK_LEFT && TOOL_F > 0 {
                     TOOL_F -= 1;
-                } else if sym == SDLK_RIGHT && TOOL_F < 2 {
+                } else if sym == SDLK_RIGHT && TOOL_F + 1 < TOOL_RECTS.len() {
                     TOOL_F += 1;
                 } else if sym == SDLK_UP {
                     AREA = Area::Tabs;
@@ -684,8 +701,8 @@ pub(crate) fn on_ok() -> Action {
         Area::Toolbar => {
             match unsafe { addr_of!(TOOL_F).read() } {
                 0 => open_sort_menu(),
-                1 => open_filter_menu(false),
-                _ => request(Pending::Unwatched(!view_unwatched())),
+                // both chips open a menu now — the unwatched switch lives inside this one
+                _ => open_filter_menu(false),
             }
             Action::None
         }
@@ -966,39 +983,39 @@ pub(crate) fn wheel(dy: c_int) {
 const CHIP_PAD: f32 = 24.0;
 const CHIP_ISZ: f32 = 22.0; // trailing-icon box
 
-/// The three toolbar chips' strings + measured widths, cached until the labels/section change.
-fn chip_strs() -> &'static [ChipStrs; 3] {
+/// The two toolbar chips' strings + measured widths, cached until the labels/section change.
+fn chip_strs() -> &'static [ChipStrs; 2] {
     // the VIEW labels, not the committed ones: a chip must relabel on the press frame, not 70 ms
     // later. The cache key is these same three values, so it invalidates on the QUEUE and then
     // again on the commit only if the resolved label actually differs (by construction it doesn't).
     let sort = view_sort_label();
-    let filt = view_filter_label();
+    let filt = view_filter_value();
     let sec = view_section();
     let cache = unsafe { &mut *addr_of_mut!(CHIP_CACHE) };
-    let stale = cache.as_ref().map(|(s, f, c, _)| s != sort || f != filt || *c != sec).unwrap_or(true);
+    let stale = cache.as_ref().map(|(s, f, c, _)| s != sort || *f != filt || *c != sec).unwrap_or(true);
     if stale {
         let build = |name: &str, value: &str| {
             let sz = theme::size::LABEL;
             let name_c = CString::new(name).unwrap_or_default();
-            let val_c = CString::new(if value.is_empty() { String::new() } else { format!(" \u{b7} {value}") })
-                .unwrap_or_default();
-            let name_bold = if value.is_empty() { 1 } else { 0 };
-            let nw = crate::text::text_width(name_c.as_ptr(), sz, name_bold);
-            let vw = if value.is_empty() { 0.0 } else { crate::text::text_width(val_c.as_ptr(), sz, 1) };
+            let val_c = CString::new(format!(" \u{b7} {value}")).unwrap_or_default();
+            let nw = crate::text::text_width(name_c.as_ptr(), sz, 0);
+            let vw = crate::text::text_width(val_c.as_ptr(), sz, 1);
             let w = CHIP_PAD + nw + vw + 10.0 + CHIP_ISZ + CHIP_PAD;
-            ChipStrs { name: name_c, val: val_c, has_val: !value.is_empty(), w }
+            ChipStrs { name: name_c, val: val_c, w }
         };
-        let chips = [build("Sort", sort), build("Filter", filt), build("Unwatched", "")];
-        *cache = Some((sort.to_string(), filt.to_string(), sec, chips));
+        let chips = [build("Sort", sort), build("Filter", &filt)];
+        *cache = Some((sort.to_string(), filt, sec, chips));
     }
     &cache.as_ref().unwrap().3
 }
 
 /// One toolbar chip from its cached strings. Hierarchy per the design review: the VALUE
 /// ("Title"/"All") is the information-bearing token — bright + bold; the static name prefix is
-/// dim + regular. A value-less chip IS the toggle (its label is the value), and `toggled`
-/// renders the unmistakable amber disc + ink check.
-fn toolbar_chip(p: Painter, x: f32, cs: &ChipStrs, icon: Icon, focused: bool, toggled: bool) -> Rect {
+/// dim + regular. Every chip on this toolbar OPENS A MENU, which is why the trailing glyph is
+/// always a chevron: the third chip — a value-less capsule that WAS its own toggle, wearing an
+/// amber disc when on — is gone (2026-08-13), because the Filter menu it sat beside already
+/// carries "Unwatched only" as a checkable row, and one state deserves one control.
+fn toolbar_chip(p: Painter, x: f32, cs: &ChipStrs, icon: Icon, focused: bool) -> Rect {
     let sz = theme::size::LABEL;
     let r = Rect::new(x, TOOL_Y, cs.w, TOOL_H);
     let (bg, bright_ink, dim_ink) = if focused {
@@ -1009,21 +1026,12 @@ fn toolbar_chip(p: Painter, x: f32, cs: &ChipStrs, icon: Icon, focused: bool, to
     p.rrect(r, TOOL_H * 0.5, TOOL_H * 0.5, bg);
     let ty = crate::text::text_vcenter_y(sz, 1, r.y + r.h * 0.5);
     let mut tx = r.x + CHIP_PAD;
-    let (name_ink, name_bold) = if cs.has_val { (dim_ink, 0) } else { (bright_ink, 1) };
-    tx += p.text(cs.name.as_ptr(), tx, ty, sz, name_ink, 0, name_bold);
-    if cs.has_val {
-        tx += p.text(cs.val.as_ptr(), tx, ty, sz, bright_ink, 0, 1);
-    }
+    tx += p.text(cs.name.as_ptr(), tx, ty, sz, dim_ink, 0, 0);
+    tx += p.text(cs.val.as_ptr(), tx, ty, sz, bright_ink, 0, 1);
     // trailing icon — an SVG asset, never a font glyph
     let ir = Rect::new(tx + 10.0, r.y + (r.h - CHIP_ISZ) * 0.5, CHIP_ISZ, CHIP_ISZ);
-    if toggled && !cs.has_val {
-        let dr = ir.inset(-4.0);
-        p.rect(dr, dr.w * 0.5, theme::RESUME_FILL, theme::RESUME_FILL, 0.0);
-        crate::ui::icons::draw(p, icon, ir, crate::ui::ACCENT_INK);
-    } else {
-        let tint = if focused { crate::ui::ACCENT_INK } else { theme::TEXT_SECONDARY };
-        crate::ui::icons::draw(p, icon, ir, tint);
-    }
+    let tint = if focused { crate::ui::ACCENT_INK } else { theme::TEXT_SECONDARY };
+    crate::ui::icons::draw(p, icon, ir, tint);
     r
 }
 
@@ -1100,7 +1108,7 @@ pub(crate) fn draw() {
 
     // ---- grid: pass 2 — the focused card + under-label, over its NEIGHBOURS but UNDER the top
     // chrome: the toolbar/pills win, so a focused card scrolling through the top band slides
-    // beneath Sort/Filter/Unwatched instead of popping over it (Home's convention; this used to
+    // beneath the Sort/Filter chips instead of popping over them (Home's convention; this used to
     // draw after the chrome and inverted it).
     if focused_pass && t > 0 {
         let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
@@ -1146,15 +1154,12 @@ pub(crate) fn draw() {
     crate::ui::widgets::draw_tab_row(pk);
 
     let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && unsafe { addr_of!(TOOL_F).read() } == i;
-    let unw = view_unwatched();
     let chips = chip_strs();
     let mut x = MARGIN_X;
-    let r0 = toolbar_chip(p, x, &chips[0], Icon::ChevronDown, tool_focus(0), false);
+    let r0 = toolbar_chip(p, x, &chips[0], Icon::ChevronDown, tool_focus(0));
     x = r0.x + r0.w + 20.0;
-    let r1 = toolbar_chip(p, x, &chips[1], Icon::ChevronDown, tool_focus(1), false);
-    x = r1.x + r1.w + 20.0;
-    let r2 = toolbar_chip(p, x, &chips[2], if unw { Icon::Check } else { Icon::Ring }, tool_focus(2), unw);
-    unsafe { *addr_of_mut!(TOOL_RECTS) = [r0, r1, r2] };
+    let r1 = toolbar_chip(p, x, &chips[1], Icon::ChevronDown, tool_focus(1));
+    unsafe { *addr_of_mut!(TOOL_RECTS) = [r0, r1] };
 
     // item count, right-aligned on the toolbar line (cached — changes only on re-query)
     let tot = crate::browse::total();
@@ -1256,6 +1261,9 @@ fn draw_rail(p: Painter) {
 /// open/move/close → unwatched on/off → filter open → drill into Genre (kicks the value-list
 /// fetch) → back out → letter-rail jump to the last letter and back. Drives the
 /// `library_switch` FPS scene.
+///
+/// The unwatched step drives the same `Pending::Unwatched` REQUEST the Filter menu's row does, so it
+/// still exercises the reload path now that the toolbar chip that used to own that switch is gone.
 pub(crate) fn switch_step(k: u32) {
     match k % 14 {
         0 => {
@@ -1334,14 +1342,14 @@ mod tests {
         clear();
         let committed = crate::browse::unwatched();
         request(Pending::Unwatched(!committed));
-        assert_eq!(view_unwatched(), !committed, "the chip flips on the press, not on the commit");
+        assert_eq!(view_unwatched(), !committed, "the chrome flips on the press, not on the commit");
         // a second press inside the same fade cancels the first: the chip must be able to say so
         request(Pending::Unwatched(committed));
         assert_eq!(view_unwatched(), committed);
 
         request(Pending::Section(2));
         assert_eq!(view_section(), 2, "the pill travels to the pressed tab immediately");
-        assert_eq!(view_unwatched(), crate::browse::unwatched(), "an unrelated chip falls back to the store");
+        assert_eq!(view_unwatched(), crate::browse::unwatched(), "an unrelated request falls back to the store");
         clear();
         assert_eq!(view_section(), crate::browse::cur(), "with nothing queued the chrome IS the store");
     }
