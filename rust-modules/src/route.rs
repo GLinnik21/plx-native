@@ -86,6 +86,16 @@ pub(crate) fn clear_url() {
 pub(crate) fn transcode_session() -> String {
     unsafe { (*addr_of!(TSESSION)).clone() }
 }
+/// Forget the cached `machineIdentifier` — the app is now pointed at a DIFFERENT server.
+///
+/// [`MACHINE_ID`] is fetched once and reused for every PlayQueue's `server://{id}/…` uri, which was
+/// sound while one process meant one server. It no longer is: `browse::set_cur` moves the current
+/// server when you pick a library on another one, and a queue built with the previous server's id
+/// names a machine that does not hold the item. Clearing it makes the next resolve re-fetch it from
+/// whichever server is current (`resolve_playqueue`'s `cached.is_empty()` branch).
+pub(crate) fn forget_server_identity() {
+    unsafe { (*addr_of_mut!(MACHINE_ID)).clear() }
+}
 /// true while this playback is a server transcode (a live transcode session exists). Cheap
 /// in-place check — the pump polls it every tick, so no String clone here.
 pub(crate) fn is_transcoding() -> bool {
