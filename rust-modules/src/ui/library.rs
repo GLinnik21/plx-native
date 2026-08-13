@@ -1130,12 +1130,35 @@ fn build_sort_menu(keep: bool) {
 }
 
 /// `keep` = re-entered from the Genre level via BACK (slide the pill, don't restart the fade).
+/// Does the section being browsed answer "unwatched"? Only movies and shows have that state, so on
+/// a music or photo library the switch is not offered rather than offered and inert — `browse`
+/// refuses to put the filter on such a query, and a control that visibly changes nothing is a worse
+/// answer than one that is not there. It also shifts the Genre row up, which is why every index in
+/// this menu is resolved through [`filter_rows`] rather than written as a literal.
+fn has_unwatched() -> bool {
+    matches!(
+        crate::browse::section_kind(crate::browse::cur()),
+        Some(crate::browse::SecKind::Movie) | Some(crate::browse::SecKind::Show)
+    )
+}
+
+/// The Filter menu's row map: which row index means what, for the section being browsed.
+fn filter_rows() -> (i32, i32) {
+    if has_unwatched() {
+        (0, 1) // unwatched, genre
+    } else {
+        (-1, 0) // no switch; genre leads
+    }
+}
+
 fn open_filter_menu(keep: bool) {
-    let sec = Section::new("Filter")
+    let mut sec = Section::new("Filter");
+    if has_unwatched() {
         // A SWITCH, not one option among several: it says what it is set to in words at the trailing
         // edge, and carries no mark at all in the leading column.
-        .row(Row::new("Unwatched only").toggle(view_unwatched()))
-        .row(
+        sec = sec.row(Row::new("Unwatched only").toggle(view_unwatched()));
+    }
+    let sec = sec.row(
             // "All" / "Comedy" is a READ-OUT — what this row is set to — so it belongs in the same
             // trailing slot as the switch above it, not on a sub-line. It was a sub-line until the
             // 2026-08-13 sync, which put the two rows of this one menu in the odd position of
@@ -1217,11 +1240,12 @@ fn menu_commit(sel: i32) {
             close_menu(); // the panel closes NOW; the grid dissolves under it
         }
         Menu::Filter => {
-            if sel == 0 {
+            let (unwatched_row, genre_row) = filter_rows();
+            if sel == unwatched_row {
                 request(Pending::Unwatched(!view_unwatched()));
                 open_filter_menu(true); // rebuilt from `view_unwatched()` — the check flips at once
-                table().sel = 0;
-            } else if sel == 1 {
+                table().sel = unwatched_row;
+            } else if sel == genre_row {
                 build_genre_menu(false);
             }
         }
