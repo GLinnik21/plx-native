@@ -667,10 +667,15 @@ fn fetch_detail(rk: &str) -> Option<Detail> {
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
     let mut d = Detail {
         rk: rk.to_string(),
-        // one server today: this fetch went to the machine we are signed in to, so the item is our
+        // One server today: this fetch went to the machine we are signed in to, so the item is our
         // own and there is nobody to credit. A borrowed item names its owner only once the
         // multi-server layer can say which server a fetch was made against (see `Detail::source`).
-        source: String::new(),
+        //
+        // dev: `/tmp/plxnative-shared=<handle>` stands in for that layer until it lands, and is the
+        // ONLY way to put the detail hero's "Shared by …" run on a real panel — there is no host
+        // runtime, so appearance is only ever observable on the TV. It stamps the handle onto every
+        // item this session loads, which is exactly what a fully-borrowed library looks like.
+        source: crate::dev::read("shared").unwrap_or_default(),
         is_show: it.kind == "show",
         kind: it.kind.clone(),
         show_title: it.grandparent_title.clone(),
