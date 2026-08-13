@@ -228,6 +228,23 @@ impl Client {
         crate::stream::http_get(&self.host, self.port, &self.with_token(path_no_token), None)
     }
 
+    /// GET raw bytes for a path this server ALREADY BUILT — the one entry point that does **not**
+    /// append `X-Plex-Token`, because the path handed in already ends in one.
+    ///
+    /// Its only caller is the poster store, and the reason is structural rather than stylistic:
+    /// there, the built `/photo/:/transcode?…&X-Plex-Token=…` path *is* the LRU key, so the key
+    /// and the request must be the same bytes. Routing it through [`Client::get_bytes`] would
+    /// append a second token — a URL with two `X-Plex-Token` params, whose meaning is the
+    /// server's business and not ours. `pub(crate)` because `posters.rs` lives outside this
+    /// module tree; it exists so that file stops calling `crate::stream` behind this layer's
+    /// back, which is what the module doc above has always claimed nothing does.
+    ///
+    /// The token is therefore in the CALLER's string. It must not be logged — the poster store
+    /// logs no keys, and neither may anything else that holds one.
+    pub(crate) fn fetch_built(&self, path_with_token: &str) -> Option<Vec<u8>> {
+        crate::stream::http_get(&self.host, self.port, path_with_token, None)
+    }
+
     /// GET whose body is discarded (transcode decision / stop registration side effects).
     pub(super) fn get_void(&self, path_no_token: &str) {
         let _ = crate::stream::http_get(&self.host, self.port, &self.with_token(path_no_token), None);
