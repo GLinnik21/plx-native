@@ -62,8 +62,9 @@ pub(crate) struct GenreEntry {
 /// grid spun with no way out — on the user's own server, for any failed fetch.
 ///
 /// `Failed` describes the last FETCH, not the store: a mid-scroll page failure on a populated
-/// section is Failed with items still on screen, which is why the screen's read-out projects the
-/// pair (see [`failed_initial`]) rather than the state alone — the same rule `pms::HubState` and
+/// section is Failed with items still on screen, which is why the screen's read-out projects this
+/// state and the store TOGETHER (`ui::library`'s `readout_of`, where that whole decision lives as
+/// one pure function) rather than reading the state alone — the same rule `pms::HubState` and
 /// `StatusKind::Empty` state, that an empty answer is an answer and only a fault is a fault.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SecFetch {
@@ -130,6 +131,17 @@ impl Default for SecState {
 
 static mut SECTIONS: Vec<BrowseSection> = Vec::new();
 static mut STATES: Vec<SecState> = Vec::new();
+/// What the last section-TABLE discovery did — [`SecFetch`] one layer up, and the same bug one
+/// layer up with it. [`ensure_sections`] swallowed every failure into `unwrap_or_default`, so a
+/// server that could not be reached at all was indistinguishable from one whose table had simply
+/// not been asked for yet: no section, no state, `fetch_state()` answering `Loading` from its
+/// `unwrap_or`, and the Library grid spinning for the rest of the session. A page failure and a
+/// table failure are ONE symptom on ONE screen, so they are one read-out, and this is the half that
+/// was missing.
+///
+/// `Ready` includes "the server answered and has nothing we browse" — a music-only account is an
+/// answer, not a fault, exactly as an empty listing is (`StatusKind::Empty`'s rule).
+static mut SECTIONS_FETCH: SecFetch = SecFetch::Loading;
 static mut CUR: usize = 0;
 /// Wanted item-index range (inclusive lo, exclusive hi) — set by the grid each frame from its
 /// visible rows + lookahead; [`pump`] fetches the first missing page inside it.
@@ -223,6 +235,9 @@ pub(crate) fn reset() {
     unsafe {
         *addr_of_mut!(SECTIONS) = Vec::new();
         *addr_of_mut!(STATES) = Vec::new();
+        // the NEXT account's table has not been asked for yet — a failure belongs to the session
+        // that produced it, the same rule `requery` keeps for a page failure
+        SECTIONS_FETCH = SecFetch::Loading;
         CUR = 0;
         RETRY_CD = 0;
     }
@@ -243,39 +258,84 @@ pub(crate) fn query_gen() -> u32 {
     GEN.load(Ordering::SeqCst)
 }
 
-/// Discover the movie/show sections (once; blocking — one small GET, same boot-fetch budget as
-/// `pms_fetch_hubs`). Safe to call every Library entry; later calls are free. Returns count.
-pub(crate) fn ensure_sections() -> usize {
-    if !sections().is_empty() {
-        return sections().len();
-    }
-    let found = catch_unwind(|| {
+/// Ask the server for its section table. `Some` = it ANSWERED (even with nothing we browse);
+/// `None` = the request failed — no client, no response, or a panic on the way. Splitting those two
+/// apart is the whole fix: `unwrap_or_default` collapsed them into one empty `Vec`, which the
+/// screen then had to read as "still loading" forever.
+fn fetch_table() -> Option<Vec<BrowseSection>> {
+    catch_unwind(|| {
+        let client = crate::plex::client_opt()?;
+        let mc = client.sections()?;
         let mut v: Vec<BrowseSection> = Vec::new();
-        if let Some(client) = crate::plex::client_opt() {
-            if let Some(mc) = client.sections() {
-                for d in &mc.directory {
-                    let is_show = match d.kind.as_str() {
-                        "movie" => false,
-                        "show" => true,
-                        _ => continue, // music/photo: not browsable here
-                    };
-                    if let Ok(key) = d.key.parse::<i64>() {
-                        v.push(BrowseSection { key, title: d.title.clone(), is_show });
-                    }
-                }
+        for d in &mc.directory {
+            let is_show = match d.kind.as_str() {
+                "movie" => false,
+                "show" => true,
+                _ => continue, // music/photo: not browsable here
+            };
+            if let Ok(key) = d.key.parse::<i64>() {
+                v.push(BrowseSection { key, title: d.title.clone(), is_show });
             }
         }
-        v
+        Some(v)
     })
-    .unwrap_or_default();
+    .unwrap_or(None)
+}
+
+/// Publish a discovery outcome — the whole state transition, and the only half of
+/// [`ensure_sections`] a host can grade (the other half needs a server).
+///
+/// A FAILURE publishes nothing: it does not wipe a table (there is none to wipe — the caller only
+/// gets here with an empty one) and does not bump [`sections_gen`], because nothing keyed on that
+/// generation has changed. It records the state and leaves, so the next attempt is an ordinary
+/// re-entry rather than a special case.
+fn publish_table(found: Option<Vec<BrowseSection>>) {
+    let Some(found) = found else {
+        unsafe { SECTIONS_FETCH = SecFetch::Failed };
+        return;
+    };
     let states: Vec<SecState> = found.iter().map(|_| SecState::default()).collect();
     SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
     unsafe {
+        SECTIONS_FETCH = SecFetch::Ready;
         *addr_of_mut!(SECTIONS) = found;
         *addr_of_mut!(STATES) = states;
         CUR = 0;
     }
+}
+
+/// Discover the movie/show sections (once; blocking — one small GET, same boot-fetch budget as
+/// `pms_fetch_hubs`). Safe to call every Library entry; later calls are free. Returns count.
+///
+/// A FAILED attempt leaves the table empty, so the next call retries — which is what makes the
+/// section read-out's Try again a plain re-call rather than a second code path.
+pub(crate) fn ensure_sections() -> usize {
+    if !sections().is_empty() {
+        return sections().len();
+    }
+    publish_table(fetch_table());
     sections().len()
+}
+
+/// What the section TABLE's discovery did — the state the screen cannot infer from an empty table,
+/// because "failed", "answered with nothing we browse" and "not asked yet" all look identical from
+/// outside. See [`SECTIONS_FETCH`].
+pub(crate) fn sections_state() -> SecFetch {
+    unsafe { addr_of!(SECTIONS_FETCH).read() }
+}
+/// The table could not be fetched — [`sections_state`]'s failure case, named for the two callers
+/// that only ask that question.
+pub(crate) fn sections_failed() -> bool {
+    sections_state() == SecFetch::Failed
+}
+
+/// Put the section table into its failed state for a host test. The real transition needs a server
+/// that refuses to answer, which no host tier has — and [`publish_table`] is private to this module,
+/// so the Library screen's own tests cannot reach it. The ONLY writer of this static outside
+/// [`publish_table`] and [`reset`], and compiled out of every shipped build.
+#[cfg(test)]
+pub(crate) fn mark_sections_failed_for_test() {
+    unsafe { SECTIONS_FETCH = SecFetch::Failed };
 }
 
 pub(crate) fn section_count() -> usize {
@@ -330,12 +390,14 @@ pub(crate) fn fetch_state() -> SecFetch {
 pub(crate) fn loading_initial() -> bool {
     fetch_state() == SecFetch::Loading
 }
-/// The failure the SCREEN can see: the last fetch failed **and** there is nothing to show for this
-/// query. A mid-scroll page failure on a populated section is deliberately not this — the grid
-/// still has its items, `RETRY_CD` is already counting, and blanking a working screen over one
-/// missing page is the bug the failure branch of [`pump`] exists to avoid.
-pub(crate) fn failed_initial() -> bool {
-    cur_state().map(|s| s.fetch == SecFetch::Failed && s.total < 0).unwrap_or(false)
+/// Re-kick this section's fetch NOW — the read-out's *Try again*.
+///
+/// It clears the back-off and nothing else. The automatic retry is already counting down, so the
+/// button's job is only to skip the wait; and the state deliberately stays [`SecFetch::Failed`]
+/// until an answer lands, so the user reads one steady statement rather than a spinner that blinks
+/// back — the rule [`SecFetch::Loading`]'s doc states, applied to the manual path too.
+pub(crate) fn retry() {
+    unsafe { RETRY_CD = 0 };
 }
 
 // ---- public surface: sort menu --------------------------------------------------------------
@@ -766,7 +828,7 @@ mod tests {
         land_page(-1, 0);
         assert_eq!(fetch_state(), SecFetch::Failed);
         assert!(!loading_initial(), "the grid must stop spinning on a failure");
-        assert!(failed_initial(), "…and the screen must be able to see that it failed");
+        assert_eq!(total(), -1, "…with nothing to show, which is what makes it the SCREEN's failure too");
         reset();
     }
 
@@ -777,7 +839,7 @@ mod tests {
         seed_one_section();
         land_page(3, 3);
         assert_eq!(fetch_state(), SecFetch::Ready);
-        assert!(!loading_initial() && !failed_initial());
+        assert!(!loading_initial());
         assert_eq!(total(), 3);
         reset();
     }
@@ -792,7 +854,7 @@ mod tests {
         seed_one_section();
         land_page(0, 0);
         assert_eq!(fetch_state(), SecFetch::Ready);
-        assert!(!failed_initial(), "an empty library is an answer, not a fault");
+        assert_eq!(total(), 0, "an empty library is an answer, not a fault");
         assert!(!loading_initial());
         reset();
     }
@@ -808,7 +870,57 @@ mod tests {
         assert_eq!(fetch_state(), SecFetch::Failed);
         requery();
         assert_eq!(fetch_state(), SecFetch::Loading);
-        assert!(loading_initial() && !failed_initial());
+        assert!(loading_initial());
+        reset();
+    }
+
+    // ---- the section TABLE, one layer up ------------------------------------------------------
+    //
+    // Same three states, same discipline, and graded through [`publish_table`] rather than
+    // [`ensure_sections`]: the fetch half needs a server, and a host test that reached for one
+    // would be dialling whatever address another module's test had just registered.
+
+    /// THE bug, one layer up: `ensure_sections` folded every failure into an empty table, so the
+    /// screen saw exactly what it sees before the first request — no sections, no state, and
+    /// `fetch_state()` answering `Loading` — and spun forever with no way out.
+    #[test]
+    fn a_failed_section_table_is_observable_rather_than_an_eternal_spinner() {
+        let _g = crate::testlock::serial();
+        reset();
+        assert!(!sections_failed(), "a table nobody has asked for yet has not failed");
+        publish_table(None);
+        assert!(sections_failed(), "the screen must be able to see that the table failed");
+        assert_eq!(section_count(), 0);
+        reset();
+        assert!(!sections_failed(), "a failure belongs to the session that produced it");
+    }
+
+    /// An account with nothing we browse — music and photos only — ANSWERED. It is `Ready` with no
+    /// sections, never `Failed`, for the same reason an empty listing is (`StatusKind::Empty`).
+    #[test]
+    fn a_server_with_no_browsable_library_answered_and_did_not_fail() {
+        let _g = crate::testlock::serial();
+        reset();
+        publish_table(Some(Vec::new()));
+        assert!(!sections_failed(), "an empty answer is an answer");
+        assert_eq!(section_count(), 0);
+        reset();
+    }
+
+    /// A served table clears a previous failure and seeds one state per section.
+    #[test]
+    fn a_served_section_table_clears_the_failure_and_seeds_its_states() {
+        let _g = crate::testlock::serial();
+        reset();
+        publish_table(None);
+        publish_table(Some(vec![
+            BrowseSection { key: 1, title: "Movies".into(), is_show: false },
+            BrowseSection { key: 2, title: "TV Shows".into(), is_show: true },
+        ]));
+        assert!(!sections_failed());
+        assert_eq!(section_count(), 2);
+        assert_eq!(section_title(1), "TV Shows");
+        assert!(loading_initial(), "a fresh section has not answered yet");
         reset();
     }
 

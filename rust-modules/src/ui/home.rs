@@ -53,7 +53,11 @@ pub(crate) const HERO_COL_W: f32 = 660.0;
 /// The action row's top edge and control diameter. Module-level because the row SLIDES with its
 /// item while the page dots below it do NOT — two draw sites, one geometry, so they cannot drift.
 const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
-const HERO_CTRL_D: f32 = 60.0;
+/// The action row's control size IS the shared one — the same height the status read-out's own
+/// pill takes ([`StatusOverlay::CTRL_H`](crate::ui::widgets::StatusOverlay::CTRL_H)), which is not a
+/// coincidence to be restated as a second 60: this screen draws both, and the status screen's Retry
+/// stands in for this very row (see [`draw_status`]).
+const HERO_CTRL_D: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 /// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
 /// spring units: the old `pos > 0.995` cut retired the transition while the incoming layer still
@@ -1376,29 +1380,35 @@ fn status_read() -> Option<(&'static std::ffi::CStr, crate::ui::widgets::StatusK
 /// tinted caption alone) with its one control below. Deliberately independent of `hero_a` and of
 /// the snap — with no shelves there is nothing for the grid to show, so the message must not fade
 /// out as the snap drifts.
+///
+/// The Retry control is the COMPONENT's now, not this screen's. It was hand-built here — a
+/// `Button::pill_w` and a y measured from the panel centre — while the caption above it came from
+/// the shared read-out, so the two halves of one block were laid out by two different pieces of
+/// code and only agreed by inspection. The Library's section read-out draws the same pair, and two
+/// hand-rolled copies of it is exactly the drift `ui/CLAUDE.md`'s fourth rule exists to stop.
 fn draw_status(env: &Env, p: Painter) {
     let Some((caption, kind, action)) = status_read() else {
         return; // there is content: the hero owns the screen, and its own hit targets
     };
-    crate::ui::widgets::StatusOverlay::new(Rect::FULL, caption, kind)
+    let mut ov = crate::ui::widgets::StatusOverlay::new(Rect::FULL, caption, kind)
         .phase(unsafe { addr_of!(status_ms).read() } as u32)
-        .draw(env, p);
+        // Focus is `>= 0` rather than `== 0` because this row has exactly one button — LEFT/RIGHT
+        // must not be able to park focus on nothing.
+        .focused(hero_focus() >= 0);
+    if let Some(label) = action {
+        ov = ov.action(label);
+    }
+    ov.draw(env, p);
     // The status screen OWNS the hero action row's focus slot AND its pointer hit targets: the two
     // can never be on screen together (a status state means an empty catalog, which means
     // `hero_item()` is None and `Hero::draw` returns before recording anything), so the existing
-    // click path drives Retry with no second hit-test. Focus is `>= 0` rather than `== 0` because
-    // this row has exactly one button — LEFT/RIGHT must not be able to park focus on nothing.
+    // click path drives Retry with no second hit-test. The rect comes from the component that drew
+    // the pill, so a click can never land somewhere the button isn't.
     // parked OFF the panel rather than at the origin: `Rect::contains` is inclusive, so a
     // zero-size rect at (0,0) would "contain" a click at exactly (0,0)
     let none = Rect::new(-1.0, -1.0, 0.0, 0.0);
-    let Some(label) = action else {
-        unsafe { addr_of_mut!(hero_btns).write([none; HERO_NBTN]) };
-        return;
-    };
-    let w = Button::pill_w(label.as_ptr(), theme::size::BODY, false);
-    let btn = Rect::new((SCR_W - w) * 0.5, SCR_H * 0.5 + theme::space::XL, w, HERO_CTRL_D);
+    let btn = ov.action_frame().unwrap_or(none);
     unsafe { addr_of_mut!(hero_btns).write([btn, none, none]) };
-    Button::new(label.as_ptr(), theme::size::BODY, btn).focused(hero_focus() >= 0).draw(env, p);
 }
 
 /// Does the status screen own this activation? Retry is Home's ONLY control while a read-out is
