@@ -1579,7 +1579,10 @@ pub(crate) fn update(dt: f32) {
     // Cast is the same shared shelf component (circular RowStyle::CAST): spring magnification + scroll.
     let cfoc = (v.section == 4).then_some(v.col.max(0) as usize);
     v.cast.update(n_items(4) as usize, cfoc, &RowStyle::CAST, dt);
-    // the "Also available" panel's own appear spring + list scroll (no-op while it is closed)
+    // the "Also available" panel's own appear spring + list scroll (no-op while it is closed), and
+    // its headless stand-in, which can only be built once the item has LANDED (a mount deliberately
+    // keeps `current()` empty for the whole fetch, so at `reset` time there is nothing to copy)
+    crate::ui::alt_sources::pump();
     crate::ui::alt_sources::update(dt);
     // debounced season fetch: load the queued season only after its tab has held focus for a beat, so
     // scanning tabs (a hold, or fast taps) coalesces into ONE blocking `/children` fetch, not one per step.

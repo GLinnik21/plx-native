@@ -51,8 +51,10 @@
 //! [`is_available`] is false, the button is not drawn, and a one-server install pays nothing —
 //! not a query, not a control, not a row of layout.
 //!
-//! For headless verification there is a draw-only stand-in, `/tmp/plxnative-altsources` (see
-//! [`dev_copies`]), which is how this panel is captured on the TV before that layer exists.
+//! For headless verification there is a draw-only stand-in built on the SAME
+//! `/tmp/plxnative-shared=<handle>` trigger the hero's own "Shared by …" run is judged through
+//! (see [`dev_stand_in`]) — one trigger for one deliverable — which is how this panel is captured
+//! on the TV before that layer exists.
 #![allow(non_upper_case_globals)]
 use crate::plex::ServerId;
 use crate::ui::consts::*;
@@ -160,13 +162,14 @@ fn copies() -> &'static [AltCopy] {
 /// film's copies over this one's hero.
 pub(crate) fn reset(item_rk: &str) {
     close();
-    // ASSIGNMENT, not `ptr::write`: both are owning heap values, and `write` overwrites without
+    // ASSIGNMENT, not `ptr::write`: these are owning heap values, and `write` overwrites without
     // running the old one's destructor — which here would leak a `String` and a `Vec<AltCopy>` on
     // every detail mount. (The `.write()` idiom this file's neighbours use is sound where they use
     // it, on `Copy` types and `&'static [T]`.)
     unsafe {
         *addr_of_mut!(FOR_RK) = item_rk.to_string();
-        *addr_of_mut!(COPIES) = dev_copies(item_rk);
+        *addr_of_mut!(COPIES) = Vec::new();
+        *addr_of_mut!(STAND_RK) = String::new();
     }
 }
 
@@ -447,68 +450,134 @@ pub(crate) fn draw() {
 /// through `dev::read`, so it is absent from a `RELEASE=1` build at compile time along with the
 /// whole `/tmp` surface (the trigger literal is `/tmp/plxnative-altsources`, spelled here for the
 /// catalog grep in the root `CLAUDE.md`).
-/// **Not in the host suite**: `dev::read` opens the real `/tmp`, so a developer who happened to
-/// have this trigger armed would change what `cargo test` sees. The PARSE is host-tested through
-/// [`parse_dev`] instead; only the file read is compiled out here.
-#[cfg(not(test))]
-fn dev_copies(item_rk: &str) -> Vec<AltCopy> {
-    let Some(s) = crate::dev::read("altsources").filter(|s| !s.trim().is_empty()) else {
-        return Vec::new();
-    };
-    let dur = crate::metadata::current().map(|d| d.dur_ms).unwrap_or(0);
-    match parse_dev(&s, item_rk, dur) {
-        Ok(v) => {
-            crate::log(&format!("altsources: {} stand-in copies for rk={item_rk}", v.len()));
-            v
-        }
-        Err(e) => {
-            crate::log(&format!("altsources: /tmp/plxnative-altsources IGNORED — not valid JSON: {e}"));
-            Vec::new()
-        }
+/// Which item the stand-in has been built for, so it is built ONCE per page rather than every
+/// frame. Cleared by [`reset`] with the rest of the store.
+static mut STAND_RK: String = String::new();
+
+/// Build the headless stand-in once the item has LANDED — called every frame by `detail::update`,
+/// and doing nothing at all in the ordinary case (two string compares, no allocation).
+///
+/// It cannot be built in [`reset`], where the rest of the store is: a mount deliberately clears
+/// `metadata::current()` for the whole 2-5 round-trip fetch window (`detail::open_rk`), so at that
+/// moment there is no runtime, no resolution class and no title to build a copy of the item FROM.
+pub(crate) fn pump() {
+    let for_rk = unsafe { (*addr_of!(FOR_RK)).as_str() };
+    if for_rk.is_empty() || for_rk == unsafe { (*addr_of!(STAND_RK)).as_str() } {
+        return;
     }
-}
-#[cfg(test)]
-fn dev_copies(_item_rk: &str) -> Vec<AltCopy> {
-    Vec::new()
+    let Some(list) = dev_stand_in(for_rk) else { return };
+    unsafe {
+        *addr_of_mut!(STAND_RK) = for_rk.to_string();
+        *addr_of_mut!(COPIES) = list;
+    }
+    crate::ui::idle::invalidate();
 }
 
-/// [`dev_copies`]' pure half: the trigger's JSON, plus the two facts the file is allowed to omit
-/// (the page's own ratingKey and the loaded item's runtime), into copies.
-fn parse_dev(s: &str, item_rk: &str, dur_ms: i64) -> Result<Vec<AltCopy>, String> {
-    #[derive(serde::Deserialize)]
-    struct DevCopy {
-        #[serde(default)]
-        library: String,
-        #[serde(default)]
-        owner: Option<String>,
-        #[serde(default)]
-        rk: String,
-        #[serde(default)]
-        res: String,
-        #[serde(default)]
-        dur_ms: i64,
-        /// The registry slot this copy claims. Absent = no registered server (see above).
-        #[serde(default)]
-        slot: Option<u16>,
+/// A DRAW-ONLY copy list for `/tmp/plxnative-shared=<handle>`, so this panel and the control that
+/// opens it can be judged on a television before the multi-server data layer exists.
+///
+/// **It reuses the trigger the hero's own "Shared by …" run is judged through** rather than adding
+/// a second one for the same deliverable: that trigger already means "pretend this item came from
+/// `<handle>`", and a second copy of the film on `<handle>`'s source is the other half of the same
+/// pretence.
+///
+/// What it stands in for, exactly:
+///
+/// * **your copy** is the real one — the page's own ratingKey, on the current server, with the
+///   loaded item's own runtime and resolution class, in the library the browse store says you are
+///   in. Nothing about it is invented, which is what makes the TICK meaningful.
+/// * **their copy** is that same film on a SECOND REGISTRY SLOT ([`stand_in_slot`]). It is a real
+///   slot with a real client, so OK on it performs the real source switch and opens a real page —
+///   the one behaviour of this panel that cannot be judged from a still.
+/// * its resolution is **one class better than yours**, and that is the stand-in's ONE invention.
+///   It exists because the ordering rule is otherwise unobservable: the design's own example is a
+///   1080p copy you are standing on sorting above a friend's 4K one, which is the case that
+///   separates "the copy that plays" from "the best copy". With two equal badges the panel cannot
+///   show that it got the rule right.
+///
+/// `None` (and no stand-in) when the trigger is not armed or the item has not landed yet.
+#[cfg(not(test))]
+fn dev_stand_in(item_rk: &str) -> Option<Vec<AltCopy>> {
+    let handle = crate::dev::read("shared").filter(|h| !h.is_empty())?;
+    let d = crate::metadata::current().filter(|d| d.rk == item_rk)?;
+    let library = crate::browse::section_title(crate::browse::cur()).to_string();
+    let here = crate::plex::current_server();
+    let theirs = stand_in_slot()?;
+    let v = stand_in(&handle, &library, item_rk, &d.video_resolution, d.dur_ms, here, theirs);
+    crate::log(&format!("altsources: stand-in for rk={item_rk} on slot {} (dev)", theirs.raw()));
+    Some(v)
+}
+#[cfg(test)]
+fn dev_stand_in(_item_rk: &str) -> Option<Vec<AltCopy>> {
+    None // the host suite must not depend on what this dev Mac happens to have under /tmp
+}
+
+/// The registry slot the stand-in's borrowed copy lives on — a REAL one, because the point of the
+/// stand-in is to exercise the switch.
+///
+/// A genuinely different server if one is registered. Otherwise the current server registered a
+/// SECOND time under a synthetic machine id: from everything this feature does — counting sources,
+/// resolving a client, switching, refetching — that is a second source, and because it is the same
+/// machine the ratingKey it carries is honestly the same film. What it cannot stand in for is a
+/// server going offline, or a library and a resolution that differ for real.
+///
+/// The token comes from the harness's own `/tmp/plxnative-token`, which is the only place a session
+/// token is available to a dev path; with no token there is nothing to build a working client from,
+/// so there is no stand-in at all rather than one that 401s.
+#[cfg(not(test))]
+fn stand_in_slot() -> Option<ServerId> {
+    let here = crate::plex::current_server();
+    let other = (0..crate::plex::server_count())
+        .map(|i| ServerId::from_raw(i as u16))
+        .find(|&id| id != here && crate::plex::client_for(id).is_some());
+    if let Some(id) = other {
+        return Some(id); // a real second server is already registered — use it
     }
-    let parsed: Vec<DevCopy> = serde_json::from_str(s).map_err(|e| e.to_string())?;
-    Ok(parsed
-        .into_iter()
-        .enumerate()
-        .map(|(i, d)| AltCopy {
-            // `UNSET` is not usable here: it is one value, so two id-less entries would be ONE
-            // source and the gate would refuse the very list the file was written to show. These
-            // are past the registry's own ceiling, so they are distinct AND unresolvable.
-            sid: d.slot.map(ServerId::from_raw).unwrap_or_else(|| ServerId::from_raw(100 + i as u16)),
-            library: d.library,
-            owner: d.owner.filter(|o| !o.is_empty()),
-            rk: if d.rk.is_empty() { item_rk.to_string() } else { d.rk },
-            dur_ms: if d.dur_ms > 0 { d.dur_ms } else { dur_ms },
-            res: d.res,
-            width: 0,
-            height: 0,
-        })
-        .collect())
+    let c = crate::plex::client_opt()?;
+    let token = crate::dev::read("token").filter(|t| !t.is_empty())?;
+    Some(crate::plex::register(&format!("standin-{}", c.machine_id()), c.host(), c.port(), &token))
+}
+
+/// [`dev_stand_in`]'s pure half — the two copies it describes, so the shape of what a device
+/// capture is looking at is itself host-graded.
+fn stand_in(
+    handle: &str,
+    library: &str,
+    rk: &str,
+    res: &str,
+    dur_ms: i64,
+    here: ServerId,
+    theirs: ServerId,
+) -> Vec<AltCopy> {
+    let mine = AltCopy {
+        sid: here,
+        library: library.to_string(),
+        owner: None,
+        rk: rk.to_string(),
+        dur_ms,
+        res: res.to_string(),
+        width: 0,
+        height: 0,
+    };
+    let borrowed = AltCopy {
+        sid: theirs,
+        owner: Some(handle.to_string()),
+        res: one_class_better(res),
+        ..mine.clone()
+    };
+    vec![mine, borrowed]
+}
+
+/// The resolution class one rung above `res`, in [`scan_lines`]' own vocabulary — the stand-in's
+/// single invention (see [`dev_stand_in`]). Anything already at the top, or unrecognised, is
+/// returned unchanged rather than promoted into a class that does not exist.
+fn one_class_better(res: &str) -> String {
+    match res.trim().to_ascii_lowercase().as_str() {
+        "sd" | "480" | "576" => "720".into(),
+        "720" => "1080".into(),
+        "1080" | "1440" => "4k".into(),
+        other => other.to_string(),
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -681,28 +750,30 @@ mod tests {
         assert_eq!(action_at(&[], 0, sid(0), "4"), Action::None);
     }
 
-    /// The headless stand-in's three conveniences, which are what let ONE trigger file be used on
-    /// any item: an entry with no `rk` is the copy you are on, a missing runtime takes the loaded
-    /// item's, and a missing `slot` gets an id that names no registered server — DISTINCT per
-    /// entry, because one shared "unknown" would collapse the list to a single source and the gate
-    /// would refuse the very panel the file was written to show.
+    /// The headless stand-in describes what a device capture is looking at, so its SHAPE is graded
+    /// here: your real copy plus the same film on a second slot, one class better — which is the
+    /// design's own example, and the only arrangement in which a still can show that the ordering
+    /// rule put the copy that PLAYS above the better one.
     #[test]
-    fn the_headless_stand_in_fills_in_what_the_file_may_omit() {
-        let json = r#"[{"library":"Movies","res":"1080"},
-                       {"library":"LDN Films","owner":"<peer-owner-1>","res":"4k","rk":"318"}]"#;
-        let v = parse_dev(json, "4", 7_020_000).expect("valid JSON");
-        assert_eq!(v[0].rk, "4", "no rk means the item on screen");
-        assert_eq!(v[0].owner, None, "no owner means this account");
-        assert_eq!(v[0].dur_ms, 7_020_000, "no runtime means the loaded item's");
-        assert_eq!(v[1].rk, "318");
+    fn the_headless_stand_in_shows_the_case_the_ordering_rule_turns_on() {
+        let v = stand_in("<peer-owner-1>", "Movies", "4", "1080", 7_020_000, sid(0), sid(1));
+        assert_eq!(source_count(&v), 2, "…or the gate would refuse the very panel it exists to show");
+        assert_eq!(v[0].owner, None, "your copy is the real one, on the current server");
+        assert_eq!((v[0].rk.as_str(), v[0].dur_ms), ("4", 7_020_000));
         assert_eq!(v[1].owner.as_deref(), Some("<peer-owner-1>"));
-        assert_ne!(v[0].sid, v[1].sid, "two slot-less entries must not read as one source");
-        assert_eq!(source_count(&v), 2, "…which is what makes the panel reachable at all");
-        // an explicit slot is taken as given, so a run with a real second server navigates for real
-        let one = parse_dev(r#"[{"library":"LDN Films","slot":1,"rk":"318"}]"#, "4", 0).unwrap();
-        assert_eq!(one[0].sid, sid(1));
-        // and a typo in the file is an error the caller can log, never a silent empty list
-        assert!(parse_dev("{oops", "4", 0).is_err());
+        assert_eq!(v[1].rk, v[0].rk, "the same film — the slot is what differs");
+
+        let rs = rows(&v, sid(0), "4");
+        assert!(rs[0].checked, "the tick is on yours…");
+        assert_eq!(rs[0].badge.as_deref(), Some("1080p"));
+        assert_eq!(rs[1].badge.as_deref(), Some("4K"), "…and the better copy is the one BELOW it");
+
+        // the one invention is bounded: the top of the ladder is not promoted past itself, and an
+        // unrecognised class is left exactly as the server spelled it
+        assert_eq!(one_class_better("4k"), "4k");
+        assert_eq!(one_class_better("sd"), "720");
+        assert_eq!(one_class_better(""), "");
+        assert_eq!(one_class_better("weird"), "weird");
     }
 
     /// The panel hangs off the control that opened it, and is never over it or off the screen.
