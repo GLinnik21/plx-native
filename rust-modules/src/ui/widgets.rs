@@ -1983,14 +1983,22 @@ impl ControlStyle {
     }
 }
 
-// ---- Button: a pill with a label and an optional leading icon, centered together as one group
-// (icon + gap + label is centered in the pill). Colour per `ControlStyle` (default Accent). The one
-// reusable action button — hero Play (Primary), detail/info actions (Accent), etc. ----
+// ---- Button: a pill with a label, an optional leading icon and an optional TRAILING accessory,
+// centered together as one group (icon + gap + label + gap + accessory is centered in the pill).
+// Colour per `ControlStyle` (default Accent). The one reusable action button — hero Play (Primary),
+// detail/info actions (Accent), etc. ----
 pub struct Button {
     pub frame: Rect,
     pub label: *const c_char,
     pub sz: c_int,
     pub icon: Option<crate::ui::icons::Icon>,
+    /// The TRAILING accessory glyph — a chevron saying the press opens a list rather than acting
+    /// ([`crate::ui::alt_sources`]'s *Also available*). Deliberately its own slot rather than a
+    /// second use of [`Button::icon`]: the leading icon is part of the label's own statement (the
+    /// Play triangle IS "play"), while this one is a disclosure mark about what the control DOES,
+    /// and the two are read in opposite directions. It is the same `›`-family mark
+    /// [`crate::ui::table::Row::ticon`] puts at a row's trailing edge, for the same reason.
+    pub trailing: Option<crate::ui::icons::Icon>,
     pub focused: bool,
     pub style: ControlStyle,
     /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
@@ -2008,10 +2016,15 @@ const BTN_KEYLINE_W: f32 = 1.5;
 
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, icon: None, focused: false, style: ControlStyle::Accent, progress: None }
+        Self { frame, label, sz, icon: None, trailing: None, focused: false, style: ControlStyle::Accent, progress: None }
     }
     pub fn icon(mut self, i: crate::ui::icons::Icon) -> Self {
         self.icon = Some(i);
+        self
+    }
+    /// Give this pill a trailing accessory — see [`Button::trailing`].
+    pub fn trailing_icon(mut self, i: crate::ui::icons::Icon) -> Self {
+        self.trailing = Some(i);
         self
     }
     pub fn focused(mut self, f: bool) -> Self {
@@ -2036,8 +2049,18 @@ impl Button {
     /// icon-only version had to send such callers off to `text::text_width` on their own. A second
     /// sizing path is exactly the drift this file exists to prevent.
     pub fn pill_w(label: *const c_char, sz: c_int, icon: bool) -> f32 {
+        Self::pill_w_full(label, sz, icon, false)
+    }
+
+    /// [`Button::pill_w`] with the TRAILING accessory counted too — the same one formula, taking
+    /// both of the button's optional slots rather than growing a second sizing path beside it (the
+    /// drift this file exists to prevent, and the exact reason `pill_w` gained its `icon` flag).
+    /// An accessory occupies one more icon box and one more gap, which is what [`Button::draw`]
+    /// lays out below.
+    pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: bool) -> f32 {
         let (isz, gap) = if icon { (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
-        isz + gap + crate::text::text_width(label, sz, 1) + BTN_PILL_AIR
+        let (tsz, tgap) = if trailing { (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
+        isz + gap + crate::text::text_width(label, sz, 1) + tgap + tsz + BTN_PILL_AIR
     }
 
     /// Turn the pill into its own countdown: `frac` of its width is filled with
@@ -2099,11 +2122,19 @@ impl View for Button {
         let tw = crate::text::text_width(self.label, self.sz, 1);
         let (isz, gap) =
             if self.icon.is_some() { (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
-        let gl = r.cx() - (isz + gap + tw) * 0.5;
+        let (asz, agap) =
+            if self.trailing.is_some() { (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
+        // the WHOLE run is centred — accessory included — which is why `pill_w_full` measures it:
+        // sizing the pill without the chevron and then drawing one would push the label off-centre
+        let gl = r.cx() - (isz + gap + tw + agap + asz) * 0.5;
         if let Some(icon) = self.icon {
             crate::ui::icons::draw(p, icon, Rect::new(gl, r.y + (r.h - isz) * 0.5, isz, isz), ink);
         }
         p.text(self.label, gl + isz + gap, ty, self.sz, ink, 0, 1); // left-aligned after the icon
+        if let Some(acc) = self.trailing {
+            let ax = gl + isz + gap + tw + agap;
+            crate::ui::icons::draw(p, acc, Rect::new(ax, r.y + (r.h - asz) * 0.5, asz, asz), ink);
+        }
     }
 }
 

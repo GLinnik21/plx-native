@@ -500,10 +500,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // Install the PMS client (singleton — the read layer AND the playback path), then fetch
         // the catalog. Used by the boot gate and again when a login resolves; host/port fix on
         // first install, a later call just swaps the token (profile switch).
-        let install_pms = |host: &str, port: c_int, token: &str| {
-            crate::plex::install(host, port, token);
-            // a (re)install is a login / profile switch: the browse store must never carry the
-            // previous user's cached grid, watched-state angles, or section tabs forward
+        // Everything that has to happen when the server `plex::client()` answers with CHANGES —
+        // whether because a new identity signed in or because the user walked into another source.
+        // EVERY store below is keyed to whichever server was current when it was filled, and none
+        // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
+        // being fetched from server B: the same catalog index opening a different film.
+        let activate_server = || {
+            // the browse store must never carry the previous user's (or server's) cached grid,
+            // watched-state angles, or section tabs forward
             crate::browse::reset();
             // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
             // wifi hiccup can't blank a populated Home), which makes this the one place that
@@ -515,6 +519,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // section discovery (one small GET) so Home's library tab pills carry real titles
             let nsec = crate::browse::ensure_sections();
             log(&format!("pms: nmovies={nmov} nsections={nsec}"));
+        };
+        let install_pms = |host: &str, port: c_int, token: &str| {
+            crate::plex::install(host, port, token); // a (re)install is a login / profile switch
+            activate_server();
         };
 
         // UI infra + poster workers always come up — the login/profiles screens use them too.
@@ -2443,7 +2451,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // is how you get a page blanking during its own fade-out or a second
                             // BACK popping a node whose page is still on screen. Only the PEEK
                             // (does the page underneath wear the tab bar?) happens here.
-                            nav_back(route, &trail, &mut nav_pending);
+                            //
+                            // …but a panel the SCREEN has open takes the press first and the page
+                            // stays: `detail::back()` is `library::back()`'s shape one screen over
+                            // ("Also available" is part of the detail page, so leaving the page
+                            // must not be the way to close it). It answers false on Person, which
+                            // has no panel of its own.
+                            if !crate::ui::detail::back() {
+                                nav_back(route, &trail, &mut nav_pending);
+                            }
                         } else if matches!(route, Route::Library) {
                             // read BEFORE `back()`: its first press moves focus ONTO the tab row, so
                             // asking afterwards would report the pill it just landed on rather than
@@ -3421,6 +3437,43 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if let Some(rk) = crate::ui::detail::take_open_request() {
                 if matches!(route, Route::Detail) {
                     nav_open(route, to_detail(&rk), None, &mut nav_pending);
+                }
+            }
+
+            // "Also available" (`ui::alt_sources`): the detail page reports the press, the panel is
+            // PRESENTED here — beside the control's drawn rect, the same division `item_menu` keeps
+            // with `home::focused_card_rect`. It is not a route: the page stays live behind it, and
+            // `detail::back()` is what a BACK spends on it.
+            if crate::ui::detail::take_alt_request() && matches!(route, Route::Detail) {
+                if let Some(r) = crate::ui::detail::alt_btn_rect() {
+                    crate::ui::alt_sources::open(r);
+                }
+            }
+            // …and a copy CHOSEN in that panel: open that server's own page for the film. The
+            // switch is performed here and not by the screen because re-pointing `client()`
+            // invalidates every store `activate_server` wipes — a ratingKey is per-server, so a
+            // hub catalog or browse grid left over from the source we are leaving would open a
+            // different film from every card on it.
+            //
+            // The trail is truncated to its ROOT for the same reason: `Node::Detail` carries a
+            // ratingKey and no server (step 2 of `docs/shared-servers.md`), so the pages behind
+            // this one cannot be re-entered against the machine we just moved to. BACK from the
+            // destination therefore reaches Home — of the source you switched to, which is where
+            // you now are. A reset to the root is the one trail move allowed on the press frame
+            // (the Library arm's rule): Home is `stack[0]`, so truncating is idempotent.
+            if let Some((sid, rk)) = crate::ui::detail::take_alt_open() {
+                if !matches!(route, Route::Detail) {
+                } else if crate::plex::set_current(sid) {
+                    log(&format!("altsources: source switched to slot {} for rk={rk}", sid.raw()));
+                    activate_server();
+                    trail.reset();
+                    nav_open(route, to_detail(&rk), None, &mut nav_pending);
+                } else {
+                    // a copy whose source is not registered (a share dropped from the roster, or
+                    // the headless stand-in): say so and stay put, rather than opening this
+                    // ratingKey on whatever machine happens to be current — which would
+                    // confidently show a different film
+                    log(&format!("altsources: no client for slot {} — not navigating", sid.raw()));
                 }
             }
 
