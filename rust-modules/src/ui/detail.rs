@@ -143,11 +143,11 @@ struct DetailView {
     related: CardRow,   // the Related row = the SAME animated shelf component the home grid uses
     cast: CardRow,      // Cast & Crew row — the same component, circular RowStyle::CAST
     last_resume_ns: i64, // resume position (ns) on_ok just started (0 = from start); app.rs seeks here
-    // Whether the hero row carried a restart disc the last time its focus was resolved. The row's
-    // control SET is derived from the loaded item, which arrives (and changes) asynchronously — so
-    // the index the focus holds has to be carried across a set change or it silently comes to mean a
-    // different button. See `hero_col`.
-    hero_had_restart: bool,
+    // Which conditional controls the hero row carried the last time its focus was resolved. The
+    // row's control SET is derived from the loaded item and from the resolved copy list, both of
+    // which arrive (and change) asynchronously — so the index the focus holds has to be carried
+    // across a set change or it silently comes to mean a different button. See `hero_col`.
+    hero_set: HeroSet,
     // per-section focus memory (episodes/related/cast): leaving a row and coming back restores the
     // item you were on — paired with the frozen h-scrolls, a row "stays where it was" instead of
     // snapping to its start whenever focus moves elsewhere. Indexed by section id.
@@ -179,7 +179,7 @@ impl DetailView {
             related: CardRow::new(),
             cast: CardRow::new(),
             last_resume_ns: 0,
-            hero_had_restart: false,
+            hero_set: HeroSet { restart: false, alt: false },
             saved_col: [0; 6],
             spin_ms: 0.0,
             // the app's own flat ground until an item keys it — byte-identical to the grey this page
@@ -195,8 +195,10 @@ fn view() -> &'static mut DetailView {
 
 // ---- the hero action row ----
 // Play/Resume pill (0), the restart disc (1, present ONLY while there is a resume point to ignore),
-// then the watched toggle. An info disc would be a no-op on its own page, so the row stops there.
-// The set is DYNAMIC, so nothing may hard-code the watched index: see `hero_btns`/`btn_watched`.
+// the "Also available" pill (present ONLY while a second pinned source holds this item), then the
+// watched toggle. An info disc would be a no-op on its own page, so the row stops there.
+// The set is DYNAMIC — TWO of the four controls come and go — so nothing may hard-code an index:
+// see `HeroCtl`/`hero_set`/`hero_btns`/`btn_watched`.
 const BTN_PLAY: c_int = 0;
 const BTN_RESTART: c_int = 1;
 // Play pill MINIMUM width. The drawn width is `Button::pill_w`, measured from the label, and for
@@ -469,31 +471,54 @@ fn hero_pill_w() -> f32 {
     Button::pill_w(hero_pill_label().as_ptr(), theme::size::BODY, true).max(PW)
 }
 
+/// The *Also available* control's label — the design's own words, and a fixed string: it names a
+/// FACT about the item rather than an action, so unlike the Play pill beside it there is no state
+/// for it to relabel from.
+const ALT_LABEL: &std::ffi::CStr = c"Also available";
+/// …and its drawn width, through the same one pill formula, counting the trailing chevron. No
+/// floor: the label is long enough to size itself, and `PW` is the Play pill's guard against a
+/// pathologically SHORT one.
+fn alt_pill_w() -> f32 {
+    // no leading icon, one trailing accessory — the disclosure chevron
+    Button::pill_w_full(ALT_LABEL.as_ptr(), theme::size::BODY, false, true)
+}
+
 /// The hero action-row control rect for index `i` at row top `y`.
 ///
-/// The row is DYNAMIC — the ↺ restart disc exists only while [`has_restart`] — and the pill's width
-/// follows its label, so positions are ACCUMULATED rather than per-control constants: the pill sits
-/// at the margin, and every control after it is a `CD` disc one `CD + CGAP` further along than the
-/// last. Indices stay contiguous (`hero_col` shifts focus with the set, `btn_watched` is always the
-/// end), so "disc slot" is simply `i - BTN_PLAY - 1` and the watched toggle slides left by exactly
-/// one disc when the restart control is absent. Walked by `draw_buttons` AND by the pointer
-/// hit-test — anything else would put the click a control out of step whenever a resume point
-/// exists, which is precisely the state a pointer user is most likely to be in.
+/// The row is DYNAMIC — the ↺ restart disc exists only while [`has_restart`], the *Also available*
+/// pill only while a second source holds the item — and two of its four controls are pills whose
+/// width follows their label, so positions are ACCUMULATED rather than per-control constants: the
+/// row starts at the margin and every control is one `CGAP` past the last one's right edge. Walked
+/// by `draw_buttons` AND by the pointer hit-test — anything else would put the click a control out
+/// of step whenever a resume point exists, which is precisely the state a pointer user is most
+/// likely to be in.
 fn hero_btn_rect(i: c_int, y: f32) -> Rect {
-    hero_btn_rect_w(i, y, hero_pill_w())
+    hero_btn_rect_at(hero_set(), i, y, hero_pill_w(), alt_pill_w())
 }
-/// [`hero_btn_rect`]'s pure core — the accumulation itself, for a pill of measured width `pw`.
+/// The accumulation itself, PURE: the drawn frame of control `i` in `set`, given both pills'
+/// measured widths. One walk, so a variable-width control in the MIDDLE of the row (which the alt
+/// pill is) cannot put everything after it a fixed disc-pitch out of step.
 ///
-/// Split from the measurement on purpose: `hero_pill_w` reaches SDL_ttf, and a host test that calls
+/// Both widths are ARGUMENTS on purpose: measuring one reaches SDL_ttf, and a host test that calls
 /// into the TV's text stack fails to LINK on the dev Mac (the crate's Tier-1 limit). Parameterising
-/// the width keeps the row's geometry host-testable at BOTH pill widths — "Play" and the wider
-/// "Resume" — which is the case the fontless host could otherwise never see.
-fn hero_btn_rect_w(i: c_int, y: f32, pw: f32) -> Rect {
-    if i <= BTN_PLAY {
-        return Rect::new(MARGIN_X, y, pw, CD);
+/// them keeps the row's geometry host-testable at every pill width — "Play" and the wider "Resume",
+/// with and without the alt control — which is the case the fontless host could otherwise never see.
+fn hero_btn_rect_at(set: HeroSet, i: c_int, y: f32, pw: f32, alt_w: f32) -> Rect {
+    let (v, n) = hero_ctls(set);
+    let mut x = MARGIN_X;
+    let mut w = pw;
+    for (k, c) in v[..n].iter().enumerate() {
+        w = match c {
+            HeroCtl::Play => pw,
+            HeroCtl::Alt => alt_w,
+            _ => CD,
+        };
+        if k as c_int >= i {
+            break;
+        }
+        x += w + CGAP;
     }
-    let slot = (i - BTN_PLAY - 1) as f32;
-    Rect::new(MARGIN_X + pw + CGAP + slot * (CD + CGAP), y, CD, CD)
+    Rect::new(x, y, w, CD)
 }
 
 /// A season tab's pill: padded `TAB_PAD` either side of the tab's CONTENT (its label plus whatever
@@ -689,15 +714,76 @@ fn hero_resume_ns() -> i64 {
 fn has_restart() -> bool {
     hero_resume_ns() > 0
 }
+
+/// A control in the hero action row, named rather than numbered.
+///
+/// The row's INDICES move — two of these four are conditional — so an index is only meaningful
+/// next to the set that produced it. Everything that has to survive a set change (the focus, the
+/// press mapping, the accumulation the pointer walks) is expressed in terms of this instead.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HeroCtl {
+    /// the Play/Resume pill — always present, always first
+    Play,
+    /// the ↺ disc, present only while there is a resume point for it to ignore
+    Restart,
+    /// the *Also available* pill, present only while a second pinned source holds this item
+    Alt,
+    /// the watched toggle — always present, always last
+    Watched,
+}
+
+/// Which of the conditional controls the row is showing. The row's whole shape is these two bits,
+/// which is what lets a set CHANGE be compared (`hero_col`) rather than inferred.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct HeroSet {
+    restart: bool,
+    alt: bool,
+}
+
+/// The live set, read from the loaded item and the resolved copy list.
+fn hero_set() -> HeroSet {
+    HeroSet { restart: has_restart(), alt: crate::ui::alt_sources::is_available() }
+}
+
+/// The row's controls, in drawn order, for a given set. A fixed stack array plus a live count, like
+/// [`sections`] — no per-frame allocation on the draw path.
+///
+/// **Order is the design's** (`Shared Sources.dc.html`, deliverable E): the play group, then *Also
+/// available*, then the watched toggle last. The alt pill sits with the things you might do to the
+/// copy rather than with the things you do to your own view state.
+fn hero_ctls(set: HeroSet) -> ([HeroCtl; 4], usize) {
+    let mut v = [HeroCtl::Play; 4];
+    let mut n = 1;
+    if set.restart {
+        v[n] = HeroCtl::Restart;
+        n += 1;
+    }
+    if set.alt {
+        v[n] = HeroCtl::Alt;
+        n += 1;
+    }
+    v[n] = HeroCtl::Watched;
+    n += 1;
+    (v, n)
+}
+
+/// The control at index `col` in `set`, or `None` for an index the set does not have.
+fn ctl_at(set: HeroSet, col: c_int) -> Option<HeroCtl> {
+    let (v, n) = hero_ctls(set);
+    usize::try_from(col).ok().filter(|&i| i < n).map(|i| v[i])
+}
+
+/// Where `ctl` sits in `set`, or `None` when the set does not include it.
+fn index_of(set: HeroSet, ctl: HeroCtl) -> Option<c_int> {
+    let (v, n) = hero_ctls(set);
+    v[..n].iter().position(|&c| c == ctl).map(|i| i as c_int)
+}
+
 /// how many controls the hero row is showing right now
 fn hero_btns() -> c_int {
-    if has_restart() {
-        3
-    } else {
-        2
-    }
+    hero_ctls(hero_set()).1 as c_int
 }
-/// index of the watched toggle — always last, so it shifts with the restart disc
+/// index of the watched toggle — always last, so it shifts with everything that comes and goes
 fn btn_watched() -> c_int {
     hero_btns() - 1
 }
@@ -715,20 +801,28 @@ fn btn_watched() -> c_int {
 ///   the focus, because scrobbling clears the server's `viewOffset`. Focus left at index 2 of a
 ///   two-button row draws nothing focused and makes every later OK inert.
 ///
-/// So the focus follows its CONTROL, not its index: the disc is inserted at (and removed from)
-/// `BTN_RESTART`, so everything at or after it shifts by one when the set flips. The clamp then
-/// catches anything else. NB `move_focus` reads `col` raw, which is sound only because this runs
-/// every drawn frame (`env_of`) and the event loop polls keys BEFORE `update` lands a fetch — a key
-/// press therefore always sees a `col` already resolved against the set that press is acting on.
+/// So the focus follows its CONTROL, not its index: the index is resolved through the set it was
+/// taken in ([`ctl_at`]) and looked up again in the new one ([`index_of`]). The clamp then catches
+/// what is left — a control that VANISHED under the focus has no new index, and the row's last
+/// control is the honest place to land. NB `move_focus` reads `col` raw, which is sound only
+/// because this runs every drawn frame (`env_of`) and the event loop polls keys BEFORE `update`
+/// lands a fetch — a key press therefore always sees a `col` already resolved against the set that
+/// press is acting on.
+///
+/// It was a `+= 1` / `-= 1` around one insertion point while the restart disc was the only
+/// conditional control. *Also available* is a second, so the shift is no longer a single offset:
+/// two controls can appear in one frame (a page mounting part-watched with a second source), and
+/// which one moved the focus depends on where it was sitting.
 fn hero_col() -> c_int {
     let v = view();
     if v.section == 0 {
-        let now = has_restart();
-        if now != v.hero_had_restart {
-            if v.col >= BTN_RESTART {
-                v.col += if now { 1 } else { -1 };
+        let now = hero_set();
+        if now != v.hero_set {
+            let was = ctl_at(v.hero_set, v.col);
+            v.hero_set = now;
+            if let Some(i) = was.and_then(|c| index_of(now, c)) {
+                v.col = i;
             }
-            v.hero_had_restart = now;
         }
         v.col = v.col.clamp(0, hero_btns() - 1);
     }
@@ -744,17 +838,17 @@ enum HeroAction {
     /// the same play, with the resume rule dropped
     Restart,
     Watched,
+    /// open the list of the OTHER sources holding this item (`ui::alt_sources`)
+    Alt,
     None,
 }
 fn hero_action(col: c_int) -> HeroAction {
-    if col == btn_watched() {
-        HeroAction::Watched
-    } else if col == BTN_PLAY {
-        HeroAction::Play
-    } else if has_restart() && col == BTN_RESTART {
-        HeroAction::Restart
-    } else {
-        HeroAction::None
+    match ctl_at(hero_set(), col) {
+        Some(HeroCtl::Play) => HeroAction::Play,
+        Some(HeroCtl::Restart) => HeroAction::Restart,
+        Some(HeroCtl::Alt) => HeroAction::Alt,
+        Some(HeroCtl::Watched) => HeroAction::Watched,
+        None => HeroAction::None,
     }
 }
 
@@ -969,7 +1063,7 @@ fn reset_view_state(v: &mut DetailView) {
     v.col = 0;
     // re-derived by the next `hero_col`; listed here because it is retained hero-row state, even
     // though col is 0 at this point so no shift could fire off a stale value anyway
-    v.hero_had_restart = false;
+    v.hero_set = HeroSet::default();
     v.pending_season = -1;
     v.saved_col = [0; 6];
     // a keep-focus latch belongs to the item that armed it — a new page must not inherit one
@@ -984,6 +1078,8 @@ fn reset_view_state(v: &mut DetailView) {
     unsafe {
         *addr_of_mut!(OPEN_REQ) = None;
         *addr_of_mut!(PENDING) = None;
+        *addr_of_mut!(ALT_REQ) = false; // …and both panel latches, for exactly the same reason
+        *addr_of_mut!(ALT_OPEN) = None;
     }
     v.ep_row = EpRow::Still; // a fresh page's filmstrip starts on its stills, like a fresh arrival
     v.column.scroll.jump(0.0);
@@ -1020,9 +1116,11 @@ pub(crate) fn open(idx: c_int) {
     let v = view();
     v.selected = idx;
     reset_view_state(v);
+    crate::ui::alt_sources::reset(""); // …until the row below names the item this page is about
     if idx >= 0 {
         if let Some(m) = crate::pms::movie(idx as usize) {
             v.mounted_rk = m.rk.clone(); // keep the index reconcilable — see `reselect`
+            crate::ui::alt_sources::reset(&m.rk);
             if !m.rk.is_empty() {
                 metadata::load_detail_now(&m.rk);
             }
@@ -1030,14 +1128,31 @@ pub(crate) fn open(idx: c_int) {
     }
 }
 
+/// BACK on the detail page, handled INSIDE the screen: dismiss the "Also available" panel if it is
+/// up, and report whether the press was spent. `false` means the page has nothing of its own to
+/// close and `app.rs` should pop the BACK trail — the shape `library::back()` established, for the
+/// same reason (a panel is part of the screen, so leaving the screen must not be how you close it).
+pub(crate) fn back() -> bool {
+    if crate::ui::alt_sources::is_open() {
+        crate::ui::alt_sources::close();
+        return true;
+    }
+    false
+}
+
 /// Leave the detail page (drop the loaded item).
 pub(crate) fn close() {
+    // the panel is this page's, so it dies with it — and with an empty rk nothing can land in the
+    // store for a page that is gone
+    crate::ui::alt_sources::reset("");
     metadata::clear();
     // Both latches die with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
     unsafe {
         *addr_of_mut!(OPEN_REQ) = None;
         *addr_of_mut!(PENDING) = None;
+        *addr_of_mut!(ALT_REQ) = false;
+        *addr_of_mut!(ALT_OPEN) = None;
     }
     let v = view();
     v.selected = -1;
@@ -1045,6 +1160,12 @@ pub(crate) fn close() {
 }
 
 pub(crate) fn move_focus(sym: c_int) {
+    // the "Also available" panel takes the nav keys while it is up — focus is trapped in the list,
+    // as it is in every other popover this app opens
+    if crate::ui::alt_sources::is_open() {
+        crate::ui::alt_sources::move_focus(sym);
+        return;
+    }
     let sym = sym as u32;
     let v = view();
     let sec = v.section;
@@ -1458,6 +1579,11 @@ pub(crate) fn update(dt: f32) {
     // Cast is the same shared shelf component (circular RowStyle::CAST): spring magnification + scroll.
     let cfoc = (v.section == 4).then_some(v.col.max(0) as usize);
     v.cast.update(n_items(4) as usize, cfoc, &RowStyle::CAST, dt);
+    // the "Also available" panel's own appear spring + list scroll (no-op while it is closed), and
+    // its headless stand-in, which can only be built once the item has LANDED (a mount deliberately
+    // keeps `current()` empty for the whole fetch, so at `reset` time there is nothing to copy)
+    crate::ui::alt_sources::pump();
+    crate::ui::alt_sources::update(dt);
     // debounced season fetch: load the queued season only after its tab has held focus for a beat, so
     // scanning tabs (a hold, or fast taps) coalesces into ONE blocking `/children` fetch, not one per step.
     if v.pending_season >= 0 {
@@ -1539,6 +1665,10 @@ pub(crate) fn draw() {
             .tint(theme::TEXT_SECONDARY)
             .draw(&env, ps);
     }
+    // LAST, over everything: the "Also available" panel is a modal on this page, and it builds its
+    // own root painter (scrim included) rather than riding the scrolled one — a popover is anchored
+    // to where its button was DRAWN, not to the page's content space. No-op while closed.
+    crate::ui::alt_sources::draw();
 }
 
 // The below-hero sections ARE the ScrollColumn's children (the hero at section id 0 is pinned, drawn
@@ -2514,6 +2644,16 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
             .focused(focus == BTN_RESTART)
             .draw(env, p);
     }
+    // "Also available" — drawn ONLY while a second pinned source holds this item (`hero_ctls`), so
+    // the 90% single-server library never pays a control for it. The trailing chevron is what says
+    // the press opens a list rather than acting: it is the same disclosure mark a drill-in row
+    // carries, and without it the pill reads as a fourth thing to DO to the film.
+    if let Some(i) = index_of(hero_set(), HeroCtl::Alt) {
+        Button::new(ALT_LABEL.as_ptr(), theme::size::BODY, hero_btn_rect(i, y))
+            .trailing_icon(crate::ui::icons::Icon::ChevronDown)
+            .focused(focus == i)
+            .draw(env, p);
+    }
     let watched = metadata::current().map(|d| d.watched).unwrap_or(false);
     let wf = focus == btn_watched();
     let wstyle = if watched && !wf {
@@ -2940,6 +3080,12 @@ fn commit_resume(from_start: bool) {
 /// tab, or an About row? Card focus gets the tvOS press — the OK dips it and the activation commits on
 /// release (app.rs); the non-card controls activate immediately.
 pub(crate) fn focus_is_card() -> bool {
+    // Nothing behind an open panel is pressable, so nothing behind it is a card either: the press
+    // belongs to the list, and `on_ok` routes it there. Without this an OK held over the panel
+    // would begin a tvOS press on a tile nobody can see and commit it on release.
+    if crate::ui::alt_sources::is_open() {
+        return false;
+    }
     // The episode filmstrip's METADATA block is not a card: it is a link into another page, so it
     // commits at once like the Play pill, a season tab or an About row. Two consequences, both wanted.
     // It gets no press dip — there is nothing to dip, the panel behind the text is the whole mark, and
@@ -2952,6 +3098,14 @@ pub(crate) fn focus_is_card() -> bool {
 }
 
 pub(crate) fn on_ok() -> bool {
+    // The "Also available" panel owns the press while it is up — it is a modal list ON this page,
+    // so an OK belongs to its highlighted row and never to the control set behind it. Reported
+    // rather than performed there (`alt_sources`'s rule); [`ALT_OPEN`] is where it becomes a
+    // navigation request, for the same reason the Related shelf's OK does not call `open_rk` itself.
+    if crate::ui::alt_sources::is_open() {
+        request_alt_open(crate::ui::alt_sources::on_ok());
+        return false;
+    }
     view().last_resume_ns = 0; // default: no resume (set below for plays)
     let sec = view().section;
     let col = view().col;
@@ -2974,6 +3128,12 @@ pub(crate) fn on_ok() -> bool {
                     refresh_view_state("");
                     crate::pms::refetch_hubs_reconcile(); // CW shelf changes with the view state
                 }
+                return false;
+            }
+            if action == HeroAction::Alt {
+                // ask for the list of the OTHER sources holding this film. Nothing is chosen yet —
+                // and nothing is PRESENTED here either; see [`ALT_REQ`].
+                unsafe { *addr_of_mut!(ALT_REQ) = true };
                 return false;
             }
             // Restart (↺) is the SAME play the pill performs, with the resume rule dropped —
@@ -3096,6 +3256,65 @@ fn request_open(rk: String) {
 /// Drain the request — `None` unless one is pending. One-shot, like `person::take_request`.
 pub(crate) fn take_open_request() -> Option<String> {
     unsafe { (*addr_of_mut!(OPEN_REQ)).take() }
+}
+
+// ---- "Also available": the same film on a second pinned source (ui/alt_sources.rs) -------------
+// Three seams, the same three the episode filmstrip's context menu has: this page supplies the
+// control's rect to anchor the panel to, takes the panel's press, and turns the chosen copy into
+// the one navigation it knows how to raise.
+
+/// An OK on the *Also available* control, waiting to be presented. Raised by [`on_ok`] and drained
+/// once a frame by `app.rs`, which opens the panel with the anchor [`alt_btn_rect`] measures — the
+/// same division `item_menu` keeps, where the SCREEN says what was pressed and the caller presents
+/// the popover beside the rect it hands in.
+///
+/// It carries a BOOL and not the rect for a mechanical reason worth stating: measuring this row's
+/// pills reaches SDL_ttf, the host suite links none (the crate's Tier-1 limit), and several host
+/// tests drive `on_ok` — so a latch that measured its own anchor would drag every one of them into
+/// the TV's text stack and fail to LINK on the dev Mac.
+static mut ALT_REQ: bool = false;
+
+/// Drain the request. One-shot, like [`take_open_request`].
+pub(crate) fn take_alt_request() -> bool {
+    unsafe { std::mem::replace(&mut *addr_of_mut!(ALT_REQ), false) }
+}
+
+/// The *Also available* control's rect in SCREEN coordinates, or `None` when the row is not showing
+/// one. The row scrolls with the hero, so this is the drawn frame — the panel must anchor to where
+/// the button IS, not to where it would be at the top of the page.
+pub(crate) fn alt_btn_rect() -> Option<Rect> {
+    let i = index_of(hero_set(), HeroCtl::Alt)?;
+    let y = hero_layout(selected()).btn_y - view().column.scroll.pos;
+    Some(hero_btn_rect(i, y))
+}
+
+/// The copy the panel chose, waiting to be OPENED — its server and that server's ratingKey.
+///
+/// **It is a navigation, never a swap of the copy in place** — the design's call, and the one that
+/// settles the per-server resume position: the destination page arrives with its own badges, its
+/// own actions and its own progress, so nothing has to explain a position that jumped.
+///
+/// It is a REQUEST rather than an act, and the reason is worth stating because the first version
+/// did act. Opening another server's page means re-pointing `plex::client()`, and that one call
+/// invalidates far more than this page: the hub catalog, the browse grid, an open person page and
+/// the poster cache are all keyed to whichever server was current when they were filled, and the
+/// BACK trail's nodes are ratingKeys with no server at all. Every one of those is `app.rs`'s to
+/// reset — it is where the identical wipe already lives for a profile switch (`activate_server`) —
+/// so a screen doing the switch itself would leave server A's ratingKeys being fetched from server
+/// B, with only the page in front of you correct.
+static mut ALT_OPEN: Option<(crate::plex::ServerId, String)> = None;
+
+/// Take the panel's chosen [`Action`](crate::ui::alt_sources::Action) as a request. A copy with no
+/// destination (the row you are already on) raises nothing.
+fn request_alt_open(act: crate::ui::alt_sources::Action) {
+    if let crate::ui::alt_sources::Action::Open { sid, rk } = act {
+        unsafe { *addr_of_mut!(ALT_OPEN) = Some((sid, rk)) };
+    }
+}
+
+/// Drain it — `None` unless a copy was chosen. One-shot, like [`take_open_request`].
+pub(crate) fn take_alt_open() -> Option<(crate::plex::ServerId, String)> {
+    unsafe { (*addr_of_mut!(ALT_OPEN)).take() }
 }
 
 // ---- the episode filmstrip's press-and-hold context menu (ui/item_menu.rs) -------------------
@@ -3278,6 +3497,9 @@ fn mount_rk(rk: &str) {
     v.selected = idx;
     v.mounted_rk = rk.to_string();
     reset_view_state(v);
+    // point the copy list at the new item — a store still describing the previous film would draw
+    // its control on this hero and offer to navigate to its copies
+    crate::ui::alt_sources::reset(rk);
 }
 
 /// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
@@ -4283,11 +4505,16 @@ mod tests {
 
     /// Install `d` as the loaded item and park hero focus on `col`. Both statics are crate-wide
     /// (`metadata::CURRENT` and detail's own `VIEW`), so every caller holds `testlock::serial()`.
-    /// `hero_had_restart` is seeded from the item so a mount is a settled starting state — a test
-    /// that means to exercise a set CHANGE makes it happen explicitly, after the mount.
+    /// `hero_set` is seeded from the item so a mount is a settled starting state — a test that
+    /// means to exercise a set CHANGE makes it happen explicitly, after the mount.
     fn mount(d: Option<Detail>, col: c_int) {
         metadata::set_current_for_test(d);
-        let restart = has_restart();
+        // The copy list is per-ITEM state exactly like `metadata::CURRENT`, and it is a crate
+        // global: without this an alt test would leave a third control on the hero row and the
+        // NEXT test to run would fail on a count it never touched. Tests that want the control
+        // call `alt_arm` after mounting.
+        crate::ui::alt_sources::reset("");
+        let set = hero_set();
         let v = view();
         v.section = 0;
         v.col = col;
@@ -4303,7 +4530,7 @@ mod tests {
         // it; the fixture simply did not.
         v.saved_col = [0; 6];
         v.last_resume_ns = 0;
-        v.hero_had_restart = restart;
+        v.hero_set = set;
     }
     fn movie(resume_ms: i64, dur_ms: i64) -> Detail {
         Detail { rk: "m1".into(), dur_ms, resume_ms, ..Default::default() }
@@ -4462,6 +4689,153 @@ mod tests {
         mount(None, 0);
     }
 
+    // ---- "Also available": the same film on a second pinned source (Shared Sources, deliverable E)
+    //
+    // The ROW MODEL — the ordering, the gate, the tick — is `ui::alt_sources`' own; what belongs
+    // here is the ACTIONS ROW around it: that the control exists only when the panel has something
+    // to show, where it sits, what an OK on it means, and that the row's geometry survives a
+    // variable-width control appearing in its middle.
+
+    /// Arm the copy store with the design's own pair (your 1080p `Movies` copy and a friend's 4K
+    /// `LDN Films` one). The store is a crate global like `metadata::CURRENT`, so callers hold
+    /// `testlock::serial()` — and must [`alt_clear`] before they end, or the next test's hero row
+    /// inherits a control it never asked for.
+    ///
+    /// The friend's slot is derived from the current server rather than written down: `plex`'s own
+    /// tests leave `CURRENT` wherever they last set it (they reset on entry, not on exit), so a
+    /// literal `from_raw(1)` collapsed both copies onto one source — and the alt control silently
+    /// failed to appear — whenever one of those ran first under the same serial lock.
+    fn alt_arm(rk: &str) {
+        use crate::ui::alt_sources::{install, reset, AltCopy};
+        let here = crate::plex::current_server();
+        let theirs = crate::plex::ServerId::from_raw(here.raw().wrapping_add(1));
+        reset(rk);
+        install(
+            rk,
+            vec![
+                AltCopy {
+                    sid: here,
+                    library: "Movies".into(),
+                    rk: rk.into(),
+                    dur_ms: 7_020_000,
+                    res: "1080".into(),
+                    ..Default::default()
+                },
+                AltCopy {
+                    sid: theirs,
+                    library: "LDN Films".into(),
+                    owner: Some("<peer-owner-1>".into()),
+                    rk: "318".into(),
+                    dur_ms: 7_020_000,
+                    res: "4k".into(),
+                    ..Default::default()
+                },
+            ],
+        );
+    }
+    fn alt_clear() {
+        crate::ui::alt_sources::reset("");
+    }
+
+    /// **The gate, as the actions row sees it.** One source and the row is what it always was — no
+    /// control, no index, no layout. A second source holding the film adds exactly one control, and
+    /// it lands BEFORE the watched toggle, which stays last.
+    #[test]
+    fn the_actions_row_grows_an_also_available_control_only_for_a_second_source() {
+        let _serial = crate::testlock::serial();
+
+        mount(Some(movie(0, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 2, "one source: Play + the watched toggle, exactly as before");
+        assert_eq!(hero_action(1), HeroAction::Watched);
+
+        alt_arm("m1");
+        assert_eq!(hero_btns(), 3, "a second source is one more control");
+        assert_eq!(hero_action(0), HeroAction::Play);
+        assert_eq!(hero_action(1), HeroAction::Alt, "…and it sits with the play group, not after the toggle");
+        assert_eq!(hero_action(2), HeroAction::Watched, "the watched toggle is still the row's last control");
+        assert_eq!(btn_watched(), 2);
+
+        // both conditional controls at once: the resume disc, then the alt pill, then the toggle
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        alt_arm("m1");
+        assert_eq!(hero_btns(), 4);
+        assert_eq!(hero_action(1), HeroAction::Restart);
+        assert_eq!(hero_action(2), HeroAction::Alt);
+        assert_eq!(hero_action(3), HeroAction::Watched);
+        assert_eq!(hero_action(4), HeroAction::None, "and there is no index 4");
+
+        alt_clear();
+        assert_eq!(hero_btns(), 3, "the control leaves with the copies that justified it");
+        mount(None, 0);
+    }
+
+    /// The alt control appears in the MIDDLE of the row, from an async landing — the case the old
+    /// single-offset shift could not express. Focus must travel with the control it is on, in both
+    /// directions, or the OK that follows means a different button than the one the user aimed at.
+    #[test]
+    fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
+        let _serial = crate::testlock::serial();
+        alt_clear();
+
+        // parked on the watched toggle of a two-control row
+        mount(Some(movie(0, 7_200_000)), 1);
+        assert_eq!(hero_action(focus()), HeroAction::Watched);
+
+        // the copy list lands: the alt pill is inserted at index 1, under the focus
+        alt_arm("m1");
+        assert_eq!(focus(), 2, "the focus followed the toggle rather than staying on index 1");
+        assert_eq!(hero_action(focus()), HeroAction::Watched, "so OK still means what it did a frame ago");
+
+        // …and it survives the list going away again
+        alt_clear();
+        assert_eq!(focus(), 1);
+        assert_eq!(hero_action(focus()), HeroAction::Watched);
+
+        // a focus sitting ON the vanished control has no new index to travel to — the clamp puts it
+        // on the row's last control rather than past the end, where every OK would be inert.
+        // (`focus()` first, so the set change is already spent and parking on index 1 is a
+        // deliberate landing on the alt pill rather than the shift carrying the toggle there.)
+        alt_arm("m1");
+        focus();
+        view().col = 1;
+        assert_eq!(hero_action(focus()), HeroAction::Alt);
+        alt_clear();
+        assert_eq!(focus(), 1);
+        assert_eq!(hero_action(focus()), HeroAction::Watched, "never an index the row does not have");
+
+        mount(None, 0);
+    }
+
+    /// The row is ACCUMULATED, and with the alt pill it has a variable-width control in the middle
+    /// — the exact case a fixed disc pitch gets wrong. Pure: both pill widths are passed in, since
+    /// the host links no SDL_ttf (the split `hero_btn_rect_at` exists for).
+    #[test]
+    fn the_actions_row_accumulates_around_a_variable_width_control() {
+        let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
+        for set in [
+            HeroSet { restart: false, alt: true },
+            HeroSet { restart: true, alt: true },
+            HeroSet { restart: true, alt: false },
+        ] {
+            let (_, n) = hero_ctls(set);
+            let mut prev = hero_btn_rect_at(set, 0, y, pw, alt_w);
+            assert_eq!((prev.x, prev.w), (MARGIN_X, pw), "the play pill starts the row at its own width");
+            for i in 1..n as c_int {
+                let r = hero_btn_rect_at(set, i, y, pw, alt_w);
+                assert_eq!(r.x, prev.x + prev.w + CGAP, "control {i} accumulates past its neighbour");
+                assert_eq!(r.h, CD, "every control in the row stands the same height");
+                assert!(!prev.contains(r.cx(), r.cy()) && !r.contains(prev.cx(), prev.cy()));
+                prev = r;
+            }
+            // the alt control is the pill's width, not a disc's — the whole reason the walk exists
+            if let Some(i) = index_of(set, HeroCtl::Alt) {
+                assert_eq!(hero_btn_rect_at(set, i, y, pw, alt_w).w, alt_w);
+            }
+            // …and the toggle still ends the row
+            assert_eq!(hero_btn_rect_at(set, n as c_int - 1, y, pw, alt_w).x, prev.x);
+        }
+    }
+
     // ---- pointer hit-tests: the rects the pointer answers with must be the ones the painter drew.
     // Detail's twins of home's "the pointer hit column matches the drawn card at every snap phase".
 
@@ -4508,10 +4882,14 @@ mod tests {
     /// performs — the pill at the margin, every later control one `CD + CGAP` past the last —
     /// asserted whatever the pill measures (the host has no fonts, so `pill_w` floors at `PW`
     /// there and carries real metrics on the TV; the walk holds either way).
+    ///
+    /// It drives `hero_btn_rect_at`, which is what `hero_btn_rect` resolves both pill widths INTO,
+    /// because measuring one reaches SDL_ttf and the host links none (`hero_btn_rect_at`'s doc).
     #[test]
     fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
         let _serial = crate::testlock::serial();
         let y = 812.0; // any row top; the live one comes from hero_chain
+        alt_clear(); // this case is about the play group; the alt control has its own
 
         // (item, control count, the pill width its label measures to). The widths stand in for
         // `hero_pill_w` — "Resume" is the wider word, and the row must accumulate off whichever it
@@ -4521,15 +4899,17 @@ mod tests {
         {
             mount(Some(d), 0);
             assert_eq!(hero_btns(), want, "the control set this case means to exercise");
+            let set = hero_set();
+            let rect = |i: c_int| hero_btn_rect_at(set, i, y, pw, 0.0);
 
-            let pill = hero_btn_rect_w(BTN_PLAY, y, pw);
+            let pill = rect(BTN_PLAY);
             assert_eq!(pill.x, MARGIN_X, "the pill starts at the margin");
             assert_eq!((pill.w, pill.h), (pw, CD), "the pill IS the measured frame");
             assert!(!pill.contains(MARGIN_X - 1.0, y + CD * 0.5), "the left margin is not the pill");
 
             let mut prev = pill;
             for i in (BTN_PLAY + 1)..hero_btns() {
-                let r = hero_btn_rect_w(i, y, pw);
+                let r = rect(i);
                 assert_eq!((r.w, r.h), (CD, CD), "control {i} is a CD disc");
                 assert_eq!(r.x, prev.x + prev.w + CGAP, "control {i} accumulates past its neighbour");
                 assert!(
@@ -4543,7 +4923,7 @@ mod tests {
                 prev = r;
             }
             // the watched toggle is always the row's LAST control — it shifts, it is not displaced
-            assert_eq!(hero_btn_rect_w(btn_watched(), y, pw).x, prev.x, "the toggle ends the row");
+            assert_eq!(rect(btn_watched()).x, prev.x, "the toggle ends the row");
         }
 
         mount(None, 0);
@@ -5340,6 +5720,12 @@ fn hover_allows(sec: c_int) -> bool {
 /// Pointer motion: focus what the pointer is over, where that is free of page movement. Reports
 /// whether focus MOVED, so `app.rs` can abort a click armed on the control the pointer just left.
 pub(crate) fn pointer_focus(mx: f32, my: f32) -> bool {
+    // an open panel owns the pointer too: hover walks ITS rows, and the page underneath must not
+    // re-focus (or scroll) under a modal the user is reading
+    if crate::ui::alt_sources::is_open() {
+        crate::ui::guard(|| crate::ui::alt_sources::pointer_focus(mx, my));
+        return false;
+    }
     let mut moved = false;
     crate::ui::guard(|| {
         if let Some((sec, col, row)) = hit_at(mx, my) {
@@ -5354,6 +5740,12 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) -> bool {
 /// Pointer click: focus what was clicked and report the hit, so `app.rs` can run the SAME activation
 /// as OK — the tvOS press dip for a card, immediate for the Play pill / watched disc / season tab.
 pub(crate) fn click(mx: f32, my: f32) -> bool {
+    // A click while the panel is up commits its row or dismisses it, and is spent EITHER WAY:
+    // reporting a hit would send `app.rs` on to `on_ok`, which would act a second time.
+    if crate::ui::alt_sources::is_open() {
+        crate::ui::guard(|| request_alt_open(crate::ui::alt_sources::click(mx, my)));
+        return false;
+    }
     let mut hit = false;
     crate::ui::guard(|| {
         if let Some((sec, col, row)) = hit_at(mx, my) {
