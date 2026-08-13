@@ -2963,7 +2963,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
                             if !part.is_empty() {
                                 log(&format!("plxnative-play: rk={rk} start"));
-                                crate::route::request_play(rk, &part, &vc, &ac, &title, "");
+                                crate::route::request_play(crate::route::surface_sid(), rk, &part, &vc, &ac, &title, "");
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
                                 start_playback(mt, resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail, &mut hud_nav);

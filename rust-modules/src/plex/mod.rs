@@ -60,6 +60,14 @@ pub use client::{Client, StreamUrl};
 // `register`, `set_current` and `ServerId` are the multi-server additions.
 #[allow(unused_imports)]
 pub use servers::{client, client_for, client_opt, count as server_count, current as current_server, install, register, set_current, ServerId};
+// The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
+// `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
+// does — that call mints and PERSISTS a device uuid, which a host test has no business writing —
+// and `reset_servers_for_test` is what keeps the table a per-test fixture instead of a growing
+// process-global holding clients whose loopback ports closed when their test returned. Both must be
+// called under `crate::testlock::serial`.
+#[cfg(test)]
+pub(crate) use servers::{register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test};
 #[allow(unused_imports)]
 pub use models::*;
 #[allow(unused_imports)]
