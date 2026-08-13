@@ -2848,7 +2848,7 @@ pub(crate) fn on_ok() -> bool {
                 } else if let Some(d) = metadata::current() {
                     // a hub refetch can orphan the page's catalog row (the item left the hubs) —
                     // the loaded Detail carries everything the string-based route entry needs
-                    crate::route::request_play(&d.rk, &d.part, &d.vcodec, &d.acodec, &d.title, "");
+                    crate::route::request_play(crate::route::surface_sid(), &d.rk, &d.part, &d.vcodec, &d.acodec, &d.title, "");
                 } else {
                     return false;
                 }
@@ -3361,7 +3361,7 @@ fn play_episode(d: &metadata::Detail, ep: &metadata::Episode) -> bool {
         detail_rk: d.rk.clone(),
     }));
     set_resume(ep.resume_ms, ep.dur_ms);
-    crate::route::request_play(&ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
+    crate::route::request_play(crate::route::surface_sid(), &ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
     true
 }
 
@@ -3964,6 +3964,15 @@ mod tests {
         v.col = col;
         v.ep_row = EpRow::Still; // the filmstrip sub-row is retained state; no test may inherit one
         v.tabs = TabStrip::new(); // …and so are the season strip's capsules
+        // …and so is the per-section column memory, which is the one that got away. `move_focus`
+        // seeds `col` from `saved_col[ns]` when it ENTERS the episode/related/cast row, so a test
+        // that walked one of those strips left the next test's first DOWN landing on ITS column
+        // rather than on the one this mount just asked for. Order-dependent, therefore invisible
+        // until the set of tests changes: it surfaced when route.rs gained a case that holds
+        // `testlock` across real socket I/O, which re-ordered who runs beside whom.
+        // `reset_view_state` — the production reset this helper stands in for — has always cleared
+        // it; the fixture simply did not.
+        v.saved_col = [0; 6];
         v.last_resume_ns = 0;
         v.hero_had_restart = restart;
     }
