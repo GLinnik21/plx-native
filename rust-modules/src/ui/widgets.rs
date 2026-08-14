@@ -1821,8 +1821,28 @@ impl TabStrip {
 /// so the strip is the same width at one friend or at ten. With a single source the two counts are
 /// identical, which is why nothing about a one-server install changed.
 pub(crate) fn tab_count() -> usize {
-    1 + crate::browse::tab_count()
+    1 + crate::browse::tab_count() + 1 // Home, the sections, then Search
 }
+/// The index of the Search pill: always the LAST one. That it goes last rather than first is the
+/// whole reason adding it cost nothing — `Home = 0, sections = 1..=n` is untouched, so every
+/// `pill - 1 → section` conversion in the app stays correct as written and only has to learn that
+/// one index is not a section. Prepending would have shifted all of them to `+2` at eight sites.
+pub(crate) fn search_pill() -> usize {
+    tab_count() - 1
+}
+/// Is `pill` the Search pill? The ONE test — every pill→section conversion asks this first, so
+/// "the last pill is not a library" lives in one place rather than as a `>= n` comparison repeated
+/// wherever the strip is read.
+pub(crate) fn is_search_pill(pill: usize) -> bool {
+    pill == search_pill()
+}
+/// The Search pill is SQUARE: 60×60, the icon's own air rather than a word's, so a mark does not
+/// wear the padding a label needs (`Search Screen.dc.html`). Every other pill keeps
+/// [`TAB_PILL_PAD`].
+const TAB_ICON_PILL_W: f32 = TAB_PILL_H;
+/// The mark inside it, at 1.15× the strip's own type rung (BODY 28 → 32) — the design system's
+/// `--btn-icon-ratio`, the same ratio every icon-and-label control in the app uses.
+const TAB_ICON_D: f32 = 32.0;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 pub(crate) const TOP_BAR_Y: f32 = 44.0;
 /// SAME element, SAME geometry as the detail season tabs (user directive): one control height
@@ -1907,17 +1927,22 @@ fn with_tab_metrics<R>(f: impl FnOnce(&[std::ffi::CString], &[f32]) -> R) -> R {
     let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
     if cache.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
         let nsec = crate::browse::tab_count();
-        let mut labels: Vec<CString> = Vec::with_capacity(1 + nsec);
+        let mut labels: Vec<CString> = Vec::with_capacity(1 + nsec + 1);
         labels.push(CString::new("Home").unwrap_or_default());
         for i in 0..nsec {
             labels.push(CString::new(crate::browse::tab_title(i)).unwrap_or_default());
         }
         // measure bold (the widest state) so pill widths don't change with focus; pill =
         // label + the season tabs' ±18 padding
-        let widths: Vec<f32> = labels
+        let mut widths: Vec<f32> = labels
             .iter()
             .map(|l| crate::text::text_width(l.as_ptr(), theme::size::BODY, 1) + 2.0 * TAB_PILL_PAD)
             .collect();
+        // The Search pill, last. It carries an EMPTY label so nothing here has to special-case a
+        // missing entry — `labels.len()` stays the pill count, which is what the draw and the hit
+        // test both walk — and a fixed square width, because a mark is not measured like a word.
+        labels.push(CString::default());
+        widths.push(TAB_ICON_PILL_W);
         *cache = Some((gen, labels, widths));
     }
     let (_, labels, widths) = cache.as_ref().unwrap();
@@ -2082,7 +2107,16 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 // booleans, or a mid-travel label could darken toward ACCENT_INK with nothing bright
                 // under it (`cap_cover` is the one rule both sides read).
                 let (fm, sm) = unsafe { &*addr_of!(TOP_STRIP) }.mixes((px, widths[i]));
-                TabPill::new(labels[i].as_ptr(), theme::size::BODY, r).mix(fm, sm).draw(&env, p);
+                if i + 1 == n {
+                    // The Search pill is a MARK, and it takes its ink from exactly the same
+                    // `mixed_ink` the labels do — so it darkens toward ACCENT_INK under the focus
+                    // capsule in step with its neighbours instead of being a separate colour story.
+                    let d = TAB_ICON_D;
+                    let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
+                    crate::ui::icons::draw(p, crate::ui::icons::Icon::Search, ir, TabPill::mixed_ink(fm, sm));
+                } else {
+                    TabPill::new(labels[i].as_ptr(), theme::size::BODY, r).mix(fm, sm).draw(&env, p);
+                }
             }
         }
         if scrolls {

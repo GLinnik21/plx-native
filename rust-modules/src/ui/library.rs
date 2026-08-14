@@ -253,6 +253,10 @@ pub(crate) enum Action {
     None,
     /// The Home tab was picked — route back to Home.
     GoHome,
+    /// The Search pill was picked. A separate arm rather than a `GoHome`-with-a-pill, because the
+    /// strip's last pill is not a library and `switch_tab` would resolve it to a section that does
+    /// not exist — silently, since `tab_section` clamps.
+    GoSearch,
     /// A grid card was activated — open its detail page (app.rs owns routing).
     Card,
 }
@@ -1328,6 +1332,9 @@ pub(crate) fn on_ok() -> Action {
             let f = unsafe { addr_of!(TAB_F).read() };
             if f == 0 {
                 return Action::GoHome;
+            }
+            if crate::ui::widgets::is_search_pill(f) {
+                return Action::GoSearch;
             }
             switch_tab(f - 1);
             Action::None
