@@ -171,6 +171,8 @@ const GAP: f32 = 16.0; // check→label gap
 const PILL_RAD: f32 = 18.0; // focused-row pill corner radius
 const PILL_INSET: f32 = 3.0; // pill inset from the row's top/bottom
 const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade masks + badge knockout
+/// Air between two chips of one right-aligned badge run (a subtitle row's `FORCED` + `SDH`).
+const BADGE_GAP: f32 = 10.0;
 
 pub struct TableView {
     pub sections: Vec<Section>,
@@ -439,7 +441,11 @@ impl TableView {
                     // trailing accessory, one rung down and on the header's own baseline. Elided,
                     // because it is the run that gives way (see `Section::accessory`).
                     if !sec.accessory.is_empty() {
-                        let asz = theme::size::CAPTION;
+                        // MICRO, a rung below the header: "the header names the group, the
+                        // accessory only qualifies it, so it never ties with the header"
+                        // (`TableView.prompt.md`). At CAPTION the two were the same size and a
+                        // plex.tv handle read as loud as the machine it hangs off.
+                        let asz = theme::size::MICRO;
                         let a = crate::text::elide(&sec.accessory, ACCESSORY_W, asz, 0, false);
                         if let Ok(ac) = CString::new(a) {
                             let ay = crate::text::baseline_y(asz, 0, hsz, 0, sy + 8.0);
@@ -487,6 +493,35 @@ impl TableView {
                 crate::ui::icons::draw(p, ti, cr, base);
                 trailing = cs + 14.0;
             }
+            // PLACE 4 — the badge run, RIGHT-ALIGNED at the trailing edge and the outermost of the
+            // three trailing runs (the design system's cell is a flex row whose label block takes
+            // all the slack, so `badge` — written last — is flush right, with the read-out beside
+            // it). It was drawn INLINE, starting at the label's own drawn right edge, which gave a
+            // chip the design pins flush a per-ROW x: a column of resolution classes, or of
+            // FORCED/SDH/codec tags, landed wherever each label happened to end, so the panel read
+            // as ragged text rather than as a column you can compare straight down.
+            //
+            // Centred on the ROW BOX (`cyc`), not on the title's cap band: the chip is a sibling of
+            // the whole label block, so on a two-line row it sits level with the pair rather than
+            // ~16px high, level with the first line.
+            if !row.badges.is_empty() {
+                let run: f32 = row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None)).sum::<f32>()
+                    + BADGE_GAP * (row.badges.len() - 1) as f32;
+                let mut bx = text_right - trailing - run;
+                for b in row.badges.iter() {
+                    // the shared chip leaf in this row's contextual colours: the row's own ink for
+                    // the label, the design's keyline for the ring (the pill's near-black ink over
+                    // a focused row, where a 55%-white stroke would vanish), the row's ground
+                    // knocked out of the interior
+                    let sty = crate::ui::widgets::BadgeStyle::Outlined {
+                        col: base,
+                        border: if focused { base } else { theme::OVERLAY_BORDER },
+                        bg: row_bg,
+                    };
+                    bx += crate::ui::widgets::badge(p, bx, cyc, b.text(), None, sty) + BADGE_GAP;
+                }
+                trailing += run + 14.0;
+            }
             // Trailing VALUE — the read-out that says what this row is set to ("On"/"Off" for a
             // switch, or any word). One step behind the label in ink, so the label is what you read
             // and the value is what you check; over the focused row's near-white pill that step is
@@ -506,9 +541,6 @@ impl TableView {
                     trailing += vw + 14.0;
                 }
             }
-            // reserve the inline-badge run so the label elides before it
-            let badge_reserve: f32 =
-                row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None) + 10.0).sum();
             // Single-line rows centre their label on the row by cap band. Two-line rows stack a
             // title over a detail sub-line: lay the pair out off both cap bands and centre it in the
             // tall row, with an explicit gap between the title baseline and the detail cap-top
@@ -516,42 +548,40 @@ impl TableView {
             let two_line = !row.detail.is_empty();
             // two-line rows follow the table's size class too (compact = BODY regular titles)
             let (tsz, tbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
-            let (title_y, detail_y, bcy) = if two_line {
+            let (title_y, detail_y) = if two_line {
                 let (t_top, t_base) = crate::text::text_cap_band(tsz, tbold);
                 let (d_top, d_base) = crate::text::text_cap_band(theme::size::CAPTION, 0);
                 let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
                 let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
                 let pair_top = sy + (h - (t_cap + pair_gap + d_cap)) * 0.5; // title cap-top
-                (pair_top - t_top, pair_top + t_cap + pair_gap - d_top, pair_top + t_cap * 0.5)
+                (pair_top - t_top, pair_top + t_cap + pair_gap - d_top)
             } else {
-                (0.0, 0.0, cyc) // title_y/detail_y unused single-line; Label centres the label
+                (0.0, 0.0) // unused single-line; Label centres the label
             };
-            // title/label, then inline badges (mockup: "Original: …" with an AD chip after it).
-            // compact tables read their single-line labels at BODY regular.
+            // PLACE 2 — the label over its optional sub-line. Compact tables read their single-line
+            // labels at BODY regular.
             let (lsz, lbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
-            let lbl = crate::text::elide(&row.label, text_right - label_x - trailing - badge_reserve, lsz, lbold, false);
-            let mut bx = label_x;
+            let text_w = text_right - label_x - trailing;
+            let lbl = crate::text::elide(&row.label, text_w, lsz, lbold, false);
             if let Ok(cs) = CString::new(lbl) {
-                bx += if two_line {
-                    p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold)
+                if two_line {
+                    p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold);
                 } else {
                     let mut lab = Label::new(cs.as_ptr(), lsz, base);
                     if lbold == 1 {
                         lab = lab.bold();
                     }
-                    lab.draw(p, Rect::new(label_x, sy, 0.0, h))
-                };
+                    lab.draw(p, Rect::new(label_x, sy, 0.0, h));
+                }
             }
-            bx += 12.0;
-            for b in row.badges.iter() {
-                // the shared chip leaf, in this row's contextual colours (ink over pill/panel)
-                let sty = crate::ui::widgets::BadgeStyle::Outlined { col: base, bg: row_bg };
-                bx += crate::ui::widgets::badge(p, bx, bcy, b.text(), None, sty) + 10.0;
-            }
-            // detail sub-line, elided (long Cyrillic descriptors would run off the edge)
+            // detail sub-line, elided (long Cyrillic descriptors would run off the edge) — to the
+            // SAME right edge as the label above it, because the design system puts the pair in one
+            // `flex:1` box. It used to elide against the bare row width, which was harmless only
+            // while the badges sat on the title's line: right-aligned and row-centred, a chip now
+            // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
                 let sub = if focused { theme::scrim_black(0.6) } else { dimc };
-                let detail = crate::text::elide(&row.detail, text_right - label_x, theme::size::CAPTION, 0, false);
+                let detail = crate::text::elide(&row.detail, text_w, theme::size::CAPTION, 0, false);
                 if let Ok(cd) = CString::new(detail) {
                     p.text(cd.as_ptr(), label_x, detail_y, theme::size::CAPTION, sub, 0, 0);
                 }
