@@ -820,12 +820,38 @@ pub(crate) fn source_groups() -> Vec<SrcGroup> {
         .collect()
 }
 
+/// The TYPE the Source panel is scoped to: the kind of the library currently being browsed, which
+/// is also the kind of the selected TAB. `None` only before any section exists.
+fn cur_kind() -> Option<SecKind> {
+    sections().get(cur()).map(|s| s.kind)
+}
+
+/// The Sources list's rows — **only the libraries of the CURRENT TAB'S TYPE**, across every source.
+///
+/// The scoping is the whole point and it is owner-directed (2026-08-14): "the chip should not switch
+/// tabs — the Movies tab should show only movie shared libraries, and shows shows." Picking a row
+/// used to be able to land on a library of another type, which moved the selected SECTION and
+/// therefore the selected TAB, so a control in the toolbar silently navigated the row above it.
+///
+/// Filtering here rather than guarding the activation is deliberate: a guard would leave rows on
+/// screen that refuse to do anything when pressed, and the panel would have to explain why. With the
+/// type as the scope there is nothing to explain — the tab bar is how you reach the other type, and
+/// a source with no library of this type drops out of the panel entirely (`source_sections` already
+/// omits a group whose rows are all gone, so no empty header is drawn).
+///
+/// Both LEVELS are scoped, not just Browse. The panel is one row set shown two ways, and a Browse
+/// level that listed four libraries while On Home listed six would read as two different lists. The
+/// cost is that pinning a TV library is done from the TV Shows tab; the tab bar is one press away,
+/// and `pinned`/`last_pinned` stay whole-roster facts so the "Home needs one library" refusal still
+/// counts every pin, not just the visible ones.
 pub(crate) fn source_rows() -> Vec<SrcRow> {
     let last = pinned_count() == 1;
     let cur = cur();
+    let Some(kind) = cur_kind() else { return Vec::new() };
     sections()
         .iter()
         .enumerate()
+        .filter(|(_, s)| s.kind == kind)
         .map(|(i, s)| SrcRow {
             src: s.src,
             section: i,
@@ -1852,6 +1878,41 @@ mod tests {
         // shows are the type nobody of ours provides)
         append_sections(2, vec![(9, "Their Shows".into(), SecKind::Show)]);
         assert_ne!(tabs_gen(), g0, "a gained pill MUST re-measure the row");
+        reset();
+    }
+
+    /// **The Source chip cannot switch tabs, because it is scoped to the tab's own TYPE.**
+    ///
+    /// Owner-reported on the device build: picking a library in the Sources panel could land on one
+    /// of a different type, which moves the selected section — and the tab is derived from the
+    /// section's kind, so a toolbar control silently navigated the row above it.
+    ///
+    /// The scope is the fix, not a guard on the press: every row the panel offers is of the browsed
+    /// type, so no reachable press can change the tab. Both servers' films appear together; neither
+    /// server's shows do.
+    #[test]
+    fn the_sources_panel_offers_only_libraries_of_the_tab_being_browsed() {
+        let _g = crate::testlock::serial();
+        reset();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (2, "Their Shows".into(), SecKind::Show)]);
+
+        // browsing a FILM library: both servers' film libraries, and no show library from either
+        set_cur(0);
+        let films: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
+        assert_eq!(films, vec!["Movies", "Film Club"], "both servers' films, nothing else: {films:?}");
+
+        // …and the same panel on the shows tab is the other list entirely
+        set_cur(1);
+        let shows: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
+        assert_eq!(shows, vec!["TV Shows", "Their Shows"], "both servers' shows: {shows:?}");
+
+        // the decisive property: every row the panel can activate keeps the browsed TYPE, so the
+        // tab derived from it cannot move. Stated over the section each row opens, not its title.
+        for r in source_rows() {
+            assert_eq!(sections()[r.section].kind, SecKind::Show, "a row of another type is reachable");
+        }
         reset();
     }
 
