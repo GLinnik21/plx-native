@@ -11,6 +11,18 @@ impl Client {
         self.get_json("/library/sections")
     }
 
+    /// GET / — what this server calls itself (`friendlyName`), or `None` when it did not answer
+    /// or answered with no name. The Sources list heads each server's group with it, which is the
+    /// only place in the app a MACHINE is named.
+    ///
+    /// Same endpoint `serverinfo`'s version/Plex-Pass probe uses, deliberately not folded into it:
+    /// that one is a process-global fact about the CURRENT server refreshed on every session path,
+    /// this is a per-server string a roster row needs once. Sharing the state would mean the last
+    /// server discovered renamed the one you are signed in to.
+    pub fn friendly_name(&self) -> Option<String> {
+        self.get_json("/").map(|mc| mc.friendly_name).filter(|s| !s.is_empty())
+    }
+
     /// GET /library/sections/{section_key}/all → `.metadata[]`
     pub fn section_items(&self, section_key: i64) -> Option<MediaContainer> {
         self.get_json(&format!("/library/sections/{section_key}/all"))
