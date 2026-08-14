@@ -141,12 +141,20 @@ const SEP_H: f32 = theme::space::MD;
 /// the visible list height for [`TableView::update`]. Exposed because each popover screen was
 /// re-hardcoding `panel_h - 40.0` and would drift the moment either pad changed.
 pub const PAD_V: f32 = TOP_PAD + BOT_PAD;
-const ROW_H: f32 = 60.0; // a plain row (label only) — mockup rowBase padding 13 + 34px label
+/// A plain row (label only) — mockup rowBase padding 13 + 34px label.
+///
+/// `pub` for the same caller shape [`CONTENT_X`] is: a block that draws ROWS of its own on the
+/// app's ground rather than mounting a [`TableView`] (`ui/search/recents.rs` — its rows are the
+/// user's own words and have to stay editable in place). It re-derived this and the four constants
+/// below from the mockup, so a row-height change here silently misaligned that block while both
+/// modules' own tests stayed green.
+pub const ROW_H: f32 = 60.0;
 const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEADLINE + detail CAPTION)
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
-// Panel header ("AUDIO"/"SUBTITLES", a server over its libraries). 58px in BOTH size classes and
-// whatever the header's own size — the band is fixed so a size change cannot reflow a panel.
-const HDR_H: f32 = 58.0;
+/// Panel header ("AUDIO"/"SUBTITLES", a server over its libraries). 58px in BOTH size classes and
+/// whatever the header's own size — the band is fixed so a size change cannot reflow a panel.
+/// `pub` for the [`ROW_H`] caller shape.
+pub const HDR_H: f32 = 58.0;
 /// Measure a [`Section::accessory`] is elided to. It is the LAST run on the header line, so it is
 /// the one that gives way: a 34-character plex.tv handle truncates on a character and the library
 /// names underneath keep their full width.
@@ -160,7 +168,8 @@ const DIV_H: f32 = 24.0; // gap + hairline between sections
 /// otherwise the two paddings add and the gap lands between rungs.
 pub const TOP_PAD: f32 = 20.0;
 const BOT_PAD: f32 = 20.0;
-const SIDE: f32 = 12.0; // pill (row) inset from the panel's left/right
+/// Pill (row) inset from the panel's left/right. `pub` for the [`ROW_H`] caller shape.
+pub const SIDE: f32 = 12.0;
 const CONTENT_PAD: f32 = 20.0; // text/check padding inside the pill (mockup rowBase 13px 20px)
 /// Where a row's own content starts, measured from the panel's left edge. Exposed so a panel that
 /// draws chrome ABOVE the list (the Sources panel's level pills) can start it on the same line the
@@ -168,8 +177,10 @@ const CONTENT_PAD: f32 = 20.0; // text/check padding inside the pill (mockup row
 pub const CONTENT_X: f32 = SIDE + CONTENT_PAD;
 const CHECK_W: f32 = 32.0; // leading check column
 const GAP: f32 = 16.0; // check→label gap
-const PILL_RAD: f32 = 18.0; // focused-row pill corner radius
-const PILL_INSET: f32 = 3.0; // pill inset from the row's top/bottom
+/// Focused-row pill corner radius. `pub` for the [`ROW_H`] caller shape.
+pub const PILL_RAD: f32 = 18.0;
+/// Pill inset from the row's top/bottom. `pub` for the [`ROW_H`] caller shape.
+pub const PILL_INSET: f32 = 3.0;
 const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade masks + badge knockout
 /// Air between two chips of one right-aligned badge run (a subtitle row's `FORCED` + `SDH`).
 const BADGE_GAP: f32 = 10.0;

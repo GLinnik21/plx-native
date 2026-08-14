@@ -3,14 +3,18 @@
 //! ## The design
 //!
 //! Rows, not a shelf: nothing here has artwork. They use TableView's own geometry on the app's
-//! ground instead of inside a panel — [`ROW_H`] tall, [`PILL_SIDE`] margins,
-//! [`crate::ui::table::CONTENT_X`] inside, the focus pill inset by [`PILL_INSET`], HEADLINE labels.
-//! Written as markup rather than mounted as a [`crate::ui::table::TableView`] for one reason, and
+//! ground instead of inside a panel — [`table::ROW_H`] tall, [`table::SIDE`] margins,
+//! [`table::CONTENT_X`] inside, the focus pill inset by [`table::PILL_INSET`], HEADLINE labels.
+//! Every one of those numbers is IMPORTED from that widget rather than restated here, so a row
+//! height change there moves this block with it (it did not until 2026-08-14, and the mismatch was
+//! invisible: [`BLOCK_BOTTOM`] is what the keyboard-clearance test pins, and it was derived from
+//! this module's own copies).
+//! Written as markup rather than mounted as a [`table::TableView`] for one reason, and
 //! it is worth keeping: **these rows are the user's own words and have to stay editable in place.**
 //!
 //! Above them sits a section HEADER, not a heading — it names the source of the rows, so it sits a
-//! full step BELOW their labels: CAPTION, caps, tertiary, on the same [`HDR_H`] band TableView
-//! reserves. At HEADLINE it read as another row.
+//! full step BELOW their labels: CAPTION, caps, tertiary, on the same [`table::HDR_H`] band
+//! TableView reserves. At HEADLINE it read as another row.
 //!
 //! It is **placed by cap band and not by TableView's number.** That widget draws its own header at
 //! a raw `sy + 8.0` — the magic y `ui/CLAUDE.md` rule 3 bans outright — so copying it here would
@@ -52,17 +56,20 @@
 //!
 //! `search::reset()` deliberately does NOT drop the terms. It runs on a plain SERVER switch too,
 //! where the terms are still this person's, and the profile case is already answered by the key.
+//!
+//! **The file is written on a WORKER, never on the SDL thread** — see [`persist`].
 #![allow(dead_code)]
 
 use crate::ui::label::Label;
 use crate::ui::search::{View, Zone};
+use crate::ui::table;
 use crate::ui::widgets::Button;
 // anonymous: this screen's own `View` is the per-frame SNAPSHOT above, and the retui trait of the
 // same name is wanted only so `Button::draw` resolves
 use crate::ui::View as _;
 use crate::ui::{theme, Env, Painter, Rect};
 use std::ffi::CString;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// How many terms are KEPT — and there is exactly ONE cap, applied on both sides of the file.
 ///
@@ -80,18 +87,11 @@ const CAP: usize = super::MAX_RECENTS;
 // ---- Geometry ---------------------------------------------------------------------------------
 //
 // The block is the FIELD's own column: same left edge, same width, so the rows line up under the
-// thing that produced them. Everything below restates `table.rs`'s row geometry, which is private
-// to that widget — see the module doc for why these rows are drawn rather than mounted.
+// thing that produced them. Its ROW geometry is `table.rs`'s, imported — `table::ROW_H` /
+// `table::PILL_INSET` / `table::SIDE` / `table::PILL_RAD` / `table::HDR_H` / `table::CONTENT_X`,
+// all `pub` for this caller shape. See the module doc for why these rows are drawn rather than
+// mounted, and why the numbers are borrowed rather than copied.
 
-/// A row's height, and the focus pill's inset from its top and bottom edges.
-const ROW_H: f32 = 60.0;
-const PILL_INSET: f32 = 3.0;
-/// The pill's inset from the block's left/right edges, and its corner radius.
-const PILL_SIDE: f32 = 12.0;
-const PILL_RAD: f32 = 18.0;
-/// The section header's band. Fixed whatever the header's own size, so a size change cannot reflow
-/// the rows under it.
-const HDR_H: f32 = 58.0;
 /// Header caps, pre-uppercased. The header is a constant here (TableView's `to_uppercase` exists
 /// because its headers are runtime machine and library names).
 const HDR: &std::ffi::CStr = c"RECENT SEARCHES";
@@ -106,20 +106,36 @@ const BLOCK_W: f32 = super::FIELD.w;
 /// Where a row's own content starts. `table::CONTENT_X` is public for exactly this: a caller that
 /// draws beside a list starting its text on the same line the rows do, rather than re-deriving two
 /// private constants and drifting from them.
-const TEXT_X: f32 = BLOCK_X + crate::ui::table::CONTENT_X;
+const TEXT_X: f32 = BLOCK_X + table::CONTENT_X;
+/// The width a row's label is elided to — the block inset by the row's own content padding on both
+/// sides, which is the same box `TableView` gives a label with no accessories.
+const TEXT_W: f32 = BLOCK_W - 2.0 * table::CONTENT_X;
 /// First row's top: the header band is reserved whether or not anything is under it.
-const ROWS_TOP: f32 = super::CONTENT_TOP + HDR_H;
+const ROWS_TOP: f32 = super::CONTENT_TOP + table::HDR_H;
 /// The bottom edge of the Clear control at a FULL list — the number the four-term cap exists to
 /// keep under the raised keyboard's top edge. Asserted by a host test, not by the eye.
 const BLOCK_BOTTOM: f32 =
-    ROWS_TOP + super::MAX_RECENTS as f32 * ROW_H + CLEAR_GAP + super::FIELD.h;
+    ROWS_TOP + super::MAX_RECENTS as f32 * table::ROW_H + CLEAR_GAP + super::FIELD.h;
 
 // ---- The store --------------------------------------------------------------------------------
 
-/// The terms, and the profile generation they were read at. `None` = never read.
-static TERMS: Mutex<Option<(u32, Vec<String>)>> = Mutex::new(None);
+/// The terms, the runs their rows are DRAWN from, and the profile generation both were read at.
+///
+/// The two lists live in one struct because they must move together: every path that touches
+/// `terms` drops `runs` in the same breath, so a run can never describe a term that is no longer
+/// there — which is what lets the draw index them by the focus cursor.
+struct Store {
+    gen: u32,
+    terms: Vec<String>,
+    /// One elided, NUL-terminated run per term, in the same order. `None` = STALE, re-baked by
+    /// [`runs`] on the next draw — see [`bake`] for why it is baked there and nowhere else.
+    runs: Option<Vec<CString>>,
+}
 
-/// THE accessor: run `f` over the live list for the current profile generation.
+/// The store for the current profile generation. `None` = never read.
+static STORE: Mutex<Option<Store>> = Mutex::new(None);
+
+/// THE accessor: run `f` over the live store for the current profile generation.
 ///
 /// The poison recovery is the crate's own idiom (`auth::with_ctl` and ~30 other call sites), and
 /// here it is load-bearing rather than tidiness. The alternative — `let Ok(g) = lock() else
@@ -128,23 +144,90 @@ static TERMS: Mutex<Option<(u32, Vec<String>)>> = Mutex::new(None);
 /// `remember`/`clear` become no-ops that report nothing. The data behind the lock is a list of
 /// strings with no invariant a panic could have half-broken, so recovering the guard is both safe
 /// and the only outcome that degrades visibly.
-fn with_terms<R>(f: impl FnOnce(&mut Vec<String>) -> R) -> R {
-    let mut g = TERMS.lock().unwrap_or_else(|e| e.into_inner());
+///
+/// **Main thread only, and nothing under this lock may block.** [`cached`] can `peek` the session
+/// file from here, and the draw bakes glyph runs under it — so the worker in [`flush`] is
+/// deliberately built to never come near it. A worker that took this lock and then read flash would
+/// simply move the stall onto the next frame that draws, which is the bug this module just stopped
+/// having.
+fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
+    let mut g = STORE.lock().unwrap_or_else(|e| e.into_inner());
     f(cached(&mut g))
 }
 
-/// The cached list for the CURRENT profile generation, re-read from the session file when the
+/// [`with_store`] over the terms alone — the shape every reader that is not the draw wants.
+fn with_terms<R>(f: impl FnOnce(&[String]) -> R) -> R {
+    with_store(|s| f(&s.terms))
+}
+
+/// Mutate the list and stale its runs in ONE step — the only way the list ever changes.
+///
+/// `f` answers whether it changed anything, which is both the re-bake test and the caller's "is
+/// there anything to write". Keeping the two halves inseparable is what makes [`Store::runs`] safe
+/// to index by the focus cursor.
+fn edit(f: impl FnOnce(&mut Vec<String>) -> bool) -> bool {
+    with_store(|s| {
+        if !f(&mut s.terms) {
+            return false;
+        }
+        s.runs = None;
+        true
+    })
+}
+
+/// The cached store for the CURRENT profile generation, re-read from the session file when the
 /// generation has moved (see the module doc).
-fn cached(g: &mut Option<(u32, Vec<String>)>) -> &mut Vec<String> {
+fn cached(g: &mut Option<Store>) -> &mut Store {
     let gen = crate::plex::session::current_gen();
-    if g.as_ref().map(|(v, _)| *v) != Some(gen) {
+    if g.as_ref().map(|s| s.gen) != Some(gen) {
         // Keyed on the PROFILE, not the account: the cache generation already moves on a Plex
         // Home switch, and this is the read that has to answer differently when it does.
         let who = crate::plex::session::current_profile_key();
-        *g = Some((gen, sanitize(crate::plex::session::peek().recents_for(&who).to_vec())));
+        let terms = sanitize(crate::plex::session::peek().recents_for(&who).to_vec());
+        *g = Some(Store { gen, terms, runs: None });
     }
     // filled immediately above when it was not already the current generation
-    &mut g.as_mut().expect("cache is populated").1
+    g.as_mut().expect("cache is populated")
+}
+
+/// The drawn runs, baked if the list has moved since the last frame. **The only caller is the
+/// draw**, and that is a hard requirement, not a convention — see [`bake`].
+fn runs(s: &mut Store) -> &[CString] {
+    // destructured so the borrow checker sees two DISJOINT fields rather than one `&mut Store`
+    let Store { terms, runs, .. } = s;
+    runs.get_or_insert_with(|| bake(terms))
+}
+
+/// The run each row DRAWS: elided to [`TEXT_W`] and NUL-terminated, baked once per change to the
+/// list instead of once per row per frame.
+///
+/// `text::elide` hands back an owned `String` (it clones out of its own memo) and `CString::new`
+/// allocates again, so the draw was paying 8 allocations a frame for four terms — on a screen whose
+/// whole job, once settled, is to cost nothing. The elide budget is a compile-time constant here,
+/// so nothing but the term itself can change the answer.
+///
+/// **Baking happens on the DRAW and nowhere else, and both reasons are load-bearing.** `text::elide`
+/// memoises through a `static mut` HashMap and measures with `TTF_SizeUTF8`, so it may not be
+/// touched from a worker — which is half of why [`flush`] carries its terms rather than reaching
+/// into the store. And it may not be reachable from [`cached`] either: `count()` goes through there
+/// and `ui/search/mod.rs`'s tests call it, so baking on the cache fill pulls SDL2_ttf into the HOST
+/// test binary, which cannot link it (`_TTF_SizeUTF8`, undefined — the suite runs on Darwin with no
+/// SDL2_ttf, the same wall `up_next.rs` documents). Hence the lazy [`Store::runs`]: the draw is the
+/// one caller, and the draw never runs in a test.
+///
+/// ONE run per term, always. An unbakeable term takes an EMPTY run rather than being dropped:
+/// the runs are indexed by the focus cursor and by the hit rects, so a dropped row would slide
+/// every term below it onto the wrong index. That is also exactly what the old per-frame `continue`
+/// drew (the pill and the hit rect, no label), and [`usable`] keeps it unreachable from both
+/// directions.
+fn bake(terms: &[String]) -> Vec<CString> {
+    terms
+        .iter()
+        .map(|t| {
+            CString::new(crate::text::elide(t, TEXT_W, theme::size::HEADLINE, 1, false))
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 /// What the store will hold, whatever the file said. `de_soft_vec` guarantees each entry is a
@@ -208,34 +291,35 @@ pub(crate) fn count() -> usize {
     with_terms(|t| t.len())
 }
 
-/// The terms, most recent first. Allocates, so the DRAW path does not use it — it borrows through
-/// [`with_terms`] instead.
+/// The terms, most recent first. Allocates, so the DRAW path does not use it — it draws the baked
+/// runs through [`with_store`] instead.
 pub(crate) fn terms() -> Vec<String> {
-    with_terms(|t| t.clone())
+    with_terms(|t| t.to_vec())
 }
 
 /// Record a term that was actually searched. Moves an existing one to the front rather than
 /// duplicating it.
 ///
-/// Called when a query is SEARCHED, never per keystroke — every call that CHANGES the list writes
-/// the session file, and one that does not must cost nothing: a repeat of the term already at the
-/// front, or a blank, returns before touching the file or waking the frame gate.
+/// Called when a query is SEARCHED, never per keystroke — every call that CHANGES the list queues a
+/// session-file write, and one that does not must cost nothing: a repeat of the term already at the
+/// front, or a blank, returns before queueing anything or waking the frame gate.
 pub(crate) fn remember(term: &str) {
     let t = term.trim();
     if !usable(t) {
         return;
     }
-    // The lock is released with the closure, before the file write.
-    let Some(next) = with_terms(|list| {
+    // The lock is released with the closure, before anything is queued.
+    let changed = edit(|list| {
         if list.first().is_some_and(|f| f == t) {
-            return None; // searching the same thing twice is not a change
+            return false; // searching the same thing twice is not a change
         }
         promote(list, t);
-        Some(list.clone())
-    }) else {
+        true
+    });
+    if !changed {
         return;
-    };
-    persist(&next);
+    }
+    persist();
     crate::ui::idle::invalidate();
 }
 
@@ -243,7 +327,7 @@ pub(crate) fn remember(term: &str) {
 /// being drawn entirely, and a cursor left in [`Zone::Recents`] would then own the remote with
 /// nothing on screen to show for it. The zone lives in the state machine, not here.
 pub(crate) fn clear() {
-    let had = with_terms(|list| {
+    let had = edit(|list| {
         let had = !list.is_empty();
         list.clear();
         had
@@ -251,39 +335,105 @@ pub(crate) fn clear() {
     if !had {
         return;
     }
-    persist(&[]);
+    persist();
     crate::ui::idle::invalidate();
 }
 
-/// The session to WRITE for these terms, or `None` when there is nothing to write.
+// ---- Persistence: the file half, off the SDL thread ---------------------------------------------
+
+/// The list a worker still has to write, and whose it is. `None` = the file already agrees.
 ///
-/// Pure, and split out from [`persist`] so both refusals are host-testable — the second one is the
-/// single line standing between a search term and a wiped credentials file, and it is invisible to
-/// every other test in the suite.
+/// This is a QUEUE, not a handoff. The SDL thread only ever REPLACES it, so it holds the newest
+/// list the user has committed and a burst of commits collapses into one write — and, because
+/// [`flush`] takes it *while holding* [`WRITING`], two workers racing to the file cannot land in
+/// the wrong order: the first one in writes the newest state and the second finds nothing to do.
+static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+
+/// Serializes the file half — one writer at a time, so two read-modify-writes cannot interleave.
+/// **Never taken on the SDL thread**, which is the whole point of the worker.
+static WRITING: Mutex<()> = Mutex::new(());
+
+struct Pending {
+    /// Whose list this is, captured at COMMIT time. [`merged`] used to ask
+    /// `session::current_profile_key()` itself, which was exact while it ran inline on the SDL
+    /// thread and is not any more: a profile switch between the commit and the write would file one
+    /// person's terms under the next person's key — precisely the leak the per-profile keying
+    /// exists to prevent.
+    who: String,
+    terms: Vec<String>,
+}
+
+/// The session to WRITE `terms` for `who`, or `None` when there is nothing to write.
+///
+/// Pure — `who` is a parameter rather than a global read for the reason [`Pending::who`] gives —
+/// and split out from [`flush`] so both refusals are host-testable. The second is the single line
+/// standing between a search term and a wiped credentials file, and it is invisible to every other
+/// test in the suite.
 ///
 /// **Never write a session we could not READ.** `peek` hands back a default `Session` both for "no
 /// file yet" and for "the file did not parse", and saving that would truncate a live one — a
 /// silent sign-out, caused by a search term. `client_id` is minted once by `session::load` on the
 /// boot path and is never empty afterwards, so it is exactly the test for "something real came
 /// back": with no readable session the terms stay in memory for this run and are dropped with it.
-fn merged(s: &crate::plex::session::Session, terms: &[String]) -> Option<crate::plex::session::Session> {
-    let who = crate::plex::session::current_profile_key();
-    if s.client_id.is_empty() || s.recents_for(&who) == terms {
+fn merged(s: &crate::plex::session::Session, who: &str, terms: &[String])
+    -> Option<crate::plex::session::Session> {
+    if s.client_id.is_empty() || s.recents_for(who) == terms {
         return None;
     }
     // `set_recents_for`, never a struct update with `recent_searches:` — the field now holds EVERY
     // profile's history, so assigning it here would drop everyone else's. That is the whole reason
     // the setter exists rather than the field being written at this call site.
     let mut next = s.clone();
-    next.set_recents_for(&who, terms.to_vec());
+    next.set_recents_for(who, terms.to_vec());
     Some(next)
 }
 
-/// Write the list back to the session file, re-reading it first: the snapshot this store holds is
-/// only the terms, and everything else in that file (a roster refresh, a profile pick) may have
-/// moved since. Same read-modify-write `auth.rs` does for the roster, and for the same reason.
-fn persist(terms: &[String]) {
-    if let Some(next) = merged(&crate::plex::session::peek(), terms) {
+/// Queue the current list for the session file and hand the write to a worker.
+///
+/// **The SDL event thread must never touch this file.** One write is `peek` (4–5 `PathBuf`s, an
+/// `fs::read` and a `serde_json` parse of the whole credentials file) followed by `to_vec_pretty`
+/// and an `O_TRUNC` write — on a 32-bit ARM television's flash. It ran inline on every committed
+/// term: the ▼ handoff into the results (the most common gesture on this screen), every ▲ back to
+/// the strip, every pointer click off the field, every recents pick and Clear. Nothing on screen
+/// waits for it — [`STORE`] is the source of truth for the draw and is already updated — so the
+/// write is genuinely fire-and-forget.
+///
+/// Both halves of the payload are read HERE, on the SDL thread: the profile key because it must be
+/// the one that was searching (see [`Pending::who`]), and the terms because [`STORE`]'s lock is
+/// main-thread-only — a worker that reached in for them could be holding it while the next frame
+/// wants to draw, and could find [`cached`] doing a file read under it.
+///
+/// A refused spawn is a return value (`task.rs`), and this caller's answer is to leave the list in
+/// [`PENDING`] and let `task.rs`'s own log stand. Deliberately NOT a fall-back to writing inline:
+/// the refusal means the device is out of threads or address space, which is the worst possible
+/// moment to park the event loop on flash — and the change is deferred rather than lost, since the
+/// next commit's worker takes the pending list, which by then is the newer one anyway. Only a run
+/// that ends with no further commit drops it, and it was never on screen.
+fn persist() {
+    let who = crate::plex::session::current_profile_key();
+    let terms = with_terms(|t| t.to_vec());
+    *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { who, terms });
+    let _ = crate::task::spawn_small("recents-save", flush);
+}
+
+/// The worker: take whatever is pending and write it.
+///
+/// Re-reads the session FILE rather than carrying one — the snapshot this module holds is only the
+/// terms, and everything else in that file (a roster refresh, a profile pick) may have moved since.
+/// Same read-modify-write `auth.rs` does for the roster, and for the same reason.
+///
+/// It touches [`PENDING`] and [`WRITING`] and nothing else of this module's: not [`STORE`], not the
+/// glyph cache, not the profile key. That is the whole seam — everything it needs was read on the
+/// SDL thread by [`persist`].
+fn flush() {
+    // Held across the whole read-modify-write, and taken BEFORE the pending list, so ordering is
+    // decided here rather than by which worker the scheduler happens to run first.
+    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let Some(p) = pending else {
+        return; // an earlier worker already wrote this state
+    };
+    if let Some(next) = merged(&crate::plex::session::peek(), &p.who, &p.terms) {
         crate::plex::session::save(&next);
     }
 }
@@ -297,56 +447,65 @@ fn clear_focused(v: &View, shown: usize) -> bool {
     v.zone == Zone::Recents && v.recent >= shown
 }
 
-pub(crate) fn draw(p: Painter, v: &View) {
-    // The list is BORROWED for the whole block rather than cloned: this runs on every presented
-    // frame, and a `Vec` plus four `String`s a frame is allocation the idle gate was built to
-    // avoid paying. Nothing inside mutates the store, so the lock cannot be re-entered.
-    with_terms(|terms| draw_block(p, v, terms));
+/// The Clear pill's width, measured ONCE for the life of the app.
+///
+/// `Button::pill_w` ends in a real `TTF_SizeUTF8`, and [`CLEAR`] is a compile-time constant — so
+/// the per-frame call was a font-engine round trip for a number that cannot change. A `const`
+/// cannot hold it: the answer comes out of the font, which does not exist until `init_text` runs,
+/// which is why this is a `OnceLock` filled on the first draw.
+fn clear_w() -> f32 {
+    static W: OnceLock<f32> = OnceLock::new();
+    *W.get_or_init(|| Button::pill_w(CLEAR.as_ptr(), theme::size::BODY, false))
 }
 
-fn draw_block(p: Painter, v: &View, terms: &[String]) {
-    let shown = terms.len().min(super::MAX_RECENTS);
+pub(crate) fn draw(p: Painter, v: &View) {
+    // The baked runs are BORROWED for the whole block rather than cloned: this runs on every
+    // presented frame, and a `Vec` plus four `CString`s a frame is allocation the idle gate was
+    // built to avoid paying. Nothing inside mutates the store, so the lock cannot be re-entered.
+    with_store(|s| draw_block(p, v, runs(s)));
+}
+
+/// `rows` is [`bake`]'s output — one run per stored term, in the same order, so `i` here is the same
+/// `i` the focus cursor and the hit rects use.
+fn draw_block(p: Painter, v: &View, rows: &[CString]) {
+    let shown = rows.len().min(super::MAX_RECENTS);
     if shown == 0 {
         return;
     }
 
     // The header: a step BELOW the rows it names, on its own fixed band.
     Label::new(HDR.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .draw(p, Rect::new(TEXT_X, super::CONTENT_TOP, 0.0, HDR_H));
+        .draw(p, Rect::new(TEXT_X, super::CONTENT_TOP, 0.0, table::HDR_H));
 
     // The rows. One elided HEADLINE-bold run, cap-band-centred in the row box — TableView's own
     // single-line label path, because these are the same rows on a different ground.
-    let text_w = BLOCK_W - 2.0 * crate::ui::table::CONTENT_X;
-    for (i, term) in terms.iter().take(shown).enumerate() {
-        let ry = ROWS_TOP + i as f32 * ROW_H;
+    for (i, run) in rows.iter().take(shown).enumerate() {
+        let ry = ROWS_TOP + i as f32 * table::ROW_H;
         let focused = v.zone == Zone::Recents && v.recent == i;
         if focused {
             let pill = Rect::new(
-                BLOCK_X + PILL_SIDE,
-                ry + PILL_INSET,
-                BLOCK_W - 2.0 * PILL_SIDE,
-                ROW_H - 2.0 * PILL_INSET,
+                BLOCK_X + table::SIDE,
+                ry + table::PILL_INSET,
+                BLOCK_W - 2.0 * table::SIDE,
+                table::ROW_H - 2.0 * table::PILL_INSET,
             );
-            p.rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
+            p.rrect(pill, table::PILL_RAD, table::PILL_RAD, crate::ui::ACCENT);
         }
         // The whole row box, not the pill: a term is clickable across the band it occupies,
         // and the pill is only drawn when it is focused. Without this the recents list answered
         // to the d-pad alone — `mod.rs::hit` scans an array `draw` parks every frame and no
         // drawer ever filled, so every click missed.
-        super::note_recent_rect(i, Rect::new(BLOCK_X, ry, BLOCK_W, ROW_H));
+        super::note_recent_rect(i, Rect::new(BLOCK_X, ry, BLOCK_W, table::ROW_H));
         let ink = if focused { crate::ui::ACCENT_INK } else { theme::TEXT_PRIMARY };
-        let run = crate::text::elide(term, text_w, theme::size::HEADLINE, 1, false);
-        let Ok(cs) = CString::new(run) else { continue };
-        Label::new(cs.as_ptr(), theme::size::HEADLINE, ink)
+        Label::new(run.as_ptr(), theme::size::HEADLINE, ink)
             .bold()
-            .draw(p, Rect::new(TEXT_X, ry, 0.0, ROW_H));
+            .draw(p, Rect::new(TEXT_X, ry, 0.0, table::ROW_H));
     }
 
     // Clearing is a CONTROL: it leaves the column of words and becomes the shared pill, at the
     // rows' own text x so it reads as belonging to the block without sitting in their column.
-    let by = ROWS_TOP + shown as f32 * ROW_H + CLEAR_GAP;
-    let bw = Button::pill_w(CLEAR.as_ptr(), theme::size::BODY, false);
-    let cr = Rect::new(TEXT_X, by, bw, super::FIELD.h);
+    let by = ROWS_TOP + shown as f32 * table::ROW_H + CLEAR_GAP;
+    let cr = Rect::new(TEXT_X, by, clear_w(), super::FIELD.h);
     // Clear sits at `MAX_RECENTS`, one past the last term it could ever follow — the index
     // `mod.rs` reserves for it whatever `shown` turns out to be.
     super::note_recent_rect(super::MAX_RECENTS, cr);
@@ -406,15 +565,35 @@ mod tests {
 
         // `peek` hands back a DEFAULT session both for "no file yet" and for "the file did not
         // parse" — writing that would truncate a live one, i.e. sign the device out over a search.
-        assert!(merged(&Session::default(), &terms).is_none(), "an unreadable session is never written");
+        assert!(merged(&Session::default(), "uu-1", &terms).is_none(), "an unreadable session is never written");
 
         let live = Session { client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default() };
-        let next = merged(&live, &terms).expect("a real session takes the terms");
-        assert_eq!(next.recents_for(&crate::plex::session::current_profile_key()), terms);
+        let next = merged(&live, "uu-1", &terms).expect("a real session takes the terms");
+        assert_eq!(next.recents_for("uu-1"), terms);
         assert_eq!(next.account_token, "acct", "everything else in the file is carried over untouched");
 
-        // and an unchanged list is not a write: `remember` re-reads the file on every call
-        assert!(merged(&next, &terms).is_none(), "no change, no write");
+        // and an unchanged list is not a write: the worker re-reads the file on every flush
+        assert!(merged(&next, "uu-1", &terms).is_none(), "no change, no write");
+    }
+
+    /// The profile key is an ARGUMENT, not a global read — which is what makes the write safe to do
+    /// on a worker. `persist` captures it on the SDL thread at commit time, so a profile switch
+    /// landing between the commit and the write cannot file one person's terms under the next
+    /// person's key, and cannot touch the list already stored for anybody else.
+    #[test]
+    fn terms_are_written_under_the_profile_that_searched_them() {
+        use crate::plex::session::Session;
+        let live = Session { client_id: "cid-1".into(), ..Default::default() };
+
+        let a = merged(&live, "uu-a", &list(&["wallace"])).expect("a's terms land");
+        let b = merged(&a, "uu-b", &list(&["gromit"])).expect("b's terms land beside them");
+        assert_eq!(b.recents_for("uu-a"), list(&["wallace"]), "the other profile's list is untouched");
+        assert_eq!(b.recents_for("uu-b"), list(&["gromit"]));
+
+        // the same terms under a DIFFERENT key are still a change — the guard compares this
+        // profile's stored list, never the file as a whole
+        assert!(merged(&b, "uu-c", &list(&["gromit"])).is_some(), "a third profile gets its own entry");
+        assert!(merged(&b, "uu-b", &list(&["gromit"])).is_none(), "…but the same profile's is a no-op");
     }
 
     /// Four, not five. The cap drops the OLDEST, which is the only end that can be dropped without
