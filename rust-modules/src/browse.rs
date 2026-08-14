@@ -131,8 +131,9 @@ pub(crate) struct GenreEntry {
 /// grid spun with no way out — on the user's own server, for any failed fetch.
 ///
 /// `Failed` describes the last FETCH, not the store: a mid-scroll page failure on a populated
-/// section is Failed with items still on screen, which is why the screen's read-out projects the
-/// pair (see [`failed_initial`]) rather than the state alone — the same rule `pms::HubState` and
+/// section is Failed with items still on screen, which is why the screen's read-out projects this
+/// state and the store TOGETHER (`ui::library`'s `readout_of`, where that whole decision lives as
+/// one pure function) rather than reading the state alone — the same rule `pms::HubState` and
 /// `StatusKind::Empty` state, that an empty answer is an answer and only a fault is a fault.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SecFetch {
@@ -919,6 +920,29 @@ pub(crate) fn want(lo: usize, hi: usize) {
 pub(crate) fn fetch_state() -> SecFetch {
     cur_state().map(|s| s.fetch).unwrap_or(SecFetch::Loading)
 }
+
+/// The same three states for the SOURCE behind what the screen is showing — the layer above a
+/// page, and the other half of the Library's read-out ([`crate::ui::library`]'s `readout_of`).
+///
+/// It is a PROJECTION of [`BrowseSource`]'s flags, not a fourth field: `reachable` and
+/// `sections_done` already carry the whole answer, per source, which is strictly more than the one
+/// global this replaced could say. (That global existed on a branch written before the table had a
+/// source dimension at all; keeping both would have been one rule in two places, and this file's
+/// history is mostly that mistake.)
+///
+/// It asks about the source of the section at [`cur`], falling back to the current SERVER when the
+/// table has no section to ask about — which is exactly the case the read-out one layer up exists
+/// for, a server that could not be reached to discover anything.
+pub(crate) fn cur_source_state() -> SecFetch {
+    let Some(s) = cur_source_idx().and_then(|i| sources().get(i)) else { return SecFetch::Loading };
+    if !s.reachable {
+        SecFetch::Failed
+    } else if s.sections_done {
+        SecFetch::Ready
+    } else {
+        SecFetch::Loading
+    }
+}
 /// True while the current query has no data yet (first page in flight) — the grid's
 /// full-screen spinner state.
 ///
@@ -928,12 +952,97 @@ pub(crate) fn fetch_state() -> SecFetch {
 pub(crate) fn loading_initial() -> bool {
     fetch_state() == SecFetch::Loading
 }
-/// The failure the SCREEN can see: the last fetch failed **and** there is nothing to show for this
-/// query. A mid-scroll page failure on a populated section is deliberately not this — the grid
-/// still has its items, `RETRY_CD` is already counting, and blanking a working screen over one
-/// missing page is the bug the failure branch of [`pump`] exists to avoid.
-pub(crate) fn failed_initial() -> bool {
-    cur_state().map(|s| s.fetch == SecFetch::Failed && s.total < 0).unwrap_or(false)
+/// Re-kick this section's fetch NOW — the read-out's *Try again*.
+///
+/// It clears the back-off and nothing else. The automatic retry is already counting down, so the
+/// button's job is only to skip the wait; and the state deliberately stays [`SecFetch::Failed`]
+/// until an answer lands, so the user reads one steady statement rather than a spinner that blinks
+/// back — the rule [`SecFetch::Loading`]'s doc states, applied to the manual path too.
+pub(crate) fn retry() {
+    unsafe { RETRY_CD = 0 };
+}
+
+/// Seed the roster with `n` sources in a chosen reachability, for a host test on the SCREEN side —
+/// `ui::library`'s read-out is a projection of these flags, and its tests cannot reach this
+/// module's private ones. The real transition needs a server that refuses to answer, which no host
+/// tier has. Compiled out of every shipped build.
+#[cfg(test)]
+pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
+    reset();
+    // Source 0 takes whatever `plex::current` already is, and NOTHING is registered. Registering
+    // here would leave slots in a crate-global registry that `pump`'s `sync_roster` re-adopts, and
+    // `maybe_discover` would then park a worker in `connect(2)` against a fixture address on behalf
+    // of some later test — the hazard `plex::servers`' own `Fresh` guard exists for. Matching the
+    // current server instead makes the empty-table fallback in `cur_source_idx` resolve to source 0
+    // by construction, with no global touched but this module's own.
+    let cur = crate::plex::current_server();
+    let v: Vec<BrowseSource> = (0..n)
+        .map(|k| BrowseSource {
+            sid: if k == 0 { cur } else { ServerId::from_raw(k as u16) },
+            name: if k == 0 { "nas-home".into() } else { "film-club".into() },
+            handle: if k == 0 { String::new() } else { "friend".into() },
+            reachable,
+            sections_done: reachable,
+            counts_done: true,
+            retry_cd: 0,
+        })
+        .collect();
+    unsafe { *addr_of_mut!(SOURCES) = v };
+}
+
+/// Re-kick the source behind what the screen is showing — the read-out's *Try again*, and the ONE
+/// place the two layers are told apart.
+///
+/// Both back-offs go: the SOURCE's, so an undiscovered table is re-attempted on the next `pump`
+/// rather than in ~10 s ([`SRC_RETRY_CD`]), and the page's, so a section that has its table refetches
+/// at once rather than in ~2 s. Clearing both is right whichever layer failed — the one that already
+/// has its answer has nothing to re-attempt — and it means the read-out's control needs to know
+/// nothing about which layer it is fixing.
+///
+/// **Nothing here blocks.** The first version called [`ensure_sections`] for the undiscovered case,
+/// on the reasoning that it is the same call route entry makes — but route entry makes it for a
+/// server nobody has dialled yet, while this button is only reachable for one that has just been
+/// PROVEN not to answer, so it would park the SDL loop for the full `connect(2)` timeout every
+/// press. That trade did not exist on the branch this came from, where there was no worker to
+/// discover a source; there is now, and `maybe_discover` picks up exactly the pair this sets
+/// (`retry_cd == 0 && !sections_done`) on the very next [`pump`], off the main thread. The button's
+/// whole job at both layers is therefore the same one: skip the wait.
+pub(crate) fn retry_cur_source() {
+    unsafe { RETRY_CD = 0 };
+    if let Some(i) = cur_source_idx() {
+        if let Some(s) = source_mut(i) {
+            s.retry_cd = 0;
+        }
+    }
+}
+
+/// The MACHINE name and the OWNER's handle of the source behind what the screen is showing.
+///
+/// These are the only two identifying strings the Library's failure read-out is allowed to say
+/// (`ui::library`'s `dead_strs` — no address, no path, no machineIdentifier: `ui::stats`' rule, for
+/// its reason). Either can be `""` and each means something different by it: an unknown machine has
+/// not named itself yet, while an empty HANDLE means the source is your OWN server and there is no
+/// owner to name — drawn as the absence of a line, never as an empty one.
+pub(crate) fn cur_source_labels() -> (&'static str, &'static str) {
+    cur_source_idx()
+        .and_then(|i| sources().get(i))
+        .map(|s| (s.name.as_str(), s.handle.as_str()))
+        .unwrap_or(("", ""))
+}
+
+/// The source behind what the screen is showing: the section at [`cur`], else the current server —
+/// an empty table has no section to ask about, and that is exactly the case the read-out one layer
+/// up exists for. Shared by [`cur_source_state`] and [`retry_cur_source`] so the state that draws
+/// the read-out and the retry that answers it can never mean two different servers.
+fn cur_source_idx() -> Option<usize> {
+    sections()
+        .get(cur())
+        .map(|s| s.src)
+        .or_else(|| {
+            let sid = crate::plex::current_server();
+            sources().iter().position(|s| s.sid == sid)
+        })
+        .filter(|&i| i < sources().len())
 }
 
 // ---- public surface: sort menu --------------------------------------------------------------
@@ -1589,7 +1698,7 @@ mod tests {
         land_page(-1, 0);
         assert_eq!(fetch_state(), SecFetch::Failed);
         assert!(!loading_initial(), "the grid must stop spinning on a failure");
-        assert!(failed_initial(), "…and the screen must be able to see that it failed");
+        assert_eq!(total(), -1, "…with nothing to show, which is what makes it the SCREEN's failure too");
         reset();
     }
 
@@ -1600,7 +1709,7 @@ mod tests {
         seed_one_section();
         land_page(3, 3);
         assert_eq!(fetch_state(), SecFetch::Ready);
-        assert!(!loading_initial() && !failed_initial());
+        assert!(!loading_initial());
         assert_eq!(total(), 3);
         reset();
     }
@@ -1615,7 +1724,7 @@ mod tests {
         seed_one_section();
         land_page(0, 0);
         assert_eq!(fetch_state(), SecFetch::Ready);
-        assert!(!failed_initial(), "an empty library is an answer, not a fault");
+        assert_eq!(total(), 0, "an empty library is an answer, not a fault");
         assert!(!loading_initial());
         reset();
     }
@@ -1631,7 +1740,80 @@ mod tests {
         assert_eq!(fetch_state(), SecFetch::Failed);
         requery();
         assert_eq!(fetch_state(), SecFetch::Loading);
-        assert!(loading_initial() && !failed_initial());
+        assert!(loading_initial());
+        reset();
+    }
+
+    // ---- the SOURCE's own state, one layer up ---------------------------------------------------
+    //
+    // Same three states, one layer up, and graded through the per-source flags rather than through
+    // `ensure_sections`: the fetch half needs a server, and a host test that reached for one would
+    // be dialling whatever address another module's test had just registered.
+    //
+    // `cur_source_state` is a PROJECTION of `reachable`/`sections_done` — there is no fourth field
+    // to set, which is the point of resolving it that way: the flags the Sources list already dims
+    // a group by are the flags the read-out reads.
+
+    /// Seed one source in a chosen phase and make it the CURRENT server, so the empty-table
+    /// fallback in [`cur_source_state`] resolves to it rather than to whatever the registry was
+    /// left holding. Registration dials nothing — it publishes a slot.
+    fn seed_one_source(reachable: bool, sections_done: bool) -> usize {
+        // The CURRENT server's id, registered or not — see `seed_sources_for_test` for why nothing
+        // is registered here. It makes `cur_source_idx`'s empty-table fallback resolve to this row.
+        seed_sources(vec![BrowseSource {
+            sid: crate::plex::current_server(),
+            name: "nas-home".into(),
+            handle: "friend".into(),
+            reachable,
+            sections_done,
+            counts_done: true,
+            retry_cd: 0,
+        }]);
+        0
+    }
+
+    /// THE bug, one layer up: `ensure_sections` folded every failure into an empty table, so the
+    /// screen saw exactly what it sees before the first request — no section, no state, and
+    /// `fetch_state()` answering `Loading` out of its `unwrap_or` — and spun forever with no way
+    /// out. A source that did not answer must be a state the screen can SEE.
+    #[test]
+    fn a_source_that_did_not_answer_is_observable_rather_than_an_eternal_spinner() {
+        let _g = crate::testlock::serial();
+        seed_one_source(true, false);
+        assert_eq!(cur_source_state(), SecFetch::Loading, "nobody has asked it anything yet");
+        source_mut(0).unwrap().reachable = false;
+        assert_eq!(cur_source_state(), SecFetch::Failed, "the screen must be able to see this");
+        reset();
+    }
+
+    /// An account with nothing we browse ANSWERED. `Ready` with no sections, never `Failed` — the
+    /// same reason an empty listing is (`StatusKind::Empty`), and the case that lands in the very
+    /// same two `unwrap_or` defaults as a failure and so used to spin identically.
+    #[test]
+    fn a_source_with_no_browsable_library_answered_and_did_not_fail() {
+        let _g = crate::testlock::serial();
+        seed_one_source(true, true);
+        assert_eq!(cur_source_state(), SecFetch::Ready, "an empty answer is an answer");
+        assert_eq!(section_count(), 0);
+        reset();
+    }
+
+    /// A served table clears a previous failure and seeds one state per section, and from then on
+    /// the state is read off the SECTION's source rather than off the current server.
+    #[test]
+    fn a_served_table_clears_the_failure_and_seeds_its_states() {
+        let _g = crate::testlock::serial();
+        seed_one_source(false, false);
+        assert_eq!(cur_source_state(), SecFetch::Failed);
+        {
+            let s = source_mut(0).unwrap();
+            s.reachable = true;
+            s.sections_done = true;
+        }
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "Film Club".into(), SecKind::Movie)]);
+        assert_eq!(cur_source_state(), SecFetch::Ready);
+        assert_eq!(section_count(), 2);
+        assert!(loading_initial(), "a fresh section has not answered yet");
         reset();
     }
 

@@ -26,11 +26,10 @@ use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::icons::Icon;
-use crate::ui::label::Label;
 use crate::ui::popover::Popover;
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, Spinner};
+use crate::ui::widgets::{Art, Spinner, StatusKind};
 use crate::ui::xfade::Xfade;
 use crate::ui::{on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
@@ -71,6 +70,134 @@ enum Area {
     /// filter: picking a letter moves focus/scroll to its first title (Emby semantics). Only
     /// reachable while [`rail_on`] — the unfiltered ascending-title listing.
     Rail,
+    /// The failure read-out's **Try again**, which stands where the grid would be. Exactly one
+    /// control, so it is a band rather than a cursor; [`sync_readout_focus`] owns when it is
+    /// entered and left, because the failure can arrive (and clear) long after [`enter`].
+    Status,
+}
+
+/// What the Library's CONTENT REGION shows in place of a grid — the projection the screen draws
+/// from, and the whole read-out decision in one pure function ([`readout_of`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Readout {
+    /// nothing: the grid speaks for itself (including a grid that is merely missing a later page)
+    Grid,
+    /// the first answer for this query is still out — the spinner
+    Loading,
+    /// this source did not answer and there is nothing to show for it: verdict, reason, Try again
+    Failed,
+    /// the source answered, and the answer is nothing
+    Empty,
+}
+
+/// The read-out, from BOTH fetch states and the store. Pure, because it is the only part of this
+/// screen a host can grade and because three of its four answers were previously spread across
+/// three `else if`s in the middle of the draw.
+///
+/// **The SOURCE outranks the section, and both of its terminal answers do — while there is nothing
+/// to show.** With no table there is no section to page, so `fetch` is the `unwrap_or(Loading)` of a
+/// state that does not exist and `total` is its `unwrap_or(-1)` — i.e. the spinner, from two
+/// defaults, which is the eternal spin this whole change is about. It is not enough to catch the
+/// FAILED source: one that answered with nothing we browse (a music-only account) is `Ready` with
+/// `n_sections == 0` and lands in the same two defaults one case over. That one is `Empty` — it
+/// answered — and the read-out says so.
+///
+/// The `total < 0` gate on both is the ONE thing this rule gained from the multi-source table, and
+/// it is a real decision rather than a mechanical one: a source that has stopped answering keeps
+/// the sections it had learned and can still have a page store full of items, so "this source is
+/// gone" and "there is nothing of it on screen" stopped being the same fact. The read-out wins only
+/// when the second is true as well. What that costs is a grid you can still scroll but cannot play
+/// from — the posters are cached, the server is not there — and the alternative costs a library
+/// blanked to report a server the Sources list is already dimming. The page rule below has made the
+/// same trade since before this branch; making the two layers disagree about it would be worse than
+/// either answer.
+///
+/// Two per-section rules are the ones that keep being got wrong. A `Failed` fetch on a section that
+/// already HAS items is `Grid`: a mid-scroll page failure must not blank a working screen — the
+/// items are still there, the back-off is already counting, and `browse::pump`'s failure branch
+/// exists precisely so the store survives. And a `Ready` empty listing is `Empty`, never `Failed`:
+/// an empty library is an answer (`StatusKind::Empty`'s rule, stated in `browse::SecFetch` too).
+fn readout_of(table: crate::browse::SecFetch, n_sections: usize, fetch: crate::browse::SecFetch, total: i64) -> Readout {
+    use crate::browse::SecFetch;
+    // Both of the TABLE's terminal answers, and both gated on there being NOTHING TO SHOW — the
+    // same sentence the page rule below is gated on, and the merge is what made that matter. On the
+    // branch this came from, a failed table meant no sections at all, so "failed" and "nothing to
+    // show" were the same fact. They are not any more: a source that stops answering KEEPS every
+    // section it had learned (`BrowseSource::reachable`'s rule, the one the Sources list dims a
+    // group by), and its page store can still hold the items you were just looking at. Blanking
+    // those to say "can't reach" is the bug the page rule exists to prevent, one layer up.
+    if total < 0 {
+        match table {
+            SecFetch::Failed => return Readout::Failed,
+            SecFetch::Ready if n_sections == 0 => return Readout::Empty,
+            _ => {}
+        }
+    }
+    match fetch {
+        SecFetch::Loading => Readout::Loading,
+        SecFetch::Failed if total < 0 => Readout::Failed,
+        SecFetch::Failed => Readout::Grid,
+        SecFetch::Ready if total == 0 => Readout::Empty,
+        SecFetch::Ready => Readout::Grid,
+    }
+}
+
+/// [`readout_of`] against the live store — or, on an automated boot, against [`FailTest`].
+fn readout() -> Readout {
+    match fail_test() {
+        Some(FailTest::Dead) | Some(FailTest::Own) | Some(FailTest::Table) => return Readout::Failed,
+        Some(FailTest::Empty) => return Readout::Empty,
+        None => {}
+    }
+    readout_of(
+        crate::browse::cur_source_state(),
+        crate::browse::section_count(),
+        crate::browse::fetch_state(),
+        crate::browse::total(),
+    )
+}
+
+/// `/tmp/plxnative-libfail` — force one read-out state, for the device pass.
+///
+/// This screen's failure is the one state in the app that **cannot be reached on purpose**: it
+/// needs a server that refuses to answer. The honest way is `tools/netcond.py` scoped to the page
+/// request, and that stays the real test — but it is three moving parts (a proxy, a recompiled
+/// `PMS_PORT`, and a macOS firewall prompt that silently swallows the TV's connections until it is
+/// allowed once), and every one of them fails looking exactly like "the app is fine". This makes
+/// the READ-OUT reachable with a file, so a capture grades the drawing rather than the plumbing.
+///
+/// It forces the projection only. Nothing downstream is faked: `browse` keeps whatever state it
+/// really has, Try again still re-kicks a real fetch, and the moment the file is gone the screen is
+/// back on [`readout_of`]. Behind `devtriggers` like every other trigger, so it does not exist in a
+/// `RELEASE=1` build.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FailTest {
+    /// (empty file, or `dead`) a BORROWED source that did not answer — the design's case, with the
+    /// reason line drawn. The owner is the REAL one whenever the browsed source has a handle; the
+    /// stand-in is only the fallback for a one-server account, where the three-block read-out has
+    /// no way to reach a panel at all and a capture is the only thing that grades its layout.
+    Dead,
+    /// `own` — the same failure on YOUR OWN server: verdict and action, no reason line, because
+    /// there is no owner to name.
+    Own,
+    /// `table` — the failure one layer up, a section list that could not be fetched.
+    Table,
+    /// `empty` — reachable and empty: a statement, no Retry, no danger tint.
+    Empty,
+}
+
+fn fail_test() -> Option<FailTest> {
+    // Read ONCE. `readout()` is asked several times a frame, and a `stat` per call on a path in the
+    // shared `/tmp` is not something to put in a draw loop.
+    static ONCE: std::sync::OnceLock<Option<FailTest>> = std::sync::OnceLock::new();
+    *ONCE.get_or_init(|| {
+        crate::dev::read("libfail").map(|v| match v.as_str() {
+            "own" => FailTest::Own,
+            "table" => FailTest::Table,
+            "empty" => FailTest::Empty,
+            _ => FailTest::Dead,
+        })
+    })
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Menu {
@@ -146,6 +273,10 @@ static mut TABLE: TableView = TableView::new();
 /// update() rebuilds the menu in place when the live server list outgrows this.
 static mut MENU_BUILT: usize = 0;
 static mut PHASE_MS: f32 = 0.0; // spinner phase accumulator
+/// The failure read-out's Try again pill, recorded at draw for the pointer (the `TOOL_RECTS` /
+/// `RAIL_RECTS` idiom). Parked OFF the panel rather than at the origin, because `Rect::contains`
+/// is inclusive and a zero-size rect at (0,0) would "contain" a click at exactly (0,0).
+static mut STATUS_BTN: Rect = Rect::new(-1.0, -1.0, 0.0, 0.0);
 /// Chip rects for pointer hit-testing, in [`chips`] order. The row is two or three long, so the
 /// unused slot stays a zero rect — and every scan tests `w > 0.5` first, because a zero rect at the
 /// origin `contains` the origin.
@@ -316,22 +447,38 @@ fn view_filter_value() -> String {
 fn source_chip_on() -> bool {
     crate::browse::sources().len() > 1
 }
+const CHIPS_NONE: [Chip; 0] = [];
+const CHIPS_SOURCE_ONLY: [Chip; 1] = [Chip::Source];
 const CHIPS_ONE: [Chip; 2] = [Chip::Sort, Chip::Filter];
 const CHIPS_MANY: [Chip; 3] = [Chip::Source, Chip::Sort, Chip::Filter];
-/// The chips on the toolbar, in drawn order — Source FIRST when it exists.
+/// The chips DRAWN, in drawn order — Source FIRST when it exists. The ONE predicate behind the
+/// draw, the pointer scan and the vertical walk, so a chip can never be invisible-and-clickable or
+/// drawn-and-unreachable.
+///
+/// **The failure read-out takes the grid's controls away and keeps navigation.** Sort and Filter
+/// act on a grid that has no items, so neither is drawn (nor is the count, nor the A–Z rail); the
+/// Source chip is how you LEAVE a dead source, which is exactly why the read-out spends no line
+/// telling you the way out (`Shared Sources.dc.html` D). With one source there is no Source chip to
+/// keep, so that row empties completely and the tab strip above is the way out.
+///
+/// An OPEN menu is the exception: it is anchored under its own chip and would otherwise be a panel
+/// hanging off nothing — a listing can fail while its Filter menu is up, and a chip must outlive
+/// the panel it opened.
 fn chips() -> &'static [Chip] {
-    if source_chip_on() {
-        &CHIPS_MANY
-    } else {
-        &CHIPS_ONE
+    match (source_chip_on(), readout() == Readout::Failed && !menu_open()) {
+        (true, false) => &CHIPS_MANY,
+        (true, true) => &CHIPS_SOURCE_ONLY,
+        (false, false) => &CHIPS_ONE,
+        (false, true) => &CHIPS_NONE,
     }
 }
-/// The chip holding toolbar focus. `TOOL_F` is clamped here rather than everywhere it is read: the
-/// row's length changes the moment a second source is granted, and a stale index must resolve to a
-/// chip that exists, never to one that does not.
-fn focused_chip() -> Chip {
+/// The chip holding toolbar focus, or `None` when the row is EMPTY — which it is on a one-source
+/// failure, where every chip this toolbar has is a grid operation. `TOOL_F` is clamped here rather
+/// than everywhere it is read: the row's length changes the moment a second source is granted (and
+/// again the moment one stops answering), and a stale index must resolve to a chip that exists.
+fn focused_chip() -> Option<Chip> {
     let c = chips();
-    c[unsafe { addr_of!(TOOL_F).read() }.min(c.len() - 1)]
+    c.get(unsafe { addr_of!(TOOL_F).read() }.min(c.len().saturating_sub(1))).copied()
 }
 
 /// THE chip → menu map, and the ONE place a chip is turned into an action. Both activation paths
@@ -395,11 +542,196 @@ static mut RAIL_LABELS: Option<(u32, usize, Vec<CString>)> = None; // (sections_
 // (total, the section TYPE's noun, the rendered string) — keyed on the noun rather than on a
 // movie/show boolean, because a section is one of four types now (`browse::SecKind`)
 static mut COUNT_C: Option<(i64, &'static str, CString)> = None;
+/// The failure read-out's two runtime lines, keyed on the RAW source labels they were built from
+/// (`(name, handle)`) — see [`dead_strs`] for why that rather than a generation, and why the key is
+/// the raw pair rather than the resolved one.
+static mut DEAD_C: Option<(String, String, CString, Option<CString>)> = None;
+/// The Empty read-out's caption, cached per (section table, section, filtered) — the three inputs
+/// that can change what it says.
+static mut EMPTY_C: Option<(u32, usize, bool, CString)> = None;
 // letter rail: focused letter + the per-letter rects recorded at draw (pointer hit-testing)
 const MAX_LETTERS: usize = 34; // A–Z + digits/# buckets
 static mut RAIL_F: usize = 0;
 static mut RAIL_RECTS: [Rect; MAX_LETTERS] = [Rect::new(0.0, 0.0, 0.0, 0.0); MAX_LETTERS];
 static mut RAIL_N: usize = 0;
+
+// ---- the section read-out: what it says, where it sits, what its one control does ------------
+//
+// `Shared Sources.dc.html` deliverable D. A borrowed server that does not answer is stated in two
+// places, neither of them Home — the Sources list, and here. The rules that are easy to lose:
+//
+//   * The failure owns the GRID, not the screen. It is anchored in the content region and the
+//     chrome above it — profile chip, tab strip, the Source chip — is untouched and still live.
+//     That difference is the whole message: a section failed, the app did not.
+//   * The verdict names the MACHINE ("Can't reach <machine>") and the reason names the PERSON
+//     ("Shared by <handle> · your own server is fine."). This is the one place outside the Sources
+//     list that speaks a machine name, because the machine is what failed; and the reason does two
+//     jobs at once — whose it is, and that nothing else is down.
+//   * Those are the only two identifying strings this screen renders, and the list is CLOSED. No
+//     address, no path, no URL, no machineIdentifier, no token — `ui::stats`' redaction rule, and
+//     for its reason: a read-out is something a user PHOTOGRAPHS for a bug report, and on a
+//     borrowed source the machine is not even theirs to publish.
+//   * NO alert glyph (that mark is the player's), no BACK hint (BACK is universal, and the chip
+//     and tabs above are the visible way out), no sort/filter chips, no count, no rail — all four
+//     of those act on a grid that has no items.
+
+/// The band the grid occupies — what the read-out is ABOUT, and where it is anchored.
+///
+/// Deliberately NOT `Rect::FULL`, which is the read-out's canonical position everywhere else: a
+/// block centred on the panel says the APP failed. Centring it on the content region says this
+/// section did, and leaves the live chrome above it saying so.
+fn content_region() -> Rect {
+    Rect::new(MARGIN_X, GRID_TOP, SCR_W - 2.0 * MARGIN_X, SCR_H - GRID_TOP - theme::space::LG)
+}
+
+/// How many toolbar chips are DRAWN — [`chips`]'s length, and nothing else. The whole decision
+/// (which chips a failure keeps, and that an open menu keeps its anchor) lives in `chips`, so the
+/// walk and the draw cannot answer it differently.
+///
+/// One cost is recorded here so it is not rediscovered as a surprise: a query the SERVER rejects
+/// outright (a sort key it 400s on) fails the same way a dead server does, and the chips that could
+/// have changed it are not drawn — so *Try again* re-runs the same losing query, and the way out is
+/// the Source chip, another section, or Home. Drawing Sort and Filter over the failure is in the
+/// design's rejected column ("they act on a grid that has no items") and clearing the user's filter
+/// behind their back is worse than either, so this stands.
+fn toolbar_n() -> usize {
+    chips().len()
+}
+
+/// The failure read-out's verdict + reason — the machine that failed, and the person who shared it.
+///
+/// **The owner is real now.** On the branch this came from it was hard-wired `None` with a note
+/// that nothing yet mapped a section to the source it came from; the multi-source table is exactly
+/// that mapping, so `browse::cur_source_labels` answers both halves and the reason line stops being
+/// a stand-in. An empty handle still means YOUR OWN server, and the line is then ABSENT rather than
+/// empty — our own server failing is a complete statement and there is nobody to name.
+///
+/// Cached, and keyed on the STRINGS rather than on a generation, because that is what actually
+/// changes: a machine names itself through `friendlyName`, which lands on a worker long after the
+/// table generation last moved, and a cache keyed on the generation would hold "Can't reach "
+/// forever. Two `&str` comparisons a frame, and only while the read-out is on screen.
+fn dead_strs() -> &'static (String, String, CString, Option<CString>) {
+    // Keyed on the RAW labels, which are two `&'static str` reads off this module's own table — and
+    // the staleness check runs BEFORE anything resolves them. It used to resolve first and compare
+    // after, which meant `source_labels`' session fallback ran every drawn frame the read-out was
+    // up: a file read and a JSON parse, in the one state where that fallback is guaranteed to fire
+    // (a source that never answered can never have supplied a `friendlyName`).
+    let (name, handle) = crate::browse::cur_source_labels();
+    let cache = unsafe { &mut *addr_of_mut!(DEAD_C) };
+    let stale = cache.as_ref().map(|(n, h, _, _)| n != name || h != handle).unwrap_or(true);
+    if stale {
+        let (machine, owner) = source_labels();
+        let verdict = CString::new(format!("Can't reach {machine}")).unwrap_or_default();
+        let reason = owner
+            .as_ref()
+            .map(|o| CString::new(format!("Shared by {o} \u{b7} your own server is fine.")).unwrap_or_default());
+        *cache = Some((name.to_string(), handle.to_string(), verdict, reason));
+    }
+    cache.as_ref().unwrap()
+}
+
+/// The two names the read-out may speak, resolved for the source the screen is showing.
+///
+/// The MACHINE falls back to the session's own server name and then to a WORD — never to the
+/// address, though it is right there in the client. This read-out is photographable (it is what a
+/// user sends when reporting "my friend's library stopped working") and `ui::stats` already settled
+/// the rule for anything a camera can reach: no URL, no path, no address, no machineIdentifier. On
+/// a BORROWED source that reasoning is stronger, because the machine is a third party's.
+///
+/// The OWNER is `None` for your own server. [`FailTest::Dead`] can put a stand-in there, and only
+/// there: with one server and nothing shared, the design's three-block read-out has no way to
+/// appear on a real panel at all, and a capture of it is the only thing that grades the layout.
+fn source_labels() -> (String, Option<String>) {
+    let (name, handle) = crate::browse::cur_source_labels();
+    let machine = if !name.is_empty() {
+        name.to_string()
+    } else {
+        let session = crate::plex::session::peek().server.name;
+        if session.is_empty() {
+            "this server".to_string()
+        } else {
+            session
+        }
+    };
+    let owner = if handle.is_empty() {
+        (fail_test() == Some(FailTest::Dead)).then(|| STANDIN_OWNER.to_string())
+    } else {
+        Some(handle.to_string())
+    };
+    (machine, owner)
+}
+
+/// The stand-in handle [`FailTest::Dead`] falls back to. A DOCUMENTATION placeholder, deliberately
+/// not a plausible one: it is drawn on a real screen and may be photographed, and a real person's
+/// plex.tv handle is not ours to put on a television.
+const STANDIN_OWNER: &str = "friend";
+
+/// The Empty read-out's caption. A library the server ANSWERED for and that holds nothing is
+/// named — "No films in Film Club" — because the name is what makes it a statement rather than a
+/// shrug. A listing emptied by a FILTER is not the library being empty and must not claim to be.
+fn empty_caption() -> &'static CString {
+    let sec = crate::browse::cur();
+    let gen = crate::browse::sections_gen();
+    let filtered = crate::browse::unwatched() || crate::browse::genre_sel().is_some();
+    let cache = unsafe { &mut *addr_of_mut!(EMPTY_C) };
+    let stale = cache.as_ref().map(|(g, s, f, _)| *g != gen || *s != sec || *f != filtered).unwrap_or(true);
+    if stale {
+        let s = if crate::browse::section_count() == 0 {
+            // the table itself answered with nothing we browse (a music-only account) — there is no
+            // section to name, and naming one would be inventing it
+            "No libraries on this server".to_string()
+        } else if filtered {
+            "Nothing here matches".to_string()
+        } else {
+            // the TYPE's own noun — a section is one of four kinds now, so "films" is a guess
+            // rather than an answer for three of them
+            let noun = crate::browse::section_kind(sec).map(|k| k.noun()).unwrap_or("items");
+            format!("No {noun} in {}", crate::browse::section_title(sec))
+        };
+        *cache = Some((gen, sec, filtered, CString::new(s).unwrap_or_default()));
+    }
+    &cache.as_ref().unwrap().3
+}
+
+/// The read-out's one action: re-kick THIS source, and nothing else in the app.
+///
+/// Two layers can have failed and the fix differs. A failed section TABLE is re-fetched here and
+/// now — blocking, one small GET, the same call [`enter`] makes on every route entry, so a dead
+/// server costs the connect timeout exactly as leaving and coming back does. A failed PAGE only
+/// needs its back-off cleared: `browse` is already counting down to the next automatic attempt, and
+/// the button's job is to skip the wait rather than to start a second fetch.
+fn retry_source() {
+    // `browse` owns WHICH layer failed — it holds the per-source flags — and clears the back-off on
+    // both, which is the right answer either way. Nothing blocks and nothing re-enters the screen:
+    // a table that lands arrives through `pump`'s worker like any other source's, and the read-out
+    // clears itself on the frame `readout()` stops saying Failed.
+    crate::browse::retry_cur_source();
+}
+
+/// Keep the focus band and the read-out in agreement, every frame. The failure can arrive long
+/// after [`enter`] (a first page that fails two seconds in) and can clear without a keypress (the
+/// automatic retry succeeding), and the grid and the read-out can never both hold focus — one of
+/// them is not on screen. Focus LANDS on Try again rather than beside it, because a server that did
+/// not answer often answers a second later and that press is the reason the control exists.
+fn sync_readout_focus() {
+    let failed = readout() == Readout::Failed;
+    unsafe {
+        // the rail goes first: it is taken away by EVERY read-out, not only the failure, and a
+        // focus band left on it is one that only LEFT can escape
+        if AREA == Area::Rail && !rail_drawn() {
+            AREA = Area::Grid;
+        }
+        // The bands the failure takes away: the grid and its rail always, the toolbar only when it
+        // has nothing left to hold. A control that is not drawn must not hold focus — the same rule
+        // that stops it being clickable.
+        let undrawn = matches!(AREA, Area::Grid | Area::Rail) || (AREA == Area::Toolbar && toolbar_n() == 0);
+        if failed && undrawn {
+            AREA = Area::Status;
+        } else if !failed && AREA == Area::Status {
+            AREA = Area::Grid;
+        }
+    }
+}
 
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
@@ -422,6 +754,16 @@ fn tab_focus() -> c_int {
     } else {
         -1
     }
+}
+
+/// The pill focus LANDS on when it walks up into the tab row.
+fn own_pill() -> usize {
+    // The pill that REPRESENTS this section, which for a borrowed library is its type's — and then
+    // clamped into the pills that EXIST. With no section table there is only Home, and an index
+    // past the last pill is a highlight on nothing: reachable now that a failed discovery keeps the
+    // user on this screen instead of bailing out of `enter` before it had a table.
+    let p = crate::browse::tab_of_section(view_section()) + 1;
+    p.min(crate::ui::widgets::tab_count().saturating_sub(1))
 }
 
 /// The tab pill holding focus, as a plain index — what a route change LEAVING this screen carries
@@ -505,21 +847,25 @@ pub(crate) enum Arrival {
 pub(crate) fn enter(tab: usize, arrival: Arrival) {
     flush(); // a reload queued on the way out is applied, not dropped (see [`flush`])
     let n = crate::browse::ensure_sections();
-    if n == 0 {
-        return;
-    }
-    // `tab` is a PILL index (`app.rs`'s `Nav::Library`, which derives it from the pill pressed),
-    // and a pill is a type rather than a library — so it is resolved through the projection here,
-    // at the ONE boundary where the strip's index space enters this screen.
-    crate::browse::set_cur(crate::browse::tab_section(tab.min(crate::browse::tab_count().saturating_sub(1))));
-    crate::browse::kick_letters();
-    restore_view();
-    // with more libraries than fit the row, a section past the visible pills would open with its
-    // own tab off screen (the `/tmp/plxnative-library=N` boot, or a restored far-right section).
-    // Put it on screen once, here, rather than dragging the row every frame — but only on a CUT;
-    // see `Arrival::Faded` for why a jump is both wrong and redundant under a travelling capsule.
-    if matches!(arrival, Arrival::Cut) {
-        crate::ui::widgets::tab_row_reveal(crate::browse::tab_of_section(crate::browse::cur()) + 1);
+    // A table that could not be FETCHED used to return here, before a single line of screen state
+    // was set — which left the focus band wherever the last visit had parked it, on a screen that
+    // now has no grid and no chips. The discovery failing is a state this screen draws (the read-out
+    // one layer up), so it is entered like any other: everything below runs, and only the parts
+    // that index a section are skipped.
+    if n > 0 {
+        // `tab` is a PILL index (`app.rs`'s `Nav::Library`, which derives it from the pill pressed),
+        // and a pill is a type rather than a library — so it is resolved through the projection here,
+        // at the ONE boundary where the strip's index space enters this screen.
+        crate::browse::set_cur(crate::browse::tab_section(tab.min(crate::browse::tab_count().saturating_sub(1))));
+        crate::browse::kick_letters();
+        restore_view();
+        // with more libraries than fit the row, a section past the visible pills would open with its
+        // own tab off screen (the `/tmp/plxnative-library=N` boot, or a restored far-right section).
+        // Put it on screen once, here, rather than dragging the row every frame — but only on a CUT;
+        // see `Arrival::Faded` for why a jump is both wrong and redundant under a travelling capsule.
+        if matches!(arrival, Arrival::Cut) {
+            crate::ui::widgets::tab_row_reveal(crate::browse::tab_of_section(crate::browse::cur()) + 1);
+        }
     }
     unsafe {
         AREA = Area::Grid;
@@ -528,6 +874,9 @@ pub(crate) fn enter(tab: usize, arrival: Arrival) {
         PENDING = Pending::None; // whatever was queued before we left has just been flushed
         EPOCH = crate::browse::query_gen(); // AFTER `set_cur` above, so our own bump isn't foreign
     }
+    // ...and then the read-out takes the band if it owns the content region, so an entry onto a
+    // dead source opens ON Try again rather than on the frame after it
+    sync_readout_focus();
     // Route entry has NO outgoing content: park at 0 and fade in once the listing exists (the very
     // next frame for a section whose store is still resident). This is also the ONE recovery for a
     // fader left mid-phase by leaving the screen — only this route steps it.
@@ -595,6 +944,17 @@ fn apply_section(i: usize) {
 fn rail_on() -> bool {
     crate::browse::rail_available()
 }
+/// Is the A–Z rail actually on screen? The ONE answer, read by the draw, by the RIGHT key that
+/// enters it and by [`sync_readout_focus`] — the `toolbar_n` rule applied to the other control
+/// this screen can take away.
+///
+/// It INDEXES a grid, so any read-out standing in for one takes it with it. Its letters do not:
+/// they are query-independent and stay resident from the listing that worked before this one
+/// failed, so `rail_on` alone would happily draw a rail into an empty region — and, worse, let
+/// RIGHT park focus on it, since with no items `cols_in_row` is 0 and RIGHT always falls through.
+fn rail_drawn() -> bool {
+    rail_on() && !menu_open() && readout() == Readout::Grid
+}
 /// The rail letter whose range contains item `idx`.
 fn letter_of(idx: usize) -> usize {
     let mut sum = 0usize;
@@ -635,7 +995,12 @@ pub(crate) fn update(dt: f32) {
     // ---- content cross-fade. FIRST, because the commit frame teleports SCROLL/GR/GC and the
     // wanted window below must be computed from the POST-swap scroll (the same reason that window
     // is computed before `pump`).
-    let ready = !crate::browse::loading_initial(); // the SAME `st.total` the draw loops read
+    // "There is something to show" — which is a READ-OUT as much as a grid. This used to ask
+    // `!browse::loading_initial()`, i.e. "did a section answer", and a table that answered with
+    // NOTHING BROWSABLE has no section to answer: `fetch_state()` falls through its `unwrap_or`
+    // forever, the fader never left its hold, and the empty read-out was drawn at alpha 0 on a
+    // screen that looked simply blank. `readout()` is the one question with the right shape.
+    let ready = readout() != Readout::Loading;
     if xf().tick(dt, ready) {
         apply_pending();
     }
@@ -661,6 +1026,9 @@ pub(crate) fn update(dt: f32) {
     if crate::browse::pump() {
         clamp_focus();
     }
+    // AFTER the pump: a landing is exactly what turns the grid into a read-out (or back), and the
+    // focus band must not spend a frame on the one that is no longer drawn.
+    sync_readout_focus();
     // waiting menu data re-kicks each frame (self-guarded): the single-flight fetch flags are
     // GLOBAL, so a fetch busy on another section must not permanently starve this one
     if crate::browse::letters().is_empty() {
@@ -763,7 +1131,9 @@ pub(crate) fn move_focus(sym: c_uint) {
                 } else if sym == SDLK_RIGHT && TAB_F + 1 < n {
                     TAB_F += 1;
                 } else if sym == SDLK_DOWN {
-                    AREA = Area::Toolbar;
+                    // DOWN goes to the first band that is DRAWN — the toolbar normally, the failure
+                    // read-out when the chips it would land on are not there
+                    AREA = if toolbar_n() > 0 { Area::Toolbar } else { Area::Status };
                 }
             }
             Area::Toolbar => {
@@ -773,11 +1143,13 @@ pub(crate) fn move_focus(sym: c_uint) {
                     TOOL_F += 1;
                 } else if sym == SDLK_UP {
                     AREA = Area::Tabs;
-                    // the pill the chrome is showing, not the store's — and the pill that
-                    // REPRESENTS it, which for a borrowed library is its type's
-                    TAB_F = crate::browse::tab_of_section(view_section()) + 1;
-                } else if sym == SDLK_DOWN && total() > 0 {
-                    AREA = Area::Grid;
+                    TAB_F = own_pill();
+                } else if sym == SDLK_DOWN {
+                    if readout() == Readout::Failed {
+                        AREA = Area::Status;
+                    } else if total() > 0 {
+                        AREA = Area::Grid;
+                    }
                 }
             }
             Area::Grid => {
@@ -787,7 +1159,7 @@ pub(crate) fn move_focus(sym: c_uint) {
                 } else if sym == SDLK_RIGHT {
                     if GC + 1 < cols_in_row(GR) {
                         GC += 1;
-                    } else if rail_on() {
+                    } else if rail_drawn() {
                         // RIGHT off the last column enters the letter rail at the current letter
                         AREA = Area::Rail;
                         RAIL_F = letter_of(focus_idx());
@@ -816,6 +1188,21 @@ pub(crate) fn move_focus(sym: c_uint) {
                     rail_jump(RAIL_F + 1);
                 } else if sym == SDLK_LEFT {
                     AREA = Area::Grid; // back into the grid at the jumped position
+                }
+            }
+            Area::Status => {
+                // ONE control, so there is nowhere to walk sideways or down to. UP leaves the
+                // read-out for the chrome above it, which never went down — the toolbar when it has
+                // a chip to hold, else the tab strip. The read-out therefore spends no line telling
+                // the user how to get out: every exit is a control they can already see.
+                if sym == SDLK_UP {
+                    if toolbar_n() > 0 {
+                        AREA = Area::Toolbar;
+                        TOOL_F = 0;
+                    } else {
+                        AREA = Area::Tabs;
+                        TAB_F = own_pill();
+                    }
                 }
             }
         }
@@ -880,12 +1267,20 @@ pub(crate) fn on_ok() -> Action {
         Area::Toolbar => {
             // matched on the CHIP, never on its index: the row is two chips long with one source
             // and three with two, so position is not identity
-            open_chip_menu(focused_chip());
+            // `None` only when the row is empty, which is the one-source failure — and then the
+            // toolbar is not a band focus can be in at all (`sync_readout_focus`)
+            if let Some(c) = focused_chip() {
+                open_chip_menu(c);
+            }
             Action::None
         }
         Area::Grid => Action::Card,
         Area::Rail => {
             unsafe { AREA = Area::Grid }; // OK on a letter lands in the grid at that title
+            Action::None
+        }
+        Area::Status => {
+            retry_source();
             Action::None
         }
     }
@@ -918,7 +1313,7 @@ pub(crate) fn back() -> bool {
     if area() != Area::Tabs {
         unsafe {
             AREA = Area::Tabs;
-            TAB_F = crate::browse::tab_of_section(crate::browse::cur()) + 1;
+            TAB_F = own_pill(); // `flush` above has made the chrome and the store agree
         }
         return true;
     }
@@ -1287,9 +1682,16 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) {
             return;
         }
         let tools = addr_of!(TOOL_RECTS).read();
+        // `w > 0.5` rather than a slice by the row's length: a chip that is not drawn parks its
+        // rect, so the geometry itself says what is hittable and the scan cannot outlive a shorter
+        // row (the failure read-out drops Sort and Filter — see `chips`).
         if let Some(i) = tools.iter().position(|r| r.w > 0.5 && r.contains(mx, my)) {
             AREA = Area::Toolbar;
             TOOL_F = i;
+            return;
+        }
+        if status_btn_at(mx, my) {
+            AREA = Area::Status;
             return;
         }
         if let Some(i) = rail_at(mx, my) {
@@ -1365,8 +1767,17 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
         // resolved through the CHIP the click landed on, exactly as the key path does. It used to
         // defer to `on_ok`, which reads the FOCUSED chip — `pointer_focus` above has just moved
         // focus there, so the two agreed by side effect rather than by construction.
-        open_chip_menu(chips()[i.min(chips().len() - 1)]);
+        // `get`, not an index: the row can be EMPTY now (a one-source failure drops every chip it
+        // has), and `saturating_sub(1)` would then index an empty slice. Unreachable today because
+        // an undrawn chip parks its rect and the scan above tests `w > 0.5` — which is exactly the
+        // kind of "safe by a fact somewhere else" that stops being true when the row changes again.
+        if let Some(&c) = chips().get(i) {
+            open_chip_menu(c);
+        }
         return Action::None;
+    }
+    if status_btn_at(mx, my) {
+        return on_ok(); // `pointer_focus` above has already parked the band on the pill
     }
     if let Some(i) = rail_at(mx, my) {
         rail_jump(i); // pointer click on a letter = the jump
@@ -1376,6 +1787,12 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
         return Action::Card;
     }
     Action::None
+}
+
+/// Is the pointer on the failure read-out's Try again pill? Rect recorded at draw and parked off
+/// the panel whenever the read-out is not up, so a stale one cannot be clicked (see [`STATUS_BTN`]).
+fn status_btn_at(mx: f32, my: f32) -> bool {
+    unsafe { addr_of!(STATUS_BTN).read() }.contains(mx, my)
 }
 
 /// The rail letter under the pointer, or None (rects recorded at draw; empty when hidden).
@@ -1508,26 +1925,43 @@ pub(crate) fn draw() {
     // jump keeps the landed card visibly anchored
     let focused_pass = matches!(area(), Area::Grid | Area::Rail) && !menu_open();
 
-    // ---- grid: pass 1 — every non-focused visible cell (row-culled; resolve only on-screen) --
+    // ---- the content region: a grid, or the ONE read-out that stands in for it ----------------
+    // The spinner and the failure draw on `p`, not `pg`: a status must stay legible while the
+    // content band is dark (`Xfade`'s rule — never fade a read-out with the content it replaces).
+    // The empty line rides `pg` because it IS a function of the listing, and dissolves with it.
     let t = total();
-    if crate::browse::loading_initial() {
-        Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
-            .phase(unsafe { addr_of!(PHASE_MS).read() } as u32)
-            .draw(&Env::inert(), p);
-    } else if crate::browse::failed_initial() {
-        // A failed first page now STOPS the spinner (`browse::SecFetch`), so this line is what the
-        // user sees instead of a grid that spins forever. It is a placeholder for the real failure
-        // read-out — caption, reason, Try again — which lands with the `StatusOverlay` treatment;
-        // it draws on `p`, not `pg`, for the reason the spinner does: a status must stay legible
-        // while the content band is dark. `browse` keeps retrying underneath it.
-        Label::new(c"Couldn't load this library".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
-            .h(crate::ui::label::HAlign::Center)
-            .draw(p, Rect::new(0.0, SCR_H * 0.5 - 20.0, SCR_W, 40.0));
-    } else if t == 0 {
-        Label::new(c"Nothing here matches".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY)
-            .h(crate::ui::label::HAlign::Center)
-            .draw(pg, Rect::new(0.0, SCR_H * 0.5 - 20.0, SCR_W, 40.0));
+    let read = readout();
+    let mut status_btn = Rect::new(-1.0, -1.0, 0.0, 0.0);
+    match read {
+        Readout::Loading => {
+            Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
+                .phase(unsafe { addr_of!(PHASE_MS).read() } as u32)
+                .draw(&Env::inert(), p);
+        }
+        Readout::Failed => {
+            // Anchored in the CONTENT REGION, not on the panel: the chrome above is still live, and
+            // that is the difference between a section failing and the app failing. No spinner
+            // (`browse` retries underneath, and a spinner for a source that isn't coming would hold
+            // the panel presenting — `ui::idle`), no alert glyph, one action.
+            let (_, _, verdict, reason) = dead_strs();
+            let mut ov = crate::ui::widgets::StatusOverlay::new(content_region(), verdict, StatusKind::Failed)
+                .action(c"Try again")
+                .focused(area() == Area::Status && !menu_open());
+            if let Some(r) = reason {
+                ov = ov.reason(r);
+            }
+            ov.draw(&Env::inert(), p);
+            status_btn = ov.action_frame().unwrap_or(status_btn);
+        }
+        Readout::Empty => {
+            // NOT `Failed`, and so no danger tint and no Retry: the server answered, and its answer
+            // was nothing. There is nothing here to try again.
+            crate::ui::widgets::StatusOverlay::new(content_region(), empty_caption(), StatusKind::Empty)
+                .draw(&Env::inert(), pg);
+        }
+        Readout::Grid => {}
     }
+    unsafe { *addr_of_mut!(STATUS_BTN) = status_btn };
     // visible row RANGE by arithmetic, not an O(totalSize) walk (a 10k-item section must not
     // cost 1.7k iterations per frame); rows fully under the opaque top-chrome scrim are culled
     // too — drawing the full card composite beneath it was pure fill-rate waste.
@@ -1536,9 +1970,18 @@ pub(crate) fn draw() {
     // being called for the incoming section's visible tiles until the fade-IN starts — delaying
     // every poster fetch by the length of the fade. The 64-slot LRU must see the on-screen
     // requests exactly as early as it does today.
+    //
+    // The read-out STANDS IN PLACE OF the grid, so a state that draws one draws no tiles. In the
+    // product that is already true by arithmetic — every non-`Grid` read-out has `total <= 0` and
+    // `n_rows()` is 0 — but it is true by ARITHMETIC, not by construction, which is exactly the
+    // kind of agreement that stops holding the moment something else decides the state (the
+    // `libfail` boot). It costs no poster fetch: there are no tiles to resolve in those states.
     let r_lo = (((sc - CARD_H - GLOW_PAD) / PITCH).floor().max(0.0)) as usize; // loose; per-row cull is exact
     let r_hi = ((((sc + SCR_H - GRID_TOP) / PITCH).ceil()).max(0.0) as usize + 1).min(n_rows());
     for r in r_lo..r_hi {
+        if read != Readout::Grid {
+            break;
+        }
         let y = GRID_TOP + r as f32 * PITCH - sc;
         if !on_axis(y, CARD_H, SCR_H, GLOW_PAD) || y + CARD_H < 150.0 {
             continue;
@@ -1565,7 +2008,7 @@ pub(crate) fn draw() {
     // chrome: the toolbar/pills win, so a focused card scrolling through the top band slides
     // beneath the Sort/Filter chips instead of popping over them (Home's convention; this used to
     // draw after the chrome and inverted it).
-    if focused_pass && t > 0 {
+    if focused_pass && t > 0 && read == Readout::Grid {
         let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
         let y = GRID_TOP + r as f32 * PITCH - sc;
         let x = MARGIN_X + c as f32 * (CARD_W + LGAP);
@@ -1621,9 +2064,12 @@ pub(crate) fn draw() {
     }
     unsafe { *addr_of_mut!(TOOL_RECTS) = rects };
 
-    // item count, right-aligned on the toolbar line (cached — changes only on re-query)
+    // Item count, right-aligned on the toolbar line (cached — changes only on re-query). It counts
+    // what the GRID holds, so it goes with the grid: absent on the failure (the design's rule —
+    // there is nothing to count) and absent beside the empty read-out too, which already says the
+    // same thing in words and does not need "0 films" agreeing with it.
     let tot = crate::browse::total();
-    if tot >= 0 {
+    if tot >= 0 && read == Readout::Grid {
         let noun = crate::browse::section_kind(crate::browse::cur()).map(|k| k.noun()).unwrap_or("items");
         let cache = unsafe { &mut *addr_of_mut!(COUNT_C) };
         if cache.as_ref().map(|(ct, cn, _)| *ct != tot || *cn != noun).unwrap_or(true) {
@@ -1693,7 +2139,7 @@ fn src_pill_at(mx: f32, my: f32) -> Option<usize> {
 /// centered in the grid band on the right edge. The letter holding rail focus is a snow disc;
 /// the letter containing the current grid focus reads primary; the rest tertiary.
 fn draw_rail(p: Painter) {
-    if !rail_on() || menu_open() {
+    if !rail_drawn() {
         unsafe { RAIL_N = 0 };
         return;
     }
@@ -1863,13 +2309,132 @@ mod tests {
         assert_eq!(focused_pill(), None, "a menu owns the frame; the row underneath is not focused");
         unsafe { MENU = Menu::None };
 
-        for a in [Area::Grid, Area::Toolbar, Area::Rail] {
+        for a in [Area::Grid, Area::Toolbar, Area::Rail, Area::Status] {
             unsafe { AREA = a };
             assert_eq!(focused_pill(), None, "focus is not on the tab row");
         }
 
         unsafe { AREA = area0; MENU = menu0; TAB_F = tab0 };
         clear();
+    }
+
+    // ---- the section read-out ------------------------------------------------------------------
+    //
+    // [`readout_of`] is PURE — no statics, so no lock and no ordering — which is the whole reason
+    // the decision was pulled out of the middle of `draw` in the first place: it is the only part
+    // of a failure state a host can grade at all, and every one of its four answers used to be an
+    // `else if` nothing could reach without a television.
+
+    use crate::browse::SecFetch;
+
+    /// The failure the screen exists for: this source did not answer, and there is nothing of it to
+    /// show. Anything less than the full read-out here is the eternal spinner coming back.
+    #[test]
+    fn a_failed_fetch_with_nothing_to_show_is_the_failure_read_out() {
+        assert_eq!(readout_of(SecFetch::Ready, 2, SecFetch::Failed, -1), Readout::Failed);
+    }
+
+    /// …and the mirror of it. A page failing mid-scroll on a section that already HAS items must
+    /// not blank a working grid: the items are on screen, the back-off is counting, and a read-out
+    /// over them would throw away a library the user can still browse to report a missing page.
+    #[test]
+    fn a_failed_page_over_a_populated_grid_leaves_the_grid_alone() {
+        assert_eq!(readout_of(SecFetch::Ready, 2, SecFetch::Failed, 185), Readout::Grid);
+    }
+
+    /// A server that answered with nothing is `Empty` — never `Failed`, so no danger tint and no
+    /// Retry. An empty library is an answer, and the read-out states it rather than blaming it.
+    #[test]
+    fn a_reachable_but_empty_library_is_an_answer_not_a_fault() {
+        assert_eq!(readout_of(SecFetch::Ready, 2, SecFetch::Ready, 0), Readout::Empty);
+        assert_ne!(readout_of(SecFetch::Ready, 2, SecFetch::Ready, 0), Readout::Failed);
+        assert_eq!(readout_of(SecFetch::Ready, 2, SecFetch::Ready, 1), Readout::Grid, "a listing with items is just the grid");
+    }
+
+    /// Only a first fetch that has not answered yet is the spinner — the state that must be
+    /// reachable exactly once per query, or it is the bug all over again.
+    #[test]
+    fn only_an_unanswered_first_fetch_spins() {
+        assert_eq!(readout_of(SecFetch::Ready, 2, SecFetch::Loading, -1), Readout::Loading);
+    }
+
+    /// The eternal spinner one case OVER from the failed table: an account with nothing we browse
+    /// (music and photos only) ANSWERED, so there is no section, no state, and both of the section
+    /// accessors fall through to their defaults — `Loading` and `-1`, i.e. the spinner again. It is
+    /// `Empty`, because the server told us; catching only the FAILED table would have left this
+    /// spinning exactly as before.
+    #[test]
+    fn a_table_that_answered_with_no_browsable_library_is_empty_not_a_spinner() {
+        assert_eq!(readout_of(SecFetch::Ready, 0, SecFetch::Loading, -1), Readout::Empty);
+        assert_ne!(readout_of(SecFetch::Ready, 0, SecFetch::Loading, -1), Readout::Loading);
+    }
+
+    /// …and a table nobody has asked for yet is still the spinner, which is the one case where a
+    /// spinner is the truth: the boot fetch is out.
+    #[test]
+    fn a_table_still_being_discovered_spins() {
+        assert_eq!(readout_of(SecFetch::Loading, 0, SecFetch::Loading, -1), Readout::Loading);
+    }
+
+    /// The layer above: a failed section TABLE. There is no section, so `fetch_state()` answers
+    /// `Loading` from its `unwrap_or` and the screen used to spin forever on it — one symptom, one
+    /// screen, and now one read-out. The table's verdict OUTRANKS the section state precisely
+    /// because that state is a default rather than an observation.
+    #[test]
+    fn a_failed_sections_list_is_the_same_read_out_and_not_a_spinner() {
+        assert_eq!(readout_of(SecFetch::Failed, 0, SecFetch::Loading, -1), Readout::Failed);
+        assert_ne!(readout_of(SecFetch::Failed, 0, SecFetch::Loading, -1), Readout::Loading);
+        // and it does not depend on which `unwrap_or` default the absent section hands back
+        for f in [SecFetch::Loading, SecFetch::Ready, SecFetch::Failed] {
+            assert_eq!(readout_of(SecFetch::Failed, 0, f, -1), Readout::Failed);
+        }
+    }
+
+    /// The decision the multi-source table forced, stated as a test because it is a trade rather
+    /// than a mechanism. A source that stops answering KEEPS the sections it had learned and can
+    /// still have a page store full of items — so "this source is gone" stopped implying "there is
+    /// nothing of it on screen". The read-out takes the region only when BOTH are true; with items
+    /// resident the grid stands, exactly as it does for a failed page one layer down.
+    #[test]
+    fn an_unreachable_source_with_items_still_resident_keeps_its_grid() {
+        assert_eq!(readout_of(SecFetch::Failed, 3, SecFetch::Failed, 185), Readout::Grid);
+        assert_eq!(readout_of(SecFetch::Failed, 3, SecFetch::Failed, -1), Readout::Failed, "…and takes it when there is nothing");
+    }
+
+    /// The read-out sits in the CONTENT REGION, under the live chrome — not centred on the panel,
+    /// which is what the app-wide read-out means. `GRID_TOP` is the grid's own top edge, so the
+    /// block centres on the band whose content is missing and the toolbar line stays clear.
+    #[test]
+    fn the_failure_is_anchored_in_the_content_region_not_on_the_panel() {
+        let r = content_region();
+        assert!(r.y >= GRID_TOP, "it starts at the grid, below the live toolbar line");
+        assert!(r.cy() > Rect::FULL.cy(), "so its centre sits BELOW the panel centre");
+        assert!(r.x >= MARGIN_X && r.x + r.w <= SCR_W - MARGIN_X, "and inside the screen margins");
+    }
+
+    /// The read-out is drawn beside NO GRID CONTROL — Sort, Filter, the count and the A–Z rail all
+    /// act on a grid that has no items. The Source chip is the exception, and it is the design's
+    /// own: it is NAVIGATION, it is how you leave a dead source, and it is why the read-out spends
+    /// no line telling you the way out. `chips()` is the ONE predicate behind the draw, the pointer
+    /// scan and the vertical walk, so this pins all three at once.
+    #[test]
+    fn the_failure_read_out_keeps_navigation_and_drops_every_grid_control() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        // ONE source: an ordinary listing carries Sort + Filter and no Source chip at all
+        crate::browse::seed_sources_for_test(1, true);
+        assert_eq!(chips(), &CHIPS_ONE[..], "one source draws no Source chip");
+        crate::browse::seed_sources_for_test(1, false);
+        assert_eq!(readout(), Readout::Failed);
+        assert!(chips().is_empty(), "there is nothing to sort, to filter or to count");
+
+        // TWO sources: the Source chip leads the row, and it OUTLIVES the failure
+        crate::browse::seed_sources_for_test(2, true);
+        assert_eq!(chips(), &CHIPS_MANY[..], "two sources put Source at the head of the row");
+        crate::browse::seed_sources_for_test(2, false);
+        assert_eq!(readout(), Readout::Failed);
+        assert_eq!(chips(), &CHIPS_SOURCE_ONLY[..], "the way OUT of a dead source stays drawn");
+        crate::browse::reset();
     }
 
     // ---- the Sources chip + its two-level panel -------------------------------------------------
@@ -2047,12 +2612,12 @@ mod tests {
         assert_eq!(chips(), &CHIPS_ONE);
         for (i, want) in [(0, Chip::Sort), (1, Chip::Filter)] {
             unsafe { TOOL_F = i };
-            assert_eq!(focused_chip(), want);
+            assert_eq!(focused_chip(), Some(want));
         }
         // a `TOOL_F` left over from the longer row resolves to a chip that EXISTS rather than
         // panicking or naming one that does not
         unsafe { TOOL_F = 2 };
-        assert_eq!(focused_chip(), Chip::Filter);
+        assert_eq!(focused_chip(), Some(Chip::Filter));
 
         unsafe { TOOL_F = tool0 };
     }

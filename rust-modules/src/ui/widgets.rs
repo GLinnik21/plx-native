@@ -1054,7 +1054,8 @@ impl AmbientWash {
 }
 
 // ---- StatusOverlay: a centred "something is happening / something failed" read-out — a Spinner
-// (or nothing, for a terminal state) above one line of copy. The player HUD renders it for the
+// (or nothing, for a terminal state) above one line of copy, optionally a REASON under it and the
+// ONE action that answers it. The player HUD renders it for the
 // states where NO PICTURE IS ON THE PANEL (Resolving/Connecting/Buffering/Seeking before this
 // session's first frame, and Error, which is what a black screen used to be) — a seek over a live
 // picture belongs to the transport's inline spinner instead, and `player_hud::busy_surface` is the
@@ -1066,7 +1067,15 @@ impl AmbientWash {
 // screen (`Rect::FULL`); the person page's shelves are one band, so it passes the band; the player's
 // picture is the whole panel, so it passes `Rect::FULL` too. Carving the frame down to "avoid"
 // nearby chrome pushes the read-out OFF the optical centre, which is exactly what the player's
-// deleted `OVERLAY_BOTTOM` did — it centred the block at y=370 on a 1080 panel. ----
+// deleted `OVERLAY_BOTTOM` did — it centred the block at y=370 on a 1080 panel. The Library's
+// SECTION read-out is the one case where a smaller frame is the honest answer rather than a dodge:
+// it passes the content region because the chrome above it is still live, and that is the whole
+// difference between a section failing and the app failing (`Shared Sources.dc.html` D).
+//
+// **Up to three blocks, and each answers one question**: the verdict (what happened), the reason
+// (why, and what is NOT broken), the action (the one thing to press). Two of the three are
+// optional, and an absent one is ABSENT — no gap, no empty band, no draw call — so the read-outs
+// that carry only a caption are laid out exactly as they were before the other two existed. ----
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StatusKind {
     /// in flight — spinner + secondary copy
@@ -1075,24 +1084,77 @@ pub enum StatusKind {
     Failed,
     /// nothing to show, and that is the server's honest ANSWER rather than a fault — no spinner,
     /// de-emphasized copy. Distinct from `Failed` on purpose: an empty library is not an error and
-    /// must not wear the danger tint (Home's empty state; the Library grid's "nothing matches" is
-    /// the same read-out, still hand-rolled as a bare Label).
+    /// must not wear the danger tint.
+    ///
+    /// The TINT is this kind's; the ACTION is the caller's, and the two callers differ for a
+    /// reason. The Library's empty section offers none — the server answered, and asking it the
+    /// same question again gets the same answer. Home's empty hub offers *Refresh*, because there
+    /// the honest reading of "nothing yet" is a server still scanning its first library, and a
+    /// second look is what finds it. Neither is a retry of a failure.
     Empty,
 }
-pub struct StatusOverlay {
+/// The read-out's own type sizes. The verdict is reading text; the reason is one rung down because
+/// it EXPLAINS rather than states, and the action carries a control label, which is the verdict's
+/// rung again (`Button`'s rung everywhere else in the product).
+const STATUS_CAP_SZ: c_int = theme::size::BODY;
+const STATUS_REASON_SZ: c_int = theme::size::CAPTION;
+pub struct StatusOverlay<'a> {
     pub frame: Rect,
-    /// `&'static CStr` from `PlaybackState::caption()` — no lifetime hazard, no per-frame alloc.
-    pub caption: &'static core::ffi::CStr,
+    /// The VERDICT — one line naming what happened.
+    ///
+    /// Borrowed rather than `&'static`: a section read-out interpolates a machine name ("Can't
+    /// reach &lt;machine&gt;"), which no `c"…"` literal can carry. `&'static CStr` still coerces, so the
+    /// state-machine captions (`PlaybackState::caption()`, Home's hub states) are unchanged. The
+    /// `Label` rule applies to a runtime one — keep the `CString` alive for the whole draw frame.
+    pub caption: &'a core::ffi::CStr,
+    /// The line UNDER the verdict, in de-emphasized ink: why it happened, and — the job it exists
+    /// for — what is still fine. `None` = absent, not empty.
+    pub reason: Option<&'a core::ffi::CStr>,
+    /// The read-out's ONE control, drawn below the copy and hit-tested by the screen through
+    /// [`StatusOverlay::action_frame`], so the drawn pill and the rect a click lands in are one
+    /// expression. `None` = no control: while a fetch is in flight the spinner IS the state, and an
+    /// [`StatusKind::Empty`] answer has nothing to retry.
+    pub action: Option<&'a core::ffi::CStr>,
     pub kind: StatusKind,
     pub phase: u32,
+    /// whether the action pill holds focus (ignored when there is no action)
+    pub focused: bool,
 }
-impl StatusOverlay {
-    pub fn new(frame: Rect, caption: &'static core::ffi::CStr, kind: StatusKind) -> Self {
-        Self { frame, caption, kind, phase: 0 }
+
+/// The stacked read-out's geometry — the ONE place its three bands are placed, read by the draw and
+/// by [`StatusOverlay::action_frame`] so a screen's hit test cannot drift from the pill it sees.
+struct StatusBands {
+    cap: Rect,
+    reason: Option<Rect>,
+    /// top of the action pill (whether or not there is one)
+    action_y: f32,
+}
+
+impl<'a> StatusOverlay<'a> {
+    /// The action pill's height. The app's one action-control size — the hero rows' pill/disc
+    /// diameter, which `home.rs` aliases rather than restating.
+    pub const CTRL_H: f32 = 60.0;
+
+    pub fn new(frame: Rect, caption: &'a core::ffi::CStr, kind: StatusKind) -> Self {
+        Self { frame, caption, reason: None, action: None, kind, phase: 0, focused: false }
     }
     /// ms clock driving the spinner's rotation (ignored by `Failed`)
     pub fn phase(mut self, ms: u32) -> Self {
         self.phase = ms;
+        self
+    }
+    /// The line under the verdict — see [`StatusOverlay::reason`].
+    pub fn reason(mut self, r: &'a core::ffi::CStr) -> Self {
+        self.reason = Some(r);
+        self
+    }
+    /// The read-out's one control — see [`StatusOverlay::action`].
+    pub fn action(mut self, label: &'a core::ffi::CStr) -> Self {
+        self.action = Some(label);
+        self
+    }
+    pub fn focused(mut self, f: bool) -> Self {
+        self.focused = f;
         self
     }
     /// How far the read-out's ink reaches ABOVE the frame centre: the spinner ring plus its dots
@@ -1102,8 +1164,36 @@ impl StatusOverlay {
     pub fn above() -> f32 {
         Spinner::R_PAGE + theme::space::XS + Spinner::R_PAGE + Spinner::dot_r(Spinner::R_PAGE)
     }
+
+    /// Where the three blocks sit. Everything hangs off ONE anchor — the caption band, which keeps
+    /// the exact position it has always had (`Working` straddles the frame centre with the spinner
+    /// above it; a terminal state owns the centre alone) — and the optional blocks stack BELOW it on
+    /// `theme::space` rungs. That ordering is deliberate: adding a reason or an action cannot move
+    /// the read-outs that carry neither, so the player's and the person page's are untouched.
+    fn bands(&self) -> StatusBands {
+        let cy = self.frame.cy();
+        let cap_h = crate::text::text_height(STATUS_CAP_SZ, 0);
+        let cap_y = if self.kind == StatusKind::Working { cy + theme::space::XS } else { cy - cap_h * 0.5 };
+        let cap = Rect::new(self.frame.x, cap_y, self.frame.w, cap_h);
+        let mut below = cap_y + cap_h;
+        let reason = self.reason.map(|_| {
+            let h = crate::text::text_height(STATUS_REASON_SZ, 0);
+            let r = Rect::new(self.frame.x, below + theme::space::SM, self.frame.w, h);
+            below = r.y + h;
+            r
+        });
+        StatusBands { cap, reason, action_y: below + theme::space::LG }
+    }
+
+    /// The action pill's frame, or `None` when there is no action. The screen records this for its
+    /// pointer hit test; the draw builds its `Button` from the same call.
+    pub fn action_frame(&self) -> Option<Rect> {
+        let label = self.action?;
+        let w = Button::pill_w(label.as_ptr(), STATUS_CAP_SZ, false);
+        Some(Rect::new(self.frame.cx() - w * 0.5, self.bands().action_y, w, Self::CTRL_H))
+    }
 }
-impl View for StatusOverlay {
+impl View for StatusOverlay<'_> {
     fn draw(&self, e: &Env, p: Painter) {
         // spinner above, caption below, the pair centred on the frame
         let cy = self.frame.cy();
@@ -1112,23 +1202,26 @@ impl View for StatusOverlay {
             StatusKind::Failed => (theme::DANGER, false),
             StatusKind::Empty => (theme::TEXT_TERTIARY, false),
         };
+        let b = self.bands();
         // Both branches centre the caption the same way — by Label's cap band (VAlign::Middle,
         // the default). Working straddles the frame centre with the spinner above it; Failed owns
         // the centre alone. Using the cap band for one and a line-box metric for the other put the
         // two states on different baselines in the same frame.
-        let cap_h = crate::text::text_height(theme::size::BODY, 0);
-        let cap_y = if working {
+        if working {
             Spinner::new(self.frame.cx(), cy - Spinner::R_PAGE - theme::space::XS, Spinner::R_PAGE)
                 .phase(self.phase)
                 .tint(tint)
                 .draw(e, p);
-            cy + theme::space::XS
-        } else {
-            cy - cap_h * 0.5
-        };
-        Label::new(self.caption.as_ptr(), theme::size::BODY, tint)
-            .h(HAlign::Center)
-            .draw(p, Rect::new(self.frame.x, cap_y, self.frame.w, cap_h));
+        }
+        Label::new(self.caption.as_ptr(), STATUS_CAP_SZ, tint).h(HAlign::Center).draw(p, b.cap);
+        // The reason is NEVER in the verdict's ink: the tint is the severity of what happened, and
+        // this line's job is the opposite — it says what is still working.
+        if let (Some(r), Some(band)) = (self.reason, b.reason) {
+            Label::new(r.as_ptr(), STATUS_REASON_SZ, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, band);
+        }
+        if let (Some(label), Some(f)) = (self.action, self.action_frame()) {
+            Button::new(label.as_ptr(), STATUS_CAP_SZ, f).focused(self.focused).draw(e, p);
+        }
     }
 }
 
