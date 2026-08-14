@@ -788,7 +788,7 @@ fn own_pill() -> usize {
     // past the last pill is a highlight on nothing: reachable now that a failed discovery keeps the
     // user on this screen instead of bailing out of `enter` before it had a table.
     let p = crate::browse::tab_of_section(view_section()) + 1;
-    p.min(crate::ui::widgets::tab_count().saturating_sub(1))
+    p.min(crate::ui::widgets::search_pill().saturating_sub(1))
 }
 
 /// The tab pill holding focus, as a plain index — what a route change LEAVING this screen carries
@@ -1845,6 +1845,9 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
     if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
         if i == 0 {
             return Action::GoHome;
+        }
+        if crate::ui::widgets::is_search_pill(i) {
+            return Action::GoSearch;
         }
         switch_tab(i - 1);
         return Action::None;

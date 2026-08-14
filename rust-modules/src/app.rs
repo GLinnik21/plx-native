@@ -2532,8 +2532,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if crate::ui::library::focus_is_card() {
                                 crate::ui::press::begin(SDL_GetTicks());
                                 ok_armed = true;
-                            } else if matches!(crate::ui::library::on_ok(), crate::ui::library::Action::GoHome) {
-                                nav_to(route, Nav::Home { focus_pill: crate::ui::library::focused_pill() }, &mut nav_pending);
+                            } else {
+                                match crate::ui::library::on_ok() {
+                                    crate::ui::library::Action::GoHome => {
+                                        nav_to(route, Nav::Home { focus_pill: crate::ui::library::focused_pill() }, &mut nav_pending)
+                                    }
+                                    crate::ui::library::Action::GoSearch => {
+                                        nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending)
+                                    }
+                                    crate::ui::library::Action::Card | crate::ui::library::Action::None => {}
+                                }
                             }
                         } else if matches!(route, Route::Detail) {
                             // OK on a detail CARD (episode / Related / Cast) → tvOS press: dip now,
@@ -3468,6 +3476,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Home => crate::ui::home::home_hero_key(held_sym), // hero view: hold LEFT/RIGHT pages the billboard
                     Route::ItemMenu { .. } => crate::ui::item_menu::move_focus(held_sym as c_int),
                     Route::Library => crate::ui::library::move_focus(held_sym),
+                    Route::Search => crate::ui::search::move_focus(held_sym),
                     Route::Detail => crate::ui::detail::move_focus(held_sym as c_int),
                     Route::Player { overlay: Overlay::Menu } => {
                         crate::ui::track_menu::move_focus(held_sym as c_int);

@@ -163,6 +163,7 @@ pub struct Hub {
     pub size: i64,
 }
 
+/// The movie/show/season/episode item. Missing fields default (Plex omits optionals).
 #[derive(Deserialize, Default)]
 pub struct Metadata {
     #[serde(rename = "type", default)]
