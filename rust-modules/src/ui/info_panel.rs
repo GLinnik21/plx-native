@@ -105,7 +105,8 @@ fn audio_badge(codec: &str) -> Option<String> {
 
 /// the shared outlined chip in this panel's colours (TEXT_HEADING border/label over the card)
 fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
-    badge(p, x, cy, text, None, BadgeStyle::Outlined { col: theme::TEXT_HEADING, bg: theme::SURFACE_PANEL })
+    badge(p, x, cy, text, None,
+        BadgeStyle::Outlined { col: theme::TEXT_HEADING, border: theme::OVERLAY_BORDER, bg: theme::SURFACE_PANEL })
 }
 
 /// A VIDEO codec's display name. The sibling of [`metadata::friendly_codec`], which is the one

@@ -715,7 +715,7 @@ mod tests {
         const PATH: &str = "/library/metadata/42/thumb/1755000000";
         let mut m = KeyMemo { map: std::collections::HashMap::new() };
         let builds = std::cell::Cell::new(0u32);
-        let mut key = |m: &mut KeyMemo, srv: u16, w: c_int, gen: u32, built: &str| -> String {
+        let key = |m: &mut KeyMemo, srv: u16, w: c_int, gen: u32, built: &str| -> String {
             m.get_or_build(srv, PATH, w, 375, false, gen, || {
                 builds.set(builds.get() + 1);
                 built.to_owned()
