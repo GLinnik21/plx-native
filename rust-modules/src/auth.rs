@@ -237,6 +237,11 @@ pub fn start_switch() {
     // and it does not touch `current` — a "Change profile" from Home lands here too, by which time
     // everything is registered already and this is a no-op.
     install_stored_roster(&sess);
+    // The SERVER roster's online refresh, beside the HOME-USER one spawned below. They are two
+    // different rosters and only the second used to be refreshed here, despite this function's own
+    // doc saying it seeded and refreshed "the persisted roster" — so a share granted after sign-in
+    // never appeared on this path either.
+    refresh_roster_online();
     with_ctl(|c| {
         c.error.clear();
         if c.users.is_empty() {
@@ -717,6 +722,62 @@ fn discover_and_store(ac: &AccountClient) -> Discovery {
         c.session.sources = found;
     });
     Discovery::Ok
+}
+
+/// **Re-learn the roster from plex.tv on a resumed session, in the background.**
+///
+/// `discover_and_store` above is the only other writer of `Session::sources`, and it runs on ONE
+/// path: the QR sign-in. So before this existed the roster was learned exactly once, at sign-in,
+/// and never again — which meant:
+///
+/// * an account signed in before shared servers shipped had `sources: []` forever, and every share
+///   was invisible on every boot no matter how many times the app was relaunched (owner-reported,
+///   2026-08-14: the libraries were there under the dev credential trigger and gone on a real
+///   launch — the persisted roster on the device was an empty array);
+/// * and a friend sharing a library TOMORROW would never appear either, because nobody signs in
+///   again. A grant is not a one-time fact, so neither is discovery of it.
+///
+/// Best-effort and non-destructive: on any failure the persisted roster stays exactly as it was, so
+/// a boot with plex.tv unreachable still browses whatever was already known. Registration is
+/// idempotent (the registry keys on `machineIdentifier`) and deliberately passes `None` as the
+/// primary, so a refresh never re-points `current` at a different machine under a user who is
+/// already browsing.
+///
+/// Persists only when the roster actually CHANGED, because the session file is on flash and a
+/// rewrite per boot buys nothing.
+pub fn refresh_roster_online() {
+    let sess = session::load();
+    if sess.account_token.is_empty() {
+        return; // signed out; nothing to ask plex.tv with
+    }
+    let _ = crate::task::spawn_small("roster-srv", move || {
+        let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
+        let Some(resources) = ac.resources() else {
+            log("auth: roster refresh — plex.tv unreachable, keeping the stored roster");
+            return;
+        };
+        let found = match resolve_roster(&resources, &get_identity) {
+            Resolved::Reached(f) => f,
+            // "no server answered" is not evidence that the grant is gone: the friend's box may
+            // simply be off. Dropping the roster here would make an offline share un-browsable
+            // for good rather than until it comes back.
+            _ => {
+                log("auth: roster refresh — nothing answered, keeping the stored roster");
+                return;
+            }
+        };
+        install_roster(&found, None);
+        let changed = found.len() != sess.sources.len()
+            || found.iter().zip(sess.sources.iter()).any(|(a, b)| {
+                a.machine_id != b.machine_id || a.address != b.address || a.port != b.port || a.token != b.token
+            });
+        log(&format!("auth: roster refresh — {} server(s){}", found.len(), if changed { ", persisted" } else { "" }));
+        if changed {
+            let mut next = session::load(); // re-read: a profile pick may have landed meanwhile
+            next.sources = found;
+            session::save(&next);
+        }
+    });
 }
 
 /// Register a roster with the [server registry](crate::plex::register), optionally naming which

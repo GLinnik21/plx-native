@@ -602,6 +602,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // Before, not after, because `install_pms` ends in the catalog + section fetch that
                 // turns a registered source into something on screen.
                 crate::auth::install_stored_roster(&session);
+                // …and re-learn it from plex.tv in the background. The stored roster is what a boot
+                // can show IMMEDIATELY (and all it can show offline); this is what makes a share
+                // granted since the last sign-in ever appear at all. Non-destructive on failure.
+                crate::auth::refresh_roster_online();
                 install_pms(&session.server.address, session.server.port as c_int, session.pms_token());
                 crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
                 log("boot: stored session — local server (offline-capable)");
