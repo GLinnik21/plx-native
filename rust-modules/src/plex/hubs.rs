@@ -4,9 +4,21 @@ use super::client::{Client, QueryBuilder};
 use super::models::MediaContainer;
 
 impl Client {
-    /// GET /hubs?count=… (D-4: drop the no-op excludeContinueWatching) → `.hub[]`.
+    /// GET /hubs?count=…&excludeContinueWatching=1 → `.hub[]`.
+    ///
+    /// **`excludeContinueWatching` is NOT a no-op**, which this call and its comment asserted for
+    /// as long as they existed ("D-4: drop the no-op excludeContinueWatching"). Measured against
+    /// this server 2026-08-14: `/hubs?count=12` returns 10 hubs, `&excludeContinueWatching=1`
+    /// returns 8 — it drops `home.continue` and `home.ondeck`.
+    ///
+    /// Sending it is right for us on both counts. Those two hubs are exactly what
+    /// [`continue_watching`] fetches properly (see its doc for why the dedicated endpoint is the
+    /// only honest one), so we parse and discard them today; and with several sources on Home the
+    /// waste is per source per fetch, not once.
     pub fn home_hubs(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(&QueryBuilder::new("/hubs").int("count", count).build())
+        self.get_json(
+            &QueryBuilder::new("/hubs").int("count", count).int("excludeContinueWatching", 1).build(),
+        )
     }
 
     /// GET /hubs/continueWatching?count=… — the dedicated Continue Watching hub.
