@@ -436,6 +436,16 @@ device measurement), text rasterization, or anything about video (the 29-symbol 
 is absent; `player::ffi`'s host arm reports the seam's own "no video path" failure, so Play lands
 on the real failure read-out). Two bugs it has already found in DEVICE code: the glyph upload
 ignored `SDL_Surface::pitch` (`text.rs`), and `dev`/`remote`/`log` all hardcoded `/tmp`.
+**Two host-only traps that read as your change being broken.** (1) **`make sim-shot` HANGS on a
+settled screen** — `SIM_FRAME` is a count of *presented* frames (`shot.rs`, and `app.rs` says the
+same at the `shot` token: "presented frames only accrue when something repaints"), and `ui::idle`
+gates presents, so a screen that settles before frame N never reaches N. Arm
+`plxnative-noidle` in the instance root first; three agents lost time to this in one day. (2) macOS
+`libSDL2` is **sdl2-compat forwarding into SDL3**, so pushing a synthetic **`SDL_TEXTINPUT`** through
+`SDL_PushEvent` SIGSEGVs *inside SDL* — SDL3's text event carries a `char *text` where SDL2 carries
+an inline `char[32]`, and the shim dereferences it. No Rust panic, no log line, the process is just
+gone. The remote FIFO's key and `ck:` tokens are safe because every field they set is a scalar; see
+`docs/search.md` §3.
 
 **Tier 2 — the device, which is still the real gate.** Nothing on the host decodes a frame or talks
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
@@ -539,9 +549,15 @@ the perf gates), and `make test` = `deploy` + `run`.
   heartbeat. **Three assertions, and picking the wrong one is how a frozen animation ships:**
   `loop_floor` grades `loop=`, which counts LOOP iterations — it proves the app is alive, and cannot
   see a stopped animation at all; `fps_floor` grades `fps=` and is what proves an animation still
-  RUNS (`login-spinner`, the two `*-nav` scenes); `fps_ceiling` grades `fps=` from the other
-  side and proves a still screen stops (`home-idle`). A scene with no motion and only a `loop_floor`
-  gates nothing — three carry an `_idle_gate_note` saying exactly that. Every run also reports
+  RUNS (`login-spinner`, the two `*-nav` scenes, `search-type`); `fps_ceiling` grades `fps=` from the
+  other side and proves a still screen stops (`home-idle`, `search-idle`). The Search pair is the
+  clearest illustration that these are two halves of ONE question — same screen, same trigger, the
+  oscillator added or taken away. A scene with no motion and only a `loop_floor`
+  gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
+  one left**; this line said "three" long after the other two (`home-grid`, `library-scroll`) were
+  given oscillators and real `fps_floor`s, which is the fix that note asks for. The two other
+  `loop_floor`-only scenes are player-tier (`info-panel`, `track-menu`) and need no note, because
+  the present gate excludes the player route. Every run also reports
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
   18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"
@@ -583,7 +599,16 @@ the perf gates), and `make test` = `deploy` + `run`.
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
   and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
-  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), plus
+  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and the
+  Search pair: `/tmp/plxnative-search[=<query>]` (boot straight into Search with the field already
+  holding `<query>` — the seed is not a convenience, since neither the harness nor `sim-shot` can
+  type and the TV's own keyboard is raised by a user, so without it every headless look at this
+  screen is the empty state) and `/tmp/plxnative-searchosc` (sweep the result shelves' focus down↔up
+  perpetually, 350 ms per step reversing every 3 s — the same cadence as `libosc`/`homeosc`). The
+  oscillator does NOT reach the screen on its own: pair it with `plxnative-search`, and with a query
+  the library actually matches, or `fps:search-type` has no shelves to sweep. Design, and the
+  on-screen-keyboard research behind the field (three traps, two dead ends): **`docs/search.md`**.
+  Plus
   `/tmp/plxnative-navosc[=<ratingKey>]` (bounce the ROUTE every 1400 ms through the real press path —
   the only scenes that change route, and so the only ones that sample the whole-screen page
   cross-fade `ui::nav` draws. EMPTY = Home↔the first library section, the two pages that SHARE the
@@ -625,4 +650,10 @@ the perf gates), and `make test` = `deploy` + `run`.
   no session lands on the QR sign-in screen.
 - Normal interactive flow: who's-watching picker (multi-user) → Home; D-pad/pointer to focus a
   card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
-  scrub-seek, **BACK/Stop** returns.
+  scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
+  peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. Text
+  entry is the **television's own keyboard**, raised by plain `SDL_StartTextInput` — the backend is
+  in LG's Wayland driver, not the webOS extension API, which is why `SDL_webOS.h` looks like it has
+  no keyboard. The field, the shelves and every trap in that seam are **`docs/search.md`**, whose
+  status note says which halves are in the tree yet. Search is **server-only** by decision — Plex
+  Discover / Watchlist catalog results are out of scope.
