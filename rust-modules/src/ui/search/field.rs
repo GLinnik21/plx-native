@@ -129,8 +129,12 @@ fn run_layout(run_w: f32, box_w: f32, caret: bool) -> (f32, f32) {
 /// One search SOURCE, as the scope line sees it. A borrowed projection of the server registry
 /// (plus `browse`'s reachability), so the wording below can be tested without one.
 struct Scope<'a> {
-    /// the MACHINE name, `""` until the roster or the server itself has said one
+    /// the MACHINE name, `""` until the roster or the server itself has said one. Used for YOUR
+    /// OWN server and nowhere else — see [`Scope::label`].
     name: &'a str,
+    /// The LIBRARY titles this source contributed, which is what a SHARE is called here. Empty
+    /// while the section table is still landing.
+    libs: Vec<&'a str>,
     /// the owner's plex.tv handle; empty on your own server
     handle: &'a str,
     owned: bool,
@@ -140,11 +144,29 @@ struct Scope<'a> {
 
 impl Scope<'_> {
     /// What to call it in a sentence. Never empty — see [`UNNAMED_OWN`].
-    fn label(&self) -> &str {
-        match (self.name.is_empty(), self.owned) {
-            (false, _) => self.name,
-            (true, true) => UNNAMED_OWN,
-            (true, false) => UNNAMED_SHARE,
+    ///
+    /// **The two sides are named at different LEVELS, and that is the design rather than an
+    /// inconsistency.** Your own server is one thing you own and recognise by its machine name
+    /// ("Gleb's Mac mini"); a share is experienced as the LIBRARY it gave you ("LDN Films"), and
+    /// its hostname is a string that means nothing to anyone watching. `Search Screen.dc.html`
+    /// writes exactly that pair, and `browse::BrowseSource::name` states the rule outright: the
+    /// Sources list is "the only place in the app a machine is named".
+    ///
+    /// A share with several libraries joins them; a share whose section table has not landed yet
+    /// falls back to [`UNNAMED_SHARE`], never to its hostname.
+    fn label(&self) -> String {
+        if !self.owned {
+            // Blank titles are dropped rather than joined: a section the table holds but has not
+            // titled yet would otherwise contribute an empty run, and the line would read
+            // "Searching nas-home and " — a sentence that stops mid-air. Nothing left to name is
+            // the same state as nothing landed.
+            let named: Vec<&str> = self.libs.iter().copied().filter(|t| !t.is_empty()).collect();
+            return if named.is_empty() { UNNAMED_SHARE.to_string() } else { join(&named) };
+        }
+        if self.name.is_empty() {
+            UNNAMED_OWN.to_string()
+        } else {
+            self.name.to_string()
         }
     }
 }
@@ -170,8 +192,8 @@ fn scope_text(src: &[Scope]) -> Option<String> {
     if src.len() < 2 {
         return None;
     }
-    let down: Vec<&str> = src.iter().filter(|s| !s.live).map(Scope::label).collect();
-    let live: Vec<&str> = src.iter().filter(|s| s.live).map(Scope::label).collect();
+    let down: Vec<String> = src.iter().filter(|s| !s.live).map(Scope::label).collect();
+    let live: Vec<String> = src.iter().filter(|s| s.live).map(Scope::label).collect();
     if down.is_empty() {
         let mut t = format!("Searching {}", join(&live));
         let mut shares = src.iter().filter(|s| !s.owned && !s.handle.is_empty());
@@ -189,8 +211,10 @@ fn scope_text(src: &[Scope]) -> Option<String> {
     Some(format!("{} unreachable · results from {} only", join(&down), join(&live)))
 }
 
-/// "A", "A and B", "A, B and C" — the one list idiom this line uses.
-fn join(v: &[&str]) -> String {
+/// "A", "A and B", "A, B and C" — the one list idiom this line uses. Generic over anything
+/// string-shaped so it serves both the SOURCE list and one share's library list.
+fn join<S: AsRef<str>>(v: &[S]) -> String {
+    let v: Vec<&str> = v.iter().map(AsRef::as_ref).collect();
     match v.len() {
         0 => String::new(),
         1 => v[0].to_string(),
@@ -224,6 +248,7 @@ fn draw_scope(p: Painter) {
             let f = crate::plex::server_facts(sid);
             Scope {
                 name: f.map(|f| f.name.as_str()).unwrap_or(""),
+                libs: crate::browse::library_titles(sid),
                 handle: f.map(|f| f.handle.as_str()).unwrap_or(""),
                 owned: f.map(|f| f.owned).unwrap_or(Some(sid) == first),
                 // `browse`'s is the app's ONE notion of a source that has stopped answering. A
@@ -249,10 +274,12 @@ mod tests {
     /// Every name here is a PLACEHOLDER. This repository is public and a real share's machine name
     /// and account handle are a third party's — see the root `CLAUDE.md`.
     fn own(name: &str) -> Scope<'_> {
-        Scope { name, handle: "", owned: true, live: true }
+        Scope { name, libs: Vec::new(), handle: "", owned: true, live: true }
     }
-    fn share<'a>(name: &'a str, handle: &'a str) -> Scope<'a> {
-        Scope { name, handle, owned: false, live: true }
+    /// A share is named by its LIBRARY, so that is what the fixture takes — the machine name is
+    /// carried only to prove the line never reaches for it.
+    fn share<'a>(lib: &'a str, handle: &'a str) -> Scope<'a> {
+        Scope { name: "a-hostname", libs: vec![lib], handle, owned: false, live: true }
     }
     fn down(mut s: Scope) -> Scope {
         s.live = false;
@@ -323,6 +350,29 @@ mod tests {
         assert_eq!(
             scope_text(&[own("nas-home"), share("Film Club", "friend")]).unwrap(),
             "Searching nas-home and Film Club · friend"
+        );
+    }
+
+    /// **The two sides are named at different levels, and a share is never named by its machine.**
+    /// `Search Screen.dc.html` writes "Searching &lt;your server&gt; and &lt;their library&gt; · &lt;handle&gt;", and
+    /// `browse::BrowseSource::name` states the invariant: the Sources list is the only place in the
+    /// app a machine is named. A hostname is a string that means nothing to someone watching.
+    ///
+    /// The fixture hands every share a machine name precisely so this can assert it never appears.
+    #[test]
+    fn a_share_is_named_by_its_library_and_never_by_its_hostname() {
+        let t = scope_text(&[own("nas-home"), share("Film Club", "friend")]).unwrap();
+        assert!(t.contains("Film Club"), "the share is its library: {t}");
+        assert!(!t.contains("a-hostname"), "the share's MACHINE must not reach this line: {t}");
+        // …while your own side is still the machine you recognise
+        assert!(t.contains("nas-home"), "your own server keeps its name: {t}");
+
+        // A share with several libraries joins them, in the same idiom the source list uses.
+        let mut two = share("Film Club", "friend");
+        two.libs = vec!["Film Club", "Archive"];
+        assert_eq!(
+            scope_text(&[own("nas-home"), two]).unwrap(),
+            "Searching nas-home and Film Club and Archive · friend"
         );
     }
 
