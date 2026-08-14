@@ -555,10 +555,26 @@ static mut DEAD_C: Option<(String, String, CString, Option<CString>)> = None;
 /// that can change what it says.
 static mut EMPTY_C: Option<(u32, usize, bool, CString)> = None;
 // letter rail: focused letter + the per-letter rects recorded at draw (pointer hit-testing)
-const MAX_LETTERS: usize = 34; // A–Z + digits/# buckets
+/// Every bucket `/firstCharacter` can return, not one alphabet's worth. `#` + Latin is 27, which
+/// is where the old 34 came from — but a Cyrillic section adds 32 more, and the cap TRUNCATED in
+/// silence: the rail simply stopped mid-alphabet and every title past it became unreachable by
+/// jump, with nothing on screen saying anything had been dropped. 64 covers `#` + Latin + Cyrillic
+/// (59) with room, and now that the rail SCROLLS a large `n` costs no layout.
+const MAX_LETTERS: usize = 64;
+/// The rail's letter pitch — a CONSTANT, not the band divided by `n`. It was the latter (capped at
+/// this value), which made the spacing a function of how many letters a section happens to have: 9
+/// letters drew at 34 px, a Cyrillic 30 fell to 27.5 against a CAPTION cap height of ~17, closing
+/// the gap to under half a letter and reading as a solid column of type rather than an index. Past
+/// what fits at this pitch the rail scrolls ([`RAIL_SCROLL`]) — so every section's rail has the
+/// same spacing, for the same reason it is top-anchored rather than centred.
+const RAIL_PITCH: f32 = 34.0;
 static mut RAIL_F: usize = 0;
 static mut RAIL_RECTS: [Rect; MAX_LETTERS] = [Rect::new(0.0, 0.0, 0.0, 0.0); MAX_LETTERS];
 static mut RAIL_N: usize = 0;
+/// Scroll offset (px) for a section with more letters than fit. Driven by the rail's own focus
+/// while it holds focus, otherwise by the letter the GRID is in — so scrolling the grid carries
+/// the rail along and it never shows a stretch of alphabet the grid left behind.
+static mut RAIL_SCROLL: Spring = Spring::at(0.0);
 
 // ---- the section read-out: what it says, where it sits, what its one control does ------------
 //
@@ -960,16 +976,34 @@ fn rail_on() -> bool {
 fn rail_drawn() -> bool {
     rail_on() && !menu_open() && readout() == Readout::Grid
 }
-/// The rail letter whose range contains item `idx`.
+/// The rail letter whose range contains item `idx`. Clamped to the drawn set, since it also
+/// indexes [`RAIL_RECTS`] by way of [`RAIL_F`].
 fn letter_of(idx: usize) -> usize {
     let mut sum = 0usize;
-    for (i, (_, n)) in crate::browse::letters().iter().enumerate() {
+    for (i, (_, n)) in crate::browse::letters().iter().enumerate().take(MAX_LETTERS) {
         sum += *n as usize;
         if idx < sum {
             return i;
         }
     }
-    crate::browse::letters().len().saturating_sub(1)
+    crate::browse::letters().len().min(MAX_LETTERS).saturating_sub(1)
+}
+/// The rail's geometry for `n` letters: `(y0, cx, win_h, max_scroll)`. ONE answer, because the
+/// scroll step in [`update`] and [`draw_rail`] must agree about the window — a reveal rule aimed
+/// at a window that is not the one on screen parks the focused letter off the end of it.
+fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
+    // the band the fit-to-fill divisor used, so a rail that DID fit sits exactly where it did
+    let vis = ((SCR_H - GRID_TOP - 40.0) / RAIL_PITCH).floor().max(1.0);
+    let win_h = vis.min(n as f32) * RAIL_PITCH;
+    (GRID_TOP + 8.0, SCR_W - 64.0, win_h, (n as f32 * RAIL_PITCH - win_h).max(0.0))
+}
+/// Where the rail's scroll wants to be with letter `drive` in hand: the grid's own reveal rule in
+/// letter units, keeping one whole letter clear on each side so the driver never sits in the edge
+/// fade. Pure, so the window invariant is assertable off-device.
+fn rail_scroll_target(cur: f32, drive: usize, n: usize) -> f32 {
+    let (_, _, win_h, max) = rail_geom(n);
+    let d = drive.min(n.saturating_sub(1)) as f32;
+    card_row::reveal(cur, (d + 2.0) * RAIL_PITCH - win_h, (d - 1.0) * RAIL_PITCH, max)
 }
 /// Jump the grid focus to letter `i`'s first title (the prefix-sum index) — focus + scroll
 /// move, the listing itself never changes.
@@ -1076,6 +1110,14 @@ pub(crate) fn update(dt: f32) {
             (*addr_of!(SCROLL)).pos
         };
         (*addr_of_mut!(SCROLL)).step(want, K_SCROLL, dt);
+
+        // the letter rail's own scroll, for the sections whose alphabet does not fit at
+        // `RAIL_PITCH`. Same reveal rule as the grid above, in letter units: keep the driving
+        // letter one whole letter clear of each end, so it never sits in the edge fade.
+        let drive = if area() == Area::Rail { RAIL_F } else { letter_of(focus_idx()) };
+        let ln = crate::browse::letters().len().min(MAX_LETTERS);
+        let want_rs = rail_scroll_target((*addr_of!(RAIL_SCROLL)).pos, drive, ln);
+        (*addr_of_mut!(RAIL_SCROLL)).step(want_rs, K_SCROLL, dt);
 
         // remember the view for re-entry (state amnesia is the official app's #2 complaint)
         crate::browse::save_view(focus_idx(), (*addr_of!(SCROLL)).pos);
@@ -2204,13 +2246,13 @@ fn draw_rail(p: Painter) {
     let n = letters.len().min(MAX_LETTERS);
     // TOP-ANCHORED at a fixed pitch (design review): the rail must sit in the same place for
     // every section (a centered block shifted between Movies' 9 letters and Shows' 7), and
-    // pulled in from the panel edge. Capped so a full A–Z+digits set still fits the band.
-    let pitch = 34.0f32.min((SCR_H - GRID_TOP - 40.0) / n as f32);
-    let y0 = GRID_TOP + 8.0;
-    let cx = SCR_W - 64.0;
+    // pulled in from the panel edge. More letters than fit that band SCROLL — the pitch is never
+    // divided down to make them fit, see [`RAIL_PITCH`].
+    let (y0, cx, win_h, max_scroll) = rail_geom(n);
+    let scroll = unsafe { (*addr_of!(RAIL_SCROLL)).pos };
     // a slim capsule track behind the letters — the tab-track family, minimized: makes the
     // rail read as a CONTROL to discover, not stray typography
-    let track = Rect::new(cx - 22.0, y0 - 10.0, 44.0, pitch * n as f32 + 20.0);
+    let track = Rect::new(cx - 22.0, y0 - 10.0, 44.0, win_h + 20.0);
     p.rect_sheened(track, 22.0, theme::scrim_black(0.30), theme::scrim_black(0.40));
     let in_rail = area() == Area::Rail;
     let cur_letter = letter_of(focus_idx());
@@ -2226,18 +2268,53 @@ fn draw_rail(p: Painter) {
             key.1,
             letters.iter().take(n).map(|(l, _)| CString::new(l.as_str()).unwrap_or_default()).collect(),
         ));
+        // a different section's rail opens at the top rather than sliding back from wherever the
+        // last one was left (change-guarded inside `jump`, so this costs no frames)
+        unsafe { (*addr_of_mut!(RAIL_SCROLL)).jump(0.0) };
     }
     let labels = &lcache.as_ref().unwrap().2;
+    let scrolls = max_scroll > 0.5;
+    if scrolls {
+        // belt and braces under the edge fade: a glyph reaches α0 before it reaches the window
+        // edge, so this only catches the rounding — but without it a letter could paint over the
+        // capsule's rounded cap while the spring is mid-flight.
+        p.clip(Rect::new(cx - 22.0, y0, 44.0, win_h));
+    }
     for (i, label) in labels.iter().enumerate() {
-        let cy = y0 + (i as f32 + 0.5) * pitch;
+        let cy = y0 + (i as f32 + 0.5) * RAIL_PITCH - scroll;
+        // one letter of fade at each end that has more beyond it: the rail says "there is more
+        // alphabet this way" without a scrollbar, and letters leave rather than pop.
+        let rel = cy - y0;
+        let mut a = 1.0f32;
+        if scroll > 0.5 {
+            a = a.min(rel / RAIL_PITCH);
+        }
+        if scroll < max_scroll - 0.5 {
+            a = a.min((win_h - rel) / RAIL_PITCH);
+        }
+        let a = a.clamp(0.0, 1.0);
+        // The pointer target is the SLOT, not the disc: a 38 px box at a 34 px pitch overlapped
+        // its neighbour, and `rail_at` takes the FIRST match, so the top of every letter clicked
+        // the letter above it. Scrolled-away letters keep an empty rect — `Rect::contains` is
+        // false on it — so a click can only reach a letter that is actually legible.
+        unsafe {
+            (*addr_of_mut!(RAIL_RECTS))[i] = if a > 0.5 {
+                Rect::new(cx - 22.0, cy - RAIL_PITCH * 0.5, 44.0, RAIL_PITCH)
+            } else {
+                Rect::new(0.0, 0.0, 0.0, 0.0)
+            }
+        };
+        if a <= 0.0 {
+            continue; // off the window entirely — the cull, since `n` can be twice what fits
+        }
+        let q = p.alpha(a);
         let d = 38.0f32;
         let r = Rect::new(cx - d * 0.5, cy - d * 0.5, d, d);
-        unsafe { (*addr_of_mut!(RAIL_RECTS))[i] = r };
         let focused = in_rail && i == unsafe { addr_of!(RAIL_F).read() };
         // idle letters at SECONDARY (the review put TERTIARY below the couch floor here);
         // the current-position letter reads PRIMARY, the focused one is a snow disc
         let ink = if focused {
-            p.rect(r, d * 0.5, crate::ui::ACCENT, crate::ui::ACCENT, 0.0);
+            q.rect(r, d * 0.5, crate::ui::ACCENT, crate::ui::ACCENT, 0.0);
             crate::ui::ACCENT_INK
         } else if i == cur_letter {
             theme::TEXT_PRIMARY
@@ -2245,7 +2322,10 @@ fn draw_rail(p: Painter) {
             theme::TEXT_SECONDARY
         };
         let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 1, cy);
-        p.text(label.as_ptr(), cx, ty, theme::size::CAPTION, ink, 1, 1);
+        q.text(label.as_ptr(), cx, ty, theme::size::CAPTION, ink, 1, 1);
+    }
+    if scrolls {
+        p.clip_clear();
     }
 }
 
@@ -2677,5 +2757,57 @@ mod tests {
         assert_eq!(focused_chip(), Some(Chip::Filter));
 
         unsafe { TOOL_F = tool0 };
+    }
+
+    /// The whole point of the constant pitch: a Latin section and a Cyrillic one space their
+    /// letters identically, and the long one scrolls instead of compressing. Both rail statics
+    /// are untouched here — [`rail_geom`] and [`rail_scroll_target`] are pure, which is why they
+    /// were split out of the draw.
+    #[test]
+    fn a_long_alphabet_scrolls_rather_than_squeezing_its_letters() {
+        let (y_short, x_short, win_short, max_short) = rail_geom(9); // Movies, Latin
+        let (y_long, x_long, win_long, max_long) = rail_geom(30); // a Cyrillic section
+
+        // same origin, so the rail does not move between sections…
+        assert_eq!((y_short, x_short), (y_long, x_long));
+        // …the short one is exactly as tall as its letters and never scrolls…
+        assert_eq!(win_short, 9.0 * RAIL_PITCH);
+        assert_eq!(max_short, 0.0);
+        // …and the long one fills the band and scrolls the remainder, at the SAME pitch
+        assert!(max_long > 0.0, "30 letters must not fit the band at {RAIL_PITCH} px");
+        assert_eq!(win_long + max_long, 30.0 * RAIL_PITCH);
+        assert!(win_long <= SCR_H - GRID_TOP - 40.0);
+    }
+
+    /// The window invariant, at every letter of a section that does not fit: whatever the scroll
+    /// was, one step of the reveal rule leaves the driving letter fully on screen — and inside the
+    /// one-letter margin the edge fade occupies, so the letter you are on is never the faded one.
+    #[test]
+    fn the_reveal_rule_keeps_the_driving_letter_clear_of_both_fades() {
+        const N: usize = 30;
+        let (_, _, win_h, max) = rail_geom(N);
+        for drive in 0..N {
+            // from the top, from the bottom, and from where the previous letter left it
+            for from in [0.0, max, drive as f32 * RAIL_PITCH] {
+                let s = rail_scroll_target(from, drive, N);
+                assert!((0.0..=max).contains(&s), "scroll {s} escaped 0..={max} at letter {drive}");
+                let top = drive as f32 * RAIL_PITCH - s; // the letter's slot, window-relative
+                let margin = if drive == 0 || drive + 1 == N { 0.0 } else { RAIL_PITCH };
+                assert!(
+                    top >= margin - 0.01 && top + RAIL_PITCH <= win_h - margin + 0.01,
+                    "letter {drive} sits at {top}..{} in a {win_h} window (scroll {s} from {from})",
+                    top + RAIL_PITCH,
+                );
+            }
+        }
+    }
+
+    /// A section short enough to fit never scrolls, whichever letter drives — otherwise the rail
+    /// would drift on a screen whose alphabet is entirely visible.
+    #[test]
+    fn a_rail_that_fits_never_scrolls() {
+        for drive in 0..9 {
+            assert_eq!(rail_scroll_target(0.0, drive, 9), 0.0);
+        }
     }
 }
