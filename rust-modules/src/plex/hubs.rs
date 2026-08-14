@@ -2,7 +2,7 @@
 //! Promoted hubs, and search. All return `.hub[]`.
 //!
 //! **A hub does NOT always carry its items in `.metadata[]`** — this line said it did, which is
-//! the exact misconception that renders three of the search screen's five shelves as nothing at
+//! the exact misconception that renders two of the search screen's five shelves as nothing at
 //! all, silently. The home hubs are `Metadata[]` only because a home shelf holds media;
 //! `/hubs/search` also answers with people and collections, and those arrive in `.directory[]`.
 //! See [`super::Hub::directory`] for the per-type split and [`Client::search`] for the endpoint.
@@ -73,7 +73,8 @@ impl Client {
     ///
     /// * **Items arrive in TWO containers** — `movie`/`show`/`episode`/`album`/`artist`/`track` as
     ///   `Metadata[]`, `actor`/`director`/`collection` as `Directory[]`. See [`super::Hub::directory`];
-    ///   a reader that assumes `Metadata` draws three of the five design shelves as nothing, silently.
+    ///   a reader that assumes `Metadata` draws **two** of the five design shelves as nothing,
+    ///   silently — those three hub types feed Cast & Crew (`actor` + `director`) and Collections.
     /// * **`sectionId` RANKS, it does not filter.** With `sectionId=1` (Movies) the `movie` hub moves
     ///   ahead of `show`, but every row from every *other* section still comes back — the section 2
     ///   episodes, shows and actors are all present and unchanged. So it cannot be used to scope a
@@ -87,8 +88,9 @@ impl Client {
     ///   (`a` → nothing, `to` → seven populated hubs) — which is what `search::MIN_QUERY` is.
     /// * **`limit` caps each hub separately**, not the response: `limit=2` turned a 6-row `movie`
     ///   hub into 2 and left the 1-row `show` hub alone. `Hub.size` is therefore the count
-    ///   RETURNED, already capped — never the total number of matches — and `Hub.more` stayed
-    ///   `false` on every truncated hub, so it cannot be used to offer a "see all" either.
+    ///   RETURNED, already capped — never the total number of matches — and the wire's `more`
+    ///   attribute (which [`super::Hub`] does not model) stayed `false` on every truncated hub, so
+    ///   it cannot be used to offer a "see all" either.
     /// * **Hub ORDER moves per query** (`sta` ranks `actor` first, `star` ranks `movie` first) and a
     ///   response carries ~17 hubs, most with `size: 0`. `search::KINDS` fixes the shelf order for
     ///   exactly this reason: honouring the server's would move a row under a typing user's focus.
@@ -139,7 +141,5 @@ mod tests {
         assert_eq!(search_path("wallace", 8, 0), "/hubs/search?query=wallace&limit=8");
         assert_eq!(search_path("wallace", 0, 1), "/hubs/search?query=wallace&sectionId=1");
         assert_eq!(search_path("wallace", 8, 1), "/hubs/search?query=wallace&limit=8&sectionId=1");
-        // …and the order is the server's: query, then limit, then the scope hint
-        assert!(search_path("x", 3, 2).ends_with("?query=x&limit=3&sectionId=2"));
     }
 }

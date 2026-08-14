@@ -8,7 +8,7 @@
 > reverse-engineering.
 >
 > **One exception, and it is a live one: `/hubs/search`.** The spec's worked example has the
-> response shape wrong (it files shows under `Directory`), and believing it renders three of the
+> response shape wrong (it files shows under `Directory`), and believing it renders two of the
 > five search shelves as nothing, silently. §3b is the probed answer; prefer it there.
 
 Server: `http://YOUR_PMS_HOST:32400` — PMS apiVersion 1.2.2.
@@ -253,7 +253,8 @@ variants. Where the spec and the server disagree, the server wins.
 This is the one fact the whole search screen rests on, and getting it wrong fails **silently**:
 nothing errors, no field is missing, `Hub.size` still reports 3 — the Cast & Crew and Collections
 shelves simply draw nothing, because the reader looked in `Metadata` and the rows were in
-`Directory`. Three of the app's five search shelves, gone, with a green parse. (Modelled as
+`Directory`. **Two** of the app's five search shelves, gone, with a green parse — three hub types,
+but `search::Kind::hubs` folds `actor` + `director` into the single Cast & Crew shelf. (Modelled as
 `plex::Hub.directory: Vec<Tag>`; pinned by `plex::models`'s fixture tests.)
 
 A `Directory[]` row is the same `Tag` record the cast row on a detail page is built from:
@@ -307,8 +308,8 @@ and never a placeholder either, per the zero rule below.
   specified"*).
 * **`Hub.size` is the number of rows RETURNED**, already capped by `limit` — never the total match
   count. A "6 results" caption built from it means "6 shown".
-* **`Hub.more` is `false` even on a truncated hub** (measured on the 6→2 cut above), so it cannot
-  be used to offer a "see all".
+* **The wire's `more` attribute is `false` even on a truncated hub** (measured on the 6→2 cut
+  above), so it cannot be used to offer a "see all". `plex::Hub` does not model it, for that reason.
 * **Hub ORDER moves per query**: `sta` ranks `actor` first, `star` ranks `movie` first. A response
   carries ~17 hubs — every type the server knows — most with `size: 0`. The app fixes its own shelf
   order for this reason; honouring the server's would move a row under a typing user's focus.
