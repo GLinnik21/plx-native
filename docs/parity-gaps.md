@@ -52,28 +52,35 @@ still take focus, and LEFT/RIGHT still walks between them, so the control looks 
 
 ## 1. The five gaps that block a normal user
 
-1. ~~**No search, anywhere.**~~ **CLOSED.** The only way to reach a title was to scroll the grid or
-   the A–Z rail. `plex/hubs.rs` `Client::search` → `GET /hubs/search` was written and typed with
-   **zero callers** (`plex/mod.rs` admitted it). The fetch was done; the cost was thought to be an
-   on-screen alphanumeric keyboard — and the PIN pad in `ui/profiles.rs` is private state, not a
-   reusable widget, so that was assumed net-new.
+1. **No search, anywhere** — **being closed; the Search screen is the feature that closes it.** The
+   only way to reach a title was to scroll the grid or the A–Z rail. `plex/hubs.rs` `Client::search`
+   → `GET /hubs/search` was written and typed with **zero callers** (`plex/mod.rs` admitted it). The
+   fetch was done; the cost was thought to be an on-screen alphanumeric keyboard — and the PIN pad in
+   `ui/profiles.rs` is private state, not a reusable widget, so that was assumed net-new.
 
-   **What shipped, and the one thing this estimate got wrong.** `Route::Search` (`app.rs`) is a peer
-   of Home and the Library, reached from the strip's last pill, and `ui/search/` draws a field over
-   typed result shelves fed by `search.rs` off that same `Client::search`. **No keyboard was
-   written.** The television has one: stock `SDL_StartTextInput()` raises the system panel, because
-   LG's Wayland video driver carries a complete `text_model` IME client behind SDL's standard
-   screen-keyboard hooks, and typed text arrives as an ordinary `SDL_TEXTINPUT`. So the half of this
-   gap that was priced as `large` did not exist — the cost was the screen, not the keys. `SDL_webOS.h`
-   is what made this hard to see: it declares eight entry points and not one of them is a keyboard.
-   **`docs/search.md` §3** records the whole seam, including the three traps that make it non-obvious
-   (a webOS-shifted `SDL_TEXTINPUT` whose text is at +16, `SDL_WINDOW_INPUT_FOCUS` as a silent
-   precondition, and a reopen wedge we inherit) and the two dead ends nobody should retry.
+   **The one thing this estimate got badly wrong: no keyboard is being written, because the
+   television has one.** Stock `SDL_StartTextInput()` raises the system panel — LG's Wayland video
+   driver carries a complete `text_model` IME client behind SDL's standard screen-keyboard hooks, and
+   typed text arrives as an ordinary `SDL_TEXTINPUT`. So the half of this gap that was priced `large`
+   did not exist; the cost is the screen, not the keys. `SDL_webOS.h` is what made that hard to see:
+   it declares eight entry points and not one of them is a keyboard. **`docs/search.md` §3** records
+   the whole seam, including the three traps that make it non-obvious (a webOS-shifted
+   `SDL_TEXTINPUT` whose text is at +16, `SDL_WINDOW_INPUT_FOCUS` as a silent precondition, and a
+   reopen wedge we inherit) and the two dead ends nobody should retry.
 
-   **Still open:** results are **server-only**. Plex Discover / Watchlist catalog hits are explicitly
-   out of scope and remain their own gap (§ *Adjacent catalog*, below). `GET /hubs/search/voice` is
-   not implemented, and `Client::search` sends `query` + `limit` only — there is no `?sectionId=`
-   scoping, so search is account-wide and cannot be narrowed to one library.
+   **What has landed, and what has not — do not read this entry as "done" without checking.**
+   Landed: `Route::Search` as a **peer** of Home and the Library (`app.rs`), the strip's last pill,
+   the five-file `ui/search/` split, `search.rs`'s query state and result types, and the wire facts
+   in §*Endpoints* below. **Not yet landed as of this entry:** the drawing and the fetch —
+   `ui/search/`'s `draw` bodies are `{}` and `search::pump` lands nothing, so **`Client::search` still
+   has zero callers**. The one-line check for whether that is still true is whether
+   `plex/mod.rs`'s "no callers yet" admission still names `search`; when it no longer does, this gap
+   is closed outright and this paragraph should go.
+
+   **Out of scope either way:** results are **server-only**. Plex Discover / Watchlist catalog hits
+   remain their own gap (§ *Adjacent catalog*, below). `GET /hubs/search/voice` is not implemented,
+   and `Client::search` sends `query` + `limit` only — there is no `?sectionId=` scoping, so search is
+   account-wide and cannot be narrowed to one library.
 
 2. **No item context menu at all.** The reference client's whole action vocabulary hangs off
    press-and-hold. Ours is *detected and deliberately dropped*: `press.rs:47` `LONG_MS = 500`,
@@ -366,7 +373,7 @@ Corrections to the gap list, all verified live against the PMS on 2026-07-29 unl
 | "No post-play card" | **`GET /hubs/metadata/{id}/postplay`** — a purpose-built endpoint |
 | "You cannot rate an item" | **`PUT /:/rate`** (the rating half of Rate & Review; the *review* text is plex.tv) |
 | "Related is flattened into one nameless 20-item strip" | **`GET /hubs/metadata/{id}/related`** returns it already grouped into named hubs — we call the flat `/related`. Also `GET /library/metadata/{ids}/similar`. |
-| "No search screen" | **`GET /hubs/search`** (already wrapped in `plex/hubs.rs`), plus `GET /hubs/search/voice`. **The screen landed — §1.1.** `/hubs/search/voice` did not, and neither did `?sectionId=` scoping. Two wire facts cost real time and are now written down in `Hub`'s doc (`plex/models.rs`) rather than here: a search response returns **every** hub type the server knows, most with `size: 0`, and its items arrive in **two** containers — `Metadata[]` for movie/show/episode but `Directory[]` for actor/director/collection, which `plex-openapi.json`'s own worked example gets wrong |
+| "No search screen" | **`GET /hubs/search`** (already wrapped in `plex/hubs.rs`), plus `GET /hubs/search/voice`. **The screen is being built — §1.1.** `/hubs/search/voice` is not, and neither is `?sectionId=` scoping. Two wire facts cost real time and are now written down in `Hub`'s doc (`plex/models.rs`) rather than here: a search response returns **every** hub type the server knows, most with `size: 0`, and its items arrive in **two** containers — `Metadata[]` for movie/show/episode but `Directory[]` for actor/director/collection, which `plex-openapi.json`'s own worked example gets wrong |
 | Person page | **`GET /library/people/{personId}`** + **`/media`** — see §5b |
 
 **Still genuinely unspecified**, so verify against the live server before writing code:
@@ -425,12 +432,13 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 *Already implemented here: 22 reference features.*
 
-- ~~**No Search anywhere in the app**~~ — `major` / `large` — **CLOSED; see §1.1.** The screen
-  landed as `Route::Search` + `ui/search/` (five files) + a `search.rs` store, with the strip's last
-  pill as its entry — the prescription below is right about every file except the expensive one:
-  **no on-screen keyboard was written**, because `SDL_StartTextInput()` raises the television's own.
-  Details and the traps in that seam: `docs/search.md`. What is still absent is catalog/Discover
-  results (their own gap) and `?sectionId=` scoping. Original finding, unedited:  
+- **No Search anywhere in the app** — `major` / `large` — **being closed; see §1.1 for exactly how
+  far.** The route, the pill and the `ui/search/` + `search.rs` seams have landed; the drawing and
+  the fetch have not, so `Client::search` still has no caller. The prescription below is right about
+  every file except the expensive one: **no on-screen keyboard is being written**, because
+  `SDL_StartTextInput()` raises the television's own (`docs/search.md` §3). Absent by decision
+  either way: catalog/Discover results (their own gap) and `?sectionId=` scoping. Original finding,
+  unedited:  
   The official client's rail leads with Search: a global search screen with an on-screen keyboard whose results come back grouped into hubs by type. We have no search screen, no search route, and no text-entry primitive outside the profiles PIN pad.  
   *Where:* New rust-modules/src/ui/search.rs (screen + on-screen keyboard + result hubs) and a Route::Search arm with key/pointer dispatch in rust-modules/src/app.rs; an entry in rust-modules/src/ui/widgets.rs draw_tab_row. Data layer already exists: plex/hubs.rs:23 -> GET /hubs/search?query=&limit=  
   *Verified:* Confirmed absent as a UI feature. Data layer partial: plex/hubs.rs:22-29 Client::search (GET /hubs/search?query=&limit=) is fully written and typed, returns MediaContainer.hub[], and has ZERO callers — plex/mod.rs:13 explicitly labels it 'written ahead of a UI feature ... no callers yet'. Route enum app.rs:586-594 is Login/Profiles/Home/Account/Library/Detail/Player{overlay} only; no wcode or pill dispatch reaches a search surface (app.rs:909-915, 1715-1723). Text entry: the ONLY input primitive is the numeric PIN keypad in ui/profiles.rs:28-58 (4x3 grid, digits + b'D' delete) — no alphanumeri
@@ -732,17 +740,18 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 *Already implemented here: 14 reference features.*
 
-- ~~**No search anywhere in the app**~~ — `blocker` / `large` — **CLOSED; see §1.1.** This is the
-  same gap as the Home-screen one above, filed twice by two auditors, and it is the one entry whose
-  *Where:* was materially wrong: it prices "an on-screen alphanumeric keyboard, ideally promoted into
-  `ui/widgets.rs` as a reusable Keyboard view" as the bulk of the work, and no such widget exists or
-  should — the television owns the keyboard and `SDL_StartTextInput()` raises it (`docs/search.md`
-  §3). Everything else it predicts did land, near enough: a `search.rs` store on the `person.rs`
-  mailbox idiom, a `Route::Search` arm in `app.rs`, a strip entry in `ui/widgets.rs`, and the screen
-  as `ui/search/` (a directory of five, not one `ui/search.rs`). Two of its capabilities remain
-  unbuilt: results are **server-only**, with no Plex-catalog hits (deliberate — see the adjacent-
-  catalog entry below), and the `?sectionId=` scoping it mentions is not wired, so search cannot be
-  narrowed to one library. Original finding, unedited:  
+- **No search anywhere in the app** — `blocker` / `large` — **being closed; see §1.1 for exactly how
+  far.** This is the same gap as the Home-screen one above, filed twice by two auditors, and it is
+  the one entry whose *Where:* was materially wrong: it prices "an on-screen alphanumeric keyboard,
+  ideally promoted into `ui/widgets.rs` as a reusable Keyboard view" as the bulk of the work, and no
+  such widget exists or should — the television owns the keyboard and `SDL_StartTextInput()` raises
+  it (`docs/search.md` §3). Everything else it predicts is the shape being built, near enough: a
+  `search.rs` store on the `person.rs` mailbox idiom, a `Route::Search` arm in `app.rs`, a strip
+  entry in `ui/widgets.rs`, and the screen as `ui/search/` (a directory of five, not one
+  `ui/search.rs`). Two of its capabilities are out of scope rather than pending: results are
+  **server-only**, with no Plex-catalog hits (deliberate — see the adjacent-catalog entry below), and
+  the `?sectionId=` scoping it mentions is not wired, so search is account-wide. Original finding,
+  unedited:  
   The official client has a full Search screen (sidebar entry) with an on-screen keyboard, searching the user's libraries plus Plex's own catalog, with results grouped by type (Movies, Shows, Episodes, People, Collections). We have no search UI, no search route, and no way to find an item by name — the only way to reach a title is to scroll the grid or the A–Z rail. The data call already exists and is dead code.  
   *Where:* New `rust-modules/src/ui/search.rs` (screen + on-screen alphanumeric keyboard, ideally promoted into `ui/widgets.rs` as a reusable Keyboard view), a new `search.rs` async store beside `browse.rs`/`metadata.rs` (spawn_small + mailbox + generation, same idiom), a `Route::Search` arm in `app.rs` (key/pointer/draw), and a search entry in `ui/widgets.rs::draw_tab_row`. PMS endpoint: `GET /hubs/search?query=&limit=` (already implemented at plex/hubs.rs:23); `/hubs/search?sectionId=` scopes it to one library.  
   *Verified:* CONFIRMED. `Client::search` exists at plex/hubs.rs:23-29 (`GET /hubs/search?query=&limit=`) and is dead code — `rg -n "search" rust-modules/src` yields only that definition, the plex/mod.rs:13 admission ("the ops written ahead of a UI feature (search/browse/leaves — no callers yet)"), and unrelated byte/binary-search helpers in stream.rs:37, text.rs:327/357, remote.rs:76/119/138, plus `av_opt_set`'s `search_flags` param name in ff.rs:272. app.rs:586-594 `enum Route` = Login/Profiles/Home/Account/Library/Detail/Player{overlay} — no Search arm, and no Search entry in `modal_of` (app.rs:608). ui/
@@ -774,9 +783,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Adjacent catalog: no Plex Discover / "Movies & Shows on Plex" and no Watchlist** — `major` / `large`  
   The official client's sidebar carries the free ad-supported Movies & Shows catalog and the user's Watchlist, and its search returns catalog + Discover results alongside server results. We have zero support: no discover.provider.plex.tv client, no watchlist read/toggle, and our search op (unused anyway) is server-only. Flagged as an adjacent-catalog feature, not a library one.  
-  **Still open, and now the ONLY open half of the search story** (2026-08-14): the Search screen
-  landed (§1.1) and `Client::search` has callers, so "unused anyway" no longer holds — but it is
-  still server-only, by decision rather than omission. Catalog + Discover hits need DNS and TLS and
+  **Still open, and the half of the search story that stays open even once §1.1 closes**
+  (2026-08-14): the Search screen is server-only **by decision**, not by omission — "unused anyway"
+  stops being true the moment `search.rs`'s fetch lands, but "server-only" does not.
+  Catalog + Discover hits need DNS and TLS and
   therefore `net.rs`/libcurl, their own client, their own store and their own failure modes; adding
   them is a separate feature, not a wider `limit=` on `/hubs/search`. `docs/search.md` §6.
   NB the partial that does exist: `plex/discover.rs` was added for person bios (see *Superseded by
