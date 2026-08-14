@@ -50,6 +50,21 @@ const CARET_H: f32 = 34.0;
 /// Clearance between the caret and the PLACEHOLDER behind it — the only gap the caret needs, since
 /// against a real run it stands at the insertion point with no lead at all (see [`run_layout`]).
 const HINT_GAP: f32 = 4.0;
+/// The one-character hint, and the air before it.
+///
+/// **It lives in the FIELD, which is the whole design decision.** One character in, the query has
+/// not started ([`crate::search::MIN_QUERY`]) and the screen owes the user that fact — but the
+/// region below still holds their recent terms, and replacing those with an instruction because a
+/// key was pressed takes content away for pressing a key. So the hint sits where the eye already
+/// is, right after the caret, in the placeholder's own dim ink, and is CONSUMED by the next
+/// keystroke rather than dismissed.
+///
+/// (`Search Screen.dc.html` carries the alternative as a `minHint` prop — a `Searching starts at
+/// two characters` line above the scope caption — and ships with this one as the default. The other
+/// is not built: it puts a second sentence in a column that already has one, and the fact belongs
+/// to the field.)
+const GHOST: &CStr = c"one more character";
+const GHOST_GAP: f32 = 14.0;
 /// Where the scope line starts — its own column on the field's row, clear of the 820-wide capsule.
 const SCOPE_X: f32 = 950.0;
 /// …and how much room it gets: the rest of the row, out to the app's own right margin. It is the
@@ -121,9 +136,30 @@ pub(crate) fn draw(p: Painter, v: &View) {
         let cr = Rect::new(inner.x + caret_dx, FIELD.cy() - CARET_H * 0.5, CARET_W, CARET_H);
         p.rrect(cr, CARET_W * 0.5, CARET_W * 0.5, ink);
     }
+    // One character in, after the insertion point — see [`GHOST`]. Placed off the caret's own slot
+    // whether or not a bar is drawn, so the run does not shuffle sideways when the panel closes.
+    if ghost_shown(q) {
+        let col = if hot { theme::ROW_VALUE_INK_ON_DIM } else { theme::TEXT_TERTIARY };
+        Label::new(GHOST.as_ptr(), theme::size::BODY, col).draw(
+            p,
+            Rect::new(inner.x + caret_dx + CARET_W + GHOST_GAP, inner.y, inner.w, inner.h),
+        );
+    }
     p.clip_clear();
 
     draw_scope(p);
+}
+
+/// Is the one-character hint on? Exactly one character SHORT of the minimum, never at zero (an
+/// empty field already says "Search", and two hints on one control is a control arguing with
+/// itself) and never at the minimum (the query has started; the answer is the hint).
+///
+/// Written against `MIN_QUERY` rather than as `== 1` so it stays true if the minimum ever moves —
+/// at three, "one more character" is right at two and wrong at one, which is a copy question this
+/// predicate would then be the place to answer.
+fn ghost_shown(q: &str) -> bool {
+    let n = q.trim().chars().count();
+    n > 0 && n + 1 == crate::search::MIN_QUERY
 }
 
 /// Where the run and the caret sit, as offsets from the padded box's left edge. `caret_w` is the
@@ -212,13 +248,23 @@ impl Scope<'_> {
     }
 }
 
-/// The scope line, or `None` when there is nothing to state.
+/// The scope line, or `None` when there is no source to name at all.
 ///
-/// Nothing is stated for a single source: the scope then IS the user's whole account, and a line
-/// saying so on every search would be chrome that never changes. With two, the design's own two
-/// shapes — all live, or one that is not, in which case the fact is which machine did not answer
-/// and what you are therefore looking at. There is no warning tint and no Retry: re-kicking one
-/// source is a control, and it lives on that section's Library screen.
+/// **Stated for a SINGLE source too**, which this file argued against for one release: the scope is
+/// then the user's whole account, so a line saying so never changes, and unchanging chrome is worth
+/// deleting. Two things overturned it. `Search Screen.dc.html` makes the point that a row whose
+/// right half empties out when a server is removed reads as a missing element rather than as a
+/// simplification — the line is not chrome, it is the field's answer to the one question this
+/// screen cannot show you, which is where you are looking. And the empty states no longer carry
+/// the fact: `empty`'s "Titles, people and collections in <server>." was the single-source case's
+/// only statement of scope anywhere, and the design deleted it as a second voice on one screen.
+/// Suppressing this as well would leave a one-server install with no answer at all.
+///
+/// `None` survives for zero sources, where there is nothing true to say.
+///
+/// With two, the design's own two shapes — all live, or one that is not, in which case the fact is
+/// which machine did not answer and what you are therefore looking at. There is no warning tint and
+/// no Retry: re-kicking one source is a control, and it lives on that section's Library screen.
 ///
 /// The owner's handle is attributed only when there are two sources and **exactly one** of them is
 /// a share with a handle — the design's own shape, where the `·` can only bind to the name in front
@@ -230,7 +276,7 @@ impl Scope<'_> {
 /// is the standalone `"Shared by friend"` sentence the hero meta line and the Library read-out
 /// draw, and this is a bare handle hung off a `·` inside a longer statement.
 fn scope_text(src: &[Scope]) -> Option<String> {
-    if src.len() < 2 {
+    if src.is_empty() {
         return None;
     }
     let down: Vec<&Scope> = src.iter().filter(|s| !s.live).collect();
@@ -583,9 +629,22 @@ mod tests {
         assert_eq!(caret, 0.0);
     }
 
+    /// **One source is still named** — the rule reversed on 2026-08-15, and worth a test rather
+    /// than a deletion because the old one asserted the opposite for a stated reason. The line is
+    /// the field's answer to "where am I looking", `empty` no longer carries that fact for the
+    /// single-source case, and a right half that empties out when a server is removed reads as a
+    /// missing element. Only "no sources at all" is silent, because there is nothing true to say.
     #[test]
-    fn one_source_is_the_whole_account_so_nothing_is_stated() {
-        assert_eq!(scope_text(&[own("nas-home")]), None);
+    fn one_source_is_named_and_only_no_source_is_silent() {
+        assert_eq!(scope_text(&[own("nas-home")]).unwrap(), "Searching nas-home");
+        // …by its MACHINE name, which is what your own server is recognised by (`Scope::label`).
+        assert_eq!(scope_text(&[own("")]).unwrap(), "Searching your server", "never a blank in a sentence");
+        // A lone SHARE is named by its library, and carries no handle: there is no second name for
+        // the `·` to separate it from, and "Film Club · friend" beside a one-source install states
+        // an attribution nothing on the screen contrasts with.
+        assert_eq!(scope_text(&[share("Film Club", "friend")]).unwrap(), "Searching Film Club");
+        // Down, alone: the bare fact, with nothing left to say results are coming from instead.
+        assert_eq!(scope_text(&[down(own("nas-home"))]).unwrap(), "nas-home unreachable");
         assert_eq!(scope_text(&[]), None);
     }
 

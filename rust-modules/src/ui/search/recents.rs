@@ -94,7 +94,10 @@ const CAP: usize = super::MAX_RECENTS;
 
 /// Header caps, pre-uppercased. The header is a constant here (TableView's `to_uppercase` exists
 /// because its headers are runtime machine and library names).
-const HDR: &std::ffi::CStr = c"RECENT SEARCHES";
+/// `pub(super)` for [`super::empty`], which draws this same header over its own empty state — the
+/// list keeps its name when it has nothing in it, and two spellings of one header is exactly the
+/// drift that would make them look like two regions.
+pub(super) const HDR: &std::ffi::CStr = c"RECENT SEARCHES";
 /// The Clear control's label and the air above it. A `space::MD` rung, not a hand-tuned gap: it
 /// separates two different KINDS of thing (the list, then a verb), which is exactly the rung's job.
 const CLEAR: &std::ffi::CStr = c"Clear";

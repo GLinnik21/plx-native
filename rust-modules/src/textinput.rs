@@ -69,9 +69,13 @@
 
 use crate::app::SDL_WINDOW_INPUT_FOCUS;
 #[cfg(not(test))]
-use crate::app::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
+use crate::app::{
+    SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_IsScreenKeyboardShown, SDL_StartTextInput, SDL_StopTextInput,
+};
 #[cfg(test)]
-use host_test_sdl::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
+use host_test_sdl::{
+    SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_IsScreenKeyboardShown, SDL_StartTextInput, SDL_StopTextInput,
+};
 
 /// The four SDL entry points this module calls, stubbed for the HOST TEST BINARY only.
 ///
@@ -94,6 +98,11 @@ mod host_test_sdl {
     }
     /// No panel on the host, matching what the simulator's own boot probe reports (`support=0`).
     pub(super) unsafe fn SDL_HasScreenKeyboardSupport() -> c_int {
+        0
+    }
+    /// …and therefore never shown, which is what makes [`super::poll`] a no-op under test: with no
+    /// panel ever seen up, there is no dismissal to detect.
+    pub(super) unsafe fn SDL_IsScreenKeyboardShown(_w: *mut c_void) -> c_int {
         0
     }
     pub(super) unsafe fn SDL_StartTextInput() {}
@@ -206,6 +215,7 @@ pub(crate) fn start() {
             return;
         }
         *addr_of_mut!(STARTED) = true;
+        *addr_of_mut!(SEEN_UP) = false; // this session's panel has not risen yet — see `poll`
         // Anything typed BEFORE the field opened belongs to whatever was on screen then, not to
         // this query. That is not hypothetical on a desktop: SDL2's `SDL_VideoInit` ends with
         // `if (!SDL_HasScreenKeyboardSupport()) SDL_StartTextInput();`, so on macOS text events
@@ -246,6 +256,52 @@ pub(crate) fn stop() {
         // is not it. With both transitions logged, one log answers which of the two you have.
         log("keyboard: stop");
         SDL_StopTextInput();
+    }
+}
+
+/// Has the panel been up at least once this session? See [`poll`] — a `false` from
+/// `SDL_IsScreenKeyboardShown` means nothing until it has first been `true`.
+static mut SEEN_UP: bool = false;
+
+/// **Did the COMPOSITOR take the panel away?** Answers `true` exactly once per dismissal, and only
+/// for a dismissal we did not perform.
+///
+/// The panel has no close button, so every dismissal a user can *press* goes through [`stop`] — but
+/// the television takes it away on its own after an idle spell, device-observed 2026-08-15 and
+/// reported before that as "it automatically disappeared". Nothing tells the app: `SDL_TEXTINPUT`
+/// simply stops arriving, `STARTED` stays set, and the screen goes on drawing a focused field with
+/// a blinking caret over a keyboard that is not there — and, on this screen, holding its empty-state
+/// layout clear of a panel that has left.
+///
+/// `SDL_IsScreenKeyboardShown` is the only thing that knows, so this polls it. The [`SEEN_UP`] latch
+/// is the whole subtlety: the panel rises ASYNCHRONOUSLY over wayland, so it reads `false` for
+/// several frames immediately after [`start`], and acting on that would close the field on the frame
+/// it was opened. A `false` counts only after a `true`.
+///
+/// Clearing [`STARTED`] here is what keeps the next [`start`] real rather than a silent no-op —
+/// the same pairing failure `stop`'s doc describes, arriving from the outside this time. The panel
+/// re-raises fine afterwards (device-verified), so the driver's reopen wedge does not bite on this
+/// firmware even from the compositor's own path.
+pub(crate) fn poll() -> bool {
+    unsafe {
+        if !*addr_of!(STARTED) {
+            return false;
+        }
+        let win = *addr_of!(WIN);
+        if win.is_null() {
+            return false;
+        }
+        if SDL_IsScreenKeyboardShown(win) != 0 {
+            *addr_of_mut!(SEEN_UP) = true;
+            return false;
+        }
+        if !*addr_of!(SEEN_UP) {
+            return false; // still rising — see the latch above
+        }
+        *addr_of_mut!(STARTED) = false;
+        *addr_of_mut!(SEEN_UP) = false;
+        log("keyboard: dismissed by the compositor");
+        true
     }
 }
 
