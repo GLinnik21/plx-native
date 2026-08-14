@@ -962,28 +962,27 @@ pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
 /// Re-kick the source behind what the screen is showing — the read-out's *Try again*, and the ONE
 /// place the two layers are told apart.
 ///
-/// A source whose **table** never landed is re-discovered here and now: its back-off is cleared and
-/// [`ensure_sections`] re-runs, which is the same blocking call route entry makes and reaches the
-/// right server because [`set_cur`] moves `plex::current` with the browsed section. A source that
-/// HAS its table only needs the page back-off cleared — a fetch is already counting down, and the
-/// button's job is to skip the wait rather than to start a second one.
+/// Both back-offs go: the SOURCE's, so an undiscovered table is re-attempted on the next `pump`
+/// rather than in ~10 s ([`SRC_RETRY_CD`]), and the page's, so a section that has its table refetches
+/// at once rather than in ~2 s. Clearing both is right whichever layer failed — the one that already
+/// has its answer has nothing to re-attempt — and it means the read-out's control needs to know
+/// nothing about which layer it is fixing.
 ///
-/// Returns whether the TABLE was re-fetched, because that is the case whose success brings pills, a
-/// grid and a focus band with it, and only the screen can mount those.
-pub(crate) fn retry_cur_source() -> bool {
-    let Some(i) = cur_source_idx() else {
-        unsafe { RETRY_CD = 0 };
-        return false;
-    };
-    if sources()[i].sections_done {
-        unsafe { RETRY_CD = 0 };
-        return false;
+/// **Nothing here blocks.** The first version called [`ensure_sections`] for the undiscovered case,
+/// on the reasoning that it is the same call route entry makes — but route entry makes it for a
+/// server nobody has dialled yet, while this button is only reachable for one that has just been
+/// PROVEN not to answer, so it would park the SDL loop for the full `connect(2)` timeout every
+/// press. That trade did not exist on the branch this came from, where there was no worker to
+/// discover a source; there is now, and `maybe_discover` picks up exactly the pair this sets
+/// (`retry_cd == 0 && !sections_done`) on the very next [`pump`], off the main thread. The button's
+/// whole job at both layers is therefore the same one: skip the wait.
+pub(crate) fn retry_cur_source() {
+    unsafe { RETRY_CD = 0 };
+    if let Some(i) = cur_source_idx() {
+        if let Some(s) = source_mut(i) {
+            s.retry_cd = 0;
+        }
     }
-    if let Some(s) = source_mut(i) {
-        s.retry_cd = 0;
-    }
-    ensure_sections();
-    true
 }
 
 /// The MACHINE name and the OWNER's handle of the source behind what the screen is showing.
