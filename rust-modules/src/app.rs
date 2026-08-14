@@ -120,6 +120,10 @@ use crate::log;
 /// detail page is restored to. See `ui/trail.rs`.
 use crate::ui::detail::Spot;
 use crate::ui::trail::{Node, Trail};
+/// The shared top strip's vocabulary: what a pill INDEX means. Every site that turns a pill into a
+/// destination `match`es on this, so a pill the app has not been taught about is a compile error
+/// rather than a silent library open — see `widgets::Pill`.
+use crate::ui::widgets::Pill;
 
 /// Log every Rust panic (message + source location + thread) to the event log AND the
 /// persistent crash log BEFORE it unwinds. A panic that crosses an extern "C" boundary
@@ -507,6 +511,189 @@ fn commit_seek(target: i64, repause_at: &mut i64) {
 }
 #[inline]
 fn is_started() -> bool { crate::player::is_started() }
+
+// ---- the route vocabulary, and the pure questions asked ABOUT a route -------------------------
+//
+// These live at module scope rather than inside `plex_run` for one reason: they are pure functions
+// of a `Route`, they decide things that have shipped wrong (the teardown rule below, twice), and a
+// `Route` that only exists inside the run loop's body is a decision no host test can reach. The
+// loop still owns every VALUE — `route` is a local, the trail is a local — and nothing here reads
+// or writes app state.
+
+/// Exclusive route state machine (replaces 5 entangled bools). Overlays live INSIDE
+/// Player because they only mean anything during playback; Detail and Player are mutually
+/// exclusive. Deleting the old bools makes the compiler flag any un-migrated read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overlay {
+    None,
+    Menu,
+    Info,
+    Chapters,
+    /// the `…` disc's overflow popover (`ui/more_menu.rs`)
+    More,
+}
+/// Which screen a [`Route::ItemMenu`] popover is sitting over.
+///
+/// The menu is a popover on a LIVE screen, not a page of its own — the card and its row keep
+/// drawing and animating behind it — so the route has to name the screen underneath, both to
+/// go on drawing/updating it and to know where the popover closes back to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuHost {
+    /// a home shelf card
+    Home,
+    /// the detail page's episode filmstrip
+    Detail,
+}
+impl MenuHost {
+    /// the route the popover returns to when it closes
+    fn route(self) -> Route {
+        match self {
+            MenuHost::Home => Route::Home,
+            MenuHost::Detail => Route::Detail,
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    Login,    // plex.tv sign-in (QR) — shown when there's no usable session
+    Profiles, // "who's watching" Plex Home picker
+    Home,
+    Account,  // Home + the top-left profile menu popover (change profile / sign out)
+    /// `over` + the press-and-hold context menu popover (ui/item_menu.rs)
+    ItemMenu { over: MenuHost },
+    Library,  // the browse grid (ui/library.rs); its sort/filter menus are internal state
+    Detail,
+    /// The person/actor page (ui/person.rs), reached by OK on a detail page's cast
+    /// headshot. Exclusive with Detail like every other node — what is UNDER it is the BACK
+    /// trail's business (`ui::trail`), not this enum's, which is exactly why the trail
+    /// exists: a `Route` names one screen, and person→detail→person is three.
+    Person,
+    /// The Search screen (`ui/search/`). A PEER of Home and the Library, not a stacking
+    /// page: it is reached from the strip's last pill and BACK from it returns to Home, so
+    /// it needs no trail node of its own — what it OPENS stacks, but it does not.
+    Search,
+    Player { overlay: Overlay },
+}
+
+/// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
+/// continuous-chrome rule. Exhaustive for the same reason `Nav::wears_tab_bar` is: a new
+/// screen must not be able to answer this by accident. (`Account`/`ItemMenu over Home` draw
+/// Home underneath, so the bar is on screen there too; Detail and Person do not have one,
+/// which is what makes every transition to or from them fade the bar with the page.)
+fn route_wears_tab_bar(r: Route) -> bool {
+    match r {
+        Route::Home | Route::Library | Route::Search => true,
+        Route::Account => true,
+        Route::ItemMenu { over } => matches!(over, MenuHost::Home),
+        Route::Login | Route::Profiles | Route::Detail | Route::Person | Route::Player { .. } => false,
+    }
+}
+/// The PAGE a trail node names — the ONE Node→[`Route`] mapping in the app. Both things
+/// that have to know it read it here: `enter_node` flips the route through it after
+/// mounting, and [`node_wears_tab_bar`] answers the chrome question by handing it to
+/// [`route_wears_tab_bar`], so a node and the page it mounts can never answer differently.
+///
+/// A free fn and not `Node::route`, which is what it would rather be: `Node` belongs to
+/// `ui::trail` (deliberately — the trail decides nothing about screens and cannot see `Route`),
+/// so the inherent `impl` would be a foreign one, which `non_local_definitions` warns about.
+fn node_route(n: &Node) -> Route {
+    match n {
+        Node::Home => Route::Home,
+        Node::Library => Route::Library,
+        Node::Person { .. } => Route::Person,
+        Node::Detail { .. } => Route::Detail,
+    }
+}
+/// The same question about a TRAIL node — what a BACK's destination wears, peeked before the
+/// pop, and what a forward `Nav::Open` is about to put on screen. DERIVED from
+/// [`route_wears_tab_bar`] through [`node_route`] rather than listing the node kinds a
+/// second time: a node and the route it mounts are the same page, and the two lists had no
+/// way to stay in step beyond someone noticing.
+fn node_wears_tab_bar(n: &Node) -> bool {
+    route_wears_tab_bar(node_route(n))
+}
+/// The PAGE a route draws. An `ItemMenu` is a popover on a LIVE screen and `Account` is one
+/// over Home, so the page being left by a navigation out of either is the screen underneath
+/// — which is what both the teardown and the spot below have to be asked about.
+fn page_of(r: Route) -> Route {
+    match r {
+        Route::ItemMenu { over } => over.route(),
+        Route::Account => Route::Home,
+        other => other,
+    }
+}
+/// The page's TEARDOWN — what leaving it FOR GOOD has to run, handed to `ui::nav` so it
+/// happens at the fade floor instead of on the press frame (see that module's doc: run
+/// early, `detail::close`'s `metadata::clear` empties the page *during its own fade-out*).
+///
+/// WHEN a navigation asks for one is [`stays_on_trail`]'s question, not this function's: this is
+/// only "what does leaving this page for good have to run".
+///
+/// Spelled out route by route, exactly as [`route_wears_tab_bar`] above it is and for the
+/// same reason: with a `_ => None` catch-all, a new STACKING screen compiles with no
+/// teardown at all and silently leaks the item it loaded, which is invisible until the page
+/// it left behind reappears under the next one.
+fn leave_of(r: Route) -> Option<fn()> {
+    match page_of(r) {
+        Route::Detail => Some(crate::ui::detail::close as fn()),
+        Route::Person => Some(crate::ui::person::leave as fn()),
+        // Nothing loaded that outlives the page. Home and the Library keep their stores for
+        // as long as the profile does (`browse.rs` is re-ENTERED, never re-queried — that is
+        // why `Node::Library` carries no payload), Login/Profiles are boot gates the app
+        // leaves once, and a player session is torn down by its own exit path.
+        Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Player { .. } => None,
+        // Search DOES have one, and it is not a store: the television's keyboard must come
+        // down with the page. Dismissing it at the press instead would drop the panel a
+        // frame early, while the screen it belongs to is still on screen behind it.
+        Route::Search => Some(crate::ui::search::leave as fn()),
+        // Unreachable: `page_of` has already resolved a popover onto the screen it sits on,
+        // so neither of these ever arrives here. Listed rather than swept into a `_` so the
+        // exhaustiveness above is real.
+        Route::Account | Route::ItemMenu { .. } => None,
+    }
+}
+/// Does this page STAY MOUNTED behind a forward navigation — is it a page the BACK trail can put
+/// back? This is the whole rule for when [`leave_of`] is asked for, and the honest predicate is
+/// **trail membership, not direction**.
+///
+/// A BACK always tears the page down: it is being left for good, by definition. A FORWARD
+/// navigation is the interesting half, and the obvious generalisation ("carry the teardown either
+/// way") is WRONG: Detail and Person stay on the trail, so closing one on the way deeper would
+/// empty the page the user is about to press BACK to — the exact bug `leave_of`'s doc defends
+/// against, and `nav`'s retarget rule is built around.
+///
+/// [`Route::Search`] is the case that made this a predicate rather than a `None`. It has no `Node`
+/// variant and the commit frame RESETS the trail on arrival (its results stack on Home, not on
+/// it), so nothing is ever behind it and every way off it is leaving it for good — including the
+/// four that are forward navigations (a pill press, BACK to Home, opening a result). Until this
+/// existed its teardown was reachable by no route off the screen at all, and the television's
+/// keyboard was instead dismissed by polling the route on every frame of the app's life.
+fn stays_on_trail(r: Route) -> bool {
+    match page_of(r) {
+        // exactly the `Node` variants (`node_route`'s domain): a forward navigation leaves these
+        // standing behind the destination, which is what makes the common pop a route flip
+        Route::Home | Route::Library | Route::Detail | Route::Person => true,
+        // no node, and the trail is reset on arrival — see the doc above
+        Route::Search => false,
+        // Boot gates the app leaves once, and a player session torn down by its own exit path.
+        // None of the three has a `leave_of` at all, so this answer is about being honest rather
+        // than about having an effect.
+        Route::Login | Route::Profiles | Route::Player { .. } => false,
+        // Unreachable: `page_of` resolves a popover onto the screen it sits on. Listed rather than
+        // swept into a `_`, exactly as `leave_of` above.
+        Route::Account | Route::ItemMenu { .. } => false,
+    }
+}
+/// The teardown a FORWARD navigation off `cur` carries — [`stays_on_trail`] and [`leave_of`]
+/// composed, so the two halves of the rule are stated once and cannot drift apart at the two call
+/// sites (`nav_to` and `nav_open`).
+fn forward_leave(cur: Route) -> Option<fn()> {
+    if stays_on_trail(cur) {
+        None
+    } else {
+        leave_of(cur)
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
@@ -968,60 +1155,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut prev_my = -1.0f32;
         let mut last_ptr_motion = 0u32;
         let mut cur_hidden = false;
-        // Exclusive route state machine (replaces 5 entangled bools). Overlays live INSIDE
-        // Player because they only mean anything during playback; Detail and Player are mutually
-        // exclusive. Deleting the old bools makes the compiler flag any un-migrated read.
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum Overlay {
-            None,
-            Menu,
-            Info,
-            Chapters,
-            /// the `…` disc's overflow popover (`ui/more_menu.rs`)
-            More,
-        }
-        /// Which screen a [`Route::ItemMenu`] popover is sitting over.
-        ///
-        /// The menu is a popover on a LIVE screen, not a page of its own — the card and its row keep
-        /// drawing and animating behind it — so the route has to name the screen underneath, both to
-        /// go on drawing/updating it and to know where the popover closes back to.
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum MenuHost {
-            /// a home shelf card
-            Home,
-            /// the detail page's episode filmstrip
-            Detail,
-        }
-        impl MenuHost {
-            /// the route the popover returns to when it closes
-            fn route(self) -> Route {
-                match self {
-                    MenuHost::Home => Route::Home,
-                    MenuHost::Detail => Route::Detail,
-                }
-            }
-        }
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum Route {
-            Login,    // plex.tv sign-in (QR) — shown when there's no usable session
-            Profiles, // "who's watching" Plex Home picker
-            Home,
-            Account,  // Home + the top-left profile menu popover (change profile / sign out)
-            /// `over` + the press-and-hold context menu popover (ui/item_menu.rs)
-            ItemMenu { over: MenuHost },
-            Library,  // the browse grid (ui/library.rs); its sort/filter menus are internal state
-            Detail,
-            /// The person/actor page (ui/person.rs), reached by OK on a detail page's cast
-            /// headshot. Exclusive with Detail like every other node — what is UNDER it is the BACK
-            /// trail's business (`ui::trail`), not this enum's, which is exactly why the trail
-            /// exists: a `Route` names one screen, and person→detail→person is three.
-            Person,
-            /// The Search screen (`ui/search/`). A PEER of Home and the Library, not a stacking
-            /// page: it is reached from the strip's last pill and BACK from it returns to Home, so
-            /// it needs no trail node of its own — what it OPENS stacks, but it does not.
-            Search,
-            Player { overlay: Overlay },
-        }
         /// Which panel owns the frame — the ONE place that decision lives, read by the pointer
         /// arm (and, when the z bands land, the draw composition) so they cannot drift. The key
         /// path was always modal for every overlay (each arm `continue`s); the CLICK path used to
@@ -1108,13 +1241,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// (`library::view_section`) the moment it is mounted.
             fn select_pill(&self) -> Option<usize> {
                 match self {
-                    Nav::Home { .. } => Some(0),
+                    Nav::Home { .. } => Some(crate::ui::widgets::pill_of(Pill::Home)),
                     // a TAB index, not a section index: the strip is a projection of the table
-                    // (`browse::tabs`), so `+1` here is only the Home pill leading the row
-                    Nav::Library(tab) => Some(tab + 1),
-                    // always the LAST pill — that Search goes last rather than first is why every
-                    // `pill - 1 -> section` conversion above and below stayed correct as written
-                    Nav::Search { .. } => Some(crate::ui::widgets::search_pill()),
+                    // (`browse::tabs`). Placed through `pill_of` rather than by a `+1` here —
+                    // where the section pills start in the row is the strip's business, not this
+                    // enum's, and the two must agree with what a CLICK on that pill resolves to.
+                    Nav::Library(tab) => Some(crate::ui::widgets::pill_of(Pill::Section(*tab))),
+                    Nav::Search { .. } => Some(crate::ui::widgets::pill_of(Pill::Search)),
                     Nav::Open { .. } | Nav::Back { .. } => None,
                 }
             }
@@ -1147,85 +1280,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// BACK must return them to where they pressed, not to where the fade found them.
             spot: Option<Spot>,
         }
-        /// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
-        /// continuous-chrome rule. Exhaustive for the same reason [`Nav::wears_tab_bar`] is: a new
-        /// screen must not be able to answer this by accident. (`Account`/`ItemMenu over Home` draw
-        /// Home underneath, so the bar is on screen there too; Detail and Person do not have one,
-        /// which is what makes every transition to or from them fade the bar with the page.)
-        fn route_wears_tab_bar(r: Route) -> bool {
-            match r {
-                Route::Home | Route::Library | Route::Search => true,
-                Route::Account => true,
-                Route::ItemMenu { over } => matches!(over, MenuHost::Home),
-                Route::Login | Route::Profiles | Route::Detail | Route::Person | Route::Player { .. } => false,
-            }
-        }
-        /// The PAGE a trail node names — the ONE Node→[`Route`] mapping in the loop. Both things
-        /// that have to know it read it here: [`enter_node`] flips the route through it after
-        /// mounting, and [`node_wears_tab_bar`] answers the chrome question by handing it to
-        /// [`route_wears_tab_bar`], so a node and the page it mounts can never answer differently.
-        ///
-        /// A free fn and not `Node::route`, which is what it would rather be: `Route` is a LOCAL of
-        /// this run loop (deliberately — the trail decides nothing about screens, and `ui::trail`
-        /// cannot see this type), so an inherent `impl` for it would have to sit inside a function
-        /// body, which `non_local_definitions` warns about and a future edition rejects outright.
-        fn node_route(n: &Node) -> Route {
-            match n {
-                Node::Home => Route::Home,
-                Node::Library => Route::Library,
-                Node::Person { .. } => Route::Person,
-                Node::Detail { .. } => Route::Detail,
-            }
-        }
-        /// The same question about a TRAIL node — what a BACK's destination wears, peeked before the
-        /// pop, and what a forward [`Nav::Open`] is about to put on screen. DERIVED from
-        /// [`route_wears_tab_bar`] through [`node_route`] rather than listing the node kinds a
-        /// second time: a node and the route it mounts are the same page, and the two lists had no
-        /// way to stay in step beyond someone noticing.
-        fn node_wears_tab_bar(n: &Node) -> bool {
-            route_wears_tab_bar(node_route(n))
-        }
-        /// The PAGE a route draws. An `ItemMenu` is a popover on a LIVE screen and `Account` is one
-        /// over Home, so the page being left by a navigation out of either is the screen underneath
-        /// — which is what both the teardown and the spot below have to be asked about.
-        fn page_of(r: Route) -> Route {
-            match r {
-                Route::ItemMenu { over } => over.route(),
-                Route::Account => Route::Home,
-                other => other,
-            }
-        }
-        /// The page's TEARDOWN — what leaving it FOR GOOD has to run, handed to `ui::nav` so it
-        /// happens at the fade floor instead of on the press frame (see that module's doc: run
-        /// early, `detail::close`'s `metadata::clear` empties the page *during its own fade-out*).
-        ///
-        /// Only a BACK asks for one. A FORWARD navigation deliberately leaves the page it came from
-        /// mounted behind the destination — that is the whole reason `enter_node`'s re-open guard
-        /// makes the common pop a route flip rather than a re-fetch.
-        ///
-        /// Spelled out route by route, exactly as [`route_wears_tab_bar`] above it is and for the
-        /// same reason: with a `_ => None` catch-all, a new STACKING screen compiles with no
-        /// teardown at all and silently leaks the item it loaded, which is invisible until the page
-        /// it left behind reappears under the next one.
-        fn leave_of(r: Route) -> Option<fn()> {
-            match page_of(r) {
-                Route::Detail => Some(crate::ui::detail::close as fn()),
-                Route::Person => Some(crate::ui::person::leave as fn()),
-                // Nothing loaded that outlives the page. Home and the Library keep their stores for
-                // as long as the profile does (`browse.rs` is re-ENTERED, never re-queried — that is
-                // why `Node::Library` carries no payload), Login/Profiles are boot gates the app
-                // leaves once, and a player session is torn down by its own exit path.
-                Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Player { .. } => None,
-                // Search DOES have one, and it is not a store: the television's keyboard must come
-                // down with the page. Dismissing it at the press instead would drop the panel a
-                // frame early, while the screen it belongs to is still on screen behind it.
-                Route::Search => Some(crate::ui::search::leave as fn()),
-                // Unreachable: `page_of` has already resolved a popover onto the screen it sits on,
-                // so neither of these ever arrives here. Listed rather than swept into a `_` so the
-                // exhaustiveness above is real.
-                Route::Account | Route::ItemMenu { .. } => None,
-            }
-        }
         /// Where the page being left is standing, for [`NavReq::spot`]. Only a detail page has a
         /// place worth restoring (`Trail::set_top_spot` ignores every other node), so this is the
         /// whole rule — no per-arm decision, and no call site that can forget it. On a BACK the
@@ -1246,16 +1300,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::ui::nav::begin(route_wears_tab_bar(cur) && to.wears_tab_bar(), to.select_pill(), leave);
             *pending = Some(NavReq { to, from: cur, spot: leaving_spot(cur) });
         }
-        /// A FORWARD navigation: the page being left stays mounted behind the destination, so there
-        /// is nothing to tear down.
+        /// A FORWARD navigation. It carries a teardown only when the page it leaves is NOT one the
+        /// BACK trail can put back — see [`stays_on_trail`], which is where that rule and its two
+        /// wrong generalisations are argued.
         fn nav_to(cur: Route, to: Nav, pending: &mut Option<NavReq>) {
-            nav_req(cur, to, None, pending);
+            nav_req(cur, to, forward_leave(cur), pending);
         }
         /// Open a stacking page (detail / person) through the transition — the ONE forward entry to
         /// both, so a new way in cannot push without routing or route without pushing. The mount
         /// and the push both happen at the fade floor; see [`nav_req`].
         fn nav_open(cur: Route, node: Node, season: Option<c_int>, pending: &mut Option<NavReq>) {
-            nav_req(cur, Nav::Open { node, season }, None, pending);
+            nav_req(cur, Nav::Open { node, season }, forward_leave(cur), pending);
         }
         /// BACK off a stacking page, through the transition. The page IS being left for good, so
         /// its teardown rides the request; the trail is only PEEKED here (`Trail::under`) and the
@@ -1755,23 +1810,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 *route = Route::Account;
                 return;
             }
-            // a tab pill in the top band: pill 0 is Home — the screen we are already on, so OK on
-            // it is a deliberate no-op; 1.. enter that library section's grid. (The grid-card
-            // sentinel is rejected by hero_pill_index itself — see its doc comment.)
+            // a tab pill in the top band. (The grid-card sentinel is rejected by hero_pill_index
+            // itself — see its doc comment.)
             if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
-                if crate::ui::widgets::is_search_pill(pill) {
-                    nav_to(*route, Nav::Search { query: String::new() }, nav);
-                    return;
-                }
-                match pill.checked_sub(1) {
+                match crate::ui::widgets::pill_at(pill) {
+                    Pill::Search => nav_to(*route, Nav::Search { query: String::new() }, nav),
                     // that section's grid, through the page cross-fade: `library::enter` and the
                     // route flip both land at the fade floor, while the selection capsule starts
                     // travelling on THIS frame (`nav::view_tab`).
-                    Some(sec) => nav_to(*route, Nav::Library(sec), nav),
-                    // pill 0 is Home, the screen we are on — still a no-op, EXCEPT that it now
-                    // withdraws a section switch that is still fading out: the user changed their
-                    // mind inside the 70 ms window, and the capsule springs back on its own.
-                    None => {
+                    Pill::Section(tab) => nav_to(*route, Nav::Library(tab), nav),
+                    // Home is the screen we are on, so OK on its pill is a deliberate no-op —
+                    // EXCEPT that it withdraws a section switch that is still fading out: the user
+                    // changed their mind inside the 70 ms window, and the capsule springs back on
+                    // its own.
+                    Pill::Home => {
                         nav_cancel(*route, nav);
                     }
                 }
@@ -2611,14 +2663,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // immediately inside the screen.
                             let spill = crate::ui::search::focused_pill();
                             if spill >= 0 {
-                                let spill = spill as usize;
-                                if crate::ui::widgets::is_search_pill(spill) {
+                                match crate::ui::widgets::pill_at(spill as usize) {
                                     // the screen we are already on — a deliberate no-op, as Home's
                                     // own pill is on Home
-                                } else if let Some(sec) = spill.checked_sub(1) {
-                                    nav_to(route, Nav::Library(sec), &mut nav_pending);
-                                } else {
-                                    nav_to(route, Nav::Home { focus_pill: Some(0) }, &mut nav_pending);
+                                    Pill::Search => {}
+                                    Pill::Section(tab) => nav_to(route, Nav::Library(tab), &mut nav_pending),
+                                    // focus lands on the Home pill, which is the pill Home selects
+                                    // anyway — the strip must not appear to move under the swap
+                                    Pill::Home => nav_to(route, Nav::Home { focus_pill: Some(0) }, &mut nav_pending),
                                 }
                             } else if crate::ui::search::focus_is_card() {
                                 crate::ui::press::begin(SDL_GetTicks());
@@ -3015,17 +3067,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::account_menu::open(); // top-left avatar → profile menu
                             route = Route::Account;
                         } else if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
-                            // the centered tab pills work from BOTH hero and grid views. Home
-                            // (pill 0) is the screen we are on, so a click there just parks focus
-                            // on it — in hero view, which is where the band's focus is visible.
-                            if crate::ui::widgets::is_search_pill(i) {
-                                nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending);
-                            } else if let Some(sec) = i.checked_sub(1) {
-                                nav_to(route, Nav::Library(sec), &mut nav_pending);
-                            } else if nav_cancel(route, &mut nav_pending) {
-                                // a section switch still fading out, taken back — the key twin's rule
-                            } else if crate::ui::home::snap_pos() < 0.5 {
-                                crate::ui::home::set_hero_focus(crate::ui::home::hero_focus_for_pill(0));
+                            // the centered tab pills work from BOTH hero and grid views
+                            match crate::ui::widgets::pill_at(i) {
+                                Pill::Search => nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending),
+                                Pill::Section(tab) => nav_to(route, Nav::Library(tab), &mut nav_pending),
+                                // Home is the screen we are on, so a click there just parks focus
+                                // on the pill — in hero view, which is where the band's focus is
+                                // visible — unless there is a section switch still fading out to
+                                // take back, which is the key twin's rule.
+                                Pill::Home => {
+                                    if !nav_cancel(route, &mut nav_pending) && crate::ui::home::snap_pos() < 0.5 {
+                                        crate::ui::home::set_hero_focus(crate::ui::home::hero_focus_for_pill(0));
+                                    }
+                                }
                             }
                         } else if crate::ui::home::snap_pos() < 0.5 {
                             // hero visible: clicks act on the action row via the ONE activation;
@@ -3048,11 +3102,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // `tab_pill_at` owns the clipped rects, so a pill scrolled half out of the
                         // track is clickable across exactly the half you can see.
                         if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
-                            if crate::ui::widgets::is_search_pill(i) {
-                            } else if let Some(sec) = i.checked_sub(1) {
-                                nav_to(route, Nav::Library(sec), &mut nav_pending);
-                            } else {
-                                nav_to(route, Nav::Home { focus_pill: Some(0) }, &mut nav_pending);
+                            match crate::ui::widgets::pill_at(i) {
+                                Pill::Search => {} // the screen we are already on
+                                Pill::Section(tab) => nav_to(route, Nav::Library(tab), &mut nav_pending),
+                                Pill::Home => nav_to(route, Nav::Home { focus_pill: Some(0) }, &mut nav_pending),
                             }
                         } else if let crate::ui::search::Action::Open(node) = crate::ui::search::click(cx, cy) {
                             nav_open(route, node, None, &mut nav_pending);
@@ -4126,25 +4179,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     dt,
                 );
                 crate::ui::search::update(dt);
-            } else {
-                // THE PANEL NEVER OUTLIVES THE SCREEN THAT ASKED FOR IT. Stated here as a route
-                // invariant rather than left to the leave path, because the leave path does not
-                // currently run: `leave_of`'s `Route::Search => search::leave` is consulted only
-                // by `nav_back`, and Search is left by `nav_to`/`nav_open` — a pill press, or
-                // opening a result — which pass `leave: None`. So `search::leave`'s `stop()` is
-                // reached by no route off this screen, and the television's keyboard would stay
-                // up over Home or over a detail page.
-                //
-                // That is not a cosmetic leak. Per trap 3 in `textinput`'s module doc, the panel
-                // cannot be REOPENED after it is dismissed (moonlight-tv#435, and we call the
-                // TV's own SDL, so we have the bug with no patch) — so a panel left up and then
-                // closed by the user is a search field that can never be typed into again for
-                // the rest of the session.
-                //
-                // Free on every other frame of the app's life: `stop` reads one bool and returns
-                // when we never started, which is every route but this one.
-                crate::textinput::stop();
             }
+            // (The television's keyboard used to be dismissed HERE, by an `else` that called
+            // `textinput::stop()` on every frame of every other route — because `search::leave`
+            // was reached by no route off the screen. It is `forward_leave`'s job now: Search is
+            // not a trail page, so every way off it carries its teardown to the fade floor, which
+            // is where the panel is meant to come down and is also the half the poll never did —
+            // it cleared `textinput`'s own flag and left `search::EDITING` set.)
             if matches!(route, Route::Account) {
                 crate::ui::account_menu::update(dt);
             }
@@ -4206,6 +4247,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // could is cancelled above; this is the backstop, and it is the cheaper half.
                 if crate::player::start_bufferfeed(mt) && !matches!(route, Route::Player { .. }) {
                     log("pump_play: engine started off-route → restoring Route::Player");
+                    // The page is being taken off screen by a LANDING, not by a navigation, so no
+                    // transition runs and nothing else would spend its teardown. `forward_leave`
+                    // and not `leave_of`: the page stays on the trail if it is a trail page, and
+                    // this repair must not blank the detail page the player will exit back to.
+                    // What it does cover is Search, where the television's keyboard would
+                    // otherwise be left up over playback (`textinput`'s trap 3: once the user
+                    // closes it themselves, the field can never be typed into again this session).
+                    if let Some(f) = forward_leave(route) {
+                        f();
+                    }
                     route = Route::Player { overlay: Overlay::None };
                 }
             }
@@ -4486,6 +4537,81 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         crate::posters::posters_shutdown();
         SDL_Quit();
         0
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    //! The route-classification rules — pure functions of a `Route`, which is why they were lifted
+    //! out of `plex_run`'s body: they decide something that has shipped wrong twice and no test
+    //! could see them in there.
+    //!
+    //! Nothing here draws, touches a global or RUNS a teardown: `leave_of` hands back a `fn()` and
+    //! these grade which answer it gives, never call it. So they are ordinary parallel tests, and
+    //! what they deliberately cannot say is whether the panel actually comes down on the
+    //! television — that is a device check (`tv-session`, the keyboard up over Home).
+    use super::*;
+
+    /// The generalisation a reviewer already caught, as an assertion. Making a forward navigation
+    /// blanket-carry `leave_of(cur)` is the obvious move and it is WRONG: Detail and Person stay on
+    /// the BACK trail, so `detail::close` (and its `metadata::clear`) would empty the page the user
+    /// is about to press BACK to, *during its own fade-out*.
+    #[test]
+    fn a_forward_navigation_never_tears_down_a_page_the_trail_can_put_back() {
+        for r in [Route::Home, Route::Library, Route::Detail, Route::Person] {
+            assert!(stays_on_trail(r), "a page with a `Node` is a page BACK can return to");
+            assert!(forward_leave(r).is_none(), "going deeper must leave the page behind it standing");
+        }
+        // …and the two that HAVE a teardown really do, so the line above is about the RULE rather
+        // than about there being nothing to run either way.
+        assert!(leave_of(Route::Detail).is_some(), "a BACK off a detail page still closes it");
+        assert!(leave_of(Route::Person).is_some());
+    }
+
+    /// Search is the other half, and the reason the rule is trail membership rather than direction:
+    /// it has no `Node`, the commit frame resets the trail on arrival, so nothing is ever behind it
+    /// and every way off it — three of the four are FORWARD navigations (a section pill, the Home
+    /// pill, opening a result) — is leaving it for good.
+    ///
+    /// The regression this replaces: `leave_of`'s Search arm was consulted only by `nav_back`,
+    /// which this screen never reaches, so the television's keyboard was dismissed by polling the
+    /// route on every frame of the app's life instead.
+    #[test]
+    fn every_way_off_search_carries_its_teardown() {
+        assert!(!stays_on_trail(Route::Search), "nothing stacks ON Search — its results stack on Home");
+        assert!(forward_leave(Route::Search).is_some(), "a pill press or an opened result takes the keyboard with it");
+        assert!(leave_of(Route::Search).is_some(), "…and a BACK runs `leave_of` outright");
+    }
+
+    /// A popover is not a page: `page_of` resolves both of them onto the screen underneath, so a
+    /// navigation out of the item menu over a detail page must behave exactly like one off that
+    /// detail page — otherwise opening a card's menu would change what BACK finds behind it.
+    #[test]
+    fn a_popover_answers_for_the_screen_it_sits_on() {
+        let menu = Route::ItemMenu { over: MenuHost::Detail };
+        assert!(stays_on_trail(menu));
+        assert!(forward_leave(menu).is_none(), "the detail page under the menu stays mounted");
+        assert!(leave_of(menu).is_some(), "…and a BACK off it still closes that page");
+        assert!(forward_leave(Route::Account).is_none(), "Account is a popover over Home");
+    }
+
+    /// The coupling that keeps [`stays_on_trail`] honest. It claims to be exactly the set of pages
+    /// a `Node` names, and `node_route` is where that set is written down — so a new `Node` whose
+    /// route answered `false` here would tear its page down on the way deeper, which is the first
+    /// test's bug arriving through the other door. The two lists are exhaustive `match`es that the
+    /// compiler cannot relate; this is what relates them.
+    #[test]
+    fn every_trail_node_names_a_page_that_stays_on_the_trail() {
+        let sid = crate::plex::ServerId::UNSET;
+        let nodes = [
+            Node::Home,
+            Node::Library,
+            Node::Person { sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new() },
+            Node::Detail { sid, rk: String::new(), spot: Spot::default() },
+        ];
+        for n in &nodes {
+            assert!(stays_on_trail(node_route(n)), "a page the trail holds must survive a forward navigation off it");
+        }
     }
 }
 

@@ -29,7 +29,7 @@ use crate::ui::icons::Icon;
 use crate::ui::popover::Popover;
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, Spinner, StatusKind};
+use crate::ui::widgets::{Art, Pill, Spinner, StatusKind};
 use crate::ui::xfade::Xfade;
 use crate::ui::{on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
@@ -784,11 +784,14 @@ fn tab_focus() -> c_int {
 /// The pill focus LANDS on when it walks up into the tab row.
 fn own_pill() -> usize {
     // The pill that REPRESENTS this section, which for a borrowed library is its type's — and then
-    // clamped into the pills that EXIST. With no section table there is only Home, and an index
-    // past the last pill is a highlight on nothing: reachable now that a failed discovery keeps the
-    // user on this screen instead of bailing out of `enter` before it had a table.
-    let p = crate::browse::tab_of_section(view_section()) + 1;
-    p.min(crate::ui::widgets::search_pill().saturating_sub(1))
+    // clamped into the pills that EXIST. `last_section_pill` is that ceiling and owns the "with no
+    // section table there is only Home" fallback: an index past the last pill is a highlight on
+    // nothing, reachable now that a failed discovery keeps the user on this screen instead of
+    // bailing out of `enter` before it had a table. It used to be spelled `search_pill() - 1` here,
+    // which meant "the last pill that is a library" only because Search happens to sit last — a
+    // fact about the strip that now lives in the strip.
+    let p = crate::ui::widgets::pill_of(Pill::Section(crate::browse::tab_of_section(view_section())));
+    p.min(crate::ui::widgets::last_section_pill())
 }
 
 /// The tab pill holding focus, as a plain index — what a route change LEAVING this screen carries
@@ -1315,6 +1318,24 @@ pub(crate) fn focus_is_card() -> bool {
     !menu_open() && area() == Area::Grid && focused_item().is_some()
 }
 
+/// What a press on strip pill `i` means for this screen. ONE function for the OK key and the
+/// pointer click, which spelled the same three-way ladder out separately and identically — the
+/// shape every other paired key/pointer path on this screen already avoids (`click` resolves the
+/// toolbar through the same `open_chip_menu` the key does, and for the same reason).
+fn tab_pill_action(i: usize) -> Action {
+    match crate::ui::widgets::pill_at(i) {
+        // the screen the strip leads with; leaving for it is `app.rs`'s call, not ours
+        Pill::Home => Action::GoHome,
+        Pill::Search => Action::GoSearch,
+        // a TAB, not a section: `switch_tab` resolves it through `browse::tabs`, because several
+        // libraries can share one pill
+        Pill::Section(tab) => {
+            switch_tab(tab);
+            Action::None
+        }
+    }
+}
+
 pub(crate) fn on_ok() -> Action {
     if menu() == Menu::Source && unsafe { addr_of!(SRC_ON_PILLS).read() } {
         // OK on the level you are already showing means "into its list" — the level itself is
@@ -1328,17 +1349,7 @@ pub(crate) fn on_ok() -> Action {
         return Action::None;
     }
     match area() {
-        Area::Tabs => {
-            let f = unsafe { addr_of!(TAB_F).read() };
-            if f == 0 {
-                return Action::GoHome;
-            }
-            if crate::ui::widgets::is_search_pill(f) {
-                return Action::GoSearch;
-            }
-            switch_tab(f - 1);
-            Action::None
-        }
+        Area::Tabs => tab_pill_action(unsafe { addr_of!(TAB_F).read() }),
         Area::Toolbar => {
             // matched on the CHIP, never on its index: the row is two chips long with one source
             // and three with two, so position is not identity
@@ -1843,14 +1854,7 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
     }
     pointer_focus(mx, my);
     if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
-        if i == 0 {
-            return Action::GoHome;
-        }
-        if crate::ui::widgets::is_search_pill(i) {
-            return Action::GoSearch;
-        }
-        switch_tab(i - 1);
-        return Action::None;
+        return tab_pill_action(i);
     }
     let tools = unsafe { addr_of!(TOOL_RECTS).read() };
     if let Some(i) = tools.iter().position(|r| r.w > 0.5 && r.contains(mx, my)) {
