@@ -67,10 +67,38 @@
 //! jail; `remote.rs` documents the general case).
 #![allow(dead_code)]
 
-use crate::app::{
-    SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput,
-    SDL_WINDOW_INPUT_FOCUS,
-};
+use crate::app::SDL_WINDOW_INPUT_FOCUS;
+#[cfg(not(test))]
+use crate::app::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
+#[cfg(test)]
+use host_test_sdl::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
+
+/// The four SDL entry points this module calls, stubbed for the HOST TEST BINARY only.
+///
+/// `cargo test --lib` links a Mach-O binary against no SDL at all, and unlike every other SDL user
+/// in this crate these calls are reachable from ordinary `pub(crate)` functions that a test can
+/// touch — `available()` and `start()` are one `ui::search` call away. An unguarded reference is
+/// therefore an undefined symbol at LINK time, which does not fail one test: it stops the whole
+/// suite building, exactly as `ff.rs`'s `#[link]` directives used to before that module moved to
+/// `dlopen`. SDL is a real link on the device, so the seam here is a `cfg` rather than a `dlopen`.
+///
+/// **Only `test` is stubbed.** `hostsim` links desktop SDL2 and takes the real arm — which is the
+/// whole point, since the simulator is where the decode path can actually be exercised by typing.
+#[cfg(test)]
+mod host_test_sdl {
+    use std::os::raw::{c_int, c_void};
+    /// No window, so no focus bit — which makes [`super::has_focus`] answer `Some(false)` under
+    /// test, the same answer a real television gives when the panel cannot rise.
+    pub(super) unsafe fn SDL_GetWindowFlags(_w: *mut c_void) -> u32 {
+        0
+    }
+    /// No panel on the host, matching what the simulator's own boot probe reports (`support=0`).
+    pub(super) unsafe fn SDL_HasScreenKeyboardSupport() -> c_int {
+        0
+    }
+    pub(super) unsafe fn SDL_StartTextInput() {}
+    pub(super) unsafe fn SDL_StopTextInput() {}
+}
 use crate::log;
 use std::os::raw::c_void;
 use std::ptr::{addr_of, addr_of_mut};
