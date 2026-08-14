@@ -3127,11 +3127,21 @@ pub(crate) fn on_ok() -> bool {
             if action == HeroAction::Watched {
                 // watched toggle: scrobble/unscrobble, then re-fetch so the button state, the
                 // resume bars and the Continue Watching shelf all reflect the new view state.
-                if let Some((rk, watched)) = metadata::current().map(|d| (d.rk.clone(), d.watched)) {
-                    if watched {
-                        crate::plex::client().unscrobble(&rk);
-                    } else {
-                        crate::plex::client().scrobble(&rk);
+                // **The ITEM's server, not the current one.** `rk` is a key on `d.sid` and on no
+                // other machine, and browsing a shared library no longer re-points `current` — so
+                // taken from `client()` this posted a BORROWED item's ratingKey to OUR server. Both
+                // servers number from 1, so that is not a no-op: the friend's film stays unwatched
+                // and an unrelated film of ours is marked instead. Nothing surfaces the mistake,
+                // because `refresh_view_state` then re-reads the page that did not change.
+                //
+                // `client_for` returns None for a slot that is not registered, where `client()`
+                // panics; a watch-state write is exactly the operation that should be skipped and
+                // logged rather than taken to the wrong machine.
+                if let Some((sid, rk, watched)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.watched)) {
+                    match crate::plex::client_for(sid) {
+                        Some(c) if watched => c.unscrobble(&rk),
+                        Some(c) => c.scrobble(&rk),
+                        None => crate::log(&format!("watched: no client for slot {} — not written", sid.raw())),
                     }
                     // the page re-reads itself, season and all. No keep-focus target: the press was
                     // on the hero, so there is no filmstrip position to protect.
