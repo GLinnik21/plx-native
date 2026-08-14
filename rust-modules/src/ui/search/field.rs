@@ -156,12 +156,20 @@ impl Scope<'_> {
     /// falls back to [`UNNAMED_SHARE`], never to its hostname.
     fn label(&self) -> String {
         if !self.owned {
-            // Blank titles are dropped rather than joined: a section the table holds but has not
-            // titled yet would otherwise contribute an empty run, and the line would read
-            // "Searching nas-home and " — a sentence that stops mid-air. Nothing left to name is
-            // the same state as nothing landed.
+            // Blank titles are dropped rather than counted: a section the table holds but has not
+            // titled yet would otherwise read as a library this share has.
             let named: Vec<&str> = self.libs.iter().copied().filter(|t| !t.is_empty()).collect();
-            return if named.is_empty() { UNNAMED_SHARE.to_string() } else { join(&named) };
+            return match (named.len(), self.handle.is_empty()) {
+                // One library IS the share, and is what the viewer recognises.
+                (1, _) => named[0].to_string(),
+                // Several, or none landed yet — say the PERSON. `Shared Sources.dc.html` states
+                // the rule: the Sources list is "the one place a machine name is spoken, and the
+                // reason the rest of the app can say only '{{ handle }}'". Listing someone's
+                // libraries here would be a rail of rooms in a sentence about scope; the person is
+                // the fact, and the Sources list is where their rooms are enumerated.
+                (_, false) => self.handle.to_string(),
+                (_, true) => UNNAMED_SHARE.to_string(),
+            };
         }
         if self.name.is_empty() {
             UNNAMED_OWN.to_string()
@@ -201,8 +209,12 @@ fn scope_text(src: &[Scope]) -> Option<String> {
         // collapsed to a count by then, so there is nothing left for a handle to qualify.
         let mut shares = live.iter().filter(|s| !s.owned && !s.handle.is_empty());
         if let (Some(s), None) = (shares.next(), shares.next()) {
-            t.push_str(" · ");
-            t.push_str(s.handle);
+            // …unless the share is ALREADY being called by their name, which is what a share with
+            // several libraries falls back to. "<peer-owner-1> · <peer-owner-1>" attributes a thing to itself.
+            if s.label() != s.handle {
+                t.push_str(" · ");
+                t.push_str(s.handle);
+            }
         }
         return Some(t);
     }
@@ -412,13 +424,17 @@ mod tests {
         // …while your own side is still the machine you recognise
         assert!(t.contains("nas-home"), "your own server keeps its name: {t}");
 
-        // A share with several libraries joins them, in the same idiom the source list uses.
+        // A share with SEVERAL libraries is called by its PERSON, not by a list of their rooms —
+        // `Shared Sources.dc.html`: the Sources list is "the one place a machine name is spoken,
+        // and the reason the rest of the app can say only '{{ handle }}'". Enumerating them here
+        // would put a rail inside a sentence about scope.
         let mut two = share("Film Club", "friend");
         two.libs = vec!["Film Club", "Archive"];
-        assert_eq!(
-            scope_text(&[own("nas-home"), two]).unwrap(),
-            "Searching nas-home and Film Club and Archive · friend"
-        );
+        let t = scope_text(&[own("nas-home"), two]).unwrap();
+        assert_eq!(t, "Searching nas-home and friend");
+        // …and the attribution is not repeated onto itself: "friend · friend" attributes a thing
+        // to the thing it already is.
+        assert_eq!(t.matches("friend").count(), 1, "the handle appears once, not as its own suffix: {t}");
     }
 
     /// **Past a couple of shares the line stops naming and starts counting.** The registry holds
