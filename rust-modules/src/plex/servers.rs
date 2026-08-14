@@ -42,10 +42,13 @@ use std::sync::Mutex;
 /// Slot ceiling. A Plex account's server list is a handful (own + shared); past this, a
 /// registration is refused and logged rather than growing a table the hot path indexes.
 ///
-/// `pub(super)` because [`super::serverinfo`] holds one entry PER SERVER in a flat array indexed
+/// `pub` because [`super::serverinfo`] holds one entry PER SERVER in a flat array indexed
 /// by [`ServerId::raw`], and a second, independent ceiling there is a silent out-of-bounds
-/// waiting to happen: this is the number that decides which ids can ever exist.
-pub(super) const MAX_SERVERS: usize = 16;
+/// waiting to happen: this is the number that decides which ids can ever exist. `crate::person`
+/// keys its per-source mailboxes the same way and is OUTSIDE this module tree, which is what
+/// moved this from `pub(super)` — a store that guessed its own 16 would go out of bounds the day
+/// this number moved.
+pub const MAX_SERVERS: usize = 16;
 
 /// A registry slot — a small `Copy` handle that names a server without borrowing it. Stable for
 /// the life of the process, so it can sit in UI state, a route, or a queued job.
