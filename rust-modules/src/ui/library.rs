@@ -542,9 +542,10 @@ static mut RAIL_LABELS: Option<(u32, usize, Vec<CString>)> = None; // (sections_
 // (total, the section TYPE's noun, the rendered string) — keyed on the noun rather than on a
 // movie/show boolean, because a section is one of four types now (`browse::SecKind`)
 static mut COUNT_C: Option<(i64, &'static str, CString)> = None;
-/// The failure read-out's two runtime lines, keyed on the strings they were built from — see
-/// [`dead_strs`] for why that rather than a generation.
-static mut DEAD_C: Option<(String, Option<String>, CString, Option<CString>)> = None;
+/// The failure read-out's two runtime lines, keyed on the RAW source labels they were built from
+/// (`(name, handle)`) — see [`dead_strs`] for why that rather than a generation, and why the key is
+/// the raw pair rather than the resolved one.
+static mut DEAD_C: Option<(String, String, CString, Option<CString>)> = None;
 /// The Empty read-out's caption, cached per (section table, section, filtered) — the three inputs
 /// that can change what it says.
 static mut EMPTY_C: Option<(u32, usize, bool, CString)> = None;
@@ -608,17 +609,23 @@ fn toolbar_n() -> usize {
 /// Cached, and keyed on the STRINGS rather than on a generation, because that is what actually
 /// changes: a machine names itself through `friendlyName`, which lands on a worker long after the
 /// table generation last moved, and a cache keyed on the generation would hold "Can't reach "
-/// forever. Two short comparisons a frame, and only while the read-out is on screen.
-fn dead_strs() -> &'static (String, Option<String>, CString, Option<CString>) {
-    let (machine, owner) = source_labels();
+/// forever. Two `&str` comparisons a frame, and only while the read-out is on screen.
+fn dead_strs() -> &'static (String, String, CString, Option<CString>) {
+    // Keyed on the RAW labels, which are two `&'static str` reads off this module's own table — and
+    // the staleness check runs BEFORE anything resolves them. It used to resolve first and compare
+    // after, which meant `source_labels`' session fallback ran every drawn frame the read-out was
+    // up: a file read and a JSON parse, in the one state where that fallback is guaranteed to fire
+    // (a source that never answered can never have supplied a `friendlyName`).
+    let (name, handle) = crate::browse::cur_source_labels();
     let cache = unsafe { &mut *addr_of_mut!(DEAD_C) };
-    let stale = cache.as_ref().map(|(m, o, _, _)| *m != machine || *o != owner).unwrap_or(true);
+    let stale = cache.as_ref().map(|(n, h, _, _)| n != name || h != handle).unwrap_or(true);
     if stale {
+        let (machine, owner) = source_labels();
         let verdict = CString::new(format!("Can't reach {machine}")).unwrap_or_default();
         let reason = owner
             .as_ref()
             .map(|o| CString::new(format!("Shared by {o} \u{b7} your own server is fine.")).unwrap_or_default());
-        *cache = Some((machine, owner, verdict, reason));
+        *cache = Some((name.to_string(), handle.to_string(), verdict, reason));
     }
     cache.as_ref().unwrap()
 }
@@ -694,13 +701,11 @@ fn empty_caption() -> &'static CString {
 /// needs its back-off cleared: `browse` is already counting down to the next automatic attempt, and
 /// the button's job is to skip the wait rather than to start a second fetch.
 fn retry_source() {
-    // `browse` owns WHICH layer failed — it holds the per-source flags — and answers whether the
-    // table was re-fetched. A table landing brings pills, a grid and a focus band with it, and
-    // mounting those is `enter`'s whole job; it is a CUT because the chrome it lands is not on
-    // screen to be continuous with.
-    if crate::browse::retry_cur_source() {
-        enter(crate::browse::tab_of_section(crate::browse::cur()), Arrival::Cut);
-    }
+    // `browse` owns WHICH layer failed — it holds the per-source flags — and clears the back-off on
+    // both, which is the right answer either way. Nothing blocks and nothing re-enters the screen:
+    // a table that lands arrives through `pump`'s worker like any other source's, and the read-out
+    // clears itself on the frame `readout()` stops saying Failed.
+    crate::browse::retry_cur_source();
 }
 
 /// Keep the focus band and the read-out in agreement, every frame. The failure can arrive long
