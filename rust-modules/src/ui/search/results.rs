@@ -30,8 +30,17 @@
 //! ## Five things that are not obvious from the picture
 //!
 //! **1. The flow is authored; the lift is paint.** A shelf's block is `HEAD_TO_ROW` + the tile +
-//! [`super::LABEL_BLOCK`], and [`stack_top`] is the ONE place that stacks them — the draw, the
-//! reveal rule and the pointer hit-test all call it, so they cannot drift. The focused shelf's
+//! [`super::LABEL_BLOCK`], and [`stack_top`] stacks them for the DRAW.
+//!
+//! It claimed to be "the ONE place… the draw, the reveal rule and the pointer hit-test all call
+//! it, so they cannot drift", and that was never true of the shipped screen: `super`'s state
+//! machine carries its own `block_h`/`shelf_top`/`content_h` and its own scroll policy, and the
+//! pointer reads rects recorded at draw. So the two halves of this screen's geometry ARE two
+//! copies, they already disagree by [`BOTTOM_PAD`], and each has its own green test. That is
+//! recorded here rather than asserted away — the fix is to give one of them the job, not to
+//! restate the invariant.
+//!
+//! The focused shelf's
 //! heading *rises* over its magnified tile, and that rise is `CardRow::lift()`: the shared
 //! clearance rule, `tile height × (focus_scale − 1) ÷ 2` (16.9px on a poster row — the design's
 //! 17), tapered by how near the popped tile is to the heading. It moves nothing below it.
@@ -528,13 +537,19 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
         // array nothing ever filled and `results::tile_at` sat complete with no caller. Both files
         // carry `#![allow(dead_code)]`, which is why neither half warned.
         //
-        // Rebuilt from the index rather than taken from `strip`, whose `extra` hands over the
-        // scale and not the rect: the x is the same prefix `strip` lays the tile out with, and the
-        // y is the flow line less this frame's scroll, since `draw` hands us a translated painter
-        // and hit-testing happens in the untranslated screen the user is pointing at.
-        |_, k, sc, _| {
-            let x = sty.margin_x + k as f32 * (sty.w + sty.gap) - row.scroll_x();
-            let r = Rect::new(x, top + HEAD_TO_ROW - v.shift, sty.w, sty.h).scaled(sc);
+        // `strip` hands over the tile's layout **x** — not a scale, which an earlier version of
+        // this closure assumed and passed straight to `Rect::scaled`, inflating every rect ~90×.
+        // `mod.rs::hit` takes the FIRST rect containing the point and non-focused tiles are
+        // recorded first, so that resolved every click anywhere in the results region to shelf 0,
+        // column 0. `detail.rs`'s cast row uses the same argument as an x and is the reference.
+        //
+        // That x is in CONTENT space (`strip` draws through a `-scroll_x` translate), and the y is
+        // the flow line less this frame's scroll — hit-testing happens in the untranslated screen
+        // the user is actually pointing at. Scaled by the cell's own spring so the target matches
+        // the tile as DRAWN, magnified or not.
+        |_, k, x, _| {
+            let r = Rect::new(x - row.scroll_x(), top + HEAD_TO_ROW - v.shift, sty.w, sty.h)
+                .scaled(row.scale(k));
             super::note_tile_rect(i, k, r);
         },
     );

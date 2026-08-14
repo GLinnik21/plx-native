@@ -312,12 +312,17 @@ const LIMIT: i64 = 12;
 /// so an item beyond the cap would draw with the last cell's pop and never pop at all when focused.
 const SHELF_MAX: usize = crate::ui::card_row::MAX_ROW_ITEMS;
 
-/// Fetch-slot ceiling, mirroring the registry's own `MAX_SERVERS`. It is a SEPARATE constant only
-/// because that one is `pub(super)` inside `plex/`, so this cannot name it — which is exactly the
-/// silent out-of-bounds `servers.rs` warns about, and why nothing here indexes by a raw id it has
-/// not first clamped: [`nsrc`] is the one place that clamping happens, and every array below is
-/// walked through it. If the registry ever grew past this, the cost is a 17th server that is never
-/// searched, not a write off the end of an array.
+/// Fetch-slot ceiling — the registry's own `MAX_SERVERS`, named rather than copied, so raising the
+/// ceiling cannot leave this module quietly never asking the extra servers.
+///
+/// It was a separate `16` for a while, on the reasoning that `MAX_SERVERS` was `pub(super)` inside
+/// `plex/` and could not be named here. That was already false when it was written — the constant
+/// is `pub` and re-exported, and `person.rs` names it for exactly this purpose — so the alias is
+/// kept only as a local name for what the arrays below are sized by.
+///
+/// Nothing here indexes by a raw server id it has not first clamped: [`nsrc`] is the one place
+/// that happens, and every array is walked through it. So a registry that outgrew this would cost
+/// an unsearched server, never a write off the end.
 const NSRC: usize = crate::plex::MAX_SERVERS;
 
 /// Bumped by every query change and every [`reset`]: a landing whose generation no longer matches
