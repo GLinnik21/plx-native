@@ -1,7 +1,5 @@
 //! The typed result shelves.
 //!
-//! **STUB** — signatures final, bodies to come.
-//!
 //! ## The design
 //!
 //! Shelves in a **fixed** order — `crate::search::KINDS` — and an empty type draws nothing at all.
@@ -22,23 +20,797 @@
 //! the focused tile and nothing else carries type under its artwork. The band is reserved either
 //! way ([`super::LABEL_BLOCK`]) so nothing reflows as focus travels.
 //!
-//! ## What to build it on
+//! ## What it is built on
 //!
-//! `card_row::strip()` — the one-row loop — with `TileLabel::height()` reserving the label band,
-//! the way `ui/person.rs`'s `draw_shelf` already stacks several shelves over one scroll flow.
-//! Reach for it before writing another per-screen tile loop.
+//! [`card_row::strip`] — the one-row loop — with [`card_row::TileLabel::height`] reserving the
+//! label band, the way `ui/person.rs`'s `draw_shelf` already stacks several shelves over one scroll
+//! flow. Every tile treatment a poster wears elsewhere in the app therefore travels here for free:
+//! the focus pop and its lifted shadow, the amber resume bar, the watched tick.
+//!
+//! ## Five things that are not obvious from the picture
+//!
+//! **1. The flow is authored; the lift is paint.** A shelf's block is `HEAD_TO_ROW` + the tile +
+//! [`super::LABEL_BLOCK`], and [`shelf_top`] is the ONE place that stacks them — the draw, the
+//! reveal rule and the pointer hit-test all read it, so they cannot drift. The focused shelf's
+//! heading *rises* over its magnified tile, and that rise is `CardRow::lift()`: the shared
+//! clearance rule, `tile height × (focus_scale − 1) ÷ 2` (16.9px on a poster row — the design's
+//! 17), tapered by how near the popped tile is to the heading. It moves nothing below it.
+//!
+//! **2. The owner annotation is a FADE with its swap at the floor.** A heading here cannot claim an
+//! owner, so the run follows focus — and focus can step straight from one borrowed source to
+//! another. A point of ink cannot cross-fade between two different words, so [`Owner`] holds the
+//! run it is currently naming, drives its alpha to zero whenever the target differs, adopts the new
+//! one while it is invisible and rises again: the same Out/Hold/In shape `ui::xfade` has one
+//! altitude up. With no source there is no run, no dot, no pad and no draw call at all, which is
+//! how a single-server library pays nothing for the feature.
+//!
+//! **3. Only VISIBLE tiles may resolve a texture.** `card_row::strip` culls off-axis columns for
+//! us; the vertical half is this module's, so a shelf whose whole block is off screen is skipped
+//! before `strip` is entered. The poster LRU is 64 slots and one query answers with five shelves.
+//!
+//! **4. A new result set starts at its left edge.** The store clears its shelves on the keystroke
+//! and refills them when the answer lands, so a row whose item COUNT changed is re-seated rather
+//! than left holding the scroll offset of a different query's results.
+//!
+//! **5. The springs are advanced from the DRAW.** Every other screen steps its motion in an
+//! `update(dt)`, and so would this one, but a region's whole contract is `draw(Painter, &View)` —
+//! the state machine hands its regions a [`View`] and no dt. [`update`] exists for the day
+//! `super::update` wants to hand one over and takes precedence whenever it is called; until then
+//! [`draw`] advances from its own monotonic clock. That is sound under the present gate for the
+//! reason the gate is built on: a spring in flight *reports* on the frame it is stepped, so the
+//! frame it moved on is the frame that keeps the next one presenting.
 #![allow(dead_code)]
 
-use crate::ui::search::View;
-use crate::ui::Painter;
+use crate::search::{Item, Kind, Shelf};
+use crate::ui::card_row::{self, CardRow, RowStyle, TileLabel};
+use crate::ui::consts::*;
+use crate::ui::label::{Label, VAlign};
+use crate::ui::search::{View, Zone, CONTENT_TOP, HEAD_TO_ROW, LABEL_BLOCK};
+use crate::ui::theme;
+use crate::ui::widgets::Art;
+use crate::ui::{on_axis, Painter, Rect, Spring};
+use std::ffi::CString;
+use std::os::raw::c_int;
+use std::ptr::addr_of_mut;
+
+/// How many shelves there can ever be. The store emits [`crate::search::KINDS`] with the empty
+/// types omitted, so this is the ceiling and never the count.
+const NSHELF: usize = crate::search::KINDS.len();
+
+/// A shelf's title to its count read-out — the design's 16px, spelled as the `space` rung it is.
+const COUNT_GAP: f32 = theme::space::SM;
+/// Pad either side of the `·` that introduces the SOURCE annotation. The same rung `home.rs` spends
+/// on the same annotation (its `SOURCE_PAD`): this is that annotation in a third position, not a
+/// third spacing.
+const SOURCE_PAD: f32 = theme::space::XS;
+/// Air kept under the lowest visible content when a shelf is revealed by scrolling.
+const BOTTOM_PAD: f32 = theme::space::LG;
+
+/// Poster art is asked for at the size it is DRAWN, which is also the size every other poster in
+/// the app asks for — so a film already on a Home shelf is a poster-cache HIT here rather than a
+/// second trip through `/photo/:/transcode` into a second LRU slot.
+const POSTER_RES: (c_int, c_int) = (250, 375);
+/// The episode still, at `detail.rs`'s filmstrip resolution for the same reason.
+const STILL_RES: (c_int, c_int) = (640, 360);
+/// A headshot, at the `person.rs` portrait / detail credits size — the same slot again.
+const HEAD_RES: (c_int, c_int) = (300, 300);
 
 /// Tile size for a shelf of this kind: `(w, h, circular)`.
-pub(crate) fn tile_size(kind: crate::search::Kind) -> (f32, f32, bool) {
+pub(crate) fn tile_size(kind: Kind) -> (f32, f32, bool) {
     match kind {
-        crate::search::Kind::Episode => (420.0, 236.0, false),
-        crate::search::Kind::Person => (250.0, 250.0, true),
-        _ => (crate::ui::consts::CARD_W, crate::ui::consts::CARD_H, false),
+        Kind::Episode => (420.0, 236.0, false),
+        Kind::Person => (250.0, 250.0, true),
+        _ => (CARD_W, CARD_H, false),
     }
 }
 
-pub(crate) fn draw(_p: Painter, _v: &View) {}
+/// A shelf's row style: [`RowStyle::HOME`]'s motion verbatim — one source, so a poster here
+/// animates exactly as it does on Home — with only the tile's own size and shape per kind.
+///
+/// `title_lines` stays at HOME's **one**, and this is the one place the search shelves cannot copy
+/// the person page (which wraps to two). [`super::LABEL_BLOCK`] is the band this screen reserves
+/// and it is fixed at 114 by the keyboard clearance the whole layout is built around; a two-line
+/// title makes [`card_row::TileLabel::height`] 122, which would put the caption 8px inside the next
+/// shelf's heading. The host test below grades exactly that.
+fn style(kind: Kind) -> RowStyle {
+    let (w, h, circular) = tile_size(kind);
+    RowStyle { w, h, circular, ..RowStyle::HOME }
+}
+
+// ---- geometry (pure: the draw, the reveal rule and the hit-test all read these) -----------------
+
+/// The vertical extent shelf `i` occupies in the flow: its heading, the row, and the caption band
+/// reserved under it whether or not a caption is drawn.
+fn block_h(kind: Kind) -> f32 {
+    HEAD_TO_ROW + tile_size(kind).1 + LABEL_BLOCK
+}
+
+/// Flow y of shelf `i`'s HEADING top, given the kinds on screen — the ONE vertical geometry this
+/// screen has. Shelves stack from [`super::CONTENT_TOP`] with no gap between blocks, because
+/// [`super::LABEL_BLOCK`] already carries the air under a row (the caption block itself is 92 of
+/// its 114).
+///
+/// Pure, and kept so deliberately: it is the layer the host suite can drive, and the impure
+/// wrappers below are one line each on top of it. (`person.rs`'s `reveal_block` splits for exactly
+/// this reason.)
+fn stack_top(kinds: &[Kind], i: usize) -> f32 {
+    CONTENT_TOP + kinds[..i.min(kinds.len())].iter().map(|&k| block_h(k)).sum::<f32>()
+}
+
+/// Total flowed height — the last block's bottom plus the bottom air.
+fn stack_content_h(kinds: &[Kind]) -> f32 {
+    match kinds.last() {
+        Some(&k) => stack_top(kinds, kinds.len() - 1) + block_h(k) + BOTTOM_PAD,
+        None => 0.0,
+    }
+}
+
+/// The MINIMAL vertical scroll that reveals shelf `i` — the shared [`card_row::reveal`] rule the
+/// shelves, the person page and the Library grid use, not a lift-to-margin pin: a block scrolls
+/// only as far as its own extent needs, and not at all when it already fits.
+///
+/// **Zero while the keyboard is up.** The result set has to be stable under the user's eyes while
+/// they are still typing, and the layout is sized so the first shelf's whole row lands on the
+/// keyboard's top edge with no scroll at all (`super`'s layout note, and a test below).
+fn reveal_of(cur: f32, kinds: &[Kind], i: usize, editing: bool) -> f32 {
+    if editing || i >= kinds.len() {
+        return 0.0;
+    }
+    let top = stack_top(kinds, i);
+    let h = block_h(kinds[i]);
+    let lo = top + h - (SCR_H - BOTTOM_PAD);
+    let hi = top - CONTENT_TOP;
+    card_row::reveal(cur, lo, hi, (stack_content_h(kinds) - SCR_H).max(0.0))
+}
+
+/// The kinds on screen, in flow order, and how many — the store's own order, which is already
+/// [`crate::search::KINDS`] with the empty types omitted.
+///
+/// A fixed array rather than a `Vec`: this is asked once per frame by the draw and once per pointer
+/// motion by the hit-test, and a five-element heap allocation on either path is one the draw does
+/// not need. (`person.rs::present` is the same shape for the same reason.)
+fn present() -> ([Kind; NSHELF], usize) {
+    let mut v = [Kind::Movie; NSHELF];
+    let mut n = 0;
+    for s in crate::search::shelves().iter().take(NSHELF) {
+        v[n] = s.kind;
+        n += 1;
+    }
+    (v, n)
+}
+
+/// [`stack_top`] against whatever the store is holding — what the state machine's scroll and any
+/// other caller wants.
+pub(crate) fn shelf_top(i: usize) -> f32 {
+    let (k, n) = present();
+    stack_top(&k[..n], i)
+}
+
+/// Flow y of shelf `i`'s tile ROW top.
+pub(crate) fn row_top(i: usize) -> f32 {
+    shelf_top(i) + HEAD_TO_ROW
+}
+
+/// [`stack_content_h`] against the store.
+pub(crate) fn content_h() -> f32 {
+    let (k, n) = present();
+    stack_content_h(&k[..n])
+}
+
+/// [`reveal_of`] against the store — the value `View::shift` should be springing toward.
+pub(crate) fn reveal_shelf(cur: f32, i: usize, editing: bool) -> f32 {
+    let (k, n) = present();
+    reveal_of(cur, &k[..n], i, editing)
+}
+
+// ---- screen state ------------------------------------------------------------------------------
+
+/// The owner annotation's own little state machine — see the module doc's point 2.
+struct Owner {
+    /// 0 = absent, 1 = fully stated. It rides the painter's cascade alpha and never
+    /// `theme::with_a`: [`theme::TEXT_SEPARATOR`] carries .45 of its own, and `with_a` REPLACES an
+    /// alpha rather than multiplying it.
+    a: Spring,
+    /// The handle currently being named, and the shelf it rides. Empty = nothing to say.
+    shown: String,
+    row: usize,
+    /// `shown`, NUL-terminated once per change rather than once per frame.
+    shown_c: CString,
+}
+
+impl Owner {
+    fn new() -> Self {
+        Owner { a: Spring::at(0.0), shown: String::new(), row: 0, shown_c: CString::default() }
+    }
+    /// This shelf's annotation alpha — 0 for every shelf but the one the run is riding.
+    fn alpha(&self, row: usize) -> f32 {
+        if self.row == row {
+            self.a.pos.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+struct Shelves {
+    rows: [CardRow; NSHELF],
+    owner: Owner,
+    /// The count read-outs, baked when the number changes — digits change on a landing, not on a
+    /// frame, and a `format!` per shelf per frame is exactly the allocation the tile loop avoids.
+    count_c: [CString; NSHELF],
+    count_n: [usize; NSHELF],
+    /// Frame clock for [`advance_from_clock`], and the latch that says [`update`] beat it to it.
+    last: Option<std::time::Instant>,
+    stepped: bool,
+}
+
+impl Shelves {
+    fn new() -> Self {
+        Shelves {
+            rows: [CardRow::new(); NSHELF],
+            owner: Owner::new(),
+            count_c: std::array::from_fn(|_| CString::default()),
+            // no shelf can hold this many items, so the first advance bakes every read-out
+            count_n: [usize::MAX; NSHELF],
+            last: None,
+            stepped: false,
+        }
+    }
+}
+
+static mut STATE: Option<Shelves> = None;
+fn state() -> &'static mut Shelves {
+    unsafe { (*addr_of_mut!(STATE)).get_or_insert_with(Shelves::new) }
+}
+
+/// Which column shelf `i` draws as focused, or `None` for every shelf that does not hold the remote
+/// — including ALL of them while focus is in the field or the strip.
+///
+/// This is what makes "one caption on screen at a time" true by construction: `card_row::strip`
+/// captions the column it is given and nothing else, so a shelf handed `None` draws a full row of
+/// bare artwork. It is also the whole implementation of the freeze — a row scrolls only while a
+/// tile inside it holds focus, so withholding focus while `v.editing` IS "nothing scrolls at all
+/// while the keyboard is up".
+fn focus_col(v: &View, i: usize, n: usize) -> Option<usize> {
+    (v.zone == Zone::Results && !v.editing && v.row == i && n > 0).then(|| v.col.min(n - 1))
+}
+
+/// The item holding focus, or None when nothing in the shelves does.
+pub(crate) fn focused_item(v: &View) -> Option<&'static Item> {
+    let s = crate::search::shelves().get(v.row)?;
+    focus_col(v, v.row, s.items.len()).and_then(|c| s.items.get(c))
+}
+
+/// Whose server the focused item came from, as the owner's handle — **empty for our own**, which is
+/// every item on a single-server install.
+///
+/// The dev stand-in is the SAME `/tmp/plxnative-shared=<handle>` file the hero's "Shared by …" run
+/// and the detail page's facts row read, deliberately not a second trigger: one file arming every
+/// surface is the only way to see them agree, and this annotation is otherwise unreachable on a
+/// machine with one server — which is every machine that can photograph it.
+fn owner_handle(v: &View) -> &'static str {
+    let Some(it) = focused_item(v) else { return "" };
+    match crate::plex::server_facts(it.sid()).map(|f| f.handle.as_str()).unwrap_or("") {
+        "" => dev_source(),
+        real => real,
+    }
+}
+
+/// The stand-in handle, read ONCE — the trigger surface is boot state, and a `stat` per frame
+/// inside a draw is not. Compiled out with the `devtriggers` feature, like every other trigger.
+fn dev_source() -> &'static str {
+    static SEEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| crate::dev::read("shared").unwrap_or_default())
+}
+
+// ---- update ------------------------------------------------------------------------------------
+
+/// Step the shelves. `super::update` may call this; if it does not, [`draw`] advances from its own
+/// clock instead (module doc, point 5) — whichever runs, the springs step exactly once a frame.
+pub(crate) fn update(dt: f32, v: &View) {
+    advance(dt, v);
+    state().stepped = true;
+}
+
+/// The fallback: wall time since the last advance, clamped to something a spring can integrate. A
+/// long stall — a fetch, a route change, the app backgrounded — must not reach the integrator as
+/// one enormous step.
+fn advance_from_clock(v: &View) {
+    let now = std::time::Instant::now();
+    let dt = state().last.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(0.0);
+    state().last = Some(now);
+    advance(dt.clamp(0.0, 0.1), v);
+}
+
+fn advance(dt: f32, v: &View) {
+    let shelves = crate::search::shelves();
+    let handle = owner_handle(v);
+    let st = state();
+    for (i, row) in st.rows.iter_mut().enumerate() {
+        let Some(s) = shelves.get(i) else {
+            // a shelf that is not there holds no focus and needs no style of its own
+            row.update(0, None, &RowStyle::HOME, dt);
+            continue;
+        };
+        let n = s.items.len();
+        if st.count_n[i] != n {
+            st.count_n[i] = n;
+            st.count_c[i] = CString::new(format!("{n} {}", s.kind.count_word(n))).unwrap_or_default();
+            // A DIFFERENT result set: re-seat the row rather than leave it holding the scroll
+            // offset of the previous query's answer (the store empties its shelves on the
+            // keystroke, so this fires on the clear as well as on the landing).
+            *row = CardRow::new();
+        }
+        row.update(n, focus_col(v, i, n), &style(s.kind), dt);
+    }
+    step_owner(&mut st.owner, v.row, handle, dt);
+}
+
+/// Drive the annotation toward the focused item's source: out whenever the run on screen is not the
+/// one wanted, adopt while invisible, in again. Pure but for the one spring, so the swap rule is
+/// host-gradeable — see the tests.
+///
+/// The adopt calls [`crate::ui::idle::invalidate`] because it is a DISCRETE change with no motion
+/// in it: the spring is already at rest on the floor, so `note_spring` sees nothing, and the frame
+/// that changes the run's words would otherwise be the one frame the present gate is free to skip.
+fn step_owner(o: &mut Owner, want_row: usize, want: &str, dt: f32) {
+    let settled = o.row == want_row && o.shown == want;
+    o.a.step(if settled && !o.shown.is_empty() { 1.0 } else { 0.0 }, K_SCALE, dt);
+    if !settled && o.a.pos < OWNER_FLOOR {
+        o.shown.clear();
+        o.shown.push_str(want);
+        o.shown_c = CString::new(want).unwrap_or_default();
+        o.row = want_row;
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// The alpha below which the annotation is invisible, and so the alpha at which its words may be
+/// swapped. It is also the draw's skip test: under it there is no run, no dot, no pad and no draw
+/// call.
+const OWNER_FLOOR: f32 = 0.02;
+
+// ---- draw --------------------------------------------------------------------------------------
+
+pub(crate) fn draw(p: Painter, v: &View) {
+    if !std::mem::replace(&mut state().stepped, false) {
+        advance_from_clock(v);
+    }
+    let shelves = crate::search::shelves();
+    if shelves.is_empty() {
+        return;
+    }
+    // `shift` is a SCROLL, as every other flow in this app spells it: content is drawn one shift
+    // higher, so the whole region rides ONE translate and every y below stays a flow coordinate.
+    let pf = p.translate(0.0, -v.shift);
+    let st: &Shelves = state();
+    let mut top = CONTENT_TOP;
+    for (i, s) in shelves.iter().take(NSHELF).enumerate() {
+        let bh = block_h(s.kind);
+        // The VERTICAL cull, over the whole block: a shelf off the panel must not reach `strip` at
+        // all, because that is where `resolve_tex` is called — the poster LRU is 64 slots against
+        // five shelves of answers.
+        if on_axis(top - v.shift, bh, SCR_H, 0.0) {
+            draw_shelf(pf, st, s, i, v, top);
+        }
+        top += bh;
+    }
+}
+
+fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32) {
+    let sty = style(s.kind);
+    let n = s.items.len();
+    let row = &st.rows[i];
+    // the heading rises over the magnified tile and takes nothing with it: the flow below is
+    // authored from `top`, never from the lifted line
+    draw_heading(p, st, s, i, top - row.lift());
+
+    // The caption names the source the HEADING is naming, never the one it is on its way to: with
+    // both reading `owner.shown`, the screen cannot state two sources at once mid-fade.
+    let handle = if st.owner.row == i { st.owner.shown.as_str() } else { "" };
+    card_row::strip(
+        p,
+        row,
+        n,
+        focus_col(v, i, n).map(|c| c as c_int).unwrap_or(-1),
+        top + HEAD_TO_ROW,
+        (sty.w, sty.h),
+        sty.w + sty.gap,
+        &sty,
+        SCR_W,
+        |k| tile_art(s.kind, &s.items[k]),
+        |k| match &s.items[k] {
+            Item::Media(m) => m.resume_frac(),
+            Item::Tag(_) => None,
+        },
+        |k| TileLabel::titled(s.items[k].title(), &subtitle(s.kind, &s.items[k], handle)),
+        |_, _, _, _| {},
+    );
+}
+
+/// The heading, flowed left→right from the shelf's own origin: the type's title, its count, and —
+/// only while the focused item is BORROWED — a quiet `· handle` naming that source.
+///
+/// The annotation's runs ride a faded PAINTER rather than a faded ink, because
+/// [`theme::TEXT_SEPARATOR`] carries .45 of its own alpha and `theme::with_a` would replace it.
+///
+/// Every run sits on the TITLE's baseline (a `BODY` run cap-top-aligned against a `HEADLINE` one
+/// reads as a superscript), which is what the reference cap band below is for — the same
+/// `VAlign::Baseline` construction `person.rs` uses for its shelf counts.
+fn draw_heading(p: Painter, st: &Shelves, s: &Shelf, i: usize, y: f32) {
+    let a = st.owner.alpha(i);
+    let pa = p.alpha(a);
+    let cap = crate::text::cap_h(theme::size::HEADLINE, 1);
+    heading_flow(
+        s.kind.title(),
+        cstr(&st.count_c[i]),
+        if a > OWNER_FLOOR { cstr(&st.owner.shown_c) } else { "" },
+        |run, dx, sz, bold, ink, faded| {
+            // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
+            let Ok(cs) = CString::new(run) else { return 0.0 };
+            let mut lab = Label::new(cs.as_ptr(), sz, ink).v(VAlign::Baseline);
+            if bold == 1 {
+                lab = lab.bold();
+            }
+            lab.draw(if faded { pa } else { p }, Rect::new(MARGIN_X + dx, y, 0.0, cap))
+        },
+    );
+}
+
+/// The heading's flow, as ONE expression the draw and the host tests share: the draw passes a
+/// closure that paints and returns `Label`'s advance, the tests pass one that measures. Returns the
+/// whole line's advance.
+///
+/// **With no source there is no annotation at all** — no pad, no dot, no run, no draw call. That is
+/// the design's "with one source, none of this is drawn" implemented as absence rather than as a
+/// branch that draws nothing visible, which is what makes the feature free for a single-server
+/// library in geometry, in ink and in draw calls alike.
+fn heading_flow(
+    title: &str,
+    count: &str,
+    source: &str,
+    mut run: impl FnMut(&str, f32, c_int, c_int, [f32; 4], bool) -> f32,
+) -> f32 {
+    let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING, false);
+    if !count.is_empty() {
+        dx += COUNT_GAP;
+        dx += run(count, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, false);
+    }
+    if source.is_empty() {
+        return dx;
+    }
+    dx += SOURCE_PAD;
+    dx += run("\u{b7}", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR, true);
+    dx += SOURCE_PAD;
+    dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, true);
+    dx
+}
+
+/// A baked run as a `&str`, or empty. These are built from `format!`, so the failure branch is
+/// unreachable rather than merely unlikely.
+fn cstr(c: &CString) -> &str {
+    c.to_str().unwrap_or("")
+}
+
+/// One tile's artwork.
+///
+/// An EPISODE takes `art`, never `thumb`: `pms::parse_item` deliberately puts the SHOW's portrait
+/// poster in an episode row's `thumb` (so a landscape still cannot fill a poster card on Home), and
+/// this shelf is the opposite shape. A COLLECTION has no artwork at all — `Directory` entries carry
+/// no thumb — so it resolves nothing and wears the tile's own skeleton face, which is the whole
+/// "an item with no art mounts no slot" rule and needs no branch of its own.
+fn tile_art<'a>(kind: Kind, it: &'a Item) -> Art<'a> {
+    match (kind, it) {
+        (Kind::Episode, Item::Media(m)) => Art::Thumb { sid: m.sid, key: &m.art, res: STILL_RES },
+        (_, Item::Media(m)) => Art::Poster(Some(m)),
+        (Kind::Person, Item::Tag(t)) => Art::Person { sid: t.sid, key: &t.thumb, res: HEAD_RES },
+        (_, Item::Tag(t)) => Art::Thumb { sid: t.sid, key: &t.thumb, res: POSTER_RES },
+    }
+}
+
+/// The focused tile's SECOND line — what this result is, in the fewest words that identify it: an
+/// episode's show and address, a film's year, a collection's extent. A person's name is the whole
+/// fact, so their tile carries no second line rather than an invented one.
+///
+/// A BORROWED item states its source here, as the line's LAST fact. Joined into the one run rather
+/// than drawn as its own: a dot baked into a joined string is one run at one colour by
+/// construction, and this line is already the quiet one — the heading's annotation is where the
+/// separator earns its own ink. With no other fact the handle stands alone, because a caption that
+/// OPENS with a middot reads as a bullet rather than as an annotation.
+fn subtitle(kind: Kind, it: &Item, handle: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match it {
+        Item::Media(m) if kind == Kind::Episode => {
+            let ord = crate::ui::fmt::episode_ordinal(m.season_index as i64, m.ep_index as i64);
+            parts.push(match m.show_title.is_empty() {
+                true => ord,
+                false => format!("{} \u{b7} {ord}", m.show_title),
+            });
+        }
+        Item::Media(m) if m.year > 0 => parts.push(m.year.to_string()),
+        Item::Tag(t) if kind == Kind::Collection && t.count > 0 => {
+            parts.push(format!("{} item{}", t.count, if t.count == 1 { "" } else { "s" }));
+        }
+        _ => {}
+    }
+    if !handle.is_empty() {
+        parts.push(handle.to_string());
+    }
+    parts.join(" \u{b7} ")
+}
+
+// ---- pointer -----------------------------------------------------------------------------------
+
+/// The shelf tile under the pointer, or None in the gaps — the hit-test half of the geometry
+/// [`draw`] lays out, including each row's own live horizontal scroll, which lives on the
+/// `CardRow` here and so can be answered nowhere else.
+///
+/// O(VISIBLE): the column is derived arithmetically from x rather than searched for, and the
+/// vertical walk is over the five shelf blocks, never over their items.
+pub(crate) fn tile_at(v: &View, mx: f32, my: f32) -> Option<(usize, usize)> {
+    let shelves = crate::search::shelves();
+    let st: &Shelves = state();
+    let mut top = CONTENT_TOP;
+    for (i, s) in shelves.iter().take(NSHELF).enumerate() {
+        let (w, h, _) = tile_size(s.kind);
+        let row_y = top + HEAD_TO_ROW - v.shift;
+        top += block_h(s.kind);
+        if my < row_y || my > row_y + h {
+            continue; // not in this shelf's band
+        }
+        let x = mx - (MARGIN_X - st.rows[i].scroll_x());
+        if x < 0.0 {
+            return None;
+        }
+        let slot = w + GAP;
+        let c = (x / slot) as usize;
+        // reject the inter-tile gap: only the tile's own width is a hit
+        return (c < s.items.len() && x - c as f32 * slot <= w).then_some((i, c));
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    //! The geometry here is pure and is graded directly. What it CANNOT say is whether the shelves
+    //! look right — nothing below opens a GL context or an SDL_ttf font, so the heading flow is
+    //! measured through a synthetic advance and the picture is a device (or simulator) capture.
+    use super::*;
+
+    /// One 60 Hz frame.
+    const DT: f32 = 1.0 / 60.0;
+    const ALL: [Kind; 5] = crate::search::KINDS;
+
+    /// **The band this screen RESERVES must hold the block `card_row` actually draws.**
+    /// [`super::super::LABEL_BLOCK`] is fixed by the keyboard clearance the whole layout is built
+    /// around, so it is the tile label that has to fit inside it — and it only does at one title
+    /// line. This is the test that fails the day someone raises `title_lines` for a shelf of long
+    /// Plex titles: the caption would land 8px inside the next shelf's heading.
+    #[test]
+    fn the_reserved_caption_band_holds_the_block_the_shared_component_draws() {
+        for k in ALL {
+            let drawn = TileLabel::height(&style(k), true);
+            assert!(drawn <= LABEL_BLOCK, "{k:?}: the label block draws {drawn}px into a band of {LABEL_BLOCK}");
+        }
+        assert!(
+            TileLabel::height(&RowStyle { title_lines: 2, ..style(Kind::Movie) }, true) > LABEL_BLOCK,
+            "a two-line title is what this band cannot hold — if that stops being true, say so here"
+        );
+    }
+
+    /// The flow: each shelf sits exactly one block below the one before it, the first at
+    /// `CONTENT_TOP`, and a row top is its heading plus `HEAD_TO_ROW`. None of it may depend on
+    /// which kinds are present or on how many items they hold.
+    #[test]
+    fn shelves_stack_by_their_own_block_heights_from_the_content_top() {
+        assert_eq!(stack_top(&ALL, 0), CONTENT_TOP);
+        for i in 1..ALL.len() {
+            assert_eq!(
+                stack_top(&ALL, i) - stack_top(&ALL, i - 1),
+                block_h(ALL[i - 1]),
+                "shelf {i} did not start one block below shelf {}",
+                i - 1
+            );
+        }
+        assert_eq!(stack_top(&ALL, 0) + HEAD_TO_ROW, CONTENT_TOP + HEAD_TO_ROW);
+        // an episode shelf is shorter than a poster shelf by exactly the tile difference, so which
+        // types are present must never change any other shelf's own height
+        assert_eq!(block_h(Kind::Movie) - block_h(Kind::Episode), CARD_H - 236.0);
+        // …and the same shelf laid out among a DIFFERENT set keeps its block
+        assert_eq!(stack_top(&[Kind::Episode, Kind::Movie], 1), CONTENT_TOP + block_h(Kind::Episode));
+        assert_eq!(stack_content_h(&[]), 0.0, "no shelves is no content, not one block of air");
+        // an index past the end cannot panic: the store re-lands under a focus that has not been
+        // re-clamped yet on exactly one frame
+        assert_eq!(stack_top(&ALL, 99), stack_top(&ALL, ALL.len()));
+    }
+
+    /// **The keyboard clearance the whole screen is sized for.** With the panel up, the first
+    /// shelf's heading and its ENTIRE row must finish above the keyboard's top edge — that is what
+    /// `CONTENT_TOP`/`HEAD_TO_ROW` are for — and it must hold for the tallest tile a first shelf
+    /// can have, since any of the five types can be the first one present.
+    #[test]
+    fn the_first_shelfs_whole_row_clears_the_raised_keyboard() {
+        let floor = SCR_H - crate::ui::search::KEYBOARD_H;
+        for k in ALL {
+            let bottom = stack_top(&[k], 0) + HEAD_TO_ROW + tile_size(k).1;
+            assert!(bottom <= floor, "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}");
+        }
+    }
+
+    /// The scroll rule is `card_row::reveal`'s, not a pin: a shelf already fully on screen must not
+    /// move the page, one below the fold scrolls exactly far enough to show its own block and no
+    /// further, and **nothing scrolls at all while the keyboard is up**.
+    #[test]
+    fn a_shelf_scrolls_only_as_far_as_its_own_block_needs_and_never_while_typing() {
+        assert_eq!(reveal_of(0.0, &ALL, 0, false), 0.0, "the first shelf is already on screen");
+
+        let want = reveal_of(0.0, &ALL, 2, false);
+        assert!(want > 0.0, "the third shelf is below the fold and must be revealed");
+        let top = stack_top(&ALL, 2);
+        assert!(top + block_h(ALL[2]) - want <= SCR_H, "its block bottom is still off screen");
+        assert!(top - want >= CONTENT_TOP, "it scrolled past the minimum — the shelf overshot upward");
+        // already revealed ⇒ no re-seating (the `reveal` contract: no slot pinning)
+        assert_eq!(reveal_of(want, &ALL, 2, false), want);
+
+        for i in 0..ALL.len() {
+            assert_eq!(reveal_of(0.0, &ALL, i, true), 0.0, "shelf {i} scrolled while the keyboard was up");
+        }
+        assert_eq!(reveal_of(0.0, &ALL, 99, false), 0.0, "a shelf that is not there cannot scroll the page");
+    }
+
+    /// The heading flow: title, one 16px gap, the count — and the source annotation ABSENT rather
+    /// than empty when the focused item is ours, so a single-server library pays nothing for it.
+    /// Measured through the very expression the draw paints, with a synthetic per-character advance
+    /// (the host suite opens no SDL_ttf, so there are no real glyph widths to have).
+    #[test]
+    fn the_heading_states_its_count_and_annotates_only_a_borrowed_source() {
+        let w = |s: &str, sz: c_int| s.chars().count() as f32 * sz as f32 * 0.5;
+        type Run = (String, f32, c_int, c_int, [f32; 4], bool);
+        let runs = |title: &str, count: &str, src: &str| {
+            let mut out: Vec<Run> = Vec::new();
+            heading_flow(title, count, src, |s, dx, sz, bold, ink, faded| {
+                out.push((s.to_string(), dx, sz, bold, ink, faded));
+                w(s, sz)
+            });
+            out
+        };
+
+        let bare = runs("Movies", "12 results", "");
+        assert_eq!(bare.len(), 2, "the title and its count, and nothing else for one source");
+        assert_eq!((bare[0].2, bare[0].3), (theme::size::HEADLINE, 1), "the title is HEADLINE bold");
+        assert_eq!(bare[0].4, theme::TEXT_HEADING, "…in the shared section-heading ink");
+        assert_eq!((bare[1].2, bare[1].3), (theme::size::BODY, 0), "the count is BODY regular");
+        assert_eq!(bare[1].4, theme::TEXT_TERTIARY);
+        assert_eq!(bare[1].1, w("Movies", theme::size::HEADLINE) + COUNT_GAP, "the count is one gap past the title");
+
+        let shared = runs("Movies", "12 results", "friend");
+        assert_eq!(shared.len(), 4, "title, count, separator, handle");
+        assert_eq!(shared[..2], bare[..2], "the annotation must not disturb the runs ahead of it");
+        assert_eq!(shared[2].0, "\u{b7}");
+        assert_eq!(shared[2].4, theme::TEXT_SEPARATOR, "the middot is the tertiary ink at .45");
+        assert_eq!(shared[2].1, bare[1].1 + w("12 results", theme::size::BODY) + SOURCE_PAD);
+        assert_eq!(shared[3].0, "friend");
+        assert_eq!(shared[3].4, theme::TEXT_TERTIARY);
+        assert_eq!((shared[3].2, shared[3].3), (theme::size::BODY, 0), "the handle takes the count's rung");
+        assert!(shared[2].5 && shared[3].5, "both annotation runs fade");
+        assert!(!shared[0].5 && !shared[1].5, "…and the title and count never do");
+
+        // a shelf whose count has not been baked yet is a bare title, with no stray gap
+        assert_eq!(runs("Collections", "", "").len(), 1);
+    }
+
+    /// The annotation cannot cross-fade between two different handles, so it must go out, swap
+    /// while it is invisible, and come back — never change its words while they can be read.
+    #[test]
+    fn the_owner_annotation_swaps_its_words_only_while_it_is_invisible() {
+        // it reports to the frame gate's process-global flag, so it is serial by obligation and
+        // not by precaution (`ui/CLAUDE.md`'s xfade note)
+        let _g = crate::testlock::serial();
+        let mut o = Owner::new();
+        for _ in 0..180 {
+            step_owner(&mut o, 0, "friend", DT);
+        }
+        assert_eq!(o.shown, "friend");
+        assert!(o.a.pos > 0.98, "a borrowed item states its source (got {})", o.a.pos);
+
+        // focus steps to another borrowed source
+        let mut swapped = false;
+        for f in 0..180 {
+            step_owner(&mut o, 1, "otherfriend", DT);
+            if o.shown != "friend" {
+                assert!(o.a.pos <= OWNER_FLOOR, "frame {f}: it swapped its words at alpha {}", o.a.pos);
+                swapped = true;
+                break;
+            }
+        }
+        assert!(swapped, "the new source never landed");
+        assert_eq!(o.shown, "otherfriend");
+        for _ in 0..180 {
+            step_owner(&mut o, 1, "otherfriend", DT);
+        }
+        assert!(o.a.pos > 0.98, "…and then rises again");
+
+        // back onto one of ours: it fades out and STAYS out, with nothing to say
+        for _ in 0..240 {
+            step_owner(&mut o, 1, "", DT);
+        }
+        assert!(o.a.pos < OWNER_FLOOR, "an owned item must state nothing (got {})", o.a.pos);
+        assert_eq!(o.shown, "");
+        assert_eq!(o.alpha(0), 0.0, "and no OTHER shelf ever wears the run");
+    }
+
+    /// A settled annotation must not ask for a frame — the present gate's other half, and the
+    /// obligation `ui/CLAUDE.md` puts on anything that animates. An over-reporting animator costs
+    /// the whole idle saving while every `floor` in the suite still passes.
+    #[test]
+    fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
+        let _g = crate::testlock::serial();
+        let asked = || {
+            crate::ui::idle::frame_begin(DT);
+            crate::ui::idle::note_present(0);
+            crate::ui::idle::should_present(0)
+        };
+        asked(); // drain whatever the previous test left on the shared flag
+
+        // the ADOPT frame carries no motion at all — the spring is at rest on the floor — so it is
+        // the discrete `invalidate` that has to speak for it
+        let mut o = Owner::new();
+        crate::ui::idle::frame_begin(DT);
+        crate::ui::idle::note_present(0);
+        step_owner(&mut o, 0, "friend", DT);
+        assert_eq!(o.shown, "friend");
+        assert!(crate::ui::idle::should_present(0), "the frame that changed the run's words must repaint");
+
+        // …and every frame of the rise after it reports as ordinary spring motion
+        for f in 0..4 {
+            crate::ui::idle::frame_begin(DT);
+            crate::ui::idle::note_present(0);
+            step_owner(&mut o, 0, "friend", DT);
+            assert!(crate::ui::idle::should_present(0), "frame {f} of the rise must repaint");
+        }
+
+        for _ in 0..600 {
+            step_owner(&mut o, 0, "friend", DT);
+        }
+        for f in 0..10 {
+            crate::ui::idle::frame_begin(DT);
+            crate::ui::idle::note_present(0);
+            step_owner(&mut o, 0, "friend", DT);
+            assert!(!crate::ui::idle::should_present(0), "frame {f}: a settled annotation asked for a repaint");
+        }
+    }
+
+    /// The caption is the fewest words that identify a result — and a borrowed one names its source
+    /// as the LAST fact on that line, never as a line that OPENS with a middot.
+    #[test]
+    fn a_caption_identifies_the_result_and_names_a_borrowed_source_last() {
+        use crate::pms::PmsMovie;
+        use crate::search::TagHit;
+
+        let film = Item::Media(PmsMovie { title: "Wallace & Gromit".into(), year: 2005, ..Default::default() });
+        assert_eq!(subtitle(Kind::Movie, &film, ""), "2005");
+        assert_eq!(subtitle(Kind::Movie, &film, "friend"), "2005 \u{b7} friend");
+
+        let ep = Item::Media(PmsMovie {
+            kind: 3,
+            title: "A Grand Day Out".into(),
+            show_title: "Wallace & Gromit".into(),
+            season_index: 1,
+            ep_index: 3,
+            ..Default::default()
+        });
+        assert_eq!(subtitle(Kind::Episode, &ep, ""), "Wallace & Gromit \u{b7} S1, E3", "an episode says where it lives");
+
+        // no year, no show, nothing to say — and then a handle stands alone rather than opening the
+        // line with a stray dot
+        let bare = Item::Media(PmsMovie { title: "Untitled".into(), ..Default::default() });
+        assert_eq!(subtitle(Kind::Movie, &bare, ""), "");
+        assert_eq!(subtitle(Kind::Movie, &bare, "friend"), "friend");
+
+        let person = Item::Tag(TagHit { name: "Peter Sallis".into(), count: 9, ..Default::default() });
+        assert_eq!(subtitle(Kind::Person, &person, ""), "", "a person's name is the whole fact");
+        assert_eq!(subtitle(Kind::Collection, &Item::Tag(TagHit { count: 4, ..Default::default() }), ""), "4 items");
+        assert_eq!(subtitle(Kind::Collection, &Item::Tag(TagHit { count: 1, ..Default::default() }), ""), "1 item");
+    }
+}
