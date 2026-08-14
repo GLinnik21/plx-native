@@ -61,7 +61,7 @@
 //! user's eyes at the exact moment they asked for a small move. The COLUMN is remembered (and
 //! clamped), which is the half of "lands where you were" that costs nothing.
 
-use crate::ui::consts::{K_SCROLL, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{K_SCROLL, SDLK_BACKSPACE, SDLK_CLEAR, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
 use crate::ui::xfade::Xfade;
 use crate::ui::{Painter, Rect, Spring};
 use std::os::raw::{c_int, c_uint};
@@ -116,11 +116,6 @@ fn xf() -> &'static mut Xfade {
     unsafe { &mut *addr_of_mut!(XF) }
 }
 
-/// SDL's backspace, which `ui/consts.rs` does not carry because nothing in this app took typed text
-/// before. It stays local until a second screen needs it — a keycode belongs beside the other
-/// `SDLK_*` the moment it has two readers, and not before.
-const SDLK_BACKSPACE: c_uint = 8;
-
 /// Which region owns the remote. Not a focus INDEX — each zone keeps its own cursor, so leaving
 /// the shelves for the field and coming back lands where you were.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -164,6 +159,11 @@ pub(crate) struct View {
     /// Vertical offset the shelves are drawn at (0 while the keyboard is up). POSITIVE moves the
     /// content UP: a shelf whose block top is `t` draws at `t - shift`.
     pub(crate) shift: f32,
+    /// The insertion point, as a BYTE offset into `search::query()` — always on a char boundary
+    /// (see [`caret`]). Meaningful only while `editing`.
+    pub(crate) caret: usize,
+    /// Is the caret in its ON phase this frame? See [`BLINK_MS`].
+    pub(crate) caret_on: bool,
 }
 
 /// What the screen reports for `app.rs` to perform. A screen never routes itself — the same rule
@@ -186,6 +186,23 @@ static mut STRIP: usize = 0;
 /// The shelves' vertical scroll. A [`Spring`], so `ui::idle` hears the motion for free (both
 /// integrators report) and this screen owes the frame gate no clock of its own.
 static mut SCROLL: Spring = Spring::at(0.0);
+/// The insertion point, a BYTE offset into `crate::search::query()`. Read through [`caret`], which
+/// clamps it into the CURRENT string — the query is the store's and can be replaced under us (a
+/// recents pick, `enter`'s pre-seed, a profile switch wiping the store), so a raw offset held here
+/// is a promise this module cannot keep on its own.
+static mut CARET: usize = 0;
+/// Milliseconds the caret spends in each phase. A **blink**, which this screen deliberately did not
+/// have: the field's own doc argued a solid bar because `ui::idle` cannot see a clock, so a blink
+/// would either freeze under the present gate or defeat it. Both halves are answered rather than
+/// traded — [`step_blink`] reports to the gate ONLY on the phase flip, so a field with the panel up
+/// costs ~2 presents a second instead of 60, and a settled screen with the panel DOWN is untouched
+/// (nothing blinks when nothing is being typed into). The user asked for it on the device, and a
+/// text field with no blinking caret reads as a text field that is not accepting input.
+const BLINK_MS: f32 = 530.0;
+/// Time inside the current blink phase, in ms. Reset to 0 (a full ON phase) by every edit, so the
+/// bar is solid while you are actually typing — the standard behaviour, and the reason a caret that
+/// blinked THROUGH a keystroke would look like a dropped character.
+static mut BLINK_T: f32 = 0.0;
 
 /// **The** hit-rect store: every target under the field that a region PAINTED this frame, as the
 /// [`Hit`] it answers with. Recorded at draw — recent rows and the Clear control by [`recents`]
@@ -214,6 +231,127 @@ fn zone() -> Zone {
 }
 fn editing() -> bool {
     unsafe { addr_of!(EDITING).read() }
+}
+
+// ---- the caret -------------------------------------------------------------------------------
+
+/// The insertion point, clamped into the query as it is RIGHT NOW and rounded DOWN to a char
+/// boundary. Every reader goes through this: [`CARET`] is a byte offset into a string this module
+/// does not own, so a stale one is the ordinary case (the store wipes and refills on every
+/// keystroke, a recents pick replaces the whole term, a profile switch empties it) and slicing on
+/// it un-clamped is a panic inside the SDL event loop.
+fn caret() -> usize {
+    let q = crate::search::query();
+    let mut c = unsafe { addr_of!(CARET).read() }.min(q.len());
+    while c > 0 && !q.is_char_boundary(c) {
+        c -= 1;
+    }
+    c
+}
+
+/// Move the insertion point, and restart the blink at full ON — an edit or a caret move must leave
+/// the bar visible, or the user cannot see where the next character will land.
+fn set_caret(c: usize) {
+    unsafe {
+        *addr_of_mut!(CARET) = c;
+        *addr_of_mut!(BLINK_T) = 0.0;
+    }
+    crate::ui::idle::invalidate();
+}
+
+/// The byte offset one character before/after `at`. `str::floor_char_boundary` is unstable, so this
+/// is the hand-rolled pair — and it must be characters and never bytes, since a Cyrillic query
+/// (device-confirmed: `q='су'` typed on the panel) is two bytes per letter and a byte step would
+/// cut a codepoint in half.
+fn prev_boundary(q: &str, at: usize) -> usize {
+    let mut i = at.min(q.len());
+    loop {
+        if i == 0 {
+            return 0;
+        }
+        i -= 1;
+        if q.is_char_boundary(i) {
+            return i;
+        }
+    }
+}
+fn next_boundary(q: &str, at: usize) -> usize {
+    let mut i = (at + 1).min(q.len());
+    while i < q.len() && !q.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Insert committed text AT the caret, not at the end. The panel's `◀`/`▶` can put the insertion
+/// point anywhere, so appending would type the new letter at the far end of a word the user had
+/// just stepped into the middle of.
+fn insert_text(text: &str) {
+    let c = caret();
+    let mut q = crate::search::query().to_string();
+    q.insert_str(c, text);
+    set_caret(c + text.len());
+    crate::search::set_query(&q); // invalidates
+}
+
+/// Delete the character BEFORE the caret.
+fn backspace() {
+    let c = caret();
+    if c == 0 {
+        return;
+    }
+    let mut q = crate::search::query().to_string();
+    let prev = prev_boundary(&q, c);
+    q.replace_range(prev..c, "");
+    set_caret(prev);
+    crate::search::set_query(&q); // invalidates
+}
+
+/// The panel's **Clear all**: the whole query goes, caret to the front. Not "delete to the caret" —
+/// the button is one word and it says all of it.
+fn clear_query() {
+    set_caret(0);
+    crate::search::set_query("");
+}
+
+/// The panel's `◀`/`▶`. One character, clamped at both ends rather than wrapping: a caret that
+/// jumped from the start of a term to its end on one press is a lost keystroke waiting to happen.
+fn move_caret(sym: c_uint) {
+    let q = crate::search::query();
+    let c = caret();
+    set_caret(if sym == SDLK_LEFT { prev_boundary(q, c) } else { next_boundary(q, c) });
+}
+
+/// Advance the blink and report to the frame gate on the FLIP alone — the whole reason a blinking
+/// caret is affordable here (see [`BLINK_MS`]). Returns the phase to draw.
+///
+/// Pure but for the two statics, so the "reports exactly on the flip" rule is host-gradeable: it is
+/// the property `ui/CLAUDE.md` demands of anything that animates from a clock, and the one that
+/// `Xfade::tick` and `Spinner::draw` both shipped without.
+fn step_blink(dt: f32, editing: bool) -> bool {
+    if !editing {
+        unsafe { *addr_of_mut!(BLINK_T) = 0.0 };
+        return true; // no bar is drawn, and a phase left mid-cycle would blink on the next open
+    }
+    let was = blink_on(unsafe { addr_of!(BLINK_T).read() });
+    let t = unsafe {
+        *addr_of_mut!(BLINK_T) += dt * 1000.0;
+        if *addr_of!(BLINK_T) >= BLINK_MS * 2.0 {
+            *addr_of_mut!(BLINK_T) -= BLINK_MS * 2.0;
+        }
+        addr_of!(BLINK_T).read()
+    };
+    let now = blink_on(t);
+    if now != was {
+        crate::ui::idle::invalidate();
+    }
+    now
+}
+
+/// Which half of the cycle `t` (ms) falls in. Pure, and separate so the flip test above and the
+/// tests below read the same expression.
+fn blink_on(t: f32) -> bool {
+    t < BLINK_MS
 }
 
 /// The Clear control's index: one past the last term SHOWN. See [`View::recent`].
@@ -334,6 +472,10 @@ fn view() -> View {
             col: addr_of!(COL).read(),
             recent: addr_of!(RECENT).read(),
             shift: addr_of!(SCROLL).read().pos,
+            caret: caret(),
+            // Read, never stepped: `update` owns the clock, so every region drawing this frame sees
+            // one phase and the flip cannot land between two of them.
+            caret_on: blink_on(addr_of!(BLINK_T).read()),
         }
     }
 }
@@ -360,6 +502,9 @@ pub(crate) fn enter(q: &str) {
         (*addr_of_mut!(SCROLL)) = Spring::at(0.0);
     }
     crate::search::set_query(q);
+    // The caret lands at the END of a pre-seeded term, which is where a person who had just typed
+    // it would be standing — and is what makes the boot trigger's field behave like a typed one.
+    set_caret(q.len());
     // Arriving is a content change like any other. `mount` (not `reload`) because there is nothing
     // on screen to fade OUT — the page transition has already covered that half.
     xf().mount();
@@ -386,6 +531,9 @@ pub(crate) fn update(dt: f32) {
     // not name either of them.
     crate::browse::discover_pump();
     crate::search::pump(dt);
+    // After `pump_text`, so a frame that typed a character draws a solid bar rather than whichever
+    // phase the clock happened to be in.
+    step_blink(dt, editing());
     clamp_focus();
     unsafe { (*addr_of_mut!(SCROLL)).step(scroll_target(), K_SCROLL, dt) };
     // The shelves' own springs, in the UPDATE phase — after `clamp_focus`, so they are handed a
@@ -421,11 +569,9 @@ fn pump_text() {
     if commits.is_empty() || !editing() {
         return;
     }
-    let mut q = crate::search::query().to_string();
     for s in &commits {
-        q.push_str(s);
+        insert_text(s);
     }
-    crate::search::set_query(&q); // invalidates
 }
 
 /// Keep every cursor inside what is actually there — after a landing, after a keystroke wiped the
@@ -631,6 +777,9 @@ fn leave_field(to: Zone) {
 
 fn start_editing() {
     unsafe { *addr_of_mut!(EDITING) = true };
+    // Opening the panel puts the insertion point after whatever is already in the field — you are
+    // resuming a term, not editing its front. Also restarts the blink at full ON.
+    set_caret(crate::search::query().len());
     crate::textinput::start();
     crate::ui::idle::invalidate();
 }
@@ -655,25 +804,32 @@ fn commit_query() {
 /// A key that is neither a d-pad move nor OK/BACK. Answers whether the screen CONSUMED it, so
 /// `app.rs`'s key arm can offer one here before falling through to its own handling.
 ///
-/// Only backspace today, and only while the panel is up — the TV's keyboard delivers its printable
-/// characters as `SDL_TEXTINPUT` ([`crate::textinput::drain`]) but its delete as an ordinary key,
-/// so this is the other half of typing rather than an extra feature.
+/// **This is the panel's edit protocol, and every key in it is one the television sends us.** The
+/// TV's keyboard commits its printable characters as `SDL_TEXTINPUT` ([`crate::textinput::drain`])
+/// and then delegates every EDIT to the app, because the app owns the text: its delete arrives as
+/// `SDLK_BACKSPACE` (wcode 42), its **Clear all** as `SDLK_CLEAR` (wcode 156), and its `◀`/`▶` as
+/// ordinary `SDLK_LEFT`/`SDLK_RIGHT` (wcodes 80/79) meaning *move the caret*. All four measured on
+/// the dev set 2026-08-15.
+///
+/// Only backspace was handled, so three of the panel's own buttons visibly did nothing — the
+/// arrows because `move_focus` has no horizontal move in [`Zone::Field`], Clear because nothing
+/// matched its sym at all. That is not a missing feature; it is half of typing.
+///
+/// **Gated on `editing`**, so with the panel down ◀/▶ stay whatever the screen says they are.
 pub(crate) fn key(sym: c_uint) -> bool {
-    if sym == SDLK_BACKSPACE && editing() {
+    if !editing() {
+        return false;
+    }
+    if sym == SDLK_BACKSPACE {
         backspace();
-        return true;
+    } else if sym == SDLK_CLEAR {
+        clear_query();
+    } else if sym == SDLK_LEFT || sym == SDLK_RIGHT {
+        move_caret(sym);
+    } else {
+        return false;
     }
-    false
-}
-
-/// Delete the last CHARACTER of the query — `String::pop`, not a byte, so a multi-byte term does
-/// not lose a codepoint's tail and become invalid UTF-8.
-fn backspace() {
-    let mut q = crate::search::query().to_string();
-    if q.pop().is_none() {
-        return;
-    }
-    crate::search::set_query(&q); // invalidates
+    true
 }
 
 pub(crate) fn on_ok() -> Action {
@@ -696,6 +852,7 @@ pub(crate) fn on_ok() -> Action {
             } else {
                 let t = terms[i].clone();
                 crate::search::set_query(&t);
+                set_caret(t.len()); // as if it had just been typed — see `start_editing`
                 recents::remember(&t); // picking a term is searching it: it moves to the front
             }
             // Either way the list under the cursor has just changed shape, and the answer for the
@@ -933,6 +1090,8 @@ mod tests {
             *addr_of_mut!(RECENT) = 0;
             *addr_of_mut!(STRIP) = 0;
             *addr_of_mut!(SCROLL) = Spring::at(0.0);
+            *addr_of_mut!(CARET) = 0;
+            *addr_of_mut!(BLINK_T) = 0.0;
             // The content fader is screen state like the rest of it, and a reset screen is SETTLED
             // by definition. Without this the watchdog in `update` sees a generation it has never
             // seen, mounts a fade, and the next ~8 frames legitimately report motion — which reads
@@ -1260,6 +1419,17 @@ mod tests {
 
     // ---- typing ---------------------------------------------------------------------------------
 
+    /// Put a term in the field the way the device does — through the panel — so the caret lands
+    /// where typing leaves it rather than wherever the last test parked it.
+    fn typed(s: &str) {
+        if !editing() {
+            on_ok();
+        }
+        crate::search::set_query("");
+        set_caret(0);
+        insert_text(s);
+    }
+
     #[test]
     fn backspace_only_bites_while_the_panel_is_up_and_takes_a_whole_character() {
         let _s = crate::testlock::serial();
@@ -1269,15 +1439,113 @@ mod tests {
         assert!(!key(SDLK_BACKSPACE), "with the panel down the screen has no claim on the key");
         assert_eq!(crate::search::query(), "wallacé", "…and must not have edited the query anyway");
 
-        unsafe { *addr_of_mut!(EDITING) = true };
+        typed("wallacé");
         assert!(key(SDLK_BACKSPACE), "editing, the screen consumes it");
         assert_eq!(crate::search::query(), "wallac", "a whole codepoint, not one byte of a two-byte char");
         assert!(!key(SDLK_UP), "everything else falls through to app.rs");
 
         crate::search::set_query("");
+        set_caret(0);
         assert!(key(SDLK_BACKSPACE), "an empty query still consumes the key — it is the field's");
         assert_eq!(crate::search::query(), "");
-        unsafe { *addr_of_mut!(EDITING) = false };
+        leave();
+        crate::search::reset();
+    }
+
+    /// **The television's own keyboard delegates every edit to us**, so the four keys it sends are
+    /// one protocol and are graded as one. `◀`/`▶` (its cursor buttons), `Clear all` and backspace
+    /// all arrived at this screen and three of them did nothing, which is how the panel shipped
+    /// with visibly dead buttons — the device report that produced this test.
+    #[test]
+    fn the_panels_edit_keys_move_the_caret_clear_the_field_and_type_in_the_middle() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        typed("суббота"); // Cyrillic: two bytes a letter, so a byte step would split a codepoint
+        assert_eq!(caret(), "суббота".len(), "typing leaves the caret after what was typed");
+
+        // ◀ walks back one CHARACTER at a time, and stops at the front rather than wrapping.
+        for _ in 0..3 {
+            assert!(key(SDLK_LEFT));
+        }
+        assert_eq!(caret(), "суббота".len() - "ота".len(), "three letters back, not three bytes");
+        for _ in 0..40 {
+            key(SDLK_LEFT);
+        }
+        assert_eq!(caret(), 0, "◀ clamps at the front");
+        assert!(key(SDLK_RIGHT));
+        assert_eq!(caret(), "с".len(), "▶ steps one whole character forward");
+
+        // …and a commit lands AT the caret, not at the end of the string.
+        insert_text("X");
+        assert_eq!(crate::search::query(), "сXуббота");
+        assert_eq!(caret(), "сX".len(), "…leaving the caret after the inserted text");
+        // backspace takes the character BEFORE the caret, which is the one just typed
+        assert!(key(SDLK_BACKSPACE));
+        assert_eq!(crate::search::query(), "суббота");
+
+        // Clear all is the whole field, wherever the caret was standing.
+        key(SDLK_RIGHT);
+        assert!(key(SDLK_CLEAR), "the panel's Clear all is the screen's key");
+        assert_eq!(crate::search::query(), "");
+        assert_eq!(caret(), 0);
+
+        // A caret held past a query the STORE replaced under us is clamped on read, never sliced
+        // on — `set_query` is called from four places this screen does not drive.
+        crate::search::set_query("ab");
+        unsafe { *addr_of_mut!(CARET) = 99 };
+        assert_eq!(caret(), 2, "a stale offset clamps to the end of the live query");
+        crate::search::set_query("é"); // 2 bytes: a clamp to len-1 would land mid-codepoint
+        unsafe { *addr_of_mut!(CARET) = 1 };
+        assert_eq!(caret(), 0, "…and rounds DOWN to a char boundary rather than panicking");
+        leave();
+        crate::search::reset();
+    }
+
+    /// The blink is a CLOCK, so it owes `ui::idle` the two halves `ui/CLAUDE.md` demands: it must
+    /// ask for a frame when the bar changes state, and must ask for nothing in between — a blink
+    /// that reported every frame would cost the whole idle saving to animate one 3px bar.
+    #[test]
+    fn the_caret_blinks_and_reports_only_on_the_flip() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let dt = 1.0 / 60.0;
+        let asked = |editing: bool| {
+            crate::ui::idle::frame_begin(dt);
+            crate::ui::idle::note_present(0);
+            let on = step_blink(dt, editing);
+            (on, crate::ui::idle::should_present(0))
+        };
+        asked(true); // drain whatever the previous test left on the shared flag
+
+        // A fresh field is ON, and stays on for a whole phase without asking for anything.
+        let mut flips = 0;
+        let mut was = true;
+        for f in 0..((BLINK_MS * 2.0 / 1000.0 / dt) as i32 + 4) {
+            let (on, present) = asked(true);
+            if on != was {
+                flips += 1;
+                assert!(present, "frame {f}: the bar changed state and did not ask to be drawn");
+                was = on;
+            } else {
+                assert!(!present, "frame {f}: a caret mid-phase asked for a repaint");
+            }
+        }
+        assert_eq!(flips, 2, "one full cycle is exactly two flips");
+
+        // An edit restarts the phase at full ON — you must see where the next glyph lands.
+        typed("s");
+        assert!(blink_on(unsafe { addr_of!(BLINK_T).read() }), "a keystroke leaves the bar solid");
+        // …and with the panel down nothing animates at all: this must not hold a settled screen
+        // awake, which is the entire reason the field drew a solid bar before.
+        leave();
+        asked(false); // the edit above raised a DISCRETE invalidate; spend it before grading quiet
+        for f in 0..200 {
+            let (on, present) = asked(false);
+            assert!(on, "the phase parks ON so the next open does not start invisible");
+            assert!(!present, "frame {f}: the caret asked for a repaint with no keyboard up");
+        }
         crate::search::reset();
     }
 

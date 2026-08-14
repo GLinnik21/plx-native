@@ -73,6 +73,26 @@ pub(crate) enum Node {
         name: String,
         thumb: String,
     },
+    /// The Search screen. **No payload, for [`Node::Library`]'s exact reason**: the query, the
+    /// shelves, the zone and both cursors all live in `crate::search` and `ui::search`'s own
+    /// statics, and nothing between opening a result and coming back disturbs them — so re-entry is
+    /// a route flip that restores the page whole, focus included, without asking a single server
+    /// again.
+    ///
+    /// **It stacks, and for one release it deliberately did not.** The reasoning then was that
+    /// Search is a peer of Home reached from the shared strip, so its results stack on Home and
+    /// nothing stacks on it — which is true of how you ARRIVE and wrong about what you do next.
+    /// Opening a result therefore pushed `Detail` straight onto `Home`, and BACK out of it landed
+    /// on the home screen with the query and every shelf gone. Reported from the couch as "back
+    /// from search result throws to Home, not to search results"; the trail is `[Home, Search,
+    /// Detail]` now and BACK walks it.
+    ///
+    /// Carrying the query here was the first fix and it was WRONG in a way worth recording, since
+    /// it is the obvious shape: the node is built when the screen is ENTERED, and the term is typed
+    /// afterwards — so the node holds the empty string the pill press arrived with, and BACK
+    /// restored a blank field over the recents list. A payload that has to be refreshed as the page
+    /// is used is a payload the page should have kept.
+    Search,
     /// `spot` is where the page stood when the user navigated deeper — `Spot::default()` for a page
     /// that has been entered and not yet left (see [`Trail::set_top_spot`]).
     Detail { sid: ServerId, rk: String, spot: Spot },
@@ -90,7 +110,7 @@ impl Node {
     /// pair, which is the server-scoped half.
     pub(crate) fn same_page(&self, other: &Node) -> bool {
         match (self, other) {
-            (Node::Home, Node::Home) | (Node::Library, Node::Library) => true,
+            (Node::Home, Node::Home) | (Node::Library, Node::Library) | (Node::Search, Node::Search) => true,
             (Node::Detail { sid: a, rk: x, .. }, Node::Detail { sid: b, rk: y, .. }) => {
                 crate::plex::same_item((*a, x), (*b, y))
             }
@@ -250,6 +270,32 @@ mod tests {
         assert_eq!(t.back(), Some(det("a")));
         assert_eq!(t.back(), Some(Node::Home));
         assert_eq!(t.back(), None, "…and Home is still the floor");
+    }
+
+    /// **The reported bug, one screen over**: a result opened from Search must come back to the
+    /// results. It landed on Home instead, because Search pushed no node and the detail page went
+    /// straight onto the root — so the query, the shelves and the scroll were all gone with one
+    /// press. The term rides the node, which is what makes the restore a restore.
+    #[test]
+    fn a_result_opened_from_search_comes_back_to_the_search() {
+        let mut t = Trail::new();
+        t.push(Node::Search);
+        t.push(det("a"));
+        assert_eq!(t.back(), Some(Node::Search), "BACK returns to the results, not to Home");
+        assert_eq!(t.back(), Some(Node::Home), "…and BACK again is Home, as a peer of it should be");
+
+        // A person reached from a Cast & Crew hit stacks the same way, and so does a detail page
+        // opened from THAT — the two-deep case that is the whole reason this is a stack.
+        let mut t = Trail::new();
+        t.push(Node::Search);
+        t.push(person("9"));
+        t.push(det("b"));
+        assert_eq!(t.back(), Some(person("9")));
+        assert_eq!(t.back(), Some(Node::Search));
+
+        assert!(Node::Search.same_page(&Node::Search));
+        assert!(!Node::Search.same_page(&Node::Home));
+        assert!(!Node::Search.same_page(&det("a")));
     }
 
     /// A Library-opened page whose Related shelf is used must not skip the page it came from on the

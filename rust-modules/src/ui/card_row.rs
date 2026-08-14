@@ -418,7 +418,8 @@ fn wrapped_title(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y:
     let (sz, bold) = (theme::size::LABEL, 1);
     let budget = under_budget(sty);
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    let x = (rect.cx() - budget * 0.5).clamp(EDGE_PAD, SCR_W - budget - EDGE_PAD);
+    // Clamped in SCREEN space and drawn in the painter's — see [`edge_clamp`].
+    let x = edge_clamp(p, rect.cx() - budget * 0.5, budget);
     // `y` is [`under_label`]'s raw glyph-texture top (it hands it straight to `Painter::text`),
     // while `TextView` positions line 0 by its CAP BAND — so the one-line and wrapped blocks only
     // start on the same row if the cap offset is added back here.
@@ -448,6 +449,28 @@ fn under_budget(sty: &RowStyle) -> f32 {
 /// Air kept between an edge tile's label block and the panel edge.
 const EDGE_PAD: f32 = 16.0;
 
+/// Keep a `w`-wide block whose left edge is `x` inside the PANEL, and answer in `p`'s own space.
+///
+/// **The clamp is a screen fact and `x` usually is not.** [`strip`] draws a shelf through
+/// `translate(-scroll_x, 0)`, so every rect below it is a CONTENT coordinate; comparing one against
+/// `SCR_W` is comparing two different spaces, and the moment a row had scrolled about a panel's
+/// width the clamp bound bit on every column at once — the focused tile's title and caption froze
+/// at a fixed screen x (each pinned at its own bound, since the bound depends on the run's width)
+/// while the words inside them still changed with focus. Device-observed on Search's episode shelf
+/// 2026-08-15, and latent in every scrolling shelf in the app: `detail`'s Related and Cast rows and
+/// `person`'s two shelves all run `strip` and all pass through here.
+///
+/// `p.dx()` converts, so the comparison happens in screen space and the result comes back in the
+/// painter's. An untranslated caller (`home`, `library`, `profiles` draw their focused tile
+/// directly) has `dx == 0` and is unchanged to the pixel.
+fn edge_clamp(p: Painter, x: f32, w: f32) -> f32 {
+    let lo = EDGE_PAD - p.dx();
+    // A block WIDER than the panel has no position that satisfies both edges; `lo` wins, which
+    // pins its left edge and lets the overflow run off the right — the same end `elide` and the
+    // wrap budget are already cutting.
+    (x).clamp(lo, (SCR_W - w - EDGE_PAD - p.dx()).max(lo))
+}
+
 /// One centered metadata line under a focused tile: elided to the tile-plus-gaps budget and kept
 /// inside the screen edges — a long episode title under an edge tile used to run off the panel.
 fn under_label(
@@ -464,8 +487,10 @@ fn under_label(
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
     let short = crate::text::elide(&s, budget, sz, bold, false);
     if let Ok(tc) = std::ffi::CString::new(short) {
-        let half = crate::text::text_width(tc.as_ptr(), sz, bold) * 0.5;
-        let cx = rect.cx().clamp(half + EDGE_PAD, SCR_W - half - EDGE_PAD);
+        let w = crate::text::text_width(tc.as_ptr(), sz, bold);
+        // Same screen-space clamp as the wrapped title's — see [`edge_clamp`]. Expressed on the
+        // run's LEFT edge and converted back, so one function owns the rule for both blocks.
+        let cx = edge_clamp(p, rect.cx() - w * 0.5, w) + w * 0.5;
         p.text(tc.as_ptr(), cx, y, sz, col, 1, bold);
     }
 }
@@ -484,8 +509,9 @@ fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f3
     let Ok(tc) = std::ffi::CString::new(short) else { return };
     let tw = crate::text::text_width(tc.as_ptr(), sz, bold);
     let gw = isz + gap + tw;
-    let cx = rect.cx().clamp(gw * 0.5 + EDGE_PAD, SCR_W - gw * 0.5 - EDGE_PAD);
-    let gl = cx - gw * 0.5;
+    // The [glyph + gap + name] group as ONE block, clamped in screen space like the other two —
+    // see [`edge_clamp`].
+    let gl = edge_clamp(p, rect.cx() - gw * 0.5, gw);
     let (ct, cb) = crate::text::text_cap_band(sz, bold);
     let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
     crate::ui::icons::draw(

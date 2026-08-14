@@ -9,11 +9,17 @@
 //!   so the query stays legible without claiming focus it does not have.
 //! - The placeholder is **unconditional**: an empty focused field is the word "Search" in the
 //!   on-accent hint ink (`ROW_VALUE_INK_ON_DIM`), never a blank capsule with a lone caret.
-//! - The run clips from the **LEFT** — a field shows the TAIL of the string, so the caret end
-//!   stays on screen. There is no text cursor: no pointer, no selection, no click-to-position.
-//! - The caret is 3px × 34px and **solid**. Nothing pulses in this app, and a blinking caret would
-//!   hold the GL loop awake forever — `ui::idle` cannot see a clock-driven animation, so a blink
-//!   would either freeze or defeat the whole idle gate. Drawn only while `editing`.
+//! - The run scrolls so the **CARET** stays on screen — see [`run_layout`]. There is a real
+//!   insertion point now (`super`'s `CARET`), because the television's own panel delegates its
+//!   `◀`/`▶` keys to the app: the field is the thing that owns the text, so it is the thing that
+//!   has to move the cursor. What there still is no route to is a POINTER cursor — no selection,
+//!   no click-to-position.
+//! - The caret is 3px × 34px and **blinks** (`super::BLINK_MS`), drawn only while `editing`.
+//!   This doc argued the opposite for one release — solid, on the grounds that `ui::idle` cannot
+//!   see a clock — and the argument was right about the mechanism and wrong about the conclusion:
+//!   an animator that reports to the gate on its PHASE FLIP alone costs two presents a second, and
+//!   a text field with a dead cursor reads on a television as a field that is not taking input.
+//!   That was the first thing reported about this screen from the couch.
 //! - The **scope line** sits at x=950 on the field's own row, CAPTION/tertiary, and is stated only
 //!   when the scope is smaller than the user's whole account: one plain fact, no warning tint and
 //!   no Retry (the retry that re-kicks one source lives on that section's Library).
@@ -87,7 +93,14 @@ pub(crate) fn draw(p: Painter, v: &View) {
     let q = &q[..q.find('\0').unwrap_or(q.len())];
     let cq = CString::new(q).unwrap_or_default();
     let run_w = crate::text::text_width(cq.as_ptr(), theme::size::BODY, 0);
-    let (run_dx, caret_dx) = run_layout(run_w, inner.w, v.editing);
+    // How far into the run the insertion point sits: the width of the text BEFORE it. `v.caret` is
+    // already clamped to a char boundary of the live query by `super::caret`, but this slice is
+    // taken from the NUL-truncated copy above, so it is re-bounded here rather than trusted —
+    // `enter` is fed by a file, and a panic in a draw is the app.
+    let head = &q[..v.caret.min(q.len())];
+    let ch = CString::new(head).unwrap_or_default();
+    let caret_w = crate::text::text_width(ch.as_ptr(), theme::size::BODY, 0);
+    let (run_dx, caret_dx) = run_layout(run_w, caret_w, inner.w, v.editing);
 
     // Scissor, so the head of an overlong run is CUT at the padding rather than sliding out over
     // the capsule's left arc. Global GL state — cleared before the scope line, which is outside it.
@@ -104,7 +117,7 @@ pub(crate) fn draw(p: Painter, v: &View) {
         Label::new(cq.as_ptr(), theme::size::BODY, ink)
             .draw(p, Rect::new(inner.x + run_dx, inner.y, inner.w, inner.h));
     }
-    if v.editing {
+    if v.editing && v.caret_on {
         let cr = Rect::new(inner.x + caret_dx, FIELD.cy() - CARET_H * 0.5, CARET_W, CARET_H);
         p.rrect(cr, CARET_W * 0.5, CARET_W * 0.5, ink);
     }
@@ -113,25 +126,37 @@ pub(crate) fn draw(p: Painter, v: &View) {
     draw_scope(p);
 }
 
-/// Where the run and the caret sit, as offsets from the padded box's left edge.
+/// Where the run and the caret sit, as offsets from the padded box's left edge. `caret_w` is the
+/// width of the text BEFORE the insertion point — 0 at the front of the run, `run_w` at its end.
 ///
-/// The field shows the **tail**: while the run fits, it starts at the left edge and the caret
-/// trails it; once it outgrows the box the whole run slides LEFT by the overflow, which parks the
-/// caret's right edge exactly on the box's. `caret` reserves the caret's own block in that budget,
-/// so the bar never hangs off the end of the field it belongs to.
+/// **The scroll follows the CARET, not the tail.** While everything fits, the run starts at the
+/// left edge and the bar stands wherever in it the insertion point is. Once it outgrows the box the
+/// run slides left by just enough to bring the caret back inside — which for a caret at the end is
+/// exactly the old "show the tail" behaviour, and for one stepped into the middle of a long term is
+/// the only rule that keeps the thing you are editing visible. The old expression scrolled to the
+/// tail unconditionally, which was correct while text could only ever be appended and put the
+/// insertion point off the left edge the moment `◀` worked.
 ///
-/// The caret sits at the run's END with **no lead**, because that is the insertion point: the next
-/// glyph is painted exactly where the bar is standing. A gap here would be visible as the caret
-/// jumping backwards on the first keystroke of every search — the bar waiting 4px right of where
-/// the letter then lands.
+/// It is deliberately stateless — the shift is a function of this frame alone, so it cannot drift
+/// out of step with the string — which costs one thing worth naming: stepping the caret left out of
+/// view jumps it to the box's right edge rather than nudging the run by one character. A minimal
+/// scroll needs the PREVIOUS shift, i.e. state, and the jump only happens past the first box-width
+/// of a query nobody types on a remote.
 ///
-/// The returned caret offset is meaningful only when `caret` is set; the caller draws no bar
-/// otherwise.
-fn run_layout(run_w: f32, box_w: f32, caret: bool) -> (f32, f32) {
+/// `caret` reserves the bar's own block in the budget, so it never hangs off the end of the field
+/// it belongs to. The returned caret offset is meaningful only when `caret` is set; the caller
+/// draws no bar otherwise.
+///
+/// The bar sits AT the insertion point with no lead, because that is where the next glyph lands. A
+/// gap would show as the caret jumping backwards on the first keystroke of every search.
+fn run_layout(run_w: f32, caret_w: f32, box_w: f32, caret: bool) -> (f32, f32) {
     let tail = if caret { CARET_W } else { 0.0 };
     let avail = (box_w - tail).max(0.0);
-    let over = (run_w - avail).max(0.0);
-    (-over, run_w - over)
+    // Never scroll further than the run's own overflow: a short query must sit at the left edge
+    // whatever the caret is doing, and the second clamp is what stops a caret at position 0 from
+    // dragging an already-short run off the box.
+    let over = (caret_w - avail).max(0.0).min((run_w - avail).max(0.0));
+    (-over, caret_w - over)
 }
 
 /// One search SOURCE, as the scope line sees it. A borrowed projection of the server registry
@@ -480,7 +505,7 @@ mod tests {
 
     #[test]
     fn a_run_that_fits_starts_at_the_edge_and_the_caret_trails_it() {
-        let (run, caret) = run_layout(100.0, 756.0, true);
+        let (run, caret) = run_layout(100.0, 100.0, 756.0, true);
         assert_eq!(run, 0.0);
         assert_eq!(caret, 100.0);
     }
@@ -488,7 +513,7 @@ mod tests {
     #[test]
     fn an_overlong_run_slides_left_so_the_caret_lands_on_the_boxs_right_edge() {
         let box_w = 756.0;
-        let (run, caret) = run_layout(900.0, box_w, true);
+        let (run, caret) = run_layout(900.0, 900.0, box_w, true);
         assert!(run < 0.0, "the run must slide LEFT, not clip on the right");
         // the tail of the string is what stays on screen…
         assert_eq!(run + 900.0, box_w - CARET_W);
@@ -499,7 +524,7 @@ mod tests {
     #[test]
     fn with_no_caret_the_run_uses_the_whole_box() {
         let box_w = 756.0;
-        let (run, _) = run_layout(900.0, box_w, false);
+        let (run, _) = run_layout(900.0, 900.0, box_w, false);
         assert_eq!(run + 900.0, box_w);
     }
 
@@ -507,18 +532,45 @@ mod tests {
     /// cannot appear to jump backwards on the first keystroke.
     #[test]
     fn an_empty_query_puts_the_caret_at_the_start_of_the_run() {
-        let (run, caret) = run_layout(0.0, 756.0, true);
+        let (run, caret) = run_layout(0.0, 0.0, 756.0, true);
         assert_eq!(run, 0.0);
         assert_eq!(caret, 0.0);
     }
 
     /// The caret marks where the NEXT glyph lands, at every length — the property the whole
-    /// left-clip exists to preserve.
+    /// left-clip exists to preserve. (With the caret at the run's END, which is where typing keeps
+    /// it; the cases where it is not are the test below.)
     #[test]
     fn the_caret_is_the_insertion_point_whether_or_not_the_run_has_slid() {
         for run_w in [0.0, 1.0, 400.0, 753.0, 900.0, 5000.0] {
-            let (run, caret) = run_layout(run_w, 756.0, true);
+            let (run, caret) = run_layout(run_w, run_w, 756.0, true);
             assert_eq!(caret, run + run_w, "caret must sit at the run's end for run_w={run_w}");
+        }
+    }
+
+    /// **The `◀`/`▶` case, which is what the second argument exists for.** The panel moves the
+    /// insertion point into the middle of a run that is wider than the box, and the field has to
+    /// scroll to it — the whole point of editing a term you have already typed. Before the caret
+    /// was a real position this scrolled to the TAIL unconditionally, so stepping left walked the
+    /// bar straight off the left edge of the capsule.
+    #[test]
+    fn the_run_scrolls_to_the_caret_rather_than_to_the_tail() {
+        let box_w = 756.0;
+        let avail = box_w - CARET_W;
+        // the caret at the FRONT of a long run: no scroll at all, and the tail is what is cut
+        let (run, caret) = run_layout(2000.0, 0.0, box_w, true);
+        assert_eq!((run, caret), (0.0, 0.0), "a caret at the front pins the run to the left edge");
+        // …stepped just inside the box: still no scroll, the bar simply stands further along
+        let (run, caret) = run_layout(2000.0, avail - 10.0, box_w, true);
+        assert_eq!((run, caret), (0.0, avail - 10.0));
+        // …and past it: the run slides by exactly the overflow, parking the bar on the right edge
+        let (run, caret) = run_layout(2000.0, 1000.0, box_w, true);
+        assert_eq!(run, -(1000.0 - avail), "the run slides to bring the caret back inside");
+        assert_eq!(caret + CARET_W, box_w);
+        // the caret is always drawn INSIDE the box, at every position in a very long query
+        for c in [0.0, 1.0, 500.0, 1999.0, 2000.0] {
+            let (_, caret) = run_layout(2000.0, c, box_w, true);
+            assert!((0.0..=avail).contains(&caret), "caret at {c} drew at {caret}, outside the field");
         }
     }
 
@@ -526,7 +578,7 @@ mod tests {
     /// budget, which would slide a short run left for no reason.
     #[test]
     fn a_box_too_narrow_for_the_caret_does_not_go_negative() {
-        let (run, caret) = run_layout(0.0, 2.0, true);
+        let (run, caret) = run_layout(0.0, 0.0, 2.0, true);
         assert_eq!(run, 0.0);
         assert_eq!(caret, 0.0);
     }

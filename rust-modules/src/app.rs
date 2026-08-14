@@ -283,6 +283,12 @@ fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
         "play" => (0, WCODE_PLAY),
         "pause" => (0, WCODE_PAUSE),
         "stop" => (0, WCODE_STOP),
+        // The system keyboard's own two edit keys (`ui::consts`' doc has the protocol). They are
+        // here because they are otherwise UNREACHABLE without a human at the panel: no trigger
+        // raises the keyboard and `SDL_PushEvent` cannot carry a text event on the simulator, so
+        // without these the only grader for backspace and Clear all is somebody's thumb.
+        "backspace" | "del" => (crate::ui::consts::SDLK_BACKSPACE, 42),
+        "clear" => (crate::ui::consts::SDLK_CLEAR, 156),
         _ => return None,
     })
 }
@@ -600,6 +606,7 @@ fn node_route(n: &Node) -> Route {
     match n {
         Node::Home => Route::Home,
         Node::Library => Route::Library,
+        Node::Search { .. } => Route::Search,
         Node::Person { .. } => Route::Person,
         Node::Detail { .. } => Route::Detail,
     }
@@ -662,18 +669,22 @@ fn leave_of(r: Route) -> Option<fn()> {
 /// empty the page the user is about to press BACK to — the exact bug `leave_of`'s doc defends
 /// against, and `nav`'s retarget rule is built around.
 ///
-/// [`Route::Search`] is the case that made this a predicate rather than a `None`. It has no `Node`
-/// variant and the commit frame RESETS the trail on arrival (its results stack on Home, not on
-/// it), so nothing is ever behind it and every way off it is leaving it for good — including the
-/// four that are forward navigations (a pill press, BACK to Home, opening a result). Until this
-/// existed its teardown was reachable by no route off the screen at all, and the television's
-/// keyboard was instead dismissed by polling the route on every frame of the app's life.
+/// [`Route::Search`] is the case that made this a predicate rather than a `None`, and it is the
+/// one route where the two questions this file otherwise collapses genuinely come apart. It HAS a
+/// node now and a result opened from it does stay on the trail — but its teardown is
+/// `search::leave`, which dismisses the TELEVISION'S KEYBOARD and drops nothing else, so running it
+/// on the way deeper costs nothing and leaving it un-run risks a system panel floating over the
+/// page you navigated to. The other three keep their teardown off a forward navigation because
+/// theirs EMPTY the page a BACK is about to return to; this one has nothing to empty.
+///
+/// So `false` here does not mean "no node" any more. It means "leaving this screen always dismisses
+/// its keyboard", and the trail push lives in the commit arm, which is where it always did.
 fn stays_on_trail(r: Route) -> bool {
     match page_of(r) {
         // exactly the `Node` variants (`node_route`'s domain): a forward navigation leaves these
         // standing behind the destination, which is what makes the common pop a route flip
         Route::Home | Route::Library | Route::Detail | Route::Person => true,
-        // no node, and the trail is reset on arrival — see the doc above
+        // stays on the trail, but its teardown rides every exit — see the doc above
         Route::Search => false,
         // Boot gates the app leaves once, and a player session torn down by its own exit path.
         // None of the three has a `leave_of` at all, so this answer is about being honest rather
@@ -1077,6 +1088,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut held_since = 0u32;
         let mut last_rep = 0u32;
         let mut held_alive = 0u32; // last hardware 0x101 for the held key — a lost-keyup liveness net
+        // The sym we believe is PHYSICALLY DOWN right now — set by a fresh key-down, cleared by its
+        // key-up. It exists to tell a real hardware auto-repeat from a PHANTOM one, which this TV
+        // emits routinely and which the repeat guard below would otherwise swallow.
+        //
+        // Device-measured 2026-08-15, over the system keyboard: the panel does not deliver a key-up
+        // for the press that raised it (`RETURN` down at t=326491 with no up until the panel's own
+        // session ends), so LG's key driver still believes OK is held and stamps the NEXT press with
+        // `state & 0x100`. The guard read that as a repeat and dropped it, so the first OK after
+        // every keyboard session did nothing and the user pressed twice — reported as "I have to
+        // click the search field twice for the keyboard to appear" and "Enter twice dismisses it".
+        // Both are this one line. A repeat for a key we never saw pressed is not a repeat.
+        let mut down_sym = 0u32;
         // Scrub state. This Magic Remote emits a HELD key as auto-repeat keydowns (state 0x101,
         // ~50ms apart) followed by ONE keyup on release; a TAP is a lone keydown(0x001)+keyup(0x000).
         // So: a fresh press does the fixed jump; the 0x101 repeats engage the continuous scrub; the
@@ -1458,7 +1481,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             match n {
                 // Nothing to mount for either root. No `library::enter`: `browse.rs` still holds the
                 // section, focus and scroll, and re-entering would re-query and lose them.
-                Node::Home | Node::Library => {}
+                // …and nothing for Search either, for the SAME reason and it is worth saying twice:
+                // `crate::search` still holds the query and the shelves, `ui::search` still holds
+                // the zone and both cursors, and `search::enter` would reset every one of them —
+                // re-entering would land the user on an empty field over their own recents list
+                // (which is exactly what the first version of this did).
+                Node::Home | Node::Library | Node::Search => {}
                 Node::Person { sid, key, guid, name, thumb } => {
                     // "already the one loaded?" through the trail's own person-identity rule
                     // (`trail::same_person`), so the guid decides when both sides have one and the
@@ -2245,6 +2273,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if sym == held_sym {
                             held_sym = 0;
                         }
+                        if sym == down_sym {
+                            down_sym = 0;
+                        }
                         if is_ok(sym) && ok_armed {
                             // OK released over a grid card: start the spring-back; the deferred
                             // activation commits from the per-frame loop once the bounce has shown.
@@ -2263,7 +2294,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         continue;
                     }
-                    if state & 0x100 != 0 {
+                    // A repeat is only a repeat if we watched the key go down. See `down_sym`: the
+                    // system keyboard eats key-ups, so the driver stamps 0x100 on presses that are
+                    // the FIRST of their own gesture, and dropping those loses one press in two.
+                    if state & 0x100 != 0 && sym == down_sym {
                         // hardware AUTO-REPEAT (held key): the ONLY thing it drives directly is the
                         // player's continuous accelerating scrub (a ramp, not a discrete move). Every
                         // discrete focus list — home grid, detail, track menu, info, chapters — repeats
@@ -2288,6 +2322,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         continue;
                     }
+                    // From here down this IS a fresh press, whatever the driver stamped on it.
+                    down_sym = sym;
                     last_input = SDL_GetTicks();
                     hud_dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
                     // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press —
@@ -3318,6 +3354,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // screen would be the empty state.
                 if let Some(q) = crate::dev::read("search") {
                     crate::ui::search::enter(q.trim());
+                    // …and STAND on it, exactly as the interactive arrival does. Without the push
+                    // a result opened from a trigger-booted Search stacks straight onto Home and
+                    // BACK behaves differently from every hand-driven run — which is the one thing
+                    // a headless entry point must never do, since it is what the harness grades.
+                    trail.push(Node::Search);
                     route = Route::Search;
                 }
                 // dev: /tmp/plxnative-heroidx=<n> jumps the rotating hero to pool index n (flip capture)
@@ -4058,26 +4099,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     match req.to {
                         Nav::Search { ref query } => {
-                            // Search is a PEER of Home reached from the strip, so arriving resets
-                            // the trail exactly as arriving at Home does. Without it the trail kept
-                            // whatever was under it — reach Search from the Library and it is
-                            // `[Home, Library]` — so opening a result and pressing BACK landed on
-                            // the browse grid instead of Home. One press, two destinations,
-                            // decided by where the user happened to come in.
+                            // Search is a PEER of Home reached from the strip, so arriving RESETS
+                            // the trail exactly as arriving at Home does — then stands on it. The
+                            // reset is what stops the way in deciding the way out: reach Search
+                            // from the Library without it and the trail is `[Home, Library,
+                            // Search]`, so BACK off a result eventually lands on the browse grid
+                            // for one user and Home for another.
                             //
-                            // `trail.reset()` and not a push: this screen mounts no node of its
-                            // own (nothing stacks ON Search, its results stack on Home), which is
-                            // the same reason `Route::Search` has no `Node` variant.
+                            // The PUSH is the half that was missing (`trail::Node::Search`): with
+                            // no node of its own, a result opened from here stacked straight onto
+                            // Home and BACK threw away the query and every shelf under it.
                             trail.reset();
                             crate::ui::search::enter(query);
+                            trail.push(Node::Search);
                             route = Route::Search;
                         }
                         Nav::Library(sec) => {
                             // every teleport `enter` performs (the store swap, `restore_view`'s
                             // scroll jump, the focus band) happens HERE, at alpha 0, off screen
                             crate::ui::library::enter(sec, crate::ui::library::Arrival::Faded);
-                            // the grid sits directly on Home, and `home_activate` truncated the
-                            // trail to that root on the press frame
+                            // The grid sits directly on Home. `home_activate` truncates on the press
+                            // frame for the Home→Library case, but the strip is a row of PEERS and
+                            // Search is now one of them that stands on the trail — so arriving from
+                            // there would otherwise stack `[Home, Search, Library]` and make BACK
+                            // out of a library land on a search nobody was doing. Reset first: it
+                            // is idempotent for the press-frame truncation Home already did.
+                            trail.reset();
                             trail.push(Node::Library);
                             route = Route::Library;
                         }
