@@ -5,10 +5,13 @@
 //! pill with a trailing chevron, and it opens this panel — the app's usual [`Popover`] +
 //! [`TableView`], the same object the Library's Sort and Filter chips open one page over.
 //!
-//! | row | detail | badge |
-//! |---|---|---|
-//! | `Movies`    | `This account · 1 hr 57 min` | `1080p` |
-//! | `Film Club` | `friend · 1 hr 57 min`       | `4K`    |
+//! Its rows use all FOUR of that cell's content places — the leading mark, the label over its
+//! sub-line, the trailing read-out, and the right-aligned badge:
+//!
+//! | mark | label | sub-line | read-out | badge |
+//! |---|---|---|---|---|
+//! | ✓ | `Movies`    | `This account` | `1 hr 57 min` | `1080p` |
+//! |   | `Film Club` | `friend`       | `1 hr 57 min` | `4K`    |
 //!
 //! # The four calls this module implements, and why each is not the obvious thing
 //!
@@ -106,9 +109,9 @@ pub(crate) enum Action {
     Open { sid: ServerId, rk: String },
 }
 
-/// The panel's width — the design's `altPanelW`. Wide because the rows carry three things (a
-/// library, a sub-line naming a person and a runtime, and a class badge) and the sub-line is the
-/// one that must not elide: "friend · 1 hr 57 min" is the answer to *whose copy is this*.
+/// The panel's width — the design's `altPanelW`. Wide because the row fills all four of the cell's
+/// content places (library, owner, runtime, class) and the two on the right are fixed runs: the
+/// label block gets whatever is left, and it is the library name that must not elide.
 const PANEL_W: f32 = 700.0;
 /// The pinned ~20px corner radius, the item menu's.
 const PANEL_RAD: f32 = 20.0;
@@ -240,8 +243,11 @@ fn scan_lines(c: &AltCopy) -> i64 {
 pub(crate) struct AltRow {
     /// the library, on that source
     pub(crate) label: String,
-    /// `"This account · 1 hr 57 min"` / `"friend · 1 hr 57 min"`
+    /// whose copy it is: `"This account"` / `"friend"`
     pub(crate) detail: String,
+    /// the runtime, for the row's trailing read-out — `None` for a copy the server sent no
+    /// duration for, which then says nothing rather than "0 min"
+    pub(crate) value: Option<String>,
     /// the resolution class, or `None` for a copy the server described no video for
     pub(crate) badge: Option<String>,
     /// the copy the page is on NOW — the picker's tick
@@ -285,13 +291,11 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
             let who = c.owner.as_deref().unwrap_or(OWN_ACCOUNT);
             AltRow {
                 label: c.library.clone(),
-                // a copy the server sent no duration for says whose it is and stops, rather than
-                // claiming "0 min" — the dangling-separator rule `dotted_run` follows one file over
-                detail: if c.dur_ms > 0 {
-                    format!("{who} \u{b7} {}", crate::ui::fmt::dur_long(c.dur_ms))
-                } else {
-                    who.to_string()
-                },
+                detail: who.to_string(),
+                // a copy the server sent no duration for leaves the read-out slot EMPTY rather
+                // than claiming "0 min" — the same rule the sub-line's dangling separator followed
+                // while the runtime was part of it
+                value: (c.dur_ms > 0).then(|| crate::ui::fmt::dur_long(c.dur_ms)),
                 badge: crate::ui::fmt::resolution(&c.res, c.width, c.height),
                 checked: here == Some(i),
                 sid: c.sid,
@@ -342,7 +346,15 @@ pub(crate) fn open(anchor: Rect) {
     let mut sel = 0;
     dests().clear();
     for (i, r) in rs.iter().enumerate() {
+        // all four of the cell's content places, which is what the row has to say: the tick is
+        // WHICH copy you are on, the label WHICH LIBRARY, the sub-line WHOSE, the read-out HOW LONG
+        // and the badge WHAT YOU GET. The runtime used to be a dotted second half of the sub-line,
+        // which left the read-out slot empty and made the one fact that lines up down the panel the
+        // one buried mid-string.
         let mut row = Row::new(r.label.clone()).detail(r.detail.clone()).checked(r.checked);
+        if let Some(v) = &r.value {
+            row = row.value(v.clone());
+        }
         if let Some(b) = &r.badge {
             row = row.badge(Badge::Text(b.clone()));
         }
@@ -661,8 +673,12 @@ mod tests {
         let list = [copy(1, "Film Club", "friend", "318", "4k"), copy(0, "Movies", "", "4", "1080")];
         let rs = rows(&list, sid(0), "4");
         assert_eq!(labels(&rs), ["Movies", "Film Club"], "the copy that plays leads, whatever its class");
-        assert_eq!(rs[0].detail, "This account \u{b7} 1 hr 57 min");
-        assert_eq!(rs[1].detail, "friend \u{b7} 1 hr 57 min");
+        // the sub-line answers WHOSE and only that; the runtime is the trailing read-out, so it
+        // lines up down the panel instead of sitting mid-string at a different x on every row
+        assert_eq!(rs[0].detail, "This account");
+        assert_eq!(rs[1].detail, "friend");
+        assert_eq!(rs[0].value.as_deref(), Some("1 hr 57 min"));
+        assert_eq!(rs[1].value.as_deref(), Some("1 hr 57 min"));
         assert_eq!(rs[0].badge.as_deref(), Some("1080p"));
         assert_eq!(rs[1].badge.as_deref(), Some("4K"), "the badge is the hero's own resolution vocabulary");
 
@@ -738,14 +754,15 @@ mod tests {
         assert_eq!(ticked(&rows(&list, sid(7), "4")), 0, "no guess, no second tick");
     }
 
-    /// A copy the server sent no runtime for says whose it is and stops — never "· 0 min", the
-    /// dangling-clause rule the hero's facts row follows.
+    /// A copy the server sent no runtime for leaves the read-out slot EMPTY and still says whose it
+    /// is — never "0 min", the dangling-clause rule the hero's facts row follows.
     #[test]
     fn a_copy_with_no_runtime_states_only_its_owner() {
         let mut c = copy(1, "Film Club", "friend", "318", "4k");
         c.dur_ms = 0;
         let rs = rows(&[c], sid(0), "4");
         assert_eq!(rs[0].detail, "friend");
+        assert_eq!(rs[0].value, None, "an unknown runtime is absent, not zero");
         // and one with no video at all carries no badge rather than an empty chip
         let mut n = copy(0, "Movies", "", "4", "");
         n.dur_ms = 0;

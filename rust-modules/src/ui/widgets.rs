@@ -2288,9 +2288,17 @@ impl View for Button {
 // centred bold CAPTION label; width hugs the label with a floor so short tags (CC) still read as a
 // chip. Returns the drawn width so callers can flow chips inline. ----
 pub(crate) enum BadgeStyle {
-    /// 2px border + knockout interior: border+label in `col`, interior filled `bg` (the surface
-    /// behind the chip — keeps the outline clean over a light focus pill or a dark panel).
-    Outlined { col: [f32; 4], bg: [f32; 4] },
+    /// 2px border + knockout interior: label in `col`, ring in `border`, interior filled `bg` (the
+    /// surface behind the chip — keeps the outline clean over a light focus pill or a dark panel).
+    ///
+    /// The ring is its OWN colour because the design system makes it one: a table row's chip is
+    /// `border: 2px solid (focused ? --accent-ink : --overlay-border)` with `color: ink`, i.e. the
+    /// stroke is a keyline and only the label carries the row's ink. Both callers passed `col` for
+    /// both, so every chip off a focus pill outlined at full [`theme::TEXT_PRIMARY`] — nearly twice
+    /// the ink the contract gives it, which is what made a FORCED/SDH tag read as loud as the track
+    /// name beside it. [`theme::OVERLAY_BORDER`] is the value, and its own doc has said
+    /// "outlined-badge / meta-badge border" the whole time it had no consumer.
+    Outlined { col: [f32; 4], border: [f32; 4], bg: [f32; 4] },
     /// solid translucent fill ([`theme::BADGE_FILL`]), label in [`theme::TEXT_HEADING`] — the
     /// About column's accessibility chips.
     Filled,
@@ -2439,9 +2447,9 @@ pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, icon: Option<crate:
     let w = badge_w(text, icon);
     let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
     let ink = match style {
-        BadgeStyle::Outlined { col, bg } => {
+        BadgeStyle::Outlined { col, border, bg } => {
             let bw = 2.0f32;
-            p.rrect(r, 6.0, 6.0, col); // border
+            p.rrect(r, 6.0, 6.0, border); // keyline
             p.rrect(Rect::new(r.x + bw, r.y + bw, r.w - 2.0 * bw, r.h - 2.0 * bw), 5.0, 5.0, bg);
             col
         }
