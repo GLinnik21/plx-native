@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use crate::pms::PmsMovie;
+use crate::plex::ServerId;
 use std::os::raw::c_char;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -29,6 +30,22 @@ static mut CUR_REMUX: bool = false;
 // ratingKey of the currently-playing item (movie or episode), so an audio-track
 // switch can force a fresh transcode of the same item.
 static mut CUR_RK: String = String::new();
+/// The SERVER the currently-playing item came from — the other half of its identity.
+///
+/// A ratingKey names an item only within one server: `1` is a real item on our own server and a
+/// different real item on a friend's share, and the same goes for `Part.id`, `Stream.id`,
+/// `playQueueID` and the resume point. Every PMS call in this file used to resolve its server
+/// implicitly, at the instant of the call, through `client_opt()` — i.e. whichever server happened
+/// to be CURRENT right then. Merged Home shelves make "the item is from B while current is A"
+/// ordinary, and every one of those calls would then land on A: the PlayQueue, the track PUT, the
+/// transcode stop, and — ten seconds at a time, forever — the progress report that writes the
+/// resume point.
+///
+/// So the server is captured ONCE, at [`request_play`], and carried by value from there:
+/// `ResolveEnv` → `Plan` → here. Nothing below this line re-resolves it. `UNSET` before the first
+/// play and on a plan that never resolved, which resolves to no client at all rather than to
+/// slot 0.
+static mut CUR_SID: ServerId = ServerId::UNSET;
 // current audio/subtitle selection carried by any TRANSCODE of the current item
 // (0 = server default / none). The subtitle is BURNED into the video (our client
 // profile advertises no soft-sub support, so Plex's decision is burn); direct-play
@@ -42,8 +59,15 @@ static mut CUR_PART_ID: i64 = 0;
 // X-Plex-Session-Identifier — they must match byte-for-byte so /status/sessions correlates the
 // transcode with the report. Regenerated on each play_movie/play_episode.
 static mut SESS: String = String::new();
-// GET /identity machineIdentifier, cached once — needed for the PlayQueue uri.
+// GET /identity machineIdentifier, cached — needed for the PlayQueue uri.
+//
+// It is cached PER SERVER, which is what `MACHINE_SID` is for: the id goes into
+// `uri=server://{machineIdentifier}/…` on the PlayQueue POST, so one cached globally is a
+// mis-addressed queue the moment a second server exists — server A's fingerprint POSTed to B,
+// naming a server B has never heard of. Only a cache learned from THIS playback's server is
+// usable, and `resolve_playqueue` prefers the registry's own per-server id over both.
 static mut MACHINE_ID: String = String::new();
+static mut MACHINE_SID: ServerId = ServerId::UNSET;
 // This playback's PlayQueue ids for the timeline (empty if /playQueues failed).
 static mut PQ_ID: String = String::new();
 static mut PQ_ITEM_ID: String = String::new();
@@ -85,6 +109,16 @@ pub(crate) fn clear_url() {
 }
 pub(crate) fn transcode_session() -> String {
     unsafe { (*addr_of!(TSESSION)).clone() }
+}
+/// Forget the cached `machineIdentifier` — the app is now pointed at a DIFFERENT server.
+///
+/// [`MACHINE_ID`] is fetched once and reused for every PlayQueue's `server://{id}/…` uri, which was
+/// sound while one process meant one server. It no longer is: `browse::set_cur` moves the current
+/// server when you pick a library on another one, and a queue built with the previous server's id
+/// names a machine that does not hold the item. Clearing it makes the next resolve re-fetch it from
+/// whichever server is current (`resolve_playqueue`'s `cached.is_empty()` branch).
+pub(crate) fn forget_server_identity() {
+    unsafe { (*addr_of_mut!(MACHINE_ID)).clear() }
 }
 /// true while this playback is a server transcode (a live transcode session exists). Cheap
 /// in-place check — the pump polls it every tick, so no String clone here.
@@ -128,6 +162,20 @@ pub(crate) fn cur_sub_sid() -> i64 {
 /// ratingKey of the currently-playing item (for /:/timeline progress reports).
 pub(crate) fn cur_rk() -> String {
     unsafe { (*addr_of!(CUR_RK)).clone() }
+}
+/// The server the currently-playing item came from — see [`CUR_SID`]. MAIN THREAD.
+///
+/// A worker must be handed this by value at its spawn site, never call it: read on a worker it is
+/// "whatever is playing now", which is the very race capturing the id was meant to end.
+pub(crate) fn cur_sid() -> ServerId {
+    unsafe { addr_of!(CUR_SID).read() }
+}
+/// The `Client` for the currently-playing item's server, `None` before the first play (or after a
+/// plan that never resolved). The main-thread twin of `client_for(env.sid)` on the resolve worker
+/// — every in-playback PMS call in this file goes through one of the two, and none through
+/// `client_opt()`, which answers with whatever server is CURRENT rather than the one playing.
+fn cur_client() -> Option<&'static crate::plex::Client> {
+    crate::plex::client_for(cur_sid())
 }
 pub(crate) fn cur_audio_sid() -> i64 {
     unsafe { addr_of!(CUR_AUDIO_SID).read() }
@@ -245,7 +293,10 @@ pub(crate) fn scrobble_stop(
     if final_report.is_none() && tsession.is_empty() && report_th.is_none() {
         return; // nothing to post and nobody to wait for
     }
-    let Some(c) = crate::plex::client_opt() else { return };
+    // The server this playback came FROM, not whichever one is current — the resume point and the
+    // transcode session both live there, and by the time a stop runs the user may well have walked
+    // back to a different source's Home.
+    let Some(c) = cur_client() else { return };
     // Serialise against a previous stop still in flight: these carry a position for a specific
     // item, and letting two race would let an older one land last. Normally free — the measured
     // baseline for a finished worker is 0 ms.
@@ -310,7 +361,7 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     if rk.is_empty() {
         return None;
     }
-    let c = crate::plex::client_opt()?;
+    let c = cur_client()?;
     // NB: do NOT explicitly /stop the old encoder here — the session id is reused, so a stop
     // would cut the stream the demux thread is still reading out from under it. The caller
     // (the pump) instead reloads onto this new start.mkv?&offset= (same session), which tears
@@ -331,8 +382,11 @@ use crate::cbuf::set as set_c; // shared fixed-C-buffer write (the HUD TITLE/CTX
 /// Ask PMS whether `rk` should direct-play (Some(true) → serve the raw Part) or transcode
 /// (Some(false) → start.mkv). None when the server returns no usable Media decision, so the
 /// caller falls back to the local codec test. Registers the session as a side effect.
-fn server_decision(rk: &str, session: &str) -> Option<bool> {
-    let mc = match crate::plex::client_opt()?.mde_decision(rk, session) {
+///
+/// Takes the `Client` rather than looking one up: this runs on the resolve worker, and `rk` is only
+/// an item on the server the caller resolved from this playback's captured `ServerId`.
+fn server_decision(c: &crate::plex::Client, rk: &str, session: &str) -> Option<bool> {
+    let mc = match c.mde_decision(rk, session) {
         Some(mc) => mc,
         None => {
             // failed fetch OR unparseable (XML/truncated) body — keep the fallback visible
@@ -435,11 +489,16 @@ fn apply_decision_codecs(mc: &crate::plex::MediaContainer) {
 /// always burn) — a query-param subtitleStreamID does NOT suppress a default-selected
 /// sub, only the PUT does. So we PUT subtitleStreamID=0 to keep subs OFF (no burn), or
 /// the chosen id to burn it; audioStreamID only when the user switched (else keep default).
-fn put_selection(part: i64, aud: i64, sub: i64) {
+///
+/// `sid` names the server that owns `part` — the resolve worker passes the id it was given, and the
+/// in-playback callers pass [`cur_sid`]. A `Part.id` is server-local, so a PUT sent to the wrong
+/// one either 404s or, worse, re-selects streams on a stranger's part that happens to share the
+/// number.
+fn put_selection(sid: ServerId, part: i64, aud: i64, sub: i64) {
     if part <= 0 {
         return;
     }
-    let c = match crate::plex::client_opt() {
+    let c = match crate::plex::client_for(sid) {
         Some(c) => c,
         None => return,
     };
@@ -562,18 +621,38 @@ fn up_next_of(r: &crate::plex::QueueRow) -> Option<UpNext> {
 /// works, just without the queue ids (and the player without an Up Next).
 ///
 /// PURE: returns owned data for `apply_plan` to install.
-fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> QueueInfo {
-    let mid = if cached.is_empty() {
-        crate::plex::client_opt().and_then(|c| c.machine_identity()).unwrap_or_default()
+///
+/// **The machine id is THIS server's, three ways, in order.** It goes into
+/// `uri=server://{machineIdentifier}/…`, so naming the wrong server is a POST that either fails or
+/// builds a queue nobody asked for.
+///   1. **The registry's own id for this client** — it is the key the server is filed under, so it
+///      cannot belong to another one. Free, and refreshed whenever the slot is re-pointed.
+///   2. `cached`, which `ResolveEnv` only fills in when the cache was learned from *this* server
+///      (see `MACHINE_SID`) — the legacy `install(host, port, token)` path registers with no id, so
+///      for the session's own server rung 1 is empty and this is what saves a round trip.
+///   3. `GET /identity`, whose answer travels back in `QueueInfo::machine_id` for `apply_plan` to
+///      cache against this server.
+fn resolve_playqueue(c: &crate::plex::Client, rk: &str, session: &str, cached: &str) -> QueueInfo {
+    let known = c.machine_id();
+    // `mid` is the FETCHED id and nothing else: apply_plan's "" means "leave the cache alone", and
+    // the first two rungs are already-known values with nothing to write back.
+    let mid = if known.is_empty() && cached.is_empty() {
+        c.machine_identity().unwrap_or_default()
     } else {
-        String::new() // unchanged — apply_plan's "" means "leave the cache alone"
+        String::new()
     };
-    let effective = if mid.is_empty() { cached } else { &mid };
+    let effective = if !known.is_empty() {
+        known
+    } else if !mid.is_empty() {
+        &mid
+    } else {
+        cached
+    };
     if effective.is_empty() {
         crate::player::log("playqueue: no machineIdentifier (skip)");
         return QueueInfo::default();
     }
-    match crate::plex::client_opt().and_then(|c| c.create_play_queue(effective, rk, session)) {
+    match c.create_play_queue(effective, rk, session) {
         Some(q) => {
             let up_next = q.next.as_ref().and_then(up_next_of);
             crate::player::log(&format!(
@@ -603,8 +682,20 @@ fn resolve_playqueue(rk: &str, session: &str, cached: &str) -> QueueInfo {
 /// that `apply_plan` reassigns on every landing — so a superseded worker could clone a buffer as
 /// it was being dropped (heap corruption on a device with no debugger), and read the two sids as
 /// non-atomic i64s, which on armv7 is a tearable two-word load.
+///
+/// The `sid` is the same idea one step further out: it is not a static the worker could read, it is
+/// a *function call* — `plex::client_opt()` — which is worse, because `Send` cannot see a function
+/// call and a worker that resolves its own server therefore compiles clean and passes every test.
+/// It is captured here, at the request, and every PMS call the worker makes is `client_for(sid)`.
 #[derive(Clone, Default)]
 pub(crate) struct ResolveEnv {
+    /// WHICH SERVER this playback's item lives on — the scope for every server-local key the
+    /// resolve then uses (`rk`, `Part.key`, `Stream.id`). Not "the current server" (see
+    /// [`CUR_SID`]): captured on the main thread with everything else here, because the resolve
+    /// worker must not read the current server itself.
+    pub sid: ServerId,
+    /// `MACHINE_ID`, but only when it was learned from `sid`'s own server (`MACHINE_SID`);
+    /// otherwise empty, so the worker re-asks rather than addressing a queue to the wrong machine.
     pub machine_id: String,
     pub audio_sid: i64,
     pub sub_sid: i64,
@@ -614,12 +705,19 @@ pub(crate) struct ResolveEnv {
 
 impl ResolveEnv {
     /// MAIN THREAD ONLY.
-    fn snapshot(rk: &str) -> ResolveEnv {
+    /// `sid` arrives BY VALUE from the caller, which is the whole point: the item being played
+    /// carries the server it came from (`PmsMovie`/`UpNext`/`Detail` all hold one now), so a play
+    /// raised off a merged shelf resolves against the server that shelf's row belongs to rather
+    /// than whichever server happens to be current when the worker gets around to asking.
+    fn snapshot(sid: ServerId, rk: &str) -> ResolveEnv {
         ResolveEnv {
-            machine_id: unsafe { (*addr_of!(MACHINE_ID)).clone() },
+            sid,
+            machine_id: unsafe {
+                if addr_of!(MACHINE_SID).read() == sid { (*addr_of!(MACHINE_ID)).clone() } else { String::new() }
+            },
             audio_sid: cur_audio_sid(),
             sub_sid: cur_sub_sid(),
-            cached_item: crate::metadata::cached_playing(rk),
+            cached_item: crate::metadata::cached_playing(sid, rk),
         }
     }
 }
@@ -630,6 +728,11 @@ impl ResolveEnv {
 /// from the worker is how you reintroduce the races the audit found.
 #[derive(Default)]
 pub(crate) struct Plan {
+    /// The server this plan was resolved against — copied straight from [`ResolveEnv::sid`], so
+    /// what `apply_plan` installs as `CUR_SID` is the id the request captured and not a re-read of
+    /// whatever became current while the worker ran. `UNSET` only on the default `Plan` a panicking
+    /// resolve lands, which carries no URL either and so never starts an engine.
+    pub sid: ServerId,
     pub url: String,
     pub tsession: String,
     pub sess: String,
@@ -677,6 +780,12 @@ pub(crate) struct Plan {
 /// input arrives in `ResolveEnv`, every output leaves in `Plan`, and `apply_plan` installs both
 /// on the main thread. Write-purity alone is not enough: `apply_plan` reassigns the `MACHINE_ID`
 /// and `SESS` Strings, so a still-running superseded worker reading them is a use-after-free.
+///
+/// **And it must not ask which server is current.** `plex::client_opt()` / `plex::current_server()`
+/// are not statics, they are calls, so nothing in the type system stops a worker making one — but
+/// the answer is "whatever the user is looking at NOW", which for an item from a shared source is
+/// the wrong authority for every id in this function. The server arrives in `env.sid` and the only
+/// client here is `client_for` of it.
 fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveEnv) -> Plan {
     // The part id is derived from THIS call's `part`, before anything else runs, and published
     // here rather than by the caller after we return. It used to be written by play_movie /
@@ -687,12 +796,15 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // The arguments ARE the source codecs, whatever this function goes on to choose — captured
     // once, here, so no later branch has to remember to.
     let mut plan = Plan {
+        // carried through every exit below, the failing ones included: a plan without a server is
+        // a plan `apply_plan` cannot install an honest `CUR_SID` from.
+        sid: env.sid,
         part_id: part_id_of(part),
         src_vcodec: vcodec.to_string(),
         src_acodec: acodec.to_string(),
         ..Default::default()
     };
-    let client = match crate::plex::client_opt() {
+    let client = match crate::plex::client_for(env.sid) {
         Some(c) => c,
         None => return plan,
     };
@@ -701,7 +813,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     let session = new_sess(rk);
     plan.sess = session.clone();
     if !rk.is_empty() {
-        let q = resolve_playqueue(rk, &session, &env.machine_id);
+        let q = resolve_playqueue(client, rk, &session, &env.machine_id);
         plan.machine_id = q.machine_id;
         plan.pq_id = q.id;
         plan.pq_item_id = q.item_id;
@@ -711,7 +823,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
     // loaded detail can be a different item (show page / straight-from-Home play)
     // detail already had this item's streams — no GET
-    plan.playing = env.cached_item.clone().or_else(|| crate::metadata::fetch_playing_item(rk));
+    plan.playing = env.cached_item.clone().or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. Falls back to the local codec test if the server returns no usable
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.
@@ -748,7 +860,15 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // (step 7) gets an owned copy instead, and never touches the `&'static` store.
     let tracks = plan.playing.as_ref().map(|p| p.audio.as_slice()).unwrap_or(&[]);
     let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(tracks, acodec) };
-    let directplay = if !video_dp {
+    // What the CONNECTION to this server allows, beside what the pipeline can decode: a Plex
+    // relay is a ~2 Mbit/s tunnel, so neither of the two flavors that ship the file's own bytes
+    // (direct play, and the uncapped container remux) can be asked for over one. Unrestricted on
+    // every other tier and on a server whose link nobody has recorded, which is all of them today.
+    // The reasoning, and what is measured versus documented, is at `plex::link_policy`.
+    let link = crate::plex::link_policy(client.link());
+    let directplay = if !link.direct_play {
+        false
+    } else if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265,
         // and H265 only on a SoC whose table lists the decoder (devcaps). Anything else
         // (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's /decision
@@ -765,7 +885,7 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     } else if rk.is_empty() {
         false
     } else {
-        server_decision(rk, &session).unwrap_or_else(|| crate::plex::is_dp_audio(acodec))
+        server_decision(client, rk, &session).unwrap_or_else(|| crate::plex::is_dp_audio(acodec))
     };
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
@@ -814,7 +934,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // profile_for). The guess below is only the /decision-unreachable fallback: decision_codecs
     // overrides it with the server's ACTUAL output, but the guess still tracks devcaps because
     // a payload naming hevc on a SoC without the decoder configures a pipeline that cannot start.
-    if video_dp {
+    // A direct-playable source means "ask Plex to REMUX" — unless the link forbids a copy, in
+    // which case this is a re-encode after all and every line below must agree (the payload guess,
+    // the stored flavor a seek rebuilds from, and the /decision query itself).
+    let remux = video_dp && link.remux;
+    if remux {
         let achosen = audio_sel.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_else(|| acodec.to_string());
         plan.vcodec = vcodec.to_string();
         plan.acodec = achosen;
@@ -831,9 +955,15 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         plan.audio_sid = *asid;
     }
     // keep the flavor so a later seek rebuilds the same query for start.mkv?...&offset=T
-    plan.remux = video_dp;
-    put_selection(plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
-    let sp = transcode_spec(rk, &session, video_dp, -1, env.audio_sid, env.sub_sid);
+    // Both halves of this line landed in the same batch from different units and each is
+    // load-bearing: `remux` (not `video_dp`) is the relay gate — a copy of a 31 Mbit/s stream
+    // down a 2 Mbit/s tunnel cannot play, so `link.remux` demotes it to a real re-encode — and
+    // `env.sid` routes the selection to the server the ITEM came from. Dropping either compiles
+    // and passes: without the gate a relay stalls, without the sid a friend's audio pick is PUT
+    // to our own server, which answers 200 and changes nothing on theirs.
+    plan.remux = remux;
+    put_selection(env.sid, plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
+    let sp = transcode_spec(rk, &session, remux, -1, env.audio_sid, env.sub_sid);
     if let Some(mc) = client.transcode_decision(&sp) {
         // The server has already answered, and it is allowed to answer NO. Stop here rather than
         // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
@@ -1100,9 +1230,25 @@ static PLAY_SLOT: Mutex<Option<(u32, Plan, String)>> = Mutex::new(None);
 /// True while a resolve is in flight — the HUD renders `PlaybackState::Resolving` from this.
 pub(crate) fn play_pending() -> bool { PLAY_BUSY.load(Ordering::SeqCst) }
 
+/// The server an item on a browsing surface came from. MAIN THREAD.
+///
+/// Today every surface is drawn from the CURRENT server, so this is `plex::current_server()` — and
+/// reading it HERE, on the main thread, at the instant the user pressed Play, is the entire point:
+/// from this line on the id travels by value and nothing downstream re-resolves it. When the stored
+/// rows carry their own server (the shared-server data-model step), each call site passes `m.sid` /
+/// `d.sid` instead and this helper goes away; it exists so there is exactly ONE line to change.
+pub(crate) fn surface_sid() -> ServerId {
+    crate::plex::current_server()
+}
+
 /// MAIN THREAD, NON-BLOCKING. Publishes the HUD strings immediately, supersedes any in-flight
 /// resolve, and spawns a worker. The caller flips the route this same frame.
-pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, title: &str, ctx: &str) {
+///
+/// `sid` is the server the ITEM came from, which the caller knows and this function must not guess:
+/// with more than one source on Home, the item being started and the server currently being browsed
+/// routinely differ, and every id in the playback protocol below (`rk`, the Part, the streams, the
+/// PlayQueue, the resume point) belongs to the former.
+pub(crate) fn request_play(sid: ServerId, rk: &str, part: &str, vcodec: &str, acodec: &str, title: &str, ctx: &str) {
     if part.is_empty() && rk.is_empty() {
         return;
     }
@@ -1130,7 +1276,7 @@ pub(crate) fn request_play(rk: &str, part: &str, vcodec: &str, acodec: &str, tit
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
-    let env = ResolveEnv::snapshot(rk);
+    let env = ResolveEnv::snapshot(sid, rk);
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     PLAY_BUSY.store(true, Ordering::SeqCst);
     let (rk, part, vc, ac) = (rk.to_string(), part.to_string(), vcodec.to_string(), acodec.to_string());
@@ -1161,7 +1307,7 @@ pub(crate) fn request_play_movie(m: &PmsMovie) {
     }
     let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
     let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
-    request_play(&m.rk, &m.part, &m.vcodec, &m.acodec, &m.title, &ctx);
+    request_play(surface_sid(), &m.rk, &m.part, &m.vcodec, &m.acodec, &m.title, &ctx);
 }
 
 /// Start the queued next episode. Takes the descriptor BY VALUE, and that is load-bearing rather
@@ -1175,7 +1321,11 @@ pub(crate) fn request_play_movie(m: &PmsMovie) {
 pub(crate) fn request_play_up_next(u: UpNext) {
     let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
     let title = if u.show_title.is_empty() { &u.ep_title } else { &u.show_title };
-    request_play(&u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx);
+    // The successor comes out of the PlayQueue of the item now playing, so its server is that
+    // item's — [`cur_sid`], not whatever surface is behind the player. Falls back to the browsing
+    // surface only if nothing is playing, which the Up Next control cannot actually reach.
+    let sid = if cur_sid().is_set() { cur_sid() } else { surface_sid() };
+    request_play(sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx);
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
@@ -1202,6 +1352,21 @@ pub(crate) fn pump_play() -> bool {
     PLAY_BUSY.store(false, Ordering::SeqCst);
     let ok = !plan.url.is_empty();
     apply_plan(plan, &rk);
+    // Warm the next episode's still NOW rather than at first draw. The URL has been known since
+    // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
+    // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
+    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
+    // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
+    // evict-protection a draw takes (see `posters::poster_warm`). At the tile's OWN 480×270 —
+    // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
+    //
+    // It sits HERE, in the once-a-frame pump, rather than inside `apply_plan`: that function's
+    // contract is that it is the sole WRITER OF THE ROUTE STATICS, and a texture prefetch is not
+    // one of them. Keeping the two apart also keeps the install reachable from the host suite —
+    // `warm_tex` pulls in the poster cache and, through it, a GL call the dev Mac cannot link.
+    if let Some(u) = up_next() {
+        crate::ui::widgets::warm_tex(&u.thumb, 480, 270, 0);
+    }
     ok
 }
 
@@ -1220,16 +1385,6 @@ fn apply_plan(plan: Plan, rk: &str) {
         // true without a second clear anyone can forget.
         *addr_of_mut!(PLAY_VERDICT) = plan.verdict;
     }
-    // Warm the next episode's still NOW rather than at first draw. The URL has been known since
-    // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
-    // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
-    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
-    // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
-    // evict-protection a draw takes (see `posters::poster_warm`). At the tile's OWN 480×270 —
-    // `(path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
-    if let Some(u) = up_next() {
-        crate::ui::widgets::warm_tex(&u.thumb, 480, 270, 0);
-    }
     if !plan.vcodec.is_empty() {
         set_stream_codecs(&plan.vcodec, &plan.acodec); // the pair is only ever set together
         // …and what the FILE is, before any /decision output overwrites the pair above
@@ -1239,7 +1394,11 @@ fn apply_plan(plan: Plan, rk: &str) {
         addr_of_mut!(CUR_PART_ID).write(plan.part_id);
         *addr_of_mut!(SESS) = plan.sess;
         if !plan.machine_id.is_empty() {
+            // Cached AGAINST its server: the next playback only reuses it when it is playing from
+            // the same one (`ResolveEnv::snapshot`). One global cache is how server A's fingerprint
+            // ends up in a PlayQueue uri POSTed to server B.
             *addr_of_mut!(MACHINE_ID) = plan.machine_id;
+            addr_of_mut!(MACHINE_SID).write(plan.sid);
         }
         *addr_of_mut!(PQ_ID) = plan.pq_id;
         *addr_of_mut!(PQ_ITEM_ID) = plan.pq_item_id;
@@ -1251,7 +1410,12 @@ fn apply_plan(plan: Plan, rk: &str) {
         addr_of_mut!(CUR_REMUX).write(plan.remux);
         *addr_of_mut!(URL) = plan.url;
         *addr_of_mut!(TSESSION) = plan.tsession;
+        // The two halves of the playing item's identity, installed together and by the same
+        // writer — a ratingKey means nothing without the server it is a key ON. Everything after
+        // this point (the track PUT, a transcode seek, the retranscode, the stop, and the 10 s
+        // progress reporter engine.rs is about to spawn) resolves its server from this.
         *addr_of_mut!(CUR_RK) = rk.to_string();
+        addr_of_mut!(CUR_SID).write(plan.sid);
     }
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
@@ -1280,7 +1444,7 @@ fn apply_plan(plan: Plan, rk: &str) {
 /// unchanged). Sets URL/TSESSION/TBASE, runs /decision, and returns the new start.mkv URL
 /// (the demux re-opens it from byte 0), or None.
 pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
-    let c = crate::plex::client_opt()?;
+    let c = cur_client()?;
     let rk = unsafe { (*addr_of!(CUR_RK)).clone() };
     if rk.is_empty() {
         return None;
@@ -1299,7 +1463,7 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     // guess: apply_decision_codecs below replaces it with the server's actual output, but it
     // must still track devcaps, not the dev TV (issue #22's bug class).
     set_stream_codecs(crate::devcaps::caps().encode_vcodec(), "ac3");
-    put_selection(cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
+    put_selection(cur_sid(), cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
     let qsess = sess();
     let sp = transcode_spec(&rk, &qsess, false, offset_secs.max(0), cur_audio_sid(), cur_sub_sid());
     if let Some(mc) = c.transcode_decision(&sp) {
@@ -1346,7 +1510,7 @@ pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
         // persist the USER's pick server-side (official-client behavior): /status/sessions'
         // selected-stream display keys on the part selection, not the timeline report. Only
         // user picks persist — the start-of-play auto-pick (eng preference) reports only.
-        put_selection(cur_part_id(), cur_audio_sid(), cur_sub_sid());
+        put_selection(cur_sid(), cur_part_id(), cur_audio_sid(), cur_sub_sid());
         crate::player::request_audio_track(idx, codec);
     } else {
         crate::player::request_audio_switch(stream_id);
@@ -1364,16 +1528,25 @@ pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
     } else {
         // persist the pick server-side (and subs Off PUTs subtitleStreamID=0, clearing a
         // stale server-side selection that would otherwise burn on the next transcode)
-        put_selection(cur_part_id(), cur_audio_sid(), cur_sub_sid());
+        put_selection(cur_sid(), cur_part_id(), cur_audio_sid(), cur_sub_sid());
     }
 }
 
-/// POST one /:/timeline progress report for `rk`, carrying this playback's session + PlayQueue
-/// + selected-stream state — so /status/sessions shows the right track and the Direct Play vs
-/// Transcode badge. The ONE timeline call site (the ~10s reporter thread and the final
-/// state=stopped report both come through here).
-pub(crate) fn report_timeline(rk: &str, state: crate::plex::TimelineState, t_ms: i64, d_ms: i64) {
-    let c = match crate::plex::client_opt() {
+/// POST one /:/timeline progress report for `rk` to `sid`'s server, carrying this playback's
+/// session + PlayQueue + selected-stream state — so /status/sessions shows the right track and the
+/// Direct Play vs Transcode badge. The ONE timeline call site (the ~10s reporter thread and the
+/// final state=stopped report both come through here).
+///
+/// **`sid` is an argument, and that is the whole point.** This runs on the reporter WORKER, once
+/// every ten seconds for the life of a playback, and it used to resolve its server by calling
+/// `client_opt()` — i.e. it asked, on each tick, "which server is the user browsing right now?".
+/// The rk is a key on the server the item came from; posted to any other one it either 404s or
+/// silently moves a stranger's resume point. Nothing about that is visible from the app: the POST
+/// is fire-and-forget, the host suite has no runtime, and the device harness grades progress from
+/// the app's own heartbeat, not from the server. So the reporter captures the id at its spawn site
+/// (`engine.rs`, beside the `rk` it already captured) and hands it back here.
+pub(crate) fn report_timeline(sid: ServerId, rk: &str, state: crate::plex::TimelineState, t_ms: i64, d_ms: i64) {
+    let c = match crate::plex::client_for(sid) {
         Some(c) => c,
         None => return,
     };
@@ -1764,5 +1937,145 @@ mod tests {
 
         // no verdict block at all (an older server, or a body we could not parse into one)
         assert!(refusal(&mc(br#"{"MediaContainer":{"size":1}}"#)).is_none(), "absent is not a refusal");
+    }
+
+    // ---- the playing item's SERVER: captured once, carried by value ---------------------------
+    // A ratingKey, a Part id, a Stream id, a playQueueID and a resume point are all keys on ONE
+    // server. Every PMS call in this file used to find its server by asking which one was current
+    // at the instant of the call, so an item borrowed from a shared source was resolved, queued,
+    // PUT, stopped and — every ten seconds — reported to whichever server the user had since
+    // wandered off to. None of that is observable from inside the app, which is why these exist.
+
+    /// Take the crate-wide serialization lock and empty the server registry, so each test below
+    /// starts from "nothing installed" and, more importantly, LEAVES the table that way. A test
+    /// that registers a loopback server and walks off owes the next one an empty table: its ports
+    /// close when it returns, so what it leaves behind is a `client_opt()` that answers `Some` with
+    /// a client nothing will ever answer.
+    fn fresh_registry() -> std::sync::MutexGuard<'static, ()> {
+        let g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        g
+    }
+
+    /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and
+    /// `build_stream` takes its no-client exit without opening a socket.
+    fn unregistered_sid() -> ServerId {
+        let id = ServerId::from_raw(crate::plex::server_count() as u16 + 1);
+        assert!(crate::plex::client_for(id).is_none(), "the test needs an EMPTY slot");
+        id
+    }
+
+    /// The identity round trip: `request_play`'s captured id reaches `CUR_SID` unchanged, through
+    /// `ResolveEnv` (the main-thread snapshot) and `Plan` (the worker's output).
+    ///
+    /// Graded on the resolve that FAILS, deliberately — it is the exit `build_stream` takes first,
+    /// before any network, and a plan that carries no server is one `apply_plan` cannot install an
+    /// honest `CUR_SID` from. Every richer exit builds on the same field.
+    #[test]
+    fn a_plan_round_trips_the_server_the_request_captured() {
+        let _g = fresh_registry();
+        let sid = unregistered_sid();
+
+        let env = ResolveEnv::snapshot(sid, "rk-7");
+        assert_eq!(env.sid, sid, "the snapshot carries the id the request was made with");
+
+        let plan = build_stream("rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
+        assert_eq!(plan.sid, sid, "a plan that could not resolve still names its server");
+        assert!(plan.url.is_empty(), "no client for that slot, so nothing resolved");
+        assert_eq!(plan.part_id, 5, "…and the rest of the plan is built as usual");
+
+        apply_plan(plan, "rk-7");
+        assert_eq!(cur_sid(), sid, "the installed identity is the captured one");
+        assert_eq!(cur_rk(), "rk-7", "and its other half");
+    }
+
+    /// The `/identity` cache is keyed to the server that taught it. It feeds
+    /// `uri=server://{machineIdentifier}/…` on the PlayQueue POST, so one cached globally is
+    /// server A's fingerprint sent to server B — naming a machine B has never heard of, on a POST
+    /// that is best-effort and therefore fails silently.
+    #[test]
+    fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
+        let _g = fresh_registry();
+        let a = ServerId::from_raw(crate::plex::server_count() as u16 + 1);
+        let b = ServerId::from_raw(crate::plex::server_count() as u16 + 2);
+
+        apply_plan(Plan { sid: a, machine_id: "MACHINE-A".into(), ..Default::default() }, "rk-a");
+        assert_eq!(ResolveEnv::snapshot(a, "rk-a").machine_id, "MACHINE-A", "its own server reuses it");
+        assert_eq!(
+            ResolveEnv::snapshot(b, "rk-b").machine_id, "",
+            "another server must re-ask rather than inherit A's fingerprint"
+        );
+
+        // …and an empty `machine_id` means "leave the cache alone", not "the cache is now B's"
+        apply_plan(Plan { sid: b, ..Default::default() }, "rk-b");
+        assert_eq!(ResolveEnv::snapshot(a, "rk-a").machine_id, "MACHINE-A");
+        assert_eq!(ResolveEnv::snapshot(b, "rk-b").machine_id, "");
+    }
+
+    /// A one-shot loopback PMS: accepts ONE connection, hands its request line back down the
+    /// channel, and answers 200 so the client's read terminates. Real sockets, like `stream.rs`'s
+    /// own tests — which server a POST actually reached is the only thing the timeline routing can
+    /// be graded on without a television.
+    fn stub_pms() -> (i32, std::sync::mpsc::Receiver<String>, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = l.local_addr().unwrap().port() as i32;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = std::thread::spawn(move || {
+            if let Some(Ok(s)) = l.incoming().next() {
+                let mut line = String::new();
+                let _ = BufReader::new(&s).read_line(&mut line);
+                let mut s = s;
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                let _ = tx.send(line);
+            }
+        });
+        (port, rx, h)
+    }
+
+    /// **The one that had to ship in the same commit as `CUR_SID`.** The `/:/timeline` report runs
+    /// on a worker every ten seconds and used to read the current server fresh on each tick — the
+    /// only place in the playback path with no capture at all. Split from the rest, the app
+    /// resolves correctly, plays correctly, and quietly writes the resume point of a friend's film
+    /// onto your own server for as long as it plays.
+    ///
+    /// Two servers on loopback, the item playing from B, the user browsing A: the POST must land on
+    /// B. The closing report to A is the control — it proves the two stubs are distinguishable, so
+    /// "A heard nothing" is a fact about the routing and not about a listener that never worked.
+    #[test]
+    fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
+        use std::time::Duration;
+        let _g = fresh_registry();
+        let (pa, rx_a, ha) = stub_pms();
+        let (pb, rx_b, hb) = stub_pms();
+        // `register_for_test`, not the public `register`: the latter resolves the device id through
+        // `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
+        let a = crate::plex::register_for_test("route-test-A", "127.0.0.1", pa, "tok-a", "cid-route-test");
+        let b = crate::plex::register_for_test("route-test-B", "127.0.0.1", pb, "tok-b", "cid-route-test");
+        assert_ne!(a, b, "two servers, two slots");
+
+        // an item from B starts playing, then the user walks back to their OWN server's Home
+        apply_plan(Plan { sid: b, ..Default::default() }, "rk-b");
+        assert!(crate::plex::set_current(a));
+        assert_eq!(cur_sid(), b, "what is PLAYING does not move when the browsed server does");
+
+        report_timeline(cur_sid(), "rk-b", crate::plex::TimelineState::Playing, 1_000, 2_000);
+        let got = rx_b.recv_timeout(Duration::from_secs(5)).expect("B never received the report");
+        assert!(got.contains("ratingKey=rk-b"), "B got something else: {got}");
+        assert!(
+            rx_a.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the current server must not receive another server's progress"
+        );
+
+        // control: the same call named at A does reach A, so the assertion above is about routing
+        report_timeline(a, "rk-a", crate::plex::TimelineState::Stopped, 0, 2_000);
+        let got = rx_a.recv_timeout(Duration::from_secs(5)).expect("A never received its own report");
+        assert!(got.contains("ratingKey=rk-a"), "A got something else: {got}");
+
+        ha.join().unwrap();
+        hb.join().unwrap();
+        // Hand the table back empty. Both stubs' ports close as this returns, so anything left
+        // registered is a client that answers nothing — and `CURRENT` still points at one of them.
+        crate::plex::reset_servers_for_test();
     }
 }

@@ -64,8 +64,8 @@ you have no such server):
 
 ```json
 "shared_server": {
-  "machine_id": "a348a464806e8d800e884ff499affcc612aa3330",
-  "name": "<peer-name-2>",
+  "machine_id": "aaaabbbbccccddddeeeeffff0000111122223333",
+  "name": "nas-home",
   "host": "10.0.0.9",
   "port": 32400
 }
@@ -77,7 +77,7 @@ you have no such server):
   `accessToken` plex.tv returns for it, exactly like it does for `test_user`.
 - `host`/`port` are **optional but usually right to set**. Without them the runner picks a
   connection from plex.tv and prints which — and for a *shared* server plex.tv's `local` flag means
-  the **owner's** LAN, not yours (a real one here advertises `172.20.0.7:32400 local=true`, which
+  the **owner's** LAN, not yours (a real one here advertises `10.9.9.5:32400 local=true`, which
   the TV can never reach), so the public address is preferred instead, dotted quads before
   hostnames (the app's transport has no DNS). Anything but a LAN address prints a NOTE saying so.
 - **Watch history:** there is no managed-user token for someone *else's* server, so a case that
@@ -94,7 +94,7 @@ server is needed, never *which*):
 - With `shared_server` configured, the runner resolves it **before touching the TV** and writes
   `/tmp/plxnative-servers` for those cases only — a JSON array of
   `{name, machine_id, host, port, token}` — beside `plxnative-token`. Value never on stdout; the
-  printed line is `plxnative-servers: <<peer-name-2> @ 10.0.0.9:32400, token redacted>`.
+  printed line is `plxnative-servers: <nas-home @ 10.0.0.9:32400, token redacted>`.
 - Without it, those cases are **SKIPPED**, with the reason, and appear as `[SKIP]` in the summary —
   an installation with no friend's server is a normal installation. Anything unresolvable *is* a
   loud exit that names it (server no longer shared, no `accessToken`, no address).
@@ -106,7 +106,7 @@ server is needed, never *which*):
 On the device the app parses the file in `dev::servers()` (`rust-modules/src/dev.rs`) and logs
 
 ```
-servers: #0 name="<peer-name-2>" 10.0.0.9:32400 mid=a348a464.. creds=ok
+servers: #0 name="nas-home" 10.0.0.9:32400 mid=a348a464.. creds=ok
 servers: 1 extra server(s) injected, 1 usable
 ```
 
