@@ -30,7 +30,7 @@ pub struct MediaContainer {
     /// GET /identity — the server's stable id (the PlayQueue `server://{id}/…` uri needs it).
     #[serde(rename = "machineIdentifier", default)]
     pub machine_identifier: String,
-    /// GET / — what the server calls ITSELF ("bx23-ldn"). The MACHINE name, and so the one string
+    /// GET / — what the server calls ITSELF ("nas-home"). The MACHINE name, and so the one string
     /// the Sources list heads a server's group with; the app says the owner's HANDLE everywhere
     /// else ("people in content, machines in settings"). Read off the PMS rather than plex.tv on
     /// purpose: a server that answers can always name itself, including on a boot that never
