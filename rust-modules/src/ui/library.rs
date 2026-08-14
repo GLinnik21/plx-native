@@ -285,7 +285,8 @@ static mut TOOL_RECTS: [Rect; 3] = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
 /// frequent act; pinning is a thing you do once per friend), so this is not remembered across opens.
 static mut SRC_LEVEL: Level = Level::Browse;
 /// Focus is on the level pills rather than in the list. UP from the first row reaches them,
-/// LEFT/RIGHT swaps the level under them, DOWN/OK returns to the rows.
+/// LEFT/RIGHT swaps the level under them, DOWN returns to the rows. While it is true the table
+/// draws NO selection pill ([`TableView::list_focused`]), so the panel shows exactly one focus.
 static mut SRC_ON_PILLS: bool = false;
 /// One action per global row index of the open Sources panel (see [`SrcAction`]).
 static mut SRC_ACTIONS: Vec<SrcAction> = Vec::new();
@@ -1090,9 +1091,14 @@ pub(crate) fn update(dt: f32) {
 
 pub(crate) fn move_focus(sym: c_uint) {
     if menu() == Menu::Source {
-        // The level pills are a focus stop ABOVE the list: UP off the first row reaches them,
-        // LEFT/RIGHT swaps the level under them, DOWN comes back into the rows. One control per
-        // press — there is no accessory inside a row to reach sideways for.
+        // The level pills ARE a focus stop above the list: UP off the first row reaches them,
+        // LEFT/RIGHT swaps the level under them, DOWN comes back into the rows.
+        //
+        // **Exactly one of the two wears focus at a time**, which is the part that was wrong: the
+        // pill row took the bright accent capsule while the list went on painting its selected row,
+        // because a table always paints its selection. `TableView::list_focused` is the "nothing
+        // selected" mode that fixes it — the row is REMEMBERED (you come back to where you left)
+        // and simply not drawn as focused while the pills have it.
         let on_pills = unsafe { addr_of!(SRC_ON_PILLS).read() };
         if on_pills {
             match sym {
@@ -1248,7 +1254,10 @@ pub(crate) fn focus_is_card() -> bool {
 
 pub(crate) fn on_ok() -> Action {
     if menu() == Menu::Source && unsafe { addr_of!(SRC_ON_PILLS).read() } {
-        unsafe { SRC_ON_PILLS = false }; // OK on the level you are already showing = into its list
+        // OK on the level you are already showing means "into its list" — the level itself is
+        // switched by LEFT/RIGHT, so there is nothing here for OK to toggle. Without this it fell
+        // through and committed whichever row the list had remembered.
+        unsafe { SRC_ON_PILLS = false };
         return Action::None;
     }
     if menu_open() {
@@ -1466,8 +1475,11 @@ fn build_source_menu(keep: bool) {
     // GLIDES (so the panel's scroll and highlight hold still while the words under them change),
     // an OPEN snaps to the current library with the list scrolled to the top.
     table().set_sections(secs, sel, keep);
+    // the list holds focus for as long as the pills do not; an OPEN always starts in the list
+    table().list_focused = unsafe { !addr_of!(SRC_ON_PILLS).read() };
     if !keep {
         unsafe { SRC_ON_PILLS = false };
+        table().list_focused = true;
         pop().open();
     }
 }
@@ -2102,15 +2114,24 @@ pub(crate) fn draw() {
         if menu() == Menu::Source {
             draw_level_pills(mp, r);
         }
+        // ONE focus in the panel: the list draws its selection pill only while the level pills do
+        // not hold focus. Every other menu has no control outside its list, so this is always true
+        // for them.
+        table().list_focused = menu() != Menu::Source || unsafe { !addr_of!(SRC_ON_PILLS).read() };
         table().draw(mp, table_rect());
     }
 }
 
 /// The Sources panel's level switch: two segmented pills at the panel top, the shared
 /// [`TabPill`](crate::ui::widgets::TabPill) in its boolean `segment` model — a selected segment is
-/// a subtle pill, an unselected one is dim text with no pill, and the focused one is the bright
-/// accent capsule. That model exists for a segmented control that is NOT in a strip, which is
-/// exactly this: two fixed segments with nothing to travel between.
+/// a subtle pill and an unselected one is dim text with no pill. That model exists for a segmented
+/// control that is NOT in a strip, which is exactly this: two fixed segments with nothing to travel
+/// between.
+///
+/// **Exactly one focus in the panel.** The pills are a focus stop, and while they hold it the table
+/// draws no selection pill at all ([`TableView::list_focused`]) — that pairing is the fix for the
+/// owner-reported "two items are at focus", where the pill row took the bright capsule while the
+/// table went on painting its selection, which a table always did.
 fn draw_level_pills(p: Painter, panel: Rect) {
     use crate::ui::widgets::TabPill;
     let rects = src_pill_rects(panel);

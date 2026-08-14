@@ -461,8 +461,12 @@ impl View for Backdrop {
         // this component already means by a texture that has not arrived: `reveal` reports 0, the
         // ground's skip test believes the texture rather than the spring, and `draw` paints nothing
         // — so the struct's promise that draw cannot disagree with the springs still holds.
+        // `_on(m.sid, …)`: with Home merged the hero rotation carries BORROWED items, whose `art`
+        // path is a key on their own server. The bare form resolves against whichever server is
+        // current and would draw the friend's billboard as a blank page.
         let art_of = |m: Option<&PmsMovie>| {
-            m.map(|m| crate::ui::widgets::resolve_tex_wh(&m.art, 1280, 720, 0)).unwrap_or((0, 0.0, 0.0))
+            m.map(|m| crate::ui::widgets::resolve_tex_wh_on(m.sid, &m.art, 1280, 720, 0))
+                .unwrap_or((0, 0.0, 0.0))
         };
         let live = env.sp < HERO_ART_CULL;
         self.tex = if live { art_of(hero_item()) } else { (0, 0.0, 0.0) };
@@ -728,12 +732,14 @@ fn prefetch_hero_neighbours() {
         let Some(m) = hero_item_at(i) else { continue };
         // the backdrop first: it is the full-screen layer, and the one whose absence reads as a blank
         // page. A missing logo only costs the title band a text→logotype swap.
-        if crate::ui::widgets::warm_tex(&m.art, 1280, 720, 0) == Warm::Claimed {
+        // the item's own server, matching the resolve the draw will make — a warm that named a
+        // different server than the draw would fetch the picture twice and use neither
+        if crate::ui::widgets::warm_tex_on(m.sid, &m.art, 1280, 720, 0) == Warm::Claimed {
             return;
         }
         // the same server the draw will resolve against (`hero_logo`), or the warm names a
         // different slot and buys nothing
-        if crate::posters::logo_warm(crate::plex::current_server(), hero_logo_rk(m)) == Warm::Claimed {
+        if crate::posters::logo_warm(m.sid, hero_logo_rk(m)) == Warm::Claimed {
             return;
         }
     }
@@ -931,7 +937,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
 
     // stack the measured blocks up from the anchor, then draw top-down
     let mut y = hero_stack_top(title_h, meta_h, syn_h);
-    HeroLogo::new(hero_logo_rk(hero), title, LogoRung::Hero).draw(p, Rect::new(tx, y, col_w, title_h));
+    HeroLogo::new(hero.sid, hero_logo_rk(hero), title, LogoRung::Hero).draw(p, Rect::new(tx, y, col_w, title_h));
     y += title_h + theme::space::MD;
     meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
     draw_meta_source(p, source, tx, y, meta_drawn_w(&meta_tv, &meta, col_w));

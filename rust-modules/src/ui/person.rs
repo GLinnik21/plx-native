@@ -779,7 +779,7 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     crate::ui::widgets::card(
         p,
         portrait,
-        Art::Person { key: &person.thumb, res: PORTRAIT_RES },
+        Art::Person { sid: person.sid, key: &person.thumb, res: PORTRAIT_RES },
         d * 0.5,
         false,
         1.0,
