@@ -103,6 +103,12 @@ extern "C" {
     pub(crate) fn SDL_StopTextInput();
     pub(crate) fn SDL_IsTextInputActive() -> c_int;
     pub(crate) fn SDL_HasScreenKeyboardSupport() -> c_int;
+    /// Is the panel ON SCREEN right now — LG's `WebOSIsScreenKeyboardShown`, the fourth of the four
+    /// hooks its Wayland driver installs. Exported by all 14 inventories
+    /// (`tools/fwcompat.py --lib libSDL2-2.0.so.0 --grep ScreenKeyboard`), like the rest of this
+    /// block. It is the only way to learn that the COMPOSITOR took the panel away — see
+    /// `textinput::poll`.
+    pub(crate) fn SDL_IsScreenKeyboardShown(w: *mut c_void) -> c_int;
     pub(crate) fn SDL_GetWindowFlags(w: *mut c_void) -> u32;
     /// Turn the DRIVER's own tracing on for one category. LG's `WebOSShowScreenKeyboard` /
     /// `Hide` / `TextModelLeave` / `TextModelInputPanelState` all log through SDL at

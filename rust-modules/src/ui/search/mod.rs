@@ -531,6 +531,14 @@ pub(crate) fn update(dt: f32) {
     // not name either of them.
     crate::browse::discover_pump();
     crate::search::pump(dt);
+    // The television can take its own keyboard away after an idle spell, and tells nobody — so the
+    // field would go on wearing the accent fill and a blinking caret over a panel that had left,
+    // with the empty state still holding its layout clear of it. Treated as the Enter it stands in
+    // for: the term is recorded and the field settles, rather than a withdrawal, because nothing
+    // the user did says they took the search back.
+    if crate::textinput::poll() {
+        commit_query();
+    }
     // After `pump_text`, so a frame that typed a character draws a solid bar rather than whichever
     // phase the clock happened to be in.
     step_blink(dt, editing());

@@ -2,88 +2,121 @@
 //!
 //! Both are **statements, not failures**: no alert mark, no danger tint, no Retry. Nothing found
 //! is an answer the server gave, and dressing it as an error tells the user something untrue about
-//! their library. A HEADLINE line over a CAPTION/tertiary hint, at [`super::CONTENT_TOP`].
+//! their library.
 //!
-//! The nothing-searched-yet copy exists for a reason worth keeping: an empty screen with no words
-//! on it reads as a screen that failed to draw.
+//! ## The anatomy, which changed on 2026-08-15 and is the reason this doc is long
 //!
-//! The hint names the scope — "across both sources" or "in <server>" — and so is the one place
-//! this screen states what it is searching when the field's scope line is not shown.
+//! Each state is **two parts, CENTRED in the band the app owns**: the region's own name in the caps
+//! header face ([`crate::ui::table::HDR_H`]'s type role — CAPTION, uppercase, tertiary), then one
+//! statement at `size::TITLE`. Same two parts, same order, same place for both, which is what makes
+//! them read as one screen answering in one voice rather than as two unrelated read-outs.
+//!
+//! | state | header | statement |
+//! |---|---|---|
+//! | nothing searched | `RECENT SEARCHES` | Nothing searched yet |
+//! | nothing found | `SEARCH RESULTS` | No results for “…” |
+//!
+//! The header is load-bearing and not decoration: an empty recents list is still **the recents
+//! list**, so it keeps the name of the thing it is empty of — the header is the only part of the
+//! populated layout that survives, and dropping it would make the empty state a different screen
+//! rather than the same one with nothing in it.
+//!
+//! **Centred, and only because the column is gone.** The populated list is a left column under the
+//! field, and the terms line up with the control that produced them; with no terms there is no
+//! column to align to, and a lone sentence pinned to the left margin of an otherwise empty 1920
+//! panel reads as a fragment. The band is [`band`] — below the field, above the raised keyboard —
+//! so the statement sits in the middle of the space the app actually has, and MOVES when the panel
+//! comes up. It was a left-aligned `HEADLINE` over a `CAPTION` scope hint at `CONTENT_TOP` before.
+//!
+//! **The scope hint is gone with it.** It said "Titles, people and collections in <server>." under
+//! the headline, and it was the second place on one screen to state what is being searched — the
+//! field's scope line beside the capsule is the first. The design's note is that repeating it
+//! "makes the screen look like it is arguing"; the consequence is that [`field::scope_text`] now
+//! states the scope for a SINGLE source too, since this line is no longer there to carry that case.
 //!
 //! ## Plain copy, deliberately — not a [`StatusOverlay`]
 //!
 //! [`crate::ui::widgets::StatusKind::Empty`] is the right *reading* of "nothing found" and the
-//! wrong *anatomy* for it here, so this draws two [`Label`]s instead of mounting the component.
-//! `StatusOverlay` is the app's CENTRED read-out: it centres its block on the frame it is given,
-//! aligns every run `HAlign::Center`, and fixes its own rungs (`BODY` verdict over a `CAPTION`
-//! reason, neither bold). This screen's copy is left-aligned at the app's own side margin, on the
-//! `HEADLINE`-bold rung, cap-top-anchored to [`super::CONTENT_TOP`] so it sits under the field
-//! exactly where a first shelf's heading would. Bending `StatusOverlay` to that would mean adding
-//! an alignment axis, an anchor mode and two size overrides to a component whose whole job is the
-//! centred read-out — a fork of its anatomy dressed as a style variant, and every existing caller
-//! would then be one builder call away from drifting off the centre it exists to hold.
+//! wrong *anatomy* for it, so this draws two [`Label`]s instead of mounting the component — and it
+//! stays true now that this file centres, because centring was never the whole difference.
+//! `StatusOverlay` fixes its own rungs (a `BODY` verdict over a `CAPTION` reason, neither bold) and
+//! has no caps header at all; this is a caps kicker over a **bold TITLE**. Bending it to that means
+//! adding a header slot and two size overrides to a component whose whole job is the one centred
+//! read-out, after which every existing caller is one builder call away from drifting off it.
 //!
-//! The division that remains is worth stating, because it is the design's own point made in
-//! GEOMETRY rather than only in tint: a **statement** is set as page copy where the content would
-//! have been; a **fault** is the app's centred read-out. See [`draw`] for the one fault case that
-//! reaches this file.
+//! The division that remains is the design's own point made in TYPE rather than only in tint: a
+//! **statement** is page copy in the page's own voice; a **fault** is the app's read-out. See
+//! [`draw`] for the one fault case that reaches this file.
 #![allow(dead_code)]
 
-use crate::ui::label::{Label, VAlign};
-use crate::ui::search::{field, View};
+use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::search::View;
 use crate::ui::widgets::{StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, Rect};
 // The retui trait, imported anonymously: `search::View` (the per-frame snapshot) already owns the
 // name in this module, and `StatusOverlay::draw` needs the trait in scope, not its name.
 use crate::ui::View as _;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
-/// The copy column. Wide enough for the longest hint at `CAPTION` and for a real query in the
-/// headline, and deliberately far short of the 1740 the margins allow: a line that runs the full
-/// panel reads as a banner, and this is a sentence. It is also the elide budget, so a pasted-long
-/// query truncates inside the quotes instead of running off the frame.
-const COPY_W: f32 = 1100.0;
+/// The copy column — the statement's elide budget. Wide enough for a real query at `TITLE` and
+/// deliberately far short of the 1920 the panel allows: a line that runs the full width reads as a
+/// banner, and this is a sentence.
+const COPY_W: f32 = 1200.0;
+
+/// Header to statement. The mock's 20 is a gap between two CSS **line boxes**, which carry leading
+/// this renderer does not: text here is placed by its cap band, so the same number would draw
+/// tighter than the design. `space::MD` is the rung that lands where the mock looks.
+const PART_GAP: f32 = theme::space::MD;
 
 /// What this file has to say for the state the screen is in. `None` is a real answer: while a
 /// query is in flight there is nothing honest to state yet, and a spinner belongs to whoever owns
 /// the fetch — one drawn here would be a second, unowned clock on the same screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Say {
-    /// `State::Idle` with an empty field — nothing has been asked, and nothing is being asked.
+    /// `State::Idle` — nothing has been searched. **Including with letters in the field**: a query
+    /// under [`crate::search::MIN_QUERY`] costs no round trip, so nothing has been asked, and that
+    /// is exactly what this says.
+    ///
+    /// It used to split here, into a second `KeepTyping` state whose headline read "Keep typing —
+    /// 2 letters or more", on the reasoning that "nothing searched yet" would be contradicted by
+    /// the field right above it. The design answers that where the contradiction is — **in the
+    /// field**, as a ghost run after the caret ([`super::field`]'s `one more character`) — and
+    /// keeps this region on the pre-search state it was already showing. The region belongs to the
+    /// recent terms, and replacing them with an instruction because a key was pressed takes content
+    /// away for pressing a key.
     NotYet,
-    /// `State::Idle` with something in the field. Also Idle, because a query below
-    /// [`crate::search::MIN_QUERY`] costs no round trip — but the user is looking at their own
-    /// typing, and [`Say::NotYet`]'s "you haven't searched yet" would be contradicted by the field
-    /// right above it.
-    KeepTyping,
     /// `State::Ready` with no shelves — the server answered, and its answer was nothing.
     NoResults,
     /// `State::Failed` — see [`draw`].
     Fault,
 }
 
-/// Which of the four (or none), from the store's state, whether anything landed, and how much is
-/// in the field.
+/// Which of the three (or none), from the store's state and whether anything landed.
 ///
 /// **Emptiness alone cannot decide this**, which is the distinction `browse.rs` had to learn: a
 /// `Ready` store with nothing in it and a `Failed` one with nothing in it look identical from the
 /// shelves and mean opposite things. `Ready` WITH shelves is the results screen's frame, not ours
 /// — `mod.rs` does not route it here, and answering `None` means a stray call cannot paint "No
 /// results" over a screen full of them.
-///
-/// `typed` is the trimmed length of the query, and it splits `Idle` in two. `set_query` maps
-/// anything under [`crate::search::MIN_QUERY`] to `Idle` and clears the shelves, so backspacing a
-/// finished search down to one character lands here with a visibly non-empty field — the one place
-/// this file could state something the screen itself disproves.
-fn say(state: crate::search::State, has_shelves: bool, typed: usize) -> Option<Say> {
+fn say(state: crate::search::State, has_shelves: bool) -> Option<Say> {
     use crate::search::State;
     match state {
-        State::Idle if typed > 0 => Some(Say::KeepTyping),
         State::Idle => Some(Say::NotYet),
         State::Searching => None,
         State::Ready => (!has_shelves).then_some(Say::NoResults),
         State::Failed => Some(Say::Fault),
     }
+}
+
+/// The band a statement centres in: from [`super::CONTENT_TOP`] down to the panel edge, or to the
+/// TV keyboard's top edge while it is up.
+///
+/// The screen's standing rule is that nothing the app owns hides behind that panel; here it is also
+/// what keeps the statement optically centred in the space the user can actually see, rather than
+/// centred in a 1080 frame whose bottom third is covered.
+fn band(editing: bool) -> Rect {
+    let bottom = if editing { crate::ui::consts::SCR_H - super::KEYBOARD_H } else { crate::ui::consts::SCR_H };
+    Rect::new(0.0, super::CONTENT_TOP, crate::ui::consts::SCR_W, bottom - super::CONTENT_TOP)
 }
 
 /// `No results for “wallace”` — typographic quotes, because the query is being QUOTED back to the
@@ -93,26 +126,12 @@ fn no_results_line(q: &str) -> String {
     format!("No results for \u{201C}{q}\u{201D}")
 }
 
-/// The hint under either headline: what this screen searches, stated as a plain fact.
-///
-/// `n` is how many sources this screen searches; `name` is the one source's machine name when there
-/// is exactly one and the roster has described it. Both come from [`field::sources`] — the ONE
-/// registry projection this screen builds — because this line and the field's scope line are two
-/// sentences about the same fact and used to be written from two different reads of it.
-///
-/// The design gives two strings, "across both sources" and "in &lt;server&gt;". A third rung is
-/// added here rather than stretching the first: the registry holds up to
-/// `plex::servers::MAX_SERVERS` slots, and "both" is simply false at three. The nameless case is
-/// the fourth — a boot that never reached plex.tv has a client it can dial and no name for it, and
-/// the honest answer there is the sentence with no scope clause at all, which stays true whatever
-/// the roster turns out to be. Never a placeholder name: inventing one is worse than saying less.
-fn scope_hint(n: usize, name: Option<&str>) -> String {
-    const WHAT: &str = "Titles, people and collections";
-    match (n, name) {
-        (1, Some(s)) if !s.is_empty() => format!("{WHAT} in {s}."),
-        (2, _) => format!("{WHAT} across both sources."),
-        (n, _) if n > 2 => format!("{WHAT} across all sources."),
-        _ => format!("{WHAT}."),
+/// The region's own name, in the caps header face — the part that survives from the populated
+/// layout, so an empty list still says what it is a list of. See the module doc's table.
+fn header_of(say: Say) -> &'static CStr {
+    match say {
+        Say::NoResults => c"SEARCH RESULTS",
+        _ => c"RECENT SEARCHES",
     }
 }
 
@@ -133,51 +152,47 @@ fn scope_hint(n: usize, name: Option<&str>) -> String {
 /// while it is up ([`super::KEYBOARD_H`]) — the screen's standing rule is that nothing the app owns
 /// hides behind that panel, and a read-out centred into it would be the first thing to break it.
 pub(crate) fn draw(p: Painter, v: &View) {
-    let typed = crate::search::query().trim().chars().count();
-    let Some(say) = say(crate::search::state(), !crate::search::shelves().is_empty(), typed) else { return };
+    let Some(say) = say(crate::search::state(), !crate::search::shelves().is_empty()) else { return };
+    let frame = band(v.editing);
 
     if say == Say::Fault {
-        let bottom = if v.editing { crate::ui::consts::SCR_H - super::KEYBOARD_H } else { crate::ui::consts::SCR_H };
-        let frame = Rect::new(0.0, super::CONTENT_TOP, crate::ui::consts::SCR_W, bottom - super::CONTENT_TOP);
         StatusOverlay::new(frame, c"Search didn\u{2019}t reach the server", StatusKind::Failed)
             .reason(c"Your libraries are fine \u{2014} try again in a moment.")
             .draw(&Env::inert(), p);
         return;
     }
 
-    let head = match say {
+    let statement = match say {
         Say::NoResults => {
             // Elide the QUERY, not the line: the shell is measured once and the remainder is the
             // budget, so the closing quote is never what gets cut.
             let q = crate::search::query().trim();
             let shell = CString::new(no_results_line("")).unwrap_or_default();
-            let shell_w = crate::text::text_width(shell.as_ptr(), theme::size::HEADLINE, 1);
-            no_results_line(&crate::text::elide(q, COPY_W - shell_w, theme::size::HEADLINE, 1, false))
+            let shell_w = crate::text::text_width(shell.as_ptr(), theme::size::TITLE, 1);
+            no_results_line(&crate::text::elide(q, COPY_W - shell_w, theme::size::TITLE, 1, false))
         }
-        Say::KeepTyping => format!("Keep typing \u{2014} {} letters or more", crate::search::MIN_QUERY),
         // U+2019, not an ASCII `'`, for the same reason the query is quoted with U+201C/U+201D:
-        // these two headlines share one type role, and a straight mark beside a curly pair is the
+        // these two statements share one type role, and a straight mark beside a curly pair is the
         // kind of mixed typography that reads as an accident.
-        _ => "You haven\u{2019}t searched yet".to_string(),
+        _ => "Nothing searched yet".to_string(),
     };
-    let (n, name) = field::sources();
-    // The hint is elided on the same column as the headline. A Plex friendly name is free text and
-    // routinely long, and `Label` paints past its frame rather than clipping to it (layout ≠ paint)
-    // — so an unmeasured "…in <name>." runs off the copy column toward the frame edge.
-    let hint = crate::text::elide(&scope_hint(n, name), COPY_W, theme::size::CAPTION, 0, false);
-    // Both runs must outlive the draws below — `Label` borrows the pointer (`ui/CLAUDE.md`).
-    let (Ok(head_c), Ok(hint_c)) = (CString::new(head), CString::new(hint)) else { return };
+    // The run must outlive the draw below — `Label` borrows the pointer (`ui/CLAUDE.md`).
+    let Ok(statement_c) = CString::new(statement) else { return };
+    let header = header_of(say);
 
-    // Cap-top anchored at CONTENT_TOP and stacked on one `space` rung, so the pair sits where a
-    // first shelf's heading would and a descender in the headline cannot shove the hint down.
-    let hint_y = super::CONTENT_TOP + crate::text::cap_h(theme::size::HEADLINE, 1) + theme::space::SM;
-    Label::new(head_c.as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING).bold().v(VAlign::CapTop).draw(
-        p,
-        Rect::new(crate::ui::consts::MARGIN_X, super::CONTENT_TOP, COPY_W, 0.0),
-    );
-    Label::new(hint_c.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+    // Both parts by cap band, so the block's height is the ink's and a descender in the statement
+    // cannot push the pair off centre. Centred on the FRAME, horizontally and vertically.
+    let (hdr_h, stm_h) = (crate::text::cap_h(theme::size::CAPTION, 0), crate::text::cap_h(theme::size::TITLE, 1));
+    let top = frame.y + (frame.h - (hdr_h + PART_GAP + stm_h)) * 0.5;
+    Label::new(header.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+        .h(HAlign::Center)
         .v(VAlign::CapTop)
-        .draw(p, Rect::new(crate::ui::consts::MARGIN_X, hint_y, COPY_W, 0.0));
+        .draw(p, Rect::new(frame.x, top, frame.w, 0.0));
+    Label::new(statement_c.as_ptr(), theme::size::TITLE, theme::TEXT_HEADING)
+        .bold()
+        .h(HAlign::Center)
+        .v(VAlign::CapTop)
+        .draw(p, Rect::new(frame.x, top + hdr_h + PART_GAP, frame.w, 0.0));
 }
 
 #[cfg(test)]
@@ -188,29 +203,41 @@ mod tests {
     #[test]
     fn the_state_decides_what_is_said_not_the_emptiness() {
         // `Ready` with nothing and `Failed` with nothing are the same store and opposite meanings.
-        assert_eq!(say(State::Ready, false, 7), Some(Say::NoResults));
-        assert_eq!(say(State::Failed, false, 7), Some(Say::Fault));
-        assert_eq!(say(State::Idle, false, 0), Some(Say::NotYet));
+        assert_eq!(say(State::Ready, false), Some(Say::NoResults));
+        assert_eq!(say(State::Failed, false), Some(Say::Fault));
+        assert_eq!(say(State::Idle, false), Some(Say::NotYet));
         // A query in flight has nothing honest to state, and owns no spinner here.
-        assert_eq!(say(State::Searching, false, 7), None);
+        assert_eq!(say(State::Searching, false), None);
         // A landed answer is the results screen's, never ours — even if something calls us.
-        assert_eq!(say(State::Ready, true, 7), None);
+        assert_eq!(say(State::Ready, true), None);
         // ...but a fault still reads as a fault with a stale set behind it, and Idle cannot have
         // shelves at all (`set_query` clears them), so neither is silenced by the flag.
-        assert_eq!(say(State::Failed, true, 7), Some(Say::Fault));
-        assert_eq!(say(State::Idle, true, 0), Some(Say::NotYet));
+        assert_eq!(say(State::Failed, true), Some(Say::Fault));
+        assert_eq!(say(State::Idle, true), Some(Say::NotYet));
     }
 
+    /// An empty list is still THE LIST, so it keeps the name of what it is empty of — the one part
+    /// of the populated layout that survives. Without it the empty state is a different screen
+    /// rather than the same one with nothing in it.
     #[test]
-    fn a_field_holding_letters_is_never_told_it_has_not_searched() {
-        // Backspacing a finished search down under MIN_QUERY: `set_query` says Idle and clears the
-        // shelves, but the letters are still on screen, so "you haven't searched yet" would be
-        // contradicted by the field directly above the line.
-        for typed in 1..crate::search::MIN_QUERY {
-            assert_eq!(say(State::Idle, false, typed), Some(Say::KeepTyping));
-        }
-        // An empty field is the only thing that has genuinely not been searched.
-        assert_eq!(say(State::Idle, false, 0), Some(Say::NotYet));
+    fn each_statement_keeps_the_name_of_the_region_it_replaces() {
+        assert_eq!(header_of(Say::NotYet), c"RECENT SEARCHES");
+        assert_eq!(header_of(Say::NoResults), c"SEARCH RESULTS");
+        // …and it is the recents list's own header, verbatim, or the two spellings drift apart.
+        assert_eq!(header_of(Say::NotYet), super::super::recents::HDR);
+    }
+
+    /// The band the pair centres in RISES with the keyboard: nothing the app owns hides behind that
+    /// panel, and a statement centred in a 1080 frame whose bottom third is covered is not centred.
+    #[test]
+    fn the_statement_centres_in_the_space_the_user_can_actually_see() {
+        let (up, down) = (band(true), band(false));
+        assert_eq!(up.y, super::super::CONTENT_TOP, "both start under the field");
+        assert_eq!(down.y, super::super::CONTENT_TOP);
+        assert_eq!(down.h - up.h, super::super::KEYBOARD_H, "the raised panel is the whole difference");
+        assert!(up.y + up.h <= crate::ui::consts::SCR_H - super::super::KEYBOARD_H);
+        assert_eq!(down.y + down.h, crate::ui::consts::SCR_H);
+        assert_eq!((up.x, up.w), (0.0, crate::ui::consts::SCR_W), "centred on the PANEL, not the field's column");
     }
 
     #[test]
@@ -219,24 +246,5 @@ mod tests {
         // The elide happens to the query, so whatever arrives is what sits inside the quotes.
         assert_eq!(no_results_line("wal\u{2026}"), "No results for \u{201C}wal\u{2026}\u{201D}");
         assert!(!no_results_line("q").contains('"'), "a straight quote is a programmer's mark");
-    }
-
-    #[test]
-    fn the_hint_names_the_scope_and_never_says_both_of_three() {
-        assert_eq!(scope_hint(1, Some("nas-home")), "Titles, people and collections in nas-home.");
-        assert_eq!(scope_hint(2, None), "Titles, people and collections across both sources.");
-        assert_eq!(scope_hint(3, None), "Titles, people and collections across all sources.");
-        assert_eq!(scope_hint(16, None), "Titles, people and collections across all sources.");
-        // A named second source does not make it one source: the count decides the clause.
-        assert_eq!(scope_hint(2, Some("nas-home")), "Titles, people and collections across both sources.");
-    }
-
-    #[test]
-    fn a_source_with_no_name_yet_drops_the_clause_rather_than_inventing_one() {
-        // A boot that never reached plex.tv can dial a server and knows nothing about it.
-        assert_eq!(scope_hint(1, None), "Titles, people and collections.");
-        assert_eq!(scope_hint(1, Some("")), "Titles, people and collections.");
-        // Nothing registered at all: still a true sentence, no scope claimed.
-        assert_eq!(scope_hint(0, None), "Titles, people and collections.");
     }
 }
