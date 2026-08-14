@@ -45,6 +45,8 @@ const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
+/// `glGetString` name for the driver's GLSL version — what `glsl_preamble` reads.
+const GL_SHADING_LANGUAGE_VERSION: c_uint = 0x8B8C;
 const GL_LINK_STATUS: c_uint = 0x8B82;
 const GL_ARRAY_BUFFER: c_uint = 0x8892;
 const GL_STATIC_DRAW: c_uint = 0x88E4;
@@ -59,6 +61,7 @@ const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TEXTURE0: c_uint = 0x84C0;
 
 extern "C" {
+    fn glGetString(name: c_uint) -> *const c_char;
     fn glCreateShader(ty: c_uint) -> c_uint;
     fn glShaderSource(shader: c_uint, count: c_int, string: *const *const c_char, length: *const c_int);
     fn glCompileShader(shader: c_uint);
@@ -218,10 +221,66 @@ static mut IL_CH: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
 
+/// The `#version` + compatibility preamble prepended to every shader, chosen by the DRIVER's GLSL
+/// version rather than by platform.
+///
+/// The nine sources in `shaders/` are GLSL ES 1.00 — `attribute`, `varying`, `texture2D`,
+/// `gl_FragColor`, `precision mediump float;`. That is what the television's GLES2 driver wants,
+/// and it needs no preamble there, so this returns an empty string and the sources compile exactly
+/// as they always have.
+///
+/// A desktop core profile has none of those spellings. macOS caps at 4.1 core and has no GLES
+/// driver at all, so the simulator gets GLSL 4.10, where the ES names must be macro-mapped. All
+/// nine were compiled against a real 4.10 context on an M4 to settle this rather than assume it.
+///
+/// Two details that are not guesses:
+/// - `#define gl_FragColor …` is what works. Declaring `out vec4 gl_FragColor;` is rejected —
+///   "Identifier name 'gl_FragColor' cannot start with 'gl_'" — because that restriction binds
+///   DECLARATIONS, while the preprocessor substitutes before the parser ever sees the name.
+/// - `#line 1` closes the preamble so compiler error line numbers still point at the real source
+///   line in `shaders/*.frag`, not at an offset only this function knows.
+///
+/// Probing the driver rather than keying on `cfg!` means this also answers correctly for a future
+/// desktop-GL webOS, a Mesa GLES2 box, or anything else — there is one arm, so nothing can rot.
+/// Is this context an OpenGL **ES** driver, asked of the driver once?
+///
+/// Hoisted out of `glsl_preamble` so the two GL-flavour adaptations cannot disagree. They very
+/// nearly did: the preamble probes, while `bind_core_profile_vao` trusted `cfg!(hostsim)` — so a
+/// host build against a Mesa GLES2 driver (a Pi, a Linux VM) would have bound a VAO into a context
+/// that has none *while* compiling ES shaders. A nonsense state that compiles clean.
+fn gl_is_es() -> bool {
+    use std::sync::OnceLock;
+    static ES: OnceLock<bool> = OnceLock::new();
+    *ES.get_or_init(|| unsafe {
+        let v = glGetString(GL_SHADING_LANGUAGE_VERSION);
+        // "OpenGL ES GLSL ES 1.00" on the television; "4.10" on a desktop core profile. An
+        // unreadable string is treated as ES, which is the configuration that needs no preamble
+        // and therefore the safe default — a wrong guess there changes nothing.
+        // `starts_with`, not a substring scan: the ES spec mandates this exact prefix, while a
+        // desktop vendor string containing "ES" anywhere would otherwise skip the preamble and
+        // hard-exit at the first shader compile.
+        v.is_null() || CStr::from_ptr(v).to_bytes().starts_with(b"OpenGL ES")
+    })
+}
+
+fn glsl_preamble(ty: c_uint) -> &'static CStr {
+    if gl_is_es() {
+        return c"";
+    }
+    if ty == GL_VERTEX_SHADER {
+        c"#version 410 core\n#define attribute in\n#define varying out\n#define texture2D texture\n#line 1\n"
+    } else {
+        c"#version 410 core\n#define varying in\n#define texture2D texture\nout vec4 plx_frag;\n#define gl_FragColor plx_frag\n#line 1\n"
+    }
+}
+
 pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
     unsafe {
         let s = glCreateShader(ty);
-        glShaderSource(s, 1, &src, std::ptr::null());
+        // Two source strings rather than a concatenation: GL joins them itself, so the preamble
+        // needs no allocation and the original `&CStr` sources stay untouched.
+        let srcs: [*const c_char; 2] = [glsl_preamble(ty).as_ptr(), src];
+        glShaderSource(s, 2, srcs.as_ptr(), std::ptr::null());
         glCompileShader(s);
         let mut ok: c_int = 0;
         glGetShaderiv(s, GL_COMPILE_STATUS, &mut ok);
@@ -269,8 +328,46 @@ pub(crate) fn use_prog(p: c_uint) {
 
 static QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
+/// Bind the one vertex array object a desktop core profile requires.
+///
+/// **GLES2 has no VAOs and a core profile has no DEFAULT one**, and the difference is silent: with
+/// VAO 0 bound, `glVertexAttribPointer` and `glDrawArrays` raise `GL_INVALID_OPERATION` and draw
+/// nothing at all. `glClear` is unaffected, so the symptom is a window painted the clear colour and
+/// a completely empty interface — which is exactly what the first simulator screenshots were, at
+/// every frame sampled.
+///
+/// One VAO for the process is enough and is not a simplification: this renderer has a single
+/// attribute layout — attribute 0, the shared unit quad in one static VBO, set up immediately
+/// below and never rebound. There is nothing for a second VAO to describe.
+///
+/// `#[cfg]` rather than a runtime check because these two entry points do not EXIST in GLES2; the
+/// television's libGLESv2 exports neither, so merely naming them in the shared `extern` block
+/// would be a link-time undefined symbol on the device.
+#[cfg(feature = "hostsim")]
+fn bind_core_profile_vao() {
+    extern "C" {
+        fn glGenVertexArrays(n: c_int, arrays: *mut c_uint);
+        fn glBindVertexArray(array: c_uint);
+    }
+    // A hostsim build is not necessarily a core profile — Mesa GLES2 exists on desktops too, and
+    // there VAO 0 is legal and these entry points are absent. Ask the driver, like the preamble.
+    if gl_is_es() {
+        return;
+    }
+    unsafe {
+        let mut vao: c_uint = 0;
+        glGenVertexArrays(1, &mut vao);
+        glBindVertexArray(vao);
+    }
+}
+
 pub(crate) fn init_gl() {
     unsafe {
+        // Before any buffer or attribute state is touched — in a core profile the calls below are
+        // errors without it.
+        #[cfg(feature = "hostsim")]
+        bind_core_profile_vao();
+
         PROG = link_program(VS_SRC.as_ptr(), FS_SRC.as_ptr()).unwrap_or_else(|| {
             eprintln!("link failed");
             std::process::exit(1);

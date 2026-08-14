@@ -17,7 +17,18 @@ repository = "https://github.com/GLinnik21/plx-native"
 # exposes the same C ABI its src/*.h declares, so the C code calls it unchanged.
 [lib]
 name = "plxnative_modules"
-crate-type = ["staticlib"]
+# `staticlib` is what the Makefile links into the ARM binary. `rlib` is additionally required so
+# the host simulator binary below can depend on this same crate as a Rust library — a bin target
+# cannot link a staticlib-only crate. It costs the cross build one extra artifact and changes
+# nothing about the `.a` the Makefile picks up.
+crate-type = ["staticlib", "rlib"]
+
+# The macOS/desktop UI simulator. Not built by `make`, not shipped, and inert unless its feature is
+# on — see the `hostsim` feature below and `src/bin/sim.rs`.
+[[bin]]
+name = "plxnative-sim"
+path = "src/bin/sim.rs"
+required-features = ["hostsim"]
 
 [features]
 # On by default, so every ordinary `make`, every `make test` and every on-device harness run
@@ -39,6 +50,20 @@ devtools = []
 # read back the event log, and `tests/run.py` builds with plain `make` — the harness never builds
 # a release binary, so gating the whole surface costs it nothing.
 devtriggers = []
+# The desktop UI simulator. OFF by default, so no ordinary `make`, `make check` or harness run is
+# affected in any way; `cargo build --features hostsim` selects it.
+#
+# It is an ADDITIVE feature in the cargo sense only by convention — it swaps `player::ffi`'s seam
+# for `ffi_host.rs` rather than adding to it. That is safe here because this crate is a leaf with
+# no dependents, so feature unification can never enable it behind someone's back. Do not give it
+# a mutually-exclusive partner feature; the television is the DEFAULT, and the simulator opts in.
+#
+# What it changes, and nothing else: the media seam (29 symbols that exist only on a television),
+# the GL context request (macOS has no GLES2 driver), the window flags, the keyboard event decode
+# (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the wayland/glib calls that
+# have no host equivalent. Everything else — all of `ui/`, the whole Plex data layer, the demux
+# orchestration — is compiled identically for both.
+hostsim = []
 
 [dependencies]
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)

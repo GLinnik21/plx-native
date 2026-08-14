@@ -16,8 +16,12 @@
 use libc::c_void;
 use std::os::unix::io::RawFd;
 
-/// The control FIFO. Kept in the `/tmp/plxnative-*` dev namespace for consistency.
-pub const FIFO_PATH: &str = "/tmp/plxnative-remote";
+/// The control FIFO. Kept in the `plxnative-*` dev namespace for consistency — and resolved
+/// through [`crate::paths`] rather than a literal, so a host build running several simulators at
+/// once gives each its own FIFO instead of all of them draining one.
+fn fifo_path() -> std::path::PathBuf {
+    crate::paths::in_runtime_dir("plxnative-remote")
+}
 
 pub struct Remote {
     fd: RawFd,
@@ -44,7 +48,10 @@ impl Remote {
         if !crate::dev::ENABLED {
             return None;
         }
-        let path = std::ffi::CString::new(FIFO_PATH).ok()?;
+        // Exact bytes, not `to_string_lossy`: an instance root comes from the environment, and a
+        // lossy conversion would silently `mkfifo` a DIFFERENT path than the one asked for.
+        use std::os::unix::ffi::OsStringExt;
+        let path = std::ffi::CString::new(fifo_path().into_os_string().into_vec()).ok()?;
         unsafe {
             // mkfifo; an existing FIFO (EEXIST) is fine, anything else and open() fails below.
             libc::mkfifo(path.as_ptr(), 0o666);

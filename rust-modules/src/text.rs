@@ -308,7 +308,32 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
     }
     let (sw, sh, pixels) = ((*surf).w, (*surf).h, (*surf).pixels);
     let (ink_t, ink_b) = surface_ink_v(surf);
-    let tex = crate::gfx::upload_rgba(0, sw, sh, pixels as *const u8);
+    // Honour the surface's PITCH. SDL is free to pad each row, and `pitch` — not `w * 4` — is the
+    // stride it actually wrote; `surface_ink_v` above has always read it, and only this upload
+    // assumed the two were equal. They are on the television's SDL2_ttf, which is why this was
+    // invisible for the app's whole life; they are NOT on the desktop SDL2_ttf the simulator
+    // links, where every string rendered as diagonal hatching because each row was read four bytes
+    // early and the image sheared.
+    //
+    // Repacking rather than `GL_UNPACK_ROW_LENGTH`: that pixel-store parameter does not exist in
+    // GLES2, so the one-line fix would work on the simulator and silently do nothing on the TV.
+    // The copy runs only when the stride is actually padded, so the device path is unchanged.
+    let stride = (*surf).pitch as isize;
+    let tight = sw as isize * 4;
+    let tex = if stride == tight {
+        crate::gfx::upload_rgba(0, sw, sh, pixels as *const u8)
+    } else {
+        let mut packed = vec![0u8; (tight * sh as isize) as usize];
+        let base = pixels as *const u8;
+        for y in 0..sh as isize {
+            std::ptr::copy_nonoverlapping(
+                base.offset(y * stride),
+                packed.as_mut_ptr().offset(y * tight),
+                tight as usize,
+            );
+        }
+        crate::gfx::upload_rgba(0, sw, sh, packed.as_ptr())
+    };
     SDL_FreeSurface(surf);
 
     let cache = &mut *addr_of_mut!(TCACHE_A);

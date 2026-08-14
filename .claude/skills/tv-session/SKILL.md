@@ -19,6 +19,13 @@ description: >
 
 # Working on the TV
 
+> **Before booking the TV: can the simulator answer this?** `make sim` runs the same app core on
+> macOS — real UI, real PMS data, boot triggers, the same FIFO tokens, self-screenshotting, and
+> several instances at once. Layout, focus, navigation and the whole data layer are answerable
+> there without touching the television, which is a single shared resource. See the **`ui-sim`**
+> skill. Come back here for frame rates, text rasterization, video, the video plane, or a final
+> device check — none of which the simulator can settle.
+
 There is no host runtime: the only way to know whether something works is to run it on
 the television and observe. That ritual has a lot of steps and each fails in its own
 silent way, so it lives in one asserting driver.
