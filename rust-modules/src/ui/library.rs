@@ -2010,10 +2010,21 @@ mod tests {
     /// mis-wire a chip to another's menu and the identity assertion fails; add a chip to the enum
     /// without wiring it and `open_chip_menu`'s exhaustive match stops compiling. Position is
     /// asserted nowhere, which is the property under test.
+    ///
+    /// Takes `testlock::serial` because the one-source half reads `source_chip_on()`, which asks
+    /// `browse`'s ROSTER — a crate global another module's test seeds. Without the lock this passed
+    /// only while no sibling happened to be holding a two-source table at that instant, which is a
+    /// race that reports as "the Source chip is drawn on a single-server install".
     #[test]
     fn every_chip_opens_its_own_menu_by_identity_and_never_by_position() {
         let _s = crate::testlock::serial();
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        // Observe the single-source shape DELIBERATELY. The lock above serialises this test against
+        // its siblings but does not undo them, and a sibling that seeds a two-source table leaves
+        // the roster behind — so `source_chip_on()` below was reading whatever ran last. That
+        // reports as "the Source chip is drawn on a single-server install", which is a real bug's
+        // symptom and was not one.
+        crate::browse::reset();
         let tool0 = unsafe { addr_of!(TOOL_F).read() };
 
         // chip → menu, one row per chip. A shifted row cannot satisfy this: it is keyed on the
