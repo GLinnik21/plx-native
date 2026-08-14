@@ -209,23 +209,6 @@ static mut WANT: (usize, usize) = (0, 0);
 fn sections() -> &'static Vec<BrowseSection> {
     unsafe { &*addr_of!(SECTIONS) }
 }
-/// Source indices whose libraries have actually been ENUMERATED — the domain over which a pin can
-/// mean anything.
-///
-/// Not the roster: discovery for a source other than the current one runs on a worker off [`pump`],
-/// which only runs while the Library screen is up, so a freshly booted app knows the roster and none
-/// of its shares' libraries. `pms::feeds_home` needs the difference, because "no pinned library"
-/// must not read as "the user turned this source off" for a source nobody has asked about yet.
-pub(crate) fn discovered_sources() -> Vec<usize> {
-    let mut out: Vec<usize> = Vec::new();
-    for s in sections() {
-        if !out.contains(&s.src) {
-            out.push(s.src);
-        }
-    }
-    out
-}
-
 /// The granted roster, in registration order — the session's own server first.
 pub(crate) fn sources() -> &'static [BrowseSource] {
     unsafe { &*addr_of!(SOURCES) }
@@ -659,11 +642,6 @@ fn activate_source_of(_i: usize) {
     // was a single server. Kept as a named no-op rather than deleted at the call site so the next
     // person to reach for a re-point here finds this note first.
 }
-/// The source index of section `i` — the server half of its address.
-fn section_src(i: usize) -> usize {
-    sections().get(i).map(|s| s.src).unwrap_or(0)
-}
-
 /// Record what a request to section `i`'s server just proved about it. See the call in [`pump`].
 fn mark_source_reachable(i: usize, ok: bool) {
     let Some(src) = sections().get(i).map(|s| s.src) else { return };
@@ -813,21 +791,16 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
     crate::ui::idle::invalidate();
     true
 }
-/// Every library that feeds Home, as (source index, section index).
+/// Every KNOWN library as `(source index, section key, pinned)` — the READ side of the pin store,
+/// and the ONE projection of it this module exports.
 ///
-/// The READ side of the pin store; its caller is Home's multi-source shelf assembly (the design's
-/// deliverable C) — `pms::pinned_servers` folds it to the set of SERVERS that feed Home, and
-/// `pms::feeds_home` is the rule that narrows the granted roster to that set.
-/// Browsing ignores it entirely, because browsing is governed by the grant.
+/// It replaced two narrower ones (`pinned_libraries`, `discovered_sources`) that `pms` folded into
+/// server sets separately — three loops resolving a source index to a registry slot, so a change to
+/// that mapping had to land in three places. Both are columns of this table.
 ///
 /// NB an EMPTY result means "no section has been discovered yet", NOT "nothing is pinned":
 /// [`is_last_pinned`] forbids unpinning the last library, so the pinned set is never legitimately
 /// empty once discovery has landed. `pms::feeds_home` is written around exactly that distinction.
-pub(crate) fn pinned_libraries() -> Vec<(usize, usize)> {
-    sections().iter().enumerate().filter(|(_, s)| s.pinned).map(|(i, s)| (s.src, i)).collect()
-}
-
-/// Every KNOWN library as `(source index, section key, pinned)` — the same table one row wider.
 ///
 /// The section KEY is what an item carries (`librarySectionID`), so this is the join Home needs to
 /// honour a per-library pin: `/hubs` is a whole-SERVER request and answers with rows from every
@@ -980,6 +953,22 @@ pub(crate) fn fetch_state() -> SecFetch {
     cur_state().map(|s| s.fetch).unwrap_or(SecFetch::Loading)
 }
 
+/// True while the current query has no data yet (first page in flight) — the grid's full-screen
+/// spinner state.
+///
+/// Reads the STATE, not `total < 0`: those two agreed for every path that ends in an answer, and
+/// disagreed for the one that doesn't. A failed first page leaves `total` at -1 forever, so this
+/// used to spin forever with it.
+///
+/// **Only the suite calls it now** — the screen asks `ui::library::readout()`, which folds this
+/// state together with the section TABLE's. Kept, and marked, because the three tests that assert
+/// it are asserting exactly the distinction above; `rustc`'s dead-code warning does not count test
+/// callers, so this reads as removable and is not.
+#[allow(dead_code)]
+pub(crate) fn loading_initial() -> bool {
+    fetch_state() == SecFetch::Loading
+}
+
 /// The same three states for the SOURCE behind what the screen is showing — the layer above a
 /// page, and the other half of the Library's read-out ([`crate::ui::library`]'s `readout_of`).
 ///
@@ -1002,25 +991,6 @@ pub(crate) fn cur_source_state() -> SecFetch {
         SecFetch::Loading
     }
 }
-/// True while the current query has no data yet (first page in flight) — the grid's
-/// full-screen spinner state.
-///
-/// Reads the STATE, not `total < 0`: those two agreed for every path that ends in an answer, and
-/// disagreed for the one that doesn't. A failed first page leaves `total` at -1 forever, so this
-/// used to spin forever with it.
-pub(crate) fn loading_initial() -> bool {
-    fetch_state() == SecFetch::Loading
-}
-/// Re-kick this section's fetch NOW — the read-out's *Try again*.
-///
-/// It clears the back-off and nothing else. The automatic retry is already counting down, so the
-/// button's job is only to skip the wait; and the state deliberately stays [`SecFetch::Failed`]
-/// until an answer lands, so the user reads one steady statement rather than a spinner that blinks
-/// back — the rule [`SecFetch::Loading`]'s doc states, applied to the manual path too.
-pub(crate) fn retry() {
-    unsafe { RETRY_CD = 0 };
-}
-
 /// Seed the roster with `n` sources in a chosen reachability, for a host test on the SCREEN side —
 /// `ui::library`'s read-out is a projection of these flags, and its tests cannot reach this
 /// module's private ones. The real transition needs a server that refuses to answer, which no host

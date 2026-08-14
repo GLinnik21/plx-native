@@ -1233,7 +1233,7 @@ pub(crate) fn load_detail_now(sid: crate::plex::ServerId, rk: &str) {
             // never ran for anything opened this way — `plxnative-detail`, `open_rk_season`, and
             // home's play-a-show arm. Found by the button staying absent on a device that had two
             // copies of the guid.
-            request_alt_sources(d.sid, &d.rk, &d.guid);
+            request_alt_sources(&d.rk, &d.guid);
             unsafe { *addr_of_mut!(CURRENT) = Some(d) }
             // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor
             sync_now_playing();
@@ -1330,7 +1330,7 @@ pub(crate) fn pump_detail() -> bool {
     // Ask the other sources about this item BEFORE the move: the resolve needs the item's own
     // server and its portable guid, and this is the one place both are known on the main thread.
     // A page with no guid, or a one-server install, spawns nothing.
-    request_alt_sources(d.sid, &d.rk, &d.guid);
+    request_alt_sources(&d.rk, &d.guid);
     unsafe { *addr_of_mut!(CURRENT) = Some(d) }
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing();
@@ -1369,7 +1369,7 @@ static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(Non
 ///
 /// Sources are captured here, on the main thread, as a plain list of ids — the worker resolves each
 /// through `client_for` and never asks what is current.
-fn request_alt_sources(_sid: crate::plex::ServerId, rk: &str, guid: &str) {
+fn request_alt_sources(rk: &str, guid: &str) {
     use std::sync::atomic::Ordering;
     let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;

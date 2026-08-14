@@ -816,23 +816,14 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
     pinned.is_empty() || pinned.contains(&sid) || !known.contains(&sid)
 }
 
-/// The servers whose section tables we have actually seen — the domain over which a pin can mean
-/// anything. Not the roster: a registered server with no discovered sections is absent from this.
-fn servers_with_known_sections() -> Vec<ServerId> {
-    let srcs = crate::browse::sources();
-    let mut out: Vec<ServerId> = Vec::new();
-    for si in crate::browse::discovered_sources() {
-        if let Some(sid) = srcs.get(si).map(|x| x.sid) {
-            if !out.contains(&sid) {
-                out.push(sid);
-            }
-        }
-    }
-    out
-}
-
 /// The pin table as `(server, section key, pinned)` — `browse`'s rows with their source index
 /// resolved to a registry slot, which is the form [`item_pinned`] can join an item against.
+///
+/// **The one projection.** There were three: this, plus a `servers_with_known_sections` and a
+/// `pinned_servers` that were the same index→slot fold with a different `browse` call feeding them
+/// — and each pulled its own `pub(crate)` out of `browse`, so a change to how a source index maps
+/// to a registry slot had to land in three places. Both are columns of this table:
+/// `known` is its `sid`s deduped, `pinned` is the same after `filter(pinned)`.
 fn library_pins_by_server() -> Vec<(ServerId, i64, bool)> {
     let srcs = crate::browse::sources();
     crate::browse::library_pins()
@@ -861,19 +852,19 @@ fn item_pinned(pins: &[(ServerId, i64, bool)], m: &PmsMovie) -> bool {
     }
 }
 
-/// The servers whose libraries are pinned to Home, as registry slots. Separated from [`feeds_home`]
-/// so the rule above stays pure: this half reads two `browse` statics.
-fn pinned_servers() -> Vec<ServerId> {
-    let srcs = crate::browse::sources();
-    let mut out: Vec<ServerId> = Vec::new();
-    for (si, _) in crate::browse::pinned_libraries() {
-        if let Some(sid) = srcs.get(si).map(|s| s.sid) {
-            if !out.contains(&sid) {
-                out.push(sid);
-            }
+/// The two server sets [`feeds_home`] takes, folded out of [`library_pins_by_server`] in one pass:
+/// `(pinned, known)`. Separated from the rule so `feeds_home` stays pure and host-gradeable.
+fn home_server_sets(pins: &[(ServerId, i64, bool)]) -> (Vec<ServerId>, Vec<ServerId>) {
+    let (mut pinned, mut known) = (Vec::new(), Vec::new());
+    for &(sid, _, is_pinned) in pins {
+        if !known.contains(&sid) {
+            known.push(sid);
+        }
+        if is_pinned && !pinned.contains(&sid) {
+            pinned.push(sid);
         }
     }
-    out
+    (pinned, known)
 }
 
 /// The sources Home is built from, in display order: our own servers first, then each share, each
@@ -886,8 +877,7 @@ fn pinned_servers() -> Vec<ServerId> {
 /// the grant to a pin. The handle comes from the same place (`ServerFacts`), so nothing here has an
 /// opinion about who a server belongs to that the Sources list does not share.
 fn roster() -> Vec<(ServerId, String)> {
-    let pinned = pinned_servers();
-    let known = servers_with_known_sections();
+    let (pinned, known) = home_server_sets(&library_pins_by_server());
     let mut own: Vec<(ServerId, String)> = Vec::new();
     let mut shared: Vec<(ServerId, String)> = Vec::new();
     for sid in crate::plex::server_ids() {
@@ -906,14 +896,16 @@ fn roster() -> Vec<(ServerId, String)> {
 }
 
 /// A cheap fingerprint of what [`roster`] would return, so [`sync_roster`] can skip the rebuild on
-/// the frames — almost all of them — where nothing has changed. Registry size plus the pinned set,
-/// which are the only two inputs.
+/// the frames — almost all of them — where nothing has changed.
+///
+/// **Two atomic loads and no allocation.** The inputs are the registry's size and the section
+/// table, and the pinned set is a projection of the second — `toggle_pin`, `append_sections` and
+/// `reset` all bump `SECTIONS_GEN`, so that counter already moves whenever the pinned set can.
+/// Folding the pinned SERVERS in by hand meant walking `browse`'s table and building two `Vec`s
+/// here, on a path `pump` runs every loop iteration — ~60×/s including on a settled Home, which is
+/// the screen `ui::idle` was tuned down to ~1% of a core on.
 fn roster_key() -> u64 {
-    let mut k = crate::plex::server_count() as u64;
-    for sid in pinned_servers() {
-        k = k.wrapping_mul(31).wrapping_add(sid.raw() as u64 + 1);
-    }
-    k
+    ((crate::plex::server_count() as u64) << 32) | crate::browse::sections_gen() as u64
 }
 
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
@@ -1063,15 +1055,6 @@ fn retry_now(s: &mut Src) {
 /// source whose fetch is already in flight.
 pub(crate) fn request_retry() {
     for s in lock_srcs().iter_mut() {
-        retry_now(s);
-    }
-}
-
-/// Retry ONE source — the section read-out's "Try again", which names a single server and must not
-/// disturb the others (a share failing is not the app failing).
-#[allow(dead_code)] // the failed-section read-out drives `browse`'s own retry today
-pub(crate) fn request_retry_source(sid: ServerId) {
-    if let Some(s) = lock_srcs().iter_mut().find(|s| s.sid == sid) {
         retry_now(s);
     }
 }

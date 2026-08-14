@@ -2062,12 +2062,11 @@ fn dotted_run(p: Painter, parts: &[&str], x: f32, y: f32, sz: c_int, col: [f32; 
 /// separator, no run, no draw call. That is the design's *"on your own server there is no run,
 /// not an empty one"* implemented as ABSENCE rather than as a branch that paints nothing visible,
 /// which is what makes the attribution free for the single-server install.
+/// The facts row wants the empty string for "no owner" (it measures and flows runs by width, and a
+/// zero-width run costs nothing), so this is [`crate::ui::fmt::shared_by`] flattened — the words
+/// themselves live there, once, for every surface that says them.
 fn shared_by(source: &str) -> String {
-    if source.is_empty() {
-        String::new()
-    } else {
-        format!("Shared by {source}")
-    }
+    crate::ui::fmt::shared_by(source).unwrap_or_default()
 }
 
 /// Which members of the facts row survive its width bound — [`facts_fit`]'s answer, and the input

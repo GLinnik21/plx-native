@@ -57,6 +57,20 @@ pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
     format!("S{season}, E{index}")
 }
 
+/// The source attribution — `"Shared by friend"` — or `None` when the item is the signed-in
+/// account's own.
+///
+/// `None` rather than an empty `String`, because ABSENCE is what the design specifies for an owned
+/// item: no separator, no empty run, no draw call. Both call sites were hand-rolling that guard.
+///
+/// ONE formatter for the same reason [`episode_kicker`] is one: this phrase is drawn by the hero's
+/// meta line, the detail page's facts row and (with a sentence after it) the Library's failure
+/// read-out. It was written twice with two different empty-handle behaviours and interpolated a
+/// third time inline — exactly the drift this module exists to prevent.
+pub(crate) fn shared_by(handle: &str) -> Option<String> {
+    (!handle.is_empty()).then(|| format!("Shared by {handle}"))
+}
+
 /// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
 /// it. ONE formatter, because this string is drawn by the transport HUD (the now-playing item), the
 /// route's pre-roll ctx line and the Up Next caption, and the whole point of the last two is that

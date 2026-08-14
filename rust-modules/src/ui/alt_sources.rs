@@ -268,7 +268,10 @@ const OWN_ACCOUNT: &str = "This account";
 /// friend's, then by library name so the list cannot reshuffle between two frames that resolved
 /// the same facts.
 pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<AltRow> {
-    let here = list.iter().position(|c| c.sid == here_sid && c.rk == here_rk);
+    // `same_item`, not a hand-rolled `&&`: it is the one place the pair rule lives, and its own doc
+    // promises every stored-item lookup routes through it. These two sites were the last that did
+    // not — and they are the ones that decide which row wears the tick and which press does nothing.
+    let here = list.iter().position(|c| crate::plex::same_item((c.sid, &c.rk), (here_sid, here_rk)));
     let mut idx: Vec<usize> = (0..list.len()).collect();
     idx.sort_by(|&a, &b| {
         let (ca, cb) = (&list[a], &list[b]);
@@ -306,11 +309,22 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
 /// `current` on our own server, no copy matched the pair, and the panel drew **no tick at all** —
 /// owner-reported. The tick answers "which of these am I looking at", and only the page knows.
 fn live_rows() -> Vec<AltRow> {
-    let sid = crate::metadata::current()
-        .map(|d| d.sid)
-        .filter(|s| s.is_set())
-        .unwrap_or_else(crate::plex::current_server);
-    rows(copies(), sid, unsafe { (*addr_of!(FOR_RK)).as_str() })
+    rows(copies(), here_sid(), unsafe { (*addr_of!(FOR_RK)).as_str() })
+}
+
+/// The server the open PAGE is on — the app-wide answer, asked in ONE place.
+///
+/// This module had two spellings of it, and they disagreed: `live_rows` read the loaded `Detail`
+/// while `action_at`'s caller passed `plex::current_server()`, so the row that wore the tick and
+/// the row a press treated as "you are already here" could be different rows. Both also fell
+/// through to the current server during the mount window, which is exactly when `metadata::current`
+/// is empty by design (`open_rk` clears it for the whole fetch) — and after browsing stopped
+/// re-pointing `current`, that fallback is a DIFFERENT machine rather than a harmless synonym.
+///
+/// `detail::mounted_sid` is the one derivation: the loaded item's server, else the page's own
+/// mounted sid, which was stamped from the row that opened it.
+fn here_sid() -> ServerId {
+    crate::ui::detail::mounted_sid()
 }
 
 // ---- the panel -------------------------------------------------------------------------------
@@ -363,7 +377,7 @@ pub(crate) fn move_focus(sym: c_int) {
 pub(crate) fn on_ok() -> Action {
     let sel = table().sel;
     close();
-    action_at(dests(), sel, crate::plex::current_server(), unsafe { (*addr_of!(FOR_RK)).as_str() })
+    action_at(dests(), sel, here_sid(), unsafe { (*addr_of!(FOR_RK)).as_str() })
 }
 
 /// The index→destination mapping, pure so the "the row you are on is not a destination" rule is
@@ -373,7 +387,7 @@ fn action_at(list: &[(ServerId, String)], sel: i32, here_sid: ServerId, here_rk:
     let Some((sid, rk)) = usize::try_from(sel).ok().and_then(|i| list.get(i)) else {
         return Action::None;
     };
-    if (*sid == here_sid && rk == here_rk) || rk.is_empty() {
+    if crate::plex::same_item((*sid, rk), (here_sid, here_rk)) || rk.is_empty() {
         return Action::None;
     }
     Action::Open { sid: *sid, rk: rk.clone() }

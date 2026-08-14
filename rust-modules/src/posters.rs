@@ -159,9 +159,18 @@ fn set_key(s: &mut Pslot, key: &str) {
 // grant, which is a 401 at best. And the generation was one number for the whole memo, flushed
 // when "the" token changed; with a table of servers there is no such number, so each entry
 // remembers the generation it was built at and is rebuilt when THAT server's token moves.
-type MemoKey = (u16, String, c_int, c_int, bool);
+/// The part of a memo key that is `Copy`. The PATH is the map's key instead, one level in, so a
+/// lookup can borrow it.
+///
+/// `HashMap` takes its key by value in `entry`, so a flat `(u16, String, …)` key allocated a
+/// `String` on every call — **hit or miss**. That is this module's hottest path: `poster_key` runs
+/// once per visible tile per frame plus the hero art and logo, so at ~25–40 tiles × 60 fps it was
+/// ~1,500–2,400 needless heap allocations a second on a 32-bit A53, on top of the `cstr` that
+/// already built the same string. Nesting keeps the hit path allocation-free (`get` borrows a
+/// `&str`) and pays for the owned key only on a real miss.
+type MemoDims = (u16, c_int, c_int, bool);
 struct KeyMemo {
-    map: std::collections::HashMap<MemoKey, (u32, String)>,
+    map: std::collections::HashMap<MemoDims, std::collections::HashMap<String, (u32, String)>>,
 }
 /// Entries kept before the memo is emptied wholesale. A ceiling, not a working set: a screen's
 /// live keys are dozens, and this only bounds a session that browses thousands of tiles.
@@ -182,20 +191,18 @@ impl KeyMemo {
         gen: u32,
         build: impl FnOnce() -> String,
     ) -> &str {
-        use std::collections::hash_map::Entry;
-        if self.map.len() > MEMO_CAP {
-            self.map.clear();
+        let by_path = self.map.entry((srv, w, h, png)).or_default();
+        // Bound the working set the same way the flat map did, one dimension bucket at a time.
+        if by_path.len() > MEMO_CAP {
+            by_path.clear();
         }
-        match self.map.entry((srv, path.to_owned(), w, h, png)) {
-            Entry::Occupied(o) => {
-                let e = o.into_mut();
-                if e.0 != gen {
-                    *e = (gen, build());
-                }
-                &e.1
-            }
-            Entry::Vacant(v) => &v.insert((gen, build())).1,
+        // HIT: borrow the path, allocate nothing. This is the frame-rate path.
+        if by_path.get(path).is_some_and(|e| e.0 == gen) {
+            return &by_path[path].1;
         }
+        // MISS (or a moved token): now the owned key is worth paying for.
+        by_path.insert(path.to_owned(), (gen, build()));
+        &by_path[path].1
     }
 }
 static mut KEY_MEMO: Option<KeyMemo> = None;
