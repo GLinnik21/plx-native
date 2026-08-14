@@ -132,6 +132,39 @@
       "_fps_floor_note": "Measured healthy median 18 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 8 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
     },
     {
+      "name": "search-type",
+      "tier": "ui",
+      "route": "search",
+      "loop_floor": 45,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-search": "th",
+        "plxnative-searchosc": true
+      },
+      "fps_floor": 10,
+      "comment": "The Search screen while it is being USED: a query in the field and focus travelling the result shelves, which is the shape the screen spends its whole life in. plxnative-search seeds the field (nothing here can type — the harness has no keyboard, and the TV's own panel is raised by the user, not by a trigger), plxnative-searchosc then steps focus every 350ms and reverses every 3s, exactly as homeosc and libosc do. The pairing is required: searchosc alone does not reach route=search, and the sample-count guard would fail the scene as 'never entered this screen' rather than passing it vacuously.",
+      "_fps_floor_note": "NOT a measured number — every other fps_floor in this file quotes a device median, and this one deliberately does not, because the scene was written with the search screen still being built and nothing has ever sampled it on the panel. 10 is chosen only as a frozen-vs-running discriminator: a stopped animator reads ~0.5/s (ui::idle's 2s keepalive alone) and a 350ms stepper reads tens, so 10 cannot false-FAIL a healthy screen and cannot pass a frozen one. RAISE IT to a real median (library-scroll measured 49, home-grid 41) the first time this runs green on a television, and record the date the way the neighbours do.",
+      "_expected_to_fail_until_note": "READ THIS BEFORE FILING A REGRESSION. This scene lands with the gate, not with the screen: while ui/search/'s draw bodies are `{}`, search::pump lands nothing and search::move_focus is a no-op, nothing on this screen animates once the tab strip's springs settle, so ui::idle correctly drops to the keepalive and the fps median reads ~0 — a FAIL, by design, on the exact assertion this scene exists to make. Its twin search-idle passes throughout, which is what makes the pair read as a regression rather than as an unbuilt screen unless you know. The gate is right and the screen is not written yet; the check that the screen HAS landed is that `plex/mod.rs`'s 'no callers yet' admission for `search` is gone. Do not lower the floor to make this green.",
+      "_caret_note": "This scene does NOT grade a blinking caret, and no scene can: ui/search/field.rs states the caret is solid by design — 'nothing pulses in this app, and a blinking caret would hold the GL loop awake forever', since ui::idle cannot see a clock-driven animation. What it grades is the motion that does exist while searching: the field's focus fill as focus enters and leaves it, and the shelves scrolling under the sweep. A frozen shelf spring or a field that stopped reporting to ui::idle::invalidate lands here.",
+      "_query_note": "'th' is the one installation-DEPENDENT value in this scene, and it is a literal rather than a symbolic key because run.py resolves items, not queries. Two characters is deliberate — search::MIN_QUERY is 2, so this is also the shortest query the server answers at all (a one-character query returns every hub empty, measured against PMS 1.43.3). It matches any library holding titles that begin with 'The'. If YOUR library returns nothing for it the shelves are empty, the sweep has nothing to travel, and this scene degrades to grading the tab strip's focus springs — change the literal to a term your library matches rather than lowering the floor."
+    },
+    {
+      "name": "search-idle",
+      "tier": "ui",
+      "route": "search",
+      "loop_floor": 30,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-search": "th"
+      },
+      "comment": "search-type's inverse, and the pair only means something together: the same screen with the oscillator taken away must STOP presenting. A settled result set — query landed, shelves built, posters in — is a still screen, so ui::idle's present gate has to take it to the keepalive. loop_floor still grades loop=, which counts LOOP iterations and not swaps, so a wedged loop cannot pass by presenting nothing. This is the only guard on the over-reporting direction, and over-reporting gives back the whole ~38-points-of-a-core saving while every floor in the suite still passes.",
+      "_fps_ceiling_note": "5, not home-idle's 3, because a search result set lands ASYNCHRONOUSLY across up to five shelves and — with a second source installed — one fan-out per server, so late poster arrivals waking the gate are likelier here than on a Home grid that has settled once. Graded on the 2nd-highest sample, so one such wake is tolerated and a sustained repaint is not. warmup_s is 8 for the same reason home-idle's is: the screen keeps presenting until the last poster has landed and its reveal spring has settled, and here that is behind a query round trip as well.",
+      "_query_note": "The same literal search-type uses, and the same caveat: change it if your library matches nothing for it. This scene degrades more gently than its twin — with no results the screen shows the 'No results' statement, which settles too, so the ceiling still means something. It just stops proving the thing worth proving, which is that ARRIVING artwork does not leave the screen repainting forever."
+    },
+    {
       "name": "home-library-nav",
       "tier": "ui",
       "route": "home",
