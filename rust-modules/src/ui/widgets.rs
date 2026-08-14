@@ -1830,11 +1830,98 @@ pub(crate) fn tab_count() -> usize {
 pub(crate) fn search_pill() -> usize {
     tab_count() - 1
 }
-/// Is `pill` the Search pill? The ONE test — every pill→section conversion asks this first, so
-/// "the last pill is not a library" lives in one place rather than as a `>= n` comparison repeated
-/// wherever the strip is read.
+/// Is `pill` the Search pill? Kept for a reader that only wants the yes/no — `ui/home.rs`'s
+/// top-band walk test, which asserts the last stop is not a library. Anything turning a pill into a
+/// DESTINATION wants [`pill_at`] instead, which answers the whole question rather than one third of
+/// it and cannot silently open a library for a pill it has never heard of. Derived FROM [`pill_at`]
+/// rather than comparing against [`search_pill`] a second time: one definition of which pill is
+/// Search, whichever way it is asked.
 pub(crate) fn is_search_pill(pill: usize) -> bool {
-    pill == search_pill()
+    matches!(pill_at(pill), Pill::Search)
+}
+
+/// What a strip index MEANS — the tab row's vocabulary, so a reader gets a destination rather than
+/// an integer to do arithmetic on.
+///
+/// Six sites (four in `app.rs`, two in `library.rs`) used to spell the same three-way ladder out
+/// by hand — `if is_search_pill(i) { … } else if let Some(sec) = i.checked_sub(1) { … } else { Home }`
+/// — two of them byte-identical. That shape has one bad property that a name cannot fix: a pill
+/// this ladder has never heard of falls into the `checked_sub(1)` arm and opens a LIBRARY, at a
+/// section index `browse::tab_section` then clamps into range. So the wrong pill quietly browses
+/// the wrong shelf instead of failing. With the decision typed, adding a variant here is a
+/// non-exhaustive `match` at every one of those sites — a compile error, which is the only kind of
+/// reminder that reaches all six.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Pill {
+    /// pill 0 — always present, the strip's one fixed member
+    Home,
+    /// a TAB index into `browse::tabs` (0-based, Home already subtracted), NOT a section index:
+    /// several libraries can share one pill, and `browse::tab_section` is what resolves it
+    Section(usize),
+    /// the last pill (see [`search_pill`])
+    Search,
+}
+
+// The three below are each a one-line wrapper over a PURE half taking the Search pill's index. The
+// split is not ceremony: the pill count is projected from `browse`'s section table, a crate global
+// that several modules' tests read, so a test that SEEDS one to get a `Section` in the middle of
+// the strip perturbs every other test in the binary (it exposed an unrelated flake in
+// `ui::person`'s shelf tests the first time these were written that way). The pure halves need no
+// table, so the ladder is graded over strips this host will never build.
+
+/// Resolve a strip index. The ladder, written ONCE — [`Pill`]'s doc has the argument for why it is
+/// written once here rather than six times at the call sites.
+pub(crate) fn pill_at(i: usize) -> Pill {
+    pill_in(i, search_pill())
+}
+/// [`pill_at`] on a strip whose Search pill is at `search`.
+///
+/// Total, deliberately: an index past the last pill resolves to `Section(i - 1)`, exactly as the
+/// hand-written ladders did, and the section index is then clamped by `browse::tab_section` as it
+/// always was. Nothing can hand one in today (`tab_pill_at` matches drawn rects, and every screen's
+/// own cursor is clamped), so an `Option` here would only add a `None` arm to six `match`es that
+/// could never run.
+fn pill_in(i: usize, search: usize) -> Pill {
+    if i == search {
+        Pill::Search
+    } else if let Some(sec) = i.checked_sub(1) {
+        Pill::Section(sec)
+    } else {
+        Pill::Home
+    }
+}
+
+/// The index a [`Pill`] is drawn at — the inverse of [`pill_at`], for the places that name a
+/// destination and need the strip position it selects (`app.rs`'s `Nav::select_pill`).
+pub(crate) fn pill_of(p: Pill) -> usize {
+    pill_index(p, search_pill())
+}
+/// [`pill_of`] on a strip whose Search pill is at `search`.
+fn pill_index(p: Pill, search: usize) -> usize {
+    match p {
+        Pill::Home => 0,
+        Pill::Section(tab) => tab + 1,
+        Pill::Search => search,
+    }
+}
+
+/// The highest index a SECTION pill can have — the ceiling for a pill index DERIVED from a section
+/// (`library::own_pill`, which walks focus up into the row onto the pill representing the library
+/// being browsed).
+///
+/// It reads "the pill before Search", and that is only correct because Search sits last — a fact
+/// about the strip, not about the caller, so it is written here and not there. The call site used
+/// to spell it `search_pill().saturating_sub(1)`, a positional pun that would silently become "the
+/// pill before whatever ends up last" the day a second non-library pill was added.
+pub(crate) fn last_section_pill() -> usize {
+    last_section_in(search_pill())
+}
+/// [`last_section_pill`] on a strip whose Search pill is at `search`. With NO sections at all the
+/// strip is `Home | Search` and this is the HOME pill: an index past the last pill is a highlight
+/// on nothing, and Home is the one pill that always exists. That is the failed-discovery case,
+/// reachable since a failed source keeps the user on the screen instead of bailing out.
+fn last_section_in(search: usize) -> usize {
+    search.saturating_sub(1)
 }
 /// The Search pill is SQUARE: 60×60, the icon's own air rather than a word's, so a mark does not
 /// wear the padding a label needs (`Search Screen.dc.html`). Every other pill keeps
@@ -2635,6 +2722,46 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── The strip's vocabulary: an index MEANS something ──────────────────────────────────────
+    //
+    // Driven through the pure halves (`pill_in`/`pill_index`/`last_section_in`), so no `browse`
+    // table is seeded and no crate global is read — see the note above them. That is also what
+    // lets these grade strips this host cannot build: one library, and none at all.
+
+    /// The ladder is a BIJECTION over the strip — every drawn index resolves to exactly one
+    /// destination and back — which is what lets [`pill_of`] PLACE the capsule for a destination
+    /// that [`pill_at`] will later resolve a click on. Swept over every strip size the app can
+    /// have, because the arm that matters is the one BETWEEN the ends and a two-pill strip has
+    /// no `Section` in it at all.
+    #[test]
+    fn every_strip_index_round_trips_through_the_typed_pill() {
+        for search in 1..8usize {
+            assert_eq!(pill_in(0, search), Pill::Home, "pill 0 is Home on every strip");
+            assert_eq!(pill_in(search, search), Pill::Search, "the last pill is never a library");
+            for sec in 0..search.saturating_sub(1) {
+                assert_eq!(pill_in(sec + 1, search), Pill::Section(sec), "a TAB index, Home already subtracted");
+            }
+            for i in 0..=search {
+                assert_eq!(pill_index(pill_in(i, search), search), i, "pill {i} of {search} did not round trip");
+            }
+        }
+    }
+
+    /// [`last_section_pill`]'s two answers. The interesting one is the SECOND: a strip with no
+    /// libraries at all (discovery failed, and the user stays on the screen) has no library pill
+    /// for a section-derived index to land on, and the fallback must be a pill that exists.
+    #[test]
+    fn the_section_ceiling_is_the_pill_before_search_and_falls_back_to_home() {
+        for search in 2..8usize {
+            let last = last_section_in(search);
+            assert_eq!(pill_in(last, search), Pill::Section(search - 2), "the last pill that IS a library");
+            assert!(last < search, "…and never Search itself");
+        }
+        // the failed-discovery strip: `Home | Search`, and nothing for a section to clamp onto
+        assert_eq!(last_section_in(1), 0, "with no sections the ceiling is HOME…");
+        assert_eq!(pill_in(last_section_in(1), 1), Pill::Home, "…so the clamp can never land on nothing");
+    }
 
     // ── The poster's state mark: one vocabulary, one mark at a time ───────────────────────────
     //
