@@ -37,17 +37,21 @@
 //! The file is read at most once per **profile generation** ([`crate::plex::session::current_gen`],
 //! bumped by every `set_current`), not once per frame: `count()` is called from the screen's draw.
 //!
-//! **What that generation does and does not buy, because the cache reads as scoping and is not.**
-//! A SIGN-OUT drops the terms: `auth::sign_out` calls `session::clear()` (the file goes) and then
-//! `set_current(None)` (the generation moves), so the next read finds nothing and one account's
-//! terms cannot survive into the next account's session. A Plex Home **profile switch does not**
-//! — it moves the generation, but the re-read hits the same account-scoped file, so every managed
-//! user on the device shares one list and any of them can Clear it. That is a property of the
-//! storage SHAPE (one `Vec<String>` on the `Session`), not of the cache, and it is written down
-//! here rather than left to be discovered: if per-profile recents are wanted, the change is to key
-//! the list by `UserRef::uuid`, not to touch anything in this module. Note `app.rs`'s
-//! `activate_server` comment claims `search::reset()` drops "the recent terms" — it does not, and
-//! cannot: `reset` also runs on a plain SERVER switch, where the terms are still this account's.
+//! **The generation is a cache key; the SCOPING is in the storage shape.** A sign-out drops the
+//! terms because `auth::sign_out` calls `session::clear()` (the file goes) and then
+//! `set_current(None)` (the generation moves), so one account's terms cannot survive into the
+//! next account's session. A Plex Home **profile switch keeps them apart** for a different
+//! reason: `Session::recent_searches` is keyed by the Home user's `uuid`
+//! ([`crate::plex::session::RecentSearches`]), read through `recents_for` and written through
+//! `set_recents_for`, so each managed user has their own list and Clear reaches only their own.
+//!
+//! It was one flat `Vec<String>` on the `Session` until 2026-08-14, which made a search history
+//! the ACCOUNT's rather than the person's — the next user's empty search screen offered back what
+//! the previous one had looked for. Clearing on a switch would also have stopped that and is the
+//! wrong fix: it costs you your own list every time you hand the remote over and take it back.
+//!
+//! `search::reset()` deliberately does NOT drop the terms. It runs on a plain SERVER switch too,
+//! where the terms are still this person's, and the profile case is already answered by the key.
 #![allow(dead_code)]
 
 use crate::ui::label::Label;
@@ -325,6 +329,11 @@ fn draw_block(p: Painter, v: &View, terms: &[String]) {
             );
             p.rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
         }
+        // The whole row box, not the pill: a term is clickable across the band it occupies,
+        // and the pill is only drawn when it is focused. Without this the recents list answered
+        // to the d-pad alone — `mod.rs::hit` scans an array `draw` parks every frame and no
+        // drawer ever filled, so every click missed.
+        super::note_recent_rect(i, Rect::new(BLOCK_X, ry, BLOCK_W, ROW_H));
         let ink = if focused { crate::ui::ACCENT_INK } else { theme::TEXT_PRIMARY };
         let run = crate::text::elide(term, text_w, theme::size::HEADLINE, 1, false);
         let Ok(cs) = CString::new(run) else { continue };
@@ -337,7 +346,11 @@ fn draw_block(p: Painter, v: &View, terms: &[String]) {
     // rows' own text x so it reads as belonging to the block without sitting in their column.
     let by = ROWS_TOP + shown as f32 * ROW_H + CLEAR_GAP;
     let bw = Button::pill_w(CLEAR.as_ptr(), theme::size::BODY, false);
-    Button::new(CLEAR.as_ptr(), theme::size::BODY, Rect::new(TEXT_X, by, bw, super::FIELD.h))
+    let cr = Rect::new(TEXT_X, by, bw, super::FIELD.h);
+    // Clear sits at `MAX_RECENTS`, one past the last term it could ever follow — the index
+    // `mod.rs` reserves for it whatever `shown` turns out to be.
+    super::note_recent_rect(super::MAX_RECENTS, cr);
+    Button::new(CLEAR.as_ptr(), theme::size::BODY, cr)
         .focused(clear_focused(v, shown))
         .draw(&Env::inert(), p);
 }

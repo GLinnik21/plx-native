@@ -690,7 +690,12 @@ fn same_tag(a: &TagHit, b: &TagHit) -> bool {
     if !a.tag_key.is_empty() && !b.tag_key.is_empty() {
         return a.tag_key == b.tag_key;
     }
-    a.sid == b.sid && !a.id.is_empty() && a.id == b.id
+    // The id fallback carries the NAME with it, because a local tag id is not unique within a
+    // server: this module's own fixture has "Wallace Shawn" and "Dee Wallace" both at id 921, in
+    // different sections. On the `tagKey`-less path that bare comparison folded two strangers into
+    // one row — one of them losing their name and both their counts summed — which is worse than
+    // the duplicate it was there to prevent.
+    a.sid == b.sid && !a.id.is_empty() && a.id == b.id && a.name == b.name
 }
 
 /// Which shelf a hub feeds, or `None` for one this screen does not draw (`album`, `artist`,
