@@ -318,7 +318,7 @@ const SHELF_MAX: usize = crate::ui::card_row::MAX_ROW_ITEMS;
 /// not first clamped: [`nsrc`] is the one place that clamping happens, and every array below is
 /// walked through it. If the registry ever grew past this, the cost is a 17th server that is never
 /// searched, not a write off the end of an array.
-const NSRC: usize = 16;
+const NSRC: usize = crate::plex::MAX_SERVERS;
 
 /// Bumped by every query change and every [`reset`]: a landing whose generation no longer matches
 /// is discarded by [`pump`], so a slow answer for `wal` can never repopulate the results for
@@ -401,7 +401,19 @@ fn nsrc() -> usize {
 /// reaching it needs two overlapping real fetches.
 fn land(i: usize, gen: u32, what: Option<Projection>) {
     let mut slot = SLOT[i].lock().unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().map(|m| m.gen < gen).unwrap_or(true) {
+    let beats = match slot.as_ref() {
+        None => true,
+        // A newer generation always wins — the monotone rule this mailbox exists for.
+        Some(m) if m.gen != gen => m.gen < gen,
+        // …but at the SAME generation an ANSWER beats a failure. The in-flight claim bounds spawns
+        // and is not a hard interlock (see `IN_FLIGHT`), so two workers can be out for one source
+        // at one generation; with the loser's `None` arriving first, the real response was dropped
+        // and the source then sat out a ~2 s backoff holding a good answer. `record` already
+        // encodes this preference on the other side of the pump — "a late failure cannot unsay an
+        // answer" — and `land` is what decides which mail survives to be read at all.
+        Some(m) => m.what.is_none() && what.is_some(),
+    };
+    if beats {
         *slot = Some(Mail { gen, what });
     }
 }
@@ -545,11 +557,29 @@ fn merge(sources: &[Source]) -> Vec<Shelf> {
         let mut items: Vec<Item> = Vec::new();
         'fill: for d in 0..deepest {
             for v in &live {
-                if let Some(it) = v.get(d) {
-                    items.push(it.clone());
-                    if items.len() >= SHELF_MAX {
-                        break 'fill;
+                let Some(it) = v.get(d) else { continue };
+                // **The same person on two servers is one person.** `project` folds per RESPONSE,
+                // so it cannot see across sources — and this is the only place both are in hand.
+                // `same_tag`'s doc already claimed the round-robin merge brought them together;
+                // nothing here acted on it, so a shared actor drew twice with a split count.
+                //
+                // `tagKey` is what makes it safe across machines: `same_tag` compares the local id
+                // only within one server, so two servers' id 921 stay two people.
+                if let Item::Tag(t) = it {
+                    if let Some(prev) = items.iter_mut().find_map(|e| match e {
+                        Item::Tag(p) if same_tag(p, t) => Some(p),
+                        _ => None,
+                    }) {
+                        prev.count += t.count;
+                        if prev.thumb.is_empty() {
+                            prev.thumb = t.thumb.clone();
+                        }
+                        continue;
                     }
+                }
+                items.push(it.clone());
+                if items.len() >= SHELF_MAX {
+                    break 'fill;
                 }
             }
         }
@@ -832,6 +862,35 @@ mod tests {
     /// same actor comes back twice with the same identity and each section's own `count` — which
     /// drew the same face twice, and would have reported 5 credits for someone with 8 had the
     /// duplicate simply been dropped. Device-observed before it was fixed.
+    #[test]
+    /// …and the same person on two SERVERS is also one person. `project` folds per response, so it
+    /// cannot see across sources — [`merge`] is the only place both are in hand, and until it did
+    /// this a shared actor drew twice with a split count while `same_tag`'s own doc claimed the
+    /// round-robin brought them together.
+    #[test]
+    fn one_person_on_two_servers_is_one_row_after_the_merge() {
+        let mk = |sid: u16, id: &str, thumb: &str, count: i64| {
+            let mut p: Projection = Default::default();
+            p[3].push(Item::Tag(TagHit {
+                sid: ServerId::from_raw(sid),
+                name: "Wallace Shawn".into(),
+                tag_key: "gid-1".into(),
+                id: id.into(),
+                thumb: thumb.into(),
+                count,
+                ..Default::default()
+            }));
+            Source { status: Status::Answered, items: p }
+        };
+        // Same guid, DIFFERENT local ids (they are server-local) and only one carries a face.
+        let sh = merge(&[mk(0, "921", "", 5), mk(1, "4471", "/t.jpg", 3)]);
+        let people = &sh.iter().find(|s| s.kind == Kind::Person).expect("a Person shelf").items;
+        assert_eq!(people.len(), 1, "one person, not one per server");
+        let Item::Tag(t) = &people[0] else { panic!("a person is a Tag row") };
+        assert_eq!(t.count, 8, "their credits across both servers");
+        assert_eq!(t.thumb, "/t.jpg", "the server with a face supplies it");
+    }
+
     #[test]
     fn a_tag_that_arrives_once_per_library_section_folds_into_one_row_with_the_counts_summed() {
         let mut mc = MediaContainer::default();
