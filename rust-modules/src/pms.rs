@@ -48,6 +48,10 @@ pub struct PmsMovie {
     /// hub, page and person workers, and by the time one of them parses, "the current server" may
     /// already be a different machine than the one whose bytes it is holding.
     pub(crate) sid: ServerId,
+    /// The LIBRARY on `sid` this row came from (`librarySectionID`), 0 when the server sent none.
+    /// The pin's grain: a whole-server `/hubs` answers with rows from every library, so this is the
+    /// only thing that can keep an UNPINNED library's items off Home without a per-library fetch.
+    pub(crate) sec: i64,
     pub(crate) title: String,
     pub(crate) year: c_int,
     pub(crate) rating: String,
@@ -164,7 +168,7 @@ pub(crate) fn urlenc_str(src: &str) -> String {
 /// server can change while a page fetch is in flight, and the rows in hand belong to the machine
 /// that was asked, not to whichever one is current when they finish parsing.
 pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
-    let mut m = PmsMovie { sid, ..Default::default() };
+    let mut m = PmsMovie { sid, sec: it.library_section_id, ..Default::default() };
     m.kind = match it.kind.as_str() {
         "show" => 1,
         "season" => 2,
@@ -553,6 +557,7 @@ fn allot(budget: usize, want: &[usize]) -> Vec<usize> {
 /// the other half of the same rule — a transient failure must not blank a populated Home, and a
 /// source that is really gone leaves the ROSTER, which is what drops its shelves.
 fn merge(srcs: &[Src]) -> HubBuild {
+    let pins = library_pins_by_server();
     let live: Vec<(&str, &SourceBuild)> =
         srcs.iter().filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b))).collect();
 
@@ -566,8 +571,11 @@ fn merge(srcs: &[Src]) -> HubBuild {
     let mut row_handle: Vec<&str> = Vec::new();
 
     // ---- 1. the merged deck ----
-    let mut cw: Vec<(&str, &CwItem)> =
-        live.iter().flat_map(|(h, b)| b.cw.iter().map(move |c| (*h, c))).collect();
+    let mut cw: Vec<(&str, &CwItem)> = live
+        .iter()
+        .flat_map(|(h, b)| b.cw.iter().map(move |c| (*h, c)))
+        .filter(|(_, c)| item_pinned(&pins, &c.m))
+        .collect();
     // stable: equal timestamps keep source order, so the owned server wins a tie
     cw.sort_by(|a, b| b.1.last_viewed_at.cmp(&a.1.last_viewed_at));
     cw.truncate(MAX_SHELF_ITEMS);
@@ -597,7 +605,10 @@ fn merge(srcs: &[Src]) -> HubBuild {
         let mut rows_left = rows_for[i];
         for sh in b.shelves.iter().take(shelves_for[i]) {
             let start = new_cat.len();
-            for m in sh.items.iter().take(rows_left.min(MAX_SHELF_ITEMS)) {
+            // Filtered BEFORE the take, so an unpinned library cannot spend a pinned one's row
+            // budget — and a shelf left with nothing contributes no `HubRow` below, which is how an
+            // unpinned library's whole shelf disappears rather than becoming an empty heading.
+            for m in sh.items.iter().filter(|m| item_pinned(&pins, m)).take(rows_left.min(MAX_SHELF_ITEMS)) {
                 new_cat.push(m.clone());
                 row_handle.push(handle);
             }
@@ -818,6 +829,36 @@ fn servers_with_known_sections() -> Vec<ServerId> {
         }
     }
     out
+}
+
+/// The pin table as `(server, section key, pinned)` — `browse`'s rows with their source index
+/// resolved to a registry slot, which is the form [`item_pinned`] can join an item against.
+fn library_pins_by_server() -> Vec<(ServerId, i64, bool)> {
+    let srcs = crate::browse::sources();
+    crate::browse::library_pins()
+        .into_iter()
+        .filter_map(|(si, key, pinned)| srcs.get(si).map(|s| (s.sid, key, pinned)))
+        .collect()
+}
+
+/// May this row appear on Home? **Per LIBRARY, which is the grain the switch offers.**
+///
+/// `/hubs` is a whole-SERVER request and answers with rows from every library on that server, so
+/// without this the finest gate available was "does this server feed Home at all" — and unpinning
+/// one library of a two-library server changed nothing at all on screen. Owner-reported.
+///
+/// Unknown is ALLOWED, in both directions: a row whose server sent no `librarySectionID`, and a
+/// library the section table has not enumerated yet, both pass. The pin is a decision about
+/// libraries we know about, and the alternative — hiding what we cannot classify — empties Home on
+/// the frame it boots, which is the same mistake [`feeds_home`] documents one level up.
+fn item_pinned(pins: &[(ServerId, i64, bool)], m: &PmsMovie) -> bool {
+    if m.sec == 0 {
+        return true; // the server said nothing about this row's library
+    }
+    match pins.iter().find(|(sid, key, _)| *sid == m.sid && *key == m.sec) {
+        Some((_, _, pinned)) => *pinned,
+        None => true, // not enumerated yet
+    }
 }
 
 /// The servers whose libraries are pinned to Home, as registry slots. Separated from [`feeds_home`]
@@ -1675,6 +1716,36 @@ mod tests {
         assert_eq!(hub_count(), 0, "both un-rostered sources' shelves are gone");
         assert!(lock_srcs().is_empty());
         reset();
+    }
+
+    /// **The pin's grain is a LIBRARY, and `/hubs` is a whole-SERVER request.** So the server-level
+    /// gate cannot be the only one: unpinning one library of a two-library server left every one of
+    /// its items on Home, which is what the owner hit ("I disabled local server lib from home but
+    /// it persisted"). Each row carries its own `librarySectionID`, and that is the join.
+    ///
+    /// Unknown passes in both directions — a row whose server sent no id, and a library the section
+    /// table has not enumerated — because hiding what cannot be classified empties Home on the
+    /// frame it boots.
+    #[test]
+    fn an_unpinned_library_keeps_its_items_off_home_even_when_its_server_feeds_it() {
+        let (a, b) = (sid(0), sid(1));
+        // server A has two libraries: 1 pinned, 2 NOT. Server B has one, pinned.
+        let pins = vec![(a, 1, true), (a, 2, false), (b, 1, true)];
+        let row = |s: ServerId, sec: i64| PmsMovie { sid: s, sec, ..Default::default() };
+
+        assert!(item_pinned(&pins, &row(a, 1)), "a pinned library of a server that feeds Home");
+        assert!(!item_pinned(&pins, &row(a, 2)), "…and its UNPINNED sibling, on the same server");
+        assert!(item_pinned(&pins, &row(b, 1)));
+
+        // the same section KEY on another server is a different library — both servers number from 1
+        let pins2 = vec![(a, 1, false), (b, 1, true)];
+        assert!(!item_pinned(&pins2, &row(a, 1)));
+        assert!(item_pinned(&pins2, &row(b, 1)), "keys collide across servers; the pair does not");
+
+        // unknown passes, both ways
+        assert!(item_pinned(&pins, &row(a, 0)), "the server sent no librarySectionID");
+        assert!(item_pinned(&pins, &row(a, 9)), "a library the section table has not enumerated");
+        assert!(item_pinned(&[], &row(a, 1)), "nothing discovered yet");
     }
 
     /// **The pin store is the seam, and "no pinned library" only means something for a server whose

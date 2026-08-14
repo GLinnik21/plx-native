@@ -298,10 +298,19 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
         .collect()
 }
 
-/// The rows as the panel would build them right now: the store, marked against the CURRENT server
-/// and the item the store was filled for.
+/// The rows as the panel would build them right now: the store, marked against **the server the
+/// open PAGE belongs to** and the item the store was filled for.
+///
+/// The page's server, not `plex::current_server()`. Those were the same thing only while browsing a
+/// shared library also re-pointed `current`; once that stopped, opening a borrowed film left
+/// `current` on our own server, no copy matched the pair, and the panel drew **no tick at all** —
+/// owner-reported. The tick answers "which of these am I looking at", and only the page knows.
 fn live_rows() -> Vec<AltRow> {
-    rows(copies(), crate::plex::current_server(), unsafe { (*addr_of!(FOR_RK)).as_str() })
+    let sid = crate::metadata::current()
+        .map(|d| d.sid)
+        .filter(|s| s.is_set())
+        .unwrap_or_else(crate::plex::current_server);
+    rows(copies(), sid, unsafe { (*addr_of!(FOR_RK)).as_str() })
 }
 
 // ---- the panel -------------------------------------------------------------------------------

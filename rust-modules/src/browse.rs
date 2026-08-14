@@ -827,6 +827,16 @@ pub(crate) fn pinned_libraries() -> Vec<(usize, usize)> {
     sections().iter().enumerate().filter(|(_, s)| s.pinned).map(|(i, s)| (s.src, i)).collect()
 }
 
+/// Every KNOWN library as `(source index, section key, pinned)` — the same table one row wider.
+///
+/// The section KEY is what an item carries (`librarySectionID`), so this is the join Home needs to
+/// honour a per-library pin: `/hubs` is a whole-SERVER request and answers with rows from every
+/// library on it, pinned or not. Without the key the finest gate available is "does this server
+/// feed Home at all", which is why unpinning one library of a two-library server changed nothing.
+pub(crate) fn library_pins() -> Vec<(usize, i64, bool)> {
+    sections().iter().map(|s| (s.src, s.key, s.pinned)).collect()
+}
+
 // ---- the Sources list's data, projected ------------------------------------------------------
 //
 // Two plain owned types rather than borrows of the statics, for one reason worth stating: the
