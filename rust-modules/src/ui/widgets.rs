@@ -42,16 +42,16 @@ pub(crate) fn resolve_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png:
     crate::posters::poster_get(srv, tex_key(srv, path, w, h, png).as_ptr() as *const c_char)
 }
 
-/// [`resolve_tex`] plus the DECODED pixel size of the texture — `(0, 0.0, 0.0)` until it is ready.
-/// For art that must be FIT or COVERED into its frame rather than stretched to it
+/// [`resolve_tex_on`] plus the DECODED pixel size of the texture — `(0, 0.0, 0.0)` until it is
+/// ready. For art that must be FIT or COVERED into its frame rather than stretched to it
 /// ([`Rect::cover`](crate::ui::Rect::cover)). The size is the store's own answer about the slot it
-/// just probed for the texture, so this is the SAME single lookup [`resolve_tex`] does — knowing the
-/// source aspect is free, and a screen never pays a second lock + key scan for it.
-pub(crate) fn resolve_tex_wh(path: &str, w: c_int, h: c_int, png: c_int) -> (u32, f32, f32) {
-    resolve_tex_wh_on(crate::plex::current_server(), path, w, h, png)
-}
-
-/// [`resolve_tex_wh`] for art belonging to a NAMED server.
+/// just probed for the texture, so this is the SAME single lookup [`resolve_tex_on`] does — knowing
+/// the source aspect is free, and a screen never pays a second lock + key scan for it.
+///
+/// **There is deliberately no current-server twin of this or of [`warm_tex_on`].** Both had one and
+/// neither had a caller: every user is a hero backdrop or a prefetch of one, and a hero is exactly
+/// the art that belongs to an ITEM rather than to the screen. A bare form would be the shorter name
+/// autocomplete offers for the case where getting it wrong is a blank billboard.
 pub(crate) fn resolve_tex_wh_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> (u32, f32, f32) {
     if path.is_empty() {
         return (0, 0.0, 0.0);
@@ -61,16 +61,11 @@ pub(crate) fn resolve_tex_wh_on(srv: ServerId, path: &str, w: c_int, h: c_int, p
     (tex, pw as f32, ph as f32)
 }
 
-/// The prefetch twin of [`resolve_tex`]: build the same transcode key and hand it to
+/// The prefetch twin of [`resolve_tex_on`]: build the same transcode key and hand it to
 /// [`posters::poster_warm`](crate::posters::poster_warm) — start the fetch, take no texture, take no
 /// LRU protection. Same arguments on purpose, so a screen warms EXACTLY the key it will later
 /// resolve; a warm at a different size — or on a different server — is a different slot and buys
 /// nothing.
-pub(crate) fn warm_tex(path: &str, w: c_int, h: c_int, png: c_int) -> crate::posters::Warm {
-    warm_tex_on(crate::plex::current_server(), path, w, h, png)
-}
-
-/// [`warm_tex`] for art belonging to a NAMED server.
 pub(crate) fn warm_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> crate::posters::Warm {
     if path.is_empty() {
         return crate::posters::Warm::Known;
