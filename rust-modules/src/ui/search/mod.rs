@@ -23,10 +23,15 @@
 //! ## The layout rule that explains the numbers
 //!
 //! With the keyboard raised, **nothing the app owns hides behind it**. The TV puts the panel over
-//! the bottom ~380px, and the field, the first shelf's heading and that shelf's full row of
-//! posters are sized to land exactly on its top edge ([`CONTENT_TOP`] + [`HEAD_TO_ROW`] + a
-//! 375-tall poster = 699). That is also why nothing scrolls while it is up: the result set has to
-//! be stable under the user's eyes while they are still typing.
+//! the bottom [`KEYBOARD_H`], so its top edge is at 700, and the field, the first shelf's heading
+//! and that shelf's full row of posters all finish above it: [`CONTENT_TOP`] 248 + [`HEAD_TO_ROW`]
+//! 60 + a 375-tall poster = **683**, seventeen clear. (This paragraph said 699 — "exactly on its
+//! top edge" — which is the number `CONTENT_TOP` = 264 would give, not the 248 the constant is and
+//! not what any of them draws. A stated equality nobody can reproduce is worse than the slack,
+//! because the next person tuning either constant balances against a figure that was never true;
+//! `a_poster_shelf_stacks_at_the_apps_own_row_pitch` now asserts the real one.) That clearance is
+//! also why nothing scrolls while the panel is up: the result set has to be stable under the
+//! user's eyes while they are still typing.
 //!
 //! ## The ▼ handoff, which is the rule the whole state machine exists for
 //!
@@ -181,6 +186,14 @@ pub(crate) fn clear_index() -> usize {
     recents::count().min(MAX_RECENTS)
 }
 
+/// Is there a query the SERVER was actually asked about? [`crate::search::MIN_QUERY`], **not**
+/// "non-empty" — below that the store stays `Idle` and sends nothing, so counting one typed
+/// character as a live search would swap the recents list for a never-searched statement for
+/// exactly one keystroke, and swap it back on a backspace. A flicker at the start of every search.
+fn has_query() -> bool {
+    crate::search::query().trim().chars().count() >= crate::search::MIN_QUERY
+}
+
 /// [`below`]'s rule over nothing but the three facts it reads. Pure for the reason
 /// `library::readout_of` is: it is the decision this screen turns on, and neither store behind it
 /// can be seeded from a host — the recents list is the session file's and the shelves are a live
@@ -201,17 +214,22 @@ fn below_of(has_query: bool, n_recents: usize, n_shelves: usize) -> Below {
 
 /// What is drawn under the field right now — the ▼ handoff and the draw dispatch, once.
 pub(crate) fn below() -> Below {
-    below_of(
-        !crate::search::query().trim().is_empty(),
-        recents::count(),
-        crate::search::shelves().len(),
-    )
+    below_of(has_query(), recents::count(), crate::search::shelves().len())
 }
 
 /// A shelf's whole block: its heading band, its row of tiles, and the caption pair reserved under
 /// them. There is no gap term because the reserved band IS the air — a poster shelf comes out at
 /// `HEAD_TO_ROW + 375 + LABEL_BLOCK` = 549, which is `consts::ROW_PITCH` exactly, so a search shelf
 /// and a home shelf stack at the same rhythm.
+///
+/// **[`LABEL_BLOCK`] must stay at least `card_row::TileLabel::height` for whatever `RowStyle`
+/// [`results`] draws with** — that function is `ui/CLAUDE.md`'s named single authority on the band,
+/// and the flow here is what has to reserve it. At `title_lines: 1` it is 92, so the 114 declared
+/// here holds it with 22 to spare (the same 22 home's `ROW_PITCH` carries). At `title_lines: 2` it
+/// is **122 and this constant is 8 short** — and two lines is what `ui/CLAUDE.md` says a shelf of
+/// real Plex titles needs. The one-line case is asserted below; the two-line case is a cross-file
+/// decision (`LABEL_BLOCK` is shared with [`results`]) and belongs to whoever raises `title_lines`,
+/// who must raise this with it rather than discovering the overlap on a panel.
 fn block_h(kind: crate::search::Kind) -> f32 {
     HEAD_TO_ROW + results::tile_size(kind).1 + LABEL_BLOCK
 }
@@ -374,17 +392,18 @@ fn clamp_focus() {
                         *addr_of_mut!(ROW) = r;
                         *addr_of_mut!(COL) = c;
                     }
-                    None => {
-                        *addr_of_mut!(ZONE) = Zone::Field;
-                        *addr_of_mut!(ROW) = 0;
-                        *addr_of_mut!(COL) = 0;
-                    }
+                    // The zone goes, the CURSOR stays — the same answer `move_focus`'s own `None`
+                    // arm gives, and the module doc's "the column is remembered" promise. Zeroing
+                    // it here (which this did) meant every keystroke, which wipes the store
+                    // synchronously, silently threw the column away before the answer came back.
+                    // Nothing downstream needs it seated: `focused_item` and `scroll_target` both
+                    // bounds-check, and ▼ re-seats through `seat`.
+                    None => *addr_of_mut!(ZONE) = Zone::Field,
                 }
             }
             Zone::Recents => {
                 if below() != Below::Recents {
                     *addr_of_mut!(ZONE) = Zone::Field;
-                    *addr_of_mut!(RECENT) = 0;
                     return;
                 }
                 *addr_of_mut!(RECENT) = addr_of!(RECENT).read().min(clear_index());
@@ -421,7 +440,9 @@ pub(crate) fn draw() {
     }
     // Unconditional on a live query, exactly as before the dispatch above was folded into `below`:
     // with no shelves it draws nothing, and the in-flight read-out is the region's own to decide.
-    if !crate::search::query().trim().is_empty() {
+    // The SAME `has_query` the dispatch used, so a sub-`MIN_QUERY` string cannot put this region on
+    // screen for a request that was never sent.
+    if has_query() {
         results::draw(p, &v);
     }
 
@@ -431,8 +452,13 @@ pub(crate) fn draw() {
 
 /// Record the rect a recent-term row (or, at [`MAX_RECENTS`], the Clear control) was DRAWN at.
 /// Called by [`recents`] from its draw; see [`RECENT_R`].
+///
+/// An index past the Clear control is DROPPED, never clamped onto it: the store is documented to
+/// hold more terms than the screen has room for, so a drawer that looped the whole list would
+/// otherwise stamp a term's rect over Clear's slot — and hovering that term would then park the
+/// cursor on the control that wipes the list.
 pub(crate) fn note_recent_rect(i: usize, r: Rect) {
-    if let Some(slot) = unsafe { (*addr_of_mut!(RECENT_R)).get_mut(i.min(MAX_RECENTS)) } {
+    if let Some(slot) = unsafe { (*addr_of_mut!(RECENT_R)).get_mut(i) } {
         *slot = r;
     }
 }
@@ -447,8 +473,14 @@ pub(crate) fn note_tile_rect(row: usize, col: usize, r: Rect) {
 
 /// Is focus on something a press would OPEN (as opposed to a control that toggles or a field)?
 /// `app.rs`'s press machinery asks this to decide whether OK is a tvOS click.
+///
+/// Asked of [`open_focused`] itself rather than of "is there an item here", so it cannot come to
+/// disagree with what OK will actually do. That distinction is not academic on this screen: a
+/// COLLECTION tile is an item and opens nothing (see [`open_focused`]), so the cheaper test would
+/// arm a press that dips the card, bounces it and commits nothing — precisely the affordance
+/// `library::focus_is_card` exists to refuse.
 pub(crate) fn focus_is_card() -> bool {
-    zone() == Zone::Results && focused_item().is_some()
+    zone() == Zone::Results && matches!(open_focused(), Action::Open(_))
 }
 
 fn focused_item() -> Option<(crate::search::Kind, &'static crate::search::Item)> {
@@ -691,49 +723,98 @@ pub(crate) fn focused_pill() -> c_int {
 
 // ---- input: pointer ----------------------------------------------------------------------------
 
-/// Hover moves focus, `library.rs`'s discipline: every hit is against a rect that was RECORDED at
-/// draw (or is a constant, for the field), so what the pointer addresses and what the eye sees are
-/// the same rect rather than two derivations that agree by luck.
-pub(crate) fn pointer_focus(mx: f32, my: f32) {
+/// What the pointer is over. `None` is BLANK GROUND, and the distinction is the whole reason this
+/// is a function rather than two scans: a miss must never activate anything.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hit {
+    Pill(usize),
+    Field,
+    Recent(usize),
+    Tile(usize, usize),
+}
+
+/// The one hit test, shared by hover and click. Every rect here was RECORDED at draw (or is a
+/// constant, for the field), `library.rs`'s discipline: what the pointer addresses and what the eye
+/// sees are the same rect rather than two derivations that agree by luck.
+///
+/// Every scan tests `w > 0.5` first. A parked rect is off-panel, but a recorded one can legitimately
+/// be zero-SIZE (a culled or fully clipped tile), and `Rect::contains` is inclusive — so a zero rect
+/// is clickable at exactly its corner. `library::STATUS_BTN`'s lesson, applied to both lists rather
+/// than only to the one it was first noticed on.
+fn hit(mx: f32, my: f32) -> Option<Hit> {
+    if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
+        return Some(Hit::Pill(i.min(strip_last())));
+    }
+    if FIELD.contains(mx, my) {
+        return Some(Hit::Field);
+    }
+    match below() {
+        Below::Recents => {
+            let rects = unsafe { addr_of!(RECENT_R).read() };
+            rects.iter().position(|r| r.w > 0.5 && r.contains(mx, my)).map(Hit::Recent)
+        }
+        Below::Results => unsafe { addr_of!(TILE_R).as_ref() }
+            .and_then(|v| v.iter().find(|(_, _, q)| q.w > 0.5 && q.contains(mx, my)))
+            .map(|&(r, c, _)| Hit::Tile(r, c)),
+        Below::Nothing => None,
+    }
+}
+
+/// Move focus onto what the pointer found.
+///
+/// Leaving the FIELD goes through [`leave_field`], exactly as the remote does. Assigning `ZONE`
+/// directly (which this did) left `EDITING` true underneath another zone, and a true `EDITING`
+/// freezes the shelf scroll unconditionally — so ▼ walked focus off the bottom of the panel with
+/// nothing moving, the very "screen the remote has silently stopped addressing" the module doc
+/// says this state machine exists to prevent. It also skipped the term's only commit point.
+fn focus(h: Hit) {
+    let to = match h {
+        Hit::Pill(_) => Zone::Strip,
+        Hit::Field => Zone::Field,
+        Hit::Recent(_) => Zone::Recents,
+        Hit::Tile(..) => Zone::Results,
+    };
     unsafe {
-        if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
-            *addr_of_mut!(ZONE) = Zone::Strip;
-            *addr_of_mut!(STRIP) = i.min(strip_last());
-            return;
+        if to != Zone::Field && zone() == Zone::Field {
+            leave_field(to);
+        } else {
+            *addr_of_mut!(ZONE) = to;
         }
-        if FIELD.contains(mx, my) {
-            // Hover focuses the field; it does NOT raise the keyboard. Opening the panel on a
-            // mouse move would cover the very results the pointer was travelling toward.
-            *addr_of_mut!(ZONE) = Zone::Field;
-            return;
-        }
-        if below() == Below::Recents {
-            let rects = addr_of!(RECENT_R).read();
-            if let Some(i) = rects.iter().position(|r| r.w > 0.5 && r.contains(mx, my)) {
-                *addr_of_mut!(ZONE) = Zone::Recents;
-                // The Clear control records itself at MAX_RECENTS whatever the list length; the
-                // cursor addresses it at `clear_index`.
-                *addr_of_mut!(RECENT) = if i >= MAX_RECENTS { clear_index() } else { i.min(clear_index()) };
-            }
-            return;
-        }
-        if below() == Below::Results {
-            if let Some(&(r, c, _)) = (*addr_of!(TILE_R)).iter().find(|(_, _, q)| q.contains(mx, my)) {
-                *addr_of_mut!(ZONE) = Zone::Results;
+        match h {
+            Hit::Pill(i) => *addr_of_mut!(STRIP) = i,
+            Hit::Field => {}
+            // The Clear control records itself at MAX_RECENTS whatever the list length; the cursor
+            // addresses it at `clear_index`.
+            Hit::Recent(i) => *addr_of_mut!(RECENT) = if i >= MAX_RECENTS { clear_index() } else { i.min(clear_index()) },
+            Hit::Tile(r, c) => {
                 *addr_of_mut!(ROW) = r;
                 *addr_of_mut!(COL) = c;
             }
         }
     }
+    crate::ui::idle::invalidate();
+}
+
+/// Hover moves focus — and only onto something the pointer is actually over.
+pub(crate) fn pointer_focus(mx: f32, my: f32) {
+    if let Some(h) = hit(mx, my) {
+        focus(h);
+    }
 }
 
 /// Pointer click — the same activation map as OK, after the hover has moved focus onto what was
 /// clicked (`library::click`'s shape).
+///
+/// **A click on blank ground is a MISS, never an activation.** Falling through to [`on_ok`] on a
+/// miss (which this did) activates whatever happens to hold focus: a stray click on the page
+/// background with the cursor resting on Clear wiped the user's recent searches, and with it on a
+/// result tile opened that page.
 pub(crate) fn click(mx: f32, my: f32) -> Action {
-    pointer_focus(mx, my);
+    let Some(h) = hit(mx, my) else { return Action::None };
+    focus(h);
     // A click on the field is the one place the pointer and the remote differ: OK on a focused
     // field toggles editing, but a click IS the request to type, so it only ever raises the panel.
-    if FIELD.contains(mx, my) {
+    if h == Hit::Field {
         if !editing() {
             start_editing();
         }
@@ -894,8 +975,11 @@ mod tests {
         }
         clamp_focus();
         assert_eq!(zone(), Zone::Field, "with no shelves drawn, Results is not a zone focus may sit in");
-        assert_eq!(view().row, 0);
-        assert_eq!(view().col, 0);
+        // …and the CURSOR survives, the same answer `move_focus`'s own fall-back gives. Zeroing it
+        // here threw the column away on every keystroke, since `set_query` wipes the store
+        // synchronously — so the "the column is remembered" promise held for a d-pad ▲ and not for
+        // the far more common case of typing one more letter.
+        assert_eq!((view().row, view().col), (3, 11), "the zone goes, the cursor stays");
 
         // The same rule one zone over: the recents cursor cannot outlive the list.
         unsafe {
@@ -904,7 +988,69 @@ mod tests {
         }
         clamp_focus();
         assert_eq!(zone(), Zone::Field, "an empty recents list draws nothing, so it holds no focus either");
-        assert_eq!(view().recent, 0);
+        crate::search::reset();
+    }
+
+    /// A click on blank ground is a MISS. It used to fall through to `on_ok`, which activates
+    /// whatever holds focus — so a stray click on the page background with the cursor resting on
+    /// the Clear control wiped the user's recent searches.
+    #[test]
+    fn a_click_on_blank_ground_activates_nothing() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        // Nothing is drawn below the field and no rect has been recorded, so every point off the
+        // field is blank ground.
+        let blank = (960.0, 900.0);
+        assert_eq!(hit(blank.0, blank.1), None);
+        unsafe { *addr_of_mut!(ZONE) = Zone::Recents };
+        assert!(matches!(click(blank.0, blank.1), Action::None));
+        assert_eq!(zone(), Zone::Recents, "a miss must not move focus either");
+
+        // The field is a constant rect, so it hits without any region having drawn.
+        assert_eq!(hit(FIELD.cx(), FIELD.cy()), Some(Hit::Field));
+        assert!(matches!(click(FIELD.cx(), FIELD.cy()), Action::None));
+        assert_eq!(zone(), Zone::Field);
+        assert!(editing(), "a click on the field IS the request to type");
+        unsafe { *addr_of_mut!(EDITING) = false };
+        crate::textinput::stop();
+        crate::search::reset();
+    }
+
+    /// A parked or zero-size recorded rect must not be hittable. `Rect::contains` is inclusive, so
+    /// a zero rect is clickable at exactly its corner — `library::STATUS_BTN`'s lesson.
+    #[test]
+    fn a_parked_or_zero_size_rect_is_not_hittable() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        assert!(!PARKED.contains(0.0, 0.0), "the park is off-panel, not a zero rect at the origin");
+        // A recorded tile that got culled to nothing still sits in the list; it must not answer.
+        unsafe {
+            (*addr_of_mut!(TILE_R)).clear();
+            (*addr_of_mut!(TILE_R)).push((0, 0, Rect::new(400.0, 400.0, 0.0, 0.0)));
+        }
+        assert_eq!(hit(400.0, 400.0), None, "a zero-size tile is not a target");
+        unsafe { (*addr_of_mut!(TILE_R)).clear() };
+        crate::search::reset();
+    }
+
+    /// One typed character is not a search: the store sends nothing below `MIN_QUERY`, so the
+    /// recents list must stay up rather than flicker out and back on a backspace.
+    #[test]
+    fn a_query_below_the_stores_own_threshold_is_not_a_query() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        crate::search::set_query("w");
+        assert!(!has_query(), "one character never reaches the server — `search::MIN_QUERY` is 2");
+        // …and the store agrees, which is the point: it went Idle rather than Searching, so no
+        // request exists for an empty-results statement to be about.
+        assert!(matches!(crate::search::state(), crate::search::State::Idle));
+        assert_eq!(below_of(has_query(), 3, 0), Below::Recents, "so the remembered terms stay on screen");
+        crate::search::set_query("wa");
+        assert!(has_query());
+        assert_eq!(below_of(has_query(), 3, 0), Below::Nothing, "now it IS a search, and an empty answer says so");
         crate::search::reset();
     }
 
@@ -970,6 +1116,65 @@ mod tests {
         assert_eq!(at(Zone::Results, false, 9), 0.0);
     }
 
+    /// The scroll spring owes `ui::idle` **both halves** — `ui/CLAUDE.md`: "it reports while running
+    /// AND goes quiet at rest", because the two failures are opposite and each is invisible to the
+    /// other's gate. An over-reporting animator costs the whole idle saving while every fps floor
+    /// still passes.
+    ///
+    /// **It restores `ui::idle`'s clock before it returns**, and that is not politeness. The gate's
+    /// `LAST_PRESENT` is a process-global that `testlock::serial()` orders but does not clean, and
+    /// `pms.rs`'s repaint test asserts `should_present(0)` at an ABSOLUTE now of 0 — so a timeline
+    /// left parked in the ten-thousands makes `0.wrapping_sub(LAST_PRESENT)` enormous, trips the 2 s
+    /// keepalive, and fails an assertion in a module this one never touches. The first version of
+    /// this test did exactly that, and the failure surfaced two tests further on as a corrupted pms
+    /// catalog (the panic ran while the lock was held, so the seeded statics never got their
+    /// `reset()`), which is about as far from its cause as a test failure can land.
+    #[test]
+    fn the_scroll_spring_reports_while_it_runs_and_goes_quiet_at_rest() {
+        use crate::ui::idle;
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        idle::set_enabled(true);
+        const DT: f32 = 1.0 / 60.0;
+        // One frame whose verdict is DISCARDED, because `should_present` is what clears the
+        // discrete flag and `reset` above raised one. Without it this grades the mount, not the
+        // spring.
+        let mut settle = |now: u32| {
+            idle::frame_begin(DT);
+            update(DT);
+            let asked = idle::should_present(now);
+            idle::note_present(now);
+            asked
+        };
+        settle(10_000);
+
+        // A settled screen: the spring is on target, so a frame that only steps it must not ask.
+        assert!(!settle(10_016), "a Search screen with nothing moving must stop repainting");
+        assert!(!settle(10_032), "…and stays quiet frame after frame");
+
+        // …and one in flight: shove the spring off its target and it must ask for as long as it is
+        // visibly travelling.
+        unsafe { *addr_of_mut!(SCROLL) = Spring { pos: 400.0, vel: 0.0 } };
+        assert!(settle(10_048), "a scrolling shelf must keep the panel awake");
+
+        // …and settles on its own rather than ringing forever.
+        let mut t = 10_064;
+        let mut frames = 0;
+        while settle(t) && frames < 600 {
+            t += 16;
+            frames += 1;
+        }
+        assert!(frames < 600, "the scroll must arrive, not ring forever");
+        assert!(view().shift.abs() < 0.25, "with focus off the shelves the flow rests at zero");
+
+        // Put the gate's clock back where a fresh process has it — see the doc above.
+        idle::note_present(0);
+        idle::should_present(0);
+        idle::take_presents();
+        crate::search::reset();
+    }
+
     /// The block ladder the tops above are built from, so a tile-size change cannot silently
     /// re-space the flow: a poster shelf must stack at `consts::ROW_PITCH`, the app's one shelf
     /// rhythm, and the two odd tile sizes must fall out of the same expression.
@@ -981,9 +1186,19 @@ mod tests {
         assert_eq!(block_h(Kind::Collection), crate::ui::consts::ROW_PITCH);
         assert_eq!(block_h(Kind::Episode), HEAD_TO_ROW + 236.0 + LABEL_BLOCK);
         assert_eq!(block_h(Kind::Person), HEAD_TO_ROW + 250.0 + LABEL_BLOCK);
-        // The layout promise the module doc makes: with the keyboard up, the first shelf's posters
-        // finish above the panel's top edge.
-        assert!(CONTENT_TOP + HEAD_TO_ROW + crate::ui::consts::CARD_H <= SCR_H - KEYBOARD_H);
+
+        // The layout promise the module doc makes, as the ACTUAL numbers rather than the 699 the
+        // doc used to claim: the first shelf's posters end at 683 against a panel edge of 700.
+        let first_row_bottom = CONTENT_TOP + HEAD_TO_ROW + crate::ui::consts::CARD_H;
+        assert_eq!(first_row_bottom, 683.0);
+        assert_eq!(SCR_H - KEYBOARD_H, 700.0);
+        assert!(first_row_bottom <= SCR_H - KEYBOARD_H, "with the keyboard up, nothing we own hides behind it");
+
+        // `LABEL_BLOCK` is the band `results.rs` will draw a `TileLabel` into, and `ui/CLAUDE.md`
+        // names `TileLabel::height` the ONE authority on how tall that is. Reserving less than it
+        // returns runs the caption into the next shelf's heading.
+        let one_line = crate::ui::card_row::TileLabel::height(&crate::ui::card_row::RowStyle::HOME, true);
+        assert!(LABEL_BLOCK >= one_line, "the reserved band ({LABEL_BLOCK}) must hold a one-line captioned label ({one_line})");
     }
 
     // ---- typing ---------------------------------------------------------------------------------
