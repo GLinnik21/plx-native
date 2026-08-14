@@ -497,9 +497,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         }
         let host_s = std::ffi::CStr::from_ptr(pms_host).to_string_lossy().into_owned();
 
-        // Install the PMS client (singleton — the read layer AND the playback path), then fetch
-        // the catalog. Used by the boot gate and again when a login resolves; host/port fix on
-        // first install, a later call just swaps the token (profile switch).
         // Everything that has to happen when the server `plex::client()` answers with CHANGES —
         // whether because a new identity signed in or because the user walked into another source.
         // EVERY store below is keyed to whichever server was current when it was filled, and none
@@ -520,8 +517,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let nsec = crate::browse::ensure_sections();
             log(&format!("pms: nmovies={nmov} nsections={nsec}"));
         };
+        // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
+        // then fetch the catalog. Used by the boot gate and again when a login resolves; a later
+        // call for the same address just swaps the token (profile switch).
         let install_pms = |host: &str, port: c_int, token: &str| {
             crate::plex::install(host, port, token); // a (re)install is a login / profile switch
+            // Every additional server this boot was handed credentials for joins the REGISTRY
+            // beside it — the granted roster `browse` addresses its section table by. Registration
+            // is not activation: `install` above has already made the session's own server current,
+            // and `register` deliberately does not steal that, so a share appears as a source to
+            // browse rather than as a server the app has switched to.
+            //
+            // AFTER `install`, so slot 0 is always the session's own server and the roster reads in
+            // the order the Sources list wants to draw it. Registering here (rather than at the boot
+            // gate) also means a profile switch re-registers them, which is what keeps a share in
+            // the roster across a switch — and it must precede `activate_server`, whose refetch is
+            // what turns a newly registered source into shelves and section tabs.
+            for s in crate::dev::servers().unwrap_or_default().iter().filter(|s| s.usable()) {
+                let id = crate::plex::register(&s.machine_id, &s.host, s.port as c_int, &s.token);
+                // the roster's own answer about this server: a handle means someone else's.
+                crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
+            }
             activate_server();
         };
 
@@ -2889,15 +2905,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     set_fr(0);
                 }
                 // dev: /tmp/plxnative-library[=N] boots straight into the Library browse grid on
-                // section N (empty file = 0) — the deterministic entry for the library FPS scenes.
+                // TAB PILL N (empty file = 0) — the deterministic entry for the library FPS scenes.
+                //
+                // N is a PILL, not a section index, and the two stopped being the same thing when
+                // the strip became one pill per TYPE (`browse::tab_section`). With one source they
+                // are still the identity map, which is every install this trigger has ever booted;
+                // with a friend's server granted, the pills are your own libraries plus any type
+                // only they have, so `library=1` is the second PILL rather than the second row of
+                // the table.
                 if let Some(s) = crate::dev::read("library") {
-                    let sec = s.parse::<usize>().unwrap_or(0);
+                    let tab = s.parse::<usize>().unwrap_or(0);
                     // A HARD CUT, deliberately: a transition means "this screen replaced that one",
                     // and at boot there is no outgoing screen to replace. The fade-in that IS wanted
                     // here belongs to the screen (`enter`'s own `xf().mount()`); dipping the whole
                     // page would fade the tab bar up from nothing too, which reads as a slow app
                     // rather than a navigated one.
-                    crate::ui::library::enter(sec, crate::ui::library::Arrival::Cut);
+                    crate::ui::library::enter(tab, crate::ui::library::Arrival::Cut);
                     route = Route::Library;
                 }
                 // dev: /tmp/plxnative-heroidx=<n> jumps the rotating hero to pool index n (flip capture)

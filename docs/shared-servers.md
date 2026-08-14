@@ -443,7 +443,65 @@ could not see the bug:
   are pinned to the same `Location` vocabulary. An unknown link is asserted to restrict **nothing** —
   that is the case every play takes today, so a wrong answer there would be wrong for everybody.
 
-**Next**, in order: threading `ServerId` through the stored structs (step 2, the mechanical diff),
-then the probe RACE and `activate_best` (step 4's second half), which is the first change any of
-this will let a user see. Until then the registry holds one server because nobody registers a
-second one.
+## 10. The section table goes multi-server, and gets its Source chip (deliverable A)
+
+Step 1's registry now has its first real consumer, and deliverable A of the design is drawn.
+
+- **The section table addresses (SOURCE, section).** `BrowseSection` carries the source its row came
+  from, and `BrowseSource` is the granted roster projected out of `plex::server_ids()` — the §3 table's
+  verified collision (both servers have a section `1`) is what the address closes. Every fetch goes
+  through `client_for(sid)` **captured at the spawn site**; nothing reads `client()` inside a worker.
+- **It grows by APPEND, never by rebuild**, and that is the whole soundness argument. A page landing
+  is blamed on a section INDEX, so a table that reshuffled under an in-flight fetch would splice one
+  library's items into another's store. `ensure_sections`'s early-return used to be the only thing
+  preventing that; appending replaces it and holds for every source, not only for the second call.
+  Two generations now, each with a crisp job: `SECTIONS_GEN` (shape — bumped by an append, what the
+  label caches key on) and `EPOCH` (identity — bumped by `reset` alone, what index-blamed landings
+  gate on, so one source's append cannot discard another's answer).
+- **Only the CURRENT server is discovered on the main thread**, which is the §5 step-8 hazard closed:
+  `ensure_sections` runs at boot and on every Library entry, so fanning out there would park the SDL
+  loop for one `connect(2)` per unreachable share. Every other source is discovered by a worker off
+  `pump` — sections, then the server's own `friendlyName`, then a `size=0` count probe per library —
+  with a 10 s per-source backoff. A dead share arrives as `reachable: false` and costs nothing.
+- **Pinning** is the design's one control and governs Home only: your own libraries start pinned, a
+  friend's start unpinned, and the last pinned one cannot be turned off. `pinned_libraries()` is its
+  read side, waiting for deliverable C.
+- **The tab strip is deliberately unchanged** (deliverable B, "no new drawing"): `browse::tab_*`
+  projects the table to one pill per TYPE — your own sections, plus any type only a friend has — so
+  the strip is a constant width at one friend or at ten, and the selection capsule for a borrowed
+  library rests on its type's pill. With one source it is the identity map.
+- **The Source chip and its two-level panel** are `ui/library.rs`; the row model is pure and
+  host-tested. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
+  (declared but never painted before) and `Section::dim`.
+- **The roster's own facts** (machine name, owner handle, owned) live beside the registry as
+  `plex::ServerFacts`, merged rather than replaced so plex.tv and a server naming itself over `GET /`
+  can land in either order. `/tmp/plxnative-servers` gained a `handle` field, and `run.py` fills it
+  from the resource's `sourceTitle`, so a two-source run is gradeable headlessly.
+
+- **Picking a library on another server MOVES the app's current server** (`browse::set_cur` →
+  `activate_source_of`), which is §5's named *cheap variant* — one active server at a time — and it
+  is here because without it the Sources list is a trap. `PmsMovie` carries no `ServerId`, so a
+  borrowed card's poster is fetched from `client()` and its ratingKey is resolved through `client()`;
+  ratingKeys are server-local, so OK on a friend's card would quietly open, and PLAY, a different
+  title of yours with the same number. Moving `current` makes all of them agree. What it costs is
+  stated rather than hidden: Home's catalog belongs to the server it came from, so it is dropped and
+  re-armed (`pms::reset`; `pms::pump` refetches asynchronously), the person page's shelves with it,
+  and `route`'s cached `machineIdentifier` is forgotten so the next PlayQueue names the right
+  machine. The poster memo needs no help — it compares a token generation and two servers never
+  share one.
+
+**Still open, and what retires that seam:** threading `ServerId` through `PmsMovie` and the other
+stored structs (§5 step 2) and moving the ~30 call sites onto `client_for` (step 3). Until then Home
+is single-source, which is also why deliverable C's merged shelves are not drawn.
+
+**Not verified on device.** The host suite is 431 and `make` (ARM, dev and RELEASE) links, but every
+screen described above is drawn by a television nobody had while this landed. The PR carries the
+recipe.
+
+**Next.** The line that stood here said step 2 (`ServerId` through the stored structs) was the next
+mechanical diff, and that "the registry holds one server because nobody registers a second one".
+Both halves are now out of date: step 2 landed, so an item is a `(ServerId, key)` pair everywhere
+one is stored, and `install_pms` registers every granted server at boot, so the registry routinely
+holds more than one. What remains is the probe RACE and `activate_best` (step 4's second half) —
+addresses are ranked and identity-verified today, but still dialled in sequence rather than
+concurrently.
