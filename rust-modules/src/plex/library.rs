@@ -37,12 +37,28 @@ impl Client {
     /// Verified live against both of this household's servers, 2026-08-14: `size=0` for a film only
     /// ours holds, `size=1` for one both hold — returning the SHARE's own `ratingKey` and its own
     /// localized title for the same guid.
+    /// **`type` is what makes the answer carry `Media[]`**, and without it the row has no quality to
+    /// show. Measured against this server 2026-08-14, same guid three ways:
+    ///
+    /// ```text
+    /// ?guid=…               size 1, no Media
+    /// ?guid=…&includeMedia=1 size 1, no Media   (not the knob it looks like)
+    /// ?guid=…&type=1        size 1, Media[0] = 4k 3840x2160
+    /// ```
+    ///
+    /// The type comes off the guid itself (`plex://movie/…`), which is the only place it is known
+    /// without another round trip — and a guid whose kind we do not recognise sends no `type` at
+    /// all rather than guessing 1, because a wrong type answers `size 0` and would read as "that
+    /// server does not have it".
     pub fn find_by_guid(&self, guid: &str) -> Option<MediaContainer> {
         if guid.is_empty() {
             return None;
         }
-        let path = QueryBuilder::new("/library/all".to_string()).str("guid", guid).build();
-        self.get_json(&path)
+        let mut q = QueryBuilder::new("/library/all".to_string()).str("guid", guid);
+        if let Some(t) = guid_type(guid) {
+            q = q.int("type", t);
+        }
+        self.get_json(&q.build())
     }
 
     /// GET /library/sections/{section_key}/all → `.metadata[]`
@@ -193,5 +209,43 @@ impl Client {
         let q = QueryBuilder::new(part_key).str("X-Plex-Session-Identifier", session);
         let path = self.playback_identity(q).build();
         StreamUrl { host: self.host.clone(), port: self.port, path: self.with_token(&path) }
+    }
+}
+
+/// PMS's numeric `type` for a `plex://<kind>/<id>` guid — the metadata provider's own kind, which is
+/// the one thing about an item a guid states outright.
+///
+/// `None` for a kind this app has no number for, and the caller then omits the parameter: a WRONG
+/// type answers `size 0`, which is indistinguishable from "that server does not hold this item" and
+/// would quietly drop a real copy out of "Also available".
+fn guid_type(guid: &str) -> Option<i64> {
+    let kind = guid.strip_prefix("plex://")?.split('/').next()?;
+    match kind {
+        "movie" => Some(1),
+        "show" => Some(2),
+        "season" => Some(3),
+        "episode" => Some(4),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guid_type;
+
+    /// The numbers are PMS's, and the mapping is the only thing standing between "Also available"
+    /// showing a quality badge and showing none — `type` is what makes `/library/all?guid=…` return
+    /// `Media[]` at all (see `find_by_guid`).
+    #[test]
+    fn a_guid_states_its_own_kind_and_an_unknown_kind_sends_no_type() {
+        assert_eq!(guid_type("plex://movie/6856893830a4aaafd5c4291d"), Some(1));
+        assert_eq!(guid_type("plex://show/5d9c081b170e05001f303f9e"), Some(2));
+        assert_eq!(guid_type("plex://season/abc"), Some(3));
+        assert_eq!(guid_type("plex://episode/abc"), Some(4));
+        // an agent guid from before the plex:// scheme, and a kind with no level here: no type
+        // rather than a guess
+        assert_eq!(guid_type("com.plexapp.agents.imdb://tt0083658?lang=en"), None);
+        assert_eq!(guid_type("plex://artist/abc"), None);
+        assert_eq!(guid_type(""), None);
     }
 }
