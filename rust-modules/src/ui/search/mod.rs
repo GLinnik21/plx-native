@@ -392,6 +392,10 @@ pub(crate) fn update(dt: f32) {
     // Typed text FIRST: a commit this frame changes the query, `set_query` wipes the shelves under
     // it synchronously, and the clamp below is what has to see that.
     pump_text();
+    // The roster's LIBRARY names, for the scope line beside the field. Only the Library screen runs
+    // the full `browse::pump`, so a boot straight into this one knew it had two sources and could
+    // not name either of them.
+    crate::browse::discover_pump();
     crate::search::pump(dt);
     clamp_focus();
     unsafe { (*addr_of_mut!(SCROLL)).step(scroll_target(), K_SCROLL, dt) };

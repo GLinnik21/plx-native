@@ -1451,6 +1451,22 @@ fn land_discovery() {
 // ---- pump: mailbox apply + next-fetch scheduling (main thread, once a frame) ----------------
 
 /// Returns true when new items just landed (the grid re-clamps focus on it).
+/// The ROSTER half of [`pump`], and nothing else: adopt newly registered servers, land a
+/// discovery, schedule the next one. No paging, no menu fetches — so a screen that needs to know
+/// what libraries exist can say so without pulling a grid's worth of items it will never draw.
+///
+/// It exists because the section table is only populated by [`pump`], which runs from the Library
+/// screen alone. A boot straight into Search therefore knew the roster ("2 sources") and not one
+/// library NAME, and the scope line beside the field — whose whole job is naming them — fell back
+/// to "a shared server" forever. Cheap and idempotent: the same single-flight and per-source
+/// backoff [`pump`] relies on, so calling it every frame from a second screen costs one comparison
+/// once the answers are in.
+pub(crate) fn discover_pump() {
+    sync_roster();
+    land_discovery();
+    maybe_discover();
+}
+
 pub(crate) fn pump() -> bool {
     let mut changed = false;
     unsafe {
