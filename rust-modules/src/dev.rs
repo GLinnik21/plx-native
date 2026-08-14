@@ -54,7 +54,7 @@ const DIAG: [&str; 9] = [
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
 #[cfg(feature = "devtriggers")]
 pub(crate) fn flag(name: &str) -> bool {
-    std::path::Path::new(&path(name)).exists()
+    path(name).exists()
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn flag(_name: &str) -> bool {
@@ -198,7 +198,7 @@ pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
 /// screen from a squatted file — after every named read had been compiled out.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn any_trigger_present() -> bool {
-    std::fs::read_dir("/tmp")
+    std::fs::read_dir(crate::paths::runtime_dir())
         .ok()
         .map(|rd| {
             rd.filter_map(|e| e.ok()).any(|e| {
@@ -217,9 +217,11 @@ pub(crate) fn any_trigger_present() -> bool {
 /// call sites gating a whole subsystem (the capture listener, the remote FIFO) rather than a read.
 pub(crate) const ENABLED: bool = cfg!(feature = "devtriggers");
 
+/// The trigger's absolute path. `/tmp/plxnative-<name>` on the television; see
+/// [`crate::paths::runtime_dir`] for why a host build may put the whole namespace elsewhere.
 #[cfg(feature = "devtriggers")]
-fn path(name: &str) -> String {
-    format!("/tmp/plxnative-{name}")
+fn path(name: &str) -> std::path::PathBuf {
+    crate::paths::in_runtime_dir(&format!("plxnative-{name}"))
 }
 
 #[cfg(test)]
@@ -241,12 +243,13 @@ mod tests {
         if !super::ENABLED {
             return; // a release build reads nothing; nothing to distinguish
         }
-        // `/tmp` by literal, NOT `env::temp_dir()`: on the dev Mac that is `$TMPDIR`, a per-user
-        // `/var/folders/…/T/` path, while `path()` always builds `/tmp/plxnative-…` — so the write
-        // and the read never met and this failed on the host for a reason having nothing to do
-        // with the property under test.
-        let p = std::path::Path::new("/tmp/plxnative-devtest-empty");
-        std::fs::write(p, "").unwrap();
+        // Write through `path()` itself, NOT a literal and NOT `env::temp_dir()`. The literal was
+        // right when the namespace was always `/tmp/plxnative-…`, but it stops meeting the read as
+        // soon as an instance root is in effect; `env::temp_dir()` never met it at all, since on
+        // the dev Mac that is a per-user `/var/folders/…/T/` path. Going through the same door the
+        // code under test uses keeps the write and the read together wherever the root points.
+        let p = super::path("devtest-empty");
+        std::fs::write(&p, "").unwrap();
         let got = super::read("devtest-empty");
         let _ = std::fs::remove_file(p);
         assert_eq!(got.as_deref(), Some(""), "an empty trigger must not read as absent");

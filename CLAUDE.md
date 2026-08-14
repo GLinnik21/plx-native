@@ -420,8 +420,25 @@ you get without waking a television. What it covers today, by module:
   whole test in anything new that touches a crate global, and reach for `testlock` (not a fresh
   local mutex) whenever the global is shared across modules.
 
-**Tier 2 — the device, which is still the real gate.** There is no host *runtime*: nothing above
-draws a pixel, decodes a frame, or talks to Starfish/ACB, so playback and UI correctness are only
+**Tier 1.5 — the desktop simulator (`make sim`), which DOES draw pixels on the host.** This tier
+did not exist before 2026-08-14, and the line below used to read "there is no host *runtime*" flatly
+— that is now wrong for the UI half and right for everything else. `plxnative-sim` is the same app
+core built with `--features hostsim` and linked against desktop SDL2 + desktop GL 4.1 core: it
+renders the real interface against a real PMS, boots to a screen with the same `plxnative-*`
+triggers, is driven by the same remote-FIFO tokens, and screenshots itself. **The
+`ui-sim` skill is the loop.** It exists because the TV is a mutex — one set, one app instance, two
+harness jobs kill each other — while N simulators run side by side, each pointed at its own
+instance root (`PLXNATIVE_RUNTIME_DIR`, which is where the triggers, FIFO and event log now come
+from; unset it and everything resolves to `/tmp` exactly as before). It answers layout, focus,
+navigation, every screen, and the whole Plex data layer. It CANNOT answer frame rate (different
+GPU — every simulator heartbeat carries **`sim=1`** so a pasted log cannot be mistaken for a
+device measurement), text rasterization, or anything about video (the 29-symbol Starfish/ACB seam
+is absent; `player::ffi`'s host arm reports the seam's own "no video path" failure, so Play lands
+on the real failure read-out). Two bugs it has already found in DEVICE code: the glyph upload
+ignored `SDL_Surface::pitch` (`text.rs`), and `dev`/`remote`/`log` all hardcoded `/tmp`.
+
+**Tier 2 — the device, which is still the real gate.** Nothing on the host decodes a frame or talks
+to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
 fails as "no line found", which reads exactly like a total regression. The **`tv-session` skill** is
 the bring-up/observe/drive loop; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new

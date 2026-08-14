@@ -15,7 +15,18 @@
 use crate::task::MainThread;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 
+/// The `hostsim` stand-in: the same 25 verbs, every one reporting the seam's own "no video path"
+/// failure. See `ffi_host.rs` for why it fails rather than no-ops successfully.
+///
+/// This `#[cfg]` and its partner below are the ONLY platform gate in the playback stack — the
+/// wrappers underneath are shared verbatim, so nothing in `engine`/`pump`/`threads` branches on
+/// which platform it is running on.
+#[cfg(feature = "hostsim")]
+#[path = "ffi_host.rs"]
+mod sys;
+
 /// The declarations themselves — private ON PURPOSE. See the module doc.
+#[cfg(not(feature = "hostsim"))]
 mod sys {
     use std::os::raw::{c_char, c_int, c_long, c_uint};
 
