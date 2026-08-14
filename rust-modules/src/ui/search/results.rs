@@ -30,20 +30,30 @@
 //! ## Five things that are not obvious from the picture
 //!
 //! **1. The flow is authored; the lift is paint.** A shelf's block is `HEAD_TO_ROW` + the tile +
-//! [`super::LABEL_BLOCK`], and [`stack_top`] stacks them for the DRAW.
+//! [`super::LABEL_BLOCK`], and [`stack_top`] stacks them — the ONE vertical geometry this screen
+//! has. The draw reads it and so does the scroll rule ([`reveal_shelf`], which `super`'s
+//! `scroll_target` is now a single line over); the pointer reads rects RECORDED at draw, which is
+//! the same geometry observed rather than a second derivation of it.
 //!
-//! It claimed to be "the ONE place… the draw, the reveal rule and the pointer hit-test all call
-//! it, so they cannot drift", and that was never true of the shipped screen: `super`'s state
-//! machine carries its own `block_h`/`shelf_top`/`content_h` and its own scroll policy, and the
-//! pointer reads rects recorded at draw. So the two halves of this screen's geometry ARE two
-//! copies, they already disagree by [`BOTTOM_PAD`], and each has its own green test. That is
-//! recorded here rather than asserted away — the fix is to give one of them the job, not to
-//! restate the invariant.
+//! It claimed that before and it was false: `super` carried its own `block_h`/`shelf_top`/
+//! `content_h` and its own scroll policy, disagreeing by [`BOTTOM_PAD`], each half green under its
+//! own test. **The policy that survived is the minimal reveal below, not the pin** the mock spells
+//! as `shift() = min(blockTop − CONTENT_TOP, max)`. Three reasons, in order of weight. Every other
+//! vertical shelf flow in this app is [`card_row::reveal`] — `home.rs`'s grid, `person.rs`'s
+//! `reveal_block`, the Library grid — so pinning would make Search the one screen that jumps. The
+//! pin's stated justification in `super` ("nothing clips the flow") went stale the day [`draw`]
+//! gained a real scissor: a shelf above the focused one is now CUT at the field, where before it
+//! would have painted up through the chrome. And the shipped pin was not the mock's anyway — the
+//! mock clamps to `end − SCR_H + 40`, and that 40 is [`BOTTOM_PAD`], which `super::content_h`
+//! omitted, so the last shelf's caption band sat flush on the panel edge with no air under it.
 //!
-//! The focused shelf's
-//! heading *rises* over its magnified tile, and that rise is `CardRow::lift()`: the shared
-//! clearance rule, `tile height × (focus_scale − 1) ÷ 2` (16.9px on a poster row — the design's
-//! 17), tapered by how near the popped tile is to the heading. It moves nothing below it.
+//! What a user sees for it: stepping from shelf 0 to shelf 1 moves the page 306px instead of 549,
+//! so the row above stays half on screen rather than leaving entirely, and the bottom of the flow
+//! keeps 40px under the last caption.
+//!
+//! The focused shelf's heading *rises* over its magnified tile, and that rise is `CardRow::lift()`:
+//! the shared clearance rule, `tile height × (focus_scale − 1) ÷ 2` (16.9px on a poster row — the
+//! design's 17), tapered by how near the popped tile is to the heading. It moves nothing below it.
 //!
 //! **2. The owner annotation is a FADE with its swap at the floor.** A heading here cannot claim an
 //! owner, so the run follows focus — and focus can step straight from one borrowed source to
@@ -61,21 +71,31 @@
 //! and refills them when the answer lands, so a row whose item COUNT changed is re-seated rather
 //! than left holding the scroll offset of a different query's results.
 //!
-//! **5. The springs are advanced from the DRAW, and that costs one extra rule.** Every other
-//! screen steps its motion in an `update(dt)`, and so would this one, but a region's whole contract
-//! is `draw(Painter, &View)` — the state machine hands its regions a [`View`] and no dt.
-//! [`update`] exists for the day `super::update` wants to hand one over and TAKES PRECEDENCE
-//! whenever it is called; until then [`draw`] advances from its own monotonic clock.
+//! **5. The springs are stepped from [`update`], which `super::update` calls once a frame** — the
+//! ordinary shape, and the reason this module owes the frame gate no clock of its own. Both spring
+//! integrators report to `ui::idle::note_spring` from the inside, and the update phase runs before
+//! `should_present`, so the shelves' motion is seen for free.
 //!
-//! The rule that buys: **`note_spring` cannot speak for a spring stepped in a draw.** `app.rs`
-//! runs `idle::frame_begin` → the update phase → `should_present` → the draw, and `frame_begin`
-//! clears the motion flag at the top of the next iteration — so a report raised during frame N's
-//! draw is wiped before anything reads it, the gate sees a still screen, and the animation creeps
-//! forward one clamped step per 2 s keepalive. [`advance_from_clock`] therefore reports the
-//! DISCRETE way, `ui::idle::invalidate`, which is a sticky flag `should_present` takes and clears
-//! — the same door `Spinner::draw` uses for the same reason. It is gated on an exact motion test
-//! ([`motion_sig`]) rather than raised unconditionally, or this screen would never settle.
-#![allow(dead_code)]
+//! Worth spelling out because it was not always so. A region's whole contract is
+//! `draw(Painter, &View)` — no dt — so this module used to advance from its own monotonic clock
+//! inside [`draw`], and then had to report the DISCRETE way (`ui::idle::invalidate`) against an
+//! exact per-row motion signature, because **`note_spring` cannot speak for a spring stepped in a
+//! draw**: `app.rs` runs `idle::frame_begin` → update → `should_present` → draw, and `frame_begin`
+//! clears the motion flag at the top of the next iteration, so a report raised during frame N's
+//! draw is wiped before anything reads it. All of it existed only because the one-line caller did
+//! not, and all of it is gone with the caller in place.
+//!
+//! [`step_owner`]'s `invalidate` is the one report that stays, and for a different reason: the
+//! adopt frame changes the run's WORDS with the spring at rest on the floor, and no integrator can
+//! speak for a change that carries no motion.
+//!
+//! ## Why there is no `#![allow(dead_code)]` here any more
+//!
+//! There was one, on this file and on `super`, and it is what let ~130 lines of rival flow —
+//! geometry, scroll rule, hit-test, all of it tested and green — sit here with no caller anywhere
+//! in the crate while `super` ran its own copy. Nothing but the compiler was ever going to notice
+//! that. Do not put a blanket back to quiet a seam that is still being built: give the seam a
+//! caller, or say in its doc that it has none and why.
 
 use crate::search::{Item, Kind, Shelf};
 use crate::ui::card_row::{self, CardRow, RowStyle, TileLabel};
@@ -120,7 +140,7 @@ const STILL_RES: (c_int, c_int) = (640, 360);
 const HEAD_RES: (c_int, c_int) = (300, 300);
 
 /// Tile size for a shelf of this kind: `(w, h, circular)`.
-pub(crate) fn tile_size(kind: Kind) -> (f32, f32, bool) {
+fn tile_size(kind: Kind) -> (f32, f32, bool) {
     match kind {
         Kind::Episode => (420.0, 236.0, false),
         Kind::Person => (250.0, 250.0, true),
@@ -141,10 +161,20 @@ fn style(kind: Kind) -> RowStyle {
     RowStyle { w, h, circular, ..RowStyle::HOME }
 }
 
-// ---- geometry (pure: the draw, the reveal rule and the hit-test all read these) -----------------
+// ---- geometry (pure: the draw and the reveal rule both read these) ------------------------------
 
 /// The vertical extent shelf `i` occupies in the flow: its heading, the row, and the caption band
-/// reserved under it whether or not a caption is drawn.
+/// reserved under it whether or not a caption is drawn. There is no gap term because the reserved
+/// band IS the air — a poster shelf comes out at `HEAD_TO_ROW + 375 + LABEL_BLOCK` = 549, which is
+/// `consts::ROW_PITCH` exactly, so a search shelf and a home shelf stack at the same rhythm (the
+/// test below asserts that equality rather than restating the number).
+///
+/// **[`super::LABEL_BLOCK`] must stay at least [`card_row::TileLabel::height`] for the [`style`]
+/// this module draws with** — that function is `ui/CLAUDE.md`'s named single authority on the band,
+/// and this expression is what has to reserve it. At `title_lines: 1` it is 92, so the 114 declared
+/// there holds it with 22 to spare (the same 22 home's `ROW_PITCH` carries); at 2 it is **122 and
+/// the constant is 8 short**, which is the cross-file cost of raising `title_lines` and is graded
+/// by `the_reserved_caption_band_holds_the_block_the_shared_component_draws` below.
 fn block_h(kind: Kind) -> f32 {
     HEAD_TO_ROW + tile_size(kind).1 + LABEL_BLOCK
 }
@@ -154,9 +184,9 @@ fn block_h(kind: Kind) -> f32 {
 /// [`super::LABEL_BLOCK`] already carries the air under a row (the caption block itself is 92 of
 /// its 114).
 ///
-/// Pure, and kept so deliberately: it is the layer the host suite can drive, and the impure
-/// wrappers below are one line each on top of it. (`person.rs`'s `reveal_block` splits for exactly
-/// this reason.)
+/// Pure, and kept so deliberately: it is the layer the host suite can drive, and [`reveal_shelf`]
+/// — the only impure thing built on it — is one line on top. (`person.rs`'s `reveal_block` splits
+/// for exactly this reason.)
 fn stack_top(kinds: &[Kind], i: usize) -> f32 {
     CONTENT_TOP + kinds[..i.min(kinds.len())].iter().map(|&k| block_h(k)).sum::<f32>()
 }
@@ -170,14 +200,16 @@ fn stack_content_h(kinds: &[Kind]) -> f32 {
 }
 
 /// The MINIMAL vertical scroll that reveals shelf `i` — the shared [`card_row::reveal`] rule the
-/// shelves, the person page and the Library grid use, not a lift-to-margin pin: a block scrolls
-/// only as far as its own extent needs, and not at all when it already fits.
+/// home grid, the person page and the Library grid use, not a lift-to-margin pin: a block scrolls
+/// only as far as its own extent needs, and not at all when it already fits. The module doc's
+/// point 1 has why this is the rule that won and what it costs the mock.
 ///
-/// **Zero while the keyboard is up.** The result set has to be stable under the user's eyes while
-/// they are still typing, and the layout is sized so the first shelf's whole row lands on the
-/// keyboard's top edge with no scroll at all (`super`'s layout note, and a test below).
-fn reveal_of(cur: f32, kinds: &[Kind], i: usize, editing: bool) -> f32 {
-    if editing || i >= kinds.len() {
+/// It answers for the flow alone. **When the flow is frozen** — the keyboard is up, or the shelves
+/// do not hold focus — the answer is not 0 from here but never asked for: `super::scroll_frozen` is
+/// the one place either freeze is stated, because both are facts about the state machine's ZONE and
+/// not about geometry.
+fn reveal_of(cur: f32, kinds: &[Kind], i: usize) -> f32 {
+    if i >= kinds.len() {
         return 0.0;
     }
     let top = stack_top(kinds, i);
@@ -190,9 +222,9 @@ fn reveal_of(cur: f32, kinds: &[Kind], i: usize, editing: bool) -> f32 {
 /// The kinds on screen, in flow order, and how many — the store's own order, which is already
 /// [`crate::search::KINDS`] with the empty types omitted.
 ///
-/// A fixed array rather than a `Vec`: this is asked once per frame by the draw and once per pointer
-/// motion by the hit-test, and a five-element heap allocation on either path is one the draw does
-/// not need. (`person.rs::present` is the same shape for the same reason.)
+/// A fixed array rather than a `Vec`: this is asked twice a frame — once by [`draw`] and once by
+/// [`reveal_shelf`] out of `super::update` — and a five-element heap allocation on the draw path is
+/// one it does not need. (`person.rs::present` is the same shape for the same reason.)
 fn present() -> ([Kind; NSHELF], usize) {
     let mut v = [Kind::Movie; NSHELF];
     let mut n = 0;
@@ -203,28 +235,11 @@ fn present() -> ([Kind; NSHELF], usize) {
     (v, n)
 }
 
-/// [`stack_top`] against whatever the store is holding — what the state machine's scroll and any
-/// other caller wants.
-pub(crate) fn shelf_top(i: usize) -> f32 {
+/// [`reveal_of`] against the store — the value `View::shift` springs toward, and the ONLY geometry
+/// this module hands out. `super` owns the flow's freezes and nothing else about its shape.
+pub(crate) fn reveal_shelf(cur: f32, i: usize) -> f32 {
     let (k, n) = present();
-    stack_top(&k[..n], i)
-}
-
-/// Flow y of shelf `i`'s tile ROW top.
-pub(crate) fn row_top(i: usize) -> f32 {
-    shelf_top(i) + HEAD_TO_ROW
-}
-
-/// [`stack_content_h`] against the store.
-pub(crate) fn content_h() -> f32 {
-    let (k, n) = present();
-    stack_content_h(&k[..n])
-}
-
-/// [`reveal_of`] against the store — the value `View::shift` should be springing toward.
-pub(crate) fn reveal_shelf(cur: f32, i: usize, editing: bool) -> f32 {
-    let (k, n) = present();
-    reveal_of(cur, &k[..n], i, editing)
+    reveal_of(cur, &k[..n], i)
 }
 
 // ---- screen state ------------------------------------------------------------------------------
@@ -265,7 +280,7 @@ struct Shelves {
     /// What each `count_c` was baked FOR: the kind and the item count together, never the count
     /// alone. A shelf POSITION is not a kind — a query whose Movies hub comes back empty puts Cast
     /// & Crew at index 0 — so a bare count leaves "Cast & Crew  5 results" on screen the moment the
-    /// two answers happen to be the same size. It is also the re-seat key (see [`advance`]).
+    /// two answers happen to be the same size. It is also the re-seat key (see [`update`]).
     count_key: [Option<(Kind, usize)>; NSHELF],
     /// The shelf TITLES, NUL-terminated once for the life of the app: they are `&'static str` in
     /// the store and would otherwise be a `CString::new` per shelf per frame. Indexed by the kind's
@@ -273,11 +288,6 @@ struct Shelves {
     /// every shelf below it. (`person.rs` writes its two as `c""` literals; these live in the store
     /// as the headings, and one copy is better than two that can drift.)
     title_c: [CString; NSHELF],
-    /// Last frame's [`motion_sig`], per row plus the annotation.
-    sig: [f32; NSHELF + 1],
-    /// Frame clock for [`advance_from_clock`], and the latch that says [`update`] beat it to it.
-    last: Option<std::time::Instant>,
-    stepped: bool,
 }
 
 impl Shelves {
@@ -288,9 +298,6 @@ impl Shelves {
             count_c: std::array::from_fn(|_| CString::default()),
             count_key: [None; NSHELF],
             title_c: std::array::from_fn(|i| CString::new(crate::search::KINDS[i].title()).unwrap_or_default()),
-            sig: [0.0; NSHELF + 1],
-            last: None,
-            stepped: false,
         }
     }
     /// This kind's baked heading run.
@@ -317,7 +324,7 @@ fn focus_col(v: &View, i: usize, n: usize) -> Option<usize> {
 }
 
 /// The item holding focus, or None when nothing in the shelves does.
-pub(crate) fn focused_item(v: &View) -> Option<&'static Item> {
+fn focused_item(v: &View) -> Option<&'static Item> {
     let s = crate::search::shelves().get(v.row)?;
     focus_col(v, v.row, s.items.len()).and_then(|c| s.items.get(c))
 }
@@ -346,66 +353,10 @@ fn dev_source() -> &'static str {
 
 // ---- update ------------------------------------------------------------------------------------
 
-/// Step the shelves. `super::update` may call this; if it does not, [`draw`] advances from its own
-/// clock instead (module doc, point 5) — whichever runs, the springs step exactly once a frame.
+/// Step the shelves — one call from `super::update`, in the update phase, so both spring
+/// integrators' own `note_spring` reports reach the frame gate before it decides (module doc,
+/// point 5).
 pub(crate) fn update(dt: f32, v: &View) {
-    advance(dt, v);
-    state().stepped = true;
-}
-
-/// The fallback: wall time since the last advance, clamped to something a spring can integrate. A
-/// long stall — a fetch, a route change, the app backgrounded — must not reach the integrator as
-/// one enormous step.
-///
-/// It also carries this path's own report to the frame gate; module doc point 5 has the whole
-/// reason, and the short version is that `note_spring` is already too late by the time a draw
-/// raises it. The test is EXACT rather than a settle timer — [`motion_sig`] against last frame's —
-/// which is what lets a settled screen stop repainting at all.
-fn advance_from_clock(v: &View) {
-    let now = std::time::Instant::now();
-    let dt = state().last.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(0.0);
-    state().last = Some(now);
-    advance(dt.clamp(0.0, 0.1), v);
-
-    let mut sig = [0.0f32; NSHELF + 1];
-    motion_sig(v, &mut sig);
-    let st = state();
-    if sig.iter().zip(st.sig.iter()).any(|(a, b)| (a - b).abs() > SIG_EPS) {
-        crate::ui::idle::invalidate();
-    }
-    st.sig = sig;
-}
-
-/// Everything on screen that a spring moves, summed PER ROW (plus the annotation as the last
-/// entry) so two rows settling in opposite directions cannot cancel each other into stillness.
-///
-/// The overflow cell is added by hand: a row longer than `CardRow`'s spring array shares one
-/// spring past it, which only the FOCUSED index reads, so walking `0..MAX_ROW_ITEMS` alone would
-/// miss the pop of a tile 30 slots into a long shelf.
-fn motion_sig(v: &View, out: &mut [f32; NSHELF + 1]) {
-    let shelves = crate::search::shelves();
-    let st = state();
-    for (i, slot) in out.iter_mut().enumerate().take(NSHELF) {
-        let row = &st.rows[i];
-        let n = shelves.get(i).map(|s| s.items.len()).unwrap_or(0);
-        let mut s = row.scroll_x() + row.lift();
-        for c in 0..n.min(card_row::MAX_ROW_ITEMS) {
-            s += row.scale(c);
-        }
-        if let Some(fc) = focus_col(v, i, n).filter(|&c| c >= card_row::MAX_ROW_ITEMS) {
-            s += row.scale(fc);
-        }
-        *slot = s;
-    }
-    out[NSHELF] = st.owner.a.pos;
-}
-
-/// The visibility floor for [`motion_sig`]: the signature is in PIXELS for the scroll and the lift
-/// and in scale units for the pops, and a thousandth of either is a third of a pixel on a 375-tall
-/// tile — under the quarter-pixel cap `ui::idle` judges its own springs by.
-const SIG_EPS: f32 = 1e-3;
-
-fn advance(dt: f32, v: &View) {
     let shelves = crate::search::shelves();
     let handle = owner_handle(v);
     let st = state();
@@ -464,9 +415,6 @@ const OWNER_FLOOR: f32 = 0.02;
 // ---- draw --------------------------------------------------------------------------------------
 
 pub(crate) fn draw(p: Painter, v: &View) {
-    if !std::mem::replace(&mut state().stepped, false) {
-        advance_from_clock(v);
-    }
     let shelves = crate::search::shelves();
     if shelves.is_empty() {
         return;
@@ -532,10 +480,15 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
         },
         |k| TileLabel::titled(s.items[k].title(), &subtitle(s.kind, &s.items[k], handle)),
         // Record what was DRAWN, in screen space, so the pointer can reach it. Without this
-        // `TILE_R` stayed empty and every result on the screen was unreachable by pointer — the
-        // whole content area answered to the d-pad alone, silently, because `mod.rs::hit` scans an
-        // array nothing ever filled and `results::tile_at` sat complete with no caller. Both files
-        // carry `#![allow(dead_code)]`, which is why neither half warned.
+        // `super::HIT_R` stayed empty and every result on the screen was unreachable by pointer —
+        // the whole content area answered to the d-pad alone, silently, because `mod.rs::hit`
+        // scanned a store nothing ever filled while a complete `results::tile_at` (which DERIVED
+        // the same rects, and is deleted) sat with no caller. Both files carried
+        // `#![allow(dead_code)]`, which is why neither half warned.
+        //
+        // Recording is chosen over deriving on purpose, and this is the reason: the rect below is
+        // the tile as PAINTED, this frame's horizontal scroll and focus pop included, where a
+        // derivation is a second expression that has to be kept in step with the draw by hand.
         //
         // `strip` hands over the tile's layout **x** — not a scale, which an earlier version of
         // this closure assumed and passed straight to `Rect::scaled`, inflating every rect ~90×.
@@ -685,39 +638,6 @@ fn subtitle(kind: Kind, it: &Item, handle: &str) -> String {
     parts.join(" \u{b7} ")
 }
 
-// ---- pointer -----------------------------------------------------------------------------------
-
-/// The shelf tile under the pointer, or None in the gaps — the hit-test half of the geometry
-/// [`draw`] lays out, including each row's own live horizontal scroll, which lives on the
-/// `CardRow` here and so can be answered nowhere else.
-///
-/// O(VISIBLE): the column is derived arithmetically from x rather than searched for, and the
-/// vertical walk is over the five shelf blocks, never over their items.
-pub(crate) fn tile_at(v: &View, mx: f32, my: f32) -> Option<(usize, usize)> {
-    let shelves = crate::search::shelves();
-    let st: &Shelves = state();
-    let (ks, n) = present();
-    for (i, s) in shelves.iter().take(n).enumerate() {
-        // The DRAW's numbers, asked for the same way the draw asks: `stack_top` for the flow and
-        // the kind's own `RowStyle` for the pitch and the margin. Deriving either from the bare
-        // consts would agree only for as long as every kind keeps `RowStyle::HOME`'s gap.
-        let sty = style(s.kind);
-        let row_y = stack_top(&ks[..n], i) + HEAD_TO_ROW - v.shift;
-        if my < row_y || my > row_y + sty.h {
-            continue; // not in this shelf's band
-        }
-        let x = mx - (sty.margin_x - st.rows[i].scroll_x());
-        if x < 0.0 {
-            return None;
-        }
-        let slot = sty.w + sty.gap;
-        let c = (x / slot) as usize;
-        // reject the inter-tile gap: only the tile's own width is a hit
-        return (c < s.items.len() && x - c as f32 * slot <= sty.w).then_some((i, c));
-    }
-    None
-}
-
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
@@ -752,8 +672,8 @@ mod tests {
     }
 
     /// The flow: each shelf sits exactly one block below the one before it, the first at
-    /// `CONTENT_TOP`, and a row top is its heading plus `HEAD_TO_ROW`. None of it may depend on
-    /// which kinds are present or on how many items they hold.
+    /// `CONTENT_TOP`, and a block is the shelf's own heading + tile + reserved caption band. None
+    /// of it may depend on which kinds are present or on how many items they hold.
     #[test]
     fn shelves_stack_by_their_own_block_heights_from_the_content_top() {
         assert_eq!(stack_top(&ALL, 0), CONTENT_TOP);
@@ -765,7 +685,13 @@ mod tests {
                 i - 1
             );
         }
-        assert_eq!(stack_top(&ALL, 0) + HEAD_TO_ROW, CONTENT_TOP + HEAD_TO_ROW);
+        // A poster shelf is the app's ONE shelf rhythm, stated as the equality rather than as 549:
+        // a tile-size change here must not silently re-space this flow against every other one.
+        assert_eq!(block_h(Kind::Movie), crate::ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Show), crate::ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Collection), crate::ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Episode), HEAD_TO_ROW + 236.0 + LABEL_BLOCK);
+        assert_eq!(block_h(Kind::Person), HEAD_TO_ROW + 250.0 + LABEL_BLOCK);
         // an episode shelf is shorter than a poster shelf by exactly the tile difference, so which
         // types are present must never change any other shelf's own height
         assert_eq!(block_h(Kind::Movie) - block_h(Kind::Episode), CARD_H - 236.0);
@@ -788,27 +714,43 @@ mod tests {
             let bottom = stack_top(&[k], 0) + HEAD_TO_ROW + tile_size(k).1;
             assert!(bottom <= floor, "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}");
         }
+        // The ACTUAL numbers `super`'s layout note quotes, so a doc claim nobody can reproduce
+        // cannot come back: a poster shelf ends at 683 against a panel edge of 700.
+        assert_eq!(stack_top(&[Kind::Movie], 0) + HEAD_TO_ROW + CARD_H, 683.0);
+        assert_eq!(floor, 700.0);
     }
 
-    /// The scroll rule is `card_row::reveal`'s, not a pin: a shelf already fully on screen must not
-    /// move the page, one below the fold scrolls exactly far enough to show its own block and no
-    /// further, and **nothing scrolls at all while the keyboard is up**.
+    /// The scroll rule is `card_row::reveal`'s, **not the mock's pin** — the module doc's point 1
+    /// is the decision and this is its executable half: a shelf already fully on screen must not
+    /// move the page, and one below the fold scrolls exactly far enough to show its own block and
+    /// no further.
     #[test]
-    fn a_shelf_scrolls_only_as_far_as_its_own_block_needs_and_never_while_typing() {
-        assert_eq!(reveal_of(0.0, &ALL, 0, false), 0.0, "the first shelf is already on screen");
+    fn a_shelf_scrolls_only_as_far_as_its_own_block_needs() {
+        assert_eq!(reveal_of(0.0, &ALL, 0), 0.0, "the first shelf is already on screen");
 
-        let want = reveal_of(0.0, &ALL, 2, false);
+        let want = reveal_of(0.0, &ALL, 2);
         assert!(want > 0.0, "the third shelf is below the fold and must be revealed");
         let top = stack_top(&ALL, 2);
         assert!(top + block_h(ALL[2]) - want <= SCR_H, "its block bottom is still off screen");
         assert!(top - want >= CONTENT_TOP, "it scrolled past the minimum — the shelf overshot upward");
         // already revealed ⇒ no re-seating (the `reveal` contract: no slot pinning)
-        assert_eq!(reveal_of(want, &ALL, 2, false), want);
+        assert_eq!(reveal_of(want, &ALL, 2), want);
 
-        for i in 0..ALL.len() {
-            assert_eq!(reveal_of(0.0, &ALL, i, true), 0.0, "shelf {i} scrolled while the keyboard was up");
-        }
-        assert_eq!(reveal_of(0.0, &ALL, 99, false), 0.0, "a shelf that is not there cannot scroll the page");
+        // The difference from the retired pin, stated as a number so the decision cannot be
+        // reversed by accident: shelf 1 comes into view for 306px of scroll where pinning its
+        // block top to `CONTENT_TOP` demanded 549 — the whole of shelf 0, which stays half on
+        // screen instead of leaving.
+        let one = reveal_of(0.0, &ALL, 1);
+        assert!(one < stack_top(&ALL, 1) - CONTENT_TOP, "the reveal must undercut the pin, or it IS the pin");
+        assert_eq!(one, stack_top(&ALL, 1) + block_h(ALL[1]) - (SCR_H - BOTTOM_PAD));
+
+        // …and the end of the flow keeps `BOTTOM_PAD` of air, which the pin's own clamp dropped.
+        let last = ALL.len() - 1;
+        let end = reveal_of(0.0, &ALL, last);
+        assert_eq!(stack_content_h(&ALL) - end, SCR_H, "the last block rests one panel above the flow's end");
+        assert_eq!(stack_top(&ALL, last) + block_h(ALL[last]) - end, SCR_H - BOTTOM_PAD);
+
+        assert_eq!(reveal_of(0.0, &ALL, 99), 0.0, "a shelf that is not there cannot scroll the page");
     }
 
     /// The heading flow: title, one 16px gap, the count — and the source annotation ABSENT rather

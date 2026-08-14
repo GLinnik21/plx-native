@@ -29,9 +29,9 @@
 //! top edge" — which is the number `CONTENT_TOP` = 264 would give, not the 248 the constant is and
 //! not what any of them draws. A stated equality nobody can reproduce is worse than the slack,
 //! because the next person tuning either constant balances against a figure that was never true;
-//! `a_poster_shelf_stacks_at_the_apps_own_row_pitch` now asserts the real one.) That clearance is
-//! also why nothing scrolls while the panel is up: the result set has to be stable under the
-//! user's eyes while they are still typing.
+//! `results`' `the_first_shelfs_whole_row_clears_the_raised_keyboard` now asserts the real one, for
+//! every tile size a first shelf can have.) That clearance is also why nothing scrolls while the
+//! panel is up: the result set has to be stable under the user's eyes while they are still typing.
 //!
 //! ## The ▼ handoff, which is the rule the whole state machine exists for
 //!
@@ -45,17 +45,23 @@
 //! ## Scroll
 //!
 //! One spring, and only the SHELVES ride it ([`View::shift`]): the field, the strip and the recents
-//! rows are chrome at fixed y. The focused shelf's block top comes to [`CONTENT_TOP`], clamped so
-//! the flow cannot be scrolled past its own end — and it is **zero whenever the shelves do not hold
-//! focus**, which is forced rather than chosen: nothing clips the flow, so a non-zero shift with
-//! focus on the field would draw shelf 0 up through the field and the tab strip. That is also why
-//! ▼ off the field lands on shelf **0** and not on the shelf last left — the shift is already back
-//! at 0 by then, so restoring a deep row would jump the page under the user's eyes at the exact
-//! moment they asked for a small move. The COLUMN is remembered (and clamped), which is the half of
-//! "lands where you were" that costs nothing.
-#![allow(dead_code)]
+//! rows are chrome at fixed y. **The flow's whole shape lives in [`results`]** — this module owns
+//! the two FREEZES ([`scroll_frozen`]) and nothing else about it, and asks
+//! [`results::reveal_shelf`] for the rest.
+//!
+//! The rule is the shared minimal reveal (`card_row::reveal`, as the home grid, the person page and
+//! the Library grid all scroll), **not** the mock's pin of the focused block to [`CONTENT_TOP`];
+//! `results`' module doc carries that decision and the reasons. This paragraph used to describe the
+//! pin and to call the second freeze "forced rather than chosen: nothing clips the flow", which
+//! stopped being true when `results::draw` gained a real scissor at the field's bottom edge.
+//!
+//! So the freeze at zero whenever the shelves do not hold focus is now a CHOICE, and the reason it
+//! stays is the ▼ handoff: it lands on shelf **0** and not on the shelf last left, and it can only
+//! mean that if the flow is already back at 0 — restoring a deep row would jump the page under the
+//! user's eyes at the exact moment they asked for a small move. The COLUMN is remembered (and
+//! clamped), which is the half of "lands where you were" that costs nothing.
 
-use crate::ui::consts::{K_SCROLL, SCR_H, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{K_SCROLL, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
 use crate::ui::xfade::Xfade;
 use crate::ui::{Painter, Rect, Spring};
 use std::os::raw::{c_int, c_uint};
@@ -72,7 +78,9 @@ pub(crate) const CONTENT_TOP: f32 = 248.0;
 /// Shelf heading to the top of its row: the 30px heading plus a 30px gap, as `home.rs` draws it.
 pub(crate) const HEAD_TO_ROW: f32 = 60.0;
 /// The caption pair reserved under every tile. Reserved whether or not it is drawn, so nothing
-/// reflows as focus travels along a row.
+/// reflows as focus travels along a row. Shared with [`results`], which stacks it into `block_h`
+/// and owns the contract that it must hold a `card_row::TileLabel` — see that function's doc, and
+/// raise it there rather than restating the arithmetic here.
 pub(crate) const LABEL_BLOCK: f32 = 114.0;
 /// How much of the panel the TV's keyboard covers. Not ours to draw or to style — this is the
 /// clearance the layout above keeps.
@@ -112,10 +120,6 @@ fn xf() -> &'static mut Xfade {
 /// before. It stays local until a second screen needs it — a keycode belongs beside the other
 /// `SDLK_*` the moment it has two readers, and not before.
 const SDLK_BACKSPACE: c_uint = 8;
-
-/// Parked far off the panel rather than at the origin: [`Rect::contains`] is inclusive, so a zero
-/// rect at (0,0) would "contain" a click at exactly (0,0) — `library::STATUS_BTN`'s lesson.
-const PARKED: Rect = Rect::new(-1.0, -1.0, 0.0, 0.0);
 
 /// Which region owns the remote. Not a focus INDEX — each zone keeps its own cursor, so leaving
 /// the shelves for the field and coming back lands where you were.
@@ -183,19 +187,25 @@ static mut STRIP: usize = 0;
 /// integrators report) and this screen owes the frame gate no clock of its own.
 static mut SCROLL: Spring = Spring::at(0.0);
 
-/// Recent-row hit rects — index `i` is term `i`, and [`MAX_RECENTS`] is the Clear control.
-/// Recorded AT DRAW by [`recents`] through [`note_recent_rect`], the `library::TOOL_RECTS` idiom:
-/// this module owns the flow but not the rows, so the only rect it can honestly hit-test is the one
-/// that was actually painted.
-static mut RECENT_R: [Rect; MAX_RECENTS + 1] = [PARKED; MAX_RECENTS + 1];
-/// Result-tile hit rects as `(row, col, rect)`, recorded AT DRAW by [`results`] through
-/// [`note_tile_rect`]. A list rather than a fixed array because a shelf's tile count is the
-/// server's answer, and it is CLEARED (never freed) each frame, so the allocation is paid once —
-/// `library::SRC_ACTIONS`' pattern.
+/// **The** hit-rect store: every target under the field that a region PAINTED this frame, as the
+/// [`Hit`] it answers with. Recorded at draw — recent rows and the Clear control by [`recents`]
+/// through [`note_recent_rect`], result tiles by [`results`] through [`note_tile_rect`] — the
+/// `library::TOOL_RECTS` idiom: this module owns the flow but not the rows, so the only rect it can
+/// honestly hit-test is the one that was actually painted.
 ///
-/// These cannot be derived here even in principle: a shelf's horizontal offset is the scroll spring
-/// inside its own `card_row::CardRow`, which lives in [`results`] and is invisible from this side.
-static mut TILE_R: Vec<(usize, usize, Rect)> = Vec::new();
+/// One list, because there was never a frame with both kinds in it: [`draw`] dispatches ONE region
+/// under the field ([`below`]). Two stores meant two parks, two scans and the `w > 0.5` rule
+/// written twice, and the tile half of it shipped with nothing ever filling it.
+///
+/// A `Vec`, because a shelf's tile count is the server's answer; it is CLEARED (never freed) each
+/// frame, so the allocation is paid once — `library::SRC_ACTIONS`' pattern.
+///
+/// The rects **cannot be derived here**: a shelf's horizontal offset is the scroll spring inside
+/// its own `card_row::CardRow`, which lives in [`results`] and is invisible from this side. (This
+/// said "even in principle", which was false — `results` could derive them and once did, in a
+/// `tile_at` no caller ever reached. It declines to on purpose: a recorded rect is the tile as
+/// PAINTED, focus pop included, where a derivation is a second expression to keep in step by hand.)
+static mut HIT_R: Vec<(Hit, Rect)> = Vec::new();
 
 // ---- the projection the regions draw from ----------------------------------------------------
 
@@ -242,51 +252,30 @@ pub(crate) fn below() -> Below {
     below_of(has_query(), recents::count(), crate::search::shelves().len())
 }
 
-/// A shelf's whole block: its heading band, its row of tiles, and the caption pair reserved under
-/// them. There is no gap term because the reserved band IS the air — a poster shelf comes out at
-/// `HEAD_TO_ROW + 375 + LABEL_BLOCK` = 549, which is `consts::ROW_PITCH` exactly, so a search shelf
-/// and a home shelf stack at the same rhythm.
+/// Is the shelf flow held at zero? The two freezes, and the ONLY thing this module says about the
+/// flow's shape — [`results`] owns the geometry and the reveal rule (see the module doc's Scroll
+/// note).
 ///
-/// **[`LABEL_BLOCK`] must stay at least `card_row::TileLabel::height` for whatever `RowStyle`
-/// [`results`] draws with** — that function is `ui/CLAUDE.md`'s named single authority on the band,
-/// and the flow here is what has to reserve it. At `title_lines: 1` it is 92, so the 114 declared
-/// here holds it with 22 to spare (the same 22 home's `ROW_PITCH` carries). At `title_lines: 2` it
-/// is **122 and this constant is 8 short** — and two lines is what `ui/CLAUDE.md` says a shelf of
-/// real Plex titles needs. The one-line case is asserted below; the two-line case is a cross-file
-/// decision (`LABEL_BLOCK` is shared with [`results`]) and belongs to whoever raises `title_lines`,
-/// who must raise this with it rather than discovering the overlap on a panel.
-fn block_h(kind: crate::search::Kind) -> f32 {
-    HEAD_TO_ROW + results::tile_size(kind).1 + LABEL_BLOCK
-}
-
-/// Top of shelf `i` in CONTENT space, before [`View::shift`]. `i == len` is the flow's end, which
-/// is how [`content_h`] asks for it.
-pub(crate) fn shelf_top(i: usize) -> f32 {
-    CONTENT_TOP + crate::search::shelves().iter().take(i).map(|s| block_h(s.kind)).sum::<f32>()
-}
-
-fn content_h() -> f32 {
-    shelf_top(crate::search::shelves().len())
-}
-
-/// Where the scroll spring is heading: the focused shelf's block top pinned to [`CONTENT_TOP`],
-/// clamped to the content's own end. Pure, so the host suite can grade the rule that the device
-/// only ever shows as motion. `top` is `None` when the focused row is not a shelf that exists —
-/// the one frame between a landing shrinking the set and [`clamp_focus`] re-seating the cursor.
-fn scroll_target_for(zone: Zone, editing: bool, top: Option<f32>, end: f32) -> f32 {
-    // Frozen while the keyboard is up (the module doc's layout rule) and whenever the shelves do
-    // not hold focus (nothing clips the flow — see the Scroll note).
-    if editing || zone != Zone::Results {
-        return 0.0;
-    }
-    let Some(top) = top else { return 0.0 };
-    (top - CONTENT_TOP).clamp(0.0, (end - SCR_H).max(0.0))
+/// **While the keyboard is up**, because the result set has to be stable under the user's eyes
+/// while they are still typing, and the layout is sized so the first shelf's whole row lands above
+/// the panel's top edge with no scroll needed at all. **And whenever the shelves do not hold
+/// focus**, so ▼ off the field can land on shelf 0 without the page jumping.
+///
+/// Pure, so the host suite can grade the rule the device only ever shows as motion.
+fn scroll_frozen(zone: Zone, editing: bool) -> bool {
+    editing || zone != Zone::Results
 }
 
 fn scroll_target() -> f32 {
-    let row = unsafe { addr_of!(ROW).read() };
-    let top = (row < crate::search::shelves().len()).then(|| shelf_top(row));
-    scroll_target_for(zone(), editing(), top, content_h())
+    if scroll_frozen(zone(), editing()) {
+        return 0.0;
+    }
+    // Minimal reveal, from where the spring actually IS: `card_row::reveal` returns `cur` unchanged
+    // for a block already on screen, so feeding it anything but the live position would re-seat a
+    // page that did not need to move. A row index past the end (the one frame between a landing
+    // shrinking the set and `clamp_focus` re-seating the cursor) answers 0 rather than panicking.
+    let (cur, row) = unsafe { (addr_of!(SCROLL).read().pos, addr_of!(ROW).read()) };
+    results::reveal_shelf(cur, row)
 }
 
 /// How many items each shelf holds, into a caller-owned buffer. There is at most one shelf per
@@ -399,6 +388,13 @@ pub(crate) fn update(dt: f32) {
     crate::search::pump(dt);
     clamp_focus();
     unsafe { (*addr_of_mut!(SCROLL)).step(scroll_target(), K_SCROLL, dt) };
+    // The shelves' own springs, in the UPDATE phase — after `clamp_focus`, so they are handed a
+    // seated cursor, and before `idle::should_present`, which is the whole reason this line exists.
+    // `results` used to advance from a clock inside its draw and hand-roll a discrete report,
+    // because a `note_spring` raised during frame N's draw is cleared by frame N+1's
+    // `idle::frame_begin` before anything reads it; from here both integrators speak for
+    // themselves, as they do on every other screen.
+    results::update(dt, &view());
 
     // `ready` is "the band has something to say", not "there are items": a query that legitimately
     // matched nothing is an ANSWER and its read-out has to rise like any other content, so
@@ -479,12 +475,9 @@ pub(crate) fn draw() {
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
     let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
     let v = view();
-    // Park last frame's hit rects BEFORE the regions record this frame's, so a row or a tile that
+    // Drop last frame's hit rects BEFORE the regions record this frame's, so a row or a tile that
     // has stopped being drawn cannot still be clicked.
-    unsafe {
-        *addr_of_mut!(RECENT_R) = [PARKED; MAX_RECENTS + 1];
-        (*addr_of_mut!(TILE_R)).clear();
-    }
+    unsafe { (*addr_of_mut!(HIT_R)).clear() };
 
     field::draw(p, &v);
     // Everything BELOW the field rides the content fade; the field itself does not (see [`XF`]).
@@ -511,22 +504,29 @@ pub(crate) fn draw() {
 }
 
 /// Record the rect a recent-term row (or, at [`MAX_RECENTS`], the Clear control) was DRAWN at.
-/// Called by [`recents`] from its draw; see [`RECENT_R`].
+/// Called by [`recents`] from its draw; see [`HIT_R`].
 ///
 /// An index past the Clear control is DROPPED, never clamped onto it: the store is documented to
 /// hold more terms than the screen has room for, so a drawer that looped the whole list would
 /// otherwise stamp a term's rect over Clear's slot — and hovering that term would then park the
 /// cursor on the control that wipes the list.
 pub(crate) fn note_recent_rect(i: usize, r: Rect) {
-    if let Some(slot) = unsafe { (*addr_of_mut!(RECENT_R)).get_mut(i) } {
-        *slot = r;
+    if i <= MAX_RECENTS {
+        note(Hit::Recent(i), r);
     }
 }
 
 /// Record the rect a result tile was DRAWN at, scroll and pop included. Called by [`results`] from
-/// its draw; see [`TILE_R`].
+/// its draw; see [`HIT_R`].
 pub(crate) fn note_tile_rect(row: usize, col: usize, r: Rect) {
-    unsafe { (*addr_of_mut!(TILE_R)).push((row, col, r)) };
+    note(Hit::Tile(row, col), r);
+}
+
+/// The one recorder. Push order is DRAW order and [`find_rect`] takes the first match, which is
+/// what keeps a focused tile's magnified rect from stealing a click that landed on the neighbour
+/// drawn under it (`card_row::strip` draws the focused tile LAST).
+fn note(h: Hit, r: Rect) {
+    unsafe { (*addr_of_mut!(HIT_R)).push((h, r)) };
 }
 
 // ---- input: focus ------------------------------------------------------------------------------
@@ -793,14 +793,30 @@ enum Hit {
     Tile(usize, usize),
 }
 
+/// The one scan over [`HIT_R`], pure so the host suite can reach it — the live store is filled by
+/// a draw the host cannot run.
+///
+/// Two rules, both of which used to be written once per store. **`w > 0.5` first**: a recorded rect
+/// can legitimately be zero-SIZE (a culled or fully clipped tile) and `Rect::contains` is
+/// inclusive, so a zero rect is clickable at exactly its corner — `library::STATUS_BTN`'s lesson.
+/// **And the target's region must be the one drawn NOW**: the rects are last frame's, so between
+/// that draw and this press [`below`] may have changed under them, and a stale recents row that
+/// still answered would put focus in a zone whose region is gone — with a click on it running the
+/// Clear control that wiped the list.
+fn find_rect(rects: &[(Hit, Rect)], below: Below, mx: f32, my: f32) -> Option<Hit> {
+    rects
+        .iter()
+        .find(|&&(h, r)| {
+            r.w > 0.5
+                && matches!((h, below), (Hit::Recent(_), Below::Recents) | (Hit::Tile(..), Below::Results))
+                && r.contains(mx, my)
+        })
+        .map(|&(h, _)| h)
+}
+
 /// The one hit test, shared by hover and click. Every rect here was RECORDED at draw (or is a
 /// constant, for the field), `library.rs`'s discipline: what the pointer addresses and what the eye
 /// sees are the same rect rather than two derivations that agree by luck.
-///
-/// Every scan tests `w > 0.5` first. A parked rect is off-panel, but a recorded one can legitimately
-/// be zero-SIZE (a culled or fully clipped tile), and `Rect::contains` is inclusive — so a zero rect
-/// is clickable at exactly its corner. `library::STATUS_BTN`'s lesson, applied to both lists rather
-/// than only to the one it was first noticed on.
 fn hit(mx: f32, my: f32) -> Option<Hit> {
     if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
         return Some(Hit::Pill(i.min(strip_last())));
@@ -808,16 +824,8 @@ fn hit(mx: f32, my: f32) -> Option<Hit> {
     if FIELD.contains(mx, my) {
         return Some(Hit::Field);
     }
-    match below() {
-        Below::Recents => {
-            let rects = unsafe { addr_of!(RECENT_R).read() };
-            rects.iter().position(|r| r.w > 0.5 && r.contains(mx, my)).map(Hit::Recent)
-        }
-        Below::Results => unsafe { addr_of!(TILE_R).as_ref() }
-            .and_then(|v| v.iter().find(|(_, _, q)| q.w > 0.5 && q.contains(mx, my)))
-            .map(|&(r, c, _)| Hit::Tile(r, c)),
-        Below::Nothing => None,
-    }
+    let rects = unsafe { addr_of!(HIT_R).as_ref() }?;
+    find_rect(rects, below(), mx, my)
 }
 
 /// Move focus onto what the pointer found.
@@ -1095,22 +1103,29 @@ mod tests {
         crate::search::reset();
     }
 
-    /// A parked or zero-size recorded rect must not be hittable. `Rect::contains` is inclusive, so
-    /// a zero rect is clickable at exactly its corner — `library::STATUS_BTN`'s lesson.
+    /// The one scan's two rules, on the pure form — the live store is filled by a draw no host can
+    /// run, which is why the vec is passed in. A zero-size rect must not answer (`Rect::contains`
+    /// is inclusive, so it is clickable at exactly its corner — `library::STATUS_BTN`'s lesson),
+    /// and a rect belonging to a region that is no longer drawn must not either.
     #[test]
-    fn a_parked_or_zero_size_rect_is_not_hittable() {
-        let _s = crate::testlock::serial();
-        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
-        assert!(!PARKED.contains(0.0, 0.0), "the park is off-panel, not a zero rect at the origin");
-        // A recorded tile that got culled to nothing still sits in the list; it must not answer.
-        unsafe {
-            (*addr_of_mut!(TILE_R)).clear();
-            (*addr_of_mut!(TILE_R)).push((0, 0, Rect::new(400.0, 400.0, 0.0, 0.0)));
-        }
-        assert_eq!(hit(400.0, 400.0), None, "a zero-size tile is not a target");
-        unsafe { (*addr_of_mut!(TILE_R)).clear() };
-        crate::search::reset();
+    fn a_zero_size_or_stale_region_rect_is_not_hittable() {
+        let tile = Rect::new(400.0, 400.0, 250.0, 375.0);
+        let rects = [(Hit::Tile(1, 2), tile), (Hit::Recent(0), Rect::new(90.0, 300.0, 820.0, 84.0))];
+
+        assert_eq!(find_rect(&rects, Below::Results, 500.0, 500.0), Some(Hit::Tile(1, 2)));
+        assert_eq!(find_rect(&rects, Below::Recents, 500.0, 500.0), None, "a tile is not a target while the recents list is what is drawn");
+        assert_eq!(find_rect(&rects, Below::Recents, 500.0, 340.0), Some(Hit::Recent(0)));
+        assert_eq!(find_rect(&rects, Below::Results, 500.0, 340.0), None, "…and the converse");
+        assert_eq!(find_rect(&rects, Below::Nothing, 500.0, 500.0), None, "nothing drawn, nothing hittable");
+
+        // A tile culled to nothing still sits in the list; it must not answer at its own corner.
+        let culled = [(Hit::Tile(0, 0), Rect::new(400.0, 400.0, 0.0, 0.0))];
+        assert_eq!(find_rect(&culled, Below::Results, 400.0, 400.0), None, "a zero-size tile is not a target");
+
+        // First match wins, which is what keeps the focused tile — drawn LAST, so recorded last —
+        // from stealing a click that landed on the neighbour underneath it.
+        let stacked = [(Hit::Tile(0, 3), tile), (Hit::Tile(0, 4), tile)];
+        assert_eq!(find_rect(&stacked, Below::Results, 500.0, 500.0), Some(Hit::Tile(0, 3)));
     }
 
     /// One typed character is not a search: the store sends nothing below `MIN_QUERY`, so the
@@ -1161,37 +1176,22 @@ mod tests {
         crate::search::reset();
     }
 
-    // ---- the scroll target ---------------------------------------------------------------------
+    // ---- the scroll freeze -----------------------------------------------------------------------
 
-    /// The whole rule, on the pure form: pin the focused shelf's top to `CONTENT_TOP`, clamp to the
-    /// content's end, and hold at zero whenever the shelves are not what focus is on.
+    /// The two freezes, which is all this module still says about the flow — the SHAPE (a minimal
+    /// `card_row::reveal`, not the mock's pin) moved to `results.rs` and is graded there, in
+    /// `a_shelf_scrolls_only_as_far_as_its_own_block_needs`.
     #[test]
-    fn the_focused_shelf_scrolls_its_top_to_content_top() {
-        // Three poster shelves at 549 apiece — `HEAD_TO_ROW + CARD_H + LABEL_BLOCK`.
-        let tops = [CONTENT_TOP, CONTENT_TOP + 549.0, CONTENT_TOP + 1098.0];
-        let end = CONTENT_TOP + 1647.0;
-        let at = |z, e, i: usize| scroll_target_for(z, e, tops.get(i).copied(), end);
-
-        assert_eq!(at(Zone::Results, false, 0), 0.0, "shelf 0 is already at CONTENT_TOP");
-        assert_eq!(at(Zone::Results, false, 1), 549.0, "shelf 1's top comes to CONTENT_TOP");
-
-        // The last shelf is clamped by the content's own end, not pinned: scrolling it all the way
-        // to CONTENT_TOP would drag empty space up from under the flow.
-        let want_pin = tops[2] - CONTENT_TOP;
-        let cap = end - SCR_H;
-        assert!(cap < want_pin, "the fixture must actually exercise the clamp");
-        assert_eq!(at(Zone::Results, false, 2), cap);
-
-        // Frozen while the keyboard is up — the result set stays still under the user's eyes.
-        assert_eq!(at(Zone::Results, true, 2), 0.0);
-        // …and whenever the shelves do not hold focus, or shelf 0 would draw up through the field.
+    fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down() {
+        assert!(!scroll_frozen(Zone::Results, false), "the one case that scrolls at all");
+        // The keyboard is up: the result set stays still under a user who is still typing.
+        assert!(scroll_frozen(Zone::Results, true));
+        // …and whenever the shelves do not hold focus, so ▼ off the field lands on shelf 0 without
+        // the page jumping under it.
         for z in [Zone::Field, Zone::Strip, Zone::Recents] {
-            assert_eq!(at(z, false, 2), 0.0, "{z:?} is not the shelves");
+            assert!(scroll_frozen(z, false), "{z:?} is not the shelves");
+            assert!(scroll_frozen(z, true));
         }
-        // A flow shorter than the panel never scrolls at all.
-        assert_eq!(scroll_target_for(Zone::Results, false, Some(CONTENT_TOP), CONTENT_TOP + 549.0), 0.0);
-        // A row index past the end (a landing shrank the set this very frame) is 0, not a panic.
-        assert_eq!(at(Zone::Results, false, 9), 0.0);
     }
 
     /// The scroll spring owes `ui::idle` **both halves** — `ui/CLAUDE.md`: "it reports while running
@@ -1253,31 +1253,10 @@ mod tests {
         crate::search::reset();
     }
 
-    /// The block ladder the tops above are built from, so a tile-size change cannot silently
-    /// re-space the flow: a poster shelf must stack at `consts::ROW_PITCH`, the app's one shelf
-    /// rhythm, and the two odd tile sizes must fall out of the same expression.
-    #[test]
-    fn a_poster_shelf_stacks_at_the_apps_own_row_pitch() {
-        use crate::search::Kind;
-        assert_eq!(block_h(Kind::Movie), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Show), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Collection), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Episode), HEAD_TO_ROW + 236.0 + LABEL_BLOCK);
-        assert_eq!(block_h(Kind::Person), HEAD_TO_ROW + 250.0 + LABEL_BLOCK);
-
-        // The layout promise the module doc makes, as the ACTUAL numbers rather than the 699 the
-        // doc used to claim: the first shelf's posters end at 683 against a panel edge of 700.
-        let first_row_bottom = CONTENT_TOP + HEAD_TO_ROW + crate::ui::consts::CARD_H;
-        assert_eq!(first_row_bottom, 683.0);
-        assert_eq!(SCR_H - KEYBOARD_H, 700.0);
-        assert!(first_row_bottom <= SCR_H - KEYBOARD_H, "with the keyboard up, nothing we own hides behind it");
-
-        // `LABEL_BLOCK` is the band `results.rs` will draw a `TileLabel` into, and `ui/CLAUDE.md`
-        // names `TileLabel::height` the ONE authority on how tall that is. Reserving less than it
-        // returns runs the caption into the next shelf's heading.
-        let one_line = crate::ui::card_row::TileLabel::height(&crate::ui::card_row::RowStyle::HOME, true);
-        assert!(LABEL_BLOCK >= one_line, "the reserved band ({LABEL_BLOCK}) must hold a one-line captioned label ({one_line})");
-    }
+    // (The block ladder — a poster shelf stacking at `consts::ROW_PITCH`, the keyboard clearance's
+    // real 683-against-700, and `LABEL_BLOCK` holding a one-line `TileLabel` — moved to
+    // `results.rs`'s tests with the geometry itself. Restating any of it here is what made the two
+    // copies survive each other for as long as they did.)
 
     // ---- typing ---------------------------------------------------------------------------------
 
