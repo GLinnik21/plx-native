@@ -162,7 +162,8 @@ Add `--verbose` to print evidence for passing assertions too.
 ## FPS regression suite (`--fps`)
 
 A separate mode that guards **UI framerate**, not playback correctness. The app logs a once/sec
-`loop=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>] fps=<n>` heartbeat; each
+`loop=<n> route=<login|profiles|account|itemmenu|library|detail|person|search|player|home>
+[overlay=<info|chapters|menu|none>] fps=<n>` heartbeat; each
 *scene* in the manifest's `fps_scenes` sets its `plxnative-*` triggers (profiler **off**), runs, and
 asserts its gates. This is the automated form of the by-hand FPS hunting that found the hero /
 cast+about / info-panel regressions.
@@ -175,7 +176,7 @@ cast+about / info-panel regressions.
 > instead of grading a loop rate as a frame rate.
 
 ```bash
-# UI tier only — home hero, home grid, detail scroll transition. No video, no PMS token needed.
+# UI tier only — every scene whose `tier` is "ui". No video, no PMS token needed.
 ./tests/run.py --fps
 
 # add the player tier (info panel, track menu) — these decode video as the test_user, slower.
@@ -190,7 +191,12 @@ cast+about / info-panel regressions.
   gate (`ui::idle`) landed, a skipped frame is a 16 ms sleep, so `loop=` reads ~60 whether or not
   anything reached the panel:
   - `loop_floor` grades `loop=`. It proves the **app is alive**. It cannot see a stopped animation,
-    and on a settled screen it grades nothing at all (three scenes carry an `_idle_gate_note`).
+    and on a settled screen it grades nothing at all — `home-hero` carries an `_idle_gate_note`
+    saying so. It is the only one left: this line said "three scenes" long after the other two
+    (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
+    the fix that note asks for. The two remaining `loop_floor`-only scenes are `info-panel` and
+    `track-menu`, and they need no such note — the present gate **excludes the player route**
+    (`ui/idle.rs:57`), so their `loop_floor` still grades a fill rate the way it always did.
   - `fps_floor` grades `fps=` on the **median** — "is this screen still animating, at rate".
     The median and not the 2nd-lowest, because a frame rate is now intermittent *by design*: on a
     scene that bounces rather than animates continuously, a 1 s window can land wholly inside the
@@ -216,6 +222,20 @@ cast+about / info-panel regressions.
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
   pass. `detail-transition`'s item (`movie_in_home_catalog`) must be an **in-home-catalog
   (recently-added / on-deck) movie**.
+- **The Search pair only means something together.** `search-type` and `search-idle` are the same
+  screen with and without its oscillator: the first asserts an `fps_floor` (the shelves still move
+  under a travelling focus), the second an `fps_ceiling` (a settled result set stops presenting).
+  Run one without the other and half the question goes unasked, which is how a screen that repaints
+  forever passes a floor. Two things to know before reading a result:
+  - **Their `fps_floor` is the one number in this file that is not a device measurement.** They were
+    written while the search screen was still being built, so `search-type` carries a floor picked
+    only to separate a frozen animator (~0.5/s, `ui::idle`'s keepalive) from a running one. Raise it
+    to a real median the first time it runs green on a television — the scene's own
+    `_fps_floor_note` says so, and the neighbours all quote a date.
+  - **`plxnative-search`'s value is a literal query, not a symbolic key.** `run.py` resolves `item`
+    keys against your overlay; it has no notion of a query, so the manifest carries the text. If
+    your library matches nothing for it there are no shelves, and `search-type` degrades to grading
+    the tab strip. Change the literal, never the floor.
 - Validated by injection: reverting the glyph-cache fix (`TCACHE 160→48`) makes `detail-transition`
   fail (~34fps) while the unaffected home scenes still pass.
 - Same nonzero-exit-on-failure contract as the case suite. Tune floors / scenes in
