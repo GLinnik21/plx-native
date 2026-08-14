@@ -130,7 +130,10 @@ impl<'a> HeroLogo<'a> {
     /// for both the logo tint and the fallback text (the value all three sites passed already).
     /// Draws only through `p`, so the caller's cascade alpha fades logo and fallback identically.
     pub fn draw(&self, p: Painter, band: Rect) {
-        if let Some((tex, sw, sh)) = crate::posters::logo_src(self.rk) {
+        // The hero draws the item the shelf under it has focused, and that shelf is the server
+        // being browsed — so its clearLogo is asked of the current server. An item that came from
+        // somewhere else (a merged Continue Watching row) names its own, once items carry one.
+        if let Some((tex, sw, sh)) = crate::posters::logo_src(crate::plex::current_server(), self.rk) {
             let (w, h) = fit(self.rung, sw, sh, band.w);
             // NOT pixel-snapped: a logo is SCALED content, and the crispness contract snaps
             // 1:1-texel content only (see the note above `theme.rs`'s size ladder).

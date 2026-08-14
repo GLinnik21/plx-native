@@ -497,13 +497,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         }
         let host_s = std::ffi::CStr::from_ptr(pms_host).to_string_lossy().into_owned();
 
-        // Install the PMS client (singleton — the read layer AND the playback path), then fetch
-        // the catalog. Used by the boot gate and again when a login resolves; host/port fix on
-        // first install, a later call just swaps the token (profile switch).
-        let install_pms = |host: &str, port: c_int, token: &str| {
-            crate::plex::install(host, port, token);
-            // a (re)install is a login / profile switch: the browse store must never carry the
-            // previous user's cached grid, watched-state angles, or section tabs forward
+        // Everything that has to happen when the server `plex::client()` answers with CHANGES —
+        // whether because a new identity signed in or because the user walked into another source.
+        // EVERY store below is keyed to whichever server was current when it was filled, and none
+        // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
+        // being fetched from server B: the same catalog index opening a different film.
+        let activate_server = || {
+            // the browse store must never carry the previous user's (or server's) cached grid,
+            // watched-state angles, or section tabs forward
             crate::browse::reset();
             // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
             // wifi hiccup can't blank a populated Home), which makes this the one place that
@@ -515,6 +516,29 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // section discovery (one small GET) so Home's library tab pills carry real titles
             let nsec = crate::browse::ensure_sections();
             log(&format!("pms: nmovies={nmov} nsections={nsec}"));
+        };
+        // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
+        // then fetch the catalog. Used by the boot gate and again when a login resolves; a later
+        // call for the same address just swaps the token (profile switch).
+        let install_pms = |host: &str, port: c_int, token: &str| {
+            crate::plex::install(host, port, token); // a (re)install is a login / profile switch
+            // Every additional server this boot was handed credentials for joins the REGISTRY
+            // beside it — the granted roster `browse` addresses its section table by. Registration
+            // is not activation: `install` above has already made the session's own server current,
+            // and `register` deliberately does not steal that, so a share appears as a source to
+            // browse rather than as a server the app has switched to.
+            //
+            // AFTER `install`, so slot 0 is always the session's own server and the roster reads in
+            // the order the Sources list wants to draw it. Registering here (rather than at the boot
+            // gate) also means a profile switch re-registers them, which is what keeps a share in
+            // the roster across a switch — and it must precede `activate_server`, whose refetch is
+            // what turns a newly registered source into shelves and section tabs.
+            for s in crate::dev::servers().unwrap_or_default().iter().filter(|s| s.usable()) {
+                let id = crate::plex::register(&s.machine_id, &s.host, s.port as c_int, &s.token);
+                // the roster's own answer about this server: a handle means someone else's.
+                crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
+            }
+            activate_server();
         };
 
         // UI infra + poster workers always come up — the login/profiles screens use them too.
@@ -857,7 +881,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// always the Home pill). One word for both is why they were named apart: on the way
             /// back from the Library the selection moves to Home while focus stays on `Movies`.
             Home { focus_pill: Option<usize> },
-            /// the Library browse grid on section `sec` (0-based)
+            /// The Library browse grid on TAB `tab` (0-based, Home excluded — the strip prepends
+            /// it). A tab, not a section: the strip is a projection of the section table
+            /// (`browse::tabs`), so several libraries can share one pill and `browse::tab_section`
+            /// is what resolves this to the library that opens.
             Library(usize),
             /// A page that STACKS — a detail page or a person page. The [`Node`] is BOTH what
             /// mounts at the floor (through the very `enter_node` a BACK pop uses, whose re-open
@@ -884,7 +911,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             fn select_pill(&self) -> Option<usize> {
                 match self {
                     Nav::Home { .. } => Some(0),
-                    Nav::Library(sec) => Some(sec + 1),
+                    // a TAB index, not a section index: the strip is a projection of the table
+                    // (`browse::tabs`), so `+1` here is only the Home pill leading the row
+                    Nav::Library(tab) => Some(tab + 1),
                     Nav::Open { .. } | Nav::Back { .. } => None,
                 }
             }
@@ -1091,8 +1120,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// A forward navigation to `rk`'s detail page, as a [`Nav`] destination. The ONE builder,
         /// so the six ways in cannot drift in what they push: the node carries an EMPTY spot, which
         /// is filled in only if the user later navigates deeper off the page (`Trail::set_top_spot`).
-        fn to_detail(rk: &str) -> Node {
-            Node::Detail { rk: rk.to_string(), spot: Spot::default() }
+        fn to_detail(sid: crate::plex::ServerId, rk: &str) -> Node {
+            Node::Detail { sid, rk: rk.to_string(), spot: Spot::default() }
         }
 
         /// Open the focused Library card's detail page — the ONE library-card activation
@@ -1103,7 +1132,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if mm.rk.is_empty() {
                 return;
             }
-            nav_open(cur, to_detail(&mm.rk), None, nav);
+            nav_open(cur, to_detail(mm.sid, &mm.rk), None, nav);
         }
 
         /// Open the focused person-page shelf card's detail page — the ONE person-card activation
@@ -1115,7 +1144,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if mm.rk.is_empty() {
                 return;
             }
-            nav_open(cur, to_detail(&mm.rk), None, nav);
+            nav_open(cur, to_detail(mm.sid, &mm.rk), None, nav);
         }
 
         /// Enter `rk`'s detail page with a HARD CUT — no transition. The one caller left is the
@@ -1123,8 +1152,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// trigger gives: at boot there is no outgoing screen to replace, so a dip would fade the
         /// page up out of nothing and read as a slow app rather than a navigated one. Every
         /// INTERACTIVE way in goes through [`nav_open`] instead.
-        fn push_detail(trail: &mut Trail, route: &mut Route, rk: &str) {
-            trail.push(to_detail(rk));
+        fn push_detail(trail: &mut Trail, route: &mut Route, sid: crate::plex::ServerId, rk: &str) {
+            trail.push(to_detail(sid, rk));
             *route = Route::Detail;
         }
 
@@ -1170,16 +1199,31 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // Nothing to mount for either root. No `library::enter`: `browse.rs` still holds the
                 // section, focus and scroll, and re-entering would re-query and lose them.
                 Node::Home | Node::Library => {}
-                Node::Person { key, guid, name, thumb } => {
-                    if crate::person::current().map(|p| p.key != *key).unwrap_or(true) {
+                Node::Person { sid, key, guid, name, thumb } => {
+                    // "already the one loaded?" through the trail's own person-identity rule
+                    // (`trail::same_person`), so the guid decides when both sides have one and the
+                    // server-scoped local id decides otherwise. The bare `p.key != *key` this
+                    // replaces compared a `personId` across machines, where it means nothing.
+                    let same = crate::person::current()
+                        .map(|p| {
+                            crate::ui::trail::same_person((p.sid, &p.key, &p.guid), (*sid, key, guid))
+                        })
+                        .unwrap_or(false);
+                    if !same {
                         // `reopen`, NOT `open`: `open` raises the latch the drain below turns into a
                         // route change PLUS a push, so a single BACK would land here and immediately
                         // push back the node it just popped — which reads as "BACK does nothing".
-                        crate::ui::person::reopen(key, guid, name, thumb);
+                        crate::ui::person::reopen(*sid, key, guid, name, thumb);
                     }
                 }
-                Node::Detail { rk, spot } => {
-                    if crate::ui::detail::mounted_rk() != *rk {
+                Node::Detail { sid, rk, spot } => {
+                    // …and the same for the detail page: the pair, never the rk alone (a share's
+                    // item 42 and ours are different pages, and re-entering must fetch the one the
+                    // node names rather than deciding it is already up).
+                    if !crate::plex::same_item(
+                        (crate::ui::detail::mounted_sid(), &crate::ui::detail::mounted_rk()),
+                        (*sid, rk),
+                    ) {
                         // A RESTORE carries a place to put the page back at. A forward navigation
                         // carries the EMPTY spot `to_detail` builds, and must not arm a placement:
                         // `open_rk_at`'s two-stage pump fires when the fetch lands, and on a fresh
@@ -1187,9 +1231,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // moved it while waiting. The test is sound because the two branches agree
                         // on the value it splits — an empty spot IS the state `open_rk` mounts in.
                         if *spot == Spot::default() {
-                            crate::ui::detail::open_rk(rk);
+                            crate::ui::detail::open_rk(*sid, rk);
                         } else {
-                            crate::ui::detail::open_rk_at(rk, spot);
+                            crate::ui::detail::open_rk_at(*sid, rk, spot);
                         }
                     }
                 }
@@ -1301,17 +1345,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // even when they had started from the show page, and even after an auto-advance chain
             // had moved them several episodes along. `detail_rk` is already the "Go to Show" target.
             if played_from_detail {
+                // The played leaf's own server — `metadata::playing()` is the store the playback
+                // was resolved from, so it names the machine the show is on. `plex::current_server()`
+                // would be the wrong answer for anything played off a share.
+                let sid = crate::metadata::playing()
+                    .map(|p| p.sid)
+                    .unwrap_or_else(crate::plex::current_server);
                 if let Some((show_rk, season)) = crate::metadata::now_playing()
                     .filter(|n| n.is_episode && !n.detail_rk.is_empty())
                     .map(|n| (n.detail_rk.clone(), n.season))
                 {
-                    crate::ui::detail::open_show_at_episode(&show_rk, season, &crate::route::cur_rk());
+                    crate::ui::detail::open_show_at_episode(sid, &show_rk, season, &crate::route::cur_rk());
                 }
                 // The player is NOT a trail node — it returns to the page it was started from, and
                 // that page may be one nothing ever pushed (a dev trigger, or `home_activate`
                 // opening a page under the hood purely to fire its Play). Read AFTER the reveal
                 // above, so an auto-advance chain names the SHOW rather than the leaf it ended on.
-                trail.ensure_detail(&crate::ui::detail::mounted_rk());
+                trail.ensure_detail(crate::ui::detail::mounted_sid(), &crate::ui::detail::mounted_rk());
             } else {
                 // …and a session that did not come from a page lands on Home, which IS the root:
                 // whatever the trail was describing is behind the user now.
@@ -1415,8 +1465,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // Same ritual as `play_item_now`: retire the finished episode's descriptor so the HUD
             // caption and Info card don't label the new playback with the old one's title for the
             // whole pre-roll, and fetch the new leaf off the loop.
+            // Read BEFORE `retire_playing` drops the store: the successor is a row of the queue
+            // the finished episode created, so it lives on that episode's server.
+            let sid = crate::metadata::playing().map(|p| p.sid).unwrap_or_else(crate::plex::current_server);
             crate::metadata::retire_playing();
-            crate::metadata::request_detail(&rk);
+            crate::metadata::request_detail(sid, &rk);
             start_playback(mt, resume, *played_from_detail, hud_ms, route, played_from_detail, hud_nav);
             true
         }
@@ -1451,7 +1504,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
             // this item), and the landing refills it via sync_now_playing.
             crate::metadata::set_now_playing(None);
-            crate::metadata::request_detail(&mm.rk);
+            crate::metadata::request_detail(mm.sid, &mm.rk);
             start_playback(
                 mt,
                 if from_start { 0 } else { crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000) },
@@ -1541,12 +1594,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // leaves the PREVIOUS detail in place; blindly firing on_ok would play
                         // whatever page was open before).
                         let expect = if mm.kind == 2 { mm.show_rk.clone() } else { rk.clone() };
+                        // a show/season row's parent lives on the SAME server as the row itself
+                        let sid = mm.sid;
                         if mm.kind == 2 {
-                            crate::ui::detail::open_rk_season(&expect, mm.season_index);
+                            crate::ui::detail::open_rk_season(sid, &expect, mm.season_index);
                         } else {
-                            crate::ui::detail::open_rk_now(&expect); // BLOCKING: `loaded` below gates the play
+                            crate::ui::detail::open_rk_now(sid, &expect); // BLOCKING: `loaded` below gates the play
                         }
-                        let loaded = crate::metadata::current().map(|d| d.rk.as_str() == expect).unwrap_or(false);
+                        let loaded = crate::metadata::current()
+                            .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
+                            .unwrap_or(false);
                         if loaded && crate::ui::detail::on_ok() {
                             start_playback(mt, crate::ui::detail::last_resume_ns(), false, hud_ms, route, played_from_detail, hud_nav);
                         } else {
@@ -1554,19 +1611,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // transition. `season: None`: the mount already happened above (this
                             // arm has to read the loaded item to decide at all), and `enter_node`'s
                             // re-open guard is what turns the floor's mount into a route flip.
-                            nav_open(*route, to_detail(&expect), None, nav);
+                            nav_open(*route, to_detail(sid, &expect), None, nav);
                         }
                     }
                 }
             } else if mm.kind == 2 {
                 // season: open the SHOW page with that season selected
-                nav_open(*route, to_detail(&mm.show_rk), Some(mm.season_index), nav);
+                nav_open(*route, to_detail(mm.sid, &mm.show_rk), Some(mm.season_index), nav);
             } else if mm.kind == 3 {
                 // an episode's page is its show's page — landed on the EPISODE'S season, so the
                 // item the hero/tile advertised is actually in view (mirrors the season arm)
-                nav_open(*route, to_detail(&mm.show_rk), (mm.season_index > 0).then_some(mm.season_index), nav);
+                nav_open(*route, to_detail(mm.sid, &mm.show_rk), (mm.season_index > 0).then_some(mm.season_index), nav);
             } else {
-                nav_open(*route, to_detail(&rk), None, nav);
+                nav_open(*route, to_detail(mm.sid, &rk), None, nav);
             }
         }
 
@@ -1601,7 +1658,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if rk.is_empty() {
                 return false;
             }
-            crate::ui::item_menu::open_episode(&rk, watched, crate::ui::detail::focused_episode_rect());
+            crate::ui::item_menu::open_episode(
+                crate::ui::detail::mounted_sid(),
+                &rk,
+                watched,
+                crate::ui::detail::focused_episode_rect(),
+            );
             *route = Route::ItemMenu { over: MenuHost::Detail };
             true
         }
@@ -1627,6 +1689,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             nav: &mut Option<NavReq>,
         ) {
             use crate::ui::item_menu::Action;
+            // WHICH SERVER this menu's rows are about — captured when the popover opened, from the
+            // row it was opened on (`item_menu::SID`). Every arm below turns an rk into a fetch, a
+            // scrobble or a play, and resolving one against `plex::current_server()` is the reported
+            // bug itself: on a merged Continue Watching shelf, Play from Start on a friend's episode
+            // found OUR row with the same key and played a different film under the friend's title.
+            let sid = crate::ui::item_menu::item_sid();
             // Every arm below turns an rk into a blocking fetch or a play; an empty one would fetch
             // nothing and land on a blank page. `build` already refuses to offer such a row — this
             // is the belt to that braces, since the menu is data-driven off the hub rows.
@@ -1645,24 +1713,29 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Action::None => {}
                 Action::GoToItem(rk) => {
                     menu_leave(trail, host);
-                    nav_open(*route, to_detail(&rk), None, nav);
+                    nav_open(*route, to_detail(sid, &rk), None, nav);
                 }
                 Action::GoToShow(show_rk, season) => {
                     menu_leave(trail, host);
                     // the season arm is BLOCKING (it indexes the loaded show's seasons) — the same
                     // trade `home_activate` makes for a season tile, now paid at the fade floor
                     // where the stall is behind a screen that is already at alpha 0
-                    nav_open(*route, to_detail(&show_rk), (season > 0).then_some(season), nav);
+                    nav_open(*route, to_detail(sid, &show_rk), (season > 0).then_some(season), nav);
                 }
                 Action::MarkWatched(rk, watched) => {
                     // Same ritual as the detail page's watched toggle: flip it server-side, then
                     // refetch the hubs so Continue Watching reflects it (a watched episode leaves the
                     // shelf; its successor takes the slot). Blocking (~100ms LAN) and deliberately so
                     // — the shelf must not still show the old state under the user's cursor.
-                    if watched {
-                        crate::plex::client().unscrobble(&rk);
-                    } else {
-                        crate::plex::client().scrobble(&rk);
+                    // `client_for(sid)`, never `client()`: the item may live on a share, and a
+                    // scrobble sent to the wrong machine marks a DIFFERENT film watched there.
+                    // A server we cannot resolve means the write never happened, and everything
+                    // below still repaints as though it had — so it says so in the log rather than
+                    // being the one dropped PMS write with no line at all.
+                    match crate::plex::client_for(sid) {
+                        Some(c) if watched => c.unscrobble(&rk),
+                        Some(c) => c.scrobble(&rk),
+                        None => log(&format!("item menu: rk={rk} watched toggle DROPPED — server {} is not registered", sid.raw())),
                     }
                     // …and when the popover was over the DETAIL page, that page is the surface the
                     // user is watching: re-read the mounted show so the filmstrip's checks, the
@@ -1688,7 +1761,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // it. The shelf is sourced from `/hubs/continueWatching`, which is the hub this
                     // action actually affects — built from `/hubs`'s `home.continue` it would come back
                     // still listing the item (see `pms::build_hubs`).
-                    let ok = crate::plex::client().remove_from_continue_watching(&rk);
+                    // …and the same honesty here: an unresolvable server is not a server that
+                    // said no, and `ok=false` alone cannot tell the two apart.
+                    let Some(c) = crate::plex::client_for(sid) else {
+                        log(&format!("item menu: rk={rk} deck removal DROPPED — server {} is not registered", sid.raw()));
+                        return;
+                    };
+                    let ok = c.remove_from_continue_watching(&rk);
                     let n = crate::pms::refetch_hubs_reconcile();
                     log(&format!("item menu: rk={rk} removed from deck ok={ok} → hubs refreshed ({n} items)"));
                 }
@@ -1706,7 +1785,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     // Re-resolve the catalog row by rk rather than holding a borrow across the menu:
                     // a hub refetch can rebuild the catalog while the popover is open.
-                    let i = crate::pms::index_of_rk(&rk);
+                    let i = crate::pms::index_of_rk(sid, &rk);
                     if let Some(mm) = (i >= 0).then(|| crate::pms::movie(i as usize)).flatten() {
                         play_item_now(mt, mm, true, HUD_LINGER_MS, route, played_from_detail, hud_nav);
                     }
@@ -2089,8 +2168,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     // "Go to Show/Movie" always lands on THIS rk's page, whatever
                                     // origin route the ritual would otherwise have chosen.
                                     if !rk.is_empty() {
+                                        // The played leaf's server, read BEFORE the exit ritual —
+                                        // `detail_rk` is that item's own show, so it is on the same
+                                        // machine, and the store this reads is torn down below.
+                                        let sid = crate::metadata::playing()
+                                            .map(|p| p.sid)
+                                            .unwrap_or_else(crate::plex::current_server);
                                         exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at, &mut trail);
-                                        crate::ui::detail::open_rk(&rk);
+                                        crate::ui::detail::open_rk(sid, &rk);
                                         // A LANDING, not a navigation, so the trail is made to agree
                                         // rather than pushed blindly: the exit above has usually
                                         // already put this very page on top (the show playback
@@ -2098,7 +2183,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                         // also strictly better than the flag it replaces — a
                                         // Library → detail → play → "Go to Show" now returns to the
                                         // Library instead of to Home.
-                                        trail.ensure_detail(&rk);
+                                        trail.ensure_detail(sid, &rk);
                                         route = Route::Detail;
                                     }
                                 }
@@ -2443,7 +2528,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // is how you get a page blanking during its own fade-out or a second
                             // BACK popping a node whose page is still on screen. Only the PEEK
                             // (does the page underneath wear the tab bar?) happens here.
-                            nav_back(route, &trail, &mut nav_pending);
+                            //
+                            // …but a panel the SCREEN has open takes the press first and the page
+                            // stays: `detail::back()` is `library::back()`'s shape one screen over
+                            // ("Also available" is part of the detail page, so leaving the page
+                            // must not be the way to close it). It answers false on Person, which
+                            // has no panel of its own.
+                            if !crate::ui::detail::back() {
+                                nav_back(route, &trail, &mut nav_pending);
+                            }
                         } else if matches!(route, Route::Library) {
                             // read BEFORE `back()`: its first press moves focus ONTO the tab row, so
                             // asking afterwards would report the pill it just landed on rather than
@@ -2801,7 +2894,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             .and_then(|s| s.parse::<c_int>().ok()).unwrap_or(0);
                         if let Some(pmm) = crate::ui::home::movie_at(pidx / COLS, pidx % COLS) {
                             crate::route::request_play_movie(pmm);
-                            crate::metadata::load_detail_now(&pmm.rk);
+                            crate::metadata::load_detail_now(pmm.sid, &pmm.rk);
                         }
                     }
                     let fd = matches!(route, Route::Detail);
@@ -2817,15 +2910,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     set_fr(0);
                 }
                 // dev: /tmp/plxnative-library[=N] boots straight into the Library browse grid on
-                // section N (empty file = 0) — the deterministic entry for the library FPS scenes.
+                // TAB PILL N (empty file = 0) — the deterministic entry for the library FPS scenes.
+                //
+                // N is a PILL, not a section index, and the two stopped being the same thing when
+                // the strip became one pill per TYPE (`browse::tab_section`). With one source they
+                // are still the identity map, which is every install this trigger has ever booted;
+                // with a friend's server granted, the pills are your own libraries plus any type
+                // only they have, so `library=1` is the second PILL rather than the second row of
+                // the table.
                 if let Some(s) = crate::dev::read("library") {
-                    let sec = s.parse::<usize>().unwrap_or(0);
+                    let tab = s.parse::<usize>().unwrap_or(0);
                     // A HARD CUT, deliberately: a transition means "this screen replaced that one",
                     // and at boot there is no outgoing screen to replace. The fade-in that IS wanted
                     // here belongs to the screen (`enter`'s own `xf().mount()`); dipping the whole
                     // page would fade the tab bar up from nothing too, which reads as a slow app
                     // rather than a navigated one.
-                    crate::ui::library::enter(sec, crate::ui::library::Arrival::Cut);
+                    crate::ui::library::enter(tab, crate::ui::library::Arrival::Cut);
                     route = Route::Library;
                 }
                 // dev: /tmp/plxnative-heroidx=<n> jumps the rotating hero to pool index n (flip capture)
@@ -2881,16 +2981,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if !rk.is_empty() {
                         // in-catalog rk keeps the catalog backdrop; an off-catalog rk still opens the
                         // page (open_rk falls back to the item's own art) so tests can target ANY rk.
-                        let idx = crate::pms::index_of_rk(rk);
+                        // a dev trigger names a bare rk, so it means the server this headless
+                        // boot signed in to — the only one it has
+                        let sid = crate::plex::current_server();
+                        let idx = crate::pms::index_of_rk(sid, rk);
                         // BLOCKING both ways: the sub-triggers below replay move_focus/on_ok in
                         // THIS frame, and they walk sections() — which is hero-only until the
                         // item lands.
                         if idx >= 0 {
                             crate::ui::detail::open(idx);
                         } else {
-                            crate::ui::detail::open_rk_now(rk);
+                            crate::ui::detail::open_rk_now(sid, rk);
                         }
-                        push_detail(&mut trail, &mut route, rk);
+                        push_detail(&mut trail, &mut route, sid, rk);
                         // dev: /tmp/plxnative-detailsec=N presses DOWN N times (headless episode/row
                         // capture). One press is one section EXCEPT inside a 2D block, where the first
                         // one moves within it: the episode filmstrip's still→metadata sub-row
@@ -2945,7 +3048,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // next statement, and this block sits behind a one-shot `play_tried`
                         // latch, so a deferred landing would have nothing left to consume it —
                         // every case in tests/manifest.json drives through here.
-                        crate::metadata::load_detail_now(rk); // fetch ANY rk (movie/show/episode)
+                        crate::metadata::load_detail_now(crate::plex::current_server(), rk); // fetch ANY rk (movie/show/episode)
                         // a movie/episode leaf carries its own part+codecs; a show has an
                         // empty part, so fall back to its first episode.
                         let leaf = crate::metadata::current().map(|d| {
@@ -2963,7 +3066,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
                             if !part.is_empty() {
                                 log(&format!("plxnative-play: rk={rk} start"));
-                                crate::route::request_play(rk, &part, &vc, &ac, &title, "");
+                                crate::route::request_play(crate::route::surface_sid(), rk, &part, &vc, &ac, &title, "");
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
                                 start_playback(mt, resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail, &mut hud_nav);
@@ -3391,6 +3494,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the store was installed by `person::open` on this same press, so these four
                     // are the header the cast row handed over — `person::reopen`'s arguments
                     let node = Node::Person {
+                        sid: p.sid,
                         key: p.key.clone(),
                         guid: p.guid.clone(),
                         name: p.name.clone(),
@@ -3418,9 +3522,52 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // Where the outgoing page was standing rides `NavReq::spot` like every other navigation
             // off a detail page — `nav_req` reads `leaving_spot` on this same frame — so the request
             // itself carries only the destination.
-            if let Some(rk) = crate::ui::detail::take_open_request() {
+            if let Some((sid, rk)) = crate::ui::detail::take_open_request() {
                 if matches!(route, Route::Detail) {
-                    nav_open(route, to_detail(&rk), None, &mut nav_pending);
+                    nav_open(route, to_detail(sid, &rk), None, &mut nav_pending);
+                }
+            }
+
+            // "Also available" (`ui::alt_sources`): the detail page reports the press, the panel is
+            // PRESENTED here — beside the control's drawn rect, the same division `item_menu` keeps
+            // with `home::focused_card_rect`. It is not a route: the page stays live behind it, and
+            // `detail::back()` is what a BACK spends on it.
+            if crate::ui::detail::take_alt_request() && matches!(route, Route::Detail) {
+                if let Some(r) = crate::ui::detail::alt_btn_rect() {
+                    crate::ui::alt_sources::open(r);
+                }
+            }
+            // …and a copy CHOSEN in that panel: open that server's own page for the film. The
+            // switch is performed here and not by the screen because re-pointing `client()`
+            // invalidates every store `activate_server` wipes — a ratingKey is per-server, so a
+            // hub catalog or browse grid left over from the source we are leaving would open a
+            // different film from every card on it.
+            //
+            // The trail is truncated to its ROOT, and the reason CHANGED when the identity work
+            // landed beside this: `Node::Detail`/`Node::Person` now carry the server their key
+            // belongs to, so it is no longer true that the pages behind this one cannot name their
+            // machine. What is still true is that RE-ENTERING one does not re-point `client()` —
+            // BACK restores a route, not a server — so a node from the source we just left would
+            // resolve its ratingKey against the machine we just moved to, which is the same wrong
+            // film by a longer path. `Node::Library` has no payload at all (browse.rs holds the
+            // section, and `activate_server` has just wiped it), so it cannot survive the move
+            // either way. BACK from the destination therefore reaches Home — of the source you
+            // switched to, which is where you now are. A reset to the root is the one trail move
+            // allowed on the press frame (the Library arm's rule): Home is `stack[0]`, so
+            // truncating is idempotent. Re-pointing on BACK is the follow-up that retires this.
+            if let Some((sid, rk)) = crate::ui::detail::take_alt_open() {
+                if !matches!(route, Route::Detail) {
+                } else if crate::plex::set_current(sid) {
+                    log(&format!("altsources: source switched to slot {} for rk={rk}", sid.raw()));
+                    activate_server();
+                    trail.reset();
+                    nav_open(route, to_detail(sid, &rk), None, &mut nav_pending);
+                } else {
+                    // a copy whose source is not registered (a share dropped from the roster, or
+                    // the headless stand-in): say so and stay put, rather than opening this
+                    // ratingKey on whatever machine happens to be current — which would
+                    // confidently show a different film
+                    log(&format!("altsources: no client for slot {} — not navigating", sid.raw()));
                 }
             }
 
@@ -3459,11 +3606,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // grid card and the BACK key raise, teardown included, so the scene measures
                     // the whole round trip and not just its cheaper half
                     Route::Home if !nav_osc_rk.is_empty() => {
-                        nav_open(route, to_detail(&nav_osc_rk), None, &mut nav_pending)
+                        // a dev trigger names a bare rk, so it means "on the server we are signed
+                        // in to" — the only server a headless boot has
+                        nav_open(route, to_detail(crate::plex::current_server(), &nav_osc_rk), None, &mut nav_pending)
                     }
                     Route::Detail => nav_back(route, &trail, &mut nav_pending),
                     Route::Home => nav_to(route, Nav::Library(0), &mut nav_pending),
-                    // pill 1 is that same first section: Home comes back in the hero view with the
+                    // pill 1 is that same first TAB — not "the first section", which stopped being
+                    // the same thing when the strip became a projection of the table (`browse::tabs`):
+                    // several libraries can share one pill. Home comes back in the hero view with the
                     // top band on the pill the round trip started from, so the scene is a loop
                     Route::Library => nav_to(route, Nav::Home { focus_pill: Some(1) }, &mut nav_pending),
                     _ => {}
@@ -3525,8 +3676,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // but now behind a page already at alpha 0 instead of stalling the
                             // frame the user's press landed on. `enter_node` then finds the page
                             // mounted and only flips the route.
-                            if let (Node::Detail { rk, .. }, Some(s)) = (&node, season) {
-                                crate::ui::detail::open_rk_season(rk, s);
+                            if let (Node::Detail { sid, rk, .. }, Some(s)) = (&node, season) {
+                                crate::ui::detail::open_rk_season(*sid, rk, s);
                             }
                             enter_node(&node, &mut route);
                             // AFTER the entry: the guard inside it asks what is currently loaded,

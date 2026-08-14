@@ -2,6 +2,7 @@
 //! via movie()/hub_item()/hero_pool_item(), plus urlenc_str (shared by posters/route).
 //! The fetch + JSON parse go through the typed `crate::plex` client (serde DTOs) — no
 //! hand-built paths or `Value` scraping here.
+use crate::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -13,6 +14,14 @@ const PMS_MAX_MOVIES: usize = 256;
 /// consumer remains). Fields pub(crate) so the UI / route / player read them directly.
 #[derive(Default)]
 pub struct PmsMovie {
+    /// WHICH SERVER this row came from. Every other identity on it — `rk`, `show_rk`, `part` — is a
+    /// server-local key that a second server reuses from 1 (docs/shared-servers.md §2 measured the
+    /// collision), so the row is only addressable as the PAIR `(sid, rk)`; see
+    /// [`crate::plex::same_item`]. Stamped by [`parse_item`] from a value the SPAWNING thread
+    /// captured, never from `plex::current_server()` inside the worker — `parse_item` runs on the
+    /// hub, page and person workers, and by the time one of them parses, "the current server" may
+    /// already be a different machine than the one whose bytes it is holding.
+    pub(crate) sid: ServerId,
     pub(crate) title: String,
     pub(crate) year: c_int,
     pub(crate) rating: String,
@@ -80,9 +89,21 @@ fn catalog() -> &'static Vec<PmsMovie> {
 pub(crate) fn movie(i: usize) -> Option<&'static PmsMovie> {
     catalog().get(i)
 }
-/// catalog index whose ratingKey == `rk` (for the /tmp/plxnative-detail probe), or -1
-pub(crate) fn index_of_rk(rk: &str) -> c_int {
-    catalog().iter().position(|m| m.rk == rk).map(|i| i as c_int).unwrap_or(-1)
+/// Catalog index of the row `(sid, rk)` names, or -1.
+///
+/// **Server-scoped, and that is the whole point.** This used to scan `m.rk == rk` over one flat
+/// catalog, which is unambiguous only while every row comes from one machine. On a Continue
+/// Watching shelf merged across servers it is not: a friend's episode and one of ours can carry the
+/// same ratingKey, so a bare-key scan returns whichever row is EARLIER — and the callers are the
+/// item menu's Play-from-Start (which then plays a different film with the friend's title still in
+/// the HUD) and `detail::mount_rk` (which mounts the wrong backdrop, blur envelope and selection).
+/// -1 stays "not in the hub catalog", which every caller already handles as "off-catalog".
+pub(crate) fn index_of_rk(sid: ServerId, rk: &str) -> c_int {
+    catalog()
+        .iter()
+        .position(|m| crate::plex::same_item((m.sid, &m.rk), (sid, rk)))
+        .map(|i| i as c_int)
+        .unwrap_or(-1)
 }
 
 // ---- helpers ----
@@ -108,9 +129,16 @@ pub(crate) fn urlenc_str(src: &str) -> String {
 }
 
 /// Parse one Plex `Metadata` item (from a section listing OR a hub) into a catalog row.
-/// pub(crate): the Library browse store (`browse.rs`) maps its paged listings with it too.
-pub(crate) fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
-    let mut m = PmsMovie::default();
+/// pub(crate): the Library browse store (`browse.rs`) and the person page (`person.rs`) map their
+/// listings with it too.
+///
+/// `sid` is the server the response came from and is **passed in, never looked up**: all three
+/// callers run this on a worker thread, and the house rule (`browse.rs`'s spawn site states it
+/// outright) is that a worker reads no statics. It is also the only correct answer — the current
+/// server can change while a page fetch is in flight, and the rows in hand belong to the machine
+/// that was asked, not to whichever one is current when they finish parsing.
+pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
+    let mut m = PmsMovie { sid, ..Default::default() };
     m.kind = match it.kind.as_str() {
         "show" => 1,
         "season" => 2,
@@ -183,7 +211,7 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata) -> PmsMovie {
 struct HubRow {
     title: String,
     hub_id: String, // locale-independent hubIdentifier ("home.continue", "home.movies.recent", …)
-    /// Which SERVER this shelf's items came from, as the owner's handle ("bamx23") — empty
+    /// Which SERVER this shelf's items came from, as the owner's handle ("friend") — empty
     /// whenever the row came from the signed-in user's own server, which is every row today.
     /// Empty is the ABSENCE of an annotation, not an empty one: the home shelf heading draws no
     /// separator and no second run at all for it (`ui::home::heading_flow`), so the annotation costs
@@ -202,16 +230,63 @@ fn hubs() -> &'static Vec<HubRow> {
 
 // ---- rotating hero pool: curated catalog indices (Continue Watching then Recently Added) ----
 const HERO_MAX: usize = 8;
-static mut HERO_POOL: Vec<usize> = Vec::new();
+
+/// One page of the rotating billboard: a catalog index, plus the handle of the SERVER the shelf it
+/// was drawn from came from ("friend") — empty for the signed-in user's own, exactly as
+/// [`HubRow::source`] means it.
+///
+/// The handle is carried on the SLOT rather than looked up from the item's shelf at draw time, and
+/// that is the point of the type existing at all: the pool is the one place in the app that lifts
+/// items OUT of their shelf order ([`own_items_first`] promotes an owned page to the front), so a
+/// pool entry that only knew its catalog index would have to find its way back to a hub through a
+/// range scan to answer "whose is this" — for a fact the build already had in its hand.
+struct HeroSlot {
+    idx: usize,
+    source: String,
+}
+static mut HERO_POOL: Vec<HeroSlot> = Vec::new();
+
+fn pool() -> &'static Vec<HeroSlot> {
+    unsafe { &*std::ptr::addr_of!(HERO_POOL) }
+}
 
 /// number of items in the rotating hero pool
 pub(crate) fn hero_pool_len() -> usize {
-    unsafe { std::ptr::addr_of!(HERO_POOL).as_ref().map(|v| v.len()).unwrap_or(0) }
+    pool().len()
 }
 /// hero-pool item `i`, or None
 pub(crate) fn hero_pool_item(i: usize) -> Option<&'static PmsMovie> {
-    let idx = unsafe { std::ptr::addr_of!(HERO_POOL).as_ref() }.and_then(|v| v.get(i)).copied()?;
-    movie(idx)
+    movie(pool().get(i)?.idx)
+}
+/// Handle of the server hero-pool page `i` came from ("friend"), or **empty** for the signed-in
+/// user's own — see [`HeroSlot`]. The hero's meta line draws no run at all for the empty case
+/// (`ui::home::meta_source_flow`), so a single-server library pays nothing for this. Borrowed on the
+/// same terms as [`hub_title`]: main-thread only, valid until the next hub commit.
+pub(crate) fn hero_pool_source(i: usize) -> &'static str {
+    pool().get(i).map(|s| s.source.as_str()).unwrap_or("")
+}
+
+/// **Own items first — an ORDERING, not a filter** (Shared Sources, deliverable C).
+///
+/// A borrowed item may not hold the FIRST rotation while the owner contributes at least one, so the
+/// app's front door opens on your own library and a friend's film arrives one 8-second flip in,
+/// attributed. Everything else about the pool is untouched: it stays merged, in the order the
+/// shelves produced it, and the promoted page is lifted out and re-inserted rather than sorted, so
+/// `[B1, B2, O1, O2, B3]` becomes `[O1, B1, B2, O2, B3]` — one page moves, nothing is dropped and
+/// nothing else is reordered.
+///
+/// Filtering instead would leave a borrowed-only account with **no hero at all**, and would overrule
+/// a pin the user made; that is why a pool with nothing of our own in it is left exactly as it is and
+/// opens on a borrowed page. This is also why the rule needs no switch of its own: the pool is built
+/// from included sources only, so a borrowed hero is always the consequence of a pin.
+fn own_items_first(pool: &mut Vec<HeroSlot>) {
+    if pool.first().map(|s| s.source.is_empty()).unwrap_or(true) {
+        return; // nothing pooled, or one of ours already opens the door
+    }
+    if let Some(k) = pool.iter().position(|s| s.source.is_empty()) {
+        let own = pool.remove(k);
+        pool.insert(0, own);
+    }
 }
 
 /// number of home hubs
@@ -223,7 +298,7 @@ pub(crate) fn hub_count() -> usize {
 pub(crate) fn hub_title(i: usize) -> &'static str {
     hubs().get(i).map(|h| h.title.as_str()).unwrap_or("")
 }
-/// Handle of the server hub `i` came from ("bamx23"), or **empty** for the signed-in user's own
+/// Handle of the server hub `i` came from ("friend"), or **empty** for the signed-in user's own
 /// server — see [`HubRow::source`]. Borrowed on the same terms as [`hub_title`]: main-thread only,
 /// valid until the next hub commit.
 pub(crate) fn hub_source(i: usize) -> &'static str {
@@ -270,7 +345,10 @@ pub(crate) fn refetch_hubs_reconcile() -> c_int {
 /// old comment was defending is intact — all three statics still only ever move together.
 pub(crate) fn pms_fetch_hubs() -> c_int {
     HUB_GEN.fetch_add(1, Ordering::SeqCst); // supersede any retry already in flight
-    match catch_unwind(fetch_build) {
+    // MAIN THREAD: which server these shelves will describe, captured here and carried into the
+    // parse — the same capture `kick_refetch` makes at its spawn site (see `parse_item`).
+    let sid = crate::plex::current_server();
+    match catch_unwind(move || fetch_build(sid)) {
         Ok(Some(build)) => commit(build),
         _ => {
             fail();
@@ -281,13 +359,16 @@ pub(crate) fn pms_fetch_hubs() -> c_int {
 
 /// The catalog/hubs/pool triple a fetch produces, before it is committed. Owned data only, so
 /// the off-thread refetch can build it on a worker and hand it over through a mailbox.
-type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<usize>);
+type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<HeroSlot>);
 
 /// GET /hubs and project it — the whole fetch, minus the commit. `None` = the request failed
 /// (transport, HTTP, or parse), which is NOT the same as a server with no hubs (`Some` with an
 /// empty build). Shared verbatim by the blocking boot fetch and the off-thread retry.
-fn fetch_build() -> Option<HubBuild> {
-    let c = crate::plex::client_opt()?;
+fn fetch_build(sid: ServerId) -> Option<HubBuild> {
+    // `client_for(sid)`, not `client_opt()`: this runs on the retry worker, and the current server
+    // is a static that a login or a server switch can move under it. Asking for the slot the
+    // spawning frame chose is what makes the rows it parses provably that server's.
+    let c = crate::plex::client_for(sid)?;
     let mc = c.home_hubs(12)?;
     // The Continue Watching shelf comes from the DEDICATED hub, not from `/hubs`'s
     // `home.continue` + `home.ondeck` pair — see `build_hubs`. Its failure fails the whole fetch
@@ -295,14 +376,15 @@ fn fetch_build() -> Option<HubBuild> {
     // last consistent values, and `pump` retries on a backoff. Losing the most important shelf to a
     // transient error would be worse than briefly showing the previous one.
     let cw = c.continue_watching(12)?;
-    Some(build_hubs(&mc, &cw))
+    Some(build_hubs(&mc, &cw, sid))
 }
 
-/// Project a /hubs response into the catalog/hubs/pool triple. Pure — no statics, no I/O.
-fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer) -> HubBuild {
+/// Project a /hubs response into the catalog/hubs/pool triple. Pure — no statics, no I/O; `sid`
+/// is the server the two containers came from, stamped onto every row it builds.
+fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer, sid: ServerId) -> HubBuild {
     let mut new_cat: Vec<PmsMovie> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
-    let mut new_pool: Vec<usize> = Vec::new();
+    let mut new_pool: Vec<HeroSlot> = Vec::new();
     const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
 
     // Build the display shelves as ordered lists of item refs.
@@ -352,7 +434,7 @@ fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer
             if new_cat.len() >= PMS_MAX_MOVIES {
                 break;
             }
-            let m = parse_item(item);
+            let m = parse_item(item, sid);
             if !m.title.is_empty() && !m.thumb.is_empty() {
                 new_cat.push(m); // need a poster to show it in a shelf
             }
@@ -390,12 +472,24 @@ fn build_hubs(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer
             if m.art.is_empty() || m.kind == 2 {
                 continue; // need landscape art; skip seasons
             }
-            if new_pool.iter().any(|&j| new_cat[j].rk == m.rk) {
-                continue; // dedup by ratingKey
+            // dedup by the item's IDENTITY, not by its bare key: two shelves merged from two
+            // servers can each contribute a different film numbered 1, and a bare-key dedup would
+            // silently drop the second from the hero rotation.
+            //
+            // NB the pool holds `HeroSlot`s, so the index is `s.idx` — unit 12's hero-ordering work
+            // and unit 3's identity work landed in this same expression from opposite directions.
+            if new_pool
+                .iter()
+                .any(|s| crate::plex::same_item((new_cat[s.idx].sid, &new_cat[s.idx].rk), (m.sid, &m.rk)))
+            {
+                continue;
             }
-            new_pool.push(idx);
+            new_pool.push(HeroSlot { idx, source: hub.source.clone() });
         }
     }
+    // …and only now is the order decided: the pool is assembled shelf by shelf, so which server
+    // opens the door is not knowable until every shelf has contributed.
+    own_items_first(&mut new_pool);
     (new_cat, new_hubs, new_pool)
 }
 
@@ -512,8 +606,12 @@ fn kick_refetch() {
         std::ptr::addr_of_mut!(RETRY_S).write(0.0);
     }
     let gen = HUB_GEN.load(Ordering::SeqCst);
+    // CAPTURED AT THE SPAWN SITE (main thread), like the generation beside it: the worker must not
+    // read `plex::current_server()` itself, or a server switch mid-retry would stamp this server's
+    // rows with the other machine's id — the one thing every rk comparison downstream then trusts.
+    let sid = crate::plex::current_server();
     let spawned = crate::task::spawn_small("hubs", move || {
-        let built = catch_unwind(fetch_build).ok().flatten();
+        let built = catch_unwind(move || fetch_build(sid)).ok().flatten();
         // filled OUTSIDE the guard so a panicking fetch still lands (as a failure) rather than
         // latching the single flight forever
         *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -727,6 +825,145 @@ mod tests {
         pump(0.0);
         assert_eq!(hub_len(0), 2, "the stale build must not replace the current catalog");
         assert_eq!(hub_state(), HubState::Ready, "nor be counted as a failure of the current one");
+        reset();
+    }
+
+    // ---- own-items-first: which server opens the front door (Shared Sources, deliverable C) ----
+    //
+    // Pure list arithmetic over `HeroSlot`, so these touch no static and take no lock. The pool is
+    // spelled as a source string per page — "" is ours, anything else a friend's handle — which is
+    // exactly what `build_hubs` hands `own_items_first` after every shelf has contributed.
+
+    /// A pool from a source-per-page spelling, and the spelling back out of one.
+    fn pool_of(sources: &[&str]) -> Vec<HeroSlot> {
+        sources.iter().enumerate().map(|(i, s)| HeroSlot { idx: i, source: s.to_string() }).collect()
+    }
+    fn sources_of(pool: &[HeroSlot]) -> Vec<&str> {
+        pool.iter().map(|s| s.source.as_str()).collect()
+    }
+
+    /// **The rule.** A borrowed film may not be the first thing the app shows while the owner has
+    /// contributed one — the door opens on your own library and a friend's arrives one flip in.
+    /// And it is an ORDERING: the pool stays merged, exactly one page moves, and everything else
+    /// keeps the order the shelves produced it in (a sort would have swept every borrowed page to
+    /// the tail, which is a filter wearing an ordering's clothes).
+    #[test]
+    fn a_borrowed_page_never_opens_the_door_while_we_have_one_of_our_own() {
+        let mut p = pool_of(&["friend", "friend", "", "", "ldn"]);
+        own_items_first(&mut p);
+        assert_eq!(sources_of(&p), ["", "friend", "friend", "", "ldn"], "one page is promoted, nothing else moves");
+        assert_eq!(p.iter().map(|s| s.idx).collect::<Vec<_>>(), [2, 0, 1, 3, 4], "every page survives — this is not a filter");
+    }
+
+    /// Already ours at the front: the rule must be a no-op, not a re-shuffle that happens to look
+    /// the same. (It is also the ONE-SERVER case, where the whole feature must be invisible: every
+    /// page's source is empty, so the first page is ours and nothing is touched.)
+    #[test]
+    fn a_pool_that_already_opens_on_one_of_ours_is_left_exactly_alone() {
+        for spelling in [vec!["", "", ""], vec!["", "friend", ""], vec!["", "friend"]] {
+            let mut p = pool_of(&spelling);
+            own_items_first(&mut p);
+            assert_eq!(sources_of(&p), spelling, "an already-owned first page must not reorder the pool");
+        }
+    }
+
+    /// A borrowed-ONLY account keeps its borrowed hero, first rotation and all. Filtering instead
+    /// would leave the front door with no billboard at all — and would overrule a pin the user
+    /// made, which is the whole reason this is an ordering.
+    #[test]
+    fn a_borrowed_only_account_still_gets_a_hero_and_it_holds_the_first_rotation() {
+        let mut p = pool_of(&["friend", "ldn", "friend"]);
+        own_items_first(&mut p);
+        assert_eq!(sources_of(&p), ["friend", "ldn", "friend"], "nothing of ours to promote — leave the pool as it is");
+        assert_eq!(p.len(), 3, "and above all: do not empty the billboard");
+    }
+
+    /// The degenerate ends, because this runs on every commit: an empty pool must not index into
+    /// nothing, and a single borrowed page must survive (it is the borrowed-only account's whole
+    /// billboard).
+    #[test]
+    fn the_ordering_holds_at_the_empty_and_single_page_ends() {
+        let mut empty: Vec<HeroSlot> = Vec::new();
+        own_items_first(&mut empty);
+        assert!(empty.is_empty());
+        for one in [vec![""], vec!["afriend"]] {
+            let mut p = pool_of(&one);
+            own_items_first(&mut p);
+            assert_eq!(sources_of(&p), one);
+        }
+    }
+
+    /// The STAMPING contract, and the linchpin under every `(sid, rk)` test in the crate: if
+    /// `parse_item` did not record the server it was told, every row would carry `UNSET`, every
+    /// pair would compare equal, and each of those tests would pass while the app aliased two
+    /// servers' items in production. Graded through `build_hubs` — the shipped projection, from a
+    /// real `/hubs` body — rather than through `parse_item` alone, because the row that has to
+    /// carry the id is the row that reaches the catalog.
+    ///
+    /// Pure: no statics, no I/O, so no serial lock.
+    #[test]
+    fn every_row_a_hub_fetch_builds_is_stamped_with_the_server_it_was_asked_of() {
+        let body = |rk: &str, title: &str| {
+            format!(
+                r#"{{"MediaContainer":{{"Hub":[{{"type":"movie","hubIdentifier":"home.movies.recent",
+                   "title":"Recently Added","Metadata":[{{"ratingKey":"{rk}","type":"movie","title":"{title}",
+                   "thumb":"/t.jpg","art":"/a.jpg"}}]}}]}}}}"#
+            )
+        };
+        let parse = |s: String| {
+            serde_json::from_str::<crate::plex::Envelope>(&s).expect("a PMS body parses").media_container
+        };
+        let empty = crate::plex::MediaContainer::default();
+        let sid = ServerId::from_raw(3);
+
+        let (cat, hubs, pool) = build_hubs(&parse(body("1", "Ours")), &empty, sid);
+        assert_eq!(hubs.len(), 1, "the shelf survived the title/poster filter");
+        assert_eq!(cat.len(), 1);
+        assert_eq!((cat[0].sid, cat[0].rk.as_str()), (sid, "1"), "the row names the server it came from");
+        assert_eq!(pool.len(), 1, "…and so does the hero pool's row, by construction");
+
+        // the same wire body parsed for ANOTHER server must not produce rows that compare equal to
+        // the first server's — this is the whole reason the field exists
+        let other = ServerId::from_raw(4);
+        let (cat2, _, _) = build_hubs(&parse(body("1", "Theirs")), &empty, other);
+        assert!(
+            !crate::plex::same_item((cat[0].sid, &cat[0].rk), (cat2[0].sid, &cat2[0].rk)),
+            "one ratingKey from two servers must never alias"
+        );
+    }
+
+    /// **A ratingKey alone does not name an item once a second server exists.** Both servers
+    /// number from 1, so the merged catalog below holds two different films called `"1"` — and the
+    /// bare-key scan this replaced returned the FIRST of them to every caller, which is a play of
+    /// the wrong film from the item menu and the wrong backdrop on the detail page.
+    #[test]
+    fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
+        let _g = crate::testlock::serial();
+        reset();
+        let (a, b) = (ServerId::from_raw(0), ServerId::from_raw(1));
+        let row = |sid: ServerId, rk: &str, title: &str| PmsMovie {
+            sid,
+            rk: rk.to_string(),
+            title: title.to_string(),
+            ..Default::default()
+        };
+        // ours first, so a bare-key scan would always answer with it
+        let cat = vec![row(a, "1", "ours"), row(a, "2", "ours too"), row(b, "1", "the friend's")];
+        let hubs = vec![HubRow {
+            title: "Continue Watching".into(),
+            hub_id: "home.continue".into(),
+            source: String::new(),
+            start: 0,
+            len: 3,
+        }];
+        commit((cat, hubs, Vec::new()));
+
+        assert_eq!(index_of_rk(a, "1"), 0);
+        assert_eq!(index_of_rk(b, "1"), 2, "the SHARE's item 1, not ours");
+        assert_eq!(movie(index_of_rk(b, "1") as usize).map(|m| m.title.as_str()), Some("the friend's"));
+        assert_eq!(index_of_rk(a, "2"), 1);
+        assert_eq!(index_of_rk(b, "2"), -1, "a key our server has and the share does not is a MISS");
+        assert_eq!(index_of_rk(ServerId::UNSET, "1"), -1, "and an unscoped lookup answers for neither");
         reset();
     }
 

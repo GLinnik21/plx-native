@@ -15,7 +15,23 @@
 //!
 //! All statics are main-thread-only (same discipline as `pms.rs`); the worker threads touch
 //! only the mailboxes + atomics and the `&'static` plex client.
-use crate::plex::SectionQuery;
+//!
+//! ## The table addresses (SOURCE, section), not a section
+//!
+//! A section key is only unique within one server: measured 2026-08-11 against a real share, our
+//! own server's section `1` and the friend's section `1` are different libraries, and each server
+//! answers 401 to the other's token. So the table is a flat `Vec<BrowseSection>` whose every entry
+//! names its [`BrowseSource`], and every fetch is issued through `client_for(source.sid)` captured
+//! AT THE SPAWN SITE — never `client()` read inside a worker, which would dial whichever server
+//! happened to be current when the thread got scheduled.
+//!
+//! **It grows by APPEND and never by rebuild**, which is what keeps the page mailbox sound. A page
+//! landing is blamed on a section INDEX (`PageResult.sec`), so an index that moved under an
+//! in-flight fetch would splice one library's items into another's store. The old
+//! `ensure_sections` early-return was the only thing preventing that; appending is the property
+//! that replaces it, and it holds for every source that lands later rather than only for the
+//! second call.
+use crate::plex::{SectionQuery, ServerId};
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
@@ -26,13 +42,66 @@ use std::sync::Mutex;
 /// full-screen scroll rarely waits, small enough that a page parse stays invisible on-frame.
 const PAGE: usize = 60;
 
-// ---- section table (discovered once) -------------------------------------------------------
+/// Frames between attempts to reach a source whose discovery failed. Far longer than the page
+/// retry (`RETRY_CD`, ~2 s): a page retry is racing a user looking at a spinner, while an
+/// unreachable SHARE is a state the Sources list states in words and nobody is waiting on. Each
+/// attempt can also park a worker in `connect(2)` for its full timeout, so a short backoff would
+/// keep one thread permanently occupied for a server that is simply switched off.
+const SRC_RETRY_CD: u32 = 600; // ~10 s at 60 fps
 
-/// One browsable library section (movie or show), from `GET /library/sections`.
+// ---- the granted roster: the SOURCE dimension of the table ----------------------------------
+
+/// One SOURCE the table is addressed by — a server this account has been granted. Comes from the
+/// [server registry](crate::plex::server_ids), which is the granted roster: a server is registered
+/// only once plex.tv (or the `plxnative-servers` dev trigger) handed us a token for it.
+pub(crate) struct BrowseSource {
+    /// The registry slot every fetch for this source's sections is issued through.
+    pub(crate) sid: ServerId,
+    /// The MACHINE name ("nas-home") — the Sources list's group header, and the only place in the
+    /// app a machine is named. Learned from the roster, else from the server naming itself
+    /// (`Client::friendly_name`); `""` until one of those lands.
+    pub(crate) name: String,
+    /// The owner's plex.tv handle ("friend"); **empty on your own server**, where the absence of an
+    /// owner is drawn as the absence of a run rather than as an empty one.
+    pub(crate) handle: String,
+    /// Did it ANSWER? One of the design's three orthogonal states — *granted* (the roster's
+    /// answer), *pinned* (the only control), *reachable* (a fact about now). A source that has
+    /// stopped answering keeps every section it had learned and every pin on them: its group dims
+    /// whole and still reads `On`, because nothing was unpinned. Hiding it would read as a
+    /// revoked share.
+    pub(crate) reachable: bool,
+    /// its `/library/sections` has landed — sections are appended exactly once per source
+    sections_done: bool,
+    /// its per-library item counts have landed (the row sub-line's "185 films")
+    counts_done: bool,
+    /// frames before the next discovery attempt after a failure (main-thread; [`pump`] counts down)
+    retry_cd: u32,
+}
+
+// ---- section table (discovered per source) ---------------------------------------------------
+
+/// One browsable library section (movie or show), from one source's `GET /library/sections`.
 pub(crate) struct BrowseSection {
+    /// index into [`SOURCES`] — the server half of this row's address. A bare `key` names two
+    /// different libraries the moment a second server is granted.
+    pub(crate) src: usize,
     pub(crate) key: i64,
     pub(crate) title: String,
-    pub(crate) is_show: bool,
+    /// The library's TYPE. A real type and not the `is_show: bool` this replaced, because the tab
+    /// projection asks "does any owned library have this KIND" ([`tabs`]) — and with two values that
+    /// question cannot tell Music from Movies, so a friend's music library would fold onto your
+    /// *Movies* pill, which is the one case the projection exists to get right.
+    pub(crate) kind: SecKind,
+    /// The library's own item count, unfiltered — the Sources row's "185 films". `-1` until the
+    /// count probe lands. Deliberately NOT [`SecState::total`], which is the count of the CURRENT
+    /// QUERY: with an unwatched filter on, that number describes what you are looking at and would
+    /// misdescribe the library in a list whose whole job is naming libraries.
+    pub(crate) count: i64,
+    /// Does this library feed **Home**? The design's one control. It governs Home and nothing
+    /// else: tabs, grid, sort and the A–Z rail all come from the GRANT, which is not a setting.
+    /// Your own libraries start pinned and a friend's start unpinned, which is the first-run state
+    /// the design specifies; the last pinned library cannot be turned off, or Home has nothing.
+    pub(crate) pinned: bool,
 }
 
 /// One sort-menu entry (from `Meta.Type[].Sort` — server-driven).
@@ -129,19 +198,9 @@ impl Default for SecState {
     }
 }
 
+static mut SOURCES: Vec<BrowseSource> = Vec::new();
 static mut SECTIONS: Vec<BrowseSection> = Vec::new();
 static mut STATES: Vec<SecState> = Vec::new();
-/// What the last section-TABLE discovery did — [`SecFetch`] one layer up, and the same bug one
-/// layer up with it. [`ensure_sections`] swallowed every failure into `unwrap_or_default`, so a
-/// server that could not be reached at all was indistinguishable from one whose table had simply
-/// not been asked for yet: no section, no state, `fetch_state()` answering `Loading` from its
-/// `unwrap_or`, and the Library grid spinning for the rest of the session. A page failure and a
-/// table failure are ONE symptom on ONE screen, so they are one read-out, and this is the half that
-/// was missing.
-///
-/// `Ready` includes "the server answered and has nothing we browse" — a music-only account is an
-/// answer, not a fault, exactly as an empty listing is (`StatusKind::Empty`'s rule).
-static mut SECTIONS_FETCH: SecFetch = SecFetch::Loading;
 static mut CUR: usize = 0;
 /// Wanted item-index range (inclusive lo, exclusive hi) — set by the grid each frame from its
 /// visible rows + lookahead; [`pump`] fetches the first missing page inside it.
@@ -149,6 +208,13 @@ static mut WANT: (usize, usize) = (0, 0);
 
 fn sections() -> &'static Vec<BrowseSection> {
     unsafe { &*addr_of!(SECTIONS) }
+}
+/// The granted roster, in registration order — the session's own server first.
+pub(crate) fn sources() -> &'static [BrowseSource] {
+    unsafe { &*addr_of!(SOURCES) }
+}
+fn source_mut(i: usize) -> Option<&'static mut BrowseSource> {
+    unsafe { (&mut *addr_of_mut!(SOURCES)).get_mut(i) }
 }
 fn states() -> &'static Vec<SecState> {
     unsafe { &*addr_of!(STATES) }
@@ -163,18 +229,27 @@ fn cur_state() -> Option<&'static SecState> {
 // ---- fetch plumbing (generation + single-flight + mailboxes) --------------------------------
 
 static GEN: AtomicU32 = AtomicU32::new(0);
-/// Bumped whenever the section TABLE is rebuilt ([`ensure_sections`]/[`reset`]) — landings
-/// keyed by section INDEX are only applied when their table generation still matches, and
-/// the tab-row label cache invalidates on it.
+/// Bumped whenever the section table's SHAPE changes — a source's sections appended, or the whole
+/// table wiped by [`reset`]. Label/measurement caches keyed on the table (the tab strip's pill
+/// widths, the rail's letters) invalidate on it. Because the table only ever GROWS, a cache keyed
+/// on this is complete: no existing entry can have changed under it.
 static SECTIONS_GEN: AtomicU32 = AtomicU32::new(0);
+/// The table's IDENTITY epoch — bumped by [`reset`] and by nothing else, i.e. exactly when the
+/// signed-in account changes and every index in the table stops meaning what it meant.
+///
+/// Landings blamed on a section INDEX gate on this rather than on [`SECTIONS_GEN`]: an APPEND from
+/// one source must not discard a landing in flight for another, and it cannot invalidate one
+/// either, because appending never moves an existing index.
+static EPOCH: AtomicU32 = AtomicU32::new(0);
 static FETCHING: AtomicBool = AtomicBool::new(false);
 static GENRE_FETCHING: AtomicBool = AtomicBool::new(false);
 static LETTERS_FETCHING: AtomicBool = AtomicBool::new(false);
+static SRC_FETCHING: AtomicBool = AtomicBool::new(false);
 /// Every single-flight flag, in one place. These are cleared ONLY inside a successful mailbox
 /// take, so [`reset`] — which drops the mailboxes — must clear them too or the fetch stays
 /// latched forever and the screen wedges on a spinner. **Add a new flag here, not just above**,
 /// and `reset` picks it up for free.
-const IN_FLIGHT: [&AtomicBool; 3] = [&FETCHING, &GENRE_FETCHING, &LETTERS_FETCHING];
+const IN_FLIGHT: [&AtomicBool; 4] = [&FETCHING, &GENRE_FETCHING, &LETTERS_FETCHING, &SRC_FETCHING];
 /// Frames left before another page fetch may spawn after a FAILED one (main-thread; pump
 /// decrements). Stops a fast-failing network from spawning a worker per frame.
 static mut RETRY_CD: u32 = 0;
@@ -190,10 +265,31 @@ struct PageResult {
     sorts: Option<Vec<SortEntry>>, // Some when the fetch carried includeMeta=1
 }
 static PAGE_RESULT: Mutex<Option<PageResult>> = Mutex::new(None);
-// menu-data landings carry the section-table generation so a landing spawned before a
-// [`reset`] (profile switch) can never populate the NEW user's state at the same index
+// menu-data landings carry the table EPOCH so a landing spawned before a [`reset`] (profile
+// switch) can never populate the NEW user's state at the same index
 static GENRE_RESULT: Mutex<Option<(u32, usize, Vec<GenreEntry>)>> = Mutex::new(None);
 static LETTER_RESULT: Mutex<Option<(u32, usize, Vec<(String, i64)>)>> = Mutex::new(None);
+
+/// What a source-discovery worker brings back, per SOURCE — named by its index, which appending
+/// can never move.
+///
+/// `name` rides EVERY landing rather than only the section one, because the current server's
+/// sections are discovered on the main thread ([`ensure_sections`]) and so never reach a worker at
+/// that phase; without this its group header would be the one blank line in the panel.
+struct SrcLanding {
+    /// `GET /`'s `friendlyName`, or "" when it was already known or the server did not answer
+    name: String,
+    what: SrcWhat,
+}
+enum SrcWhat {
+    /// `GET /library/sections`. `None` is the FAILURE sentinel — the source is marked unreachable
+    /// and whatever sections it had already contributed are left exactly where they are.
+    Sections(Option<Vec<(i64, String, SecKind)>>),
+    /// The unfiltered item count per library, **by section KEY** rather than by index: the table
+    /// may have grown between the spawn and the landing, and a key is stable inside one source.
+    Counts(Vec<(i64, i64)>),
+}
+static SRC_RESULT: Mutex<Option<(u32, usize, SrcLanding)>> = Mutex::new(None);
 
 /// Supersede everything in flight for the CURRENT query (sort/filter/section change): a late
 /// landing with an older generation is discarded by [`pump`].
@@ -224,27 +320,34 @@ fn requery() {
 pub(crate) fn reset() {
     bump_gen();
     SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
+    EPOCH.fetch_add(1, Ordering::SeqCst);
     *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *GENRE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *LETTER_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // Dropping a mailbox without clearing its flag latches the fetch forever (the flag is only
     // cleared on a successful take), so the two must move together.
     for f in IN_FLIGHT {
         f.store(false, Ordering::SeqCst);
     }
     unsafe {
+        *addr_of_mut!(SOURCES) = Vec::new();
         *addr_of_mut!(SECTIONS) = Vec::new();
         *addr_of_mut!(STATES) = Vec::new();
-        // the NEXT account's table has not been asked for yet — a failure belongs to the session
-        // that produced it, the same rule `requery` keeps for a page failure
-        SECTIONS_FETCH = SecFetch::Loading;
+        // TABS is deliberately NOT cleared here, only invalidated. It is a memo, and the ONE thing
+        // that decides whether the strip re-measures is [`tabs`] comparing the old row against the
+        // new one — so emptying it in advance makes that comparison `[] != []`, which is false, and
+        // the label cache keeps the PREVIOUS ACCOUNT's pills: `draw_tab_row` iterates the cache, so
+        // after a profile switch the strip would go on drawing and hit-testing libraries the new
+        // user cannot open, until some later landing happened to change the row.
+        TABS_GEN = u32::MAX;
         CUR = 0;
         RETRY_CD = 0;
     }
 }
 
-/// The section-table generation — bumped by [`reset`]/[`ensure_sections`]; the tab-row label
-/// cache keys on it.
+/// The section-table SHAPE generation — bumped by [`reset`] and by every append; the tab-row label
+/// cache and the rail's letter cache key on it.
 pub(crate) fn sections_gen() -> u32 {
     SECTIONS_GEN.load(Ordering::SeqCst)
 }
@@ -258,84 +361,191 @@ pub(crate) fn query_gen() -> u32 {
     GEN.load(Ordering::SeqCst)
 }
 
-/// Ask the server for its section table. `Some` = it ANSWERED (even with nothing we browse);
-/// `None` = the request failed — no client, no response, or a panic on the way. Splitting those two
-/// apart is the whole fix: `unwrap_or_default` collapsed them into one empty `Vec`, which the
-/// screen then had to read as "still loading" forever.
-fn fetch_table() -> Option<Vec<BrowseSection>> {
-    catch_unwind(|| {
-        let client = crate::plex::client_opt()?;
-        let mc = client.sections()?;
-        let mut v: Vec<BrowseSection> = Vec::new();
-        for d in &mc.directory {
-            let is_show = match d.kind.as_str() {
-                "movie" => false,
-                "show" => true,
-                _ => continue, // music/photo: not browsable here
-            };
-            if let Ok(key) = d.key.parse::<i64>() {
-                v.push(BrowseSection { key, title: d.title.clone(), is_show });
-            }
-        }
-        Some(v)
-    })
-    .unwrap_or(None)
-}
-
-/// Publish a discovery outcome — the whole state transition, and the only half of
-/// [`ensure_sections`] a host can grade (the other half needs a server).
+/// Adopt every server the registry holds that the table does not — the granted roster, appended
+/// in registration order so the session's own server is source 0. Cheap enough for every Library
+/// entry: it touches only the slots it has not seen.
 ///
-/// A FAILURE publishes nothing: it does not wipe a table (there is none to wipe — the caller only
-/// gets here with an empty one) and does not bump [`sections_gen`], because nothing keyed on that
-/// generation has changed. It records the state and leaves, so the next attempt is an ordinary
-/// re-entry rather than a special case.
-fn publish_table(found: Option<Vec<BrowseSection>>) {
-    let Some(found) = found else {
-        unsafe { SECTIONS_FETCH = SecFetch::Failed };
-        return;
-    };
-    let states: Vec<SecState> = found.iter().map(|_| SecState::default()).collect();
-    SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
-    unsafe {
-        SECTIONS_FETCH = SecFetch::Ready;
-        *addr_of_mut!(SECTIONS) = found;
-        *addr_of_mut!(STATES) = states;
-        CUR = 0;
+/// Facts are re-read on every call rather than copied once: the roster ingest and the server's own
+/// `friendlyName` land at different times, in either order, and a source whose header was blank
+/// when it was adopted must be able to fill in later.
+fn sync_roster() {
+    let known = sources().len();
+    for sid in crate::plex::server_ids() {
+        // matched on the SLOT, not on position: the roster and this table happen to be appended in
+        // the same order today, and that is an invariant nobody outside this loop would know to
+        // keep. The list is a handful of servers, so the scan costs nothing.
+        let at = sources().iter().position(|s| s.sid == sid);
+        match at.and_then(source_mut) {
+            // Steady state — every frame the Library is up — allocates NOTHING: a field is only
+            // read (and cloned) while it is still unknown. A roster that later RENAMES a server we
+            // already have a name for is deliberately not followed: a machine name changing under
+            // an open panel is churn, not news.
+            Some(s) => {
+                if s.name.is_empty() || s.handle.is_empty() {
+                    if let Some(f) = crate::plex::server_facts(sid) {
+                        if s.name.is_empty() {
+                            s.name = f.name.clone();
+                        }
+                        if s.handle.is_empty() {
+                            s.handle = f.handle.clone();
+                        }
+                    }
+                }
+            }
+            None => unsafe {
+                let f = crate::plex::server_facts(sid);
+                let (name, handle) = f.map(|f| (f.name.clone(), f.handle.clone())).unwrap_or_default();
+                (*addr_of_mut!(SOURCES)).push(BrowseSource {
+                    sid,
+                    name,
+                    handle,
+                    // Optimistic until proven otherwise: a source nobody has dialled yet is not a
+                    // source that failed, and the whole group would otherwise open dimmed.
+                    reachable: true,
+                    sections_done: false,
+                    counts_done: false,
+                    retry_cd: 0,
+                });
+            },
+        }
+    }
+    if sources().len() != known {
+        crate::log(&format!("browse: roster now {} source(s)", sources().len()));
     }
 }
 
-/// Discover the movie/show sections (once; blocking — one small GET, same boot-fetch budget as
-/// `pms_fetch_hubs`). Safe to call every Library entry; later calls are free. Returns count.
+/// Discover the CURRENT server's movie/show sections (once; blocking — one small GET, the same
+/// boot-fetch budget as `pms_fetch_hubs`). Safe to call every Library entry; later calls are free.
+/// Returns the table's size.
 ///
-/// A FAILED attempt leaves the table empty, so the next call retries — which is what makes the
-/// section read-out's Try again a plain re-call rather than a second code path.
+/// **Only the current server is fetched here, and that is the point.** This runs on the main
+/// thread at boot and on every Library entry, so fanning out over the roster would park the SDL
+/// loop for one `connect(2)` timeout per unreachable share — seconds of frozen boot for a friend
+/// who switched their server off. Every OTHER source is discovered by [`pump`] on a worker
+/// ([`maybe_discover`]), which costs the main thread nothing and lets a dead share simply arrive
+/// as `reachable: false`.
 pub(crate) fn ensure_sections() -> usize {
-    if !sections().is_empty() {
+    sync_roster();
+    let cur_sid = crate::plex::current_server();
+    let Some(si) = sources().iter().position(|s| s.sid == cur_sid) else {
+        return sections().len();
+    };
+    if sources()[si].sections_done {
         return sections().len();
     }
-    publish_table(fetch_table());
+    let found = catch_unwind(|| {
+        crate::plex::client_for(cur_sid).and_then(|c| c.sections()).map(|mc| project_sections(&mc))
+    })
+    .unwrap_or(None);
+    let ok = found.is_some();
+    append_sections(si, found.unwrap_or_default());
+    if let Some(s) = source_mut(si) {
+        s.sections_done = ok;
+        s.reachable = ok;
+        s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
+    }
     sections().len()
 }
 
-/// What the section TABLE's discovery did — the state the screen cannot infer from an empty table,
-/// because "failed", "answered with nothing we browse" and "not asked yet" all look identical from
-/// outside. See [`SECTIONS_FETCH`].
-pub(crate) fn sections_state() -> SecFetch {
-    unsafe { addr_of!(SECTIONS_FETCH).read() }
-}
-/// The table could not be fetched — [`sections_state`]'s failure case, named for the two callers
-/// that only ask that question.
-pub(crate) fn sections_failed() -> bool {
-    sections_state() == SecFetch::Failed
+/// `MediaContainer.Directory[]` → the (key, title, kind) rows this app can browse. The ONE
+/// projection, shared by the blocking discovery above and the worker below, so the two can never
+/// disagree about which sections exist.
+///
+/// `artist`/`photo` are KEPT. They used to be dropped here as "not browsable", and that quietly
+/// disabled the one growth case the tab projection is written for: a friend sharing a type you do
+/// not own can only add a pill if that type reaches the table at all. They browse like any other
+/// section (the listing, its server-driven sorts and the A–Z rail are type-agnostic), and this
+/// account's own `/hubs` already puts a *Recently Added Music* shelf on Home, so the content was at
+/// the top level before it had a tab. What is still missing is the level BELOW the grid — an artist
+/// opens the movie detail page, which has nothing to play — and that belongs to whoever builds the
+/// music level, not to the strip.
+fn project_sections(mc: &crate::plex::MediaContainer) -> Vec<(i64, String, SecKind)> {
+    mc.directory
+        .iter()
+        .filter_map(|d| {
+            let kind = SecKind::from_wire(&d.kind)?; // a type this product has no level for at all
+            d.key.parse::<i64>().ok().map(|k| (k, d.title.clone(), kind))
+        })
+        .collect()
 }
 
-/// Put the section table into its failed state for a host test. The real transition needs a server
-/// that refuses to answer, which no host tier has — and [`publish_table`] is private to this module,
-/// so the Library screen's own tests cannot reach it. The ONLY writer of this static outside
-/// [`publish_table`] and [`reset`], and compiled out of every shipped build.
-#[cfg(test)]
-pub(crate) fn mark_sections_failed_for_test() {
-    unsafe { SECTIONS_FETCH = SecFetch::Failed };
+/// A library section's TYPE — the product's closed type list, and the unit the tab projection
+/// ([`tabs`]) compares by.
+///
+/// It replaced an `is_show: bool`, and the reason is the projection rather than tidiness: "does any
+/// owned library have this kind" is the test that decides whether a friend's library gets its own
+/// pill, and with two values Music is indistinguishable from Movies — a friend's music library would
+/// silently ride your *Movies* pill and its content would be unreachable from the strip.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SecKind {
+    Movie,
+    Show,
+    Music,
+    Photo,
+}
+
+impl SecKind {
+    /// The wire's `Directory.type`, or `None` for a type this product draws no level for.
+    pub(crate) fn from_wire(s: &str) -> Option<SecKind> {
+        match s {
+            "movie" => Some(SecKind::Movie),
+            "show" => Some(SecKind::Show),
+            "artist" => Some(SecKind::Music),
+            "photo" => Some(SecKind::Photo),
+            _ => None,
+        }
+    }
+    /// The Sources row's count noun ("185 films") — plural, and the singular-less form the row
+    /// falls back to when no count has landed is [`SecKind::plural`].
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            SecKind::Movie => "films",
+            SecKind::Show => "shows",
+            SecKind::Music => "artists",
+            SecKind::Photo => "photos",
+        }
+    }
+    /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
+    pub(crate) fn plural(self) -> &'static str {
+        match self {
+            SecKind::Movie => "Films",
+            SecKind::Show => "TV shows",
+            SecKind::Music => "Music",
+            SecKind::Photo => "Photos",
+        }
+    }
+}
+
+/// APPEND one source's sections to the table, with their per-section states in lockstep.
+///
+/// Append, never rebuild — see this module's header. Existing indices (and therefore `CUR`, every
+/// remembered view, and every in-flight page landing's `sec`) survive untouched, which is what
+/// makes a source arriving late safe at all. A source is only ever appended once, so a repeat call
+/// for it is a no-op rather than a duplicated library.
+fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
+    // Only what this source does not already have. A re-discovery ("Check for new shares", or a
+    // server that came back) therefore ADDS a library the owner has since created and leaves every
+    // existing row — and every index — exactly where it was.
+    let fresh: Vec<(i64, String, SecKind)> = list
+        .into_iter()
+        .filter(|(k, _, _)| !sections().iter().any(|s| s.src == src && s.key == *k))
+        .collect();
+    if fresh.is_empty() {
+        return;
+    }
+    // Your own libraries feed Home; a friend's do not until you say so (the design's first-run
+    // state). `handle` is the roster's own answer to "is this someone else's".
+    let pinned = sources().get(src).map(|s| s.handle.is_empty()).unwrap_or(true);
+    unsafe {
+        let secs = &mut *addr_of_mut!(SECTIONS);
+        let states = &mut *addr_of_mut!(STATES);
+        for (key, title, kind) in fresh {
+            secs.push(BrowseSection { src, key, title, kind, count: -1, pinned });
+            states.push(SecState::default());
+        }
+    }
+    SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
+    crate::ui::idle::invalidate(); // a new tab pill / Sources row appears under a settled screen
 }
 
 pub(crate) fn section_count() -> usize {
@@ -344,11 +554,27 @@ pub(crate) fn section_count() -> usize {
 pub(crate) fn section_title(i: usize) -> &'static str {
     sections().get(i).map(|s| s.title.as_str()).unwrap_or("")
 }
-pub(crate) fn section_is_show(i: usize) -> bool {
-    sections().get(i).map(|s| s.is_show).unwrap_or(false)
+/// The TYPE of section `i` — `None` for an index the table does not hold.
+pub(crate) fn section_kind(i: usize) -> Option<SecKind> {
+    sections().get(i).map(|s| s.kind)
+}
+/// The registry slot section `i` is browsed through. **Read this at the SPAWN SITE**; a worker
+/// that calls `client()` instead dials whichever server happens to be current when it runs.
+fn section_sid(i: usize) -> Option<ServerId> {
+    let s = sections().get(i)?;
+    sources().get(s.src).map(|src| src.sid)
 }
 pub(crate) fn cur() -> usize {
     unsafe { CUR }.min(sections().len().saturating_sub(1))
+}
+/// The handle of section `i`'s owner — `""` on your own libraries, where the annotation is absent
+/// rather than empty. The Source chip's dim trailing run.
+///
+/// Takes the section rather than reading `cur()`, because the chip must relabel on the PRESS frame:
+/// its name comes from the queued section (`view_section`) and a handle resolved from the committed
+/// one would pop in 70 ms later, changing the chip's measured width mid-fade.
+pub(crate) fn handle_of(i: usize) -> &'static str {
+    sections().get(i).and_then(|s| sources().get(s.src)).map(|s| s.handle.as_str()).unwrap_or("")
 }
 /// Switch section tab. Keeps the target section's remembered query/view; only re-fetches
 /// when its store is empty.
@@ -358,6 +584,288 @@ pub(crate) fn set_cur(i: usize) {
     }
     unsafe { CUR = i };
     bump_gen(); // discard any in-flight page for the previous section
+    activate_source_of(i);
+}
+
+/// Point the app's CURRENT server at the source of section `i`, and drop the per-server state that
+/// belonged to the old one.
+///
+/// **This is the seam that per-item `ServerId` retires** (`docs/shared-servers.md` §5 steps 2–3),
+/// and it is here because without it the Sources list is a trap rather than a feature. The grid
+/// itself is fetched through `client_for(sid)`, but a `PmsMovie` carries no server: `posters` fetch
+/// from `client()`, and OK on a card resolves its ratingKey through `client()` too — and ratingKeys
+/// are server-local, so a friend's card would quietly open, and play, a DIFFERENT title of yours
+/// with the same number. Moving `current` with the browsed library makes every one of those agree
+/// again, which is `docs/shared-servers.md` §5's named "cheap variant": one active server at a time.
+///
+/// What it costs is stated rather than hidden: Home's catalog belongs to the server it was fetched
+/// from, so it is dropped and re-armed (`pms::reset` — `pms::pump` refetches on the next frames,
+/// asynchronously, so nothing blocks), and the person page's shelves with it. The poster memo needs
+/// no help: it compares a token generation, and two servers never share one (`plex::servers`).
+fn activate_source_of(i: usize) {
+    let Some(sid) = section_sid(i) else { return };
+    if sid == crate::plex::current_server() || !crate::plex::set_current(sid) {
+        return;
+    }
+    crate::log(&format!("browse: current server is now source {}", section_src(i)));
+    crate::pms::reset(); // Home's catalog is the OLD server's — drop it and re-arm the fetch
+    crate::person::reset();
+    crate::route::forget_server_identity(); // the PlayQueue's machineIdentifier was the old one
+}
+/// The source index of section `i` — the server half of its address.
+fn section_src(i: usize) -> usize {
+    sections().get(i).map(|s| s.src).unwrap_or(0)
+}
+
+/// Record what a request to section `i`'s server just proved about it. See the call in [`pump`].
+fn mark_source_reachable(i: usize, ok: bool) {
+    let Some(src) = sections().get(i).map(|s| s.src) else { return };
+    let Some(s) = source_mut(src) else { return };
+    if s.reachable == ok {
+        return;
+    }
+    s.reachable = ok;
+    // A server that has come back is worth re-asking properly (its library list may have moved on);
+    // one that has gone means the Sources list must dim its group NOW rather than at the next press.
+    if ok {
+        s.retry_cd = 0;
+    }
+    crate::ui::idle::invalidate();
+}
+
+// ---- the TAB projection: which sections get a pill in the shared top strip -------------------
+//
+// **A pill is a TYPE, never a person** (the design's deliverable B). Source lives in the toolbar
+// chip one line below, so the strip names your own libraries and nothing else — with one exception
+// that costs nothing: a friend sharing a type you do not own (they have shows, you don't) DOES add
+// a pill, because otherwise that content is unreachable from the strip at all.
+//
+// The consequence is the property B was written for: the strip is a constant width at one friend
+// or at ten. Put source in the strip instead and three friends measure 2133px against a 1540 track.
+//
+// With one source this is the identity map, so a single-server install draws exactly the strip it
+// always did.
+
+/// tab index → section index, rebuilt when the table's shape moves.
+static mut TABS: Vec<usize> = Vec::new();
+static mut TABS_GEN: u32 = u32::MAX;
+/// …and how many times the projection above actually CHANGED, which is a different question from
+/// how many times it was re-derived. See [`tabs_gen`].
+static mut TABS_SHAPE_GEN: u32 = 0;
+
+fn tabs() -> &'static Vec<usize> {
+    let g = sections_gen();
+    if unsafe { addr_of!(TABS_GEN).read() } != g {
+        // compared by real TYPE, not by `is_show`: with a boolean, "does an owned library have this
+        // kind" answers YES for a friend's MUSIC library on the strength of your films, so it would
+        // get no pill and nothing in it could be reached from the strip at all
+        let owned_kinds: Vec<SecKind> = sections()
+            .iter()
+            .filter(|s| sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true))
+            .map(|s| s.kind)
+            .collect();
+        // A missing type earns ONE pill, not one per borrowed library of it. Two friends who both
+        // share Music are two libraries of a type you do not own, and admitting both puts two
+        // identically-titled *Music* pills in the row with nothing to tell them apart — which is
+        // the strip growing by PEOPLE, the one property this projection exists to prevent. The
+        // first one carries the type; the rest are reachable through the toolbar's Source chip,
+        // exactly as a borrowed library of a type you DO own already is.
+        let mut borrowed_kinds: Vec<SecKind> = Vec::new();
+        let v: Vec<usize> = sections()
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let owned = sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true);
+                if owned {
+                    return true;
+                }
+                if owned_kinds.contains(&s.kind) || borrowed_kinds.contains(&s.kind) {
+                    return false;
+                }
+                borrowed_kinds.push(s.kind);
+                true
+            })
+            .map(|(i, _)| i)
+            .collect();
+        // The strip's own generation, bumped only when the projected PILL LIST changes. The section
+        // table's generation moves for things the strip cannot see — a source's counts landing, a
+        // second friend's libraries arriving that all fold onto pills already drawn — and the label
+        // cache downstream re-measures every pill in the row when it does. That is Home's hot path,
+        // and with sources landing one at a time it now happens several times a boot.
+        // BORROW, never `.read()`: that copies the `Vec` bitwise, and dropping the copy frees the
+        // buffer the static still points at — a double free that aborts the process, not a warning.
+        let changed = unsafe { (*addr_of!(TABS)).as_slice() != v.as_slice() };
+        unsafe {
+            *addr_of_mut!(TABS) = v;
+            TABS_GEN = g;
+            if changed {
+                TABS_SHAPE_GEN += 1;
+            }
+        }
+    }
+    unsafe { &*addr_of!(TABS) }
+}
+
+/// The generation of the strip's own SHAPE — moves only when the projected pill list actually
+/// changes, which is what the tab row's label + width cache keys on
+/// ([`widgets::with_tab_metrics`](crate::ui::widgets)).
+pub(crate) fn tabs_gen() -> u32 {
+    tabs(); // re-project first: a stale answer would name the generation of a row nobody has
+    unsafe { addr_of!(TABS_SHAPE_GEN).read() }
+}
+
+/// Pills in the strip (excluding Home, which the strip prepends itself).
+pub(crate) fn tab_count() -> usize {
+    tabs().len()
+}
+pub(crate) fn tab_title(t: usize) -> &'static str {
+    tabs().get(t).map(|&i| section_title(i)).unwrap_or("")
+}
+/// The section a pill opens.
+pub(crate) fn tab_section(t: usize) -> usize {
+    tabs().get(t).copied().unwrap_or(0)
+}
+/// The pill that represents section `s`: its own when it has one, else the pill of the same TYPE —
+/// so browsing a friend's film library keeps the *Movies* pill lit, which is what "a pill is a
+/// type" means for the selection capsule. Falls back to 0, never out of range.
+pub(crate) fn tab_of_section(s: usize) -> usize {
+    let t = tabs();
+    if let Some(p) = t.iter().position(|&i| i == s) {
+        return p;
+    }
+    let Some(kind) = section_kind(s) else { return 0 };
+    t.iter().position(|&i| section_kind(i) == Some(kind)).unwrap_or(0)
+}
+
+// ---- pinning: the ONE control, and it governs Home only --------------------------------------
+
+pub(crate) fn pinned(i: usize) -> bool {
+    sections().get(i).map(|s| s.pinned).unwrap_or(false)
+}
+pub(crate) fn pinned_count() -> usize {
+    sections().iter().filter(|s| s.pinned).count()
+}
+/// Is this the last library feeding Home? Its row draws its value dimmed and states the rule; it
+/// is NOT dimmed whole, because dim means unavailable and this is the library that works.
+pub(crate) fn is_last_pinned(i: usize) -> bool {
+    pinned(i) && pinned_count() == 1
+}
+/// Flip a library's pin. Returns false — changing nothing — for the last pinned one: unpinning it
+/// would leave Home with nothing to draw, which is the only real failure this control has.
+pub(crate) fn toggle_pin(i: usize) -> bool {
+    if is_last_pinned(i) {
+        return false;
+    }
+    let Some(s) = (unsafe { (&mut *addr_of_mut!(SECTIONS)).get_mut(i) }) else { return false };
+    s.pinned = !s.pinned;
+    crate::ui::idle::invalidate();
+    true
+}
+/// Every library that feeds Home, as (source index, section index).
+///
+/// No caller yet: this is the READ side of the pin store, and Home's multi-source shelf assembly
+/// (the design's deliverable C) is the one that wants it. Kept here rather than added later
+/// because the pin is written here and a setting with no reader is easier to spot than one whose
+/// reader disagrees about where it lives.
+/// Browsing ignores it entirely, because browsing is governed by the grant.
+#[allow(dead_code)]
+pub(crate) fn pinned_libraries() -> Vec<(usize, usize)> {
+    sections().iter().enumerate().filter(|(_, s)| s.pinned).map(|(i, s)| (s.src, i)).collect()
+}
+
+// ---- the Sources list's data, projected ------------------------------------------------------
+//
+// Two plain owned types rather than borrows of the statics, for one reason worth stating: the
+// panel's ROW MODEL — which level draws a tick and which draws a word — is the part that must be
+// host-tested, and a test can build these by hand. Handing out `&BrowseSource` would make that
+// impossible without a live section table.
+
+/// One server's group in the Sources list.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct SrcGroup {
+    /// the MACHINE name — the header
+    pub(crate) name: String,
+    /// the owner's handle — the header's accessory; empty on your own server, where the header
+    /// carries no accessory at all
+    pub(crate) handle: String,
+    /// false dims the WHOLE group, header included, and states it there
+    pub(crate) reachable: bool,
+}
+
+/// One library row in the Sources list.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct SrcRow {
+    /// which group it belongs to
+    pub(crate) src: usize,
+    /// the section it opens
+    pub(crate) section: usize,
+    pub(crate) title: String,
+    /// "185 films" once the count has landed, else the library's type word
+    pub(crate) count_line: String,
+    pub(crate) pinned: bool,
+    /// the only pinned library left — its value dims and its sub-line states the rule
+    pub(crate) last_pinned: bool,
+    /// the library being browsed — the Browse level's single tick
+    pub(crate) current: bool,
+}
+
+pub(crate) fn source_groups() -> Vec<SrcGroup> {
+    sources()
+        .iter()
+        .map(|s| SrcGroup { name: s.name.clone(), handle: s.handle.clone(), reachable: s.reachable })
+        .collect()
+}
+
+pub(crate) fn source_rows() -> Vec<SrcRow> {
+    let last = pinned_count() == 1;
+    let cur = cur();
+    sections()
+        .iter()
+        .enumerate()
+        .map(|(i, s)| SrcRow {
+            src: s.src,
+            section: i,
+            title: s.title.clone(),
+            count_line: count_line(s.count, s.kind),
+            pinned: s.pinned,
+            last_pinned: last && s.pinned,
+            current: i == cur,
+        })
+        .collect()
+}
+
+/// A library's sub-line: its size once the count has landed, else its TYPE. Never absent — a row
+/// that loses its second line changes height, and the panel is not allowed to resize under a level
+/// switch or a landing.
+fn count_line(count: i64, kind: SecKind) -> String {
+    if count >= 0 {
+        format!("{count} {}", kind.noun())
+    } else {
+        kind.plural().to_string()
+    }
+}
+
+/// Re-check the roster: adopt anything newly registered, and re-arm discovery for every source
+/// that failed. The Sources list's last row.
+///
+/// It cannot ask plex.tv for shares the app was never granted — that fetch belongs to whoever
+/// owns the roster ingest, and this is where it hooks in. What it does today is the half that is
+/// ours: a friend who has switched their server back on stops being unreachable on the next pump
+/// instead of after the ten-second backoff.
+pub(crate) fn recheck_shares() {
+    sync_roster();
+    // EVERY source, not only the ones already known to be down. Asking again is the whole content
+    // of this row: a server that has since gone offline learns it (its group dims), one that came
+    // back learns that, and a library the owner has created since appears — `append_sections` adds
+    // only what is new, so nothing already on screen moves.
+    for i in 0..sources().len() {
+        if let Some(s) = source_mut(i) {
+            s.retry_cd = 0;
+            s.sections_done = false;
+            s.counts_done = false;
+        }
+    }
+    crate::ui::idle::invalidate();
 }
 
 // ---- public surface: items ------------------------------------------------------------------
@@ -381,6 +889,29 @@ pub(crate) fn want(lo: usize, hi: usize) {
 pub(crate) fn fetch_state() -> SecFetch {
     cur_state().map(|s| s.fetch).unwrap_or(SecFetch::Loading)
 }
+
+/// The same three states for the SOURCE behind what the screen is showing — the layer above a
+/// page, and the other half of the Library's read-out ([`crate::ui::library`]'s `readout_of`).
+///
+/// It is a PROJECTION of [`BrowseSource`]'s flags, not a fourth field: `reachable` and
+/// `sections_done` already carry the whole answer, per source, which is strictly more than the one
+/// global this replaced could say. (That global existed on a branch written before the table had a
+/// source dimension at all; keeping both would have been one rule in two places, and this file's
+/// history is mostly that mistake.)
+///
+/// It asks about the source of the section at [`cur`], falling back to the current SERVER when the
+/// table has no section to ask about — which is exactly the case the read-out one layer up exists
+/// for, a server that could not be reached to discover anything.
+pub(crate) fn cur_source_state() -> SecFetch {
+    let Some(s) = cur_source_idx().and_then(|i| sources().get(i)) else { return SecFetch::Loading };
+    if !s.reachable {
+        SecFetch::Failed
+    } else if s.sections_done {
+        SecFetch::Ready
+    } else {
+        SecFetch::Loading
+    }
+}
 /// True while the current query has no data yet (first page in flight) — the grid's
 /// full-screen spinner state.
 ///
@@ -398,6 +929,88 @@ pub(crate) fn loading_initial() -> bool {
 /// back — the rule [`SecFetch::Loading`]'s doc states, applied to the manual path too.
 pub(crate) fn retry() {
     unsafe { RETRY_CD = 0 };
+}
+
+/// Seed the roster with `n` sources in a chosen reachability, for a host test on the SCREEN side —
+/// `ui::library`'s read-out is a projection of these flags, and its tests cannot reach this
+/// module's private ones. The real transition needs a server that refuses to answer, which no host
+/// tier has. Compiled out of every shipped build.
+#[cfg(test)]
+pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
+    reset();
+    let mut v = Vec::new();
+    for k in 0..n {
+        let sid = crate::plex::register(&format!("mach-{k}"), "10.9.9.7", 31234, "tok");
+        if k == 0 {
+            crate::plex::set_current(sid);
+        }
+        v.push(BrowseSource {
+            sid,
+            name: if k == 0 { "nas-home".into() } else { "film-club".into() },
+            handle: if k == 0 { String::new() } else { "friend".into() },
+            reachable,
+            sections_done: reachable,
+            counts_done: true,
+            retry_cd: 0,
+        });
+    }
+    unsafe { *addr_of_mut!(SOURCES) = v };
+}
+
+/// Re-kick the source behind what the screen is showing — the read-out's *Try again*, and the ONE
+/// place the two layers are told apart.
+///
+/// A source whose **table** never landed is re-discovered here and now: its back-off is cleared and
+/// [`ensure_sections`] re-runs, which is the same blocking call route entry makes and reaches the
+/// right server because [`set_cur`] moves `plex::current` with the browsed section. A source that
+/// HAS its table only needs the page back-off cleared — a fetch is already counting down, and the
+/// button's job is to skip the wait rather than to start a second one.
+///
+/// Returns whether the TABLE was re-fetched, because that is the case whose success brings pills, a
+/// grid and a focus band with it, and only the screen can mount those.
+pub(crate) fn retry_cur_source() -> bool {
+    let Some(i) = cur_source_idx() else {
+        unsafe { RETRY_CD = 0 };
+        return false;
+    };
+    if sources()[i].sections_done {
+        unsafe { RETRY_CD = 0 };
+        return false;
+    }
+    if let Some(s) = source_mut(i) {
+        s.retry_cd = 0;
+    }
+    ensure_sections();
+    true
+}
+
+/// The MACHINE name and the OWNER's handle of the source behind what the screen is showing.
+///
+/// These are the only two identifying strings the Library's failure read-out is allowed to say
+/// (`ui::library`'s `dead_strs` — no address, no path, no machineIdentifier: `ui::stats`' rule, for
+/// its reason). Either can be `""` and each means something different by it: an unknown machine has
+/// not named itself yet, while an empty HANDLE means the source is your OWN server and there is no
+/// owner to name — drawn as the absence of a line, never as an empty one.
+pub(crate) fn cur_source_labels() -> (&'static str, &'static str) {
+    cur_source_idx()
+        .and_then(|i| sources().get(i))
+        .map(|s| (s.name.as_str(), s.handle.as_str()))
+        .unwrap_or(("", ""))
+}
+
+/// The source behind what the screen is showing: the section at [`cur`], else the current server —
+/// an empty table has no section to ask about, and that is exactly the case the read-out one layer
+/// up exists for. Shared by [`cur_source_state`] and [`retry_cur_source`] so the state that draws
+/// the read-out and the retry that answers it can never mean two different servers.
+fn cur_source_idx() -> Option<usize> {
+    sections()
+        .get(cur())
+        .map(|s| s.src)
+        .or_else(|| {
+            let sid = crate::plex::current_server();
+            sources().iter().position(|s| s.sid == sid)
+        })
+        .filter(|&i| i < sources().len())
 }
 
 // ---- public surface: sort menu --------------------------------------------------------------
@@ -478,15 +1091,21 @@ fn kick_directory<T: Send + 'static>(
     project: fn(&crate::plex::LibrarySection) -> Option<T>,
 ) {
     let c = cur();
-    if states().get(c).is_none() || done || flag.swap(true, Ordering::SeqCst) {
+    if states().get(c).is_none() || done {
+        return;
+    }
+    // the SERVER this section lives on, captured on the main thread (`browse.rs`'s standing rule:
+    // never resolve the current server inside a worker)
+    let Some(sid) = section_sid(c) else { return };
+    if flag.swap(true, Ordering::SeqCst) {
         return;
     }
     let key = sections()[c].key;
-    let sgen = sections_gen();
+    let sgen = EPOCH.load(Ordering::SeqCst);
     let spawned = crate::task::spawn_small("directory", move || {
         let list = catch_unwind(|| {
             let mut v = Vec::new();
-            if let Some(client) = crate::plex::client_opt() {
+            if let Some(client) = crate::plex::client_for(sid) {
                 if let Some(mc) = client.section_directory(key, dir) {
                     v.extend(mc.directory.iter().filter_map(project));
                 }
@@ -506,7 +1125,8 @@ fn kick_directory<T: Send + 'static>(
 }
 
 /// The landing half of [`kick_directory`]: take the mailbox, clear the single-flight, and
-/// apply to the section's state iff the section table hasn't been rebuilt underneath it.
+/// apply to the section's state iff the table's IDENTITY (its [`EPOCH`]) still holds. Not its
+/// shape: a section appended by another source since the spawn cannot have moved this index.
 fn land_directory<T>(
     flag: &'static AtomicBool,
     mail: &'static Mutex<Option<(u32, usize, Vec<T>)>>,
@@ -516,7 +1136,7 @@ fn land_directory<T>(
         // a menu's value list arriving repopulates an open Sort/Filter popover (`ui::idle`)
         crate::ui::idle::invalidate();
         flag.store(false, Ordering::SeqCst);
-        if sgen == sections_gen() {
+        if sgen == EPOCH.load(Ordering::SeqCst) {
             if let Some(st) = state_mut(sec) {
                 apply(st, list);
             }
@@ -578,6 +1198,179 @@ pub(crate) fn save_view(focus: usize, scroll: f32) {
     }
 }
 
+// ---- source discovery, off the main thread ---------------------------------------------------
+
+/// What a discovery worker is being asked for. Two phases per source, one worker at a time
+/// process-wide: the roster is a handful of servers and none of it is on a user's critical path.
+enum SrcJob {
+    /// its section list
+    Sections,
+    /// the unfiltered item count of each of its libraries, by section key
+    Counts(Vec<i64>),
+}
+
+/// Pick and spawn the next source-discovery fetch, if any. Called once a frame by [`pump`].
+fn maybe_discover() {
+    // per-source failure backoff (the roster is short; this loop is cheaper than a heap of timers)
+    for i in 0..sources().len() {
+        if let Some(s) = source_mut(i) {
+            s.retry_cd = s.retry_cd.saturating_sub(1);
+        }
+    }
+    if SRC_FETCHING.load(Ordering::SeqCst) {
+        return;
+    }
+    // SECTIONS for every source before the COUNTS of any: the section list is what puts a library
+    // on screen (a tab pill, a Sources row), the count is a sub-line refining one that is already
+    // drawn. Doing them source-by-source instead would put our own libraries' counts — three LAN
+    // requests — ahead of a friend's libraries existing at all.
+    let mut pick: Option<(usize, ServerId, SrcJob, bool)> = None;
+    let ready = |i: usize| sources().get(i).map(|s| s.retry_cd == 0).unwrap_or(false);
+    let no_name = |i: usize| sources().get(i).map(|s| s.name.is_empty()).unwrap_or(false);
+    for i in 0..sources().len() {
+        if ready(i) && !sources()[i].sections_done {
+            pick = Some((i, sources()[i].sid, SrcJob::Sections, no_name(i)));
+            break;
+        }
+    }
+    if pick.is_none() {
+        for i in 0..sources().len() {
+            if !ready(i) || sources()[i].counts_done {
+                continue;
+            }
+            let keys: Vec<i64> = sections().iter().filter(|x| x.src == i).map(|x| x.key).collect();
+            if keys.is_empty() {
+                // a source with nothing browsable (music/photo only) has no counts to fetch, and
+                // must not be picked again for the rest of the session
+                if let Some(s) = source_mut(i) {
+                    s.counts_done = true;
+                }
+                continue;
+            }
+            pick = Some((i, sources()[i].sid, SrcJob::Counts(keys), no_name(i)));
+            break;
+        }
+    }
+    let Some((si, sid, job, want_name)) = pick else { return };
+
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    let is_sections = matches!(job, SrcJob::Sections);
+    SRC_FETCHING.store(true, Ordering::SeqCst);
+    // `sid` is captured HERE, on the main thread. The worker resolves it through `client_for`
+    // and never reads `client()` — a worker that asked for "the current server" would dial
+    // whichever one the user happened to be browsing by the time it got scheduled.
+    let spawned = crate::task::spawn_small("sources", move || {
+        let landing = catch_unwind(|| {
+            // the server naming ITSELF, so a roster that never reached plex.tv still heads its
+            // group with a machine name. One request, once, per source.
+            let name = if want_name {
+                crate::plex::client_for(sid).and_then(|c| c.friendly_name()).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let what = match job {
+                SrcJob::Sections => SrcWhat::Sections(
+                    crate::plex::client_for(sid).and_then(|c| c.sections()).map(|mc| project_sections(&mc)),
+                ),
+                SrcJob::Counts(keys) => {
+                    let mut out = Vec::new();
+                    if let Some(c) = crate::plex::client_for(sid) {
+                        for k in keys {
+                            // size=0: PMS answers with `totalSize` and no items at all, so a
+                            // library's count costs a header rather than a page.
+                            let q = SectionQuery {
+                                section_key: k,
+                                sort: "",
+                                filters: &[],
+                                start: 0,
+                                size: 0,
+                                include_meta: false,
+                            };
+                            if let Some(mc) = c.section_items_query(&q) {
+                                out.push((k, mc.total_size));
+                            }
+                        }
+                    }
+                    SrcWhat::Counts(out)
+                }
+            };
+            SrcLanding { name, what }
+        })
+        .unwrap_or_else(|_| {
+            // a panicking fetch is a FAILURE of the job it was doing, never a success of another:
+            // reporting a panicked count probe as a failed section list would drop the source's
+            // whole library list on the floor.
+            let what = if is_sections { SrcWhat::Sections(None) } else { SrcWhat::Counts(Vec::new()) };
+            SrcLanding { name: String::new(), what }
+        });
+        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((epoch, si, landing));
+    });
+    if !spawned {
+        // the flag is cleared only inside a successful mailbox take, and nothing will fill that
+        // mailbox — the `reset_clears_the_single_flight_flags_with_the_mailboxes` latch again
+        SRC_FETCHING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Apply a discovery landing. Gated on the table EPOCH, not on its shape generation: an append
+/// from one source must not throw away another's answer.
+fn land_discovery() {
+    let Some((epoch, si, landing)) = SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    SRC_FETCHING.store(false, Ordering::SeqCst);
+    crate::ui::idle::invalidate(); // a Sources row, a tab pill or a count appears
+    if epoch != EPOCH.load(Ordering::SeqCst) {
+        return; // the account changed under it — every index means something else now
+    }
+    let SrcLanding { name, what } = landing;
+    if !name.is_empty() {
+        if let Some(s) = source_mut(si) {
+            s.name = name.clone();
+        }
+        // …and back into the registry, so anything else that asks about this server gets the same
+        // answer without a second `GET /`. `owned` is carried through unchanged: this describer
+        // learned a name, not a grant.
+        if let Some(s) = sources().get(si) {
+            let owned = s.handle.is_empty();
+            crate::plex::describe_server(s.sid, &name, "", owned);
+        }
+    }
+    match what {
+        SrcWhat::Sections(list) => {
+            let ok = list.is_some();
+            append_sections(si, list.unwrap_or_default());
+            if let Some(s) = source_mut(si) {
+                s.sections_done = ok;
+                s.reachable = ok;
+                s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
+            }
+            if !ok {
+                // The machine name, never a token or an address — this line is what a user sends us.
+                let who = sources().get(si).map(|s| s.name.clone()).unwrap_or_default();
+                crate::log(&format!("browse: source {si} ({who}) did not answer — its group reads unreachable"));
+            }
+        }
+        SrcWhat::Counts(counts) => {
+            // EMPTY is a failure, not an answer: the worker pushes one entry per request that
+            // succeeded, so a server that stopped answering mid-probe yields nothing. Latching
+            // `counts_done` on that would leave those rows reading "Films" for the rest of the
+            // session with no way to fix it — `maybe_discover` skips a done source and
+            // `recheck_shares` only re-arms unreachable ones.
+            let ok = !counts.is_empty();
+            unsafe {
+                for s in (*addr_of_mut!(SECTIONS)).iter_mut().filter(|s| s.src == si) {
+                    if let Some((_, n)) = counts.iter().find(|(k, _)| *k == s.key) {
+                        s.count = *n;
+                    }
+                }
+            }
+            if let Some(s) = source_mut(si) {
+                s.counts_done = ok;
+                s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
+            }
+        }
+    }
+}
+
 // ---- pump: mailbox apply + next-fetch scheduling (main thread, once a frame) ----------------
 
 /// Returns true when new items just landed (the grid re-clamps focus on it).
@@ -588,7 +1381,13 @@ pub(crate) fn pump() -> bool {
             RETRY_CD -= 1;
         }
     }
-    // menu-data landings (query-independent; sgen-gated inside land_directory so a pre-reset
+    // the roster: adopt anything newly registered, land a discovery, schedule the next one. Cheap
+    // and idempotent, and it is what lets a friend's libraries arrive without the main thread ever
+    // waiting on their server.
+    sync_roster();
+    land_discovery();
+    maybe_discover();
+    // menu-data landings (query-independent; epoch-gated inside land_directory so a pre-reset
     // fetch can't populate a new user's state at the same index)
     land_directory(&GENRE_FETCHING, &GENRE_RESULT, |st, list| {
         st.genres_done = true;
@@ -608,6 +1407,13 @@ pub(crate) fn pump() -> bool {
         // the FAILED branch repaints too, since the retry back-off changes what the grid shows
         crate::ui::idle::invalidate();
         FETCHING.store(false, Ordering::SeqCst);
+        // A page fetch is also EVIDENCE ABOUT THE SERVER, and it is the only evidence that keeps
+        // arriving after discovery: `sections_done` latches on success, so without this a source
+        // that went offline an hour into the session could never stop reading as reachable. It is
+        // a fact about NOW in both directions — a served page says the server is answering, a
+        // failed one says it is not — and it is deliberately not gated on the query generation:
+        // whether the machine replied does not depend on which listing was asked for.
+        mark_source_reachable(r.sec, r.total >= 0);
         if r.total < 0 {
             // the fetch FAILED (network/parse) — leave the store exactly as it was and back
             // off before retrying (a wiped-to-"empty" store here was a review-confirmed bug:
@@ -688,11 +1494,20 @@ fn maybe_spawn() {
         None => String::new(),
     };
     let mut filters: Vec<(String, String)> = Vec::new();
+    // The unwatched filter is a MOVIE/SHOW question, and only those two types answer it: shows
+    // advertise `unwatchedLeaves` (any unwatched episode), movies take a plain `unwatched=1`, and
+    // the comment this replaced already recorded that the plain form has odd semantics off type=1
+    // (verified live 2026-07-19). Sending it to a music or photo listing is asking a library that
+    // has no such state to filter by it — newly reachable, since those types now get a pill, so the
+    // Filter menu's switch is now one press away on them. Unset here rather than in the menu: the
+    // query is the one place that knows what it is asking, and a switch that changed nothing would
+    // be a worse answer than a switch that is simply not offered.
     if st.unwatched {
-        // shows advertise unwatchedLeaves (any unwatched episode); plain unwatched=1 has odd
-        // semantics on type=2 (verified live 2026-07-19)
-        let k = if sec.is_show { "unwatchedLeaves" } else { "unwatched" };
-        filters.push((k.to_string(), "1".to_string()));
+        match sec.kind {
+            SecKind::Show => filters.push(("unwatchedLeaves".to_string(), "1".to_string())),
+            SecKind::Movie => filters.push(("unwatched".to_string(), "1".to_string())),
+            SecKind::Music | SecKind::Photo => {}
+        }
     }
     if let Some(g) = &st.genre {
         filters.push(("genre".to_string(), g.id.clone()));
@@ -701,6 +1516,11 @@ fn maybe_spawn() {
     let gen = GEN.load(Ordering::SeqCst);
     let key = sec.key;
     let sec_idx = c; // captured on the main thread; the worker must not read the statics
+    // …and so is the SERVER — the section's OWN one, not whatever is current. `key` alone is
+    // ambiguous across sources (both servers have a section `1`), `client()` inside the worker
+    // would answer with whatever is current by then, and the sid is stamped onto every row this
+    // parses, so a row is only ever addressable as `(sid, rk)` — see `pms::PmsMovie::sid`.
+    let Some(sid) = section_sid(c) else { return };
     FETCHING.store(true, Ordering::SeqCst);
     let spawned = crate::task::spawn_small("page", move || {
         let result = catch_unwind(|| {
@@ -712,11 +1532,11 @@ fn maybe_spawn() {
                 size: PAGE as i64,
                 include_meta,
             };
-            let mc = crate::plex::client_opt().and_then(|cl| cl.section_items_query(&q));
+            let mc = crate::plex::client_for(sid).and_then(|cl| cl.section_items_query(&q));
             let Some(mc) = mc else {
                 return (Vec::new(), -1i64, None); // FAILURE sentinel — pump leaves the store alone
             };
-            let items: Vec<PmsMovie> = mc.metadata.iter().map(parse_item).collect();
+            let items: Vec<PmsMovie> = mc.metadata.iter().map(|m| parse_item(m, sid)).collect();
             // keep the item count authoritative even when PMS omits totalSize on an
             // unpaged-shaped response (paged queries carry it; belt and braces)
             let total = if mc.total_size > 0 { mc.total_size } else { start as i64 + items.len() as i64 };
@@ -751,6 +1571,27 @@ fn maybe_spawn() {
 }
 
 // ---------------------------------------------------------------------------------------
+    /// A two-source table for tests OUTSIDE this module (`ui::home`'s focus walk): your Movies and
+    /// TV Shows, a friend's films and shows that fold onto them, and a friend's music that does not
+    /// — five libraries projecting to three pills. Writes crate globals, so the caller holds
+    /// [`crate::testlock::serial`] and `reset()`s afterwards.
+    #[cfg(test)]
+    pub(crate) fn seed_two_source_table_for_test() {
+        tests::seed_sources(vec![
+            tests::a_source("mac-mini", "", true),
+            tests::a_source("nas-home", "friend", true),
+        ]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(
+            1,
+            vec![
+                (1, "Film Club".into(), SecKind::Movie),
+                (2, "Film Club".into(), SecKind::Show),
+                (3, "Film Club".into(), SecKind::Music),
+            ],
+        );
+    }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -874,53 +1715,392 @@ mod tests {
         reset();
     }
 
-    // ---- the section TABLE, one layer up ------------------------------------------------------
+    // ---- the SOURCE's own state, one layer up ---------------------------------------------------
     //
-    // Same three states, same discipline, and graded through [`publish_table`] rather than
-    // [`ensure_sections`]: the fetch half needs a server, and a host test that reached for one
-    // would be dialling whatever address another module's test had just registered.
+    // Same three states, one layer up, and graded through the per-source flags rather than through
+    // `ensure_sections`: the fetch half needs a server, and a host test that reached for one would
+    // be dialling whatever address another module's test had just registered.
+    //
+    // `cur_source_state` is a PROJECTION of `reachable`/`sections_done` — there is no fourth field
+    // to set, which is the point of resolving it that way: the flags the Sources list already dims
+    // a group by are the flags the read-out reads.
+
+    /// Seed one source in a chosen phase and make it the CURRENT server, so the empty-table
+    /// fallback in [`cur_source_state`] resolves to it rather than to whatever the registry was
+    /// left holding. Registration dials nothing — it publishes a slot.
+    fn seed_one_source(reachable: bool, sections_done: bool) -> usize {
+        // `register` is idempotent on the machine id (it re-points the slot), so repeated runs and
+        // a sibling module's registrations cannot make this ambiguous; `set_current` is what makes
+        // the fallback deterministic.
+        let sid = crate::plex::register("mach-test", "10.9.9.7", 31234, "tok");
+        crate::plex::set_current(sid);
+        seed_sources(vec![BrowseSource {
+            sid,
+            name: "nas-home".into(),
+            handle: "friend".into(),
+            reachable,
+            sections_done,
+            counts_done: true,
+            retry_cd: 0,
+        }]);
+        0
+    }
 
     /// THE bug, one layer up: `ensure_sections` folded every failure into an empty table, so the
-    /// screen saw exactly what it sees before the first request — no sections, no state, and
-    /// `fetch_state()` answering `Loading` — and spun forever with no way out.
+    /// screen saw exactly what it sees before the first request — no section, no state, and
+    /// `fetch_state()` answering `Loading` out of its `unwrap_or` — and spun forever with no way
+    /// out. A source that did not answer must be a state the screen can SEE.
     #[test]
-    fn a_failed_section_table_is_observable_rather_than_an_eternal_spinner() {
+    fn a_source_that_did_not_answer_is_observable_rather_than_an_eternal_spinner() {
         let _g = crate::testlock::serial();
-        reset();
-        assert!(!sections_failed(), "a table nobody has asked for yet has not failed");
-        publish_table(None);
-        assert!(sections_failed(), "the screen must be able to see that the table failed");
-        assert_eq!(section_count(), 0);
-        reset();
-        assert!(!sections_failed(), "a failure belongs to the session that produced it");
-    }
-
-    /// An account with nothing we browse — music and photos only — ANSWERED. It is `Ready` with no
-    /// sections, never `Failed`, for the same reason an empty listing is (`StatusKind::Empty`).
-    #[test]
-    fn a_server_with_no_browsable_library_answered_and_did_not_fail() {
-        let _g = crate::testlock::serial();
-        reset();
-        publish_table(Some(Vec::new()));
-        assert!(!sections_failed(), "an empty answer is an answer");
-        assert_eq!(section_count(), 0);
+        seed_one_source(true, false);
+        assert_eq!(cur_source_state(), SecFetch::Loading, "nobody has asked it anything yet");
+        source_mut(0).unwrap().reachable = false;
+        assert_eq!(cur_source_state(), SecFetch::Failed, "the screen must be able to see this");
         reset();
     }
 
-    /// A served table clears a previous failure and seeds one state per section.
+    /// An account with nothing we browse ANSWERED. `Ready` with no sections, never `Failed` — the
+    /// same reason an empty listing is (`StatusKind::Empty`), and the case that lands in the very
+    /// same two `unwrap_or` defaults as a failure and so used to spin identically.
     #[test]
-    fn a_served_section_table_clears_the_failure_and_seeds_its_states() {
+    fn a_source_with_no_browsable_library_answered_and_did_not_fail() {
         let _g = crate::testlock::serial();
+        seed_one_source(true, true);
+        assert_eq!(cur_source_state(), SecFetch::Ready, "an empty answer is an answer");
+        assert_eq!(section_count(), 0);
         reset();
-        publish_table(None);
-        publish_table(Some(vec![
-            BrowseSection { key: 1, title: "Movies".into(), is_show: false },
-            BrowseSection { key: 2, title: "TV Shows".into(), is_show: true },
-        ]));
-        assert!(!sections_failed());
+    }
+
+    /// A served table clears a previous failure and seeds one state per section, and from then on
+    /// the state is read off the SECTION's source rather than off the current server.
+    #[test]
+    fn a_served_table_clears_the_failure_and_seeds_its_states() {
+        let _g = crate::testlock::serial();
+        seed_one_source(false, false);
+        assert_eq!(cur_source_state(), SecFetch::Failed);
+        {
+            let s = source_mut(0).unwrap();
+            s.reachable = true;
+            s.sections_done = true;
+        }
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "Film Club".into(), SecKind::Movie)]);
+        assert_eq!(cur_source_state(), SecFetch::Ready);
         assert_eq!(section_count(), 2);
-        assert_eq!(section_title(1), "TV Shows");
         assert!(loading_initial(), "a fresh section has not answered yet");
+        reset();
+    }
+
+    // ---- the (source, section) table ------------------------------------------------------------
+    //
+    // These seed SOURCES directly and mark every phase done, so `maybe_discover` picks nothing and
+    // no worker is spawned — the same discipline as the fetch-machine tests above, one layer up.
+    // Their `sid` is `UNSET`, which resolves to no client, so even a spawn could reach no socket.
+
+    pub(super) fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSource {
+        BrowseSource {
+            sid: ServerId::UNSET,
+            name: name.into(),
+            handle: handle.into(),
+            reachable,
+            sections_done: true,
+            counts_done: true,
+            retry_cd: 0,
+        }
+    }
+    pub(super) fn seed_sources(srcs: Vec<BrowseSource>) {
+        reset();
+        unsafe { *addr_of_mut!(SOURCES) = srcs };
+    }
+
+    /// THE reason the table gained a source dimension. Measured against the real share on
+    /// 2026-08-11: both servers have a section `1`, and they are different libraries. A bare key
+    /// names two things, so every row carries its source and the two rows coexist.
+    #[test]
+    fn two_servers_both_have_a_section_one_and_the_table_tells_them_apart() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+
+        assert_eq!(section_count(), 3);
+        let ours = &sections()[0];
+        let theirs = &sections()[2];
+        assert_eq!((ours.key, ours.src), (1, 0), "our section 1, on source 0");
+        assert_eq!((theirs.key, theirs.src), (1, 1), "THEIR section 1 — same key, different source");
+        assert_eq!((section_title(0), section_title(2)), ("Movies", "Film Club"));
+        // and the chip's annotation follows the section being browsed, not the account
+        assert_eq!(handle_of(2), "friend");
+        assert_eq!(handle_of(0), "", "your own libraries carry no owner at all");
+        reset();
+    }
+
+    /// A source discovered LATE must never move an existing index. `PageResult.sec` is a section
+    /// index, so a table that reshuffled under an in-flight fetch would splice one library's items
+    /// into another's store — the soundness the old `ensure_sections` early-return provided and
+    /// APPEND-ONLY now provides for every source rather than only for the second call.
+    #[test]
+    fn a_source_arriving_late_appends_and_moves_no_existing_index() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        set_cur(1);
+        let before = (cur(), section_title(1).to_string(), states().len());
+
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        assert_eq!(cur(), before.0, "the library being browsed is still the one at that index");
+        assert_eq!(section_title(1), before.1);
+        assert_eq!(states().len(), section_count(), "states stay in lockstep with the table");
+        assert_eq!(states().len(), before.2 + 1);
+
+        // A RE-discovery ("Check for new shares", or a server that came back) re-offers the same
+        // list: every row is already there, so nothing is duplicated and nothing moves…
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        assert_eq!(section_count(), 3);
+        assert_eq!(cur(), before.0);
+        // …while a library the owner has CREATED since is appended, at the end, where it cannot
+        // disturb an index anything is already holding.
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (4, "LDN Shows".into(), SecKind::Show)]);
+        assert_eq!(section_count(), 4);
+        assert_eq!(section_title(3), "LDN Shows");
+        assert_eq!(section_title(1), before.1, "and the row we were browsing is untouched");
+        reset();
+    }
+
+    /// The pin defaults and the one rule the control has. Your own libraries feed Home, a friend's
+    /// do not until you say so — and the LAST pinned library cannot be turned off, because Home
+    /// with nothing on it is the only real failure this setting has.
+    #[test]
+    fn a_friends_libraries_start_unpinned_and_the_last_pin_cannot_be_turned_off() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, false));
+        assert_eq!(pinned_count(), 2);
+
+        assert!(toggle_pin(2), "a friend's library can be pinned");
+        assert_eq!(pinned_count(), 3);
+        assert!(toggle_pin(0) && toggle_pin(1), "your own can be unpinned — a preference, not a mistake");
+        assert_eq!(pinned_count(), 1);
+
+        assert!(is_last_pinned(2));
+        assert!(!toggle_pin(2), "the last pinned library is refused");
+        assert!(pinned(2), "…and refused means UNCHANGED, not toggled twice");
+        assert_eq!(pinned_count(), 1);
+        reset();
+    }
+
+    /// **A pill is a TYPE, never a person.** The strip names your own libraries; a friend's film
+    /// library gets no pill of its own (the toolbar chip under it says whose), but a type only they
+    /// have does — otherwise that content is unreachable from the strip at all. And the selection
+    /// capsule for a borrowed library rests on its TYPE's pill, so nothing is ever homeless.
+    #[test]
+    fn the_tab_strip_grows_by_types_and_never_by_people() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (2, "Their Shows".into(), SecKind::Show)]);
+
+        assert_eq!(tab_count(), 2, "your Movies, plus the shows nobody of yours provides");
+        assert_eq!((tab_title(0), tab_title(1)), ("Movies", "Their Shows"));
+        assert_eq!(tab_section(1), 2);
+        assert_eq!(tab_of_section(1), 0, "their films ride YOUR Movies pill — same type, one level");
+        assert_eq!(tab_of_section(2), 1, "their shows have a pill of their own");
+        reset();
+    }
+
+    /// The case a BOOLEAN type could not express, and the reason [`SecKind`] exists. `is_show` has
+    /// two values, so "does an owned library have this kind" answered YES for a friend's MUSIC
+    /// library on the strength of your films: it got no pill, and nothing in it was reachable from
+    /// the strip at all. With a real type it gets exactly one, like any other missing type — and
+    /// `artist`/`photo` reaching the table at all is the other half of the same fix, since a type
+    /// dropped at discovery can never be missing from the projection either.
+    #[test]
+    fn a_friends_music_library_is_a_missing_type_and_not_a_second_films_pill() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (3, "Their Music".into(), SecKind::Music)]);
+
+        assert_eq!(tab_count(), 3, "your two, plus the music nobody of yours provides");
+        assert_eq!(tab_title(2), "Their Music");
+        assert_eq!(tab_of_section(3), 2, "their music is its own pill, NOT your Movies one");
+        assert_eq!(tab_of_section(2), 0, "…while their films still ride yours");
+        // and the wire types this product has a level for, including the two that used to be
+        // dropped before they could ever reach the projection
+        assert_eq!(SecKind::from_wire("artist"), Some(SecKind::Music));
+        assert_eq!(SecKind::from_wire("photo"), Some(SecKind::Photo));
+        assert_eq!(SecKind::from_wire("mixed"), None, "a type with no level is still refused");
+        reset();
+    }
+
+    /// **The deliverable, as an assertion**: the strip is a constant row however many friends
+    /// arrive. Its pill list — and therefore its width, which is a pure function of the labels —
+    /// does not move as the roster grows from one server to three, because every borrowed library
+    /// folds onto the pill of a type you already have. Only a MISSING type may widen it.
+    ///
+    /// The shape the design rejected is the control: a pill per section reaches eleven pills here,
+    /// which is what measured 2133px against a 1540px track at three friends.
+    #[test]
+    fn the_strip_is_the_same_row_at_one_friend_and_at_three() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+            a_source("nas-home", "friend", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        // OWNED, deliberately: `tab_title` hands back a `&'static str` borrowed out of the section
+        // table's own `String`s, and `append_sections` can reallocate that Vec — so a row captured
+        // as borrows and compared after the next source lands is reading freed memory. Every
+        // caller in the app consumes these inside one frame with no append in between, which is
+        // what makes the signature sound in the product and unsound in a test that spans landings.
+        let row = || (0..tab_count()).map(|t| tab_title(t).to_string()).collect::<Vec<_>>();
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        let alone = row();
+        assert_eq!(alone, vec!["Movies", "TV Shows"], "your own libraries, and nothing else");
+
+        for src in 1..=3 {
+            append_sections(
+                src,
+                vec![
+                    (1, "Film Club".into(), SecKind::Movie),
+                    (2, "Film Club".into(), SecKind::Show),
+                    (3, "Film Club".into(), SecKind::Movie),
+                ],
+            );
+            assert_eq!(row(), alone, "source {src} added a pill — the strip must not grow by people");
+        }
+        assert_eq!(section_count(), 11, "eleven libraries…");
+        assert_eq!(tab_count(), 2, "…and the two pills it started with");
+
+        // …and a type NOBODY owns grows the row by exactly one however many people share it. Every
+        // fixture above is a type we own, which is why this half needs saying separately: it is the
+        // only branch of the projection that can admit a borrowed library at all.
+        for src in 1..=3 {
+            append_sections(src, vec![(9, "Film Club".into(), SecKind::Music)]);
+        }
+        assert_eq!(tab_count(), 3, "three friends sharing music are ONE Music pill");
+        assert_eq!(row().len(), 3);
+        reset();
+    }
+
+    /// A profile switch must not leave the previous account's pills on screen. `reset()` empties
+    /// the table, and the strip's generation is what the tab row's label cache keys on — so if the
+    /// projection's own memo were CLEARED here rather than merely invalidated, the comparison that
+    /// decides "did the row change" would be `[] != []`, i.e. false, and `draw_tab_row` (which
+    /// iterates the cache, not the live table) would go on drawing and hit-testing libraries the
+    /// new user cannot open until some later landing happened to change the row.
+    #[test]
+    fn a_profile_switch_re_measures_the_strip_instead_of_keeping_the_last_accounts_pills() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        let g0 = tabs_gen();
+        assert_eq!(tab_count(), 2);
+
+        reset(); // install_pms: a different account signs in
+        assert_eq!(tab_count(), 0, "the row is empty…");
+        assert_ne!(tabs_gen(), g0, "…and the strip MUST re-measure rather than keep the old pills");
+    }
+
+    /// The strip's own generation moves when the ROW changes and not when the TABLE does — which,
+    /// once a table is appended to one source at a time, are different questions. Every borrowed
+    /// library that folds onto a pill you already have bumps the table's generation and changes
+    /// nothing in the row, so keying the label + width cache on the table re-measured every pill in
+    /// the strip once per source, on Home's hot path, for a strip that had not moved.
+    #[test]
+    fn only_a_changed_row_costs_the_tab_cache_a_re_measure() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        let (g0, table0) = (tabs_gen(), sections_gen());
+
+        // two friends' film libraries land: both fold onto your Movies pill
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        append_sections(2, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        assert_ne!(sections_gen(), table0, "the TABLE's generation moved, twice");
+        assert_eq!(tabs_gen(), g0, "…and the row did not, so it must not re-measure");
+
+        // …while a MISSING type is exactly what must invalidate it
+        append_sections(2, vec![(9, "Their Music".into(), SecKind::Music)]);
+        assert_ne!(tabs_gen(), g0, "a gained pill MUST re-measure the row");
+        reset();
+    }
+
+    /// **Reachability is a fact about NOW, and a page fetch is the only evidence that keeps
+    /// arriving.** `sections_done` latches on success, so the discovery worker never asks that
+    /// server anything again — without this a source that went offline an hour into the session
+    /// could never stop reading as reachable, and its group would never dim. It moves in both
+    /// directions, because a server that came back must stop being dimmed too.
+    #[test]
+    fn a_page_fetch_is_what_keeps_reachability_honest_after_discovery() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        assert!(sources()[1].sections_done, "discovery is done — it will never re-ask by itself");
+
+        mark_source_reachable(1, false); // a page for THEIR library did not come back
+        assert!(!sources()[1].reachable, "their group dims");
+        assert!(sources()[0].reachable, "…and ours is untouched — it answered");
+
+        mark_source_reachable(1, true); // …and it comes back
+        assert!(sources()[1].reachable);
+        assert_eq!(sources()[1].retry_cd, 0, "a server that answered is worth re-asking at once");
+        reset();
+    }
+
+    /// An EMPTY count landing is a failure, not an answer: the worker pushes one entry per request
+    /// that succeeded. Latching `counts_done` on it would leave those rows reading their type word
+    /// instead of their size for the rest of the session, with nothing able to fix it —
+    /// `maybe_discover` skips a done source, and this is the bug class the module has now hit twice
+    /// (the single-flight flags were the first).
+    #[test]
+    fn an_empty_count_landing_does_not_latch_the_probe_off() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        if let Some(s) = source_mut(0) {
+            s.counts_done = false;
+        }
+        let epoch = EPOCH.load(Ordering::SeqCst);
+
+        // nothing came back
+        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((epoch, 0, SrcLanding { name: String::new(), what: SrcWhat::Counts(Vec::new()) }));
+        land_discovery();
+        assert!(!sources()[0].counts_done, "an empty answer must leave the probe armed");
+        assert_eq!(sections()[0].count, -1);
+
+        // …and the real one does land, and does latch
+        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((epoch, 0, SrcLanding { name: String::new(), what: SrcWhat::Counts(vec![(1, 185)]) }));
+        land_discovery();
+        assert!(sources()[0].counts_done);
+        assert_eq!(sections()[0].count, 185, "the row can say \"185 films\" now");
+        reset();
+    }
+
+    /// With one source the projection is the identity map, which is what makes a single-server
+    /// install draw exactly the strip it always did — and the Source chip absent, not empty.
+    #[test]
+    fn one_source_leaves_the_strip_exactly_as_it_was() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        assert_eq!(tab_count(), section_count());
+        for i in 0..section_count() {
+            assert_eq!(tab_section(i), i);
+            assert_eq!(tab_of_section(i), i);
+            assert_eq!(tab_title(i), section_title(i));
+        }
+        assert_eq!(sources().len(), 1, "…and the Source chip's own condition is false");
         reset();
     }
 
