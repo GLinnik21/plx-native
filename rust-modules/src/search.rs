@@ -273,6 +273,14 @@ pub(crate) fn state() -> State {
     unsafe { *addr_of!(STATE) }
 }
 
+/// The CONTENT epoch — bumped by every query change and every [`reset`]. Read by the screen to
+/// notice that the shelves under it have been replaced, including by something the screen did not
+/// do itself (a profile switch calling [`reset`]), which is what earns it a cross-fade rather than
+/// a cut. `browse::query_gen` is the same accessor for the same reason.
+pub(crate) fn query_gen() -> u32 {
+    GEN.load(Ordering::SeqCst)
+}
+
 /// The shelves, already in [`KINDS`] order, with empty ones omitted — an empty type draws nothing
 /// at all, so the UI never has to test for it.
 pub(crate) fn shelves() -> &'static [Shelf] {
