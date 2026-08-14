@@ -538,9 +538,24 @@ fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
     if fresh.is_empty() {
         return;
     }
-    // Your own libraries feed Home; a friend's do not until you say so (the design's first-run
-    // state). `handle` is the roster's own answer to "is this someone else's".
-    let pinned = sources().get(src).map(|s| s.handle.is_empty()).unwrap_or(true);
+    // **Every granted library feeds Home by default, a friend's included.**
+    //
+    // This started `handle.is_empty()` — your own libraries on, a friend's off — which is the
+    // design's FIRST-RUN state, and it is the right default only once the first-run screen exists
+    // to ask (deliverable F). Without that screen a share is granted, discovered, browsable and
+    // silently absent from Home, with no visible control anywhere to turn it on: the user's
+    // reported symptom was Home not merging at all.
+    //
+    // The reference settles it. In the official client (owner's own capture, 2026-08-14) a shared
+    // library's films sit in the main Home's Continue Watching interleaved with the account's own,
+    // with nothing pinned by hand — sharing IS the opt-in, and the client's per-source controls
+    // remove things afterwards rather than adding them.
+    //
+    // The pin therefore stays a real, persisted, per-library decision — it is simply DEFAULTED on.
+    // When the first-run screen lands it asks the question before this default is ever read, and
+    // `pin::resolve` already prefers a recorded answer over the ownership default, so neither the
+    // screen nor `feeds_home` changes when it does.
+    let pinned = true;
     unsafe {
         let secs = &mut *addr_of_mut!(SECTIONS);
         let states = &mut *addr_of_mut!(STATES);
@@ -1905,20 +1920,29 @@ mod tests {
         reset();
     }
 
-    /// The pin defaults and the one rule the control has. Your own libraries feed Home, a friend's
-    /// do not until you say so — and the LAST pinned library cannot be turned off, because Home
-    /// with nothing on it is the only real failure this setting has.
+    /// The pin defaults and the one rule the control has.
+    ///
+    /// **Every granted library feeds Home, a friend's included** — the reference client puts a
+    /// shared library's films in the main Home with nothing pinned by hand, and until the first-run
+    /// screen exists to ask, defaulting a share OFF means it is granted, discovered, browsable and
+    /// silently absent with no control on screen to turn it on. This asserted the opposite default
+    /// (`(true, true, false)`) while that screen was still unbuilt.
+    ///
+    /// The pin stays a real per-library decision — it is defaulted on, not removed — and the LAST
+    /// pinned library still cannot be turned off, because Home with nothing on it is the only real
+    /// failure this setting has.
     #[test]
-    fn a_friends_libraries_start_unpinned_and_the_last_pin_cannot_be_turned_off() {
+    fn every_granted_library_starts_pinned_and_the_last_pin_cannot_be_turned_off() {
         let _g = crate::testlock::serial();
         seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
         append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, false));
-        assert_eq!(pinned_count(), 2);
-
-        assert!(toggle_pin(2), "a friend's library can be pinned");
+        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, true), "a friend's library feeds Home too");
         assert_eq!(pinned_count(), 3);
+
+        assert!(toggle_pin(2), "…and can be turned off, which is what makes it a decision");
+        assert_eq!(pinned_count(), 2);
+        assert!(toggle_pin(2), "and back on");
         assert!(toggle_pin(0) && toggle_pin(1), "your own can be unpinned — a preference, not a mistake");
         assert_eq!(pinned_count(), 1);
 
