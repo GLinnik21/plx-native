@@ -524,7 +524,12 @@ fn project(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer, s
 /// every unclaimed row to whoever came first, which is the starvation this exists to prevent
 /// wearing a fairer name. Pure, so the rule is graded on the host rather than inferred from a
 /// screenshot.
-fn allot(budget: usize, want: &[usize]) -> Vec<usize> {
+///
+/// `pub(crate)` for `crate::person`, whose Movies/Shows shelves are the same merge one level down:
+/// a prolific actor's films on the server you arrived through would otherwise fill the row and
+/// leave the share behind it nothing — which is the bug that store exists to fix, re-created inside
+/// it. One water-filling rule, not two.
+pub(crate) fn allot(budget: usize, want: &[usize]) -> Vec<usize> {
     let n = want.len();
     let mut out = vec![0usize; n];
     let mut left = budget;
