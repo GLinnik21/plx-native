@@ -9,7 +9,21 @@ use std::sync::atomic::Ordering::Relaxed;
 
 // ---- constants (SDL 2.0.4 + GLES2 + app) ----
 const SDL_INIT_VIDEO: u32 = 0x20;
-const SDL_WINDOW_FLAGS: u32 = 0x2 | 0x1; // OPENGL | FULLSCREEN
+/// Appended to every heartbeat on a simulator build, and empty on a television.
+///
+/// The heartbeat is the app's perf surface: `tests/run.py --fps` grades `loop=` and `fps=` from it,
+/// and the floors are calibrated to the SM9000's Mali. A Mac renders the same interface through a
+/// completely different GPU, driver and compositor, so those numbers are not merely optimistic —
+/// they are about a different machine. A log line is the unit that gets pasted into an issue or
+/// handed between agents, so the disclaimer has to travel ON the line rather than sit in a doc.
+const SIM_TAG: &str = if cfg!(feature = "hostsim") { " sim=1" } else { "" };
+
+/// OPENGL | FULLSCREEN on the television, which owns the whole panel.
+///
+/// The simulator asks for OPENGL | RESIZABLE instead — a fullscreen grab on a desktop is hostile,
+/// and resizing is genuinely useful now that `surface::probe` letterboxes the logical canvas into
+/// whatever drawable it is given rather than cropping it.
+const SDL_WINDOW_FLAGS: u32 = if cfg!(feature = "hostsim") { 0x2 | 0x20 } else { 0x2 | 0x1 };
 const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 const GL_RENDERER: c_uint = 0x1F01;
 const GL_VERSION: c_uint = 0x1F02;
@@ -23,6 +37,8 @@ const A_CTX_MAJOR: c_int = 17;
 const A_CTX_MINOR: c_int = 18;
 const A_CTX_PROFILE_MASK: c_int = 21;
 const CTX_PROFILE_ES: c_int = 0x0004;
+/// `SDL_GL_CONTEXT_PROFILE_CORE` — the simulator's only option on macOS. See the context request.
+const CTX_PROFILE_CORE: c_int = 0x0001;
 // event types
 const SDL_QUIT: u32 = 0x100;
 const SDL_KEYDOWN: u32 = 0x300;
@@ -42,6 +58,13 @@ const SCR_H: c_int = crate::surface::LOGICAL_H as c_int;
 const COLS: c_int = 10;
 const RESUME_REWIND_NS: i64 = 5_000_000_000;
 
+// `SDL_webOSCursorVisibility` is declared apart from the rest because it exists ONLY in LG's
+// SDL fork. Naming it in the shared block would make the host simulator fail to link.
+#[cfg(not(feature = "hostsim"))]
+extern "C" {
+    fn SDL_webOSCursorVisibility(visible: c_int) -> c_int;
+}
+
 extern "C" {
     fn SDL_SetMainReady();
     fn SDL_SetHint(name: *const c_char, value: *const c_char) -> c_int;
@@ -59,7 +82,6 @@ extern "C" {
     fn SDL_PushEvent(event: *const c_void) -> c_int;
     fn SDL_GL_SwapWindow(win: *mut c_void);
     fn SDL_Quit();
-    fn SDL_webOSCursorVisibility(visible: c_int) -> c_int;
     fn glGetString(name: c_uint) -> *const c_char;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
@@ -95,7 +117,7 @@ fn install_panic_logger() {
         let line = format!("*** RUST PANIC [{thread}] at {loc}: {msg}");
         log(&line);
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/plxnative-crash.log") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&crate::paths::in_runtime_dir("plxnative-crash.log")) {
             let _ = writeln!(f, "{line}");
         }
         default(info); // preserve default behaviour (stderr -> plxnative-stderr.log)
@@ -105,6 +127,98 @@ fn install_panic_logger() {
 #[inline]
 fn rd_u32(ev: &[u8], off: usize) -> u32 {
     u32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
+}
+
+/// A keyboard event's `(state, wcode, sym)`, decoded from the raw event bytes.
+///
+/// **The two SDLs disagree about this struct, and nothing warns you.** LG's fork writes
+/// `state` (u32) at +16, the webOS keycode at +20 and the SDL sym at +24. Stock SDL2 —
+/// what the host simulator links — has `SDL_KeyboardEvent { type, timestamp, windowID,
+/// state:u8@12, repeat:u8@13, pad, pad, keysym{ scancode:u32@16, sym:i32@20, … } }`, so
+/// every field the app reads is at a different offset and there is no webOS keycode at all.
+/// Reading the fork's offsets out of a stock event yields the window id as a keystate and
+/// a scancode as a sym — plausible-looking garbage rather than a crash.
+///
+/// `cfg!` rather than `#[cfg]` deliberately: both arms stay compiled on both platforms, so
+/// the one nobody is currently building cannot rot. This is the single site that knows the
+/// layout — `rd_u32`'s callers elsewhere read pointer events, whose offsets already agree.
+#[inline]
+fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
+    if cfg!(feature = "hostsim") {
+        let pressed = *ev.get(12).unwrap_or(&0) as u32;
+        let repeat = *ev.get(13).unwrap_or(&0) as u32;
+        let sym = rd_u32(ev, 20);
+        // Rebuild the fork's packed state byte-for-byte: low byte pressed(1)/released(0),
+        // bit 0x100 auto-repeat. Everything downstream tests exactly those two.
+        let state = pressed | if repeat != 0 { 0x100 } else { 0 };
+        // A synthetic event from the remote FIFO parks its webOS keycode in the spare `unused`
+        // field; a real keypress leaves it zero, and then the keyboard mapping supplies one.
+        let injected = rd_u32(ev, 28);
+        let wcode = if injected != 0 { injected } else { host_wcode(sym) };
+        (state, wcode, sym)
+    } else {
+        (rd_u32(ev, 16), rd_u32(ev, 20), rd_u32(ev, 24))
+    }
+}
+
+/// The Magic Remote button a desktop keyboard stands in for, or 0.
+///
+/// Only the keys with NO sym equivalent need this. Navigation and OK/BACK already work on a
+/// keyboard through `is_ok`/`is_back`, which accept RETURN/ESCAPE/'q' — those predicates were
+/// always keyboard-capable, which is why the simulator needs no remapping layer for them.
+#[inline]
+fn host_wcode(sym: u32) -> u32 {
+    // ASCII literals spelled numerically: `b'p' as u32` is an expression, not a pattern.
+    match sym {
+        32 => crate::ui::consts::WCODE_PAUSE, // space
+        112 => crate::ui::consts::WCODE_PLAY, // 'p'
+        115 => crate::ui::consts::WCODE_STOP, // 's'
+        8 => crate::ui::consts::WCODE_BACK,   // backspace
+        _ => 0,
+    }
+}
+
+/// The bytes a synthetic key event needs, in whichever layout [`decode_key`] reads.
+///
+/// **The inverse of `decode_key`, and the pair is only correct together.** They already shipped
+/// disagreeing once: the simulator accepted every FIFO token and never moved, because this end
+/// wrote LG's fork layout while the reading end had been taught stock SDL2's. Nothing in the
+/// compiler couples them, so `key_bytes_round_trip` below is what does.
+///
+/// Pure, and separate from the `SDL_PushEvent` that consumes it, precisely so that test can run on
+/// the host — `make check` links no SDL.
+fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
+    let mut ev = [0u8; 128];
+    ev[0..4].copy_from_slice(&if down { SDL_KEYDOWN } else { SDL_KEYUP }.to_ne_bytes());
+    if cfg!(feature = "hostsim") {
+        ev[12] = u8::from(down); // state
+        ev[13] = 0; // repeat
+        ev[20..24].copy_from_slice(&sym.to_ne_bytes());
+        // Stock SDL_Keysym ends in a spare `unused` u32 (event offset +28). A webOS keycode has
+        // nowhere else to go on this layout, and several tokens carry ONLY a wcode (`pause` is
+        // sym 0, wcode 72), so deriving it from the sym would lose them. `decode_key` prefers
+        // this field and falls back to the keyboard mapping when it is zero — which is what a
+        // real desktop keypress leaves it as.
+        ev[28..32].copy_from_slice(&wcode.to_ne_bytes());
+    } else {
+        ev[16..20].copy_from_slice(&if down { 1u32 } else { 0 }.to_ne_bytes()); // state
+        ev[20..24].copy_from_slice(&wcode.to_ne_bytes());
+        ev[24..28].copy_from_slice(&sym.to_ne_bytes());
+    }
+    ev
+}
+
+/// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
+/// hide on a desktop, and `SDL_webOSCursorVisibility` exists in no SDL but LG's fork.
+///
+/// One door rather than a branch at each of the five call sites, so the platform question is
+/// asked once and the call sites read the same on both.
+#[inline]
+unsafe fn hide_cursor() {
+    #[cfg(not(feature = "hostsim"))]
+    {
+        SDL_webOSCursorVisibility(0);
+    }
 }
 #[inline]
 /// An SDL pointer event's position, converted from window pixels to the authored 1920x1080 canvas.
@@ -189,11 +303,7 @@ fn remote_synth_key(sym: c_uint, wcode: c_uint) {
 /// opens on `press::is_long`, which measures the interval between the down and the up. The paired
 /// `remote_synth_key` above is this called twice back to back (a tap).
 fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
-    let mut ev = [0u8; 128];
-    ev[0..4].copy_from_slice(&if down { SDL_KEYDOWN } else { SDL_KEYUP }.to_ne_bytes());
-    ev[16..20].copy_from_slice(&if down { 1u32 } else { 0 }.to_ne_bytes()); // state: pressed / released
-    ev[20..24].copy_from_slice(&wcode.to_ne_bytes());
-    ev[24..28].copy_from_slice(&sym.to_ne_bytes());
+    let ev = encode_key(sym, wcode, down);
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
 
@@ -413,9 +523,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 log(&format!("video driver: {}", std::ffi::CStr::from_ptr(d).to_string_lossy()));
             }
         }
-        SDL_GL_SetAttribute(A_CTX_PROFILE_MASK, CTX_PROFILE_ES);
-        SDL_GL_SetAttribute(A_CTX_MAJOR, 2);
-        SDL_GL_SetAttribute(A_CTX_MINOR, 0);
+        // The television has a real GLES2 driver (a shim over libmali). macOS has none at all —
+        // Apple ships desktop GL only, capped at 4.1 core — so asking for ES here fails context
+        // creation outright. 4.1 core is the closest thing that exists, and it is a superset for
+        // everything this renderer does: a real VBO (never client arrays) and RGBA/UNSIGNED_BYTE
+        // textures, both core-profile-legal. The shader sources are adapted at compile time by
+        // `gfx::glsl_preamble`, which reads the driver's GLSL version rather than assuming.
+        if cfg!(feature = "hostsim") {
+            SDL_GL_SetAttribute(A_CTX_PROFILE_MASK, CTX_PROFILE_CORE);
+            SDL_GL_SetAttribute(A_CTX_MAJOR, 4);
+            SDL_GL_SetAttribute(A_CTX_MINOR, 1);
+        } else {
+            SDL_GL_SetAttribute(A_CTX_PROFILE_MASK, CTX_PROFILE_ES);
+            SDL_GL_SetAttribute(A_CTX_MAJOR, 2);
+            SDL_GL_SetAttribute(A_CTX_MINOR, 0);
+        }
         // full 32-bit RGBA so the video plane shows through
         SDL_GL_SetAttribute(A_RED, 8);
         SDL_GL_SetAttribute(A_GREEN, 8);
@@ -1732,6 +1854,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 remote_synth_ptr(x.clamp(0, 1919), y.clamp(0, 1079));
                             }
                         }
+                    } else if cfg!(feature = "hostsim") && tok == "shot" {
+                        // Simulator only. Screenshotting has to be a TOKEN rather than a launch
+                        // option, because the interesting frame is the one AFTER driving, and
+                        // `PLXNATIVE_SHOT_FRAME` is fixed before the app starts — worse, presented
+                        // frames only accrue when something repaints (the idle gate), so no frame
+                        // number can be predicted from outside. This makes
+                        // `down down right ok shot` a single composable line.
+                        #[cfg(feature = "hostsim")]
+                        crate::shot::request();
                     } else if tok == "okdown" || tok == "okup" {
                         // the two halves of OK, so a driver can hold it: `okdown`, wait past
                         // press::LONG_MS, `okup` — the only way to exercise a press-and-hold (and so
@@ -1824,10 +1955,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                     }
                 } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
-                    // LG SDL fork: state@16, wcode@20, sym@24
-                    let state = rd_u32(&ev, 16);
-                    let wcode = rd_u32(&ev, 20);
-                    let sym = rd_u32(&ev, 24);
+                    let (state, wcode, sym) = decode_key(&ev);
                     let isnav = sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == 417 || wcode == 417 || sym == 412 || wcode == 412;
                     if (state & 0xff) != 1 {
                         // key-up = a reliable release (the remote sends exactly one per press).
@@ -1890,7 +2018,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // cursor and puts input in D-pad mode; pointer motion brings it back.
                     if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
                         if !dpad_mode || !cur_hidden {
-                            SDL_webOSCursorVisibility(0);
+                            hide_cursor();
                         }
                         dpad_mode = true;
                         cur_hidden = true;
@@ -2287,7 +2415,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 ok_armed = true;
                             }
                             if !dpad_mode {
-                                SDL_webOSCursorVisibility(0);
+                                hide_cursor();
                                 dpad_mode = true;
                                 cur_hidden = true;
                             }
@@ -2311,7 +2439,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             set_paused(false);
                             if !dpad_mode {
-                                SDL_webOSCursorVisibility(0);
+                                hide_cursor();
                                 dpad_mode = true;
                                 cur_hidden = true;
                             }
@@ -2327,7 +2455,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == 417 || wcode == 417 || sym == 412 || wcode == 412)
                     {
                         if !cur_hidden {
-                            SDL_webOSCursorVisibility(0);
+                            hide_cursor();
                             cur_hidden = true;
                         }
                         if ptr_drag {
@@ -3257,7 +3385,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             // hide the idle pointer during playback
             if matches!(route, Route::Player { .. }) && !cur_hidden && !ptr_drag && last_ptr_motion != 0 && now.wrapping_sub(last_ptr_motion) > 3000 {
-                SDL_webOSCursorVisibility(0);
+                hide_cursor();
                 cur_hidden = true;
             }
             // re-pause after a resume the INSTANT the seek's frame is on screen. `frames()` counts
@@ -3778,6 +3906,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::capture::tick(now);
                 }
                 fd_pc_cap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
+                // Before the swap, never after: the back buffer is undefined once presented.
+                #[cfg(feature = "hostsim")]
+                crate::shot::maybe_capture(vx, vy, vw, vh);
                 SDL_GL_SwapWindow(win);
                 fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
                 // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
@@ -3866,10 +3997,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // own is not a fault at all. Note the on-screen counter still draws `loop=`.
                 let pres = crate::ui::idle::take_presents();
                 if framedrop_on {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres} worstframe={fd_worst:.1}ms"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres} worstframe={fd_worst:.1}ms{SIM_TAG}"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{SIM_TAG}"));
                 }
             }
         }
@@ -3886,5 +4017,41 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         crate::posters::posters_shutdown();
         SDL_Quit();
         0
+    }
+}
+
+#[cfg(test)]
+mod key_layout_tests {
+    use super::{decode_key, encode_key};
+    use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, WCODE_BACK, WCODE_PAUSE};
+
+    /// `encode_key` and `decode_key` must agree, in whichever layout this build compiled.
+    ///
+    /// This is the regression test for a bug that shipped: the two ends disagreed about
+    /// `SDL_KeyboardEvent`'s field offsets, so every remote-FIFO token was accepted, decoded into
+    /// nonsense, and silently dropped — no error on either side. Nothing in the compiler couples a
+    /// reader and a writer of raw byte offsets, so this does.
+    ///
+    /// `make check` builds the television layout, so that is the one graded by default; a
+    /// `--features hostsim` test run grades the stock-SDL2 one. Both arms are compiled either way
+    /// (they are `cfg!`, not `#[cfg]`), so neither can rot.
+    #[test]
+    fn key_bytes_round_trip() {
+        // The wcode-only case is the one that breaks a sym-derived mapping, and the one a naive
+        // host layout loses: `pause` carries no sym at all.
+        for (sym, wcode) in [(SDLK_DOWN, 0), (SDLK_RETURN, 0), (0, WCODE_PAUSE), (8, WCODE_BACK)] {
+            for down in [true, false] {
+                let ev = encode_key(sym, wcode, down);
+                let (state, got_wcode, got_sym) = decode_key(&ev);
+                assert_eq!(got_sym, sym, "sym lost (wcode={wcode}, down={down})");
+                assert_eq!(got_wcode, wcode, "wcode lost (sym={sym}, down={down})");
+                assert_eq!(
+                    state & 0xff,
+                    u32::from(down),
+                    "press/release lost — the low byte is what every handler tests (sym={sym})"
+                );
+                assert_eq!(state & 0x100, 0, "a synthetic edge must never look like auto-repeat");
+            }
+        }
     }
 }

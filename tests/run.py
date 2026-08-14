@@ -1154,9 +1154,26 @@ def do_build(tv):
 # ---------------------------------------------------------------------------
 LOOP_RE = re.compile(r"loop=(\d+) route=(\w+)(?: overlay=(\w+))?")
 
+# The desktop simulator (`make sim`) emits the SAME heartbeat, tagged `sim=1` (app.rs's SIM_TAG).
+# Its numbers describe a Mac's GPU, driver and compositor; every gate in this file is calibrated to
+# the SM9000's Mali. Refusing the sample is the enforcement — a disclaimer in a doc is a comment,
+# and the whole point of the tag is that a log gets pasted between agents and into issues.
+SIM_RE = re.compile(r"\bsim=1\b")
+
+
+def reject_simulator(lines):
+    """Abort rather than grade a simulator log against device-calibrated gates."""
+    if any(SIM_RE.search(ln) for ln in lines):
+        raise SystemExit(
+            "refusing to grade: this log carries `sim=1`, so it came from the desktop simulator "
+            "(make sim), not a television. Its frame rates are about a Mac. Run the scene on the "
+            "device — see the tv-session skill."
+        )
+
 
 def parse_loop(lines, route, overlay):
     """The per-second LOOP-ITERATION counts whose route (+overlay, if the scene pins one) match."""
+    reject_simulator(lines)
     out = []
     for ln in lines:
         m = LOOP_RE.search(ln)
@@ -1177,6 +1194,7 @@ FPS_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bfps=(\d+)")
 
 def parse_fps(lines, route, overlay):
     """The per-second PRESENTED-FRAME counts whose route (+overlay) match."""
+    reject_simulator(lines)
     out = []
     for ln in lines:
         m = FPS_RE.search(ln)

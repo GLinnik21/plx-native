@@ -32,6 +32,8 @@ mod remote; // dev/testing remote-control channel: a FIFO the loop drains into s
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod stream;
 mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
+#[cfg(feature = "hostsim")]
+mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
@@ -96,12 +98,54 @@ fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
 /// surface (`make run` fetches it). The ONE shared sink; modules bring it in as `use crate::log;`.
 ///
 /// Every line goes through [`redact_tokens`] first — see its doc for why the guard lives here.
+/// The event log's path. One definition, because three things open this file: `log` below,
+/// the simulator binary (which truncates it at startup), and `src/main.c` on the television — and
+/// the last of those cannot see this module, which is what [`paths::ENV_STEERABLE`] guarantees.
+fn events_log() -> std::path::PathBuf {
+    paths::in_runtime_dir("plxnative-events.log")
+}
+
 pub(crate) fn log(m: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/plxnative-events.log") {
+    // Through the instance root, not a literal: several host simulators run at once, and one
+    // shared event log would interleave their lines into something no run can be graded from.
+    // On the television the root is `/tmp`, so this is byte-for-byte the path it always was —
+    // `make run`, `tests/run.py` and every skill recipe still read the same file.
+    let p = events_log();
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
         let _ = writeln!(f, "{}", redact_tokens(m));
     }
 }
+
+/// The instance root, for the simulator binary.
+///
+/// `src/bin/sim.rs` is a separate crate and cannot see `pub(crate)` items, but it must create the
+/// directory and truncate the event log inside it before the app starts. Exposing the resolver
+/// keeps ONE definition of where that is — a second `env::var` read in the binary would be a
+/// second answer waiting to drift from this one.
+#[cfg(feature = "hostsim")]
+pub fn sim_runtime_dir() -> std::path::PathBuf {
+    paths::runtime_dir().to_path_buf()
+}
+
+/// The event log's path, built by the ONE expression [`log`] uses.
+///
+/// `src/bin/sim.rs` truncates this file at startup. Spelling the name a second time over there
+/// would mean a rename could leave the binary truncating a file the app never appends to — the
+/// simulator's log would silently start non-empty, which is exactly the state `tests/run.py` dates
+/// its first line from.
+#[cfg(feature = "hostsim")]
+pub fn sim_events_log() -> std::path::PathBuf {
+    events_log()
+}
+
+/// Re-exported so the simulator binary calls the SAME entry the C shim calls, by name, with the
+/// compiler checking the signature. It previously re-declared `plex_run` in its own `extern "C"`
+/// block, which meant the one binary whose whole premise is "cannot drift from the shipped boot
+/// path" was the one place a signature change would become a silent ABI mismatch instead of a
+/// compile error.
+#[cfg(feature = "hostsim")]
+pub use app::plex_run;
 
 /// The log's credential backstop. These run on the pure function, so they need no filesystem.
 #[cfg(test)]
