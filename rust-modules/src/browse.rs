@@ -607,15 +607,25 @@ pub(crate) fn set_cur(i: usize) {
 /// from, so it is dropped and re-armed (`pms::reset` — `pms::pump` refetches on the next frames,
 /// asynchronously, so nothing blocks), and the person page's shelves with it. The poster memo needs
 /// no help: it compares a token generation, and two servers never share one (`plex::servers`).
-fn activate_source_of(i: usize) {
-    let Some(sid) = section_sid(i) else { return };
-    if sid == crate::plex::current_server() || !crate::plex::set_current(sid) {
-        return;
-    }
-    crate::log(&format!("browse: current server is now source {}", section_src(i)));
-    crate::pms::reset(); // Home's catalog is the OLD server's — drop it and re-arm the fetch
-    crate::person::reset();
-    crate::route::forget_server_identity(); // the PlayQueue's machineIdentifier was the old one
+fn activate_source_of(_i: usize) {
+    // **Browsing a friend's library does NOT re-point the app.** This used to `set_current` to that
+    // section's server and then wipe Home's catalog, the person store and the PlayQueue identity —
+    // which is exactly what the owner hit on the device (2026-08-14): opening a shared library
+    // replaced the whole Home page with the friend's content, and once left the tab strip showing
+    // only their library, because `ensure_sections` discovers the CURRENT server and the strip had
+    // just been re-pointed at theirs.
+    //
+    // It was a deliberate stopgap and it said so: `PmsMovie` carried no `ServerId`, so OK on a
+    // borrowed card would have opened one of OUR films with the same ratingKey, and re-pointing was
+    // the cheap way to make the ids line up. Threading `ServerId` through the stored rows retired
+    // it — the promise its own comment made. Every consumer now addresses the server by DATA:
+    // the page fetch dials `client_for(section_sid(..))`, rows are stamped at parse, and
+    // `open_library_card` opens `to_detail(mm.sid, &mm.rk)`.
+    //
+    // "Current" is the SESSION's server — whose Home you are on, whose PlayQueue identity is in
+    // play. Browsing is not a session change, and the two only looked like one thing while there
+    // was a single server. Kept as a named no-op rather than deleted at the call site so the next
+    // person to reach for a re-point here finds this note first.
 }
 /// The source index of section `i` — the server half of its address.
 fn section_src(i: usize) -> usize {
