@@ -652,6 +652,8 @@ the perf gates), and `make test` = `deploy` + `run`.
   card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. Text
-  entry is the **television's own keyboard**, raised by plain `SDL_StartTextInput`; the field, the
-  shelves and every trap in that seam are `docs/search.md`. Search is **server-only** by decision —
-  Plex Discover / Watchlist catalog results are out of scope.
+  entry is the **television's own keyboard**, raised by plain `SDL_StartTextInput` — the backend is
+  in LG's Wayland driver, not the webOS extension API, which is why `SDL_webOS.h` looks like it has
+  no keyboard. The field, the shelves and every trap in that seam are **`docs/search.md`**, whose
+  status note says which halves are in the tree yet. Search is **server-only** by decision — Plex
+  Discover / Watchlist catalog results are out of scope.
