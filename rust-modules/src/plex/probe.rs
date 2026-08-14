@@ -20,7 +20,10 @@
 //! 2. **No plain-HTTP candidate when the owner set `httpsRequired`.** It is their setting; a plain
 //!    request to such a server is a refusal, not a connection.
 //! 3. **Rank local → remote → relay.** The order every Plex client with an order uses. Relay is a
-//!    2 Mbit/s tunnel the server transcodes down to fit: a last resort, never a preference.
+//!    2 Mbit/s tunnel the server transcodes down to fit: a last resort, never a preference. Inside a
+//!    tier, an address this client can actually dial comes first: IPv4 before IPv6, and a numeric
+//!    literal before a HOSTNAME (see [`is_numeric_address`] — the transport has no resolver at all,
+//!    and the measured share lists an unresolvable internal name ahead of the address that answers).
 //!
 //! ## What a real prober must still do (this module cannot)
 //!
@@ -33,7 +36,7 @@
 //! - **Treat `401` as its own state, never as "unreachable"** ([`Outcome::Unauthorized`]). The
 //!   `accessToken` is per (user, server) and carries the sharing grant; when it stops working the
 //!   answer is to refetch `/api/v2/resources`, not to try the next address — every other address of
-//!   that server will fail identically, and reporting "can't reach <peer-name-2>" for what is a token
+//!   that server will fail identically, and reporting "can't reach nas-home" for what is a token
 //!   problem sends the user to look at their friend's router.
 //!
 //! The racing itself (parallel dial, first good wins, cancel the rest) lands with the transport
@@ -87,9 +90,9 @@ pub struct ProbePlan {
     /// which authenticates to plex.tv only and gets a 401 from a share. A secret: never logged.
     pub token: String,
     pub owned: bool,
-    /// The machine name ("<peer-name-2>") — settings surfaces only.
+    /// The machine name ("nas-home") — settings surfaces only.
     pub name: String,
-    /// The owner's plex.tv handle ("<peer-owner-1>"), `None` on our own server. The one string the browsing
+    /// The owner's plex.tv handle ("friend"), `None` on our own server. The one string the browsing
     /// UI says about a shared source.
     pub source_title: Option<String>,
     /// In rank order, best first. Empty means the policy refused every advertised address, which is
@@ -158,6 +161,40 @@ fn host_for_url(address: &str) -> String {
     }
 }
 
+/// The host of a bare origin — **what would actually be dialled**, which for a `uri` candidate is
+/// NOT [`Candidate::address`]: plex.tv advertises the `plex.direct` hostname in `uri` while
+/// `address` stays the dotted quad behind it. Ranking the `uri` candidate on `address` would score
+/// `https://203-0-113-9.hash.plex.direct:32400` as numeric when it is the very name that needs DNS.
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    if let Some(end) = rest.find(']') {
+        return &rest[..=end]; // bracketed v6 literal, port (if any) follows
+    }
+    rest.split(':').next().unwrap_or(rest)
+}
+
+/// Is this host a NUMERIC literal (v4 or v6) rather than a name that needs resolving?
+///
+/// The fourth ranking axis, and it exists for the same reason `Scheme` is ranked at all: this app's
+/// transport has **no name resolution of any kind** — `stream.rs`'s `http_open` builds a
+/// `sockaddr_in` from four decimal octets and there is no `getaddrinfo` in the file — so a hostname
+/// candidate cannot be dialled however well it ranks. It is not hypothetical: the share measured on
+/// 2026-08-11 advertises a custom internal hostname that does not resolve from here at all, and it
+/// is listed BEFORE the public IPv4 that answers. Ranking it above a numeric address spends the
+/// first probe slot on a name that cannot resolve.
+///
+/// A hostname is not DROPPED, because it is the only form that can ever carry TLS validation (an
+/// https `plex.direct` origin is a name by construction) — it is merely ranked behind the addresses
+/// that can be dialled today, which is exactly the treatment IPv6 already gets.
+///
+/// **Exactly four octets**, because a name can be all-digits per label: `1.2.3` is not an address
+/// and must not be scored as one.
+fn is_numeric_address(a: &str) -> bool {
+    let a = a.strip_prefix('[').map_or(a, |h| h.strip_suffix(']').unwrap_or(h));
+    a.contains(':') // a v6 literal — colons cannot appear in a hostname
+        || (a.split('.').count() == 4 && a.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())))
+}
+
 /// Every address of `res` that policy allows, best first.
 ///
 /// Each surviving connection yields its advertised `uri` (verbatim — the `plex.direct` hostname's
@@ -198,8 +235,10 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
         }
     }
     // Stable, so plex.tv's own order survives inside a tier — it is the only tiebreak left once
-    // location, scheme and address family have spoken, and it is not ours to reorder.
-    out.sort_by_key(|c| (c.location, c.scheme, c.ipv6));
+    // location, scheme, resolvability and address family have spoken, and it is not ours to reorder.
+    // Resolvability is read off the URL's own host, not `address` — see `host_of`, which is the
+    // difference between scoring the `plex.direct` uri and scoring the quad hiding behind it.
+    out.sort_by_key(|c| (c.location, c.scheme, !is_numeric_address(host_of(&c.url)), c.ipv6));
     out
 }
 
@@ -231,15 +270,15 @@ mod tests {
     /// **over plain HTTP**, because the owner did not require secure connections.
     fn shared_server() -> Resource {
         parse(
-            r#"{"name":"<peer-name-2>","clientIdentifier":"bbbb2222","provides":"server","owned":false,
-                "sourceTitle":"<peer-owner-1>","ownerId":987654,"publicAddressMatches":false,
+            r#"{"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server","owned":false,
+                "sourceTitle":"friend","ownerId":987654,"publicAddressMatches":false,
                 "httpsRequired":false,"accessToken":"tok-share","connections":[
-                  {"protocol":"https","address":"172.20.4.7","port":32400,
+                  {"protocol":"https","address":"10.9.9.7","port":32400,
                    "uri":"https://172-20-4-7.hash2.plex.direct:32400","local":true,"relay":false,"IPv6":false},
-                  {"protocol":"https","address":"media.example.internal","port":26937,
-                   "uri":"https://media.example.internal:26937","local":false,"relay":false,"IPv6":false},
-                  {"protocol":"https","address":"203.0.113.9","port":26937,
-                   "uri":"https://203-0-113-9.hash2.plex.direct:26937","local":false,"relay":false,"IPv6":false}]}"#,
+                  {"protocol":"https","address":"media.example.internal","port":31234,
+                   "uri":"https://media.example.internal:31234","local":false,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"203.0.113.9","port":31234,
+                   "uri":"https://203-0-113-9.hash2.plex.direct:31234","local":false,"relay":false,"IPv6":false}]}"#,
         )
     }
 
@@ -278,7 +317,7 @@ mod tests {
             "the OWNER's LAN address is not ours to dial: {cs:#?}"
         );
         assert!(
-            cs.iter().any(|c| c.url == "http://203.0.113.9:26937" && c.scheme == Scheme::Http),
+            cs.iter().any(|c| c.url == "http://203.0.113.9:31234" && c.scheme == Scheme::Http),
             "the one connection measured as reachable from the TV: {cs:#?}"
         );
         // two surviving connections, each an https uri + an http twin
@@ -286,6 +325,77 @@ mod tests {
         assert!(cs.iter().all(|c| c.location == Location::Remote), "a share has no local tier here");
         // and http outranks https for now, because https is the one this app cannot dial yet
         assert_eq!(cs[0].scheme, Scheme::Http);
+        // FIRST, not merely present. This fixture carries a second http candidate — the custom
+        // hostname `media.example.internal`, which plex.tv lists BEFORE the public IPv4 — and with
+        // no resolvability term the tie fell through to that order and put an address the media
+        // transport cannot open at the head of the list.
+        assert_eq!(
+            cs[0].url, "http://203.0.113.9:31234",
+            "the dialable address must lead, not merely appear: {cs:#?}"
+        );
+    }
+
+    /// `stream.rs` has no resolver, so a hostname is as undialable as an https origin. plex.tv's
+    /// listing order decides this tie unless we rank it, which makes the failure depend on a remote
+    /// service's array order — reproducible for one account and not another.
+    #[test]
+    fn a_dotted_quad_outranks_a_hostname_that_plex_tv_listed_first() {
+        let cs = candidates(&shared_server());
+        let pos = |u: &str| cs.iter().position(|c| c.url == u).unwrap_or_else(|| panic!("{u} absent: {cs:#?}"));
+
+        assert!(
+            pos("http://203.0.113.9:31234") < pos("http://media.example.internal:31234"),
+            "same tier and same scheme, so resolvability is the tiebreak: {cs:#?}"
+        );
+        // The hostname is ranked DOWN, never dropped: the curl control plane does resolve names,
+        // so a hostname-only server must still be reachable once TLS lands.
+        assert!(cs.iter().any(|c| c.url == "http://media.example.internal:31234"));
+    }
+
+    #[test]
+    fn a_host_is_numeric_only_when_it_is_four_digit_octets_or_a_v6_literal() {
+        assert!(is_numeric_address("203.0.113.9"));
+        assert!(is_numeric_address("[2001:db8::1]"), "a bracketed v6 literal needs no resolver");
+        assert!(!is_numeric_address("media.example.internal"));
+        // the shape that makes this worth a function: plex.direct encodes the quad with DASHES,
+        // so it CONTAINS an address while still requiring DNS to reach.
+        assert!(!is_numeric_address("203-0-113-9.hash2.plex.direct"));
+        // exactly four octets — a label can be all-digits without the name being an address, and
+        // scoring `1.2.3` as dialable would put an unresolvable name at the head of its tier.
+        assert!(!is_numeric_address("1.2.3"));
+        assert!(!is_numeric_address("1.2.3.4.5"));
+        assert!(!is_numeric_address(""));
+    }
+
+    #[test]
+    fn the_host_of_an_origin_is_read_without_its_scheme_or_port() {
+        assert_eq!(host_of("http://203.0.113.9:31234"), "203.0.113.9");
+        assert_eq!(host_of("https://media.example.internal:31234"), "media.example.internal");
+        assert_eq!(host_of("http://[2001:db8::1]:32400"), "[2001:db8::1]", "the port is not a v6 group");
+    }
+
+    /// **A hostname ranks behind a numeric address**, and the share is the live case: plex.tv lists
+    /// the owner's internal name (`media.example.internal`, which does not resolve from here)
+    /// BEFORE the public IPv4 that answered in 115 ms. This client's transport has no resolver at
+    /// all, so ranking the name first spends the first probe slot proving that.
+    ///
+    /// It is ranked, not dropped — a name is the only thing TLS can validate, so it has to survive
+    /// for the curl transport to use later.
+    #[test]
+    fn a_hostname_ranks_behind_an_address_that_can_actually_be_dialled() {
+        let cs = candidates(&shared_server());
+        let http: Vec<&Candidate> = cs.iter().filter(|c| c.scheme == Scheme::Http).collect();
+
+        assert_eq!(http[0].address, "203.0.113.9", "the numeric address leads its tier: {cs:#?}");
+        assert_eq!(http[1].address, "media.example.internal", "the name is kept, just not first");
+        assert!(
+            cs.iter().any(|c| c.address == "media.example.internal" && c.scheme == Scheme::Https),
+            "and its https uri survives for the TLS transport: {cs:#?}"
+        );
+
+        assert!(is_numeric_address("203.0.113.9") && is_numeric_address("2001:db8::1"));
+        assert!(!is_numeric_address("media.example.internal"));
+        assert!(!is_numeric_address("203-0-113-9.hash2.plex.direct"), "a plex.direct name is a NAME");
     }
 
     /// A friend on our own LAN (Plex Home, or a share while visiting) is the case rule 1 must not
@@ -297,7 +407,7 @@ mod tests {
         let cs = candidates(&res);
 
         assert_eq!(cs[0].location, Location::Local, "the LAN address now leads: {cs:#?}");
-        assert!(cs.iter().any(|c| c.url == "http://172.20.4.7:32400"));
+        assert!(cs.iter().any(|c| c.url == "http://10.9.9.7:32400"));
         assert_eq!(cs.len(), 6, "three connections, two candidates each");
     }
 
@@ -390,8 +500,8 @@ mod tests {
         assert_eq!(p.machine_id, "bbbb2222", "what the probe response must equal");
         assert_eq!(p.token, "tok-share", "the sharing grant, not the account token");
         assert!(!p.owned);
-        assert_eq!(p.name, "<peer-name-2>", "the machine name — settings surfaces only");
-        assert_eq!(p.source_title.as_deref(), Some("<peer-owner-1>"), "the handle the rest of the UI says");
+        assert_eq!(p.name, "nas-home", "the machine name — settings surfaces only");
+        assert_eq!(p.source_title.as_deref(), Some("friend"), "the handle the rest of the UI says");
         assert_eq!(p.candidates.len(), 4);
     }
 }

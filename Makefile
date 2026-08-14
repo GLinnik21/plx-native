@@ -116,11 +116,29 @@ RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon $(RUST_DEB
 #   libpf-1.0 carries mediapipeline::CustomPipeline (the webOS<11 seek path).
 LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
             -lwayland-client -lplayerAPIs -lpf-1.0
-# NOT LISTED, DELIBERATELY: FFmpeg, libcurl and libAcbAPI. Their SONAMEs move between releases
-# (FFmpeg 55->57->58->59->60, curl .so.5->.so.4, ACB deleted outright at webOS 5.0), and a
-# DT_NEEDED entry for a name the device lacks kills the process at exec() — before main, before
-# the event log exists. They are dlopen'd by SONAME candidate list instead: see
-# rust-modules/src/dynlib.rs, and the video-plane comment at the top of src/starfish.c.
+# NOT LISTED, DELIBERATELY — but for TWO different reasons, and this comment used to give only
+# the first, for all three.
+#
+#   libcurl and libAcbAPI: their SONAMEs MOVE between releases (curl .so.5 -> .so.4, ACB deleted
+#   outright at webOS 5.0). A DT_NEEDED entry is a hard requirement for one exact name, cannot say
+#   "either of these", and a name the device lacks kills the process at exec() — before main,
+#   before the event log exists. So they are dlopen'd by SONAME CANDIDATE LIST:
+#   rust-modules/src/dynlib.rs, and the video-plane comment at the top of src/starfish.c.
+#
+#   FFmpeg is not a version question at all any more: we SHIP our own, pinned (the bundled-FFmpeg
+#   section below builds libav*-plx.so.63/63/61 and stages them into pkg/). It is unlinked because
+#   those files land BESIDE the binary, which is on no library search path, and they carry no rpath
+#   — so a DT_NEEDED entry would be resolved at exec() against the system path, where it either
+#   finds nothing (dead before main) or finds the TELEVISION's copy, which is the wrong one:
+#   webOS 11.2.0 ships FFmpeg 6 itself. ff.rs::load_libraries opens the three by ABSOLUTE PATH out
+#   of paths::app_dir(), one pinned SONAME each, in dependency order under RTLD_GLOBAL — not a
+#   candidate list, and nothing is being tolerated.
+#
+# The old wording ("FFmpeg 55->57->58->59->60") described the app that read the TV's FFmpeg, and it
+# survived the bundling by 100 lines. Left alone it points the next reader at version tolerance we
+# no longer need and at a library we no longer use — which is how "just use the TV's libavformat
+# for https" keeps coming back, when the copy we ship is configured --disable-network and cannot
+# open a URL at all. Root CLAUDE.md's "Linking" section carries the same account at length.
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs

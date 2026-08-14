@@ -107,14 +107,29 @@ impl Row {
 
 pub struct Section {
     pub header: String,    // "" = no header row
-    pub accessory: String, // right-aligned header accessory, e.g. "Dolby Atmos"
+    /// Right-aligned accessory on the HEADER line — a second fact about the group, one rung down
+    /// and in the header's own dim ink ("Dolby Atmos"; the Sources list's owner handle beside a
+    /// machine name). It is the last run on that line and is **elided** to [`ACCESSORY_W`], so a
+    /// long plex.tv handle truncates on a character instead of colliding with the header or
+    /// widening the panel — the rows below it are never touched.
+    pub accessory: String,
+    /// Dim the WHOLE group — header, accessory and every row — at one alpha.
+    ///
+    /// Deliberately not [`Row::dim`] applied row by row: a row's dim is an ink role, and the state
+    /// this expresses (an unreachable server, still granted and still pinned) is a fact about the
+    /// GROUP, whose header would otherwise stay the brightest thing in the panel. One alpha over
+    /// the lot is also what keeps a dimmed row's own read-out ("On") legible as itself: nothing was
+    /// unpinned, so nothing may read as off.
+    pub dim: bool,
     pub rows: Vec<Row>,
 }
 impl Section {
     pub fn new(header: impl Into<String>) -> Self {
-        Self { header: header.into(), accessory: String::new(), rows: Vec::new() }
+        Self { header: header.into(), accessory: String::new(), dim: false, rows: Vec::new() }
     }
     pub fn accessory(mut self, a: impl Into<String>) -> Self { self.accessory = a.into(); self }
+    /// Dim the whole group at [`GROUP_DIM_A`] — see [`Section::dim`].
+    pub fn dim(mut self, v: bool) -> Self { self.dim = v; self }
     pub fn row(mut self, r: Row) -> Self { self.rows.push(r); self }
 }
 
@@ -130,11 +145,22 @@ const ROW_H: f32 = 60.0; // a plain row (label only) — mockup rowBase padding 
 const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEADLINE + detail CAPTION)
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
 const HDR_H: f32 = 58.0; // panel header ("Audio"/"Subtitles"), HEADLINE
+/// Measure a [`Section::accessory`] is elided to. It is the LAST run on the header line, so it is
+/// the one that gives way: a 34-character plex.tv handle truncates on a character and the library
+/// names underneath keep their full width.
+const ACCESSORY_W: f32 = 320.0;
+/// The alpha a [`Section::dim`]med group is drawn at — the same weight an unreachable tab pill
+/// takes, applied once over header and rows together.
+const GROUP_DIM_A: f32 = 0.52;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
 const TOP_PAD: f32 = 20.0;
 const BOT_PAD: f32 = 20.0;
 const SIDE: f32 = 12.0; // pill (row) inset from the panel's left/right
 const CONTENT_PAD: f32 = 20.0; // text/check padding inside the pill (mockup rowBase 13px 20px)
+/// Where a row's own content starts, measured from the panel's left edge. Exposed so a panel that
+/// draws chrome ABOVE the list (the Sources panel's level pills) can start it on the same line the
+/// rows do, instead of re-deriving two private constants and drifting from them.
+pub const CONTENT_X: f32 = SIDE + CONTENT_PAD;
 const CHECK_W: f32 = 32.0; // leading check column
 const GAP: f32 = 16.0; // check→label gap
 const PILL_RAD: f32 = 18.0; // focused-row pill corner radius
@@ -352,15 +378,20 @@ impl TableView {
         let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
 
         // ---- sliding pill (under the rows) — warm off-white; top/bottom edges morph independently ----
+        // It follows its GROUP's dim: the focused row of an unreachable server must not be the one
+        // bright thing in a panel that is telling you the server is unreachable.
         let py0 = top0 + self.hl_top.pos - scroll;
         let py1 = top0 + self.hl_bot.pos - scroll;
         let pill = Rect::new(frame.x + SIDE, py0, frame.w - 2.0 * SIDE, (py1 - py0).max(1.0));
         if pill.y + pill.h > vis_top && pill.y < vis_bot {
-            p.rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
+            self.group_painter(p, self.section_of_row(self.sel)).rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
         }
 
         // ---- headers + rows ----
         self.walk(|cy, gi, si| {
+            // ONE alpha over the whole group (see `Section::dim`) — pushed here, at the top of the
+            // walk, so header, accessory, rows, marks and read-outs can never dim out of step.
+            let p = self.group_painter(p, si);
             let sy = top0 + cy - scroll;
             if gi == -1 {
                 // panel/section header (+ hairline divider above later sections); scissor-clipped to `frame`
@@ -370,9 +401,19 @@ impl TableView {
                         p.rect(Rect::new(content_x, sy - DIV_H * 0.5, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
                             0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                     }
+                    let hsz = if self.compact { theme::size::CAPTION } else { theme::size::HEADLINE };
                     if let Ok(cs) = CString::new(sec.header.as_str()) {
-                        let hsz = if self.compact { theme::size::CAPTION } else { theme::size::HEADLINE };
                         p.text(cs.as_ptr(), content_x, sy + 8.0, hsz, dimc, 0, 0);
+                    }
+                    // trailing accessory, one rung down and on the header's own baseline. Elided,
+                    // because it is the run that gives way (see `Section::accessory`).
+                    if !sec.accessory.is_empty() {
+                        let asz = theme::size::CAPTION;
+                        let a = crate::text::elide(&sec.accessory, ACCESSORY_W, asz, 0, false);
+                        if let Ok(ac) = CString::new(a) {
+                            let ay = crate::text::baseline_y(asz, 0, hsz, 0, sy + 8.0);
+                            p.text(ac.as_ptr(), text_right, ay, asz, dimc, 2, 0);
+                        }
                     }
                 }
                 return;
@@ -483,6 +524,27 @@ impl TableView {
         });
 
         p.clip_clear();
+    }
+
+    /// `p`, dimmed if section `si` is — the ONE place [`Section::dim`] becomes an alpha.
+    fn group_painter(&self, p: Painter, si: usize) -> Painter {
+        if self.sections.get(si).is_some_and(|s| s.dim) {
+            p.alpha(GROUP_DIM_A)
+        } else {
+            p
+        }
+    }
+
+    /// Which section global row `gi` belongs to (0 when it belongs to none — an empty table).
+    fn section_of_row(&self, gi: i32) -> usize {
+        let mut n = 0i32;
+        for (si, sec) in self.sections.iter().enumerate() {
+            n += sec.rows.len() as i32;
+            if gi < n {
+                return si;
+            }
+        }
+        0
     }
 
     fn rows_at(&self, gi: i32) -> &Row {

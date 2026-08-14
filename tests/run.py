@@ -267,7 +267,7 @@ def pick_connection(hit):
     """Best (address, port, how) plex.tv offers for this server, or None.
 
     `local` does NOT mean "on the TV's network" for a server someone SHARED with you -- it means
-    on the OWNER's. A real shared server in this account advertises `172.20.0.7:32400 local=true`
+    on the OWNER's. A real shared server in this account advertises `10.9.9.5:32400 local=true`
     (the friend's LAN, unroutable from here) alongside its public address, so ranking `local` first
     the way the app's own sign-in does would hand the TV an address it can never reach and turn a
     credentials test into a mystery timeout. Hence: for an OWNED server local wins; for a shared one
@@ -348,6 +348,10 @@ def resolve_shared_server(admin_token, spec):
     return {
         "name": spec.get("name") or hit.get("name") or "shared",
         "machine_id": hit.get("clientIdentifier") or want_mid or "",
+        # The OWNER's plex.tv handle, straight off the resource. It is what every browsing surface
+        # says out loud (the Sources list, the Library chip), and it is also what tells the app this
+        # is somebody else's server at all: empty means owned. Public, unlike the token below.
+        "handle": hit.get("sourceTitle") or "",
         "host": host,
         "port": int(port or 32400),
         "token": token,
