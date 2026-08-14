@@ -572,10 +572,17 @@ pub(crate) fn on_ok() -> Action {
 // ---- update ----------------------------------------------------------------------------------
 
 pub(crate) fn update(dt: f32) {
+    // The focused card's IDENTITY, taken BEFORE the pump. The shelves are a merge across every
+    // source now (`person::merge_shelves`), and a landing re-divides the row's budget between them
+    // — so a bare column index silently comes to mean a different film the moment a slow share
+    // answers. Before this, a share landing two seconds in slid the card out from under the user's
+    // focus and the next OK opened something they were not looking at.
+    let was = focused_id();
     // `clamp_focus` and the dirty flag below both reach `scene()` themselves, so they run BEFORE
     // this function takes its own `&'static mut` — holding one across a call that mints a second is
     // aliasing UB, not a lint. (`detail.rs::update` carries the same note for the same reason.)
     if crate::person::pump() {
+        reseat(was);
         clamp_focus();
         scene().header_dirty = true; // a landing changes the header runs AND the flow
     }
@@ -602,6 +609,34 @@ pub(crate) fn update(dt: f32) {
     }
     let want = scroll_target(sc);
     sc.column.scroll.step(want, K_SCROLL, dt);
+}
+
+/// The focused card's IDENTITY — the `(server, ratingKey)` PAIR, never the bare key. The shelves
+/// merge two sources into one row and both servers number their items from 1, so a bare key names a
+/// card on neither of them in particular (`plex::same_item`). None while the header holds focus,
+/// which is a state [`reseat`] then correctly leaves alone.
+fn focused_id() -> Option<(crate::plex::ServerId, String)> {
+    focused_item().map(|m| (m.sid, m.rk.clone()))
+}
+
+/// Put focus back on the card it was on, wherever a landing has since moved it.
+///
+/// [`clamp_focus`] cannot do this: it range-clamps an INDEX, and the index is exactly what stops
+/// meaning the same thing when `person::merge_shelves` re-divides the row between the sources. A
+/// no-op when the card is gone (its source dropped out, or the cap pushed it off the row) — the
+/// clamp that follows then does what it always did.
+fn reseat(was: Option<(crate::plex::ServerId, String)>) {
+    let Some((sid, rk)) = was else { return };
+    let Some(p) = crate::person::current() else { return };
+    for kind in 0..NSHELF {
+        let found = p.shelf(kind).iter().position(|m| crate::plex::same_item((m.sid, &m.rk), (sid, &rk)));
+        if let Some(i) = found {
+            let sc = scene();
+            sc.focus_kind = kind;
+            sc.col[kind] = i as c_int;
+            return;
+        }
+    }
 }
 
 /// Keep the focus inside whatever the store currently holds — after a landing, and after every
@@ -1018,6 +1053,38 @@ mod tests {
         assert_eq!(scene().focus_kind, 0, "focus must fall back to the one present shelf");
         assert_eq!(scene().col[1], 0, "the vanished shelf's remembered column clamps too");
         assert_eq!(focused_item().map(|m| m.rk.clone()), Some("m0".to_string()));
+        crate::person::close();
+    }
+
+    /// **The card under focus must stay the same CARD when a source lands**, not the same index.
+    /// The shelves are a merge, and `person::merge_shelves` re-divides the row's budget every time a
+    /// server answers — so the film at column 3 a moment ago can be a different film now. Before
+    /// [`reseat`], a share landing two seconds into the page slid the selection out from under the
+    /// user and the next OK opened something they were not looking at.
+    #[test]
+    fn a_landing_that_re_divides_the_shelf_keeps_focus_on_the_same_card() {
+        let _serial = crate::testlock::serial();
+        seed(4, 0);
+        move_focus(SDLK_RIGHT);
+        move_focus(SDLK_RIGHT); // on "m2"
+        let was = focused_id();
+        assert_eq!(was.as_ref().map(|(_, rk)| rk.as_str()), Some("m2"));
+
+        // the row is rebuilt with two rows inserted ahead of it — what a second source landing does
+        let rebuilt: Vec<PmsMovie> =
+            ["x0", "x1", "m0", "m1", "m2", "m3"].iter().map(|rk| item(rk)).collect();
+        crate::person::install_for_test(rebuilt, Vec::new());
+        reseat(was);
+        clamp_focus();
+        assert_eq!(scene().col[0], 4, "the index followed the card, instead of the card following the index");
+        assert_eq!(focused_item().map(|m| m.rk.clone()), Some("m2".to_string()));
+
+        // a card that is gone entirely leaves the clamp to do what it always did — never a panic
+        let was = focused_id();
+        crate::person::install_for_test(vec![item("z0")], Vec::new());
+        reseat(was);
+        clamp_focus();
+        assert_eq!(focused_item().map(|m| m.rk.clone()), Some("z0".to_string()));
         crate::person::close();
     }
 
