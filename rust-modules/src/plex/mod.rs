@@ -59,7 +59,18 @@ pub use client::{Client, StreamUrl};
 // singleton accessors, so every call site outside `plex/` reads unchanged; `client_for`,
 // `register`, `set_current` and `ServerId` are the multi-server additions.
 #[allow(unused_imports)]
-pub use servers::{client, client_for, client_opt, count as server_count, current as current_server, install, register, set_current, ServerId};
+pub use servers::{
+    client, client_for, client_opt, count as server_count, current as current_server, describe as describe_server,
+    facts as server_facts, ids as server_ids, install, register, same_item, set_current, ServerFacts, ServerId,
+};
+// The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
+// `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
+// does — that call mints and PERSISTS a device uuid, which a host test has no business writing —
+// and `reset_servers_for_test` is what keeps the table a per-test fixture instead of a growing
+// process-global holding clients whose loopback ports closed when their test returned. Both must be
+// called under `crate::testlock::serial`.
+#[cfg(test)]
+pub(crate) use servers::{register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test};
 #[allow(unused_imports)]
 pub use models::*;
 #[allow(unused_imports)]
@@ -71,5 +82,8 @@ pub use params::*;
 pub use timeline::{queue_index_of, QueueRow};
 // DP_AUDIO_CODECS rides along for `devcaps`, which intersects it with the device's own codec
 // table — the caps snapshot is what `is_dp_audio` and the profile string then both read.
+// `link_policy` is the other gate on the same decision: `is_dp_audio` asks what the PIPELINE can
+// decode, `link_policy` asks what the CONNECTION can carry, and `route::build_stream` must pass
+// both before it streams a file itself.
 #[allow(unused_imports)]
-pub use transcoder::{is_dp_audio, DP_AUDIO_CODECS};
+pub use transcoder::{is_dp_audio, link_policy, LinkPolicy, DP_AUDIO_CODECS};

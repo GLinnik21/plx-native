@@ -10,6 +10,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub mod account_menu; // Home top-left profile popover (change profile / sign out)
+pub mod alt_sources; // "Also available": the same item on a second pinned source, as a picker
 pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;

@@ -21,7 +21,7 @@
 //! visible art tile, every frame (~25–40 tiles × 60 fps). An `RwLock` there buys nothing and
 //! costs an atomic RMW pair per call plus a fairness stall whenever a login writes; an `Arc`
 //! clone would be a refcount bump per call on top of changing every call site's type. So a read
-//! is: one relaxed load of `CURRENT`, one acquire load of a slot pointer, deref. No lock, no
+//! is: one acquire load of `CURRENT`, one acquire load of a slot pointer, deref. No lock, no
 //! refcount, no allocation. Writers (login, profile switch, adding a server) serialize on
 //! `WRITE`, which no reader ever touches.
 //!
@@ -41,7 +41,11 @@ use std::sync::Mutex;
 
 /// Slot ceiling. A Plex account's server list is a handful (own + shared); past this, a
 /// registration is refused and logged rather than growing a table the hot path indexes.
-const MAX_SERVERS: usize = 16;
+///
+/// `pub(super)` because [`super::serverinfo`] holds one entry PER SERVER in a flat array indexed
+/// by [`ServerId::raw`], and a second, independent ceiling there is a silent out-of-bounds
+/// waiting to happen: this is the number that decides which ids can ever exist.
+pub(super) const MAX_SERVERS: usize = 16;
 
 /// A registry slot — a small `Copy` handle that names a server without borrowing it. Stable for
 /// the life of the process, so it can sit in UI state, a route, or a queued job.
@@ -60,7 +64,9 @@ impl ServerId {
     pub fn raw(self) -> u16 {
         self.0
     }
-    pub fn from_raw(v: u16) -> ServerId {
+    /// `const` so a fixed slot can name a server in a `const` — which is what lets the host tests
+    /// that grade the identity rules build one without a registry, a socket or the serial lock.
+    pub const fn from_raw(v: u16) -> ServerId {
         ServerId(v)
     }
     /// Slot index, `None` for UNSET — the one place the reserved value is turned away.
@@ -75,9 +81,56 @@ impl Default for ServerId {
     }
 }
 
+/// **THE item-identity rule**: do two server-scoped keys name the same item?
+///
+/// Every `ratingKey`, `librarySectionID`, `Part.key`, `Stream.id` and `personId` Plex issues is a
+/// server-local integer dense from 1, so with two servers registered a bare key names an item on
+/// *neither* of them in particular. Two servers colliding is therefore the NORMAL case, not an edge
+/// one — it is measured (docs/shared-servers.md §2): the share's only section key is `1`, exactly
+/// like our own `Movies`, and its ratingKeys start at 1 alongside ours. Anything that stores an
+/// item and later looks it up again — the home catalog, the loaded detail, the playing-item store,
+/// the BACK trail, a play queue — has to compare the PAIR, and they all compare it here so the
+/// answer cannot drift between them.
+///
+/// [`ServerId::UNSET`] matches only itself, and that is the pre-registry state rather than a
+/// wildcard: a row parsed before any server was installed (and every row a host test builds by
+/// literal) carries UNSET, so UNSET-vs-UNSET is the single-server app behaving exactly as it did.
+/// UNSET vs a real slot is deliberately NOT a match — a "server unknown" row must not be handed to
+/// a caller asking about a specific machine, because the whole failure this rule exists to stop is
+/// a confident answer about the wrong one. Every such miss degrades safely at its call site (a
+/// catalog miss opens the page off-catalog, a playing-item miss costs one PMS fetch), which is the
+/// property that makes strict equality the safe default here.
+pub fn same_item(a: (ServerId, &str), b: (ServerId, &str)) -> bool {
+    a.0 == b.0 && a.1 == b.1
+}
+
+/// What the ROSTER says ABOUT a registered server, as opposed to the address a request dials:
+/// whose it is and what it is called. Set by whoever ingested the roster (plex.tv
+/// `/api/v2/resources`, the `plxnative-servers` dev trigger, or a server naming itself through
+/// `Client::friendly_name`), read by the Sources list.
+///
+/// Deliberately NOT fields on `Client`: a `Client` is re-pointed whenever the address moves, and
+/// a re-point must not forget whose server it is. Published by the same leak-and-store the client
+/// slots use, so [`facts`] hands out `&'static` on exactly the same terms as [`client_for`].
+pub struct ServerFacts {
+    /// The MACHINE name — "nas-home". "People in content, machines in settings": this is drawn
+    /// only where the grant itself is the subject, i.e. the Sources list's group headers.
+    pub name: String,
+    /// The owner's plex.tv handle — "friend". **Empty on your own server**, and empty is the
+    /// ABSENCE of an owner rather than an anonymous one: every surface that annotates a source
+    /// draws nothing at all for it, no separator and no empty run.
+    pub handle: String,
+    /// This account owns the server (`account::Resource.owned`). Not derivable from an empty
+    /// handle: a share whose `sourceTitle` plex.tv did not send is still a share.
+    pub owned: bool,
+}
+
 /// The table. A null slot is unpopulated; a non-null one is a leaked `Client` that is never
 /// freed (see the module doc), which is what makes the `unsafe` deref in [`client_for`] sound.
 static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
+/// [`ServerFacts`] per slot, published and leaked exactly as `SLOTS` is. A null slot is a server
+/// nobody has described yet — which is the honest state on a boot that never reached plex.tv.
+static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
 /// Slots populated so far. Only writers and the match scan read it; `client_for` does not.
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The current/primary server as a raw `ServerId` — what `client()` answers with.
@@ -97,8 +150,16 @@ pub fn client_for(id: ServerId) -> Option<&'static Client> {
 }
 
 /// Which server `client()` answers with. `UNSET` before the first install.
+///
+/// **`Acquire`, and the pair with [`set_current`]'s `Release` is load-bearing on the TV.** The
+/// invariant every reader depends on is *"if you can see this id, the slot it names is published"*
+/// — `client_opt` reads this and then the slot, and `client()` PANICS on a null one. Relaxed on
+/// both sides states no such ordering: ARMv7 is weakly ordered, so a poster worker calling
+/// `client()` per art tile per frame could observe an id stored by the auth worker's `install`
+/// before that thread's slot-pointer store landed, and take the panic. x86 would never show it,
+/// which is exactly why it is spelled out here rather than left to a host test to catch.
 pub fn current() -> ServerId {
-    ServerId(CURRENT.load(Ordering::Relaxed) as u16)
+    ServerId(CURRENT.load(Ordering::Acquire) as u16)
 }
 
 /// Point `client()` at another registered server. `false` (and no change) for an id that names
@@ -106,7 +167,9 @@ pub fn current() -> ServerId {
 pub fn set_current(id: ServerId) -> bool {
     let ok = client_for(id).is_some();
     if ok {
-        CURRENT.store(id.0 as u32, Ordering::Relaxed);
+        // Release, pairing with `current()`'s Acquire: publishes the slot store that
+        // `client_for` above just proved visible TO US, so it is visible to every later reader.
+        CURRENT.store(id.0 as u32, Ordering::Release);
     }
     ok
 }
@@ -126,6 +189,48 @@ pub fn client_opt() -> Option<&'static Client> {
 /// How many servers are registered.
 pub fn count() -> usize {
     COUNT.load(Ordering::Acquire)
+}
+
+/// Every registered slot, in registration order — **the granted roster**, since a server is only
+/// registered once the account was granted it. Registration order matters to the one caller
+/// (`browse`'s section table appends in it, and the session server registers first), so this is an
+/// ordered walk and not a set.
+pub fn ids() -> impl Iterator<Item = ServerId> {
+    (0..count() as u16).map(ServerId)
+}
+
+/// What the roster says about one server, `None` until something has described it.
+pub fn facts(id: ServerId) -> Option<&'static ServerFacts> {
+    let p = FACTS.get(id.index()?)?.load(Ordering::Acquire);
+    // SAFETY: identical to `client_for`'s — a slot holds null or a `Box::into_raw` pointer that is
+    // never freed, published Release and read Acquire.
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// Record what the roster says about a server. Idempotent and additive: a field given as empty
+/// KEEPS whatever was already known, so a later describer that learned only the machine name (the
+/// server naming itself over `GET /`) cannot blank an owner handle plex.tv already supplied — and
+/// the two ingest paths can land in either order.
+///
+/// A no-op for an id that names no client: describing a slot nothing dials would leave a row in
+/// the Sources list that cannot be browsed.
+pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else { return };
+    let old = facts(id);
+    let merged = ServerFacts {
+        name: pick(name, old.map(|f| f.name.as_str())),
+        handle: pick(handle, old.map(|f| f.handle.as_str())),
+        // `owned` has no "unknown", so the newest answer wins — but a describer that only learned
+        // a name passes the flag it read back, which is what makes that a no-op rather than a lie.
+        owned,
+    };
+    FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+}
+
+/// `new` when it says something, else whatever was already known.
+fn pick(new: &str, old: Option<&str>) -> String {
+    if new.is_empty() { old.unwrap_or_default().to_owned() } else { new.to_owned() }
 }
 
 // ---- writes: registration ----
@@ -168,12 +273,26 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
     // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
     // commonest call here by far is the profile switch, which only swaps a token; the singleton
     // this replaced read the file exactly once, and so does this.
-    register_lazy(machine_id, host, port, token, &|| super::session::load().client_id)
+    let id = register_lazy(machine_id, host, port, token, &|| super::session::load().client_id);
+    // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
+    // seam below is the test one and deliberately does not), so it is the single place that keeps
+    // each server's self-description — version + Plex Pass, issue #22's blind spot — fresh
+    // without every caller remembering to. It used to sit in `install`, which reached only the
+    // CURRENT server; a shared server registered beside it would have stayed permanently
+    // `Unknown`, and the failure read-out blames a missing Pass on a known-free server only.
+    // A worker fetch, single-flighted per server; nothing waits on it.
+    super::serverinfo::refresh(id);
+    id
 }
 
 /// [`register`] with the device id supplied — the seam that keeps the session file out of the
 /// registry proper (and out of the tests).
-pub(super) fn register_with_client_id(machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> ServerId {
+///
+/// `pub(crate)` rather than `pub(super)` because tests OUTSIDE `plex/` need it too (`route.rs`
+/// grades which server a `/:/timeline` POST reaches, which takes two registered clients): the
+/// public [`register`] resolves the device id through `session::load`, which MINTS AND PERSISTS a
+/// uuid when there is none, and a host test must not write one.
+pub(crate) fn register_with_client_id(machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> ServerId {
     register_lazy(machine_id, host, port, token, &|| client_id.to_owned())
 }
 
@@ -211,7 +330,9 @@ fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id
     // and the event log is what users send us.
     crate::log(&format!("plex: server slot {} registered at {host}:{port}", id.0));
     if !current().is_set() {
-        CURRENT.store(id.0 as u32, Ordering::Relaxed);
+        // Release: this store is what makes the `publish` above reachable through `client()`, so it
+        // must not be seen before it (see `current()`).
+        CURRENT.store(id.0 as u32, Ordering::Release);
     }
     id
 }
@@ -228,23 +349,27 @@ fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id
 pub fn install(host: &str, port: i32, token: &str) {
     let id = register("", host, port, token);
     set_current(id); // the session path always retargets: this is now the server we are using
-    // Every session path funnels through here — boot, QR login, profile switch — so this is the
-    // one place that keeps the server's self-description (version + Plex Pass, issue #22's blind
-    // spot) fresh without each caller remembering to. A worker fetch; nothing waits on it.
-    super::serverinfo::refresh();
+    // (`register` already refreshed this server's self-description — see its doc.)
 }
 
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
 /// (that is the ordinary lifecycle here, not a test-only wart) and must be called under
 /// [`crate::testlock::serial`] — the registry is a crate global.
+///
+/// `pub(crate)` for the same reason as [`register_with_client_id`]: a test outside `plex/` that
+/// registers a server owes the rest of the suite an empty table on the way out, or the next test
+/// to ask `client_opt()` gets `Some(a client whose port closed when that test returned)`.
 #[cfg(test)]
-pub(super) fn reset_for_test() {
+pub(crate) fn reset_for_test() {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     for s in SLOTS.iter() {
         s.store(std::ptr::null_mut(), Ordering::Release);
     }
+    for f in FACTS.iter() {
+        f.store(std::ptr::null_mut(), Ordering::Release);
+    }
     COUNT.store(0, Ordering::Release);
-    CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Relaxed);
+    CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -254,10 +379,22 @@ mod tests {
     /// Every test here mutates the ONE registry, so they hold the crate-wide serialization lock
     /// (`lib.rs`'s `testlock`) rather than a module-local one: `client()` is reachable from other
     /// modules' tests too.
-    fn fresh() -> std::sync::MutexGuard<'static, ()> {
+    ///
+    /// It empties the registry on the way OUT as well as on the way in, and that half is
+    /// load-bearing rather than tidy: `browse::pump` adopts every registered slot as a source and
+    /// then spawns a discovery worker for it, so servers left behind here would have another
+    /// module's tests dialling `10.0.0.1` on a background thread. The reset happens while the lock
+    /// is still held (a struct's own `Drop` runs before its fields').
+    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    impl Drop for Fresh {
+        fn drop(&mut self) {
+            reset_for_test();
+        }
+    }
+    fn fresh() -> Fresh {
         let g = crate::testlock::serial();
         reset_for_test();
-        g
+        Fresh(g)
     }
 
     /// The token as the wire would carry it — `with_token` is the only reader of the field.
@@ -357,6 +494,54 @@ mod tests {
         reg("mach-A", "10.0.0.1", "tok-a2");
         assert_ne!(client_for(a).unwrap().token_gen(), ga, "A's token changed");
         assert_eq!(client_for(b).unwrap().token_gen(), gb, "B's did not");
+    }
+
+    /// The identity rule the whole app's stored rows compare on. The case it exists for is the
+    /// FIRST assertion: the share's ratingKeys are dense from 1 exactly like ours, so a bare key
+    /// matching is the bug, not the feature. No registry state is touched, so no lock is needed.
+    #[test]
+    fn one_rating_key_on_two_servers_is_two_different_items() {
+        let (a, b) = (ServerId::from_raw(0), ServerId::from_raw(1));
+        assert!(!same_item((a, "1"), (b, "1")), "the same key on two servers is two items");
+        assert!(same_item((a, "1"), (a, "1")), "…and the same key on ONE server is one item");
+        assert!(!same_item((a, "1"), (a, "2")), "a different key is a different item");
+
+        // UNSET is the pre-registry / host-test state: it matches itself (the single-server app,
+        // unchanged) and nothing else — a row whose server is unknown must never answer for a
+        // named one.
+        assert!(same_item((ServerId::UNSET, "1"), (ServerId::UNSET, "1")));
+        assert!(!same_item((ServerId::UNSET, "1"), (a, "1")));
+        assert!(!same_item((a, "1"), (ServerId::UNSET, "1")));
+    }
+
+    /// The roster half: [`ids`] walks every registered slot in registration order (that IS the
+    /// granted roster), and [`describe`] MERGES rather than replaces — the two ingest paths (plex.tv,
+    /// which knows the owner, and the server naming itself over `GET /`, which knows only the machine
+    /// name) land in either order without either one blanking the other's field.
+    #[test]
+    fn the_roster_walks_in_registration_order_and_describing_it_never_blanks_a_known_field() {
+        let _g = fresh();
+        let a = reg("mach-A", "10.0.0.1", "tok-a");
+        let b = reg("mach-B", "10.0.0.2", "tok-b");
+        assert_eq!(ids().collect::<Vec<_>>(), vec![a, b], "registration order, the session server first");
+        assert!(facts(a).is_none(), "nothing has described it yet — not an empty-named server");
+
+        // plex.tv first (owner known, no machine name in this path), then the server itself
+        describe(b, "", "friend", false);
+        describe(b, "nas-home", "", false);
+        let f = facts(b).expect("described");
+        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("nas-home", "friend", false));
+
+        // and the other order, on the other slot
+        describe(a, "mac-mini", "", true);
+        describe(a, "", "", true);
+        let f = facts(a).expect("described");
+        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("mac-mini", "", true));
+
+        // a slot nothing dials is never described — a Sources row you cannot browse
+        describe(ServerId::from_raw(9), "ghost", "nobody", false);
+        assert!(facts(ServerId::from_raw(9)).is_none());
+        assert!(facts(ServerId::UNSET).is_none(), "the reserved value must never resolve");
     }
 
     /// A slot registered by address only (what `install` can do) is ADOPTED once the machine id

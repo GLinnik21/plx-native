@@ -11,6 +11,40 @@ impl Client {
         self.get_json("/library/sections")
     }
 
+    /// GET / — what this server calls itself (`friendlyName`), or `None` when it did not answer
+    /// or answered with no name. The Sources list heads each server's group with it, which is the
+    /// only place in the app a MACHINE is named.
+    ///
+    /// Same endpoint `serverinfo`'s version/Plex-Pass probe uses, deliberately not folded into it:
+    /// that one is a process-global fact about the CURRENT server refreshed on every session path,
+    /// this is a per-server string a roster row needs once. Sharing the state would mean the last
+    /// server discovered renamed the one you are signed in to.
+    pub fn friendly_name(&self) -> Option<String> {
+        self.get_json("/").map(|mc| mc.friendly_name).filter(|s| !s.is_empty())
+    }
+
+    /// GET /library/all?guid=… — **does THIS server hold this film, and under which key?**
+    ///
+    /// The one query in the app that crosses libraries rather than naming one, which is why the
+    /// rows it returns carry `librarySectionTitle`: the caller does not know in advance which
+    /// library will answer, and "Also available" names the library, not the machine.
+    ///
+    /// `None` is a transport/parse failure; `Some` with an empty `metadata` is the server
+    /// answering *"I do not have it"*, and the two must not be collapsed — a share that is merely
+    /// unreachable would otherwise read as one that does not hold the film, which is a row silently
+    /// missing from the panel rather than a source visibly not answering.
+    ///
+    /// Verified live against both of this household's servers, 2026-08-14: `size=0` for a film only
+    /// ours holds, `size=1` for one both hold — returning the SHARE's own `ratingKey` and its own
+    /// localized title for the same guid.
+    pub fn find_by_guid(&self, guid: &str) -> Option<MediaContainer> {
+        if guid.is_empty() {
+            return None;
+        }
+        let path = QueryBuilder::new("/library/all".to_string()).str("guid", guid).build();
+        self.get_json(&path)
+    }
+
     /// GET /library/sections/{section_key}/all → `.metadata[]`
     pub fn section_items(&self, section_key: i64) -> Option<MediaContainer> {
         self.get_json(&format!("/library/sections/{section_key}/all"))
