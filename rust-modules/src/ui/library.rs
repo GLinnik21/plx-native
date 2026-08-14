@@ -660,7 +660,7 @@ fn source_labels() -> (String, Option<String>) {
 const STANDIN_OWNER: &str = "friend";
 
 /// The Empty read-out's caption. A library the server ANSWERED for and that holds nothing is
-/// named — "No films in LDN Films" — because the name is what makes it a statement rather than a
+/// named — "No films in Film Club" — because the name is what makes it a statement rather than a
 /// shrug. A listing emptied by a FILTER is not the library being empty and must not claim to be.
 fn empty_caption() -> &'static CString {
     let sec = crate::browse::cur();
