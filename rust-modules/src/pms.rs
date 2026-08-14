@@ -744,6 +744,11 @@ static RESULTS: Mutex<Vec<Landing>> = Mutex::new(Vec::new());
 /// in flight across a profile switch could commit the previous account's hubs on top of the new
 /// one's — the same late-landing hazard `browse.rs` keys its `GEN` on.
 static HUB_GEN: AtomicU32 = AtomicU32::new(0);
+/// `browse::sections_gen()` as of the last merge. The section table is where the pinned set comes
+/// from, so a change to it can change WHICH sources Home is built from without any hub landing —
+/// see the read in [`pump`]. Starts at 0, which is also the table's own starting generation, so a
+/// boot that discovers nothing does not merge twice for nothing.
+static LAST_SECTIONS_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// The backoff ladder's ends. A TV parked on a sleeping server must keep trying — that IS the
 /// feature — without ever becoming a request loop, so the wait doubles from `MIN` to a `MAX`
@@ -784,8 +789,35 @@ pub(crate) fn hub_state() -> HubState {
 /// with no sources at all on the frame it boots.
 ///
 /// Pure, so the bootstrap rule is graded rather than observed on a television.
-fn feeds_home(sid: ServerId, pinned: &[ServerId]) -> bool {
-    pinned.is_empty() || pinned.contains(&sid)
+fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
+    // **A server whose libraries we have not enumerated yet is UNDECIDED, not unpinned.**
+    //
+    // The pin is a decision about libraries; you cannot have decided against one nobody has
+    // discovered. Section discovery for a source other than the current one runs on a worker off
+    // `browse::pump`, which only runs while the LIBRARY screen is up — so on a fresh boot the share
+    // is in the roster, has answered with shelves, and has no known sections at all. Testing
+    // `pinned.contains` there excluded it from Home until you happened to visit the Library, which
+    // is exactly how the owner found it: "it appeared on the home screen only after I watched the
+    // library."
+    //
+    // The whole-set emptiness check below is the same rule one level up (nothing discovered
+    // anywhere yet) and is kept for the boot frame before any source has answered.
+    pinned.is_empty() || pinned.contains(&sid) || !known.contains(&sid)
+}
+
+/// The servers whose section tables we have actually seen — the domain over which a pin can mean
+/// anything. Not the roster: a registered server with no discovered sections is absent from this.
+fn servers_with_known_sections() -> Vec<ServerId> {
+    let srcs = crate::browse::sources();
+    let mut out: Vec<ServerId> = Vec::new();
+    for si in crate::browse::discovered_sources() {
+        if let Some(sid) = srcs.get(si).map(|x| x.sid) {
+            if !out.contains(&sid) {
+                out.push(sid);
+            }
+        }
+    }
+    out
 }
 
 /// The servers whose libraries are pinned to Home, as registry slots. Separated from [`feeds_home`]
@@ -814,10 +846,11 @@ fn pinned_servers() -> Vec<ServerId> {
 /// opinion about who a server belongs to that the Sources list does not share.
 fn roster() -> Vec<(ServerId, String)> {
     let pinned = pinned_servers();
+    let known = servers_with_known_sections();
     let mut own: Vec<(ServerId, String)> = Vec::new();
     let mut shared: Vec<(ServerId, String)> = Vec::new();
     for sid in crate::plex::server_ids() {
-        if crate::plex::client_for(sid).is_none() || !feeds_home(sid, &pinned) {
+        if crate::plex::client_for(sid).is_none() || !feeds_home(sid, &pinned, &known) {
             continue;
         }
         let handle = crate::plex::server_facts(sid).map(|f| f.handle.clone()).unwrap_or_default();
@@ -900,6 +933,16 @@ fn commit(build: HubBuild) -> c_int {
 /// Record one source's success: it answers with this build from now on, and the backoff retires so
 /// its next failure starts at the bottom of the ladder instead of inheriting a 30 s wait.
 fn landed_ok(s: &mut Src, b: SourceBuild) {
+    // The success twin of `landed_fail`'s line. Without it a source that fetched and answered was
+    // indistinguishable in the log from one still in flight — "hubs: source 1 fetching" with
+    // nothing after it says only that the worker started. The SLOT, never the handle (a plex.tv
+    // username is the friend's, and the event log is what users send us).
+    crate::log(&format!(
+        "hubs: source {} ok — {} shelves, {} in CW",
+        s.sid.raw(),
+        b.shelves.len(),
+        b.cw.len()
+    ));
     s.last = Some(b);
     s.state = HubState::Ready;
     s.retry_n = 0;
@@ -1032,7 +1075,21 @@ pub(crate) fn pump(dt: f32) {
             kick(s);
         }
     }
-    let build = dirty.then(|| merge(&srcs));
+    // …and re-merge when the SECTION TABLE moves, not only when a build lands. `feeds_home` reads
+    // the pinned set, which is derived from that table — so both of the ways the set changes were
+    // invisible to Home before this:
+    //
+    //   * a share's sections are discovered on a WORKER (`browse::maybe_discover`), strictly after
+    //     the boot fetch. Until they land the share is in the roster but has no pinned library, so
+    //     the merge that ran on its hub landing excluded it — and nothing re-ran.
+    //   * a pin toggled by hand (now bumping the same generation).
+    //
+    // `merge` is pure over the builds each source already answered with: no request, no allocation
+    // beyond the rebuilt catalog. Cheap enough to run on a generation change rather than to try to
+    // predict which changes matter.
+    let sgen = crate::browse::sections_gen();
+    let sections_moved = LAST_SECTIONS_GEN.swap(sgen, Ordering::SeqCst) != sgen;
+    let build = (dirty || sections_moved).then(|| merge(&srcs));
     drop(srcs); // before calling out: `detail::reselect` walks the catalog this is about to replace
     if any_landed {
         // A landing rewrites the shelves under a Home screen that may have gone idle (a failure
@@ -1620,18 +1677,29 @@ mod tests {
         reset();
     }
 
-    /// **The pin store is the seam, and an EMPTY one means "nothing discovered yet", not "nothing
-    /// is pinned".** `/library/sections` lands asynchronously and always after `pms_fetch_hubs`, and
-    /// `browse::is_last_pinned` forbids unpinning the last library — so reading an empty list as
-    /// "no source feeds Home" would leave Home with no sources at all on the frame it boots.
+    /// **The pin store is the seam, and "no pinned library" only means something for a server whose
+    /// libraries have been ENUMERATED.** `/library/sections` lands asynchronously and always after
+    /// `pms_fetch_hubs`, and for a source other than the current one it lands only while the LIBRARY
+    /// screen is up — so a booted app knows the roster and none of its shares' libraries.
+    ///
+    /// Reading that state as "not pinned" is what produced the owner's report that a share
+    /// "appeared on the home screen only after I watched the library": the pin said On the whole
+    /// time, and Home was asking a question the section table could not yet answer.
     #[test]
-    fn a_source_feeds_home_until_the_pin_store_says_otherwise() {
+    fn a_server_whose_libraries_are_unknown_is_undecided_not_unpinned() {
         let (a, b) = (sid(0), sid(1));
-        assert!(feeds_home(a, &[]), "nothing discovered yet: every granted server feeds Home");
-        assert!(feeds_home(b, &[]));
-        assert!(feeds_home(a, &[a]), "pinned");
-        assert!(!feeds_home(b, &[a]), "granted, browsable, but not pinned — so not on Home");
-        assert!(feeds_home(b, &[a, b]));
+        // nothing discovered anywhere: every granted server feeds Home
+        assert!(feeds_home(a, &[], &[]));
+        assert!(feeds_home(b, &[], &[]));
+
+        // **the regression**: `a` is discovered and pinned, `b` is in the roster and has not been
+        // enumerated. `b` is UNDECIDED and must still feed Home.
+        assert!(feeds_home(b, &[a], &[a]), "a share nobody has enumerated is not a share turned off");
+
+        // …and once `b`'s libraries ARE known, the pin is a real answer in both directions
+        assert!(!feeds_home(b, &[a], &[a, b]), "enumerated, granted, browsable — and not pinned");
+        assert!(feeds_home(b, &[a, b], &[a, b]), "pinned");
+        assert!(feeds_home(a, &[a], &[a, b]));
     }
 
     /// The budget is split, not raced for. Whoever is asked first used to spend it — and `/hubs`

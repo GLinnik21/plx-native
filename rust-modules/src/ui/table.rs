@@ -172,6 +172,17 @@ const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade
 pub struct TableView {
     pub sections: Vec<Section>,
     pub sel: i32,  // global index across all sections' rows (headers are not selectable)
+    /// Does the LIST hold focus? `false` draws no selection pill at all — the "nothing selected"
+    /// mode this widget did not have.
+    ///
+    /// It exists for a panel with a control OUTSIDE the list (the Sources panel's Browse / On Home
+    /// segments): while focus is up there, a table that always paints its selection puts a second
+    /// accent capsule on screen, and the two are indistinguishable. `sel` is REMEMBERED across the
+    /// trip — you come back to the row you left, so this suppresses the pill rather than clearing
+    /// the selection.
+    ///
+    /// Defaults to `true`, so every panel whose list is the only focusable thing is unchanged.
+    pub list_focused: bool,
     /// compact size class: BODY regular row LABELS instead of the default HEADLINE bold (the small
     /// account popover; HEADLINE-bold rows overwhelmed a 440px panel of one-word actions). Set it
     /// on every ACTION menu — the item context menu, account, more, and the library sort/filter/
@@ -191,6 +202,7 @@ impl TableView {
         Self {
             sections: Vec::new(),
             sel: 0,
+            list_focused: true,
             compact: false,
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
@@ -390,7 +402,7 @@ impl TableView {
         let py0 = top0 + self.hl_top.pos - scroll;
         let py1 = top0 + self.hl_bot.pos - scroll;
         let pill = Rect::new(frame.x + SIDE, py0, frame.w - 2.0 * SIDE, (py1 - py0).max(1.0));
-        if pill.y + pill.h > vis_top && pill.y < vis_bot {
+        if self.list_focused && pill.y + pill.h > vis_top && pill.y < vis_bot {
             self.group_painter(p, self.section_of_row(self.sel)).rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
         }
 

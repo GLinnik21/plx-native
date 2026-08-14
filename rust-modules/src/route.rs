@@ -1388,7 +1388,7 @@ pub(crate) fn pump_play() -> bool {
     // one of them. Keeping the two apart also keeps the install reachable from the host suite —
     // `warm_tex` pulls in the poster cache and, through it, a GL call the dev Mac cannot link.
     if let Some(u) = up_next() {
-        crate::ui::widgets::warm_tex(&u.thumb, 480, 270, 0);
+        crate::ui::widgets::warm_tex_on(item_sid(cur_sid()), &u.thumb, 480, 270, 0);
     }
     ok
 }

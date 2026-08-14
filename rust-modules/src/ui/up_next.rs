@@ -244,7 +244,7 @@ pub(crate) fn draw(p: Painter, focused: bool, btn: c_int, now: u32) {
     // passing it as a constant drew the still permanently 7% oversized — overhanging the column on
     // both sides. The still is decoration on a focusable row, not a focusable tile itself, so it
     // keeps the card treatment (sheen + resting shadow) at rest scale.
-    draw_card(p, l.still, &u.thumb, (480, 270), 10.0, false, 1.0);
+    draw_card(p, l.still, crate::route::item_sid(crate::route::cur_sid()), &u.thumb, (480, 270), 10.0, false, 1.0);
 
     if let Ok(cs) = CString::new(crate::text::elide(&caption(u), l.caption.w, theme::size::CAPTION, 1, false)) {
         Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY)

@@ -84,12 +84,15 @@ pub(crate) fn warm_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_
 /// (the same thumbnail, but its EMPTY case draws a person glyph rather than a blank tile).
 pub(crate) enum Art<'a> {
     Poster(Option<&'a PmsMovie>),
-    Thumb { key: &'a str, res: (c_int, c_int) },
+    /// `sid` is the server `key` is a path on — an image-transcode path embeds a server-local
+    /// ratingKey, so a still or a poster fetched from another machine is a 404 or, worse, a
+    /// different item's picture. Every variant here carries one for that reason.
+    Thumb { sid: ServerId, key: &'a str, res: (c_int, c_int) },
     /// A credit's headshot (the Cast & Crew shelf). Distinct from [`Art::Thumb`] because a
     /// missing headshot is ROUTINE here — the server has one for most actors and for few crew —
     /// and an empty circle beside named circles reads as a broken image rather than as a person
     /// the metadata agent has no photo of.
-    Person { key: &'a str, res: (c_int, c_int) },
+    Person { sid: ServerId, key: &'a str, res: (c_int, c_int) },
 }
 
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
@@ -102,7 +105,14 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
     let r = if focused { frame.scaled(scale) } else { frame };
     match art {
         Art::Poster(m) => {
-            let t = m.map(|m| resolve_tex(&m.thumb, 250, 375, 0)).unwrap_or(0);
+            // **The ROW's server, not the current one.** A `thumb` path is a key on the server that
+            // issued it — image-transcode paths embed a server-local ratingKey — so the bare
+            // `resolve_tex` (which is `_on(current_server(), …)`) fetched every tile's art from
+            // whichever server was current. That was invisible only while browsing a shared library
+            // also re-pointed `current`; the moment that stopped, the Library grid of a friend's
+            // library drew skeletons for most tiles and OUR films for the few ratingKeys that
+            // happen to collide — both servers number from 1, so collisions are the normal case.
+            let t = m.map(|m| resolve_tex_on(m.sid, &m.thumb, 250, 375, 0)).unwrap_or(0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
@@ -132,16 +142,16 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 }
             }
         }
-        Art::Thumb { key, res } => {
-            let t = resolve_tex(key, res.0, res.1, 0);
+        Art::Thumb { sid, key, res } => {
+            let t = resolve_tex_on(sid, key, res.0, res.1, 0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
             }
         }
-        Art::Person { key, res } => {
-            let t = resolve_tex(key, res.0, res.1, 0);
+        Art::Person { sid, key, res } => {
+            let t = resolve_tex_on(sid, key, res.0, res.1, 0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
@@ -301,10 +311,19 @@ pub(crate) const DISC_ICON_RATIO: f32 = 0.54;
 /// identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop about the centre +
 /// the focus treatment (soft drop-shadow + top sheen) when `focused` (the caller owns the `scale`
 /// spring).
-pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int), radius: f32, focused: bool, scale: f32) {
+pub(crate) fn draw_card(
+    p: Painter,
+    frame: Rect,
+    sid: ServerId,
+    thumb: &str,
+    res: (c_int, c_int),
+    radius: f32,
+    focused: bool,
+    scale: f32,
+) {
     // pop factor from the caller's scale spring (0 at rest → 1 at full focus scale) drives the folded shadow
     let f = if focused { ((scale - 1.0) / (CARD_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
-    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
+    card(p, frame, Art::Thumb { sid, key: thumb, res }, radius, focused, scale, f);
 }
 
 /// How many flat bands [`art_scrim`] uses for its corner region — see there for why they exist. 3 is
