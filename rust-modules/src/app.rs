@@ -798,6 +798,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let lib_switch = crate::dev::flag("libswitch");
         let mut lib_switch_last = 0u32;
         let mut lib_switch_step = 0u32;
+        // dev: /tmp/plxnative-searchosc — the Search twin of homeosc/libosc: sweep the result
+        // shelves' focus down↔up perpetually for the `fps:search-type` scene. It does NOT reach the
+        // screen on its own — pair it with `/tmp/plxnative-search=<query>`, and with a query the
+        // library actually matches, or there are no shelves to sweep and the scene grades nothing.
+        let search_osc = crate::dev::flag("searchosc");
+        let mut search_osc_last = 0u32;
         // dev: /tmp/plxnative-navosc — bounce the ROUTE on a timer, so the page cross-fade
         // (`ui::nav`) is FPS-gated like every other motion in the app. These are the only scenes
         // that change route, and therefore the only ones that sample a whole-screen cascade alpha
@@ -3963,6 +3969,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 crate::ui::library::update(dt);
             }
             if matches!(route, Route::Search) {
+                // dev: searchosc sweeps the result shelves' focus down↔up (the fps:search-type
+                // scene). Same 350ms step / 3s reversal as homeosc and libosc, so the three read
+                // the same in a log and one settle predicate covers all of them.
+                if search_osc && now.wrapping_sub(search_osc_last) > 350 {
+                    search_osc_last = now;
+                    let sym = if (now / 3000) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
+                    crate::ui::search::move_focus(sym);
+                }
                 crate::ui::widgets::tab_row_update(
                     crate::ui::search::selected_pill(),
                     crate::ui::search::focused_pill(),
