@@ -32,8 +32,11 @@ Verified response (trimmed):
   {"key":"3","type":"artist","title":"Music",    "uuid":"332590ad-..."}]}}
 ```
 
-**Section keys on this server: Movies = `1`, TV Shows = `2`** (Music = `3`, ignore for now).
-Select sections by `Directory[].type == "movie" | "show"`, not by hard-coded key.
+**Section keys on this server: Movies = `1`, TV Shows = `2`, Music = `3`.** Select sections by
+`Directory[].type`, never by hard-coded key — and note the app no longer filters that type down to
+`movie`/`show`: `artist` and `photo` are kept too (`browse::SecKind`), because the top strip's
+projection can only give a friend's shared MUSIC library a pill if the type reaches the table at
+all. "Ignore music for now" was true while the strip named one server's movie and show sections.
 
 ---
 
