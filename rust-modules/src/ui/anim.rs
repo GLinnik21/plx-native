@@ -106,7 +106,7 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
 // get large, and it should never drown the primary /tmp/plxnative-events.log debugging surface.
 fn log(m: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/plxnative-anim.log") {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&crate::paths::in_runtime_dir("plxnative-anim.log")) {
         let _ = writeln!(f, "{m}");
     }
 }

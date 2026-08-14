@@ -52,6 +52,10 @@ pub const WCODE_CH_DOWN: c_uint = 34;
 /// (app.rs) and the remote-injection token map both match against these names.
 pub const WCODE_PAUSE: c_uint = 72;
 pub const WCODE_STOP: c_uint = 413;
+/// webOS BACK. This Magic Remote sends 482 (0x1E2); 461 is kept for other remotes. Named here
+/// because [`is_back`] calls itself the ONE BACK predicate, so the code it matches lives with it
+/// rather than being re-inlined by whoever needs to synthesize a press.
+pub const WCODE_BACK: c_uint = 482;
 pub const WCODE_PLAY: c_uint = 450;
 
 /// OK/confirm press — RETURN, keypad ENTER, or the remote's SELECT. The ONE OK predicate
@@ -64,7 +68,7 @@ pub fn is_ok(sym: c_uint) -> bool {
 /// 482 = 0x1E2; 461 kept for other remotes). The ONE BACK predicate.
 #[inline]
 pub fn is_back(sym: c_uint, wcode: c_uint) -> bool {
-    sym == SDLK_ESCAPE || sym == 'q' as c_uint || wcode == 461 || wcode == 482
+    sym == SDLK_ESCAPE || sym == 'q' as c_uint || wcode == 461 || wcode == WCODE_BACK
 }
 
 // spring stiffnesses (from ui_home.c, redistributed 1:1 to their owning views)

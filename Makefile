@@ -501,4 +501,63 @@ threadprobe: tools/threadprobe.c
 sockprobe: tools/sockprobe.c
 	$(CC) $(CFLAGS) -o pkg/sockprobe tools/sockprobe.c -lpthread
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe
+# ---------------------------------------------------------------------------------------------
+# The desktop UI simulator — the same app core against a desktop SDL2 + desktop GL, no television.
+#
+# It exists because the TV serializes the whole dev loop: one set, one app instance, and two
+# `tests/run.py` jobs kill each other's app. Several simulators run at once, each with its own
+# instance root, so UI and data-layer work can proceed in parallel. It has NO video (the 29-symbol
+# Starfish/ACB seam does not exist off-device) and its frame rates describe this Mac, not the panel.
+#
+# `SIM_PMS` defaults to the host compiled into src/config.local.h so the common case needs no
+# argument. SIM_DIR is the instance root: give each concurrent simulator a different one.
+# Read one #define out of the gitignored header. `[^"]*`, NOT `.*`: the greedy form captures
+# everything up to the LAST quote on the line, so a trailing comment containing a quote silently
+# puts garbage in the value. tools/tv-session.sh and tests/run.py both already use this form.
+cfg_macro = $(shell sed -n 's/^\#define[ \t]*$(1)[ \t]*"\([^"]*\)".*/\1/p' src/config.local.h 2>/dev/null)
+SIM_PMS  ?= $(call cfg_macro,PMS_HOST)
+SIM_PORT ?= $(shell sed -n 's/^\#define[ \t]*PMS_PORT[ \t]*\([0-9]*\).*/\1/p' src/config.local.h 2>/dev/null)
+SIM_DIR  ?= /tmp/plxnative-sim
+# Its OWN target dir, per this file's rule for feature-set splits: `make check` builds default
+# features on nightly, `make sim` builds `hostsim` on the default toolchain. Sharing one dir makes
+# each invocation rebuild the crate the other way round.
+SIM_TDIR  = rust-modules/target-sim
+SIM_BIN   = $(SIM_TDIR)/debug/plxnative-sim
+# Which presented frame `sim-shot` grabs. 200 is comfortably past first paint and the poster
+# fetches on a warm cache; raise it if a shot catches a screen mid-load.
+SIM_FRAME ?= 200
+SIM_SHOT  ?= $(SIM_DIR)/shot.png
+# Shared by every sim recipe so the wiring and the error sentence have exactly one copy — the same
+# reason BOOT_SH exists for `run`/`run-stream`.
+SIM_ENV = PLXNATIVE_RUNTIME_DIR=$(SIM_DIR) PLXNATIVE_APP_DIR=$(CURDIR)/pkg
+SIM_PRE = mkdir -p $(SIM_DIR); test -n "$(SIM_PMS)" || \
+          { echo "no PMS host — set SIM_PMS=<ip> or add PMS_HOST to src/config.local.h"; exit 1; }
+
+sim:
+	cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR) --features hostsim --bin plxnative-sim
+
+# Interactive: opens a window. Ctrl-C to quit.
+sim-run: sim
+	@$(SIM_PRE)
+	$(SIM_ENV) $(SIM_BIN) $(SIM_PMS) $(SIM_PORT)
+
+# Headless: boot, settle, write ONE png, exit. This is the agent-facing entry point.
+sim-shot: sim
+	@$(SIM_PRE)
+	$(SIM_ENV) PLXNATIVE_SHOT=$(SIM_SHOT) PLXNATIVE_SHOT_FRAME=$(SIM_FRAME) PLXNATIVE_SHOT_EXIT=1 \
+	  $(SIM_BIN) $(SIM_PMS) $(SIM_PORT)
+	@echo "wrote $(SIM_SHOT)"
+
+# Copy the owner token out of the gitignored header into this instance's root, so the simulator
+# boots straight to a signed-in Home. Same mechanism `tests/run.py` uses on the TV; the value is
+# never echoed. plex.tv QR sign-in does not work here (see net.rs's SONAME candidate list).
+sim-token:
+	@mkdir -p $(SIM_DIR)
+	@printf '%s' '$(call cfg_macro,PMS_TOKEN)' > $(SIM_DIR)/plxnative-token
+	@test -s $(SIM_DIR)/plxnative-token || { echo "no PMS_TOKEN in src/config.local.h"; rm -f $(SIM_DIR)/plxnative-token; exit 1; }
+	@echo "token staged in $(SIM_DIR)"
+
+sim-clean:
+	rm -rf $(SIM_DIR)
+
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe sim sim-run sim-shot sim-token sim-clean

@@ -35,6 +35,7 @@ src/config.local.h
 tests/manifest.local.json
 rust-modules/target/
 rust-modules/target-release/
+rust-modules/target-sim/
 
 # dead prototype dir (code lives in rust-modules/ now)
 rust-poc/
@@ -67,3 +68,8 @@ vendor/ffmpeg-prefix/
 # bump forever in a repo whose reproducibility rests on the pinned tarball.
 pkg/lib*-plx.so.*
 pkg/.ffabi-ok
+
+# Session file the app writes next to its payload. The desktop simulator is pointed at
+# pkg/ via PLXNATIVE_APP_DIR, so it lands here on a host run; it can hold plex.tv and PMS
+# tokens, and this repository is public.
+pkg/auth.json

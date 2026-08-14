@@ -12,12 +12,20 @@ const GL_RED_BITS: c_uint = 0x0D52;
 // SDL_SysWMinfo layout (32-bit): version u8[3]@0, subsystem int@4, info union@8
 
 extern "C" {
-    fn wl_proxy_marshal(proxy: *mut c_void, opcode: c_uint, ...);
     fn SDL_GetWindowWMInfo(window: *mut c_void, info: *mut c_void) -> c_int;
     /// Fills `SDL_version` — three `Uint8`, major/minor/patch.
     fn SDL_GetVersion(ver: *mut u8);
     fn SDL_GL_GetAttribute(attr: c_int, value: *mut c_int) -> c_int;
     fn glGetIntegerv(pname: c_uint, params: *mut c_int);
+}
+
+// The three symbols that exist only on a television: wayland's proxy marshaller and glib's main
+// context. The desktop simulator links neither — SDL owns its own event loop there, and there is
+// no luna bus to pump — so they are declared apart rather than in the block above, which would
+// otherwise fail the host link.
+#[cfg(not(feature = "hostsim"))]
+extern "C" {
+    fn wl_proxy_marshal(proxy: *mut c_void, opcode: c_uint, ...);
     fn g_main_context_pending(ctx: *mut c_void) -> c_int;
     fn g_main_context_iteration(ctx: *mut c_void, may_block: c_int) -> c_int;
 }
@@ -34,11 +42,20 @@ pub(crate) fn clear_opaque_region() {
         // set_opaque_region(NULL): opcode 4 + one NULL region arg (variadic). The
         // commit is left to SDL_GL_SwapWindow (a bare commit here presents a
         // null-buffer surface and disrupts the slaved video plane).
+        //
+        // Nothing to do on the simulator: there is no video plane underneath to show through, so
+        // a non-opaque surface would buy a desktop compositor nothing but per-frame blending.
+        #[cfg(not(feature = "hostsim"))]
         wl_proxy_marshal(surface, 4, std::ptr::null_mut::<c_void>());
     }
 }
 
+/// Service the glib main context that luna-service2 replies arrive on.
+///
+/// A no-op on the simulator: glib is not linked and there is no luna bus to pump, so the loop
+/// simply has nothing to service. Every caller stays unchanged.
 pub(crate) fn ls2_pump() {
+    #[cfg(not(feature = "hostsim"))]
     unsafe {
         let mut guard = 8;
         while guard > 0 && g_main_context_pending(std::ptr::null_mut()) != 0 {
@@ -78,6 +95,13 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
         glGetIntegerv(GL_ALPHA_BITS, &mut abits);
         glGetIntegerv(GL_RED_BITS, &mut rbits);
         log(&format!("FB bits: alpha={abits} red={rbits} (config alpha={a})"));
+        // The wayland grab is webOS-only, and on a desktop it is not merely useless but UNSOUND.
+        // The union is read as `*mut c_void` pairs at a 4-byte offset, which is fine for the
+        // television's 32-bit pointers and a misaligned 64-bit dereference anywhere else — the
+        // simulator aborted here with "address must be a multiple of 0x8" before drawing a frame.
+        // There is also nothing to grab: SDL's cocoa backend reports SDL_SYSWM_COCOA, no wayland
+        // surface exists, and no video plane sits underneath needing to show through.
+        #[cfg(not(feature = "hostsim"))]
         if SDL_GetWindowWMInfo(winp, wmbuf.as_mut_ptr() as *mut c_void) != 0 {
             // info union @ offset 8: {wl_display*, wl_surface*, ...}; members
             // share offset 0, so read the first two pointers directly.
@@ -85,6 +109,8 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
             G_WL_DISPLAY = *info.add(0);
             G_WL_SURFACE = *info.add(1);
         }
+        #[cfg(feature = "hostsim")]
+        let _ = winp;
         let subsystem = i32::from_ne_bytes([wmbuf[4], wmbuf[5], wmbuf[6], wmbuf[7]]);
         let (surf, disp) = (G_WL_SURFACE, G_WL_DISPLAY);
         // The version bytes are still in wmbuf[0..3] — SDL_GetWindowWMInfo validates them and
@@ -96,7 +122,7 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
         // Loud, because the consequence is a black screen with working audio and nothing else in
         // the log would say why. SDL_SYSWM_WAYLAND is 6 in SDL2's enum; anything else here means
         // we did not get a surface and the video plane will stay hidden under an opaque UI.
-        if surf.is_null() {
+        if surf.is_null() && !cfg!(feature = "hostsim") {
             log("wm: NO wl_surface — the UI plane cannot be made transparent, so video will \
                  decode invisibly beneath it. Check the SDL_SysWMinfo version handshake.");
         }
