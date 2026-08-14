@@ -73,6 +73,15 @@ static mut TABLE: TableView = TableView::new(); // main-thread only
 static mut ACTS: Vec<Option<Action>> = Vec::new();
 /// The focused card's drawn rect at open time, in screen coords — what the panel anchors beside.
 static mut ANCHOR: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+/// WHICH SERVER every [`Action`] above is about, captured when the menu opened.
+///
+/// One popover is about ONE item, so the server belongs to the menu rather than to each variant —
+/// and it has to be captured, not looked up when the action is performed: on a Continue Watching
+/// shelf merged across servers, `apply_item_action` resolving a bare rk against the current server
+/// is precisely the reported failure (long-press a friend's episode → Play from Start → our film
+/// with the same number plays, under the friend's title). Deliberately NOT cleared by [`close`]:
+/// `on_ok` returns the action after closing, so the drain reads this one frame later.
+static mut SID: crate::plex::ServerId = crate::plex::ServerId::UNSET;
 
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
@@ -97,14 +106,22 @@ pub(crate) fn has_actions(m: &PmsMovie) -> bool {
 /// Open the menu for `m`, anchored beside `anchor` (the focused card's drawn rect; `None` centres
 /// it, which is only reachable from the headless trigger).
 pub(crate) fn open(m: &PmsMovie, from_deck: bool, anchor: Option<Rect>) {
+    unsafe { *addr_of_mut!(SID) = m.sid }; // the ROW's server, not the current one
     present(build(m, from_deck), anchor);
 }
 
 /// Open the menu for the DETAIL page's focused episode still — the owner-reported gap (a long press
 /// on an episode tile had no menu at all, so there was nowhere to mark one watched). Same panel,
 /// same choreography, a shorter row set: see [`build_episode`].
-pub(crate) fn open_episode(rk: &str, watched: bool, anchor: Option<Rect>) {
+pub(crate) fn open_episode(sid: crate::plex::ServerId, rk: &str, watched: bool, anchor: Option<Rect>) {
+    unsafe { *addr_of_mut!(SID) = sid }; // the loaded show's server — the episode is one of its own
     present(build_episode(rk, watched), anchor);
+}
+
+/// The server every [`Action`] from the open (or just-closed) menu names — see [`SID`]. Read by
+/// `app.rs`'s dispatch, which pairs it with the action's rk.
+pub(crate) fn item_sid() -> crate::plex::ServerId {
+    unsafe { *addr_of!(SID) }
 }
 
 /// Put a built row set on screen beside `anchor`. Shared by both entry points so the panel's

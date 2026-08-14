@@ -28,7 +28,9 @@ For each case in manifest.json this driver:
 
 Security: the PMS X-Plex-Token is read from src/config.local.h at runtime and is NEVER
 printed, logged, or written to any file. The TV ssh creds already live in the committed
-Makefile, so we shell out to `make` / sshpass for device I/O.
+Makefile, so we shell out to `make` / sshpass for device I/O. A run that also needs a SECOND
+server (a friend's shared one) resolves that server's own access token from plex.tv with the
+same owner token -- again storing nothing; see resolve_shared_server.
 
 Usage:
   ./tests/run.py --list                 # list cases and what they cover
@@ -69,7 +71,7 @@ ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
-    "plxnative-play", "plxnative-ffprobe", "plxnative-token",
+    "plxnative-play", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
     # UI/FPS scenes (plxnative-profile MUST be cleared — a stale one glFinish-tanks FPS and false-fails)
     "plxnative-detailosc", "plxnative-info", "plxnative-chapters", "plxnative-profile",
     # boot-flow triggers (heroidx pins the hero + bypasses the who's-watching picker; pickuser forces it)
@@ -135,6 +137,16 @@ def load_manifest():
     # test_user is optional by design: leaving it out runs as the owner (with a warning).
     if "test_user" in local:
         manifest["test_user"] = local["test_user"]
+    # shared_server is optional the same way: an installation with no second server simply omits it,
+    # and any case that needs one is SKIPPED (not failed) with the reason printed. What is NOT
+    # optional is naming the server well enough to look up on plex.tv -- a block with neither
+    # machine_id nor name resolves to nothing, and would otherwise fail later as a mystery.
+    if "shared_server" in local:
+        ss = local["shared_server"]
+        if not (ss.get("machine_id") or ss.get("name")):
+            _die_no_overlay("\n  (`shared_server` needs a `machine_id` (preferred) or a `name` to "
+                            "match against your plex.tv resources)")
+        manifest["shared_server"] = ss
 
     items = local.get("items", {})
     _resolve_items(manifest["cases"], items, "case")
@@ -158,10 +170,12 @@ def load_manifest():
 
     # A copied-but-unedited template fails LOUDLY here rather than as a 404 from plex.tv or as a
     # case that never plays: every value in the example is bracketed, and none is ever legitimate.
+    ss = manifest.get("shared_server", {})
     stray = [f"{k}={v}" for k, v in
              [("pms.host", manifest["pms"].get("host")), ("tv", manifest["tv"])]
              + [(f"items.{k}", v) for k, v in items.items()]
              + ([("test_user.id", manifest["test_user"].get("id"))] if "test_user" in manifest else [])
+             + [(f"shared_server.{k}", ss.get(k)) for k in ("machine_id", "name", "host")]
              if isinstance(v, str) and v.startswith("<")]
     if stray:
         sys.exit(f"{MANIFEST_LOCAL} still holds template placeholders: {', '.join(stray)}\n"
@@ -215,6 +229,153 @@ def fetch_managed_user_token(admin_token, host, port, user_id):
             sys.exit(f"managed user {user_id} is shared but has no accessToken")
     sys.exit(f"managed user {user_id} has no shared_servers entry on this server "
              f"(share the libraries with it first, or run with --owner)")
+
+
+# ---------------------------------------------------------------------------
+# The SECOND server (a friend's shared server) — resolved, never stored
+# ---------------------------------------------------------------------------
+# A shared server is a separate authority: its own machineIdentifier and its own per-(user,server)
+# accessToken, and the account token gets a 401 from it. So a run that has to reach two servers
+# needs two credentials, which one /tmp/plxnative-token cannot carry -- that is what
+# /tmp/plxnative-servers (app: dev::servers) exists for.
+#
+# The overlay NAMES the server; it never holds its token. plex.tv's resource list is keyed by the
+# owner's account token, which the harness already reads from src/config.local.h for everything
+# else, and each entry carries that account's accessToken for that server. Same bargain as
+# fetch_managed_user_token: one secret in one gitignored place, everything else derived at runtime.
+def _plextv_resources(admin_token):
+    """Every server this account can reach — owned AND shared with it — from plex.tv."""
+    url = "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/json",
+        "X-Plex-Token": admin_token,
+        "X-Plex-Client-Identifier": CID})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.load(resp)
+
+
+def _server_resources(res):
+    return [r for r in res if "server" in (r.get("provides") or "")]
+
+
+def _is_ipv4(addr):
+    parts = (addr or "").split(".")
+    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+
+def pick_connection(hit):
+    """Best (address, port, how) plex.tv offers for this server, or None.
+
+    `local` does NOT mean "on the TV's network" for a server someone SHARED with you -- it means
+    on the OWNER's. A real shared server in this account advertises `10.9.9.5:32400 local=true`
+    (the friend's LAN, unroutable from here) alongside its public address, so ranking `local` first
+    the way the app's own sign-in does would hand the TV an address it can never reach and turn a
+    credentials test into a mystery timeout. Hence: for an OWNED server local wins; for a shared one
+    the public address does, and `local` is demoted below it.
+
+    Within a rank, a dotted quad beats a hostname, because the app's media transport (stream.rs)
+    has no DNS at all. Relay last: it is TLS-only. Either way the caller PRINTS what it picked --
+    `shared_server.host` in the overlay is the override, and for most shares it is the right answer.
+    """
+    owned = bool(hit.get("owned"))
+    conns = [c for c in (hit.get("connections") or []) if c.get("address")]
+    if not conns:
+        return None
+
+    def rank(c):
+        if c.get("relay"):
+            tier = 3
+        elif c.get("local"):
+            tier = 0 if owned else 2
+        else:
+            tier = 1
+        return (tier, 0 if _is_ipv4(c["address"]) else 1)
+
+    best = min(conns, key=rank)
+    how = "relay" if best.get("relay") else ("LAN" if best.get("local") else "remote")
+    return best["address"], int(best.get("port") or 32400), f"{how}, {best.get('protocol', '?')}"
+
+
+def resolve_shared_server(admin_token, spec):
+    """Turn the overlay's `shared_server` block into the credentials the TV needs.
+
+    Returns {name, machine_id, host, port, token}; the token is resolved from plex.tv and is NEVER
+    printed. Exits, naming what it could not resolve, on anything unresolvable -- an unreachable
+    plex.tv, a server no longer shared with this account, or a server with no address the TV could
+    use. A silent fallback here would run the case against ONE server and pass it.
+    """
+    want_mid, want_name = spec.get("machine_id"), spec.get("name")
+    try:
+        res = _server_resources(_plextv_resources(admin_token))
+    except Exception as e:
+        sys.exit(f"cannot resolve the second server: plex.tv /resources failed ({e})\n"
+                 f"  (this call needs internet; the rest of the harness is LAN-only)")
+
+    def matches(r):
+        if want_mid:
+            return r.get("clientIdentifier") == want_mid
+        return (r.get("name") or "").lower() == (want_name or "").lower()
+
+    hit = next((r for r in res if matches(r)), None)
+    if hit is None:
+        known = "\n".join(f"    {r.get('name')!r}  machine_id={r.get('clientIdentifier')}  "
+                          f"{'owned' if r.get('owned') else 'shared with you'}" for r in res)
+        sys.exit(f"shared_server {want_mid or want_name!r} is not in this account's plex.tv "
+                 f"resources (is it still shared with you?). Servers this account can reach:\n"
+                 f"{known or '    (none)'}")
+
+    token = hit.get("accessToken")
+    if not token:
+        sys.exit(f"shared_server {hit.get('name')!r} has no accessToken on plex.tv — the share was "
+                 f"probably revoked; re-accept it, or drop the block from {MANIFEST_LOCAL}")
+
+    host, port = spec.get("host"), spec.get("port")
+    if not host:
+        best = pick_connection(hit)
+        if best is None:
+            sys.exit(f"shared_server {hit.get('name')!r} advertises no connection at all on plex.tv."
+                     f"\n  Set `shared_server.host` (and `port`) in {MANIFEST_LOCAL} to an address "
+                     f"the TV can route to.")
+        host, port, how = best
+        # Loud on purpose. The app streams over plain HTTP to a numeric IP (stream.rs: no DNS, no
+        # TLS), so anything but a LAN address may resolve, be picked, and still be unreachable from
+        # the TV — which would read as "the second server's credentials did not work".
+        if how.split(",")[0] != "LAN":
+            print(f"    NOTE: plex.tv offers no LAN address for {hit.get('name')!r} — using "
+                  f"{host}:{port} ({how}). The TV's transport is plain HTTP to a numeric IP; set "
+                  f"`shared_server.host`/`port` in {os.path.basename(MANIFEST_LOCAL)} if it cannot "
+                  f"reach that.")
+    return {
+        "name": spec.get("name") or hit.get("name") or "shared",
+        "machine_id": hit.get("clientIdentifier") or want_mid or "",
+        # The OWNER's plex.tv handle, straight off the resource. It is what every browsing surface
+        # says out loud (the Sources list, the Library chip), and it is also what tells the app this
+        # is somebody else's server at all: empty means owned. Public, unlike the token below.
+        "handle": hit.get("sourceTitle") or "",
+        "host": host,
+        "port": int(port or 32400),
+        "token": token,
+    }
+
+
+def shared_servers_json(cfg, entry):
+    """The /tmp/plxnative-servers payload for this case/scene, or None if it wants one server.
+
+    Opt-in, never blanket: a case declares `needs_shared_server` in manifest.json (or the whole run
+    passes --shared-server). Injecting a second server into every case would change what Home shows
+    for cases that say nothing about it.
+    """
+    srv = cfg.get("shared_server")
+    if not srv:
+        return None
+    if not (cfg.get("shared_all") or entry.get("needs_shared_server")):
+        return None
+    return json.dumps([srv], separators=(",", ":"))
+
+
+def sh_squote(s):
+    """POSIX single-quote a string for the one-line ssh command (names can contain apostrophes)."""
+    return "'" + s.replace("'", "'\\''") + "'"
 
 
 # ---------------------------------------------------------------------------
@@ -334,8 +495,9 @@ def apply_triggers(tv, files, extra=None):
     scene, a stale plxnative-press/-login would derail a home scene. ALL_TRIGGERS above is now just a
     human reference of the known triggers.
 
-    `extra` is a raw shell command appended to the same round-trip, for a trigger whose VALUE must
-    not reach stdout (the PMS token) and so cannot go through the printed `files` list.
+    `extra` is a raw shell command — or a list of them — appended to the same round-trip, for a
+    trigger whose VALUE must not reach stdout (a PMS token) and so cannot go through the printed
+    `files` list. Both credential triggers ride it: plxnative-token and plxnative-servers.
     """
     # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
     parts = ['for f in /tmp/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done']
@@ -345,8 +507,9 @@ def apply_triggers(tv, files, extra=None):
         else:
             # single-quote the content; rks / "0,6" / "mkv" never contain quotes
             parts.append(f"printf '%s' '{content}' > /tmp/{name}")
-    if extra:
-        parts.append(extra)
+    for cmd in ([extra] if isinstance(extra, str) else (extra or [])):
+        if cmd:
+            parts.append(cmd)
     ssh(tv, "; ".join(parts))
 
 
@@ -801,9 +964,12 @@ def teardown(tv):
       inherits a resume point on that rk — the exact contamination ee07506 removed between
       cases, reintroduced at the seam between runs. It is also what "I see FPS tests running"
       looks like from the outside, long after the suite printed its summary.
-    * THE INJECTED TOKEN STAYS in /tmp/plxnative-token: a real per-server PMS access token,
-      world-readable, on a device with a rooted sshd and a committed password. The normal path
-      did clear it; every abnormal one left it.
+    * THE INJECTED TOKENS STAY in /tmp/plxnative-token and /tmp/plxnative-servers: real
+      per-(user,server) PMS access tokens -- and the second file carries someone ELSE'S server's
+      too -- world-readable, on a device with a rooted sshd and a committed password. The normal
+      path did clear them; every abnormal one left them. Both are covered because the wipe is a
+      GLOB over /tmp/plxnative-*, which is exactly why a new credential trigger needs no change
+      here; a credential file named anything else would need one.
     * ssh CLIENTS. Per-case reaping covers a case that ends normally, but not the harness dying
       between cases.
 
@@ -1088,12 +1254,22 @@ def run_case(case, cfg, token, verbose):
     # Always required — the binary carries no baked token, so /tmp/plxnative-token is the only way
     # an automated run gets PMS access.
     files = triggers_for_case(case)
-    tok_cmd = f"printf '%s' '{token}' > /tmp/plxnative-token" if cfg.get("inject_token") else None
-    apply_triggers(tv, files, extra=tok_cmd)
+    extras = []
+    if cfg.get("inject_token"):
+        extras.append(f"printf '%s' '{token}' > /tmp/plxnative-token")
+    # …and, for a case that declares it needs one, the SECOND server's credentials — same rules:
+    # value never on stdout, cleared by the glob wipe above and again by teardown().
+    srv_json = shared_servers_json(cfg, case)
+    if srv_json:
+        extras.append(f"printf '%s' {sh_squote(srv_json)} > /tmp/plxnative-servers")
+    apply_triggers(tv, files, extra=extras)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown}")
-    if tok_cmd:
+    if cfg.get("inject_token"):
         print(f"    plxnative-token: <{cfg['user_label']}, redacted>")
+    if srv_json:
+        s = cfg["shared_server"]
+        print(f"    plxnative-servers: <{s['name']} @ {s['host']}:{s['port']}, token redacted>")
 
     # 4. run + grade the log as it streams (run_secs is the cap, not the runtime)
     early = not cfg.get("no_early")
@@ -1250,11 +1426,21 @@ def run_fps_scene(scene, cfg, token):
     # clears every plxnative-* (incl. plxnative-profile) then writes this scene's. Player-tier
     # scenes actually decode video, so they need the test-user token too — appended to the same
     # round-trip via extra= so its value stays off stdout, exactly like the playback cases.
-    tok_cmd = (f"printf '%s' '{token}' > /tmp/plxnative-token"
-               if is_player and cfg.get("inject_token") else None)
-    apply_triggers(tv, files, extra=tok_cmd)
+    extras = []
+    srv_json = shared_servers_json(cfg, scene)
+    # A UI-tier scene normally needs no PMS token (it draws whatever the boot lands on), but a scene
+    # about the SECOND server needs the first one's credentials to get past the boot gate to Home at
+    # all — otherwise it sits on the QR sign-in screen and grades a route it never reached.
+    if (is_player or srv_json) and cfg.get("inject_token"):
+        extras.append(f"printf '%s' '{token}' > /tmp/plxnative-token")
+    if srv_json:
+        extras.append(f"printf '%s' {sh_squote(srv_json)} > /tmp/plxnative-servers")
+    apply_triggers(tv, files, extra=extras)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown or '(none)'}   run {run_secs}s, skip first {warmup} sample(s)")
+    if srv_json:
+        s = cfg["shared_server"]
+        print(f"    plxnative-servers: <{s['name']} @ {s['host']}:{s['port']}, token redacted>")
 
     try:
         proc = make(["run", f"TV={tv}", f"RUN_SECS={run_secs}"], timeout=run_secs + 90)
@@ -1335,9 +1521,17 @@ def run_fps_scene(scene, cfg, token):
     return ok, detail
 
 
+def fps_for_tiers(scenes, include_player):
+    """The scenes this run will actually execute. One definition, because main() has to know it too
+    — it decides from the SELECTED scenes whether a second server is needed, and resolving one for a
+    player-tier scene that `--fps` was never going to run is a plex.tv round-trip for nothing."""
+    tiers = {"ui"} | ({"player"} if include_player else set())
+    return [s for s in scenes if s.get("tier", "ui") in tiers]
+
+
 def run_fps_suite(scenes, cfg, token, include_player):
     tiers = {"ui"} | ({"player"} if include_player else set())
-    scenes = [s for s in scenes if s.get("tier", "ui") in tiers]
+    scenes = fps_for_tiers(scenes, include_player)
     if not scenes:
         sys.exit("no FPS scenes defined in the manifest for the selected tier(s)")
     print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)} ===")
@@ -1379,6 +1573,38 @@ def case_suite(case):
     return "codec" if ops <= {"play"} else "logic"
 
 
+def setup_shared(manifest, cfg, args, entries, what):
+    """Resolve the second server if this run needs it. Returns (entries_to_run, skipped_names).
+
+    Three states, and they are deliberately different:
+      * nothing wants a second server  -> no plex.tv call at all (the common case stays LAN-only);
+      * something wants one and the overlay describes it -> resolve now, loudly, before the TV is
+        touched, so a revoked share fails as itself instead of as an empty screen mid-suite;
+      * something wants one and the overlay has no `shared_server` -> SKIP those entries with the
+        reason printed. Not a failure: an installation with no friend's server is a normal
+        installation, and the rest of the matrix is still meaningful there. `--shared-server` is
+        the exception -- it was asked for explicitly, so it exits instead of silently doing nothing.
+    """
+    cfg["shared_all"] = args.shared_server
+    named = [e for e in entries if e.get("needs_shared_server")]
+    if not (args.shared_server or named):
+        return entries, []
+    spec = manifest.get("shared_server")
+    if not spec:
+        msg = (f"no `shared_server` block in {MANIFEST_LOCAL} — see manifest.local.json.example "
+               f"(it names a server shared with your account; the token is resolved from plex.tv)")
+        if args.shared_server:
+            sys.exit(f"--shared-server: {msg}")
+        print(f"NOTE: {msg}\n      skipping {len(named)} {what}(s) that need a second server: "
+              f"{', '.join(e['name'] for e in named)}")
+        return [e for e in entries if not e.get("needs_shared_server")], [e["name"] for e in named]
+    cfg["shared_server"] = resolve_shared_server(read_token(), spec)
+    s = cfg["shared_server"]
+    print(f"second server: {s['name']} @ {s['host']}:{s['port']} (machine_id={s['machine_id']}) "
+          f"— access token resolved from plex.tv, never printed")
+    return entries, []
+
+
 def main():
     ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
     ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
@@ -1398,6 +1624,10 @@ def main():
     ap.add_argument("--owner", action="store_true",
                     help="run as the config.local.h OWNER token (default: run as the overlay's "
                          "test_user, so watch history stays off your real account)")
+    ap.add_argument("--shared-server", action="store_true",
+                    help="inject the overlay's `shared_server` credentials into EVERY case/scene of "
+                         "this run, not just the ones declaring needs_shared_server. For bringing "
+                         "up a second-server screen by hand; exits if the overlay has no such block")
     ap.add_argument("--fps", action="store_true",
                     help="run the FPS regression suite (UI tier: home/detail, no video needed)")
     ap.add_argument("--fps-player", action="store_true",
@@ -1419,8 +1649,9 @@ def main():
     if args.list:
         for c in manifest["cases"]:
             ops = "+".join(o["op"] for o in c["operations"])
+            mark = "  [+2nd server]" if c.get("needs_shared_server") else ""
             print(f"{c['name']:32s} suite={case_suite(c):6s} rk={c['rk']:<5} {ops:20s} "
-                  f"{', '.join(c.get('covers', []))}")
+                  f"{', '.join(c.get('covers', []))}{mark}")
         for s in manifest.get("fps_scenes", []):
             tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
             gates = f"loop_floor={s['loop_floor']}"
@@ -1428,7 +1659,18 @@ def main():
                 gates += f" fps_floor={s['fps_floor']}"
             if s.get("fps_ceiling") is not None:
                 gates += f" fps_ceiling={s['fps_ceiling']}"
-            print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}")
+            mark = "  [+2nd server]" if s.get("needs_shared_server") else ""
+            print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")
+        # Offline, so this reports what the OVERLAY says — nothing is resolved and plex.tv is not
+        # called. It is still the answer to "will the [+2nd server] entries above actually run".
+        ss = manifest.get("shared_server")
+        if ss:
+            print(f"\nsecond server: {ss.get('name') or ss.get('machine_id')} "
+                  f"(machine_id={ss.get('machine_id') or 'by name'}) — configured; its access token "
+                  f"is resolved from plex.tv at run time")
+        else:
+            print(f"\nsecond server: not configured in {os.path.basename(MANIFEST_LOCAL)} — any "
+                  f"[+2nd server] entry above is SKIPPED (and --shared-server exits)")
         return 0
 
     # FPS regression suite — a separate path from the playback cases. UI-tier scenes need no video
@@ -1437,8 +1679,13 @@ def main():
         if args.suite:
             sys.exit("--suite selects playback cases; the FPS scenes use --fps / --fps-player")
         include_player = args.fps_player
+        scenes, _skipped = setup_shared(
+            manifest, cfg, args,
+            fps_for_tiers(manifest.get("fps_scenes", []), include_player), "scene")
         token = None
-        if include_player:
+        # A second-server scene needs the FIRST server's token too, whatever its tier: without it
+        # the app boots to QR sign-in and the scene grades a screen it never reached.
+        if include_player or cfg.get("shared_server"):
             admin_token = read_token()
             test_user = manifest.get("test_user")
             if args.owner or not test_user:
@@ -1450,7 +1697,7 @@ def main():
         arm_teardown(cfg["tv"])
         if args.build:
             do_build(cfg["tv"])
-        return run_fps_suite(manifest.get("fps_scenes", []), cfg, token, include_player)
+        return run_fps_suite(scenes, cfg, token, include_player)
 
     if not cases:
         sys.exit(f"no cases match --filter {args.filter!r} / --suite {args.suite!r}")
@@ -1474,6 +1721,13 @@ def main():
         cfg["user_label"] = f'{test_user.get("title", "managed")} (id={test_user["id"]})'
         cfg["inject_token"] = True
     print(f"test identity: {cfg['user_label']}  (playback + watch-history isolation)")
+
+    # The second server, if anything selected needs one. AFTER the identity above and before the TV
+    # is touched: it can exit, and an exit here still leaves an app nobody has driven yet alone.
+    cases, shared_skipped = setup_shared(manifest, cfg, args, cases, "case")
+    if not cases:
+        sys.exit("every selected case needs a second server, and none is configured "
+                 f"(see {MANIFEST_LOCAL})")
 
     arm_teardown(cfg["tv"])
     if args.build:
@@ -1509,7 +1763,13 @@ def main():
             mark = "FAIL"
             detail = "  <- " + ", ".join(fails)
         print(f"  [{mark}] {name}{detail}")
-    print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}")
+    # A case that was never run is reported, never counted as a pass: an installation with no
+    # friend's server must be able to see, in the summary, exactly what its matrix did not cover.
+    for name in shared_skipped:
+        print(f"  [SKIP] {name}  <- needs a second server; none configured in "
+              f"{os.path.basename(MANIFEST_LOCAL)}")
+    tail = f", {len(shared_skipped)} skipped" if shared_skipped else ""
+    print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}{tail}")
     return 0 if real_fail == 0 else 1
 
 

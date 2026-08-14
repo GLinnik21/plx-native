@@ -107,14 +107,29 @@ impl Row {
 
 pub struct Section {
     pub header: String,    // "" = no header row
-    pub accessory: String, // right-aligned header accessory, e.g. "Dolby Atmos"
+    /// Right-aligned accessory on the HEADER line — a second fact about the group, one rung down
+    /// and in the header's own dim ink ("Dolby Atmos"; the Sources list's owner handle beside a
+    /// machine name). It is the last run on that line and is **elided** to [`ACCESSORY_W`], so a
+    /// long plex.tv handle truncates on a character instead of colliding with the header or
+    /// widening the panel — the rows below it are never touched.
+    pub accessory: String,
+    /// Dim the WHOLE group — header, accessory and every row — at one alpha.
+    ///
+    /// Deliberately not [`Row::dim`] applied row by row: a row's dim is an ink role, and the state
+    /// this expresses (an unreachable server, still granted and still pinned) is a fact about the
+    /// GROUP, whose header would otherwise stay the brightest thing in the panel. One alpha over
+    /// the lot is also what keeps a dimmed row's own read-out ("On") legible as itself: nothing was
+    /// unpinned, so nothing may read as off.
+    pub dim: bool,
     pub rows: Vec<Row>,
 }
 impl Section {
     pub fn new(header: impl Into<String>) -> Self {
-        Self { header: header.into(), accessory: String::new(), rows: Vec::new() }
+        Self { header: header.into(), accessory: String::new(), dim: false, rows: Vec::new() }
     }
     pub fn accessory(mut self, a: impl Into<String>) -> Self { self.accessory = a.into(); self }
+    /// Dim the whole group at [`GROUP_DIM_A`] — see [`Section::dim`].
+    pub fn dim(mut self, v: bool) -> Self { self.dim = v; self }
     pub fn row(mut self, r: Row) -> Self { self.rows.push(r); self }
 }
 
@@ -129,23 +144,57 @@ pub const PAD_V: f32 = TOP_PAD + BOT_PAD;
 const ROW_H: f32 = 60.0; // a plain row (label only) — mockup rowBase padding 13 + 34px label
 const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEADLINE + detail CAPTION)
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
-const HDR_H: f32 = 58.0; // panel header ("Audio"/"Subtitles"), HEADLINE
+// Panel header ("AUDIO"/"SUBTITLES", a server over its libraries). 58px in BOTH size classes and
+// whatever the header's own size — the band is fixed so a size change cannot reflow a panel.
+const HDR_H: f32 = 58.0;
+/// Measure a [`Section::accessory`] is elided to. It is the LAST run on the header line, so it is
+/// the one that gives way: a 34-character plex.tv handle truncates on a character and the library
+/// names underneath keep their full width.
+const ACCESSORY_W: f32 = 320.0;
+/// The alpha a [`Section::dim`]med group is drawn at — the same weight an unreachable tab pill
+/// takes, applied once over header and rows together.
+const GROUP_DIM_A: f32 = 0.52;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
-const TOP_PAD: f32 = 20.0;
+/// The list's own air above its first row. `pub` because a panel that stacks something ABOVE the
+/// list (the Sources panel's level band) has to subtract it to put the SEAM on the space scale —
+/// otherwise the two paddings add and the gap lands between rungs.
+pub const TOP_PAD: f32 = 20.0;
 const BOT_PAD: f32 = 20.0;
 const SIDE: f32 = 12.0; // pill (row) inset from the panel's left/right
 const CONTENT_PAD: f32 = 20.0; // text/check padding inside the pill (mockup rowBase 13px 20px)
+/// Where a row's own content starts, measured from the panel's left edge. Exposed so a panel that
+/// draws chrome ABOVE the list (the Sources panel's level pills) can start it on the same line the
+/// rows do, instead of re-deriving two private constants and drifting from them.
+pub const CONTENT_X: f32 = SIDE + CONTENT_PAD;
 const CHECK_W: f32 = 32.0; // leading check column
 const GAP: f32 = 16.0; // check→label gap
 const PILL_RAD: f32 = 18.0; // focused-row pill corner radius
 const PILL_INSET: f32 = 3.0; // pill inset from the row's top/bottom
 const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade masks + badge knockout
+/// Air between two chips of one right-aligned badge run (a subtitle row's `FORCED` + `SDH`).
+const BADGE_GAP: f32 = 10.0;
 
 pub struct TableView {
     pub sections: Vec<Section>,
     pub sel: i32,  // global index across all sections' rows (headers are not selectable)
-    /// compact size class: BODY regular row labels + CAPTION headers (the small account popover;
-    /// the default HEADLINE-bold rows overwhelmed a 440px panel of one-word actions).
+    /// Does the LIST hold focus? `false` draws no selection pill at all — the "nothing selected"
+    /// mode this widget did not have.
+    ///
+    /// It exists for a panel with a control OUTSIDE the list (the Sources panel's Browse / On Home
+    /// segments): while focus is up there, a table that always paints its selection puts a second
+    /// accent capsule on screen, and the two are indistinguishable. `sel` is REMEMBERED across the
+    /// trip — you come back to the row you left, so this suppresses the pill rather than clearing
+    /// the selection.
+    ///
+    /// Defaults to `true`, so every panel whose list is the only focusable thing is unchanged.
+    pub list_focused: bool,
+    /// compact size class: BODY regular row LABELS instead of the default HEADLINE bold (the small
+    /// account popover; HEADLINE-bold rows overwhelmed a 440px panel of one-word actions). Set it
+    /// on every ACTION menu — the item context menu, account, more, and the library sort/filter/
+    /// genre menus all do; only a PICKER of title+detail rows stays on the default.
+    ///
+    /// It no longer affects HEADERS: those are CAPS at CAPTION in both classes, because the caps
+    /// are what make a header a label and a size that varied could tie with its own rows.
     pub compact: bool,
     // the highlight pill's top and bottom edges spring INDEPENDENTLY (content coords), so moving
     // to a taller/shorter row morphs the pill smoothly instead of snapping its height.
@@ -158,6 +207,7 @@ impl TableView {
         Self {
             sections: Vec::new(),
             sel: 0,
+            list_focused: true,
             compact: false,
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
@@ -352,15 +402,20 @@ impl TableView {
         let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
 
         // ---- sliding pill (under the rows) — warm off-white; top/bottom edges morph independently ----
+        // It follows its GROUP's dim: the focused row of an unreachable server must not be the one
+        // bright thing in a panel that is telling you the server is unreachable.
         let py0 = top0 + self.hl_top.pos - scroll;
         let py1 = top0 + self.hl_bot.pos - scroll;
         let pill = Rect::new(frame.x + SIDE, py0, frame.w - 2.0 * SIDE, (py1 - py0).max(1.0));
-        if pill.y + pill.h > vis_top && pill.y < vis_bot {
-            p.rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
+        if self.list_focused && pill.y + pill.h > vis_top && pill.y < vis_bot {
+            self.group_painter(p, self.section_of_row(self.sel)).rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
         }
 
         // ---- headers + rows ----
         self.walk(|cy, gi, si| {
+            // ONE alpha over the whole group (see `Section::dim`) — pushed here, at the top of the
+            // walk, so header, accessory, rows, marks and read-outs can never dim out of step.
+            let p = self.group_painter(p, si);
             let sy = top0 + cy - scroll;
             if gi == -1 {
                 // panel/section header (+ hairline divider above later sections); scissor-clipped to `frame`
@@ -370,9 +425,32 @@ impl TableView {
                         p.rect(Rect::new(content_x, sy - DIV_H * 0.5, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
                             0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                     }
-                    if let Ok(cs) = CString::new(sec.header.as_str()) {
-                        let hsz = if self.compact { theme::size::CAPTION } else { theme::size::HEADLINE };
+                    // **CAPS at CAPTION, one size in BOTH size classes.** The caps are what make a
+                    // header read as a label rather than as a row, which is why the size stops
+                    // varying: at HEADLINE — what the non-compact class used to draw — a header
+                    // ties with or outweighs the rows it heads, and on the Sources panel (a
+                    // two-line picker, so non-compact) that put the machine names on screen bigger
+                    // than the libraries they name. Design system, `TableView.prompt.md`.
+                    //
+                    // `to_uppercase`, not `to_ascii_uppercase`: a header is a machine name or a
+                    // library name and can be any script — the share measured here is Cyrillic.
+                    let hsz = theme::size::CAPTION;
+                    if let Ok(cs) = CString::new(sec.header.to_uppercase()) {
                         p.text(cs.as_ptr(), content_x, sy + 8.0, hsz, dimc, 0, 0);
+                    }
+                    // trailing accessory, one rung down and on the header's own baseline. Elided,
+                    // because it is the run that gives way (see `Section::accessory`).
+                    if !sec.accessory.is_empty() {
+                        // MICRO, a rung below the header: "the header names the group, the
+                        // accessory only qualifies it, so it never ties with the header"
+                        // (`TableView.prompt.md`). At CAPTION the two were the same size and a
+                        // plex.tv handle read as loud as the machine it hangs off.
+                        let asz = theme::size::MICRO;
+                        let a = crate::text::elide(&sec.accessory, ACCESSORY_W, asz, 0, false);
+                        if let Ok(ac) = CString::new(a) {
+                            let ay = crate::text::baseline_y(asz, 0, hsz, 0, sy + 8.0);
+                            p.text(ac.as_ptr(), text_right, ay, asz, dimc, 2, 0);
+                        }
                     }
                 }
                 return;
@@ -389,7 +467,11 @@ impl TableView {
                     0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                 return;
             }
-            let focused = gi == self.sel;
+            // **`list_focused` gates the INK, not just the pill.** `ink` is near-black and is only
+            // legible ON the accent pill; suppressing the pill while still flipping the ink drew
+            // black-on-panel rows, which is what the owner saw the moment focus moved to the
+            // Sources panel's level pills. The two are one decision and are read from one flag.
+            let focused = gi == self.sel && self.list_focused;
             let base = if focused { ink } else if row.dim { dimc } else { white };
             let row_bg = if focused { crate::ui::ACCENT } else { PANEL_BG };
             let cyc = sy + h * 0.5; // row vertical center
@@ -411,6 +493,35 @@ impl TableView {
                 crate::ui::icons::draw(p, ti, cr, base);
                 trailing = cs + 14.0;
             }
+            // PLACE 4 — the badge run, RIGHT-ALIGNED at the trailing edge and the outermost of the
+            // three trailing runs (the design system's cell is a flex row whose label block takes
+            // all the slack, so `badge` — written last — is flush right, with the read-out beside
+            // it). It was drawn INLINE, starting at the label's own drawn right edge, which gave a
+            // chip the design pins flush a per-ROW x: a column of resolution classes, or of
+            // FORCED/SDH/codec tags, landed wherever each label happened to end, so the panel read
+            // as ragged text rather than as a column you can compare straight down.
+            //
+            // Centred on the ROW BOX (`cyc`), not on the title's cap band: the chip is a sibling of
+            // the whole label block, so on a two-line row it sits level with the pair rather than
+            // ~16px high, level with the first line.
+            if !row.badges.is_empty() {
+                let run: f32 = row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None)).sum::<f32>()
+                    + BADGE_GAP * (row.badges.len() - 1) as f32;
+                let mut bx = text_right - trailing - run;
+                for b in row.badges.iter() {
+                    // the shared chip leaf in this row's contextual colours: the row's own ink for
+                    // the label, the design's keyline for the ring (the pill's near-black ink over
+                    // a focused row, where a 55%-white stroke would vanish), the row's ground
+                    // knocked out of the interior
+                    let sty = crate::ui::widgets::BadgeStyle::Outlined {
+                        col: base,
+                        border: if focused { base } else { theme::OVERLAY_BORDER },
+                        bg: row_bg,
+                    };
+                    bx += crate::ui::widgets::badge(p, bx, cyc, b.text(), None, sty) + BADGE_GAP;
+                }
+                trailing += run + 14.0;
+            }
             // Trailing VALUE — the read-out that says what this row is set to ("On"/"Off" for a
             // switch, or any word). One step behind the label in ink, so the label is what you read
             // and the value is what you check; over the focused row's near-white pill that step is
@@ -430,9 +541,6 @@ impl TableView {
                     trailing += vw + 14.0;
                 }
             }
-            // reserve the inline-badge run so the label elides before it
-            let badge_reserve: f32 =
-                row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None) + 10.0).sum();
             // Single-line rows centre their label on the row by cap band. Two-line rows stack a
             // title over a detail sub-line: lay the pair out off both cap bands and centre it in the
             // tall row, with an explicit gap between the title baseline and the detail cap-top
@@ -440,42 +548,40 @@ impl TableView {
             let two_line = !row.detail.is_empty();
             // two-line rows follow the table's size class too (compact = BODY regular titles)
             let (tsz, tbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
-            let (title_y, detail_y, bcy) = if two_line {
+            let (title_y, detail_y) = if two_line {
                 let (t_top, t_base) = crate::text::text_cap_band(tsz, tbold);
                 let (d_top, d_base) = crate::text::text_cap_band(theme::size::CAPTION, 0);
                 let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
                 let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
                 let pair_top = sy + (h - (t_cap + pair_gap + d_cap)) * 0.5; // title cap-top
-                (pair_top - t_top, pair_top + t_cap + pair_gap - d_top, pair_top + t_cap * 0.5)
+                (pair_top - t_top, pair_top + t_cap + pair_gap - d_top)
             } else {
-                (0.0, 0.0, cyc) // title_y/detail_y unused single-line; Label centres the label
+                (0.0, 0.0) // unused single-line; Label centres the label
             };
-            // title/label, then inline badges (mockup: "Original: …" with an AD chip after it).
-            // compact tables read their single-line labels at BODY regular.
+            // PLACE 2 — the label over its optional sub-line. Compact tables read their single-line
+            // labels at BODY regular.
             let (lsz, lbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
-            let lbl = crate::text::elide(&row.label, text_right - label_x - trailing - badge_reserve, lsz, lbold, false);
-            let mut bx = label_x;
+            let text_w = text_right - label_x - trailing;
+            let lbl = crate::text::elide(&row.label, text_w, lsz, lbold, false);
             if let Ok(cs) = CString::new(lbl) {
-                bx += if two_line {
-                    p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold)
+                if two_line {
+                    p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold);
                 } else {
                     let mut lab = Label::new(cs.as_ptr(), lsz, base);
                     if lbold == 1 {
                         lab = lab.bold();
                     }
-                    lab.draw(p, Rect::new(label_x, sy, 0.0, h))
-                };
+                    lab.draw(p, Rect::new(label_x, sy, 0.0, h));
+                }
             }
-            bx += 12.0;
-            for b in row.badges.iter() {
-                // the shared chip leaf, in this row's contextual colours (ink over pill/panel)
-                let sty = crate::ui::widgets::BadgeStyle::Outlined { col: base, bg: row_bg };
-                bx += crate::ui::widgets::badge(p, bx, bcy, b.text(), None, sty) + 10.0;
-            }
-            // detail sub-line, elided (long Cyrillic descriptors would run off the edge)
+            // detail sub-line, elided (long Cyrillic descriptors would run off the edge) — to the
+            // SAME right edge as the label above it, because the design system puts the pair in one
+            // `flex:1` box. It used to elide against the bare row width, which was harmless only
+            // while the badges sat on the title's line: right-aligned and row-centred, a chip now
+            // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
                 let sub = if focused { theme::scrim_black(0.6) } else { dimc };
-                let detail = crate::text::elide(&row.detail, text_right - label_x, theme::size::CAPTION, 0, false);
+                let detail = crate::text::elide(&row.detail, text_w, theme::size::CAPTION, 0, false);
                 if let Ok(cd) = CString::new(detail) {
                     p.text(cd.as_ptr(), label_x, detail_y, theme::size::CAPTION, sub, 0, 0);
                 }
@@ -483,6 +589,27 @@ impl TableView {
         });
 
         p.clip_clear();
+    }
+
+    /// `p`, dimmed if section `si` is — the ONE place [`Section::dim`] becomes an alpha.
+    fn group_painter(&self, p: Painter, si: usize) -> Painter {
+        if self.sections.get(si).is_some_and(|s| s.dim) {
+            p.alpha(GROUP_DIM_A)
+        } else {
+            p
+        }
+    }
+
+    /// Which section global row `gi` belongs to (0 when it belongs to none — an empty table).
+    fn section_of_row(&self, gi: i32) -> usize {
+        let mut n = 0i32;
+        for (si, sec) in self.sections.iter().enumerate() {
+            n += sec.rows.len() as i32;
+            if gi < n {
+                return si;
+            }
+        }
+        0
     }
 
     fn rows_at(&self, gi: i32) -> &Row {

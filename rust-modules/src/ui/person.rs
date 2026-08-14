@@ -500,8 +500,8 @@ fn amb_target(sc: &Scene) -> [[f32; 4]; 4] {
 /// subject until the user asks for the shelves. There is nothing focusable in it (it is a scroll
 /// POSITION, see [`move_focus`]), and nothing to focus on the shelves yet either: they land a
 /// moment later, and DOWN goes to them.
-pub(crate) fn reopen(key: &str, guid: &str, name: &str, thumb: &str) {
-    crate::person::open(key, guid, name, thumb);
+pub(crate) fn reopen(sid: crate::plex::ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
+    crate::person::open(sid, key, guid, name, thumb);
     let sc = scene();
     // A WHOLESALE reset, not a field-by-field one: every default this page mounts with — focus on
     // the header, scroll and condense at 0, shelves at their left edge, EMPTY text runs — is already
@@ -518,8 +518,8 @@ pub(crate) fn reopen(key: &str, guid: &str, name: &str, thumb: &str) {
 
 /// [`reopen`] plus the flag app.rs routes on — the INTERACTIVE entry, called from `detail.rs`'s
 /// cast-row OK arm.
-pub(crate) fn open(key: &str, guid: &str, name: &str, thumb: &str) {
-    reopen(key, guid, name, thumb);
+pub(crate) fn open(sid: crate::plex::ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
+    reopen(sid, key, guid, name, thumb);
     scene().requested = true;
 }
 
@@ -779,7 +779,7 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     crate::ui::widgets::card(
         p,
         portrait,
-        Art::Person { key: &person.thumb, res: PORTRAIT_RES },
+        Art::Person { sid: person.sid, key: &person.thumb, res: PORTRAIT_RES },
         d * 0.5,
         false,
         1.0,
@@ -923,7 +923,13 @@ mod tests {
 
     /// [`seed`] without the opening DOWN — for the tests that are about the header row itself.
     fn seed_at_header(movies: usize, shows: usize) {
-        crate::person::open("161", "5d77682aeb5d26001f1de4b0", "Idina Menzel", "");
+        crate::person::open(
+            crate::plex::ServerId::UNSET,
+            "161",
+            "5d77682aeb5d26001f1de4b0",
+            "Idina Menzel",
+            "",
+        );
         crate::person::install_for_test(
             (0..movies).map(|i| item(&format!("m{i}"))).collect(),
             (0..shows).map(|i| item(&format!("s{i}"))).collect(),
@@ -1038,12 +1044,12 @@ mod tests {
     #[test]
     fn reopen_mounts_the_page_without_asking_to_be_routed_to() {
         let _serial = crate::testlock::serial();
-        reopen("77", "plex://person/77", "Peter Sallis", "/t.jpg");
+        reopen(crate::plex::ServerId::UNSET, "77", "plex://person/77", "Peter Sallis", "/t.jpg");
         assert!(!take_request(), "a trail re-entry must not ask app.rs to route again");
         assert_eq!(crate::person::current().map(|p| p.key.clone()), Some("77".to_string()));
         assert!(scene().on_header, "…and it is still a full mount: the page opens on its header");
 
-        open("78", "plex://person/78", "Nick Park", "/n.jpg");
+        open(crate::plex::ServerId::UNSET, "78", "plex://person/78", "Nick Park", "/n.jpg");
         assert!(take_request(), "the interactive entry is the one that raises the latch");
         crate::person::close();
     }

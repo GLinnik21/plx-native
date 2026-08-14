@@ -30,6 +30,13 @@ pub struct MediaContainer {
     /// GET /identity — the server's stable id (the PlayQueue `server://{id}/…` uri needs it).
     #[serde(rename = "machineIdentifier", default)]
     pub machine_identifier: String,
+    /// GET / — what the server calls ITSELF ("nas-home"). The MACHINE name, and so the one string
+    /// the Sources list heads a server's group with; the app says the owner's HANDLE everywhere
+    /// else ("people in content, machines in settings"). Read off the PMS rather than plex.tv on
+    /// purpose: a server that answers can always name itself, including on a boot that never
+    /// reached plex.tv at all.
+    #[serde(rename = "friendlyName", default, deserialize_with = "de_str")]
+    pub friendly_name: String,
     /// POST /playQueues response ids (0 = absent) — the timeline's playQueueID/playQueueItemID.
     #[serde(rename = "playQueueID", default, deserialize_with = "de_i64")]
     pub play_queue_id: i64,
@@ -134,17 +141,61 @@ pub struct Hub {
     pub title: String,
     #[serde(rename = "Metadata", default)]
     pub metadata: Vec<Metadata>,
+    /// **A hub's items do not all arrive as `Metadata`**, and a search screen that assumes they do
+    /// renders three of its five shelves as nothing at all, silently. Measured against this
+    /// household's PMS 1.43.3 over six queries on 2026-08-14:
+    ///
+    /// | payload | hubs |
+    /// |---|---|
+    /// | `Metadata[]` | `movie`, `show`, `episode`, `album`, `artist`, `track` |
+    /// | **`Directory[]`** | **`actor`, `director`, `collection`** |
+    ///
+    /// So Cast & Crew *and* Collections both come through here. `plex-openapi.json`'s own worked
+    /// example for `/hubs/search` disagrees — it puts shows under `Directory` — which is why this
+    /// was probed live rather than modelled from the spec, and why the split is written down here
+    /// instead of being rediscovered the next time a hub looks empty.
+    #[serde(rename = "Directory", default)]
+    pub directory: Vec<Tag>,
+    /// How many items the hub holds. A search response carries EVERY hub type the server knows
+    /// about — 17 of them on this set — most with `size: 0`, so this is the field that says which
+    /// ones are worth drawing.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub size: i64,
 }
 
-/// The movie/show/season/episode item. Missing fields default (Plex omits optionals).
 #[derive(Deserialize, Default)]
 pub struct Metadata {
     #[serde(rename = "type", default)]
     pub kind: String, // movie|show|season|episode|clip
     #[serde(rename = "ratingKey", default)]
     pub rating_key: String,
+    /// **The only PORTABLE identity Plex issues** — `plex://movie/6856…291d`, the metadata
+    /// provider's id, identical on every server that ever matched this film. Everything else
+    /// item-shaped (`ratingKey`, `librarySectionID`, `Part.key`, `Stream.id`) is a server-local
+    /// integer dense from 1.
+    ///
+    /// Measured across this household's two servers 2026-08-14: one film is `ratingKey` **2029**
+    /// on ours and **5274** on the share, and their copy is titled in another language entirely —
+    /// so matching copies by key offers a different film and matching by title misses this one.
+    /// Plex's own client matches these two, which is the behaviour "Also available" reproduces.
+    #[serde(default, deserialize_with = "de_str")]
+    pub guid: String,
     #[serde(default)]
     pub title: String,
+    /// The LIBRARY this row lives in, on the server that answered ("Movies", "Film Club"). Sent on
+    /// a cross-library query such as `/library/all?guid=…`, which is the one place the app asks a
+    /// server something without already knowing which of its libraries will answer.
+    #[serde(rename = "librarySectionTitle", default, deserialize_with = "de_str")]
+    pub library_section_title: String,
+    /// Which LIBRARY on that server this row belongs to — the pin's grain.
+    ///
+    /// Present on every `/hubs` and `/hubs/continueWatching` row (verified live), which is what
+    /// lets Home honour a per-library pin without a per-library fetch: the whole-server hub request
+    /// answers with rows from every library, and this is the only field that says which. 0 = the
+    /// server did not send one, and an item with no library cannot be gated out — see
+    /// `pms::feeds_home_item`.
+    #[serde(rename = "librarySectionID", default, deserialize_with = "de_i64")]
+    pub library_section_id: i64,
     #[serde(default, deserialize_with = "de_i64")]
     pub year: i64,
     #[serde(rename = "contentRating", default)]
@@ -388,6 +439,27 @@ pub struct Tag {
     /// server (this one omits it on `Role[]`), so 0 means "unknown", never "none".
     #[serde(default, deserialize_with = "de_i64")]
     pub count: i64,
+    // ---- the SECOND producer of this record: a search hub's `Directory[]` ----
+    //
+    // `/hubs/search` returns its `actor`, `director` and `collection` hubs as `Directory[]` of
+    // exactly this shape (measured live — see `Hub::directory`), so the cast-credit tag and the
+    // search hit are one type rather than two that would drift. The three fields below are the
+    // ones only the search producer sets; a `Role[]` entry leaves them empty and nothing reads
+    // them there.
+    /// The listing this tag opens — `/library/sections/1/all?collection=6068`. The only handle a
+    /// COLLECTION hit gives you: those carry no `tagKey`, no `thumb` and no `ratingKey`.
+    #[serde(default)]
+    pub key: String,
+    #[serde(rename = "librarySectionID", default, deserialize_with = "de_i64")]
+    pub library_section_id: i64,
+    /// Why this result, when it is not a direct term match: `section` (the same title in several
+    /// sections), `originalTitle`, or another hub's identifier — searching "arnold" returns films
+    /// with `reason: actor`. Kept because a shelf that mixes direct and inferred hits without
+    /// saying so reads as the server being wrong.
+    #[serde(default)]
+    pub reason: String,
+    #[serde(rename = "reasonTitle", default)]
+    pub reason_title: String,
 }
 
 impl Tag {
@@ -550,7 +622,7 @@ fn de_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
 /// string-encoded int (PMS does this: e.g. `size:"40"`, `streamType:"2"`), dropping every
 /// item in the response. This keeps one field's-worth of degradation (and actually recovers a
 /// stringy int rather than zeroing it). Applied to every i64 in a parsed DTO.
-fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+pub(super) fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum IntFloatStrBool {
@@ -569,6 +641,43 @@ fn de_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
         Some(IntFloatStrBool::S(s)) => s.trim().parse().unwrap_or(0),
         Some(IntFloatStrBool::B(b)) => b as i64,
         None => 0,
+    })
+}
+
+/// Lenient `Vec<T>`: a JSON array, or null → empty. Same trap as [`de_str`], one container up:
+/// `#[serde(default)]` fills an ABSENT field and does nothing for one that is present and `null`,
+/// and a strict `Vec` meeting a `null` fails the whole array it sits in. `connections` is the field
+/// that matters — a server with a null connection list must cost that server, never the roster.
+pub(super) fn de_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
+}
+
+/// Lenient bool: a JSON bool, the `1`/`0` (or `"1"`/`"0"`) forms Plex also uses, or null → false.
+///
+/// The PMS DTOs above keep their 0/1 flags as `i64` and test `!= 0`, because those fields are read
+/// once, near the wire. This adapter exists for the plex.tv **connection-policy** flags
+/// (`account.rs`'s `httpsRequired`/`publicAddressMatches`/`local`/`relay`/`IPv6`), which are read in
+/// boolean position by `probe.rs` on every candidate: folding the encodings here once beats
+/// spelling `!= 0` at every branch of a policy that has to stay readable to be trusted. Leniency
+/// itself is not optional — plex.tv sends these as real JSON bools today, and a strict `bool` that
+/// meets a `"1"` fails the WHOLE resources parse, which is a silent sign-in failure.
+pub(super) fn de_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolIntStr {
+        B(bool),
+        I(i64),
+        S(String),
+    }
+    Ok(match Option::<BoolIntStr>::deserialize(d)? {
+        Some(BoolIntStr::B(b)) => b,
+        Some(BoolIntStr::I(n)) => n != 0,
+        Some(BoolIntStr::S(s)) => matches!(s.trim(), "1" | "true" | "True"),
+        None => false,
     })
 }
 
@@ -597,7 +706,10 @@ fn de_opt_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::
 /// string on this server ("1080"/"4k", verified live) but reads like a number, and a strict
 /// `String` that meets one is a WHOLE-`MediaContainer` parse failure — the same blast radius
 /// `de_i64` exists to avoid, just pointing the other way. Use it for any stringly-typed number.
-fn de_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+///
+/// `pub(super)` because `account.rs` needs the null half of it: plex.tv sends an explicit `null` for
+/// an absent string, and there a whole-container failure is the account's whole server list.
+pub(super) fn de_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum StrIntFloatBool {

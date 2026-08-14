@@ -30,6 +30,7 @@ mod pms;
 mod posters;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
+mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
 mod stream;
 mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
 #[cfg(feature = "hostsim")]
@@ -57,6 +58,7 @@ pub(crate) mod testlock {
     }
 }
 mod text;
+mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
 mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename)
 mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
 

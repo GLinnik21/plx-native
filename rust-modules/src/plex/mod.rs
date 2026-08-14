@@ -17,6 +17,10 @@ mod client;
 pub(crate) mod identity; // ONE X-Plex-* identity for both transports (plex.tv headers + PMS query)
 mod models;
 mod params;
+// WHICH servers exist and which one is current. `client()`/`client_opt()` live here now (they
+// mean "the current server"); `client.rs` is just the type. See its module doc for why the hot
+// path is an atomic pointer table rather than a lock.
+mod servers;
 
 // Op files below only add `impl Client { … }` blocks (Rust allows multiple impls of one
 // type across a crate) — declared here so those methods compile onto `Client`.
@@ -37,6 +41,12 @@ pub(crate) mod serverinfo;
 pub(crate) mod account;
 pub(crate) mod session;
 
+// Which of a server's advertised addresses are worth dialling, and in what order. PURE policy over
+// an `account::Resource` — no socket, no thread — so the rules that decide reachability are gradeable
+// on the host, which is the only tier that can grade them at all: the failures they prevent are an
+// 8-second timeout and a probe that answers as the wrong machine.
+pub(crate) mod probe;
+
 // The plex.tv METADATA PROVIDER (`discover.provider.plex.tv`) — a third service, but one that
 // shares the account API's transport + identity headers exactly, so it only adds an
 // `impl AccountClient` block (same pattern as the PMS op files above).
@@ -44,7 +54,23 @@ pub(crate) mod discover;
 
 // The re-exports are the public surface the call sites import.
 #[allow(unused_imports)]
-pub use client::{client, client_opt, install, Client, StreamUrl};
+pub use client::{Client, StreamUrl};
+// The registry surface. `client`/`client_opt`/`install` keep the exact signatures they had as
+// singleton accessors, so every call site outside `plex/` reads unchanged; `client_for`,
+// `register`, `set_current` and `ServerId` are the multi-server additions.
+#[allow(unused_imports)]
+pub use servers::{
+    client, client_for, client_opt, count as server_count, current as current_server, describe as describe_server,
+    facts as server_facts, ids as server_ids, install, register, same_item, set_current, ServerFacts, ServerId,
+};
+// The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
+// `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
+// does — that call mints and PERSISTS a device uuid, which a host test has no business writing —
+// and `reset_servers_for_test` is what keeps the table a per-test fixture instead of a growing
+// process-global holding clients whose loopback ports closed when their test returned. Both must be
+// called under `crate::testlock::serial`.
+#[cfg(test)]
+pub(crate) use servers::{register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test};
 #[allow(unused_imports)]
 pub use models::*;
 #[allow(unused_imports)]
@@ -56,5 +82,8 @@ pub use params::*;
 pub use timeline::{queue_index_of, QueueRow};
 // DP_AUDIO_CODECS rides along for `devcaps`, which intersects it with the device's own codec
 // table — the caps snapshot is what `is_dp_audio` and the profile string then both read.
+// `link_policy` is the other gate on the same decision: `is_dp_audio` asks what the PIPELINE can
+// decode, `link_policy` asks what the CONNECTION can carry, and `route::build_stream` must pass
+// both before it streams a file itself.
 #[allow(unused_imports)]
-pub use transcoder::{is_dp_audio, DP_AUDIO_CODECS};
+pub use transcoder::{is_dp_audio, link_policy, LinkPolicy, DP_AUDIO_CODECS};

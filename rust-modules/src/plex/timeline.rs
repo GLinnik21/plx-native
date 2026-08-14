@@ -8,6 +8,7 @@
 //! (correlated by `X-Plex-Session-Identifier == transcode session=`).
 use super::client::{Client, QueryBuilder};
 use super::params::TimelineReport;
+use super::servers::ServerId;
 
 impl Client {
     /// POST /:/timeline (the spec verb; params ride the query). Fire-and-forget — the
@@ -62,7 +63,7 @@ impl Client {
             .int("repeat", 0)
             .str("X-Plex-Session-Identifier", session);
         let q = self.playback_identity(q);
-        Some(PlayQueueResult::of(self.post_json(&q.build())?, rating_key))
+        Some(PlayQueueResult::of(self.post_json(&q.build())?, self.id(), rating_key))
     }
 }
 
@@ -84,6 +85,11 @@ pub struct QueueRow {
     /// item queued twice), a playQueueItemID cannot, so every lookup keys off this. 0 = a server
     /// that omitted the field.
     pub item_id: i64,
+    /// The server that ISSUED this queue, and so the server `rk` is a key on. A PlayQueue is
+    /// per-server by construction (it is created with a `server://{machineIdentifier}/…` uri), so
+    /// every row of one shares this — but the ratingKey FALLBACK below compares against a key
+    /// supplied by the caller, and that one can come from anywhere.
+    pub sid: super::ServerId,
     pub rk: String,
     /// `type` — movie | episode | clip …
     pub kind: String,
@@ -113,7 +119,7 @@ pub struct QueueRow {
 impl QueueRow {
     /// Consume a queue `Metadata` row into its lean projection. BY VALUE: the strings are moved,
     /// not cloned, and the rest of the row's tree is dropped as this returns.
-    fn of(m: super::models::Metadata) -> QueueRow {
+    fn of(m: super::models::Metadata, sid: super::ServerId) -> QueueRow {
         // `Media[0]` / `Media[0].Part[0]`, the same pick `Metadata::first_part` makes — by value,
         // so the other versions and their Stream lists die here.
         let (vcodec, acodec, part) = match m.media.into_iter().next() {
@@ -126,6 +132,7 @@ impl QueueRow {
         };
         QueueRow {
             item_id: m.play_queue_item_id,
+            sid,
             rk: m.rating_key,
             kind: m.kind,
             title: m.title,
@@ -151,16 +158,21 @@ impl QueueRow {
 /// twice, and matching on the rating key would then pick the wrong row. The rating key is only the
 /// fallback for a server that omitted the per-row id — for a queue built FROM this item the two
 /// agree, and losing the row entirely is the worse failure.
-pub fn queue_index_of(items: &[QueueRow], item_id: i64, rating_key: &str) -> Option<usize> {
+pub fn queue_index_of(items: &[QueueRow], item_id: i64, sid: ServerId, rating_key: &str) -> Option<usize> {
     let by_id = (item_id != 0).then(|| items.iter().position(|r| r.item_id == item_id)).flatten();
-    by_id.or_else(|| items.iter().position(|r| r.rk == rating_key))
+    by_id.or_else(|| items.iter().position(|r| super::same_item((r.sid, &r.rk), (sid, rating_key))))
 }
 
 /// The queue row that follows the selected one — None at the end of the queue, and None when the
 /// selection matches no row at all (handing back `items[1]` there would start something the user
 /// was never watching).
-fn next_after<'a>(items: &'a [QueueRow], selected_item_id: i64, rating_key: &str) -> Option<&'a QueueRow> {
-    items.get(queue_index_of(items, selected_item_id, rating_key)? + 1)
+fn next_after<'a>(
+    items: &'a [QueueRow],
+    selected_item_id: i64,
+    sid: ServerId,
+    rating_key: &str,
+) -> Option<&'a QueueRow> {
+    items.get(queue_index_of(items, selected_item_id, sid, rating_key)? + 1)
 }
 
 #[cfg(test)]
@@ -168,9 +180,13 @@ mod tests {
     use super::*;
     use crate::plex::models::Envelope;
 
-    /// one queue row: (playQueueItemID, ratingKey)
+    /// The server the fixture queues belong to. A PlayQueue is per-server by construction, so one
+    /// slot for a whole queue is exactly the real shape.
+    const Q: ServerId = ServerId::from_raw(0);
+
+    /// one queue row: (playQueueItemID, ratingKey) on server [`Q`]
     fn row(item_id: i64, rk: &str) -> QueueRow {
-        QueueRow { item_id, rk: rk.to_string(), ..Default::default() }
+        QueueRow { item_id, sid: Q, rk: rk.to_string(), ..Default::default() }
     }
     fn rks(items: &[QueueRow]) -> Vec<&str> {
         items.iter().map(|r| r.rk.as_str()).collect()
@@ -179,7 +195,7 @@ mod tests {
     /// its POST returns, so these tests cannot pass on a projection the app does not use.
     fn result(body: &str, rating_key: &str) -> PlayQueueResult {
         let mc = serde_json::from_str::<Envelope>(body).expect("a PMS body parses").media_container;
-        PlayQueueResult::of(mc, rating_key)
+        PlayQueueResult::of(mc, Q, rating_key)
     }
 
     /// The whole up-next extraction. Every case here is one the live server actually produces:
@@ -189,15 +205,15 @@ mod tests {
     #[test]
     fn the_successor_is_the_row_after_the_selected_one() {
         let q = vec![row(13083, "1804"), row(13084, "1805"), row(13085, "1806")];
-        let next = next_after(&q, 13083, "1804").expect("a mid-queue item has a successor");
+        let next = next_after(&q, 13083, Q, "1804").expect("a mid-queue item has a successor");
         assert_eq!(next.rk, "1805");
 
         // a queue of one — the season finale / movie case
         let solo = vec![row(13092, "774")];
-        assert!(next_after(&solo, 13092, "774").is_none());
+        assert!(next_after(&solo, 13092, Q, "774").is_none());
         // ...and the LAST row of a longer queue is the same thing
         let q = vec![row(1, "a"), row(2, "b")];
-        assert!(next_after(&q, 2, "b").is_none());
+        assert!(next_after(&q, 2, Q, "b").is_none());
     }
 
     #[test]
@@ -205,7 +221,7 @@ mod tests {
         // A queue holding the same episode twice: matching on the ratingKey would pick the FIRST
         // occurrence and hand back its successor, which is the wrong episode.
         let q = vec![row(1, "dup"), row(2, "mid"), row(3, "dup"), row(4, "after")];
-        let next = next_after(&q, 3, "dup").expect("the second occurrence has a successor");
+        let next = next_after(&q, 3, Q, "dup").expect("the second occurrence has a successor");
         assert_eq!(next.rk, "after");
     }
 
@@ -214,8 +230,25 @@ mod tests {
         // Rows with no playQueueItemID (0) — the successor must still be found, or the feature
         // silently disappears on a server that trims the field.
         let q = vec![row(0, "1804"), row(0, "1805")];
-        let next = next_after(&q, 0, "1804").expect("the rating key is the fallback identity");
+        let next = next_after(&q, 0, Q, "1804").expect("the rating key is the fallback identity");
         assert_eq!(next.rk, "1805");
+    }
+
+    /// The FALLBACK is the one identity here that a second server can spoof. `playQueueItemID` is
+    /// per-queue and safe; the rating key is not, so it is compared as `(server, key)` — otherwise
+    /// a queue built on the share and a playing rk read off our own server (or the reverse) would
+    /// "find" a row and auto-advance to something the viewer never queued.
+    #[test]
+    fn the_rating_key_fallback_is_scoped_to_the_queues_own_server() {
+        let other = ServerId::from_raw(1);
+        let q = vec![row(0, "1804"), row(0, "1805")];
+        assert!(next_after(&q, 0, other, "1804").is_none(), "another server's 1804 is not this row");
+        assert_eq!(queue_index_of(&q, 0, Q, "1804"), Some(0), "…and the queue's OWN 1804 still is");
+
+        // the primary key is unaffected: a playQueueItemID is minted by the queue itself, so it
+        // needs no scoping and must keep working even when the caller names another server
+        let byid = vec![row(13083, "1804"), row(13084, "1805")];
+        assert_eq!(queue_index_of(&byid, 13084, other, "zzz"), Some(1));
     }
 
     #[test]
@@ -223,8 +256,8 @@ mod tests {
         // Neither identity matches: returning `items[0]`'s successor here would start an episode
         // the user was never watching.
         let q = vec![row(1, "a"), row(2, "b")];
-        assert!(next_after(&q, 99, "zzz").is_none());
-        assert!(next_after(&[], 1, "a").is_none(), "an empty queue is not a panic");
+        assert!(next_after(&q, 99, Q, "zzz").is_none());
+        assert!(next_after(&[], 1, Q, "a").is_none(), "an empty queue is not a panic");
     }
 
     /// A real `continuous=1` response — three episodes, the first selected — through the shipped
@@ -275,7 +308,7 @@ mod tests {
         assert_eq!((next.rk.as_str(), next.index), ("1805", 2));
         assert_eq!(next.part, "/library/parts/3140/1781467999/file.mkv", "the successor is start-able");
         assert_eq!(next.dur_ms, 3120000, "…and a plain JSON number lands too");
-        let at = queue_index_of(&q.items, q.selected_item_id, "1804").expect("the playing row is locatable");
+        let at = queue_index_of(&q.items, q.selected_item_id, Q, "1804").expect("the playing row is locatable");
         assert_eq!((at, q.items[at + 1].rk.as_str()), (0, next.rk.as_str()), "next IS items[selected+1]");
     }
 
@@ -324,7 +357,7 @@ pub struct PlayQueueResult {
 impl PlayQueueResult {
     /// The WHOLE response→result mapping, kept out of `create_play_queue` so the host tests grade
     /// the code that ships instead of a copy of it (only the request build is left up there).
-    fn of(mc: super::models::MediaContainer, rating_key: &str) -> PlayQueueResult {
+    fn of(mc: super::models::MediaContainer, sid: super::ServerId, rating_key: &str) -> PlayQueueResult {
         // Remaining AFTER the item being played, from the whole-queue counters (the returned
         // `Metadata[]` can be a window). Clamped: a server that omits either counter must read as
         // "nothing after this", not as a negative count the UI would then format.
@@ -333,8 +366,8 @@ impl PlayQueueResult {
         // Project BY VALUE: every `Metadata` row is consumed into a `QueueRow` and its
         // Media/Part/Stream/Role tree dropped right here, on the worker. What the main thread then
         // holds for the length of the playback is a dozen scalars and strings per row.
-        let items: Vec<QueueRow> = mc.metadata.into_iter().map(QueueRow::of).collect();
-        let next = next_after(&items, selected, rating_key).cloned();
+        let items: Vec<QueueRow> = mc.metadata.into_iter().map(|m| QueueRow::of(m, sid)).collect();
+        let next = next_after(&items, selected, sid, rating_key).cloned();
         PlayQueueResult { id: mc.play_queue_id, selected_item_id: selected, remaining, items, next }
     }
 }

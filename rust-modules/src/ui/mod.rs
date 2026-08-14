@@ -10,6 +10,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub mod account_menu; // Home top-left profile popover (change profile / sign out)
+pub mod alt_sources; // "Also available": the same item on a second pinned source, as a picker
 pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;
@@ -28,6 +29,7 @@ pub mod more_menu; // the player's `…` overflow popover (holds the Stats for n
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
+pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
