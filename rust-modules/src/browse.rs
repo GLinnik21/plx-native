@@ -938,22 +938,24 @@ pub(crate) fn retry() {
 #[cfg(test)]
 pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
     reset();
-    let mut v = Vec::new();
-    for k in 0..n {
-        let sid = crate::plex::register(&format!("mach-{k}"), "10.9.9.7", 31234, "tok");
-        if k == 0 {
-            crate::plex::set_current(sid);
-        }
-        v.push(BrowseSource {
-            sid,
+    // Source 0 takes whatever `plex::current` already is, and NOTHING is registered. Registering
+    // here would leave slots in a crate-global registry that `pump`'s `sync_roster` re-adopts, and
+    // `maybe_discover` would then park a worker in `connect(2)` against a fixture address on behalf
+    // of some later test — the hazard `plex::servers`' own `Fresh` guard exists for. Matching the
+    // current server instead makes the empty-table fallback in `cur_source_idx` resolve to source 0
+    // by construction, with no global touched but this module's own.
+    let cur = crate::plex::current_server();
+    let v: Vec<BrowseSource> = (0..n)
+        .map(|k| BrowseSource {
+            sid: if k == 0 { cur } else { ServerId::from_raw(k as u16) },
             name: if k == 0 { "nas-home".into() } else { "film-club".into() },
             handle: if k == 0 { String::new() } else { "friend".into() },
             reachable,
             sections_done: reachable,
             counts_done: true,
             retry_cd: 0,
-        });
-    }
+        })
+        .collect();
     unsafe { *addr_of_mut!(SOURCES) = v };
 }
 
@@ -1729,13 +1731,10 @@ mod tests {
     /// fallback in [`cur_source_state`] resolves to it rather than to whatever the registry was
     /// left holding. Registration dials nothing — it publishes a slot.
     fn seed_one_source(reachable: bool, sections_done: bool) -> usize {
-        // `register` is idempotent on the machine id (it re-points the slot), so repeated runs and
-        // a sibling module's registrations cannot make this ambiguous; `set_current` is what makes
-        // the fallback deterministic.
-        let sid = crate::plex::register("mach-test", "10.9.9.7", 31234, "tok");
-        crate::plex::set_current(sid);
+        // The CURRENT server's id, registered or not — see `seed_sources_for_test` for why nothing
+        // is registered here. It makes `cur_source_idx`'s empty-table fallback resolve to this row.
         seed_sources(vec![BrowseSource {
-            sid,
+            sid: crate::plex::current_server(),
             name: "nas-home".into(),
             handle: "friend".into(),
             reachable,
