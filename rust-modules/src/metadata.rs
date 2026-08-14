@@ -1228,6 +1228,12 @@ pub(crate) fn load_detail_now(sid: crate::plex::ServerId, rk: &str) {
     let rk = rk.to_string();
     let _ = catch_unwind(move || {
         if let Some(d) = fetch_full(sid, &rk) {
+            // the SAME cross-source resolve `pump_detail` kicks. This path installs CURRENT itself
+            // rather than going through the mailbox, so a resolve hung only off the async landing
+            // never ran for anything opened this way — `plxnative-detail`, `open_rk_season`, and
+            // home's play-a-show arm. Found by the button staying absent on a device that had two
+            // copies of the guid.
+            request_alt_sources(d.sid, &d.rk, &d.guid);
             unsafe { *addr_of_mut!(CURRENT) = Some(d) }
             // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor
             sync_now_playing();
@@ -1350,25 +1356,38 @@ struct AltResult {
 }
 static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(None);
 
-/// MAIN THREAD. Ask every OTHER registered source whether it holds this guid.
+/// MAIN THREAD. Ask EVERY registered source whether it holds this guid — the item's own included.
 ///
-/// The item's own source is skipped rather than queried and filtered: it is the page you are on,
-/// and "also available" means elsewhere. Sources are captured here, on the main thread, as a plain
-/// list of ids — the worker resolves each through `client_for` and never asks what is current.
-fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
+/// Including our own copy is not redundancy, it is what the panel is: a list of every copy with the
+/// one you are on ticked, whose first row is normally "This account". Querying rather than
+/// synthesising that row from the open `Detail` also gets the one field the page does not have —
+/// which LIBRARY the copy is in, since a detail page knows its item and not the shelf it came from.
+/// And the gate counts distinct SOURCES, so a list built of the others alone can never reach two
+/// and the control would never appear however many servers held the film. (It didn't: this
+/// function skipped `sid` on its first outing and the button stayed absent on a device with two
+/// copies of the same guid.)
+///
+/// Sources are captured here, on the main thread, as a plain list of ids — the worker resolves each
+/// through `client_for` and never asks what is current.
+fn request_alt_sources(_sid: crate::plex::ServerId, rk: &str, guid: &str) {
     use std::sync::atomic::Ordering;
     let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if guid.is_empty() {
         return; // nothing portable to match on; the panel stays absent
     }
-    let others: Vec<crate::plex::ServerId> = crate::plex::server_ids().filter(|&id| id != sid).collect();
-    if others.is_empty() {
+    let others: Vec<crate::plex::ServerId> = crate::plex::server_ids().collect();
+    if others.len() < 2 {
         return; // a one-server install pays nothing: no worker, no query, no control
     }
     let (rk, guid) = (rk.to_string(), guid.to_string());
+    let n = others.len();
     let _ = crate::task::spawn_small("altsrc", move || {
         let list = catch_unwind(|| resolve_alt_sources(&others, &guid)).unwrap_or_default();
+        // The one line that makes this chain debuggable from a device log. A guid is a public
+        // metadata id — not an address, a token or a machine — so it is safe to log, and it is the
+        // only string that identifies WHICH lookup this was.
+        crate::log(&format!("altsrc: asked {n} source(s) for {guid} -> {} copy(ies)", list.len()));
         *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, rk, list });
     });
 }
