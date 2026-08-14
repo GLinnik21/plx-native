@@ -125,6 +125,23 @@ fn default_port() -> i64 {
 impl DevServer {
     /// Everything about this server except the token, for the event log.
     pub(crate) fn describe(&self) -> String {
+        // A SHARED server is someone else's machine, and this line goes to
+        // `/tmp/plxnative-events.log` — the file that gets pasted into issues and PR bodies. Four
+        // PR bodies leaked exactly these fields on 2026-08-14 and had to be redacted after the
+        // fact, which a public repository does not really allow. So a share names NOTHING that
+        // identifies it or its owner: not the server's name, not the plex.tv handle, not the
+        // address, not the machineIdentifier.
+        //
+        // The token was already excluded (`describe_never_carries_the_token`), but a token is not
+        // the only thing here worth protecting — an address plus a handle is a person's home.
+        //
+        // What survives is what DEBUGGING actually needs: that a share is present at all, whether
+        // its credentials are complete, and a stable `ref` so two lines about the same server can
+        // be correlated within one log without identifying it outside one. An OWNED server is the
+        // user's own machine, already in the boot line and in `config.local.h`, so it is unchanged.
+        if !self.handle.is_empty() {
+            return format!("SHARED ref={} port_set={}", self.reference(), self.port > 0);
+        }
         // by CHARS, not bytes: a machineIdentifier is hex in practice, but a hand-written file is
         // whatever someone typed, and slicing a byte range mid-codepoint panics.
         let mut mid: String = self.machine_id.chars().take(8).collect();
@@ -132,6 +149,20 @@ impl DevServer {
             mid.push_str("..");
         }
         format!("name={:?} handle={:?} {}:{} mid={}", self.name, self.handle, self.host, self.port, mid)
+    }
+
+    /// A short, stable, NON-reversible tag for a shared server — enough to tell two shares apart in
+    /// one log and to follow one across a boot, and useless to anyone reading that log elsewhere.
+    ///
+    /// FNV-1a over the machineIdentifier: not a cryptographic choice, a legibility one. The id is
+    /// the right input because it is the only field that survives the server changing address.
+    fn reference(&self) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in self.machine_id.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+        format!("{:06x}", h & 0xff_ffff)
     }
     /// Are these credentials complete enough to reach the server at all?
     pub(crate) fn usable(&self) -> bool {
@@ -356,6 +387,40 @@ mod tests {
         assert!(!d.contains("SECRETTOKENVALUE"), "describe() leaked the token: {d}");
         assert!(d.contains("10.0.0.9:32400"), "{d}");
         assert!(d.contains("mid=01234567.."), "the machine id is truncated, not dropped: {d}");
+    }
+
+    /// …and a SHARED server names nothing at all. The event log is pasted into public issues and PR
+    /// bodies — it has already happened, to these exact fields — so a share's owner, machine and
+    /// address must not be in it. The token was never the only thing worth protecting here.
+    #[test]
+    fn describe_redacts_everything_identifying_about_someone_elses_server() {
+        let v = super::parse_servers(
+            r#"[{"name":"Film Club","machine_id":"0123456789abcdef","host":"10.9.9.7",
+                 "port":31234,"token":"SECRETTOKENVALUE","handle":"friend"}]"#,
+        )
+        .unwrap();
+        let d = v[0].describe();
+        for leak in ["SECRETTOKENVALUE", "Film Club", "friend", "10.9.9.7", "31234", "0123456789", "01234567"] {
+            assert!(!d.contains(leak), "describe() leaked {leak:?}: {d}");
+        }
+        assert!(d.contains("SHARED"), "a share still says it is one: {d}");
+        assert!(d.contains("port_set=true"), "…and that its credentials look complete: {d}");
+    }
+
+    /// The correlation tag is stable for one server and different for another — the whole point of
+    /// keeping a tag rather than dropping the field. A reader can follow one share across a boot
+    /// and tell two shares apart, and learn nothing about either.
+    #[test]
+    fn the_shared_reference_is_stable_per_machine_and_distinct_across_them() {
+        let mk = |mid: &str| {
+            super::parse_servers(&format!(
+                r#"[{{"machine_id":"{mid}","host":"10.9.9.7","token":"t","handle":"friend"}}]"#
+            ))
+            .unwrap()[0]
+                .describe()
+        };
+        assert_eq!(mk("aaaaaaaaaaaa"), mk("aaaaaaaaaaaa"), "same machine, same tag");
+        assert_ne!(mk("aaaaaaaaaaaa"), mk("bbbbbbbbbbbb"), "two shares must be tellable apart");
     }
 
     /// `plxnative-servers` must NOT be exempt from the picker-suppression scan: it names a host and

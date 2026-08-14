@@ -56,6 +56,7 @@
 #![allow(dead_code)]
 
 use crate::ui::consts::{K_SCROLL, SCR_H, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::xfade::Xfade;
 use crate::ui::{Painter, Rect, Spring};
 use std::os::raw::{c_int, c_uint};
 use std::ptr::{addr_of, addr_of_mut};
@@ -82,6 +83,30 @@ pub(crate) const FIELD: Rect = Rect { x: 90.0, y: 148.0, w: 820.0, h: 60.0 };
 /// control all have to finish above its top edge. The fifth is DROPPED, not scrolled — a list you
 /// cannot see the end of asks to be paged, and there is no paging in this product.
 pub(crate) const MAX_RECENTS: usize = 4;
+
+/// The RESULT BAND's content cross-fade — the Library's [`Xfade`] doing the same job one screen
+/// over. A query change replaces everything below the field, and a replacement that CUTS reads as
+/// a glitch rather than as an answer arriving.
+///
+/// It also closes a hole the regions could not close between them. `search::set_query` clears the
+/// shelves synchronously on the keystroke and the answer lands a debounce later, so the band is
+/// legitimately EMPTY in between — and three regions each correctly declined to draw anything for
+/// `State::Searching`, which left the gap blank. [`Xfade::tick`]'s `ready` gate is exactly the
+/// missing piece: the band holds at the floor while the query is in flight and rises with the new
+/// shelves, so the empty frames are spent invisible instead of on screen.
+///
+/// The FIELD is deliberately outside it. You are typing into that control; fading it out under
+/// your own keystroke would say the app had lost the query, which is the opposite of what happened.
+static mut XF: Xfade = Xfade::new();
+
+/// The content epoch this screen last saw, for the watchdog in [`update`]. A store replaced by
+/// something OTHER than this screen — `search::reset()` on a profile switch — must fade too, and
+/// the only way to notice that is to watch the generation rather than our own calls.
+static mut EPOCH: u32 = 0;
+
+fn xf() -> &'static mut Xfade {
+    unsafe { &mut *addr_of_mut!(XF) }
+}
 
 /// SDL's backspace, which `ui/consts.rs` does not carry because nothing in this app took typed text
 /// before. It stays local until a second screen needs it — a keycode belongs beside the other
@@ -341,6 +366,10 @@ pub(crate) fn enter(q: &str) {
         (*addr_of_mut!(SCROLL)) = Spring::at(0.0);
     }
     crate::search::set_query(q);
+    // Arriving is a content change like any other. `mount` (not `reload`) because there is nothing
+    // on screen to fade OUT — the page transition has already covered that half.
+    xf().mount();
+    unsafe { EPOCH = crate::search::query_gen() };
     crate::ui::idle::invalidate();
 }
 
@@ -361,6 +390,22 @@ pub(crate) fn update(dt: f32) {
     crate::search::pump(dt);
     clamp_focus();
     unsafe { (*addr_of_mut!(SCROLL)).step(scroll_target(), K_SCROLL, dt) };
+
+    // `ready` is "the band has something to say", not "there are items": a query that legitimately
+    // matched nothing is an ANSWER and its read-out has to rise like any other content, so
+    // `Ready`-with-no-shelves counts. Only `Searching` holds the fade down — the same distinction
+    // `State` exists to make, and the same shape as `library`'s `readout() != Loading`.
+    let ready = crate::search::state() != crate::search::State::Searching;
+    xf().tick(dt, ready);
+    // Watchdog, read AFTER the tick so our own bump is never mistaken for a foreign one: a store
+    // wiped by a profile switch still gets a fade rather than a cut.
+    let g = crate::search::query_gen();
+    if g != unsafe { addr_of!(EPOCH).read() } {
+        unsafe { EPOCH = g };
+        if !xf().is_swapping() {
+            xf().mount();
+        }
+    }
 }
 
 /// Drain the keyboard and append what it committed. Text arriving while the panel is DOWN is
@@ -433,9 +478,11 @@ pub(crate) fn draw() {
     }
 
     field::draw(p, &v);
+    // Everything BELOW the field rides the content fade; the field itself does not (see [`XF`]).
+    let pg = p.alpha(xf().alpha());
     match below() {
-        Below::Recents => recents::draw(p, &v),
-        Below::Nothing => empty::draw(p, &v),
+        Below::Recents => recents::draw(pg, &v),
+        Below::Nothing => empty::draw(pg, &v),
         Below::Results => {}
     }
     // Unconditional on a live query, exactly as before the dispatch above was folded into `below`:
@@ -443,7 +490,7 @@ pub(crate) fn draw() {
     // The SAME `has_query` the dispatch used, so a sub-`MIN_QUERY` string cannot put this region on
     // screen for a request that was never sent.
     if has_query() {
-        results::draw(p, &v);
+        results::draw(pg, &v);
     }
 
     crate::ui::widgets::profile_chip(pk, Rect::new(crate::ui::consts::MARGIN_X, crate::ui::widgets::TOP_BAR_Y, 54.0, 54.0), 0.0);
@@ -853,6 +900,12 @@ mod tests {
             *addr_of_mut!(RECENT) = 0;
             *addr_of_mut!(STRIP) = 0;
             *addr_of_mut!(SCROLL) = Spring::at(0.0);
+            // The content fader is screen state like the rest of it, and a reset screen is SETTLED
+            // by definition. Without this the watchdog in `update` sees a generation it has never
+            // seen, mounts a fade, and the next ~8 frames legitimately report motion — which reads
+            // as the idle gate being broken when it is in fact working.
+            *addr_of_mut!(XF) = Xfade::new();
+            *addr_of_mut!(EPOCH) = crate::search::query_gen();
         }
     }
 
