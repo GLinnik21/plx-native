@@ -789,8 +789,11 @@ const META_FLOW_W: f32 = HERO_META_R - MARGIN_X;
 
 /// The words the run is made of. "Shared by friend" — the PERSON, not the machine: the same handle
 /// the shelf headings carry, never a server's own name.
+/// The hero's own caller has already returned for an empty handle, so the flattened form is safe
+/// here — the words live in [`crate::ui::fmt::shared_by`], which is where the detail page's facts
+/// row and the Library read-out get them too.
 fn shared_by(source: &str) -> String {
-    format!("Shared by {source}")
+    crate::ui::fmt::shared_by(source).unwrap_or_default()
 }
 
 /// The hero meta line's SOURCE annotation, flowed onto the end of a line whose own facts have
@@ -940,7 +943,14 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
     HeroLogo::new(hero.sid, hero_logo_rk(hero), title, LogoRung::Hero).draw(p, Rect::new(tx, y, col_w, title_h));
     y += title_h + theme::space::MD;
     meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
-    draw_meta_source(p, source, tx, y, meta_drawn_w(&meta_tv, &meta, col_w));
+    // Guarded, because the ARGUMENT is the expensive part: `meta_drawn_w` builds a `CString` and
+    // runs an uncached `TTF_SizeUTF8` over the whole meta line, and Rust evaluates it before the
+    // call can decide there is nothing to draw. A single-server install has no source run and is
+    // documented as paying nothing for the feature — it was paying a measure per hero frame, twice
+    // per frame through a slide.
+    if !source.is_empty() {
+        draw_meta_source(p, source, tx, y, meta_drawn_w(&meta_tv, &meta, col_w));
+    }
     y += meta_h;
     if let Some(tv) = syn {
         tv.draw(p, Rect::new(tx, y + theme::space::SM, col_w, 0.0));
