@@ -192,12 +192,15 @@ fn scope_text(src: &[Scope]) -> Option<String> {
     if src.len() < 2 {
         return None;
     }
-    let down: Vec<String> = src.iter().filter(|s| !s.live).map(Scope::label).collect();
-    let live: Vec<String> = src.iter().filter(|s| s.live).map(Scope::label).collect();
+    let down: Vec<&Scope> = src.iter().filter(|s| !s.live).collect();
+    let live: Vec<&Scope> = src.iter().filter(|s| s.live).collect();
     if down.is_empty() {
-        let mut t = format!("Searching {}", join(&live));
-        let mut shares = src.iter().filter(|s| !s.owned && !s.handle.is_empty());
-        if let (2, Some(s), None) = (src.len(), shares.next(), shares.next()) {
+        let mut t = format!("Searching {}", name_set(&live));
+        // The handle attributes ONE share. With two it would have to pick a winner, and with the
+        // registry's sixteen slots the line stops being a sentence anyway — `name_set` has already
+        // collapsed to a count by then, so there is nothing left for a handle to qualify.
+        let mut shares = live.iter().filter(|s| !s.owned && !s.handle.is_empty());
+        if let (Some(s), None) = (shares.next(), shares.next()) {
             t.push_str(" · ");
             t.push_str(s.handle);
         }
@@ -206,10 +209,52 @@ fn scope_text(src: &[Scope]) -> Option<String> {
     if live.is_empty() {
         // Every source is down. "results from … only" has nothing to name, and the bare fact is
         // the honest line — the empty state below says the rest.
-        return Some(format!("{} unreachable", join(&down)));
+        return Some(format!("{} unreachable", name_set(&down)));
     }
-    Some(format!("{} unreachable · results from {} only", join(&down), join(&live)))
+    Some(format!("{} unreachable · results from {} only", name_set(&down), name_set(&live)))
 }
+
+/// Name a set of sources, collapsing to a COUNT once naming them all stops being a sentence.
+///
+/// `Search Screen.dc.html` designs one share ("Searching <your server> and <their library> ·
+/// <handle>"), and enumerating is right at that size. It does not survive N: the registry holds
+/// sixteen slots, each share can carry several libraries, and "A and B and C and D and E" is a
+/// list rather than the "one plain fact" the design asks for — while the handle can only ever
+/// attribute one of them.
+///
+/// So: up to [`NAME_LIMIT`] shares are named; past it the shares become a count and only your own
+/// server keeps its name, because that is the part of the answer that does not change. Counting
+/// LIBRARIES rather than servers is deliberate — a machine is not what anyone is searching, and it
+/// is the unit the rest of this line already speaks in. Falls back to counting sources while the
+/// section table is still landing and no library is named yet.
+fn name_set(v: &[&Scope]) -> String {
+    let (own, shares): (Vec<&&Scope>, Vec<&&Scope>) = v.iter().partition(|s| s.owned);
+    if shares.len() <= NAME_LIMIT {
+        let all: Vec<String> = v.iter().map(|s| s.label()).collect();
+        return join(&all);
+    }
+    let libs: usize = shares.iter().map(|s| s.libs.iter().filter(|t| !t.is_empty()).count()).sum();
+    let tail = if libs > 0 {
+        format!("{libs} shared libraries")
+    } else {
+        format!("{} shared sources", shares.len())
+    };
+    let mut names: Vec<String> = own.iter().map(|s| s.label()).collect();
+    names.push(tail);
+    join(&names)
+}
+
+/// How many shares are named individually before the line collapses to a count.
+///
+/// **Two**, which is a compromise between two correct instincts. Naming them is more useful than
+/// counting them and stays a readable sentence at this size — "nas-home, Film Club and Archive" —
+/// so the enumerate-and-attribute-none behaviour is kept exactly where it works. Past it the line
+/// stops being a fact and becomes a list: the registry holds sixteen slots, each share can carry
+/// several libraries, and no handle can attribute more than one of them anyway.
+///
+/// It is a threshold and not a truth, so it is one constant with the reasoning on it rather than a
+/// number spelled into `name_set`.
+const NAME_LIMIT: usize = 2;
 
 /// "A", "A and B", "A, B and C" — the one list idiom this line uses. Generic over anything
 /// string-shaped so it serves both the SOURCE list and one share's library list.
@@ -374,6 +419,32 @@ mod tests {
             scope_text(&[own("nas-home"), two]).unwrap(),
             "Searching nas-home and Film Club and Archive · friend"
         );
+    }
+
+    /// **Past a couple of shares the line stops naming and starts counting.** The registry holds
+    /// sixteen slots; enumerating them is a list, not the "one plain fact" the design asks for, and
+    /// the handle could attribute only one of them regardless. Libraries are what is counted — a
+    /// machine is not what anyone is searching — and your own server keeps its name, because that
+    /// is the part of the answer that does not change.
+    #[test]
+    fn many_shares_collapse_to_a_count_rather_than_becoming_a_list() {
+        let mut mk = |lib: &'static str, h: &'static str| {
+            let mut s = share(lib, h);
+            s.libs = vec![lib];
+            s
+        };
+        let many = vec![own("nas-home"), mk("A", "ann"), mk("B", "bob"), mk("C", "cat")];
+        assert_eq!(scope_text(&many).unwrap(), "Searching nas-home and 3 shared libraries");
+
+        // …and with the section tables still landing there are no library names to count, so it
+        // counts what it does know rather than inventing one.
+        let mut blank = vec![own("nas-home"), share("", "ann"), share("", "bob"), share("", "cat")];
+        for s in blank.iter_mut() {
+            if !s.owned {
+                s.libs = Vec::new();
+            }
+        }
+        assert_eq!(scope_text(&blank).unwrap(), "Searching nas-home and 3 shared sources");
     }
 
     #[test]
