@@ -1779,17 +1779,20 @@ mod tests {
     /// …and the clamp is actually WIRED to the pill count. The walk above drives the pure helper;
     /// this drives the real setter, which is the line the cap used to live on. The host has no
     /// section table (`browse::reset` — the only writer any test reaches — always leaves it
-    /// empty), so the row here is the Home pill alone and the band's last pill IS Home.
+    /// empty), so the row here is Home and Search: the two pills that exist whatever the account
+    /// turns out to hold. The band's last pill is therefore SEARCH, and this asserts the clamp
+    /// lands on it rather than on the last library — which on a fresh boot there is none of.
     #[test]
     fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
         let _s = crate::testlock::serial(); // the count comes from `browse`'s table, a crate global
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();
         crate::browse::reset();
-        assert_eq!(crate::ui::widgets::tab_count(), 1, "no sections discovered: the Home pill alone");
+        assert_eq!(crate::ui::widgets::tab_count(), 2, "no sections discovered: Home and Search");
         set_hero_focus(c_int::MIN / 2);
-        assert_eq!(hero_focus(), hero_focus_for_pill(0), "past the last pill clamps onto it");
-        assert_eq!(hero_pill_index(hero_focus()), Some(0));
+        let last = crate::ui::widgets::search_pill();
+        assert_eq!(hero_focus(), hero_focus_for_pill(last), "past the last pill clamps onto it");
+        assert_eq!(hero_pill_index(hero_focus()), Some(last));
         set_hero_focus(999);
         assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "past the action row clamps to its end");
         set_hero_focus(saved);
@@ -1797,10 +1800,14 @@ mod tests {
 
     /// The top band walks the PILLS the strip's projection produces, not the section table — with
     /// several sources those are different lengths. FOUR libraries across two servers project to
-    /// two pills (both servers provide both types), so RIGHT stops on the second and never on a
-    /// third that nothing would draw. The gap between the two counts is the whole point; it used to
-    /// be 5→3 because the fixture's fifth library was a music one, and music is no longer a type
-    /// this product has a level for.
+    /// two pills (both servers provide both types), so RIGHT stops past them and never on a
+    /// library-shaped pill that nothing would draw. The gap between the two counts is the whole
+    /// point; it used to be 5→3 because the fixture's fifth library was a music one, and music is
+    /// no longer a type this product has a level for.
+    ///
+    /// The row is Home + those two + Search, and the last stop is the SEARCH pill — which is the
+    /// other half of why the two counts must not be conflated: one end of the row is not a library
+    /// either.
     #[test]
     fn the_top_band_walks_the_projected_pills_not_the_section_table() {
         let _s = crate::testlock::serial();
@@ -1808,10 +1815,11 @@ mod tests {
         let saved = hero_focus();
         crate::browse::seed_two_source_table_for_test();
         assert_eq!(crate::browse::section_count(), 4, "four libraries…");
-        assert_eq!(crate::ui::widgets::tab_count(), 3, "…and Home + two pills");
+        assert_eq!(crate::ui::widgets::tab_count(), 4, "…and Home + two pills + Search");
 
         set_hero_focus(c_int::MIN / 2); // walk RIGHT past the end of the row
-        assert_eq!(hero_pill_index(hero_focus()), Some(2), "the last pill is the last PILL, not the last library");
+        assert_eq!(hero_pill_index(hero_focus()), Some(3), "the last pill is the last PILL, not the last library");
+        assert!(crate::ui::widgets::is_search_pill(3), "…and that pill is Search, not a section");
         set_hero_focus(saved);
         crate::browse::reset();
     }

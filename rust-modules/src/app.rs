@@ -628,6 +628,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // the browse store must never carry the previous user's (or server's) cached grid,
             // watched-state angles, or section tabs forward
             crate::browse::reset();
+            // …and the search store, for the same reason: a query, its results and the recent
+            // terms are all one person's.
+            crate::search::reset();
             // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
             // wifi hiccup can't blank a populated Home), which makes this the one place that
             // must still wipe it — otherwise a profile switch whose fetch fails would leave the
@@ -962,6 +965,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// trail's business (`ui::trail`), not this enum's, which is exactly why the trail
             /// exists: a `Route` names one screen, and person→detail→person is three.
             Person,
+            /// The Search screen (`ui/search/`). A PEER of Home and the Library, not a stacking
+            /// page: it is reached from the strip's last pill and BACK from it returns to Home, so
+            /// it needs no trail node of its own — what it OPENS stacks, but it does not.
+            Search,
             Player { overlay: Overlay },
         }
         /// Which panel owns the frame — the ONE place that decision lives, read by the pointer
@@ -1029,6 +1036,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// a SHOW opened with one season already selected, which a node has no field for
             /// because a trail node names a PAGE, not a tab inside one.
             Open { node: Node, season: Option<c_int> },
+            /// The Search screen. It carries the query to seed the field with, which is empty for
+            /// every interactive entry and non-empty only for the boot trigger — a headless
+            /// screenshot cannot type, so that is how a shot reaches a populated result set.
+            Search { query: String },
             /// BACK off a stacking page: pop the trail at the floor and re-enter what was under it.
             /// The destination is deliberately NOT spelled out here — `enter_node` handles every
             /// node, and re-deriving it at the press would mean peeking a trail the pop re-reads
@@ -1050,6 +1061,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // a TAB index, not a section index: the strip is a projection of the table
                     // (`browse::tabs`), so `+1` here is only the Home pill leading the row
                     Nav::Library(tab) => Some(tab + 1),
+                    // always the LAST pill — that Search goes last rather than first is why every
+                    // `pill - 1 -> section` conversion above and below stayed correct as written
+                    Nav::Search { .. } => Some(crate::ui::widgets::search_pill()),
                     Nav::Open { .. } | Nav::Back { .. } => None,
                 }
             }
@@ -1058,7 +1072,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// silent `false`, and a silent `false` is a bar that blinks out and back for no reason.
             fn wears_tab_bar(&self) -> bool {
                 match self {
-                    Nav::Home { .. } | Nav::Library(_) => true,
+                    Nav::Home { .. } | Nav::Library(_) | Nav::Search { .. } => true,
                     // Detail and Person wear no bar today — but the NODE is the destination and can
                     // answer for itself, so ask it rather than hard-coding the answer a new stacking
                     // page would silently inherit.
@@ -1089,7 +1103,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         /// which is what makes every transition to or from them fade the bar with the page.)
         fn route_wears_tab_bar(r: Route) -> bool {
             match r {
-                Route::Home | Route::Library => true,
+                Route::Home | Route::Library | Route::Search => true,
                 Route::Account => true,
                 Route::ItemMenu { over } => matches!(over, MenuHost::Home),
                 Route::Login | Route::Profiles | Route::Detail | Route::Person | Route::Player { .. } => false,
@@ -1151,6 +1165,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // why `Node::Library` carries no payload), Login/Profiles are boot gates the app
                 // leaves once, and a player session is torn down by its own exit path.
                 Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Player { .. } => None,
+                // Search DOES have one, and it is not a store: the television's keyboard must come
+                // down with the page. Dismissing it at the press instead would drop the panel a
+                // frame early, while the screen it belongs to is still on screen behind it.
+                Route::Search => Some(crate::ui::search::leave as fn()),
                 // Unreachable: `page_of` has already resolved a popover onto the screen it sits on,
                 // so neither of these ever arrives here. Listed rather than swept into a `_` so the
                 // exhaustiveness above is real.
@@ -1690,6 +1708,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // it is a deliberate no-op; 1.. enter that library section's grid. (The grid-card
             // sentinel is rejected by hero_pill_index itself — see its doc comment.)
             if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
+                if crate::ui::widgets::is_search_pill(pill) {
+                    nav_to(*route, Nav::Search { query: String::new() }, nav);
+                    return;
+                }
                 match pill.checked_sub(1) {
                     // that section's grid, through the page cross-fade: `library::enter` and the
                     // route flip both land at the fade floor, while the selection capsule starts
@@ -2430,6 +2452,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::person::move_focus(sym);
                         } else if matches!(route, Route::Library) {
                             crate::ui::library::move_focus(sym);
+                        } else if matches!(route, Route::Search) {
+                            crate::ui::search::move_focus(sym);
                         } else if g_snap() < 0.5 {
                             if sym == SDLK_DOWN {
                                 if crate::ui::home::hero_focus() < 0 {
@@ -2492,6 +2516,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                             extend_hud(last_input, HUD_LINGER_MS);
+                        } else if matches!(route, Route::Search) {
+                            // A result tile takes the tvOS press (dip now, commit on the spring-back
+                            // — `ok_armed` runs `on_ok` then); the field, the recents rows and the
+                            // strip commit immediately inside the screen.
+                            if crate::ui::search::focus_is_card() {
+                                crate::ui::press::begin(SDL_GetTicks());
+                                ok_armed = true;
+                            } else if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
+                                nav_open(route, node, None, &mut nav_pending);
+                            }
                         } else if matches!(route, Route::Library) {
                             // OK on a browse-grid card → the same tvOS press as home's grid;
                             // tabs / toolbar / menus commit immediately inside the screen.
@@ -2679,6 +2713,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if !crate::ui::detail::back() {
                                 nav_back(route, &trail, &mut nav_pending);
                             }
+                        } else if matches!(route, Route::Search) {
+                            // `back()` answers true while it still had something to close (the
+                            // raised keyboard); false means leave, and the destination is Home —
+                            // Search is a peer of it, not a page stacked on it.
+                            if !crate::ui::search::back() {
+                                nav_to(route, Nav::Home { focus_pill: None }, &mut nav_pending);
+                            }
                         } else if matches!(route, Route::Library) {
                             // read BEFORE `back()`: its first press moves focus ONTO the tab row, so
                             // asking afterwards would report the pill it just landed on rather than
@@ -2751,6 +2792,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                     } else if matches!(route, Route::Person) {
                         crate::ui::person::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Search) {
+                        let (mx, my) = ptr_xy(&ev);
+                        crate::ui::search::pointer_focus(mx, my);
                     } else if matches!(route, Route::Home) {
                         // hover moves focus on the route that owns the screen — and ONLY there
                         // (Detail/Login hover used to silently mutate home's focus behind them)
@@ -2866,7 +2910,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // the centered tab pills work from BOTH hero and grid views. Home
                             // (pill 0) is the screen we are on, so a click there just parks focus
                             // on it — in hero view, which is where the band's focus is visible.
-                            if let Some(sec) = i.checked_sub(1) {
+                            if crate::ui::widgets::is_search_pill(i) {
+                                nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending);
+                            } else if let Some(sec) = i.checked_sub(1) {
                                 nav_to(route, Nav::Library(sec), &mut nav_pending);
                             } else if nav_cancel(route, &mut nav_pending) {
                                 // a section switch still fading out, taken back — the key twin's rule
@@ -2891,6 +2937,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else if matches!(route, Route::Library) {
                         let (cx, cy) = ptr_xy(&ev);
                         match crate::ui::library::click(cx, cy) {
+                            crate::ui::library::Action::GoSearch => {
+                                nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending);
+                            }
                             crate::ui::library::Action::GoHome => {
                                 // `library::click` has already parked focus on the Home pill, so
                                 // `focused_pill()` is the pill the capsule is under
@@ -3069,6 +3118,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // rather than a navigated one.
                     crate::ui::library::enter(tab, crate::ui::library::Arrival::Cut);
                     route = Route::Library;
+                }
+                // dev: /tmp/plxnative-search[=<query>] boots straight into Search, with the field
+                // already holding <query>. The seed is the whole point — `sim-shot` and the TV
+                // harness both run with no keyboard, so without it every headless look at this
+                // screen would be the empty state.
+                if let Some(q) = crate::dev::read("search") {
+                    crate::ui::search::enter(q.trim());
+                    route = Route::Search;
                 }
                 // dev: /tmp/plxnative-heroidx=<n> jumps the rotating hero to pool index n (flip capture)
                 if let Some(s) = crate::dev::read("heroidx") {
@@ -3622,6 +3679,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 open_person_card(route, &mut nav_pending);
                             }
                         }
+                        Route::Search => {
+                            if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
+                                nav_open(route, node, None, &mut nav_pending);
+                            }
+                        }
                         Route::Profiles => crate::ui::profiles::select_focused(),
                         _ => {}
                     }
@@ -3801,6 +3863,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         trail.set_top_spot(s);
                     }
                     match req.to {
+                        Nav::Search { ref query } => {
+                            // Search sits ON Home rather than over it — the strip is continuous
+                            // chrome across the flip, exactly as Home<->Library is — so the trail
+                            // stays rooted where it is and BACK falls through to Home.
+                            crate::ui::search::enter(query);
+                            route = Route::Search;
+                        }
                         Nav::Library(sec) => {
                             // every teleport `enter` performs (the store swap, `restore_view`'s
                             // scroll jump, the focus band) happens HERE, at alpha 0, off screen
@@ -3892,6 +3961,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     lib_switch_step = lib_switch_step.wrapping_add(1);
                 }
                 crate::ui::library::update(dt);
+            }
+            if matches!(route, Route::Search) {
+                crate::ui::widgets::tab_row_update(
+                    crate::ui::search::selected_pill(),
+                    crate::ui::search::focused_pill(),
+                    dt,
+                );
+                crate::ui::search::update(dt);
             }
             if matches!(route, Route::Account) {
                 crate::ui::account_menu::update(dt);
@@ -4084,6 +4161,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::person::draw();
                         } else if matches!(route, Route::Library) {
                             crate::ui::library::draw();
+                        } else if matches!(route, Route::Search) {
+                            crate::ui::search::draw();
                         } else {
                             crate::ui::home::home_draw();
                         }
@@ -4145,6 +4224,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Library => "library",
                 Route::Detail => "detail",
                 Route::Person => "person",
+                Route::Search => "search",
                 Route::Player { .. } => "player",
                 _ => "home",
             };

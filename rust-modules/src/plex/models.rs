@@ -141,9 +141,28 @@ pub struct Hub {
     pub title: String,
     #[serde(rename = "Metadata", default)]
     pub metadata: Vec<Metadata>,
+    /// **A hub's items do not all arrive as `Metadata`**, and a search screen that assumes they do
+    /// renders three of its five shelves as nothing at all, silently. Measured against this
+    /// household's PMS 1.43.3 over six queries on 2026-08-14:
+    ///
+    /// | payload | hubs |
+    /// |---|---|
+    /// | `Metadata[]` | `movie`, `show`, `episode`, `album`, `artist`, `track` |
+    /// | **`Directory[]`** | **`actor`, `director`, `collection`** |
+    ///
+    /// So Cast & Crew *and* Collections both come through here. `plex-openapi.json`'s own worked
+    /// example for `/hubs/search` disagrees — it puts shows under `Directory` — which is why this
+    /// was probed live rather than modelled from the spec, and why the split is written down here
+    /// instead of being rediscovered the next time a hub looks empty.
+    #[serde(rename = "Directory", default)]
+    pub directory: Vec<Tag>,
+    /// How many items the hub holds. A search response carries EVERY hub type the server knows
+    /// about — 17 of them on this set — most with `size: 0`, so this is the field that says which
+    /// ones are worth drawing.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub size: i64,
 }
 
-/// The movie/show/season/episode item. Missing fields default (Plex omits optionals).
 #[derive(Deserialize, Default)]
 pub struct Metadata {
     #[serde(rename = "type", default)]
@@ -420,6 +439,27 @@ pub struct Tag {
     /// server (this one omits it on `Role[]`), so 0 means "unknown", never "none".
     #[serde(default, deserialize_with = "de_i64")]
     pub count: i64,
+    // ---- the SECOND producer of this record: a search hub's `Directory[]` ----
+    //
+    // `/hubs/search` returns its `actor`, `director` and `collection` hubs as `Directory[]` of
+    // exactly this shape (measured live — see `Hub::directory`), so the cast-credit tag and the
+    // search hit are one type rather than two that would drift. The three fields below are the
+    // ones only the search producer sets; a `Role[]` entry leaves them empty and nothing reads
+    // them there.
+    /// The listing this tag opens — `/library/sections/1/all?collection=6068`. The only handle a
+    /// COLLECTION hit gives you: those carry no `tagKey`, no `thumb` and no `ratingKey`.
+    #[serde(default)]
+    pub key: String,
+    #[serde(rename = "librarySectionID", default, deserialize_with = "de_i64")]
+    pub library_section_id: i64,
+    /// Why this result, when it is not a direct term match: `section` (the same title in several
+    /// sections), `originalTitle`, or another hub's identifier — searching "arnold" returns films
+    /// with `reason: actor`. Kept because a shelf that mixes direct and inferred hits without
+    /// saying so reads as the server being wrong.
+    #[serde(default)]
+    pub reason: String,
+    #[serde(rename = "reasonTitle", default)]
+    pub reason_title: String,
 }
 
 impl Tag {
