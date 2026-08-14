@@ -263,10 +263,16 @@ pub(crate) fn shelves() -> &'static [Shelf] {
 const SETTLE_S: f32 = 0.25;
 
 /// Items asked for **per hub** — `plex-openapi.json`: "The number of items to return per hub. 3 if
-/// not specified", which is why the parameter is always sent. Matched to [`SHELF_MAX`]: asking a
-/// server for more rows than a shelf can ever draw is bytes over the wire for pixels that do not
-/// exist.
-const LIMIT: i64 = SHELF_MAX as i64;
+/// not specified", which is why the parameter is always sent at all.
+///
+/// **Per HUB is the word that decides the number, and it is not [`SHELF_MAX`].** A search response
+/// carries every hub type the server knows about — 17 on this set — so `limit` is multiplied by
+/// however many of them the query happens to touch, not by the five this screen draws. Asking 24
+/// buys a full row from a single source and pays for up to ~400 `Metadata` records per settled
+/// keystroke, over `stream.rs`'s blocking socket, on an endpoint whose whole selling point is being
+/// fast enough to call as the user types. Half a row from each of two sources still fills the
+/// merged cap exactly, and a search that needs the 13th hit needs a better query instead.
+const LIMIT: i64 = 12;
 
 /// Per-shelf item cap, for the same reason `person.rs` carries one: a `CardRow` owns exactly
 /// [`crate::ui::card_row::MAX_ROW_ITEMS`] focus-scale springs and `scale(i)` clamps past the end,
@@ -421,10 +427,23 @@ pub(crate) fn pump(dt: f32) -> bool {
         }
         maybe_spawn(i);
     }
-    if !landed {
+    // The SHELVES are rebuilt only when something landed, but the STATE is recomputed every frame:
+    // it is a scan of at most sixteen statuses, and making it conditional on a landing left the one
+    // case that can never produce one — an EMPTY roster — parked on `Searching` forever, which is
+    // precisely the endless spinner `state_from`'s empty arm exists to prevent. Reachable in
+    // practice: `/tmp/plxnative-search=<q>` forces the route whether or not a server was installed.
+    if landed {
+        rebuild(n);
+    }
+    let state = state_from(live_sources(n), terms(query()).is_some());
+    let moved = state != self::state();
+    if moved {
+        crate::log(&format!("search: q='{}' state={}", query().trim(), state.name()));
+        unsafe { *addr_of_mut!(STATE) = state };
+    }
+    if !landed && !moved {
         return false;
     }
-    rebuild(n);
     // every landing repaints, the failure branch included: without this the screen sits on a
     // spinner that has already been answered until the next keypress happens to invalidate it
     crate::ui::idle::invalidate();
@@ -436,6 +455,15 @@ pub(crate) fn pump(dt: f32) -> bool {
 fn record(i: usize, what: Option<Projection>) {
     let q = query().trim();
     match what {
+        // A failure for a source that has ALREADY answered this query is dropped on the floor. The
+        // duplicate-spawn race [`IN_FLIGHT`] documents is what makes this reachable: two workers can
+        // briefly be out for one source at one generation, and if the loser's `None` arrived after
+        // the winner's answer, `Status::Answered` would regress to `Failed` — dropping that
+        // source's already-drawn results out of the merge for a two-second backoff, over an error
+        // about a request whose answer we are holding.
+        None if unsafe { (*addr_of!(SRC))[i].status } == Status::Answered => {
+            crate::log(&format!("search: q='{q}' sid={i} late failure ignored — already answered"));
+        }
         None => {
             unsafe {
                 (*addr_of_mut!(SRC))[i].status = Status::Failed;
@@ -452,26 +480,22 @@ fn record(i: usize, what: Option<Projection>) {
     }
 }
 
-/// Recompute the merged shelves and the screen's [`State`] from every source's last word.
+/// The first `n` registry slots, as a slice — the one place a raw `static mut` array becomes a
+/// borrow. The whole array is taken first and sliced after, because `&(*addr_of!(SRC))[..n]`
+/// autorefs the raw pointer's target implicitly, which rustc denies outright
+/// (`dangerous_implicit_autorefs`).
+fn live_sources(n: usize) -> &'static [Source] {
+    let all: &'static [Source; NSRC] = unsafe { &*addr_of!(SRC) };
+    &all[..n]
+}
+
+/// Recompute the merged shelves from every source's last answer. The [`State`] is NOT set here —
+/// [`pump`] recomputes that every frame, landing or no landing (see the note there).
 fn rebuild(n: usize) {
-    // the whole array first, THEN the live prefix: `&(*addr_of!(SRC))[..n]` autorefs the raw
-    // pointer's target implicitly, which rustc denies outright (`dangerous_implicit_autorefs`)
-    let all: &[Source; NSRC] = unsafe { &*addr_of!(SRC) };
-    let sources = &all[..n];
-    let shelves = merge(sources);
-    let state = state_from(sources, terms(query()).is_some());
+    let shelves = merge(live_sources(n));
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
-    crate::log(&format!(
-        "search: q='{}' shelves={} items={} state={}",
-        query().trim(),
-        shelves.len(),
-        items,
-        state.name()
-    ));
-    unsafe {
-        *addr_of_mut!(SHELVES) = shelves;
-        *addr_of_mut!(STATE) = state;
-    }
+    crate::log(&format!("search: q='{}' shelves={} items={}", query().trim(), shelves.len(), items));
+    unsafe { *addr_of_mut!(SHELVES) = shelves };
 }
 
 /// The merged result set: [`KINDS`] order, empty shelves omitted, sources taken **round robin** so
@@ -505,21 +529,35 @@ fn merge(sources: &[Source]) -> Vec<Shelf> {
 
 /// What the screen should be saying, from every source's last word. Pure.
 ///
-/// One answer is enough to be `Ready`: a friend's server being off is not a reason to tell someone
-/// their own library's results failed. `Failed` therefore means EVERY source failed — which is also
-/// the honest answer when the roster is empty, since there is nothing left that could ever answer
-/// and a spinner there would never end.
+/// **`Ready` is not "somebody replied", it is "there is nothing more to wait for" — with one
+/// exception that has to be made.** `Ready` and no items is the *"No results for wallace"* screen,
+/// and saying that while a source is still out is a sentence the next second contradicts: our own
+/// server answers empty in 20 ms on the LAN, a friend's takes a second, and the user reads "no
+/// results" and then watches a shelf appear under it. So a still-pending source holds `Searching`.
+///
+/// The exception is a source that HAS given us something to draw: those results go up at once
+/// rather than waiting on the slowest server in the house, because a populated screen is never
+/// contradicted by more arriving under it — it only grows.
+///
+/// `Failed` therefore means every source has had its say and none of them answered — which is also
+/// the honest verdict on an EMPTY roster, since there is nothing left that could ever answer and a
+/// spinner there would never end. A friend's server being off is not a reason to tell someone their
+/// own library's search failed, which is why one answer beats any number of failures.
 fn state_from(sources: &[Source], asking: bool) -> State {
     if !asking {
         return State::Idle;
     }
-    if sources.iter().any(|s| s.status == Status::Answered) {
+    let is_answered = |s: &Source| s.status == Status::Answered;
+    if sources.iter().any(|s| s.status == Status::Pending) {
+        // something is still out: only an answer with CONTENT is worth showing ahead of it
+        let has_items =
+            sources.iter().filter(|s| is_answered(s)).any(|s| s.items.iter().any(|v| !v.is_empty()));
+        return if has_items { State::Ready } else { State::Searching };
+    }
+    if sources.iter().any(is_answered) {
         return State::Ready;
     }
-    if sources.iter().all(|s| s.status == Status::Failed) {
-        return State::Failed;
-    }
-    State::Searching
+    State::Failed
 }
 
 /// One fetch per source at a time, and only once the query has settled. Re-entered every frame by
@@ -793,8 +831,31 @@ mod tests {
         assert_eq!(state_from(&[Source::EMPTY], true), State::Searching);
         // a query below MIN_QUERY was never asked, so nothing about it is pending or failed
         assert_eq!(state_from(&[bad(), bad()], false), State::Idle);
-        // an answer that is genuinely empty is still an answer — this is the "No results" screen
+        // an answer that is genuinely empty is still an answer, ONCE nobody else is still out —
+        // this is the "No results for wallace" screen
         assert_eq!(state_from(&[Source { status: Status::Answered, items: Default::default() }], true), State::Ready);
+    }
+
+    /// **"No results" must not be said over a source that has not answered yet.** Our own server
+    /// replies empty in 20 ms on the LAN and a friend's takes a second: publishing `Ready` on the
+    /// first would print "No results for wallace" and then grow a shelf underneath it. An answer
+    /// with CONTENT is the exception — a populated screen is only ever added to, never contradicted,
+    /// so those results go up without waiting on the slowest server in the house.
+    #[test]
+    fn an_empty_answer_waits_for_the_stragglers_but_a_populated_one_does_not() {
+        let empty = || Source { status: Status::Answered, items: Default::default() };
+        assert_eq!(
+            state_from(&[empty(), Source::EMPTY], true),
+            State::Searching,
+            "'No results' over a server that has not answered yet"
+        );
+        assert_eq!(
+            state_from(&[answered(0, vec![media("A Close Shave")]), Source::EMPTY], true),
+            State::Ready,
+            "results already in hand must not wait on the slowest server"
+        );
+        // …and once the straggler has failed, the empty answer IS the whole truth
+        assert_eq!(state_from(&[empty(), Source { status: Status::Failed, items: Default::default() }], true), State::Ready);
     }
 
     /// The query state machine: below `MIN_QUERY` nothing is asked at all, at it the screen goes
@@ -928,6 +989,48 @@ mod tests {
         assert_eq!(unsafe { (*addr_of!(RETRY_CD))[1] }, RETRY_FRAMES, "the failed source backs off before retrying");
         assert!(!IN_FLIGHT[0].load(Ordering::SeqCst) && !IN_FLIGHT[1].load(Ordering::SeqCst));
         crate::plex::reset_servers_for_test();
+        reset();
+    }
+
+    /// The duplicate-spawn race [`IN_FLIGHT`] admits to can leave two workers out for one source at
+    /// one generation. If the loser's failure arrived after the winner's answer, a plain
+    /// `Status::Failed` would drop that source's already-drawn results out of the merge and back off
+    /// for two seconds — over an error about a request whose answer is already on screen.
+    #[test]
+    fn a_late_failure_cannot_unsay_an_answer_this_source_already_gave() {
+        let _g = fresh();
+        register(1);
+        set_query("wallace");
+        let gen = GEN.load(Ordering::SeqCst);
+        land(0, gen, Some(answered(0, vec![media("A Close Shave")]).items));
+        hold_off();
+        assert!(pump(0.0));
+        assert_eq!(state(), State::Ready);
+
+        land(0, gen, None); // the duplicate worker, finishing second
+        hold_off();
+        pump(0.0);
+        assert_eq!(titles(&shelves()[0]), ["A Close Shave"], "the results vanished for two seconds");
+        assert_eq!(state(), State::Ready);
+        assert_eq!(unsafe { (*addr_of!(SRC))[0].status }, Status::Answered);
+        assert_eq!(unsafe { (*addr_of!(RETRY_CD))[0] }, RETRY_FRAMES - 1, "no backoff — only the sentinel ticked");
+        crate::plex::reset_servers_for_test();
+        reset();
+    }
+
+    /// A screen that can never be answered must not spin forever. With no server registered nothing
+    /// can land, so a `State` recomputed only on a landing would sit on `Searching` for good — and
+    /// this is reachable: `/tmp/plxnative-search=<q>` forces the route whether or not a server was
+    /// ever installed.
+    #[test]
+    fn an_empty_roster_settles_instead_of_spinning_forever() {
+        let _g = fresh();
+        set_query("wallace");
+        assert_eq!(state(), State::Searching, "the query starts out pending, as typed");
+        assert_eq!(nsrc(), 0, "no server can ever answer it");
+        assert!(pump(SETTLE_S * 2.0), "the verdict changed, so the screen must repaint");
+        assert_eq!(state(), State::Failed);
+        assert!(!pump(0.016), "…and it is not news a second time");
         reset();
     }
 
