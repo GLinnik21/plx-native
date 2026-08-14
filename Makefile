@@ -503,7 +503,13 @@ SIM_DIR  ?= /tmp/plxnative-sim
 # Its OWN target dir, per this file's rule for feature-set splits: `make check` builds default
 # features on nightly, `make sim` builds `hostsim` on the default toolchain. Sharing one dir makes
 # each invocation rebuild the crate the other way round.
-SIM_TDIR  = rust-modules/target-sim
+#
+# `?=` so it can also come from the environment: a checkout on a network or external volume
+# (/Volumes/…, SMB, some external SSDs) cannot be a cargo target dir at all — those filesystems do
+# not implement flock, and cargo fails with "could not create session directory lock file
+# (os error 45)" before compiling anything. Point this at a local path and the checkout can stay
+# where it is:  export SIM_TDIR=$HOME/plxnative-sim-target
+SIM_TDIR  ?= rust-modules/target-sim
 SIM_BIN   = $(SIM_TDIR)/debug/plxnative-sim
 # Which presented frame `sim-shot` grabs. 200 is comfortably past first paint and the poster
 # fetches on a warm cache; raise it if a shot catches a screen mid-load.

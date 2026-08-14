@@ -47,6 +47,36 @@ With no `SIM_DIR` the root is `/tmp`, exactly as on the device.
 `SIM_PMS`/`SIM_PORT` default to `src/config.local.h`. The host must be a **numeric IP**:
 `stream.rs` has no DNS resolver here either.
 
+**A checkout on a mounted volume needs `SIM_TDIR`.** Network shares, SMB mounts and some external
+disks do not implement `flock`, and a cargo target dir on one fails before compiling anything —
+`could not create session directory lock file (os error 45)`. The message blames incremental
+compilation, but the cause is the filesystem. Point the build somewhere local and leave the
+checkout where it is:
+
+```sh
+export SIM_TDIR=$HOME/plxnative-sim-target      # SIM_BIN follows it
+```
+
+Only the simulator is rescuable this way. `make` and `make check` build under
+`rust-modules/$(RUST_TDIR)`, which is rooted inside the checkout by construction, so the ARM build
+and the host suite still need the repo on a local filesystem. That is usually fine — the whole
+point of the simulator is that it needs neither.
+
+### What a second machine needs
+
+Three things, and notably no webOS NDK and no nightly:
+
+1. `brew install sdl2_ttf` — pulls `sdl2-compat`. These are the ONLY non-system dynamic
+   dependencies (`otool -L` shows just those two plus OpenGL/iconv/libSystem), and they are linked
+   by absolute Homebrew path, so a copied binary will not run on a machine without them. Build on
+   the machine rather than copying: `build.rs` asks `brew --prefix`, so it is also correct on an
+   Intel Mac where Homebrew lives at `/usr/local`.
+2. **rustup + stable.** Not nightly. `rust-modules/.cargo/config.toml` carries `[unstable]
+   build-std`, which looks like it forces nightly, but that table is gated and stable cargo ignores
+   it — it only applies to the ARM cross-build, which passes `cargo +nightly` explicitly.
+3. `src/config.local.h` for the PMS host and token. Gitignored, so a fresh clone has none: pass
+   `SIM_PMS=<ip>` and write the token into `$SIM_DIR/plxnative-token` by hand.
+
 ## Boot into a specific screen
 
 Identical to the TV: arm a trigger in the instance root. The catalog is the source —
