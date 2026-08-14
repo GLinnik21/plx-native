@@ -641,7 +641,8 @@ mod tests {
     /// cursor at `MAX_RECENTS` — and at every index in between — lands on the Clear control.
     #[test]
     fn the_clear_control_takes_focus_past_the_last_shown_term() {
-        let v = |zone, recent| View { zone, editing: false, row: 0, col: 0, recent, shift: 0.0 };
+        let v =
+            |zone, recent| View { zone, editing: false, row: 0, col: 0, recent, shift: 0.0, caret: 0, caret_on: true };
         for r in 2..=crate::ui::search::MAX_RECENTS {
             assert!(clear_focused(&v(Zone::Recents, r), 2), "recent={r} with 2 terms shown");
         }

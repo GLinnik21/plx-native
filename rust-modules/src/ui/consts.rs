@@ -44,6 +44,17 @@ pub const SDLK_SELECT: c_uint = 77 | (1 << 30);
 pub const SDLK_ESCAPE: c_uint = 27;
 pub const SDLK_PAGEUP: c_uint = 75 | (1 << 30);
 pub const SDLK_PAGEDOWN: c_uint = 78 | (1 << 30);
+/// Backspace and Clear — **the system keyboard's own two edit keys**, and the reason they are named
+/// here rather than left as literals in the one screen that reads text.
+///
+/// The television's on-screen panel does not edit the field itself. It commits printable characters
+/// as `SDL_TEXTINPUT` and then forwards every EDIT intent to the app as an ordinary key, expecting
+/// the app to own the text: `◀`/`▶` arrive as [`SDLK_LEFT`]/[`SDLK_RIGHT`] and mean *move the
+/// caret*, its delete key arrives as [`SDLK_BACKSPACE`], and its **Clear all** button arrives as
+/// [`SDLK_CLEAR`] (wcode 156, sym `0x4000009C` — device-measured 2026-08-15). A screen that ignores
+/// them has a keyboard whose buttons visibly do nothing, which is exactly how this shipped.
+pub const SDLK_BACKSPACE: c_uint = 8;
+pub const SDLK_CLEAR: c_uint = 156 | (1 << 30);
 /// Magic-Remote CH▲/CH▼ rocker — webOS keyCodes 33/34 (page the Library grid). Matched
 /// alongside the SDLK_PAGE* syms; verify the raw wcodes in the event log on a new remote.
 pub const WCODE_CH_UP: c_uint = 33;

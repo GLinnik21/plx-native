@@ -283,6 +283,20 @@ impl Painter {
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self { dx: self.dx + dx, dy: self.dy + dy, ..self }
     }
+    /// This painter's accumulated horizontal offset — what to ADD to a coordinate drawn through it
+    /// to get the screen x it lands on.
+    ///
+    /// Exposed for exactly one job: clamping a run against the PANEL edges from inside a translated
+    /// tree. A horizontally scrolled shelf draws through `translate(-scroll_x, 0)`, so a rect
+    /// handed to a child is a content coordinate — and `card_row`'s label clamp compared one of
+    /// those against `SCR_W` and pinned every focused caption at a fixed screen x once a row had
+    /// scrolled a screen's worth (device-observed on the Search episode shelf: the words under the
+    /// tile changed with focus while the block itself never moved). Reach for it only where a
+    /// SCREEN bound is genuinely the thing being tested; ordinary drawing must stay in the
+    /// painter's own space, which is the whole point of the cascade.
+    pub fn dx(self) -> f32 {
+        self.dx
+    }
     #[inline]
     fn c(self, c: [f32; 4]) -> [f32; 4] {
         [c[0], c[1], c[2], c[3] * self.a]
