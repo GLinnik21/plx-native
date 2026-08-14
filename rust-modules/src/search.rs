@@ -612,7 +612,10 @@ fn maybe_spawn(i: usize) {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an answer of "this server has nothing"
         let what = catch_unwind(|| {
-            let mc = crate::plex::client_for(sid)?.search(&q, LIMIT)?;
+            // sectionId 0 = every section, which `opt_int` sends by omitting it. The Search screen
+            // is deliberately account-wide: `sectionId` only RANKS (measured — every other
+            // section's rows still come back), so it could not scope this even if we wanted it to.
+            let mc = crate::plex::client_for(sid)?.search(&q, LIMIT, 0)?;
             Some(project(&mc, sid))
         })
         .unwrap_or(None);

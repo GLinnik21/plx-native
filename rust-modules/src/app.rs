@@ -2526,6 +2526,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         continue;
                     }
+                    if matches!(route, Route::Search) && crate::ui::search::key(sym) {
+                        continue;
+                    }
                     if !matches!(route, Route::Player { .. }) && (sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN) {
                         if matches!(route, Route::Detail) {
                             crate::ui::detail::move_focus(sym as c_int);
@@ -2599,9 +2602,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             extend_hud(last_input, HUD_LINGER_MS);
                         } else if matches!(route, Route::Search) {
                             // A result tile takes the tvOS press (dip now, commit on the spring-back
-                            // — `ok_armed` runs `on_ok` then); the field, the recents rows and the
-                            // strip commit immediately inside the screen.
-                            if crate::ui::search::focus_is_card() {
+                            // — `ok_armed` runs `on_ok` then); the field and the recents rows commit
+                            // immediately inside the screen.
+                            let spill = crate::ui::search::focused_pill();
+                            if spill >= 0 {
+                                let spill = spill as usize;
+                                if crate::ui::widgets::is_search_pill(spill) {
+                                    // the screen we are already on — a deliberate no-op, as Home's
+                                    // own pill is on Home
+                                } else if let Some(sec) = spill.checked_sub(1) {
+                                    nav_to(route, Nav::Library(sec), &mut nav_pending);
+                                } else {
+                                    nav_to(route, Nav::Home { focus_pill: Some(0) }, &mut nav_pending);
+                                }
+                            } else if crate::ui::search::focus_is_card() {
                                 crate::ui::press::begin(SDL_GetTicks());
                                 ok_armed = true;
                             } else if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
@@ -3023,6 +3037,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
                             home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut trail, &mut hud_nav, &mut nav_pending);
                         }
+                    } else if matches!(route, Route::Search) {
+                        let (cx, cy) = ptr_xy(&ev);
+                        // The strip is shared chrome and is hit-tested here, not by the screen —
+                        // `tab_pill_at` owns the clipped rects, so a pill scrolled half out of the
+                        // track is clickable across exactly the half you can see.
+                        if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
+                            if crate::ui::widgets::is_search_pill(i) {
+                            } else if let Some(sec) = i.checked_sub(1) {
+                                nav_to(route, Nav::Library(sec), &mut nav_pending);
+                            } else {
+                                nav_to(route, Nav::Home { focus_pill: Some(0) }, &mut nav_pending);
+                            }
+                        } else if let crate::ui::search::Action::Open(node) = crate::ui::search::click(cx, cy) {
+                            nav_open(route, node, None, &mut nav_pending);
+                        }
                     } else if matches!(route, Route::Library) {
                         let (cx, cy) = ptr_xy(&ev);
                         match crate::ui::library::click(cx, cy) {
@@ -3155,6 +3184,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::person::move_focus(if dy < 0 { SDLK_DOWN } else { SDLK_UP });
                         } else if matches!(route, Route::Library) {
                             crate::ui::library::wheel(dy);
+                        } else if matches!(route, Route::Search) {
+                            crate::ui::search::wheel(dy as f32);
                         }
                     }
                 } else if et == SDL_TEXTINPUT {

@@ -849,7 +849,10 @@ fn maybe_spawn(i: usize) {
         let what = match kind {
             K_RESOLVE => Landing::Resolve(
                 catch_unwind(|| {
-                    let mc = c.search(&arg[0], RESOLVE_LIMIT)?;
+                    // sectionId 0 = every section. `opt_int` omits a zero, and scoping would be
+                    // wrong anyway: this asks a server we have never addressed before whether it
+                    // knows this person AT ALL, so it must see the whole library.
+                    let mc = c.search(&arg[0], RESOLVE_LIMIT, 0)?;
                     // `""` is the ANSWER "no record of them here" — see `Landing::Resolve`
                     Some(resolve_local(&mc, &arg[0], &guid).unwrap_or_default())
                 })
