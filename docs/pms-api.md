@@ -4,8 +4,12 @@
 > Server OpenAPI 3.1 spec (205 operations). Check it FIRST for any endpoint (method, path,
 > params, response); this file is a hand-curated, live-verified subset for the paths we use.
 > The spec is where `transcodeSubtitles` (soft WebVTT during transcode), `PUT /library/parts`
-> (audio/subtitle stream selection), `/hubs/search`, and `/library/streams/{id}.{ext}` live —
-> reach for it before reverse-engineering.
+> (audio/subtitle stream selection), and `/library/streams/{id}.{ext}` live — reach for it before
+> reverse-engineering.
+>
+> **One exception, and it is a live one: `/hubs/search`.** The spec's worked example has the
+> response shape wrong (it files shows under `Directory`), and believing it renders three of the
+> five search shelves as nothing, silently. §3b is the probed answer; prefer it there.
 
 Server: `http://YOUR_PMS_HOST:32400` — PMS apiVersion 1.2.2.
 Token: `X-Plex-Token=YOUR_PLEX_TOKEN` (query param or `X-Plex-Token` header). Get yours from Plex → any item → Get Info → View XML.
@@ -221,6 +225,117 @@ without a second metadata fetch. Resume position = `viewOffset` ms.
 Recommendation for the app: use `/hubs/promoted?count=12` for the home screen
 (one request → Continue Watching + On Deck + Recently Added + collections),
 and hub `key` + paging for "see all".
+
+---
+
+## 3b. Search — `/hubs/search` (verified live 2026-08-14, PMS 1.43.3)
+
+```
+GET /hubs/search?query=wallace&limit=8[&sectionId=1]&X-Plex-Token=...
+```
+
+**The spec is right about the parameters and wrong about the response.** Take `plex-openapi.json`'s
+`sectionId` and `limit` descriptions — both were checked live and both hold. Do **not** take its
+`simpson` response example, which files the `show` hub under `Directory`: read that and you
+conclude shows arrive as `Directory[]` and people as `Metadata[]`, the exact inverse of the truth.
+That example is why the split below was probed rather than read.
+
+Everything here was measured across six queries, three `sectionId` variants and four `limit`
+variants. Where the spec and the server disagree, the server wins.
+
+### The payload arrives in TWO containers, and the hub's type says which
+
+| container | hubs |
+|---|---|
+| `Metadata[]` | `movie`, `show`, `episode`, `album`, `artist`, `track` |
+| **`Directory[]`** | **`actor`, `director`, `collection`** |
+
+This is the one fact the whole search screen rests on, and getting it wrong fails **silently**:
+nothing errors, no field is missing, `Hub.size` still reports 3 — the Cast & Crew and Collections
+shelves simply draw nothing, because the reader looked in `Metadata` and the rows were in
+`Directory`. Three of the app's five search shelves, gone, with a green parse. (Modelled as
+`plex::Hub.directory: Vec<Tag>`; pinned by `plex::models`'s fixture tests.)
+
+A `Directory[]` row is the same `Tag` record the cast row on a detail page is built from:
+
+```json
+{"key":"/library/sections/1/all?actor=921","librarySectionID":1,"librarySectionTitle":"Movies",
+ "reason":"section","reasonID":1,"reasonTitle":"Movies","score":"0.52000","type":"tag",
+ "id":921,"filter":"actor=921","tag":"Wallace Shawn","tagType":6,
+ "tagKey":"5d776827151a60001f24ab18",
+ "thumb":"https://metadata-static.plex.tv/a/people/….jpg","count":5}
+```
+
+A **collection** row carries `tag`, `id`, `key`, `count`, `filter`, `librarySectionID`, `reason`,
+`reasonTitle` and a `guid` (`collection://…`) — and **no `tagKey`, no `thumb`, no `ratingKey`**. So
+`key` is the only handle a collection hit gives you, and a screen that keys tags by `tagKey`
+silently drops every collection. A person's `thumb` is an **absolute** `metadata-static.plex.tv`
+URL, not a PMS path (§5's transcoder still fetches it, but nothing may prepend the server host).
+
+**The same person arrives once per library section.** Wallace Shawn comes back twice — section 1
+`count: 5`, section 2 `count: 3` — with the same `id` and the same `tagKey`, because the hub is a
+union of per-section tag listings (that is what `reason: "section"` means). Draw it raw and he
+appears twice; keep the first row and you report 5 credits for a person who has 8. Dedupe on
+`tagKey`/`id`, sum the counts.
+
+Nested credit arrays on a search `Metadata` row are **trimmed to `{"tag": …}`** — no `id`, no
+`tagKey`, no `thumb` — unlike the same arrays on `/library/metadata/{rk}`. Search results are not
+a substitute for a detail fetch.
+
+### `sectionId` RANKS; it does not filter
+
+With `sectionId=1` (Movies) the `movie` hub moves ahead of `show`; with `sectionId=2` (TV Shows)
+`show` and `episode` come first. **Every row from every other section is still returned** in all
+three cases — same items, same counts, different hub order. It cannot scope a search to one
+library; the client must filter if it wants that.
+
+The spec says the same thing and is easy to read past: *"This gives context to the search, and can
+result in re-ordering of search result hubs."* Re-ordering — not filtering. The name is the only
+part that suggests otherwise.
+
+An **unknown `sectionId` is a 400**, so never forward a section id the server did not hand you —
+and never a placeholder either, per the zero rule below.
+
+### Query and limit
+
+* **A blank/whitespace query is a 400.** A **one-character** query is a 200 with every hub empty
+  (`a` → nothing; `to` → seven populated hubs). The app's minimum is therefore 2 characters, and
+  the first keystroke of a search costs no round trip.
+* **`limit` caps each hub separately**, not the response: `limit=2` cut a 6-row `movie` hub to 2
+  and left the 1-row `show` hub alone. Omitting it is legal; the server's own default is **3 rows
+  per hub** (measured, and the spec agrees: *"The number of items to return per hub. 3 if not
+  specified"*).
+* **`Hub.size` is the number of rows RETURNED**, already capped by `limit` — never the total match
+  count. A "6 results" caption built from it means "6 shown".
+* **`Hub.more` is `false` even on a truncated hub** (measured on the 6→2 cut above), so it cannot
+  be used to offer a "see all".
+* **Hub ORDER moves per query**: `sta` ranks `actor` first, `star` ranks `movie` first. A response
+  carries ~17 hubs — every type the server knows — most with `size: 0`. The app fixes its own shelf
+  order for this reason; honouring the server's would move a row under a typing user's focus.
+* Every row of every hub carries `score`, a float **encoded as a string** (`"0.52000"`). It is not
+  modelled; if it ever is, it needs `de_f64` or the whole `MediaContainer` fails.
+
+### The zero rule: omit an optional number, never send `0`
+
+| request | result |
+|---|---|
+| `limit` omitted | **200** (3 rows per hub) |
+| `limit=0` | **500** |
+| `sectionId` omitted | **200** (whole server) |
+| `sectionId=0` | **400** (no server has section 0) |
+
+Both zeros are errors, so `Client::search` puts both numbers on via `QueryBuilder::opt_int` — 0
+means "send no parameter". Using `.int` for either builds a search that never works and blames the
+network for it, which is the next paragraph.
+
+### Errors are HTML, so a rejected request looks like a dead socket
+
+Every error here — 400 (blank `query`, `sectionId=0`), 500 (`limit=0`), 404 (bad path) — comes back
+as `text/html` (`<html><head><title>Bad Request</title>…`), **not** a JSON `MediaContainer`,
+whatever the `Accept` header says. `Client::get_json` parses nothing and returns `None`, which is
+the same `None` a dead socket gives — the layer cannot tell them apart. So the search store must
+read any `None` as "the request failed", never as "no results"; and a malformed request is not
+self-announcing here, it just looks like bad wifi forever.
 
 ---
 
