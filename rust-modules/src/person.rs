@@ -164,6 +164,17 @@ impl Src {
     fn settled(&self) -> bool {
         self.landed || (self.resolved && self.local.is_none())
     }
+
+    /// Did this source actually put a tile on the page?
+    ///
+    /// **Not the same question as `landed`,** and the difference is a visible flash. A `/media`
+    /// response can succeed and still yield nothing: [`split_by_type`] keeps only `movie` and `show`
+    /// rows, so a person credited on this server in episodes alone lands *successfully* with two
+    /// empty shelves. Reading that as "the page has something to show" draws the empty read-out over
+    /// a share that is still resolving, and its films then pop in on top of the words.
+    fn has_content(&self) -> bool {
+        self.shelves.iter().any(|sh| !sh.items.is_empty())
+    }
 }
 
 /// One person's page: the header handed in by the cast row, the plex.tv biography fields, and the
@@ -211,10 +222,17 @@ pub(crate) struct Person {
     /// Every server this page asks, in [`sources`] order. Read once at [`open`].
     srcs: Vec<Src>,
     /// Something is worth showing, so the spinner can stop. The `browse.rs` `total < 0` sentinel in
-    /// bool form, folded across the sources by [`resettle`]: ANY source's filmography having landed
-    /// settles it, and with nothing anywhere it takes EVERY source having answered — so a share
-    /// that instantly says "never heard of them" cannot draw "nothing in your libraries" over a
-    /// fetch that is still out on the server that does have them.
+    /// bool form, folded across the sources by [`resettle`], and the fold is **content, then
+    /// consensus**:
+    ///
+    /// * ANY source having put a TILE on the page settles it — a share whose machine is asleep must
+    ///   not hold shelves we already have off the screen;
+    /// * with nothing anywhere, it takes EVERY source having answered.
+    ///
+    /// Both halves stop the same flash from a different side: a server that says "never heard of
+    /// them" instantly, and one that answers with a successful but empty filmography ([`Src::
+    /// has_content`] — an episodes-only credit lands exactly like that), must neither of them draw
+    /// "nothing in your libraries" over a fetch still out on the server that does have them.
     pub(crate) landed: bool,
     /// the plex.tv profile fetch has ANSWERED at least once — including the answer "no such
     /// person", which arrives as an all-empty profile. Its only job is to stop the retry; the page
@@ -417,22 +435,32 @@ fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
 /// is the one this rule picks.
 ///
 /// Both of `search::Kind::Person`'s hubs are scanned, so a page opened from a DIRECTOR credit
-/// resolves too; the `actor` hub is listed first there, so an actor-and-director keeps their acting
-/// id. Hubs are matched on either `hubIdentifier` or `type` because `/hubs/search` sends the same
-/// token in both (`docs/plex-openapi.json`'s own example), and `Hub::directory` is keyed by that
-/// word.
+/// resolves too — **and they are scanned in ITS order, `actor` before `director`, not in the order
+/// the server sent them.** On PMS an actor tag and a director tag for one person are different rows
+/// with different `id`s and the SAME `tagKey` (see [`Tag::filter`], which carries the role `id`
+/// alone does not), and `search.rs` records that `/hubs/search` reorders its hubs per query. Filter
+/// `mc.hub` and an actor-director whose `director` hub happened to come back first resolves to the
+/// directing tag — after which `/library/people/{id}/media` returns only what they directed, and
+/// every acting credit that server holds is silently gone. So the candidate list is built by walking
+/// `want`, and the server's order decides nothing.
+///
+/// Hubs are matched on either `hubIdentifier` or `type` because `/hubs/search` sends the same token
+/// in both (`docs/plex-openapi.json`'s own example), and `Hub::directory` is keyed by that word.
 pub(crate) fn resolve_local(mc: &crate::plex::MediaContainer, name: &str, guid: &str) -> Option<String> {
-    let want = crate::search::Kind::Person.hubs();
-    let people = || {
-        mc.hub
-            .iter()
-            .filter(|h| want.contains(&h.hub_identifier.as_str()) || want.contains(&h.kind.as_str()))
-            .flat_map(|h| h.directory.iter())
-    };
-    people()
+    let mut people: Vec<&Tag> = Vec::new();
+    for h in crate::search::Kind::Person.hubs() {
+        for hub in mc.hub.iter().filter(|x| x.hub_identifier == *h || x.kind == *h) {
+            people.extend(hub.directory.iter());
+        }
+    }
+    // the guid join first, across EVERY person hub — a `director`-hub guid match still beats a
+    // name match in `actor`, because a guid is proof and a name is a guess
+    people
+        .iter()
+        .copied()
         .find(|t| t.is_person("", guid))
         .or_else(|| {
-            people().find(|t| {
+            people.iter().copied().find(|t| {
                 !name.is_empty() && t.tag == name && (t.tag_key.is_empty() || guid.is_empty())
             })
         })
@@ -493,7 +521,7 @@ fn merge_shelves(srcs: &[Src]) -> [Shelf; NSHELF] {
 /// one without the other.
 fn resettle(p: &mut Person) {
     p.shelves = merge_shelves(&p.srcs);
-    p.landed = p.srcs.iter().any(|s| s.landed) || p.srcs.iter().all(Src::settled);
+    p.landed = p.srcs.iter().any(Src::has_content) || p.srcs.iter().all(Src::settled);
 }
 
 // ---- public surface --------------------------------------------------------------------------
@@ -1125,6 +1153,40 @@ mod tests {
         assert_eq!(resolve_local(&crew, "Nick Park", "5d776826"), Some("459".to_string()));
     }
 
+    /// An actor-director carries TWO tag rows on one server — same `tagKey`, different `id`, one per
+    /// department — and `/hubs/search` reorders its hubs per query (`search.rs`'s own measurement).
+    /// So the scan order has to be OURS, `actor` first, not the server's: take the director row and
+    /// `/library/people/{id}/media` answers with only what they directed, silently dropping every
+    /// acting credit that server holds.
+    #[test]
+    fn an_actor_director_keeps_their_acting_id_whatever_order_the_server_sent_its_hubs() {
+        let guid = "5d77682b7a53e9001e73f2d1";
+        let mut mc = MediaContainer::default();
+        // the server put its DIRECTOR hub first, which it is free to do
+        mc.hub = vec![
+            Hub {
+                kind: "director".into(),
+                hub_identifier: "director".into(),
+                directory: vec![person_tag("Clint Eastwood", 2201, guid)],
+                ..Default::default()
+            },
+            Hub {
+                kind: "actor".into(),
+                hub_identifier: "actor".into(),
+                directory: vec![person_tag("Clint Eastwood", 1104, guid)],
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            resolve_local(&mc, "Clint Eastwood", guid),
+            Some("1104".to_string()),
+            "the acting id must win — the server's hub order decides nothing"
+        );
+        // …and with no actor row at all, the director one is still better than nothing
+        mc.hub.truncate(1);
+        assert_eq!(resolve_local(&mc, "Clint Eastwood", guid), Some("2201".to_string()));
+    }
+
     // ---- the merge ---------------------------------------------------------------------------
 
     /// The merge is the filmography: every source's rows, in source order, each still carrying the
@@ -1525,6 +1587,36 @@ mod tests {
         pump();
         assert!(!loading(), "every source has answered — the page is finished, not still loading");
         assert!(current().unwrap().shelf(0).is_empty());
+        close();
+    }
+
+    /// The same flash from the other side. A `/media` response can SUCCEED and still put no tile on
+    /// the page — `split_by_type` keeps only `movie` and `show` rows, so a person credited here in
+    /// episodes alone lands exactly like that. Read as "we have something to show", it draws the
+    /// empty read-out over a share still resolving, whose films then pop in on top of the words.
+    #[test]
+    fn a_successful_but_empty_filmography_is_not_something_to_show() {
+        let _g = fresh_registry();
+        let own = crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
+        let friend = crate::plex::register_for_test("mach-friend", "10.0.0.2", 32400, "tok", "cid-person-test");
+        open(own, "161", "5d77682a", "Idina Menzel", "");
+        let gen = GEN.load(Ordering::SeqCst);
+
+        // the origin succeeds with nothing shelvable while the share has not answered at all
+        land(at(own, K_MEDIA), gen, media(Vec::new(), Vec::new()));
+        hold_off();
+        pump();
+        assert!(loading(), "a successful EMPTY answer is not content — the share is still out");
+
+        // …and the share then fills the page
+        land(at(friend, K_RESOLVE), gen, Landing::Resolve(Some("918".to_string())));
+        hold_off();
+        pump();
+        land(at(friend, K_MEDIA), gen, media(vec![movie_on(friend, "5274")], Vec::new()));
+        hold_off();
+        assert!(pump());
+        assert!(!loading());
+        assert_eq!(current().unwrap().shelf(0).len(), 1, "the borrowed film is the whole page");
         close();
     }
 
