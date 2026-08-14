@@ -62,6 +62,7 @@ pub use client::{Client, StreamUrl};
 pub use servers::{
     client, client_for, client_opt, count as server_count, current as current_server, describe as describe_server,
     facts as server_facts, ids as server_ids, install, register, same_item, set_current, ServerFacts, ServerId,
+    MAX_SERVERS,
 };
 // The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
 // `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
