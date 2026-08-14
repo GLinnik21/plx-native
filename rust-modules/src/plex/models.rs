@@ -142,7 +142,7 @@ pub struct Hub {
     #[serde(rename = "Metadata", default)]
     pub metadata: Vec<Metadata>,
     /// **A hub's items do not all arrive as `Metadata`**, and a search screen that assumes they do
-    /// renders three of its five shelves as nothing at all, silently. Measured against this
+    /// renders two of its five shelves as nothing at all, silently. Measured against this
     /// household's PMS 1.43.3 over six queries on 2026-08-14:
     ///
     /// | payload | hubs |
@@ -882,7 +882,8 @@ mod tests {
     /// The failure it guards is silent and total, not partial: nothing errors, no field is
     /// missing, `Hub.size` still says 3 — the Cast & Crew and Collections shelves simply draw
     /// zero cards, because the reader looked in `.metadata` and the rows were in `.directory`.
-    /// Three of the five design shelves, gone, with a green parse.
+    /// **Two** of the five design shelves, gone, with a green parse (three hub types, but
+    /// `search::Kind::hubs` folds `actor` + `director` into one Cast & Crew shelf).
     #[test]
     fn a_search_response_delivers_its_items_in_two_different_containers() {
         let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE).expect("lenient parse").media_container;
@@ -892,8 +893,15 @@ mod tests {
             let h = search_hub(&mc, kind);
             assert!(!h.metadata.is_empty(), "{kind} rows are Metadata[]");
             assert!(h.directory.is_empty(), "{kind} sends no Directory[]");
-            assert_eq!(h.size, h.metadata.len() as i64, "size counts the rows RETURNED");
+            // `size` round-trips the wire number. It is NOT evidence about what the server counts:
+            // two of these hubs were trimmed here and their `size` edited to match (see above), so
+            // the wire fact — `size` is the count RETURNED, capped by `limit` — is `docs/pms-api.md`
+            // §3b's, measured by varying `limit`, not something this body could show.
+            assert_eq!(h.size, h.metadata.len() as i64);
         }
+        // `director` belongs in this list and cannot be tested from THIS capture: "wallace" matched
+        // no directors, so its hub is one of the twelve that came back `size: 0`. The hub type is
+        // in the split table on the strength of the `sta` query, which does populate it.
         for kind in ["actor", "collection"] {
             let h = search_hub(&mc, kind);
             assert!(!h.directory.is_empty(), "{kind} rows are Directory[] — the whole point");
@@ -913,11 +921,11 @@ mod tests {
     /// Two of them are the reason a person hit and a collection hit cannot share a code path:
     /// a person carries `tagKey` (the portable guid, and the only id `discover.provider.plex.tv`
     /// answers to) and an ABSOLUTE `metadata-static.plex.tv` `thumb`; a collection carries
-    /// **neither**, nor a `ratingKey`. So `key` — the ready-made listing URL — is the only handle
-    /// a collection hit gives you at all, and a screen that keys tags by `tagKey` silently loses
-    /// every collection.
+    /// **neither**, nor a `ratingKey`. It is not identity-less — it has the server-local `id`,
+    /// `filter` and `key` — but it has nothing that means anything OFF this server, so a screen
+    /// that keys tags by `tagKey` silently loses every collection.
     #[test]
-    fn a_person_hit_carries_a_portable_guid_and_a_collection_hit_carries_no_identity_but_its_key() {
+    fn a_person_hit_carries_a_portable_guid_and_a_collection_hit_carries_no_portable_identity() {
         let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE).expect("lenient parse").media_container;
 
         let p = &search_hub(&mc, "actor").directory[0];
@@ -937,9 +945,17 @@ mod tests {
         assert_eq!(c.tag, "Wallace & Gromit Collection");
         assert_eq!((c.id, c.count), (6068, 6));
         assert_eq!(c.key, "/library/sections/1/all?collection=6068");
+        assert_eq!(c.filter, "collection=6068");
         assert_eq!(c.tag_key, "", "a collection has no portable guid");
         assert_eq!(c.thumb, "", "…and no artwork of its own");
-        assert!(!c.is_person("0", ""), "an absent id must never match a caller's literal \"0\"");
+        // so it is addressable on THIS server and nowhere else
+        assert!(c.is_person("6068", ""), "the server-local id still matches");
+        assert!(!c.is_person("", "5d776827151a60001f24ab18"), "but no guid ever will");
+
+        // …and a row the server sent no id for must not match a caller's literal "0" — the guard
+        // in `is_person` that the collection above cannot exercise, because it HAS an id
+        assert!(!super::Tag::default().is_person("0", ""), "id 0 means absent, not id zero");
+        assert!(!super::Tag::default().is_person("", ""), "nor does an empty guid match an empty one");
     }
 
     /// **The same person arrives ONCE PER LIBRARY SECTION**, as separate rows with the same `id`
@@ -998,8 +1014,9 @@ mod tests {
     }
 
     /// A one-character query is a **200 with every hub empty** — not an error, and not an absent
-    /// `Hub[]`: seventeen hubs arrive carrying `size: 0` and no items array at all. (Measured:
+    /// `Hub[]`: all seventeen hubs arrive carrying `size: 0` and no items array at all. (Measured:
     /// `a` returns this; `to` returns seven populated hubs. It is why `search::MIN_QUERY` is 2.)
+    /// Three hubs stand in for the seventeen below; the shape is per-hub, so the count adds nothing.
     ///
     /// So "the server answered with nothing" and "the request failed" are different states that
     /// the store must not conflate, and the DTO's job is to make the first one arrive intact:
