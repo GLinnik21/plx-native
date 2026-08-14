@@ -485,6 +485,13 @@ pub(crate) struct Detail {
     /// step 2 threads `ServerId` through this struct); the roster field behind it is
     /// `plex::account::Resource::source_title`.
     pub(crate) source: String,
+    /// The item's PORTABLE identity (`plex://movie/…`) — the same string on every server that
+    /// matched this film, and the only one that is. It is what "Also available" asks the other
+    /// sources about, because their copy has a different `rk` and may even have a different title:
+    /// measured across this household's two servers, one film is `2029` here and `5274` there,
+    /// under a Russian title. Empty when the server sent none, which simply means no cross-source
+    /// lookup is possible for this item.
+    pub(crate) guid: String,
     pub(crate) is_show: bool,
     pub(crate) kind: String,       // this item's own type: movie | episode | show | season
     pub(crate) show_title: String, // grandparentTitle — the show name, when this item is an episode
@@ -679,15 +686,21 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     let mut d = Detail {
         sid,
         rk: rk.to_string(),
-        // One server today: this fetch went to the machine we are signed in to, so the item is our
-        // own and there is nobody to credit. A borrowed item names its owner only once the
-        // multi-server layer can say which server a fetch was made against (see `Detail::source`).
+        // WHOSE server this fetch went to, asked of the registry with the id we were handed.
         //
-        // dev: `/tmp/plxnative-shared=<handle>` stands in for that layer until it lands, and is the
-        // ONLY way to put the detail hero's "Shared by …" run on a real panel — there is no host
-        // runtime, so appearance is only ever observable on the TV. It stamps the handle onto every
-        // item this session loads, which is exactly what a fully-borrowed library looks like.
-        source: crate::dev::read("shared").unwrap_or_default(),
+        // This read `dev::read("shared")` and nothing else, which meant the attribution existed
+        // only under a trigger: on a signed-in television every item's `source` was empty and the
+        // hero drew no "Shared by" run at all, whatever server the item came from. Owner-reported
+        // 2026-08-14. `ServerFacts::handle` is empty on our own server, which is exactly what this
+        // field wants — absence, not an empty owner — so the mapping needs no special case.
+        //
+        // dev: `/tmp/plxnative-shared=<handle>` still OVERRIDES, and is still the only way to make
+        // a single-server library look borrowed for a capture. It stamps the handle onto every item
+        // this session loads, which is what a fully-borrowed library looks like.
+        source: crate::dev::read("shared")
+            .unwrap_or_else(|| crate::plex::server_facts(sid).map(|f| f.handle.clone()).unwrap_or_default()),
+        // the portable identity — what "Also available" resolves across the other sources
+        guid: it.guid.clone(),
         is_show: it.kind == "show",
         kind: it.kind.clone(),
         show_title: it.grandparent_title.clone(),
@@ -1308,10 +1321,99 @@ pub(crate) fn pump_detail() -> bool {
     // to happen here as well as at request time: a tab hop issued while this load was in flight
     // spawned a fetch against the OLD item, and its landing would patch these fresh episodes.
     supersede_season();
+    // Ask the other sources about this item BEFORE the move: the resolve needs the item's own
+    // server and its portable guid, and this is the one place both are known on the main thread.
+    // A page with no guid, or a one-server install, spawns nothing.
+    request_alt_sources(d.sid, &d.rk, &d.guid);
     unsafe { *addr_of_mut!(CURRENT) = Some(d) }
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing();
     true
+}
+
+// ---- "Also available": the same film on the OTHER sources ------------------------------------
+//
+// The cross-source resolve, in the mailbox shape the detail fetch uses and for the same reason: it
+// is one round trip PER REGISTERED SOURCE, and doing it on the SDL loop would park the frame for a
+// `connect(2)` timeout per unreachable share.
+//
+// It runs off the back of a landed detail rather than beside it, because it needs that detail's
+// `guid` — which only the fetch can supply — and because a page with no guid (a server that sent
+// none) must cost nothing at all.
+static ALT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+struct AltResult {
+    gen: u32,
+    /// The rk the resolve was asked FOR, carried so the landing can be matched against the page
+    /// that is mounted now — `alt_sources::install` refuses any other, and this is what lets it.
+    rk: String,
+    list: Vec<crate::ui::alt_sources::AltCopy>,
+}
+static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(None);
+
+/// MAIN THREAD. Ask every OTHER registered source whether it holds this guid.
+///
+/// The item's own source is skipped rather than queried and filtered: it is the page you are on,
+/// and "also available" means elsewhere. Sources are captured here, on the main thread, as a plain
+/// list of ids — the worker resolves each through `client_for` and never asks what is current.
+fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
+    use std::sync::atomic::Ordering;
+    let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if guid.is_empty() {
+        return; // nothing portable to match on; the panel stays absent
+    }
+    let others: Vec<crate::plex::ServerId> = crate::plex::server_ids().filter(|&id| id != sid).collect();
+    if others.is_empty() {
+        return; // a one-server install pays nothing: no worker, no query, no control
+    }
+    let (rk, guid) = (rk.to_string(), guid.to_string());
+    let _ = crate::task::spawn_small("altsrc", move || {
+        let list = catch_unwind(|| resolve_alt_sources(&others, &guid)).unwrap_or_default();
+        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, rk, list });
+    });
+}
+
+/// WORKER. One `find_by_guid` per source, projected into rows. Pure of app state apart from the
+/// registry (an atomic read whose clients are never freed), so it is gradeable against a fixture.
+fn resolve_alt_sources(others: &[crate::plex::ServerId], guid: &str) -> Vec<crate::ui::alt_sources::AltCopy> {
+    let mut out = Vec::new();
+    for &id in others {
+        let Some(c) = crate::plex::client_for(id) else { continue };
+        // `None` here is "did not answer" and `Some(empty)` is "does not have it" — both contribute
+        // no row, but only the second is a fact about the library. They are not collapsed at the
+        // client (see `find_by_guid`) so a later revision can say "not reachable" in the panel.
+        let Some(mc) = c.find_by_guid(guid) else { continue };
+        let handle = crate::plex::server_facts(id).map(|f| f.handle.clone()).unwrap_or_default();
+        for m in mc.metadata.iter() {
+            let media0 = m.media.first();
+            out.push(crate::ui::alt_sources::AltCopy {
+                sid: id,
+                library: m.library_section_title.clone(),
+                // `None` is the ABSENCE of an owner, which is what the row spells "This account";
+                // an empty handle must not become `Some("")`.
+                owner: (!handle.is_empty()).then(|| handle.clone()),
+                rk: m.rating_key.clone(),
+                dur_ms: m.duration,
+                res: media0.map(|x| x.video_resolution.clone()).unwrap_or_default(),
+                width: media0.map(|x| x.width).unwrap_or_default(),
+                height: media0.map(|x| x.height).unwrap_or_default(),
+            });
+        }
+    }
+    out
+}
+
+/// MAIN THREAD, once a frame. Hands a landed cross-source resolve to the panel's store.
+pub(crate) fn pump_alt_sources() {
+    use std::sync::atomic::Ordering;
+    let taken = ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let Some(r) = taken else { return };
+    if r.gen != ALT_GEN.load(Ordering::SeqCst) {
+        return; // superseded: the page moved on while this was in flight
+    }
+    // `install` re-checks the rk against the page actually mounted — this generation test alone
+    // cannot see a page that was opened, left and re-opened between spawn and landing.
+    crate::ui::alt_sources::install(&r.rk, r.list);
 }
 
 /// True while a detail fetch is in flight — drives the detail page's loading spinner.
@@ -1847,6 +1949,42 @@ mod tests {
     }
     fn cur_rk() -> Option<String> {
         current().map(|d| d.rk.clone())
+    }
+
+    /// **The cross-source projection, on the real measured shape.** A `/library/all?guid=…` answer
+    /// is the OTHER server's own row: its own `ratingKey`, its own library, and — measured against
+    /// this household's two servers on 2026-08-14 — its own localized title for the same film.
+    /// Everything a row needs must come off that answer, because nothing about the page we are on
+    /// describes the copy over there.
+    ///
+    /// Pure: no statics, no socket, so no serial lock. It grades `resolve_alt_sources`'s projection
+    /// by feeding the container directly, which is the half that decides whether the panel offers
+    /// the right film.
+    #[test]
+    fn a_guid_answer_projects_the_other_servers_own_key_library_and_class() {
+        let body = r#"{"MediaContainer":{"size":1,"Metadata":[{
+            "ratingKey":"5274","type":"movie","title":"another title entirely",
+            "guid":"plex://movie/6856893830a4aaafd5c4291d","librarySectionTitle":"Film Club",
+            "duration":7020000,"Media":[{"videoResolution":"1080","width":1920,"height":1080}]}]}}"#;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+
+        let m = mc.metadata.first().expect("one row");
+        assert_eq!(m.guid, "plex://movie/6856893830a4aaafd5c4291d", "the portable identity is read");
+        assert_eq!(m.rating_key, "5274", "…and the key is THEIRS, not ours");
+        assert_eq!(m.library_section_title, "Film Club", "the library names the row, not the machine");
+        assert_eq!(m.duration, 7_020_000);
+        assert_eq!(m.media.first().map(|x| x.video_resolution.as_str()), Some("1080"));
+    }
+
+    /// A server that answers "I do not have it" contributes no row — and is not confused with one
+    /// that did not answer. Both yield nothing here; only the client keeps them apart (see
+    /// `find_by_guid`), which is what lets a later revision say "not reachable" in the panel.
+    #[test]
+    fn a_server_without_the_film_contributes_no_row() {
+        let mc = serde_json::from_str::<crate::plex::Envelope>(r#"{"MediaContainer":{"size":0}}"#)
+            .expect("parses")
+            .media_container;
+        assert!(mc.metadata.is_empty(), "size=0 is an answer, and it is an empty one");
     }
 
     /// The whole detail mailbox in one serial test — the statics are global, so splitting this
