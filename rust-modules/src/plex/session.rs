@@ -96,6 +96,19 @@ pub struct Session {
     /// libraries), never draw an empty Home.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub pinned: Vec<PinnedLib>,
+    /// The search terms the user actually searched, **most recent first** — what the Search
+    /// screen's empty-query state offers back (`crate::ui::search::recents`, which owns the cap,
+    /// the de-duplication and the ordering; this is only where they rest).
+    ///
+    /// They live here rather than in a file of their own for one reason: they are the ACCOUNT's,
+    /// and this is the file that is cleared on sign-out, so they are dropped with the credentials
+    /// they belong to instead of being left behind for whoever signs in next.
+    ///
+    /// Soft-parsed (see [`de_soft_vec`]) for the reason every list in this struct is: a hand-edited
+    /// or half-written entry must cost that term and nothing more. Failing the `Session` over a
+    /// search term would sign the device out on every boot.
+    #[serde(default, deserialize_with = "de_soft_vec")]
+    pub recent_searches: Vec<String>,
 }
 
 /// One persisted who's-watching tile (avatar + PIN flag; no tokens live here).
@@ -519,6 +532,43 @@ mod tests {
         assert_eq!(s.owned_source().map(|x| x.address.as_str()), Some(s.server.address.as_str()));
         assert_eq!(s.shared_sources().count(), 0);
         assert!(s.account(None).signed_in && s.account(None).can_switch);
+    }
+
+    /// The Search screen's recent terms are ordinary session content: they survive a write/read
+    /// cycle in order, including the non-ASCII ones this household actually searches.
+    #[test]
+    fn the_recent_search_terms_round_trip_through_the_session_file_format() {
+        let s: Session = serde_json::from_str(
+            r#"{"client_id":"cid-1","recent_searches":["wallace","Гладиатор","the curse"]}"#,
+        )
+        .expect("a session carrying terms parses");
+        let s: Session = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).expect("re-read");
+        assert_eq!(s.recent_searches, ["wallace", "Гладиатор", "the curse"], "most recent first, in order");
+
+        // absent entirely — every session file written before this landed
+        let s: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
+        assert!(s.recent_searches.is_empty());
+    }
+
+    /// And they degrade the same way every other list here does: one malformed term costs that
+    /// term, never the credentials sitting beside it. A search term must never be able to sign the
+    /// device out.
+    #[test]
+    fn a_corrupt_search_term_costs_that_term_and_not_the_session() {
+        let s: Session = serde_json::from_str(
+            r#"{"client_id":"cid-1","account_token":"acct",
+                "server":{"address":"192.168.0.10","port":32400,"token":"t"},
+                "recent_searches":["wallace",null,42,{"oops":true},"gromit"]}"#,
+        )
+        .expect("a bad term must not fail the file");
+        assert_eq!(s.recent_searches, ["wallace", "gromit"], "the three bad entries dropped");
+        assert_eq!(s.account_token, "acct");
+        assert!(s.can_go_local(), "and the device can still stream");
+
+        // the whole field the wrong type is no list, not an error
+        let s: Session = serde_json::from_str(r#"{"client_id":"c","recent_searches":"wallace"}"#)
+            .expect("a string where a list belongs parses");
+        assert!(s.recent_searches.is_empty());
     }
 
     /// The roster's own leniency must not weaken the roster the picker draws from: a managed user
