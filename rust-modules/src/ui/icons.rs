@@ -81,6 +81,17 @@ pub enum Icon {
     /// A horizontal ellipsis — "more options". The player transport's third control disc, which
     /// opens the overflow popover (`ui/more_menu.rs`). Overflow, so it sits at the END of the row.
     More,
+    /// The magnifier — the only pill in the shared top strip that is a MARK instead of a word
+    /// (`Search Screen.dc.html`). Drawn at 1.15× the strip's own type rung, inked exactly as a
+    /// label would be, so it reads as one of the row rather than as an ornament on it.
+    ///
+    /// ONE `<path>`, two subpaths (the ring as a pair of half-arcs, then the handle), both STROKED
+    /// — `info.svg`'s construction, and the reason it is one element rather than a `<circle>` plus
+    /// a `<line>`: separate elements alpha-composite, and where the handle meets the ring their two
+    /// antialiased edges would land at ~0.75 and wear a visible crease (see the module doc). The
+    /// handle also starts just outside the ring, so the round caps close the joint without the two
+    /// strokes overlapping at all.
+    Search,
     // ---- review-score marks (the detail hero's ratings row) ----
     //
     // These are OUR OWN drawings, not reproductions. Rotten Tomatoes' marks — the fruit, the
@@ -137,6 +148,7 @@ fn src(id: Icon) -> &'static str {
         Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
         Icon::More => include_str!("../../../assets/icons/more.svg"),
+        Icon::Search => include_str!("../../../assets/icons/search.svg"),
         Icon::Tomato => include_str!("../../../assets/icons/tomato.svg"),
         Icon::TomatoCalyx => include_str!("../../../assets/icons/tomato-calyx.svg"),
         Icon::TomatoHollow => include_str!("../../../assets/icons/tomato-hollow.svg"),
