@@ -522,7 +522,21 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
             Item::Tag(_) => None,
         },
         |k| TileLabel::titled(s.items[k].title(), &subtitle(s.kind, &s.items[k], handle)),
-        |_, _, _, _| {},
+        // Record what was DRAWN, in screen space, so the pointer can reach it. Without this
+        // `TILE_R` stayed empty and every result on the screen was unreachable by pointer — the
+        // whole content area answered to the d-pad alone, silently, because `mod.rs::hit` scans an
+        // array nothing ever filled and `results::tile_at` sat complete with no caller. Both files
+        // carry `#![allow(dead_code)]`, which is why neither half warned.
+        //
+        // Rebuilt from the index rather than taken from `strip`, whose `extra` hands over the
+        // scale and not the rect: the x is the same prefix `strip` lays the tile out with, and the
+        // y is the flow line less this frame's scroll, since `draw` hands us a translated painter
+        // and hit-testing happens in the untranslated screen the user is pointing at.
+        |_, k, sc, _| {
+            let x = sty.margin_x + k as f32 * (sty.w + sty.gap) - row.scroll_x();
+            let r = Rect::new(x, top + HEAD_TO_ROW - v.shift, sty.w, sty.h).scaled(sc);
+            super::note_tile_rect(i, k, r);
+        },
     );
 }
 
@@ -609,7 +623,13 @@ fn tile_art<'a>(kind: Kind, it: &'a Item) -> Art<'a> {
         // none. `m.art` alone drew the same picture on every episode of one show — the fanart IS
         // the show's, so a row of six results for one series was six identical tiles.
         (Kind::Episode, Item::Media(m)) => {
-            let key = if m.still.is_empty() { &m.art } else { &m.still };
+            // still → thumb → art, and the middle step is the one that matters. `parse_item` fills
+            // `still` only when it SUBSTITUTED the show poster into `thumb`; when the show has no
+            // `grandparentThumb` there is nothing to substitute, so `thumb` IS the episode's own
+            // 16:9 still and `still` is empty. Falling straight through to `art` there is the show
+            // fanart again — the identical-tiles defect, surviving for exactly the shows the fix
+            // did not cover.
+            let key = [&m.still, &m.thumb, &m.art].into_iter().find(|k| !k.is_empty()).unwrap_or(&m.art);
             Art::Thumb { sid: m.sid, key, res: STILL_RES }
         }
         (_, Item::Media(m)) => Art::Poster(Some(m)),

@@ -207,8 +207,11 @@ fn scope_text(src: &[Scope]) -> Option<String> {
         // The handle attributes ONE share. With two it would have to pick a winner, and with the
         // registry's sixteen slots the line stops being a sentence anyway — `name_set` has already
         // collapsed to a count by then, so there is nothing left for a handle to qualify.
+        // `live.len() == 2` as well as "exactly one share with a handle": with three sources
+        // the `·` lands at the END of a list and reads as attributing whichever name it follows.
+        // "nas-home, A and B · ann" says B belongs to ann, and B may be someone else entirely.
         let mut shares = live.iter().filter(|s| !s.owned && !s.handle.is_empty());
-        if let (Some(s), None) = (shares.next(), shares.next()) {
+        if let (2, Some(s), None) = (live.len(), shares.next(), shares.next()) {
             // …unless the share is ALREADY being called by their name, which is what a share with
             // several libraries falls back to. "bamx23 · bamx23" attributes a thing to itself.
             if s.label() != s.handle {
