@@ -196,9 +196,23 @@ pub(crate) fn drain() -> Vec<String> {
     unsafe { std::mem::take(&mut *addr_of_mut!(PENDING)) }
 }
 
+/// How many commits are waiting for [`drain`]. Diagnostic only — the screen drains rather than
+/// counts — but it is what makes the `txt:` remote token observable in the event log while
+/// nothing is draining yet.
+pub(crate) fn pending() -> usize {
+    unsafe { (*addr_of!(PENDING)).len() }
+}
+
+/// What [`on_event`] would read out of these bytes, at THIS platform's offset. Exposed so a
+/// caller can log the decode without duplicating the choice of offset — which is the one thing in
+/// this file that must never be written down twice.
+pub(crate) fn decode(ev: &[u8]) -> String {
+    decode_text_at(ev, TEXT_OFF)
+}
+
 /// One `SDL_TEXTINPUT` event, straight off the wire. Called from `app.rs`'s event ladder.
 pub(crate) fn on_event(ev: &[u8]) {
-    let s = decode_text_at(ev, TEXT_OFF);
+    let s = decode(ev);
     // An empty commit is not a commit. SDL delivers `SDL_TEXTINPUT` for the IME's own bookkeeping
     // as well as for text, and a caller that reads "drain returned something" as "the query moved"
     // would spend a round trip re-asking the server the same question.

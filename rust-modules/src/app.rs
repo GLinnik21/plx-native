@@ -2076,7 +2076,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // layout, the decode, the queue cap, the drain — and deliberately claims
                         // nothing about `SDL_PollEvent`'s own delivery, which only a real panel
                         // (or a real keystroke in `make sim-run`) can prove.
-                        crate::textinput::on_event(&crate::textinput::encode_event(&text.replace('+', " ")));
+                        let ev = crate::textinput::encode_event(&text.replace('+', " "));
+                        crate::textinput::on_event(&ev);
+                        // Logged, because until a screen drains this queue the token is otherwise
+                        // completely unobservable — and what it prints is the string read back
+                        // through the platform's own offset, not the one that was written.
+                        log(&format!("txt: decoded {:?} pending={}",
+                            crate::textinput::decode(&ev), crate::textinput::pending()));
                     } else if let Some((sym, wcode)) = remote_token_key(tok) {
                         remote_synth_key(sym, wcode);
                     } else {
@@ -3138,12 +3144,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                     }
                 } else if et == SDL_TEXTINPUT {
-                    // The television's own keyboard committing text. Route-UNCONDITIONAL on
-                    // purpose: `textinput` owns both ends of this — it only queues while it has
-                    // asked for the panel, and it clears the queue when it does — so gating on
-                    // `Route::Search` here would just be a second, weaker copy of that rule which
-                    // could disagree with it (the route flips at the fade floor, a frame away from
-                    // when the field starts editing).
+                    // The television's own keyboard committing text. Route-UNCONDITIONAL, and
+                    // `textinput::on_event` queues unconditionally too — it does NOT check
+                    // whether we asked for the panel, deliberately. This is the raw platform
+                    // seam: SDL delivered a character because SDL believes text input is on, and
+                    // discarding it against our own flag would silently eat REAL typing the first
+                    // time the two disagree (a panel dismissed from outside the app, or any
+                    // future caller that enables text events another way). Dropping input is the
+                    // worse failure, so instead both leaks are closed downstream, where they can
+                    // be closed completely: `textinput::start` clears the queue, so nothing typed
+                    // before the field opened can arrive in it, and `MAX_PENDING` bounds a queue
+                    // nobody drains. Gating here would also be a second, weaker copy of a rule
+                    // that lives in one place — and it would flip a frame away from the field's
+                    // own edit state, because the route changes at the fade floor.
                     crate::textinput::on_event(&ev);
                 }
             }
@@ -4046,6 +4059,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     dt,
                 );
                 crate::ui::search::update(dt);
+            } else {
+                // THE PANEL NEVER OUTLIVES THE SCREEN THAT ASKED FOR IT. Stated here as a route
+                // invariant rather than left to the leave path, because the leave path does not
+                // currently run: `leave_of`'s `Route::Search => search::leave` is consulted only
+                // by `nav_back`, and Search is left by `nav_to`/`nav_open` — a pill press, or
+                // opening a result — which pass `leave: None`. So `search::leave`'s `stop()` is
+                // reached by no route off this screen, and the television's keyboard would stay
+                // up over Home or over a detail page.
+                //
+                // That is not a cosmetic leak. Per trap 3 in `textinput`'s module doc, the panel
+                // cannot be REOPENED after it is dismissed (moonlight-tv#435, and we call the
+                // TV's own SDL, so we have the bug with no patch) — so a panel left up and then
+                // closed by the user is a search field that can never be typed into again for
+                // the rest of the session.
+                //
+                // Free on every other frame of the app's life: `stop` reads one bool and returns
+                // when we never started, which is every route but this one.
+                crate::textinput::stop();
             }
             if matches!(route, Route::Account) {
                 crate::ui::account_menu::update(dt);
