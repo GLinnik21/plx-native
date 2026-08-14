@@ -30,8 +30,8 @@
 //! ## Five things that are not obvious from the picture
 //!
 //! **1. The flow is authored; the lift is paint.** A shelf's block is `HEAD_TO_ROW` + the tile +
-//! [`super::LABEL_BLOCK`], and [`shelf_top`] is the ONE place that stacks them — the draw, the
-//! reveal rule and the pointer hit-test all read it, so they cannot drift. The focused shelf's
+//! [`super::LABEL_BLOCK`], and [`stack_top`] is the ONE place that stacks them — the draw, the
+//! reveal rule and the pointer hit-test all call it, so they cannot drift. The focused shelf's
 //! heading *rises* over its magnified tile, and that rise is `CardRow::lift()`: the shared
 //! clearance rule, `tile height × (focus_scale − 1) ÷ 2` (16.9px on a poster row — the design's
 //! 17), tapered by how near the popped tile is to the heading. It moves nothing below it.
@@ -52,13 +52,20 @@
 //! and refills them when the answer lands, so a row whose item COUNT changed is re-seated rather
 //! than left holding the scroll offset of a different query's results.
 //!
-//! **5. The springs are advanced from the DRAW.** Every other screen steps its motion in an
-//! `update(dt)`, and so would this one, but a region's whole contract is `draw(Painter, &View)` —
-//! the state machine hands its regions a [`View`] and no dt. [`update`] exists for the day
-//! `super::update` wants to hand one over and takes precedence whenever it is called; until then
-//! [`draw`] advances from its own monotonic clock. That is sound under the present gate for the
-//! reason the gate is built on: a spring in flight *reports* on the frame it is stepped, so the
-//! frame it moved on is the frame that keeps the next one presenting.
+//! **5. The springs are advanced from the DRAW, and that costs one extra rule.** Every other
+//! screen steps its motion in an `update(dt)`, and so would this one, but a region's whole contract
+//! is `draw(Painter, &View)` — the state machine hands its regions a [`View`] and no dt.
+//! [`update`] exists for the day `super::update` wants to hand one over and TAKES PRECEDENCE
+//! whenever it is called; until then [`draw`] advances from its own monotonic clock.
+//!
+//! The rule that buys: **`note_spring` cannot speak for a spring stepped in a draw.** `app.rs`
+//! runs `idle::frame_begin` → the update phase → `should_present` → the draw, and `frame_begin`
+//! clears the motion flag at the top of the next iteration — so a report raised during frame N's
+//! draw is wiped before anything reads it, the gate sees a still screen, and the animation creeps
+//! forward one clamped step per 2 s keepalive. [`advance_from_clock`] therefore reports the
+//! DISCRETE way, `ui::idle::invalidate`, which is a sticky flag `should_present` takes and clears
+//! — the same door `Spinner::draw` uses for the same reason. It is gated on an exact motion test
+//! ([`motion_sig`]) rather than raised unconditionally, or this screen would never settle.
 #![allow(dead_code)]
 
 use crate::search::{Item, Kind, Shelf};
@@ -69,7 +76,7 @@ use crate::ui::search::{View, Zone, CONTENT_TOP, HEAD_TO_ROW, LABEL_BLOCK};
 use crate::ui::theme;
 use crate::ui::widgets::Art;
 use crate::ui::{on_axis, Painter, Rect, Spring};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 use std::ptr::addr_of_mut;
 
@@ -86,13 +93,17 @@ const SOURCE_PAD: f32 = theme::space::XS;
 /// Air kept under the lowest visible content when a shelf is revealed by scrolling.
 const BOTTOM_PAD: f32 = theme::space::LG;
 
-/// Poster art is asked for at the size it is DRAWN, which is also the size every other poster in
-/// the app asks for — so a film already on a Home shelf is a poster-cache HIT here rather than a
-/// second trip through `/photo/:/transcode` into a second LRU slot.
-const POSTER_RES: (c_int, c_int) = (250, 375);
-/// The episode still, at `detail.rs`'s filmstrip resolution for the same reason.
+/// Art is asked for at the size the REST OF THE APP asks for it, never at this shelf's own tile
+/// size: the store key is `(server, path, w, h, png)`, so a film already on a Home shelf is a
+/// poster-cache HIT here rather than a second trip through `/photo/:/transcode` into a second slot
+/// of a 64-slot LRU. `detail.rs`'s filmstrip requests a still at 640×360 and `person.rs` a portrait
+/// at 300×300; these are those numbers, spelled here so the reason travels with them.
+///
+/// A POSTER has no constant, because `Art::Poster` resolves at its own fixed 250×375 inside
+/// `widgets::card` — the one below is only ever reached by a `Directory` hit that turned out to
+/// carry a thumb after all.
+const TAG_POSTER_RES: (c_int, c_int) = (250, 375);
 const STILL_RES: (c_int, c_int) = (640, 360);
-/// A headshot, at the `person.rs` portrait / detail credits size — the same slot again.
 const HEAD_RES: (c_int, c_int) = (300, 300);
 
 /// Tile size for a shelf of this kind: `(w, h, circular)`.
@@ -235,10 +246,22 @@ impl Owner {
 struct Shelves {
     rows: [CardRow; NSHELF],
     owner: Owner,
-    /// The count read-outs, baked when the number changes — digits change on a landing, not on a
-    /// frame, and a `format!` per shelf per frame is exactly the allocation the tile loop avoids.
+    /// The count read-outs, baked when a shelf's ANSWER changes — a `format!` per shelf per frame
+    /// is exactly the allocation the tile loop avoids.
     count_c: [CString; NSHELF],
-    count_n: [usize; NSHELF],
+    /// What each `count_c` was baked FOR: the kind and the item count together, never the count
+    /// alone. A shelf POSITION is not a kind — a query whose Movies hub comes back empty puts Cast
+    /// & Crew at index 0 — so a bare count leaves "Cast & Crew  5 results" on screen the moment the
+    /// two answers happen to be the same size. It is also the re-seat key (see [`advance`]).
+    count_key: [Option<(Kind, usize)>; NSHELF],
+    /// The shelf TITLES, NUL-terminated once for the life of the app: they are `&'static str` in
+    /// the store and would otherwise be a `CString::new` per shelf per frame. Indexed by the kind's
+    /// position in [`crate::search::KINDS`], not by shelf position, because an absent type shifts
+    /// every shelf below it. (`person.rs` writes its two as `c""` literals; these live in the store
+    /// as the headings, and one copy is better than two that can drift.)
+    title_c: [CString; NSHELF],
+    /// Last frame's [`motion_sig`], per row plus the annotation.
+    sig: [f32; NSHELF + 1],
     /// Frame clock for [`advance_from_clock`], and the latch that says [`update`] beat it to it.
     last: Option<std::time::Instant>,
     stepped: bool,
@@ -250,11 +273,16 @@ impl Shelves {
             rows: [CardRow::new(); NSHELF],
             owner: Owner::new(),
             count_c: std::array::from_fn(|_| CString::default()),
-            // no shelf can hold this many items, so the first advance bakes every read-out
-            count_n: [usize::MAX; NSHELF],
+            count_key: [None; NSHELF],
+            title_c: std::array::from_fn(|i| CString::new(crate::search::KINDS[i].title()).unwrap_or_default()),
+            sig: [0.0; NSHELF + 1],
             last: None,
             stepped: false,
         }
+    }
+    /// This kind's baked heading run.
+    fn title(&self, kind: Kind) -> &CStr {
+        &self.title_c[crate::search::KINDS.iter().position(|&k| k == kind).unwrap_or(0)]
     }
 }
 
@@ -315,33 +343,83 @@ pub(crate) fn update(dt: f32, v: &View) {
 /// The fallback: wall time since the last advance, clamped to something a spring can integrate. A
 /// long stall — a fetch, a route change, the app backgrounded — must not reach the integrator as
 /// one enormous step.
+///
+/// It also carries this path's own report to the frame gate; module doc point 5 has the whole
+/// reason, and the short version is that `note_spring` is already too late by the time a draw
+/// raises it. The test is EXACT rather than a settle timer — [`motion_sig`] against last frame's —
+/// which is what lets a settled screen stop repainting at all.
 fn advance_from_clock(v: &View) {
     let now = std::time::Instant::now();
     let dt = state().last.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(0.0);
     state().last = Some(now);
     advance(dt.clamp(0.0, 0.1), v);
+
+    let mut sig = [0.0f32; NSHELF + 1];
+    motion_sig(v, &mut sig);
+    let st = state();
+    if sig.iter().zip(st.sig.iter()).any(|(a, b)| (a - b).abs() > SIG_EPS) {
+        crate::ui::idle::invalidate();
+    }
+    st.sig = sig;
 }
+
+/// Everything on screen that a spring moves, summed PER ROW (plus the annotation as the last
+/// entry) so two rows settling in opposite directions cannot cancel each other into stillness.
+///
+/// The overflow cell is added by hand: a row longer than `CardRow`'s spring array shares one
+/// spring past it, which only the FOCUSED index reads, so walking `0..MAX_ROW_ITEMS` alone would
+/// miss the pop of a tile 30 slots into a long shelf.
+fn motion_sig(v: &View, out: &mut [f32; NSHELF + 1]) {
+    let shelves = crate::search::shelves();
+    let st = state();
+    for (i, slot) in out.iter_mut().enumerate().take(NSHELF) {
+        let row = &st.rows[i];
+        let n = shelves.get(i).map(|s| s.items.len()).unwrap_or(0);
+        let mut s = row.scroll_x() + row.lift();
+        for c in 0..n.min(card_row::MAX_ROW_ITEMS) {
+            s += row.scale(c);
+        }
+        if let Some(fc) = focus_col(v, i, n).filter(|&c| c >= card_row::MAX_ROW_ITEMS) {
+            s += row.scale(fc);
+        }
+        *slot = s;
+    }
+    out[NSHELF] = st.owner.a.pos;
+}
+
+/// The visibility floor for [`motion_sig`]: the signature is in PIXELS for the scroll and the lift
+/// and in scale units for the pops, and a thousandth of either is a third of a pixel on a 375-tall
+/// tile — under the quarter-pixel cap `ui::idle` judges its own springs by.
+const SIG_EPS: f32 = 1e-3;
 
 fn advance(dt: f32, v: &View) {
     let shelves = crate::search::shelves();
     let handle = owner_handle(v);
     let st = state();
     for (i, row) in st.rows.iter_mut().enumerate() {
-        let Some(s) = shelves.get(i) else {
-            // a shelf that is not there holds no focus and needs no style of its own
-            row.update(0, None, &RowStyle::HOME, dt);
-            continue;
-        };
-        let n = s.items.len();
-        if st.count_n[i] != n {
-            st.count_n[i] = n;
-            st.count_c[i] = CString::new(format!("{n} {}", s.kind.count_word(n))).unwrap_or_default();
-            // A DIFFERENT result set: re-seat the row rather than leave it holding the scroll
-            // offset of the previous query's answer (the store empties its shelves on the
-            // keystroke, so this fires on the clear as well as on the landing).
+        // A shelf's ANSWER — its kind and its extent. The store empties its shelves on the
+        // keystroke and refills them when the reply lands, so this is `None` for a frame or two in
+        // between, and both edges of that are changes.
+        let key = shelves.get(i).map(|s| (s.kind, s.items.len()));
+        if st.count_key[i] != key {
+            st.count_key[i] = key;
+            st.count_c[i] = match key {
+                Some((k, n)) => CString::new(format!("{n} {}", k.count_word(n))).unwrap_or_default(),
+                None => CString::default(),
+            };
+            // A DIFFERENT result set: re-seat the row rather than leave it parked in the scroll
+            // offset of a query whose answers are gone. Keyed on the answer rather than on the
+            // count alone, so two broad queries that both fill a shelf still re-seat it.
             *row = CardRow::new();
         }
-        row.update(n, focus_col(v, i, n), &style(s.kind), dt);
+        match shelves.get(i) {
+            // a shelf that is not there holds no focus and needs no style of its own
+            None => row.update(0, None, &RowStyle::HOME, dt),
+            Some(s) => {
+                let n = s.items.len();
+                row.update(n, focus_col(v, i, n), &style(s.kind), dt);
+            }
+        }
     }
     step_owner(&mut st.owner, v.row, handle, dt);
 }
@@ -384,16 +462,15 @@ pub(crate) fn draw(p: Painter, v: &View) {
     // higher, so the whole region rides ONE translate and every y below stays a flow coordinate.
     let pf = p.translate(0.0, -v.shift);
     let st: &Shelves = state();
-    let mut top = CONTENT_TOP;
-    for (i, s) in shelves.iter().take(NSHELF).enumerate() {
-        let bh = block_h(s.kind);
+    let (ks, n) = present();
+    for (i, s) in shelves.iter().take(n).enumerate() {
+        let top = stack_top(&ks[..n], i);
         // The VERTICAL cull, over the whole block: a shelf off the panel must not reach `strip` at
         // all, because that is where `resolve_tex` is called — the poster LRU is 64 slots against
         // five shelves of answers.
-        if on_axis(top - v.shift, bh, SCR_H, 0.0) {
+        if on_axis(top - v.shift, block_h(s.kind), SCR_H, 0.0) {
             draw_shelf(pf, st, s, i, v, top);
         }
-        top += bh;
     }
 }
 
@@ -405,9 +482,11 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
     // authored from `top`, never from the lifted line
     draw_heading(p, st, s, i, top - row.lift());
 
-    // The caption names the source the HEADING is naming, never the one it is on its way to: with
-    // both reading `owner.shown`, the screen cannot state two sources at once mid-fade.
-    let handle = if st.owner.row == i { st.owner.shown.as_str() } else { "" };
+    // The caption states the FOCUSED ITEM's own source, not the heading's settled one. The two are
+    // the same string except during the annotation's fade, and there the caption must be the one
+    // that is right: it is attached to a particular poster, at full opacity, and the heading's run
+    // is the one wearing the alpha that says it is mid-change.
+    let handle = owner_handle(v);
     card_row::strip(
         p,
         row,
@@ -442,13 +521,16 @@ fn draw_heading(p: Painter, st: &Shelves, s: &Shelf, i: usize, y: f32) {
     let pa = p.alpha(a);
     let cap = crate::text::cap_h(theme::size::HEADLINE, 1);
     heading_flow(
-        s.kind.title(),
-        cstr(&st.count_c[i]),
-        if a > OWNER_FLOOR { cstr(&st.owner.shown_c) } else { "" },
+        st.title(s.kind),
+        &st.count_c[i],
+        if a > OWNER_FLOOR { st.owner.shown_c.as_c_str() } else { c"" },
         |run, dx, sz, bold, ink, faded| {
-            // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
-            let Ok(cs) = CString::new(run) else { return 0.0 };
-            let mut lab = Label::new(cs.as_ptr(), sz, ink).v(VAlign::Baseline);
+            // Every run is a run this module already NUL-terminated — the titles for the life of
+            // the app, the count and the handle when they last changed. Nothing here allocates:
+            // a `CString::new` per run per shelf per frame is what the baking exists to avoid, and
+            // it is also the `ui/CLAUDE.md` lifetime gotcha (a temporary would be freed under the
+            // pointer `Label` holds).
+            let mut lab = Label::new(run.as_ptr(), sz, ink).v(VAlign::Baseline);
             if bold == 1 {
                 lab = lab.bold();
             }
@@ -466,10 +548,10 @@ fn draw_heading(p: Painter, st: &Shelves, s: &Shelf, i: usize, y: f32) {
 /// branch that draws nothing visible, which is what makes the feature free for a single-server
 /// library in geometry, in ink and in draw calls alike.
 fn heading_flow(
-    title: &str,
-    count: &str,
-    source: &str,
-    mut run: impl FnMut(&str, f32, c_int, c_int, [f32; 4], bool) -> f32,
+    title: &CStr,
+    count: &CStr,
+    source: &CStr,
+    mut run: impl FnMut(&CStr, f32, c_int, c_int, [f32; 4], bool) -> f32,
 ) -> f32 {
     let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING, false);
     if !count.is_empty() {
@@ -480,31 +562,35 @@ fn heading_flow(
         return dx;
     }
     dx += SOURCE_PAD;
-    dx += run("\u{b7}", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR, true);
+    dx += run(c"\u{b7}", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR, true);
     dx += SOURCE_PAD;
     dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, true);
     dx
 }
 
-/// A baked run as a `&str`, or empty. These are built from `format!`, so the failure branch is
-/// unreachable rather than merely unlikely.
-fn cstr(c: &CString) -> &str {
-    c.to_str().unwrap_or("")
-}
-
 /// One tile's artwork.
 ///
-/// An EPISODE takes `art`, never `thumb`: `pms::parse_item` deliberately puts the SHOW's portrait
-/// poster in an episode row's `thumb` (so a landscape still cannot fill a poster card on Home), and
-/// this shelf is the opposite shape. A COLLECTION has no artwork at all — `Directory` entries carry
-/// no thumb — so it resolves nothing and wears the tile's own skeleton face, which is the whole
-/// "an item with no art mounts no slot" rule and needs no branch of its own.
+/// A COLLECTION resolves nothing — `Directory` entries carry no thumb, so this is not the loading
+/// state but the resting one — and it takes `Art::Poster(None)` for that rather than an empty
+/// `Art::Thumb`, because the two draw DIFFERENT blank faces (`SKELETON_TOP`/`BOT` versus
+/// `CARD_PLACEHOLDER`) and a whole shelf of collections sits directly under a shelf of posters
+/// whose unloaded tiles wear the first one. Same blank, one vocabulary.
+///
+/// **An EPISODE takes `art`, and that is a known compromise, not the right answer.**
+/// `pms::parse_item` deliberately overwrites an episode row's `thumb` with the SHOW's portrait
+/// poster (`grandparentThumb`), so a landscape still cannot fill a poster card on Home — and the
+/// episode's own still is then not on the DTO at all. `art` is the show's landscape fanart: right
+/// shape, wrong specificity, so five episodes of one show draw one picture distinguished only by
+/// their captions. The fix belongs in the STORE, which parses these hits and can keep the still
+/// (`detail.rs` draws its filmstrip from the episode's own thumb at exactly [`STILL_RES`], so the
+/// cache slot is already the right one); this shelf needs no change when it does.
 fn tile_art<'a>(kind: Kind, it: &'a Item) -> Art<'a> {
     match (kind, it) {
         (Kind::Episode, Item::Media(m)) => Art::Thumb { sid: m.sid, key: &m.art, res: STILL_RES },
         (_, Item::Media(m)) => Art::Poster(Some(m)),
         (Kind::Person, Item::Tag(t)) => Art::Person { sid: t.sid, key: &t.thumb, res: HEAD_RES },
-        (_, Item::Tag(t)) => Art::Thumb { sid: t.sid, key: &t.thumb, res: POSTER_RES },
+        (_, Item::Tag(t)) if t.thumb.is_empty() => Art::Poster(None),
+        (_, Item::Tag(t)) => Art::Thumb { sid: t.sid, key: &t.thumb, res: TAG_POSTER_RES },
     }
 }
 
@@ -550,22 +636,24 @@ fn subtitle(kind: Kind, it: &Item, handle: &str) -> String {
 pub(crate) fn tile_at(v: &View, mx: f32, my: f32) -> Option<(usize, usize)> {
     let shelves = crate::search::shelves();
     let st: &Shelves = state();
-    let mut top = CONTENT_TOP;
-    for (i, s) in shelves.iter().take(NSHELF).enumerate() {
-        let (w, h, _) = tile_size(s.kind);
-        let row_y = top + HEAD_TO_ROW - v.shift;
-        top += block_h(s.kind);
-        if my < row_y || my > row_y + h {
+    let (ks, n) = present();
+    for (i, s) in shelves.iter().take(n).enumerate() {
+        // The DRAW's numbers, asked for the same way the draw asks: `stack_top` for the flow and
+        // the kind's own `RowStyle` for the pitch and the margin. Deriving either from the bare
+        // consts would agree only for as long as every kind keeps `RowStyle::HOME`'s gap.
+        let sty = style(s.kind);
+        let row_y = stack_top(&ks[..n], i) + HEAD_TO_ROW - v.shift;
+        if my < row_y || my > row_y + sty.h {
             continue; // not in this shelf's band
         }
-        let x = mx - (MARGIN_X - st.rows[i].scroll_x());
+        let x = mx - (sty.margin_x - st.rows[i].scroll_x());
         if x < 0.0 {
             return None;
         }
-        let slot = w + GAP;
+        let slot = sty.w + sty.gap;
         let c = (x / slot) as usize;
         // reject the inter-tile gap: only the tile's own width is a hit
-        return (c < s.items.len() && x - c as f32 * slot <= w).then_some((i, c));
+        return (c < s.items.len() && x - c as f32 * slot <= sty.w).then_some((i, c));
     }
     None
 }
@@ -581,6 +669,10 @@ mod tests {
     /// One 60 Hz frame.
     const DT: f32 = 1.0 / 60.0;
     const ALL: [Kind; 5] = crate::search::KINDS;
+
+    fn cs(s: &str) -> CString {
+        CString::new(s).expect("test literal")
+    }
 
     /// **The band this screen RESERVES must hold the block `card_row` actually draws.**
     /// [`super::super::LABEL_BLOCK`] is fixed by the keyboard clearance the whole layout is built
@@ -668,10 +760,13 @@ mod tests {
         let w = |s: &str, sz: c_int| s.chars().count() as f32 * sz as f32 * 0.5;
         type Run = (String, f32, c_int, c_int, [f32; 4], bool);
         let runs = |title: &str, count: &str, src: &str| {
+            let (t, c, s) = (cs(title), cs(count), cs(src));
             let mut out: Vec<Run> = Vec::new();
-            heading_flow(title, count, src, |s, dx, sz, bold, ink, faded| {
-                out.push((s.to_string(), dx, sz, bold, ink, faded));
-                w(s, sz)
+            heading_flow(&t, &c, &s, |run, dx, sz, bold, ink, faded| {
+                let txt = run.to_str().unwrap_or_default().to_string();
+                let adv = w(&txt, sz);
+                out.push((txt, dx, sz, bold, ink, faded));
+                adv
             });
             out
         };
