@@ -9,7 +9,7 @@ use crate::ui::icons::Icon;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{badge, resolve_tex, BadgeStyle};
+use crate::ui::widgets::{badge, resolve_tex_on, BadgeStyle};
 use crate::ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -225,7 +225,8 @@ pub(crate) fn draw() {
     let sy = cyt + (ch - sh) * 0.5;
     let mut drawn = false;
     if !thumb_path.is_empty() {
-        let t = resolve_tex(&thumb_path, 480, 270, 0);
+        // the PLAYING item's server — the info panel describes what is on the video plane
+        let t = resolve_tex_on(crate::route::item_sid(crate::route::cur_sid()), &thumb_path, 480, 270, 0);
         if t != 0 {
             p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
             drawn = true;

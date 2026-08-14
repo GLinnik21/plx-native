@@ -28,7 +28,7 @@ use crate::ui::label::HAlign;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    resolve_tex_wh, AmbientWash, Art, Button, CircleButton, ControlStyle, TabPill, TabStrip,
+    resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, ControlStyle, TabPill, TabStrip,
     HERO_BASE_SCRIM_Y0,
 };
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
@@ -704,6 +704,19 @@ fn hero_art_path(m: Option<&PmsMovie>) -> String {
         .or_else(|| d.filter(|d| is_episode(d)).map(|d| d.thumb.clone()).filter(|s| !s.is_empty()))
         .or_else(|| m.filter(|m| !m.art.is_empty()).map(|m| m.art.clone()))
         .or_else(|| d.map(|d| d.art.clone()).filter(|s| !s.is_empty()))
+        .unwrap_or_default()
+}
+
+/// The server [`hero_art_path`]'s picture is a key on. Every rung of that ladder — the hero
+/// episode, the loaded `Detail`, the catalog row — belongs to the page's own server, because the
+/// episodes were fetched from the `Detail` and the row is the same item; so this is one answer, not
+/// one per rung. The loaded page wins over the catalog row: a page can outlive the row that opened
+/// it (a hub refetch can orphan it), and it is the page whose art is on screen.
+fn hero_art_sid(m: Option<&PmsMovie>) -> crate::plex::ServerId {
+    metadata::current()
+        .map(|d| d.sid)
+        .filter(|s| s.is_set())
+        .or_else(|| m.map(|m| m.sid))
         .unwrap_or_default()
 }
 
@@ -1811,7 +1824,7 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
     // Which picture (`hero_art_path` owns the ladder and its rationale), and at what DECODED size —
     // the size is what lets the blit COVER the panel instead of stretching to it.
     let (art_tex, art_w, art_h) = if art_a > 0.01 {
-        resolve_tex_wh(&hero_art_path(m), HERO_ART.0, HERO_ART.1, 0)
+        resolve_tex_wh_on(hero_art_sid(m), &hero_art_path(m), HERO_ART.0, HERO_ART.1, 0)
     } else {
         (0, 0.0, 0.0)
     };
@@ -1893,7 +1906,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
     let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
     let band = hero_logo::band_h(LogoRung::Hero);
-    HeroLogo::new(rk, title, LogoRung::Hero).draw(p, Rect::new(tx, TITLE_BOTTOM - band, HERO_TEXT_W, band));
+    HeroLogo::new(hero_art_sid(m), rk, title, LogoRung::Hero).draw(p, Rect::new(tx, TITLE_BOTTOM - band, HERO_TEXT_W, band));
 
     // ---- meta line: "TV Show · Sci-Fi · Adventure · 18+", or for an EPISODE's own page
     // "<show name> · S1, E1 · TV-MA". ----
@@ -2708,7 +2721,7 @@ fn draw_compact_title(p: Painter, m: Option<&PmsMovie>) {
     let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
     let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
     let band = hero_logo::band_h(LogoRung::Compact);
-    HeroLogo::new(rk, title, LogoRung::Compact)
+    HeroLogo::new(hero_art_sid(m), rk, title, LogoRung::Compact)
         .align(HAlign::Center)
         .draw(p, Rect::new(MARGIN_X, COMPACT_TITLE_BOT - band, SCR_W - 2.0 * MARGIN_X, band));
 }
@@ -2800,7 +2813,7 @@ fn draw_episodes(p: Painter) {
         let popped = still_focused || sc > 1.001;
         let card = Rect::new(x, ep_y, EP_W, EP_H);
         // episode still + focus ring + scale-pop (shared with the chapters strip)
-        crate::ui::widgets::draw_card(pe, card, &ep.thumb, (640, 360), 12.0, popped, sc);
+        crate::ui::widgets::draw_card(pe, card, d.sid, &ep.thumb, (640, 360), 12.0, popped, sc);
         // Marks ON the still: the scrim, ONE state line on it, and the full-bleed progress bar. All
         // three track the SCALED card while it is popped.
         let cr = if popped { card.scaled(sc) } else { card };
@@ -2991,7 +3004,7 @@ fn draw_related(p: Painter) {
         REL_W + REL_GAP,
         &RowStyle::HOME,
         SCR_W,
-        |i| Art::Thumb { key: &d.related[i].thumb, res: (250, 375) },
+        |i| Art::Thumb { sid: d.sid, key: &d.related[i].thumb, res: (250, 375) },
         |_| None,
         |i| card_row::TileLabel::title(&d.related[i].title),
         |_, _, _, _| {},
@@ -3035,7 +3048,7 @@ fn draw_cast(p: Painter) {
         // server, and the person glyph says "no photo" where a bare placeholder disc said
         // "broken image". The absolute metadata-static.plex.tv URL rides the SAME server-side
         // /photo/:/transcode fetch the actor headshots already use.
-        |i| Art::Person { key: d.credit(i).map_or("", |c| c.thumb.as_str()), res: (300, 300) },
+        |i| Art::Person { sid: d.sid, key: d.credit(i).map_or("", |c| c.thumb.as_str()), res: (300, 300) },
         |_| None, // resume: a person is not an item with a playhead
         // every credit is captioned by `extra`, focused or not — so no TileLabel
         |_| card_row::TileLabel::default(),

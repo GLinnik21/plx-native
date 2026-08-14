@@ -209,6 +209,23 @@ static mut WANT: (usize, usize) = (0, 0);
 fn sections() -> &'static Vec<BrowseSection> {
     unsafe { &*addr_of!(SECTIONS) }
 }
+/// Source indices whose libraries have actually been ENUMERATED — the domain over which a pin can
+/// mean anything.
+///
+/// Not the roster: discovery for a source other than the current one runs on a worker off [`pump`],
+/// which only runs while the Library screen is up, so a freshly booted app knows the roster and none
+/// of its shares' libraries. `pms::feeds_home` needs the difference, because "no pinned library"
+/// must not read as "the user turned this source off" for a source nobody has asked about yet.
+pub(crate) fn discovered_sources() -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    for s in sections() {
+        if !out.contains(&s.src) {
+            out.push(s.src);
+        }
+    }
+    out
+}
+
 /// The granted roster, in registration order — the session's own server first.
 pub(crate) fn sources() -> &'static [BrowseSource] {
     unsafe { &*addr_of!(SOURCES) }
@@ -788,6 +805,11 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
     }
     let Some(s) = (unsafe { (&mut *addr_of_mut!(SECTIONS)).get_mut(i) }) else { return false };
     s.pinned = !s.pinned;
+    // The pin is an input to Home's merge (`pms::feeds_home`), and the merge re-runs off this
+    // generation — without the bump the switch said `On`, the store agreed, and Home did not
+    // change until something else happened to land. Reported on the device exactly that way:
+    // "LDN Films are enabled On Home but not on home".
+    SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
     crate::ui::idle::invalidate();
     true
 }
