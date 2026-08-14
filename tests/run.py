@@ -348,6 +348,10 @@ def resolve_shared_server(admin_token, spec):
     return {
         "name": spec.get("name") or hit.get("name") or "shared",
         "machine_id": hit.get("clientIdentifier") or want_mid or "",
+        # The OWNER's plex.tv handle, straight off the resource. It is what every browsing surface
+        # says out loud (the Sources list, the Library chip), and it is also what tells the app this
+        # is somebody else's server at all: empty means owned. Public, unlike the token below.
+        "handle": hit.get("sourceTitle") or "",
         "host": host,
         "port": int(port or 32400),
         "token": token,

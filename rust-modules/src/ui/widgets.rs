@@ -1701,14 +1701,20 @@ impl TabStrip {
 // sections>) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
 // Library screen so they read as one global tab bar; the pill rects live here so both
 // screens' pointer paths share [`tab_pill_at`]. ----
-/// Home + **every** discovered library section. Focus walking clamps to this — the invariant is
-/// still "a pill that can't be drawn must never be focusable", but it now holds by construction
+/// Home + every library section **that gets a pill**. Focus walking clamps to this — the invariant
+/// is still "a pill that can't be drawn must never be focusable", but it now holds by construction
 /// rather than by a cap: the strip scrolls horizontally inside its track (see
 /// [`tab_scroll_target`]), so every pill can be brought into view and every pill is focusable.
 /// This used to be a hard `MAX_TABS = 5`, which left a fifth `movie`/`show` section unreachable
 /// from the UI even though `browse` discovers it and the grid browses it fine.
+///
+/// It is `browse::tab_count`, NOT `section_count`, and the difference is a design call rather than
+/// a detail: **a pill is a TYPE, never a person**. The strip names your own libraries (plus any
+/// type only a friend has), source lives in the Library toolbar's Source chip one line below, and
+/// so the strip is the same width at one friend or at ten. With a single source the two counts are
+/// identical, which is why nothing about a one-server install changed.
 pub(crate) fn tab_count() -> usize {
-    1 + crate::browse::section_count()
+    1 + crate::browse::tab_count()
 }
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 pub(crate) const TOP_BAR_Y: f32 = 44.0;
@@ -1786,11 +1792,11 @@ fn with_tab_metrics<R>(f: impl FnOnce(&[std::ffi::CString], &[f32]) -> R) -> R {
     let gen = crate::browse::sections_gen();
     let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
     if cache.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
-        let nsec = crate::browse::section_count();
+        let nsec = crate::browse::tab_count();
         let mut labels: Vec<CString> = Vec::with_capacity(1 + nsec);
         labels.push(CString::new("Home").unwrap_or_default());
         for i in 0..nsec {
-            labels.push(CString::new(crate::browse::section_title(i)).unwrap_or_default());
+            labels.push(CString::new(crate::browse::tab_title(i)).unwrap_or_default());
         }
         // measure bold (the widest state) so pill widths don't change with focus; pill =
         // label + the season tabs' ±18 padding
