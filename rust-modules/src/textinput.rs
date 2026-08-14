@@ -100,7 +100,7 @@ mod host_test_sdl {
     pub(super) unsafe fn SDL_StopTextInput() {}
 }
 use crate::log;
-use std::os::raw::c_void;
+use std::os::raw::{c_int, c_void};
 use std::ptr::{addr_of, addr_of_mut};
 
 /// `SDL_TEXTINPUTEVENT_TEXT_SIZE` — `char text[32]`, inline in the event rather than a pointer.
@@ -144,6 +144,36 @@ static mut WIN: *mut c_void = std::ptr::null_mut();
 /// started yet. So [`start`] re-reads it at the one moment it decides anything.
 pub(crate) fn bind(win: *mut c_void) {
     unsafe { *addr_of_mut!(WIN) = win };
+    trace_driver();
+}
+
+/// `SDL_LOG_CATEGORY_INPUT` / `SDL_LOG_PRIORITY_DEBUG`, from `SDL_log.h`.
+const SDL_LOG_CATEGORY_INPUT: c_int = 3;
+const SDL_LOG_PRIORITY_DEBUG: c_int = 2;
+
+/// Ask LG's SDL to narrate its own keyboard lifecycle into stderr
+/// (`/tmp/plxnative-stderr.log`).
+///
+/// The driver already logs `[WebOSShowScreenKeyboard] called`, `... called text_model_activate`,
+/// `[TextModelLeave] called`, `[TextModelInputPanelState] called - state: %d` and
+/// `[WebOSHideScreenKeyboard] called` — at `INPUT`/`DEBUG`, which is below the default priority,
+/// so none of it prints. One call makes the whole sequence readable without patching SDL.
+///
+/// It is here for a specific open question, not as general noise. Disassembly says the panel
+/// cannot be REOPENED because `text_model.leave` NULLs the model *before* calling
+/// `SDL_StopTextInput`, so `WebOSHideScreenKeyboard` early-returns and `text_model_deactivate` is
+/// never sent — after which the compositor ignores every later `activate`. The decisive
+/// observation is whether `[TextModelLeave] called` appears BEFORE our own `stop()`: if it does,
+/// the compositor dismissed the panel and that path ran; if it does not, our dismissal sent the
+/// deactivate and something else is wrong. One is a five-line mitigation, the other is not.
+///
+/// Cheap and permanent: a handful of lines per keyboard session, on a log that is already the
+/// primary debugging surface, on a path a user reaches only by opening a search field.
+fn trace_driver() {
+    #[cfg(not(test))]
+    unsafe {
+        crate::app::SDL_LogSetPriority(SDL_LOG_CATEGORY_INPUT, SDL_LOG_PRIORITY_DEBUG);
+    }
 }
 
 /// `SDL_GetWindowFlags & SDL_WINDOW_INPUT_FOCUS`, or `None` before [`bind`].
@@ -210,6 +240,11 @@ pub(crate) fn stop() {
             return;
         }
         *addr_of_mut!(STARTED) = false;
+        // The other half of `start`'s line, and the pair is the point: `start` is a NO-OP while
+        // `STARTED` is set, so a `stop` that never runs makes every later `start` silent and the
+        // panel simply never returns — which looks exactly like the driver's own reopen wedge and
+        // is not it. With both transitions logged, one log answers which of the two you have.
+        log("keyboard: stop");
         SDL_StopTextInput();
     }
 }
