@@ -104,6 +104,11 @@ extern "C" {
     pub(crate) fn SDL_IsTextInputActive() -> c_int;
     pub(crate) fn SDL_HasScreenKeyboardSupport() -> c_int;
     pub(crate) fn SDL_GetWindowFlags(w: *mut c_void) -> u32;
+    /// Turn the DRIVER's own tracing on for one category. LG's `WebOSShowScreenKeyboard` /
+    /// `Hide` / `TextModelLeave` / `TextModelInputPanelState` all log through SDL at
+    /// `SDL_LOG_CATEGORY_INPUT`, which is silent at the default priority — so this is how the
+    /// keyboard's real lifecycle becomes readable without patching SDL.
+    pub(crate) fn SDL_LogSetPriority(category: c_int, priority: c_int);
     fn glGetString(name: c_uint) -> *const c_char;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);

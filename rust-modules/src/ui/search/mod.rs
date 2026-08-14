@@ -354,9 +354,14 @@ fn view() -> View {
 /// Mount the screen. `q` pre-seeds the field — the boot trigger's whole job, since a headless
 /// screenshot cannot type.
 pub(crate) fn enter(q: &str) {
+    // Through `stop()`, not by clearing the flag: `textinput` keeps its OWN `STARTED`, and
+    // `start()` is a no-op while that is set. Clearing `EDITING` alone would leave the two
+    // disagreeing, after which no later press could ever raise the panel again — the same symptom
+    // as the driver's reopen wedge, with a cause entirely our own. `stop()` is guarded, so this
+    // costs nothing on the normal arrival where the panel was never up.
+    leave();
     unsafe {
         *addr_of_mut!(ZONE) = Zone::Field;
-        *addr_of_mut!(EDITING) = false;
         *addr_of_mut!(ROW) = 0;
         *addr_of_mut!(COL) = 0;
         *addr_of_mut!(RECENT) = 0;
