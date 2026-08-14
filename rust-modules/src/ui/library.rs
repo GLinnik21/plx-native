@@ -2449,7 +2449,7 @@ mod tests {
             vec![
                 lib(0, 0, "Movies", true, false, true),
                 lib(0, 1, "TV Shows", true, false, false),
-                lib(1, 2, "LDN Films", false, false, false),
+                lib(1, 2, "Film Club", false, false, false),
             ],
         )
     }
