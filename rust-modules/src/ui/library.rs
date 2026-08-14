@@ -1891,11 +1891,11 @@ mod tests {
     /// Our own server with two libraries and a friend's with one — the canvas's own shape.
     fn two_sources() -> (Vec<crate::browse::SrcGroup>, Vec<crate::browse::SrcRow>) {
         (
-            vec![group("mac-mini", "", true), group("<peer-name-2>", "<peer-owner-1>", true)],
+            vec![group("mac-mini", "", true), group("nas-home", "friend", true)],
             vec![
                 lib(0, 0, "Movies", true, false, true),
                 lib(0, 1, "TV Shows", true, false, false),
-                lib(1, 2, "LDN Films", false, false, false),
+                lib(1, 2, "Film Club", false, false, false),
             ],
         )
     }
@@ -1943,7 +1943,7 @@ mod tests {
         let (secs, _) = source_sections(Level::OnHome, &g, &r);
         assert_eq!(secs.len(), 2);
         assert_eq!((secs[0].header.as_str(), secs[0].accessory.as_str()), ("mac-mini", ""));
-        assert_eq!((secs[1].header.as_str(), secs[1].accessory.as_str()), ("<peer-name-2>", "<peer-owner-1>"));
+        assert_eq!((secs[1].header.as_str(), secs[1].accessory.as_str()), ("nas-home", "friend"));
         assert!(!secs[0].dim && !secs[1].dim);
 
         g[1].reachable = false;
@@ -1954,7 +1954,7 @@ mod tests {
         assert!(!secs[0].dim, "…and only that group");
         assert_eq!(secs[1].rows[0].toggle, Some(true), "it still reads On — nothing was turned off");
         // the state leads the accessory, so the run that gives way under elision is the handle
-        assert_eq!(secs[1].accessory, "Not reachable \u{b7} <peer-owner-1>");
+        assert_eq!(secs[1].accessory, "Not reachable \u{b7} friend");
 
         // a source whose libraries we never learned contributes no group at all: a header over
         // nothing reads as broken, and absence is the answer for a share that has never answered

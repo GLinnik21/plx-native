@@ -110,7 +110,7 @@ pub(crate) struct DevServer {
     /// `plxnative-token` cannot express two servers. A SECRET — never logged.
     #[serde(default)]
     pub(crate) token: String,
-    /// The owner's plex.tv handle (`sourceTitle` on the wire) — "<peer-owner-1>". EMPTY means **your own
+    /// The owner's plex.tv handle (`sourceTitle` on the wire) — "friend". EMPTY means **your own
     /// server**, which is what the Sources list draws as the absence of an owner rather than as an
     /// anonymous one, so a harness overlay that omits it injects an owned server by definition.
     /// Public, like the machine name: it is the string every browsing surface says out loud.
