@@ -37,6 +37,13 @@ pub(crate) fn take_upload_stats() -> (u32, u64) {
 }
 
 const PT_CAP: usize = 64;
+/// Bytes a slot's key array holds, NUL included — see [`Pslot::key`] for the cliff at the end of
+/// it, and [`KEY_MAX`] for the gate that keeps requests off it.
+const PT_KEYLEN: usize = 256;
+/// The longest built path that survives the round trip into a slot intact. Derived from
+/// [`PT_KEYLEN`] rather than written as a literal, so the gate cannot drift from the array it
+/// gates.
+const KEY_MAX: usize = PT_KEYLEN - 1;
 const P_EMPTY: c_int = 0;
 const P_WANT: c_int = 1;
 const P_LOADING: c_int = 2;
@@ -69,11 +76,14 @@ pub(crate) enum Warm {
 
 #[derive(Clone, Copy)]
 struct Pslot {
-    // Full /photo/:/transcode request path = store key. NB set_key TRUNCATES to 255 bytes + NUL:
-    // a key at/over 256 bytes would never match its probe again (the text.rs glyph cache had this
-    // exact bug at 96 — fixed with klen there). Real keys run ~135 bytes today; if the path shape
-    // ever grows past ~255, key this the klen way too.
-    key: [u8; 256],
+    // Full /photo/:/transcode request path = store key. NB set_key TRUNCATES to KEY_MAX bytes +
+    // NUL: a key at/over PT_KEYLEN would never match its probe again (the text.rs glyph cache had
+    // this exact bug at 96 — fixed with klen there), so every frame would miss, claim a fresh slot
+    // and evict a real poster — the whole store thrashing over one tile. `poster_key` now REFUSES
+    // to hand out a path this cannot hold (see [`KEY_MAX`]), which turns that into one skeleton
+    // tile; if the shape ever routinely needs more room, key this the klen way instead of raising
+    // the number.
+    key: [u8; PT_KEYLEN],
     /// Which server this art was asked of — the OTHER half of the slot's identity, and what the
     /// worker dials. Two servers can hand out the same `/photo/:/transcode?url=/library/metadata/
     /// 42/thumb/…` path (their rating keys are both server-local integers from 1), so a key alone
@@ -89,8 +99,18 @@ struct Pslot {
     frame: c_uint, // last frame poster_get touched it (evict-protect)
 }
 impl Pslot {
-    const ZERO: Pslot =
-        Pslot { key: [0; 256], srv: ServerId::UNSET, tex: 0, pw: 0, ph: 0, px: 0, state: P_EMPTY, use_: 0, gen: 0, frame: 0 };
+    const ZERO: Pslot = Pslot {
+        key: [0; PT_KEYLEN],
+        srv: ServerId::UNSET,
+        tex: 0,
+        pw: 0,
+        ph: 0,
+        px: 0,
+        state: P_EMPTY,
+        use_: 0,
+        gen: 0,
+        frame: 0,
+    };
 }
 
 /// Does this slot hold the art `srv` was asked for under `key`?
@@ -211,10 +231,34 @@ static mut KEY_MEMO: Option<KeyMemo> = None;
 /// The path (and token) come from that server's own `image_transcode_path` — the one place that
 /// assembles a /photo/:/transcode request — so this stays the LRU key AND the fetch path.
 ///
-/// A server the registry does not know writes an EMPTY key, which every store entry point reads
-/// as "nothing to fetch": there is no address to dial and no token to sign with, and a claimed
-/// slot for a key that can never resolve is a tile that stays a skeleton forever while holding
-/// one of [`PT_CAP`].
+/// ## `src_path` may be RELATIVE or ABSOLUTE, and both take this one route
+///
+/// Most art is a PMS-relative key (`/library/metadata/42/thumb/1778526065`). Search's `Directory[]`
+/// results are the exception: an `actor` row's `thumb` is an **absolute
+/// `https://metadata-static.plex.tv/…jpg`**, a different host entirely — and `stream.rs` has
+/// neither DNS nor TLS, so the app can never dial it. It does not have to. `image_transcode_path`
+/// percent-encodes whatever it is given into `url=` (`enc` is RFC3986-unreserved passthrough, so
+/// `:` and `/` both become `%XX`), the request still goes to our own PMS, and **the server does
+/// the TLS on our behalf**. Verified live against PMS 1.43.3 (2026-08-14): a headshot URL encoded
+/// into `url=` answers `200 image/jpeg`, exactly the requested 300×300. `docs/pms-api.md` §2 says
+/// the same thing about the detail page's cast row and adds the rule this doc is here to keep —
+/// **never invent another image route for them**. There is deliberately no second code path: the
+/// two shapes differ only in how long the encoded value is.
+///
+/// ## Three sources get an EMPTY key, which every store entry point reads as "nothing to fetch"
+///
+/// The alternative is a claimed slot for a request that can never resolve — a tile that stays a
+/// skeleton forever while holding one of [`PT_CAP`].
+///
+///  * **A server the registry does not know**: no address to dial, no token to sign with.
+///  * **An empty `src_path`**, which used to fall through and build a fetchable-LOOKING
+///    `…&url=&X-Plex-Token=…`. This server answers that **404 `text/html`** (measured), so each one
+///    burnt a slot as `P_FAILED` until the LRU walked back to it. A rarity worth ignoring while
+///    every caller was `ui::widgets::resolve_tex_on`, which refuses an empty path at the call site
+///    — but SEARCH makes it the normal case for a WHOLE SHELF, because a `/hubs/search`
+///    `collection` row carries no `thumb` at all (nor a `ratingKey` — see `search::TagHit::thumb`).
+///  * **A built path longer than a slot can key** (see [`KEY_MAX`]) — the cliff absolute URLs
+///    brought within sight, and the worst of the three if it is let through.
 pub(crate) fn poster_key(srv: ServerId, dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
     if dst.is_null() || cap == 0 {
         return;
@@ -224,12 +268,22 @@ pub(crate) fn poster_key(srv: ServerId, dst: *mut c_char, cap: usize, src_path: 
         return;
     };
     unsafe {
-        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo { map: std::collections::HashMap::new() });
         let path = cstr(src_path);
+        if path.is_empty() {
+            crate::cbuf::set(dst, cap, "");
+            return;
+        }
+        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo { map: std::collections::HashMap::new() });
         let s = memo.get_or_build(srv.raw(), &path, w, h, png != 0, c.token_gen(), || {
             c.image_transcode_path(&path, w as i64, h as i64, png != 0)
         });
-        crate::cbuf::set(dst, cap, s);
+        // A path the slot array cannot hold is worse than no path: `set_key` would truncate it,
+        // the truncated key would never equal the probe that built it, and every frame would claim
+        // a fresh slot and evict a real poster. Refusing hands back the same skeleton an unknown
+        // server gets. Headroom today is comfortable and worth stating so a future shape can be
+        // judged against it: a headshot key measures ~177 bytes of the 255 (54 fixed + 89 encoded
+        // URL + 34 of token), an ordinary relative thumb ~140.
+        crate::cbuf::set(dst, cap, if s.len() <= KEY_MAX { s } else { "" });
     }
 }
 
@@ -615,13 +669,153 @@ pub(crate) fn posters_shutdown() {
 
 #[cfg(test)]
 mod tests {
-    //! The pure half of the store: which slot a miss claims, and whether the store is quiet.
+    //! The pure half of the store: which slot a miss claims, whether the store is quiet, and what
+    //! [`poster_key`] builds.
     //!
-    //! Ordinary parallel tests — every one of these drives a LOCAL `[Pslot; PT_CAP]` array rather
-    //! than the `STORE` singleton, deliberately: the singleton's eviction path frees a GL texture
-    //! and no test binary on this host links GL. That boundary is exactly why [`victim`] and
-    //! [`idle_of`] were split out of [`lookup`]/[`store_idle`] in the first place.
+    //! The LRU tests are ordinary parallel ones — each drives a LOCAL `[Pslot; PT_CAP]` array
+    //! rather than the `STORE` singleton, deliberately: the singleton's eviction path frees a GL
+    //! texture and no test binary on this host links GL. That boundary is exactly why [`victim`]
+    //! and [`idle_of`] were split out of [`lookup`]/[`store_idle`] in the first place.
+    //!
+    //! The key-building tests are the exception and take [`crate::testlock::serial`]: they need a
+    //! server in the registry, which is a crate global. They still touch no socket and no GL —
+    //! `poster_key` only formats a string.
     use super::*;
+
+    /// A synthetic headshot URL of the SHAPE the server really returns for a `/hubs/search`
+    /// `actor` row: absolute, on Plex's metadata CDN, with a 32-hex digest. A made-up digest
+    /// rather than a captured one, so nothing here is a record of who is in anyone's library —
+    /// the LENGTH is what the encoding and the [`KEY_MAX`] headroom are graded on, and it matches.
+    const HEADSHOT: &str = "https://metadata-static.plex.tv/a/people/0123456789abcdef0123456789abcdef.jpg";
+    /// The same, encoded — every `:` and `/` gone, which is the whole reason the PMS photo
+    /// transcoder can be handed a third-party URL as a query VALUE.
+    const HEADSHOT_ENC: &str =
+        "https%3A%2F%2Fmetadata-static.plex.tv%2Fa%2Fpeople%2F0123456789abcdef0123456789abcdef.jpg";
+
+    /// A registry holding exactly one server, emptied again on the way out. The reset on DROP is
+    /// the load-bearing half: `browse::pump` adopts every registered slot as a source and spawns a
+    /// discovery worker for it, so a server left behind here would have another module's tests
+    /// dialling a dead loopback port on a background thread.
+    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    impl Drop for Fresh {
+        fn drop(&mut self) {
+            crate::plex::reset_servers_for_test();
+        }
+    }
+    /// `register_for_test`, not the public `register`: the latter resolves the device id through
+    /// `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
+    fn one_server() -> (Fresh, ServerId, &'static str) {
+        let g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let tok = "tok-poster-test";
+        let sid = crate::plex::register_for_test("poster-test", "127.0.0.1", 32400, tok, "cid-poster-test");
+        (Fresh(g), sid, tok)
+    }
+
+    /// Build a key through the real [`poster_key`], into the same 352-byte buffer
+    /// `ui::widgets::tex_key` uses — so these grade the string a draw actually receives, not a
+    /// reimplementation of it.
+    fn key_for(srv: ServerId, src: &str, w: c_int, h: c_int, png: c_int) -> String {
+        let src_c = std::ffi::CString::new(src).expect("test source paths carry no NUL");
+        let mut buf = [0u8; 352];
+        poster_key(srv, buf.as_mut_ptr() as *mut c_char, buf.len(), src_c.as_ptr(), w, h, png);
+        String::from_utf8_lossy(crate::cbuf::as_bytes(&buf)).into_owned()
+    }
+
+    /// **Search's `Directory[]` half, and the reason this file needed no second image route.** An
+    /// `actor` result's `thumb` is an absolute `https://metadata-static.plex.tv/…` URL on a host
+    /// `stream.rs` can never reach — it has neither DNS nor TLS. It does not need to: the URL goes
+    /// in as the `url=` VALUE, percent-encoded whole, and the request still goes to our own PMS,
+    /// which fetches it over TLS on our behalf. Verified live against PMS 1.43.3 (2026-08-14):
+    /// `200 image/jpeg`, exactly the requested 300×300.
+    ///
+    /// The assertions that matter are that nothing survives raw — a bare `://` or `?` in a query
+    /// value would end the `url` parameter early and hand the server a truncated address — and
+    /// that the token still lands at the end, on the outer request rather than inside `url=`.
+    #[test]
+    fn an_absolute_headshot_is_percent_encoded_into_the_url_parameter() {
+        let (_g, sid, tok) = one_server();
+        let k = key_for(sid, HEADSHOT, 300, 300, 0);
+
+        assert!(k.starts_with("/photo/:/transcode?width=300&height=300&minSize=1&url="), "wrong request shape: {k}");
+        assert!(k.contains(&format!("url={HEADSHOT_ENC}&")), "the absolute URL is not encoded whole: {k}");
+        assert!(!k.contains("://"), "a raw scheme separator would truncate the url parameter: {k}");
+        assert!(k.ends_with(&format!("&X-Plex-Token={tok}")), "the token belongs to the OUTER request: {k}");
+
+        // The headroom the doc quotes, pinned. A headshot key is the longest shape the store holds
+        // today; if a future one crosses KEY_MAX it is refused rather than truncated (below), so
+        // this failing means artwork silently became skeletons, not that anything corrupted.
+        assert!(k.len() <= KEY_MAX, "a headshot key must fit a slot: {} bytes", k.len());
+    }
+
+    /// The other half of "keep the existing path untouched": a PMS-relative key is encoded by the
+    /// same rule and comes out the same shape it always did. Both kinds reach the transcoder
+    /// through one code path, and this is what says so.
+    #[test]
+    fn a_relative_thumb_still_takes_the_old_path() {
+        let (_g, sid, _) = one_server();
+        let k = key_for(sid, "/library/metadata/42/thumb/1778526065", 250, 375, 0);
+        assert!(k.starts_with("/photo/:/transcode?width=250&height=375&minSize=1&url="), "wrong request shape: {k}");
+        assert!(k.contains("url=%2Flibrary%2Fmetadata%2F42%2Fthumb%2F1778526065&"), "relative key mis-encoded: {k}");
+
+        // png=1 is the clearLogo flavour — the one thing that changes the shape — and it must not
+        // have moved either.
+        let logo = key_for(sid, "/library/metadata/42/clearLogo", LOGO_REQ_W, LOGO_REQ_H, 1);
+        assert!(logo.contains("&format=png&"), "the transparent flavour lost its format: {logo}");
+    }
+
+    /// **A `/hubs/search` `collection` row carries no `thumb` at all** (verified live — no
+    /// `ratingKey` either; only `key` and a tag `id`), so an empty source stops being a rarity and
+    /// becomes a whole shelf of them. It must produce NO request: `…&url=&X-Plex-Token=…` is a
+    /// `404 text/html` from this server (measured), and every one of them would burn a slot as
+    /// `P_FAILED` until the LRU walked back to it.
+    ///
+    /// The empty key is the store's existing "nothing to fetch" convention — the same answer an
+    /// unregistered server gets — so the tile draws its skeleton face and no prefetch budget is
+    /// spent on it.
+    ///
+    /// It asserts only the BUILDER, and that limit is the host boundary rather than an oversight:
+    /// calling `poster_get_wh`/`poster_warm` here — even on the empty key they return early for —
+    /// makes `lookup` reachable from the test binary, and through it `gfx::delete_tex`. The link
+    /// then fails with `Undefined symbols … _glDeleteTextures`, because `-dead_strip` was the only
+    /// reason this suite got away without a GL context at all. Their empty-key early exits are
+    /// asserted in prose at their definitions instead.
+    #[test]
+    fn an_empty_thumb_yields_no_request_at_all() {
+        let (_g, sid, _) = one_server();
+        assert_eq!(key_for(sid, "", 300, 300, 0), "", "an empty source must not become a request");
+    }
+
+    /// The cliff absolute URLs brought within sight, and the reason [`poster_key`] gates on
+    /// [`KEY_MAX`] instead of trusting the caller's 352-byte buffer.
+    ///
+    /// `set_key` truncates into [`PT_KEYLEN`]. A truncated key never equals the probe that built
+    /// it, so the slot can never be found again: every frame misses, claims a fresh slot and
+    /// evicts a real poster — the whole store thrashing over one tile, which is far worse than the
+    /// tile simply not loading. The sizes are DERIVED from a probe build rather than written down,
+    /// so this keeps grading the real boundary if the request shape ever changes.
+    #[test]
+    fn a_path_too_long_for_a_slot_is_refused_rather_than_truncated() {
+        let (_g, sid, _) = one_server();
+        // Everything around the source, measured: build with a one-character source and subtract
+        // it. The filler is alphanumeric, so it passes through `enc` one byte per byte.
+        let overhead = key_for(sid, "x", 300, 300, 0).len() - 1;
+
+        let exact = key_for(sid, &"a".repeat(KEY_MAX - overhead), 300, 300, 0);
+        assert_eq!(exact.len(), KEY_MAX, "the fixture must land exactly on the boundary");
+        let mut s = Pslot::ZERO;
+        set_key(&mut s, &exact);
+        assert_eq!(key_bytes(&s), exact.as_bytes(), "a key the gate accepts must survive a slot intact");
+
+        let over = key_for(sid, &"a".repeat(KEY_MAX - overhead + 1), 300, 300, 0);
+        assert_eq!(over, "", "one byte past what a slot holds must be refused, not handed out");
+
+        // …because this is what handing it out would have meant. Not a claim about `set_key`, a
+        // claim about `lookup`: the probe it compares against is the FULL string.
+        let would_be = "b".repeat(KEY_MAX + 1);
+        set_key(&mut s, &would_be);
+        assert_ne!(key_bytes(&s), would_be.as_bytes(), "a truncated slot can never match its own probe");
+    }
 
     /// A settled, drawable slot: READY, last touched on frame `frame` with LRU age `use_`.
     fn ready(use_: c_uint, frame: c_uint) -> Pslot {

@@ -109,8 +109,32 @@ pub(crate) struct TagHit {
     pub(crate) tag_key: String,
     /// The server-local numeric tag id, as a string. Dense from 1 and meaningless off this server.
     pub(crate) id: String,
-    /// Absolute for a person (`metadata-static.plex.tv`, so it needs the PMS photo transcoder),
-    /// empty for a collection.
+    /// The artwork source, to be handed to the poster store **verbatim** — there is no second
+    /// image route to build, and `posters::poster_key` is where the whole story is written down.
+    ///
+    /// **A person's is ABSOLUTE**: `https://metadata-static.plex.tv/…jpg`, a host `stream.rs` can
+    /// never dial (no DNS, no TLS). It does not need to. The URL goes in as the `url=` value of
+    /// `/photo/:/transcode`, percent-encoded whole, the request goes to our own PMS, and the
+    /// server fetches it over TLS for us. Verified live against PMS 1.43.3 (2026-08-14): `200
+    /// image/jpeg` at exactly the requested size.
+    ///
+    /// **A collection's is EMPTY**, and that is the server's answer, not a parse gap — a
+    /// `/hubs/search` `collection` row carries no `thumb` and no `ratingKey`, only `key`, a tag
+    /// `id` and a `collection://` guid. An empty source is refused by `poster_key` rather than
+    /// turned into a request (the bare `url=` is a 404 here, and a shelf of them would spend the
+    /// store on failures), so the tile draws the skeleton face the design specifies for art the
+    /// server has not given us.
+    ///
+    /// Resolving one anyway is possible and was measured, in case a later unit wants it: `GET
+    /// /library/sections/{librarySectionID}/collections` returns `Metadata[]` with real `thumb`
+    /// paths, and the join is **`index` == this row's `id`** (or the `guid`) — the id here is NOT
+    /// the collection's `ratingKey`, which is a different number entirely. Note the shape of the
+    /// cost, which is better than it first looks: **one request per library SECTION**, not per
+    /// collection, and cacheable for the session. Neither of the two obvious shortcuts works —
+    /// following `key` returns the collection's MEMBERS under the section's own generic art, and
+    /// the `/library/sections/{k}/collection` tag axis carries no thumb at all. It is still a
+    /// second store with its own fetch, cache and invalidation for a shelf that is usually a row
+    /// or two, which is why the skeleton stands for now.
     pub(crate) thumb: String,
     /// The listing this tag opens — `/library/sections/1/all?collection=6068`.
     pub(crate) key: String,
