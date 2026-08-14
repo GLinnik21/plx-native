@@ -1,8 +1,9 @@
 //! search — the search screen's data layer (the store `ui/search/` draws).
 //!
 //! One query, fanned out across every registered source, merged into typed shelves and pumped once
-//! a frame while the screen is up. The types are what `ui/search/` draws; everything below
-//! [`Item`] is the fetch machine that fills them.
+//! a frame while the screen is up. The types down to [`shelves`] are what `ui/search/` draws;
+//! everything below the *fetch plumbing* banner is the machine that fills them. [`terms`] is the
+//! one predicate the screen shares with the store — see its doc before writing a second one.
 //!
 //! ## The endpoint, and what it actually returns
 //!
@@ -90,7 +91,8 @@ impl Kind {
             Kind::Collection => "Collections",
         }
     }
-    /// The count read-out beside it. People are counted as people; everything else as results.
+    /// The count read-out beside it — how many RESULTS are on this shelf. People are counted as
+    /// people; everything else as results. See [`items_word`] for the other count on this screen.
     pub(crate) fn count_word(self, n: usize) -> &'static str {
         match (self, n) {
             (Kind::Person, 1) => "person",
@@ -108,6 +110,25 @@ impl Kind {
             Kind::Person => &["actor", "director"],
             Kind::Collection => &["collection"],
         }
+    }
+}
+
+/// The MEMBERSHIP read-out: how many things are inside ONE result ("12 items", a collection's
+/// extent on the focused tile's second line). A sibling of [`Kind::count_word`] and deliberately
+/// not an arm of it — that one answers "how many results are on this shelf", so a Collections
+/// heading saying "3 results" and a collection tile saying "12 items" are both right and the two
+/// numbers are never the same number. It lives here because the count vocabulary for this feature
+/// is one thing: `ui/search/results.rs` spelled its own `if n == 1 {""} else {"s"}` beside a
+/// `count_word` call on the very next screen, which is how one feature ends up with two plural
+/// rules and then two ways to spell a zero.
+///
+/// Takes an `i64` because that is what the wire hands over ([`TagHit::count`]): a server that sends
+/// a nonsense negative gets the plural word, rather than a cast at the call site that could wrap it
+/// into "1 item".
+pub(crate) fn items_word(n: i64) -> &'static str {
+    match n {
+        1 => "item",
+        _ => "items",
     }
 }
 
@@ -201,9 +222,19 @@ pub(crate) enum State {
     Idle,
     /// A query is settling or in flight and no answer for it has arrived yet.
     Searching,
-    /// The server answered. Possibly with nothing.
+    /// At least one source answered — possibly with nothing, which is still an answer and reads as
+    /// "No results". See [`state_from`] for why one answer is enough and why an EMPTY one waits.
     Ready,
-    /// The request failed. Whatever is in the store is the PREVIOUS answer and is left alone.
+    /// Every source has had its say and none of them answered — which is also the verdict on a
+    /// roster with nothing in it to ask.
+    ///
+    /// The shelves are empty here **by construction**, not by policy: a query change clears them
+    /// ([`set_query`]) and [`merge`] draws only from a source whose status is [`Status::Answered`],
+    /// so nothing a previous query fetched can still be on screen. That is exactly why this variant
+    /// exists — the fault sentence is read off the STATE, because an empty store on its own cannot
+    /// be told apart from a [`State::Ready`] one. (This line long said the opposite: "whatever is in
+    /// the store is the PREVIOUS answer and is left alone", which is `browse.rs`'s rule, not this
+    /// store's — search drops the old answer the moment the terms change.)
     Failed,
 }
 
@@ -228,11 +259,24 @@ pub(crate) fn query() -> &'static str {
     unsafe { &*addr_of!(QUERY) }
 }
 
-/// The terms a fetch would actually be addressed to, or `None` when the query is too short to be
-/// worth a round trip. Trimmed, because leading/trailing space is a fact about the FIELD and not
-/// about what is being looked for — which is also what lets [`set_query`] tell "the user typed a
-/// space" apart from "the user is looking for something else".
-fn terms(q: &str) -> Option<&str> {
+/// **THE predicate for "is this a real query"**, and the terms a fetch would actually be addressed
+/// to — `None` when the query is too short to be worth a round trip. Two halves, and each one is a
+/// decision rather than a formality:
+///
+/// - **Trimmed**, because leading/trailing space is a fact about the FIELD and not about what is
+///   being looked for — which is also what lets [`set_query`] tell "the user typed a space" apart
+///   from "the user is looking for something else".
+/// - **[`MIN_QUERY`] counted in CHARACTERS, not bytes**, because the floor is a measured fact about
+///   what the SERVER answers (module doc) and the query arrives as UTF-8 off the television's own
+///   keyboard: `len()` would put a one-letter Cyrillic or CJK query over a floor the server will
+///   still answer nothing to, spending a round trip per keystroke on a guaranteed empty response.
+///
+/// `pub(crate)` so `ui/search/` asks instead of re-deriving it. "Is a search on screen", "may this
+/// term be filed in the recents", and "is a fetch owed" are the SAME question, and a screen that
+/// spells its own copy of the test can disagree with the store about whether a search is happening
+/// at all — a results region drawn over a store parked on [`State::Idle`], which never asked
+/// anything and so will never answer.
+pub(crate) fn terms(q: &str) -> Option<&str> {
     let t = q.trim();
     (t.chars().count() >= MIN_QUERY).then_some(t)
 }
@@ -330,20 +374,38 @@ const NSRC: usize = crate::plex::MAX_SERVERS;
 /// `wallace`.
 static GEN: AtomicU32 = AtomicU32::new(0);
 
-/// The claim that source `i`'s fetch is out. Cleared ONLY by a mailbox take, so anything that drops
-/// a mailbox ([`supersede`]) must clear it too — otherwise the source stays latched and never
-/// searches again. Same latch `person.rs`/`browse.rs` document, and the same honest caveat: it
-/// bounds spawns per *pump*, it is not a hard one-worker-at-a-time interlock. [`supersede`]
-/// releases the claim while the old worker is still running, and a take releases it before the
-/// generation check, so a stale landing can free a newer fetch's claim at the cost of one duplicate
-/// request. Neither can wedge or corrupt — [`land`] is monotone and [`pump`] discards stale mail.
+/// The claim that source `i`'s fetch is out. Released by the mailbox take — the only event that
+/// knows the fetch is over — so anything that ends one by another route must release it itself:
+/// [`supersede`] drops the mailbox the take would have come from, and a refused `spawn_small` never
+/// produces one at all. Miss either and the source stays latched and never searches again.
+///
+/// This and [`SLOT`] are the two halves a WORKER touches, which is why they stay `Sync` statics
+/// rather than fields on [`Source`] beside the main-thread-only status/backoff/answer.
+///
+/// Same latch `person.rs`/`browse.rs` document, and the same honest caveat: it bounds spawns per
+/// *pump*, it is not a hard one-worker-at-a-time interlock. **Two ways past it, and they are
+/// different sizes.**
+///
+/// *Within one generation* a stale landing releases the claim before the generation check, so it
+/// can free a newer fetch's claim and buy one duplicate request. Bounded at one, and neither can
+/// wedge nor corrupt: [`land`] is monotone and [`pump`] discards stale mail.
+///
+/// *Across generations there is no bound at all*, and that half is written down here because
+/// nothing else says it. [`supersede`] releases the claim while the superseded worker is **still
+/// running** — it drops the ANSWER, it cannot abort the fetch, since the worker is parked in a
+/// blocking `stream.rs` GET with no cancellation to poll. So every keystroke that changes the terms
+/// can leave one live worker per source behind and immediately free the slot for another, each
+/// holding a `spawn_small` 256 KB stack until its request returns. [`SETTLE_S`]'s 0.25 s debounce is
+/// what bounds this in the normal case (one settled query per source, and the previous one has
+/// usually landed); a source that STALLS rather than failing — accepted, held open, never answered,
+/// `tools/netcond.py`'s `stall` — is the case that genuinely accumulates, until `task.rs`'s thread
+/// ceiling refuses a spawn, which [`maybe_spawn`] already treats as a retry rather than a fault. The
+/// fix, if it is ever worth one, is a cancel token the worker polls between reads; a tighter claim
+/// here cannot help, because the claim is not what is holding the thread.
 static IN_FLIGHT: [AtomicBool; NSRC] = [const { AtomicBool::new(false) }; NSRC];
 
-/// Frames left before source `i` may be asked again after a FAILED attempt (main thread; [`pump`]
-/// decrements). PER SOURCE on purpose: a friend's server that is off must not hold our own
-/// library's results off for two seconds a go.
-static mut RETRY_CD: [u32; NSRC] = [0; NSRC];
-/// ~2 s at 60 fps — the same backoff `person.rs`/`browse.rs` use for a failed fetch.
+/// ~2 s at 60 fps — the same backoff `person.rs`/`browse.rs` use for a failed fetch. Counted down in
+/// [`Source::retry_cd`].
 const RETRY_FRAMES: u32 = 120;
 
 /// Seconds the current query has held still, and whether it is still owed a fetch. Main thread
@@ -375,20 +437,32 @@ enum Status {
     /// answered — possibly with nothing, which is an ANSWER. A source in this state is not asked
     /// again for this generation, which is why it can never regress to [`Status::Failed`].
     Answered,
-    /// the attempt failed; [`RETRY_CD`] is counting down to the next one
+    /// the attempt failed; [`Source::retry_cd`] is counting down to the next one
     Failed,
 }
 
-/// One source's contribution to the merge, plus what its last attempt did.
+/// One source's contribution to the merge, plus what its last attempt did. **Main thread only, in
+/// full** — [`pump`], [`record`], [`supersede`] and [`maybe_spawn`] are the only code that touches
+/// one, and all four run on the frame loop. The worker's two halves are [`IN_FLIGHT`] and [`SLOT`],
+/// which is why those stay separate `Sync` statics.
 struct Source {
     status: Status,
+    /// Frames left before this source may be asked again after a FAILED attempt ([`pump`]
+    /// decrements, [`record`] arms it at [`RETRY_FRAMES`]). PER SOURCE on purpose: a friend's server
+    /// that is off must not hold our own library's results off for two seconds a go.
+    ///
+    /// A field rather than the parallel `RETRY_CD` array this used to be. It never moved
+    /// independently of `status` — armed with it in [`record`], read with it in [`maybe_spawn`],
+    /// cleared with it in [`supersede`] — so a second array was a second place to forget, and the
+    /// per-slot reset is now the one assignment `Source::EMPTY` already meant.
+    retry_cd: u32,
     /// The last successful answer for the CURRENT generation. Meaningful only while `status` is
     /// [`Status::Answered`], which is what [`merge`] filters on.
     items: Projection,
 }
 
 impl Source {
-    const EMPTY: Source = Source { status: Status::Pending, items: [const { Vec::new() }; NKIND] };
+    const EMPTY: Source = Source { status: Status::Pending, retry_cd: 0, items: [const { Vec::new() }; NKIND] };
 }
 
 static mut SRC: [Source; NSRC] = [const { Source::EMPTY }; NSRC];
@@ -424,17 +498,16 @@ fn land(i: usize, gen: u32, what: Option<Projection>) {
 }
 
 /// Invalidate everything in flight: bump the generation (a late landing is discarded), drop every
-/// mailbox, release the single-flight claims with them, clear the retry backoffs, and forget every
-/// source's answer. The ONE place those move together — and what a keystroke calls.
+/// mailbox, release the single-flight claims with them, and put every source back to
+/// [`Source::EMPTY`] — status, retry backoff and answer together, since they are one source's state
+/// and "never asked" has exactly one spelling. The ONE place those move together, and what a
+/// keystroke calls. It does NOT stop the workers; see [`IN_FLIGHT`] for what that costs.
 fn supersede() {
     GEN.fetch_add(1, Ordering::SeqCst);
     for i in 0..NSRC {
         *SLOT[i].lock().unwrap_or_else(|e| e.into_inner()) = None;
         IN_FLIGHT[i].store(false, Ordering::SeqCst);
-        unsafe {
-            (*addr_of_mut!(RETRY_CD))[i] = 0;
-            (*addr_of_mut!(SRC))[i] = Source::EMPTY;
-        }
+        unsafe { (*addr_of_mut!(SRC))[i] = Source::EMPTY };
     }
 }
 
@@ -457,7 +530,7 @@ pub(crate) fn pump(dt: f32) -> bool {
     let mut landed = false;
     for i in 0..n {
         unsafe {
-            let cd = &mut (*addr_of_mut!(RETRY_CD))[i];
+            let cd = &mut (*addr_of_mut!(SRC))[i].retry_cd;
             if *cd > 0 {
                 *cd -= 1;
             }
@@ -478,7 +551,7 @@ pub(crate) fn pump(dt: f32) -> bool {
         maybe_spawn(i);
     }
     // The SHELVES are rebuilt only when something landed, but the STATE is recomputed every frame:
-    // it is a scan of at most sixteen statuses, and making it conditional on a landing left the one
+    // it is a scan of at most NSRC statuses, and making it conditional on a landing left the one
     // case that can never produce one — an EMPTY roster — parked on `Searching` forever, which is
     // precisely the endless spinner `state_from`'s empty arm exists to prevent. Reachable in
     // practice: `/tmp/plxnative-search=<q>` forces the route whether or not a server was installed.
@@ -516,8 +589,9 @@ fn record(i: usize, what: Option<Projection>) {
         }
         None => {
             unsafe {
-                (*addr_of_mut!(SRC))[i].status = Status::Failed;
-                (*addr_of_mut!(RETRY_CD))[i] = RETRY_FRAMES;
+                let s = &mut (*addr_of_mut!(SRC))[i];
+                s.status = Status::Failed;
+                s.retry_cd = RETRY_FRAMES;
             }
             crate::log(&format!("search: q='{q}' sid={i} FAILED, retry in {RETRY_FRAMES}f"));
         }
@@ -525,7 +599,16 @@ fn record(i: usize, what: Option<Projection>) {
             let counts: Vec<String> =
                 KINDS.iter().enumerate().map(|(k, kind)| format!("{}={}", kind.title(), items[k].len())).collect();
             crate::log(&format!("search: q='{q}' sid={i} hubs {}", counts.join(" ")));
-            unsafe { (*addr_of_mut!(SRC))[i] = Source { status: Status::Answered, items } };
+            // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
+            // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
+            // query resets the whole record through `Source::EMPTY`. (Assigning a whole `Source`
+            // here would zero a backoff instead of leaving it — the same behaviour today, but only
+            // by accident of nothing reading it.)
+            unsafe {
+                let s = &mut (*addr_of_mut!(SRC))[i];
+                s.status = Status::Answered;
+                s.items = items;
+            }
         }
     }
 }
@@ -636,10 +719,14 @@ fn maybe_spawn(i: usize) {
     if unsafe { *addr_of!(ARMED) } {
         return; // still settling — the keystroke burst is not over
     }
-    if IN_FLIGHT[i].load(Ordering::SeqCst) || unsafe { (*addr_of!(RETRY_CD))[i] > 0 } {
+    // ONE borrow of this source's record, since the backoff and the status are now one thing. The
+    // whole array is taken first and indexed after, for `live_sources`' reason.
+    let all: &'static [Source; NSRC] = unsafe { &*addr_of!(SRC) };
+    let src = &all[i];
+    if IN_FLIGHT[i].load(Ordering::SeqCst) || src.retry_cd > 0 {
         return;
     }
-    if unsafe { (*addr_of!(SRC))[i].status } == Status::Answered {
+    if src.status == Status::Answered {
         return; // this source has had its say about this query
     }
     let Some(q) = terms(query()) else { return };
@@ -796,7 +883,9 @@ mod tests {
     /// count `stream.rs`'s tests assert on. Call it before every `pump()`.
     fn hold_off() {
         unsafe {
-            *addr_of_mut!(RETRY_CD) = [RETRY_FRAMES; NSRC];
+            for s in &mut *addr_of_mut!(SRC) {
+                s.retry_cd = RETRY_FRAMES;
+            }
             *addr_of_mut!(ARMED) = false;
         }
     }
@@ -822,9 +911,14 @@ mod tests {
     }
     /// A source that answered, holding `items` on shelf `k`.
     fn answered(k: usize, items: Vec<Item>) -> Source {
-        let mut s = Source { status: Status::Answered, items: Default::default() };
+        let mut s = Source { status: Status::Answered, ..Source::EMPTY };
         s.items[k] = items;
         s
+    }
+    /// A source whose attempt failed, with no backoff armed — [`hold_off`] is what parks spawns in
+    /// these tests, so a fixture must not also decide the retry timing it is being graded on.
+    fn failed() -> Source {
+        Source { status: Status::Failed, ..Source::EMPTY }
     }
     fn titles(shelf: &Shelf) -> Vec<&str> {
         shelf.items.iter().map(|i| i.title()).collect()
@@ -859,16 +953,11 @@ mod tests {
         assert!(p[4].is_empty(), "Collections");
 
         // …and the drawn order is KINDS, whatever the wire said
-        let sh = merge(&[Source { status: Status::Answered, items: p }]);
+        let sh = merge(&[Source { status: Status::Answered, items: p, ..Source::EMPTY }]);
         assert_eq!(sh.iter().map(|s| s.kind).collect::<Vec<_>>(), [Kind::Movie, Kind::Person]);
     }
 
-    /// **A person in two libraries is one person.** The server answers per library SECTION, so the
-    /// same actor comes back twice with the same identity and each section's own `count` — which
-    /// drew the same face twice, and would have reported 5 credits for someone with 8 had the
-    /// duplicate simply been dropped. Device-observed before it was fixed.
-    #[test]
-    /// …and the same person on two SERVERS is also one person. `project` folds per response, so it
+    /// The same person on two SERVERS is one person. `project` folds per response, so it
     /// cannot see across sources — [`merge`] is the only place both are in hand, and until it did
     /// this a shared actor drew twice with a split count while `same_tag`'s own doc claimed the
     /// round-robin brought them together.
@@ -885,7 +974,7 @@ mod tests {
                 count,
                 ..Default::default()
             }));
-            Source { status: Status::Answered, items: p }
+            Source { status: Status::Answered, items: p, ..Source::EMPTY }
         };
         // Same guid, DIFFERENT local ids (they are server-local) and only one carries a face.
         let sh = merge(&[mk(0, "921", "", 5), mk(1, "4471", "/t.jpg", 3)]);
@@ -896,6 +985,10 @@ mod tests {
         assert_eq!(t.thumb, "/t.jpg", "the server with a face supplies it");
     }
 
+    /// **A person in two libraries is one person.** The server answers per library SECTION, so the
+    /// same actor comes back twice with the same identity and each section's own `count` — which
+    /// drew the same face twice, and would have reported 5 credits for someone with 8 had the
+    /// duplicate simply been dropped. Device-observed before it was fixed.
     #[test]
     fn a_tag_that_arrives_once_per_library_section_folds_into_one_row_with_the_counts_summed() {
         let mut mc = MediaContainer::default();
@@ -970,7 +1063,7 @@ mod tests {
     fn the_merge_round_robins_every_answered_source_and_skips_the_rest() {
         let sources = [
             answered(0, vec![media("ours-1"), media("ours-2"), media("ours-3")]),
-            Source { status: Status::Failed, items: Default::default() },
+            failed(),
             answered(0, vec![media("theirs-1"), media("theirs-2")]),
             Source::EMPTY, // still pending
         ];
@@ -997,7 +1090,7 @@ mod tests {
     #[test]
     fn one_answer_is_ready_and_only_an_all_failed_roster_is_failed() {
         let ok = || answered(0, vec![media("x")]);
-        let bad = || Source { status: Status::Failed, items: Default::default() };
+        let bad = failed;
         assert_eq!(state_from(&[ok(), bad()], true), State::Ready, "a dead source must not fail the others");
         assert_eq!(state_from(&[bad(), Source::EMPTY], true), State::Searching, "one is still out");
         assert_eq!(state_from(&[bad(), bad()], true), State::Failed);
@@ -1007,7 +1100,7 @@ mod tests {
         assert_eq!(state_from(&[bad(), bad()], false), State::Idle);
         // an answer that is genuinely empty is still an answer, ONCE nobody else is still out —
         // this is the "No results for wallace" screen
-        assert_eq!(state_from(&[Source { status: Status::Answered, items: Default::default() }], true), State::Ready);
+        assert_eq!(state_from(&[Source { status: Status::Answered, ..Source::EMPTY }], true), State::Ready);
     }
 
     /// **"No results" must not be said over a source that has not answered yet.** Our own server
@@ -1017,7 +1110,7 @@ mod tests {
     /// so those results go up without waiting on the slowest server in the house.
     #[test]
     fn an_empty_answer_waits_for_the_stragglers_but_a_populated_one_does_not() {
-        let empty = || Source { status: Status::Answered, items: Default::default() };
+        let empty = || Source { status: Status::Answered, ..Source::EMPTY };
         assert_eq!(
             state_from(&[empty(), Source::EMPTY], true),
             State::Searching,
@@ -1029,7 +1122,25 @@ mod tests {
             "results already in hand must not wait on the slowest server"
         );
         // …and once the straggler has failed, the empty answer IS the whole truth
-        assert_eq!(state_from(&[empty(), Source { status: Status::Failed, items: Default::default() }], true), State::Ready);
+        assert_eq!(state_from(&[empty(), failed()], true), State::Ready);
+    }
+
+    /// [`terms`] is THE predicate — the store's own gate and the one `ui/search/` asks — so it is
+    /// graded here rather than at each screen that used to re-spell it. Two properties, both of
+    /// which a re-spelling has got wrong: the trim (the FIELD's spaces are not part of what is being
+    /// looked for) and the floor counted in CHARACTERS, since a two-letter Cyrillic query is four
+    /// bytes and a `len()` test would have let a ONE-letter one through to a server that answers
+    /// every hub empty.
+    #[test]
+    fn terms_trims_and_counts_characters_not_bytes() {
+        assert_eq!(terms("wa"), Some("wa"), "exactly MIN_QUERY is a real query");
+        assert_eq!(terms("  wallace  "), Some("wallace"));
+        assert_eq!(terms("w"), None, "one character costs a round trip and returns nothing");
+        assert_eq!(terms(" w "), None, "…and padding it does not make it one");
+        assert_eq!(terms("   "), None);
+        assert_eq!(terms(""), None);
+        assert_eq!(terms("к"), None, "one letter, two bytes — a byte count would have asked");
+        assert_eq!(terms("ко"), Some("ко"));
     }
 
     /// The query state machine: below `MIN_QUERY` nothing is asked at all, at it the screen goes
@@ -1128,7 +1239,7 @@ mod tests {
             "the take must release the single-flight even for a landing it drops"
         );
         // …and it must not arm a backoff either, which would delay the CURRENT query's first answer
-        assert_eq!(unsafe { (*addr_of!(RETRY_CD))[0] }, RETRY_FRAMES - 1, "only the sentinel ticked");
+        assert_eq!(unsafe { (*addr_of!(SRC))[0].retry_cd }, RETRY_FRAMES - 1, "only the sentinel ticked");
 
         let fresh_gen = GEN.load(Ordering::SeqCst);
         land(0, fresh_gen, Some(answered(0, vec![media("A Close Shave")]).items));
@@ -1160,7 +1271,11 @@ mod tests {
         assert_eq!(titles(&shelves()[0]), ["A Close Shave"], "a dead source must not blank a live one");
         assert_eq!(state(), State::Ready, "one answer is enough");
         assert_eq!(unsafe { (*addr_of!(SRC))[1].status }, Status::Failed);
-        assert_eq!(unsafe { (*addr_of!(RETRY_CD))[1] }, RETRY_FRAMES, "the failed source backs off before retrying");
+        assert_eq!(
+            unsafe { (*addr_of!(SRC))[1].retry_cd },
+            RETRY_FRAMES,
+            "the failed source backs off before retrying"
+        );
         assert!(!IN_FLIGHT[0].load(Ordering::SeqCst) && !IN_FLIGHT[1].load(Ordering::SeqCst));
         crate::plex::reset_servers_for_test();
         reset();
@@ -1187,7 +1302,7 @@ mod tests {
         assert_eq!(titles(&shelves()[0]), ["A Close Shave"], "the results vanished for two seconds");
         assert_eq!(state(), State::Ready);
         assert_eq!(unsafe { (*addr_of!(SRC))[0].status }, Status::Answered);
-        assert_eq!(unsafe { (*addr_of!(RETRY_CD))[0] }, RETRY_FRAMES - 1, "no backoff — only the sentinel ticked");
+        assert_eq!(unsafe { (*addr_of!(SRC))[0].retry_cd }, RETRY_FRAMES - 1, "no backoff — only the sentinel ticked");
         crate::plex::reset_servers_for_test();
         reset();
     }
@@ -1218,8 +1333,9 @@ mod tests {
         for i in 0..NSRC {
             IN_FLIGHT[i].store(true, Ordering::SeqCst);
             unsafe {
-                (*addr_of_mut!(RETRY_CD))[i] = RETRY_FRAMES;
-                (*addr_of_mut!(SRC))[i] = answered(0, vec![media("A Close Shave")]);
+                let s = &mut (*addr_of_mut!(SRC))[i];
+                *s = answered(0, vec![media("A Close Shave")]);
+                s.retry_cd = RETRY_FRAMES;
             }
         }
 
@@ -1227,7 +1343,7 @@ mod tests {
 
         for i in 0..NSRC {
             assert!(!IN_FLIGHT[i].load(Ordering::SeqCst), "source {i} stayed latched — the screen wedges");
-            assert_eq!(unsafe { (*addr_of!(RETRY_CD))[i] }, 0);
+            assert_eq!(unsafe { (*addr_of!(SRC))[i].retry_cd }, 0);
             assert_eq!(unsafe { (*addr_of!(SRC))[i].status }, Status::Pending, "source {i} kept the last account's answer");
         }
         assert!(query().is_empty() && shelves().is_empty());
@@ -1236,12 +1352,19 @@ mod tests {
     }
 
     /// The count read-out and the heading, which are the only strings this store hands the screen.
+    /// The two counts are different questions and a Collections shelf answers both at once: three
+    /// collections found ("3 results"), one of which holds twelve films ("12 items").
     #[test]
     fn a_person_shelf_counts_people_and_everything_else_counts_results() {
         assert_eq!((Kind::Person.title(), Kind::Person.count_word(1)), ("Cast & Crew", "person"));
         assert_eq!(Kind::Person.count_word(2), "people");
         assert_eq!(Kind::Movie.count_word(1), "result");
         assert_eq!(Kind::Collection.count_word(0), "results");
+
+        assert_eq!((Kind::Collection.count_word(3), items_word(12)), ("results", "items"));
+        assert_eq!(items_word(1), "item");
+        // 0 is plural ("0 items"), and so is a nonsense negative the wire could still send
+        assert_eq!((items_word(0), items_word(-1)), ("items", "items"));
     }
 }
 
