@@ -24,6 +24,10 @@ const SIM_TAG: &str = if cfg!(feature = "hostsim") { " sim=1" } else { "" };
 /// and resizing is genuinely useful now that `surface::probe` letterboxes the logical canvas into
 /// whatever drawable it is given rather than cropping it.
 const SDL_WINDOW_FLAGS: u32 = if cfg!(feature = "hostsim") { 0x2 | 0x20 } else { 0x2 | 0x1 };
+/// `SDL_WINDOW_INPUT_FOCUS`. Note it is NOT among the flags requested above — no window flag can
+/// ask for it; SDL sets it when the compositor gives this surface the keyboard. Read, never asked
+/// for, and read by exactly one thing: `crate::textinput`, whose panel it silently gates.
+pub(crate) const SDL_WINDOW_INPUT_FOCUS: u32 = 0x200;
 const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 const GL_RENDERER: c_uint = 0x1F01;
 const GL_VERSION: c_uint = 0x1F02;
@@ -47,6 +51,11 @@ const SDL_MOUSEMOTION: u32 = 0x400;
 const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
 const SDL_MOUSEBUTTONUP: u32 = 0x402;
 const SDL_MOUSEWHEEL: u32 = 0x403;
+/// Text COMMITTED by the system keyboard — `crate::textinput`. Its sibling `SDL_TEXTEDITING`
+/// (0x302) is the IME's in-progress composition and is deliberately ignored: the search field
+/// shows what has been committed, so a preedit would put characters on screen that the query
+/// does not contain.
+pub(crate) const SDL_TEXTINPUT: u32 = 0x303;
 // keysyms + the OK/BACK predicates live in ui::consts (the single keycode home)
 use crate::ui::consts::{
     is_back, is_ok, SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_PAGEDOWN, SDLK_PAGEUP, SDLK_RETURN,
@@ -82,6 +91,19 @@ extern "C" {
     fn SDL_PushEvent(event: *const c_void) -> c_int;
     fn SDL_GL_SwapWindow(win: *mut c_void);
     fn SDL_Quit();
+    // The system on-screen keyboard. A PLAIN link, not `dynlib!`, and the rule in `dynlib.rs` is
+    // why: that module is for libraries whose SONAME moves, and this is stock public SDL2 API —
+    // `tools/fwcompat.py --lib libSDL2-2.0.so.0 --grep TextInput` finds the whole family exported
+    // by all 14 firmware inventories, so there is nothing here for a runtime bind to tolerate.
+    //
+    // `pub(crate)` on these five alone because `crate::textinput` owns this seam and is the only
+    // caller; the declarations stay here with the rest of SDL rather than being duplicated into a
+    // second `extern` block, where a signature could drift from this one unnoticed.
+    pub(crate) fn SDL_StartTextInput();
+    pub(crate) fn SDL_StopTextInput();
+    pub(crate) fn SDL_IsTextInputActive() -> c_int;
+    pub(crate) fn SDL_HasScreenKeyboardSupport() -> c_int;
+    pub(crate) fn SDL_GetWindowFlags(w: *mut c_void) -> u32;
     fn glGetString(name: c_uint) -> *const c_char;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
@@ -567,6 +589,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     std::ffi::CStr::from_ptr(v).to_string_lossy()));
             }
         }
+        // The system on-screen keyboard, PROBED — see `crate::textinput`'s module doc. Both facts
+        // on this line are preconditions that fail in complete silence, and nothing in this tree
+        // had ever read either of them:
+        //   support= `SDL_HasScreenKeyboardSupport` — does this firmware's SDL have a panel at all.
+        //   focus=   `SDL_WINDOW_INPUT_FOCUS` — `SDL_StartTextInput` shows the panel only
+        //            `if (SDL_GetKeyboardFocus())`. Clear, and it enables text events, returns
+        //            void, and no panel appears.
+        //   active=  whether text events are already on. It is 1 on a desktop and 0 here, because
+        //            SDL only auto-starts text input on platforms with NO screen keyboard — which
+        //            is precisely why `textinput` tracks its own started flag instead of this one.
+        // A `focus=0` HERE is not yet a verdict: the flag arrives with the wayland keyboard
+        // `enter`, which needs the event loop below. `textinput::start` logs it again at the
+        // moment the field asks for the panel, which is the reading that decides anything.
+        crate::textinput::bind(win);
+        let wflags = SDL_GetWindowFlags(win);
+        log(&format!("keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
+            SDL_HasScreenKeyboardSupport(), SDL_IsTextInputActive(),
+            i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)));
 
         crate::system::sys_grab_wayland(win);
         crate::gfx::init_gl();
@@ -2013,6 +2053,36 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // press::LONG_MS, `okup` — the only way to exercise a press-and-hold (and so
                         // the item menu) over the FIFO, since every other token is a tap.
                         remote_synth_key_edge(SDLK_RETURN, 0, tok == "okdown");
+                    } else if let Some(text) = tok.strip_prefix("txt:") {
+                        // `txt:star+wars` — commit text as the system keyboard's IME would. The
+                        // only way to get text into the app without a human: no trigger can raise
+                        // the panel, and typing into the simulator needs somebody at the keyboard.
+                        // `+` is a space, because this protocol is whitespace-DELIMITED
+                        // (`remote.rs` splits on it) so a token can never contain one and a query
+                        // is mostly spaces; a literal '+' cannot be sent, which no query needs.
+                        //
+                        // **Handed to `textinput` directly and NOT through `SDL_PushEvent` — the
+                        // way every other synthetic input here works, and the way that CRASHES.**
+                        // Measured 2026-08-14: pushing a synthetic `SDL_TEXTINPUT` SIGSEGVs
+                        // inside SDL itself (`KERN_INVALID_ADDRESS at 0x8`, no Rust panic and no
+                        // log line), because the Mac's `libSDL2` is **sdl2-compat forwarding into
+                        // libSDL3** — the backtrace runs `libSDL2-2.0.0.dylib SDL_PushEvent_REAL`
+                        // → `libSDL3.0.dylib SDL_PushEvent_REAL` — and SDL3's text event carries a
+                        // `char *text` POINTER where SDL2's carries an inline `char text[32]`. The
+                        // compat layer dereferences it while converting. Keys and `ck:` clicks
+                        // push safely only because their fields are all scalars.
+                        //
+                        // So this exercises `on_event` and everything below it — the platform
+                        // layout, the decode, the queue cap, the drain — and deliberately claims
+                        // nothing about `SDL_PollEvent`'s own delivery, which only a real panel
+                        // (or a real keystroke in `make sim-run`) can prove.
+                        let ev = crate::textinput::encode_event(&text.replace('+', " "));
+                        crate::textinput::on_event(&ev);
+                        // Logged, because until a screen drains this queue the token is otherwise
+                        // completely unobservable — and what it prints is the string read back
+                        // through the platform's own offset, not the one that was written.
+                        log(&format!("txt: decoded {:?} pending={}",
+                            crate::textinput::decode(&ev), crate::textinput::pending()));
                     } else if let Some((sym, wcode)) = remote_token_key(tok) {
                         remote_synth_key(sym, wcode);
                     } else {
@@ -2027,12 +2097,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // silently draw nothing.
                 crate::ui::idle::invalidate();
                 let et = rd_u32(&ev, 0);
-                if et == SDL_KEYDOWN || et == SDL_KEYUP {
-                    let mut hex = String::with_capacity(64);
-                    for b in &ev[..32] {
+                if et == SDL_KEYDOWN || et == SDL_KEYUP || et == SDL_TEXTINPUT {
+                    // 48 bytes, not 32: a TEXTINPUT event's `text[32]` starts at +16 on the
+                    // television (LG's `inputSource` shifts it), so it ENDS at exactly +48. At the
+                    // old width the one event whose payload the offsets are most easily wrong
+                    // about would have left a forensic trail that stopped just before the payload.
+                    let mut hex = String::with_capacity(96);
+                    for b in &ev[..48] {
                         hex.push_str(&format!("{b:02x}"));
                     }
-                    log(&format!("[{}] key type=0x{et:x} raw={hex}", SDL_GetTicks()));
+                    let what = if et == SDL_TEXTINPUT { "text" } else { "key" };
+                    log(&format!("[{}] {what} type=0x{et:x} raw={hex}", SDL_GetTicks()));
                 }
                 if et == SDL_QUIT {
                     running = false;
@@ -3076,6 +3151,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::library::wheel(dy);
                         }
                     }
+                } else if et == SDL_TEXTINPUT {
+                    // The television's own keyboard committing text. Route-UNCONDITIONAL, and
+                    // `textinput::on_event` queues unconditionally too — it does NOT check
+                    // whether we asked for the panel, deliberately. This is the raw platform
+                    // seam: SDL delivered a character because SDL believes text input is on, and
+                    // discarding it against our own flag would silently eat REAL typing the first
+                    // time the two disagree (a panel dismissed from outside the app, or any
+                    // future caller that enables text events another way). Dropping input is the
+                    // worse failure, so instead both leaks are closed downstream, where they can
+                    // be closed completely: `textinput::start` clears the queue, so nothing typed
+                    // before the field opened can arrive in it, and `MAX_PENDING` bounds a queue
+                    // nobody drains. Gating here would also be a second, weaker copy of a rule
+                    // that lives in one place — and it would flip a frame away from the field's
+                    // own edit state, because the route changes at the fade floor.
+                    crate::textinput::on_event(&ev);
                 }
             }
 
@@ -3978,6 +4068,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     dt,
                 );
                 crate::ui::search::update(dt);
+            } else {
+                // THE PANEL NEVER OUTLIVES THE SCREEN THAT ASKED FOR IT. Stated here as a route
+                // invariant rather than left to the leave path, because the leave path does not
+                // currently run: `leave_of`'s `Route::Search => search::leave` is consulted only
+                // by `nav_back`, and Search is left by `nav_to`/`nav_open` — a pill press, or
+                // opening a result — which pass `leave: None`. So `search::leave`'s `stop()` is
+                // reached by no route off this screen, and the television's keyboard would stay
+                // up over Home or over a detail page.
+                //
+                // That is not a cosmetic leak. Per trap 3 in `textinput`'s module doc, the panel
+                // cannot be REOPENED after it is dismissed (moonlight-tv#435, and we call the
+                // TV's own SDL, so we have the bug with no patch) — so a panel left up and then
+                // closed by the user is a search field that can never be typed into again for
+                // the rest of the session.
+                //
+                // Free on every other frame of the app's life: `stop` reads one bool and returns
+                // when we never started, which is every route but this one.
+                crate::textinput::stop();
             }
             if matches!(route, Route::Account) {
                 crate::ui::account_menu::update(dt);
