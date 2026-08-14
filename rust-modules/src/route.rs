@@ -1307,7 +1307,30 @@ pub(crate) fn request_play_movie(m: &PmsMovie) {
     }
     let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
     let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
-    request_play(surface_sid(), &m.rk, &m.part, &m.vcodec, &m.acodec, &m.title, &ctx);
+    // **The ITEM's server, not the browsed one.** This passed `surface_sid()` — i.e. whichever
+    // server happens to be current — while the row has carried its own `sid` since item identity
+    // became a `(server, key)` pair. Starting a borrowed film therefore sent that film's
+    // server-local `rk` and `Part.key` to OUR server, which is a different film or no film at all:
+    // owner-reported as "playback from the other server just fails with no error, or starves".
+    // Both symptoms are the same cause — our server either refuses the key (nothing to show) or
+    // hands back a part that is not the one the pipeline was told to expect.
+    //
+    // `surface_sid()` stays as the fallback for a row with no server on it: rows built by host
+    // tests, and any row parsed before a registry existed, carry `UNSET`.
+    request_play(item_sid(m.sid), &m.rk, &m.part, &m.vcodec, &m.acodec, &m.title, &ctx);
+}
+
+/// The server an item's ids belong to: its own when it has one, else the browsed surface.
+///
+/// A row's `sid` is `UNSET` only before any server was registered (and in host tests, which build
+/// rows by literal). Falling back to the surface there keeps the single-server app exactly as it
+/// was, while never letting an item that DOES name its server be resolved against another.
+pub(crate) fn item_sid(sid: ServerId) -> ServerId {
+    if sid.is_set() {
+        sid
+    } else {
+        surface_sid()
+    }
 }
 
 /// Start the queued next episode. Takes the descriptor BY VALUE, and that is load-bearing rather

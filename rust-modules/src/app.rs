@@ -592,6 +592,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 log("boot: stored session — who's watching");
                 BootTo::Profiles
             } else {
+                // The persisted roster FIRST, then the primary. This is the one boot path that does
+                // not go through `auth::start_switch` — a stored session with a single Plex Home
+                // user, or any automated run — so without this line it registered exactly one
+                // server and every share was invisible until the next sign-in: no second source in
+                // the Sources panel, no borrowed shelves, nothing to attribute. `install_roster`
+                // leaves `current` alone and sorts owned first, and `install_pms` below retargets to
+                // the session's own server regardless, so ordering cannot land us on a friend's box.
+                // Before, not after, because `install_pms` ends in the catalog + section fetch that
+                // turns a registered source into something on screen.
+                crate::auth::install_stored_roster(&session);
                 install_pms(&session.server.address, session.server.port as c_int, session.pms_token());
                 crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
                 log("boot: stored session — local server (offline-capable)");
@@ -3066,7 +3076,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
                             if !part.is_empty() {
                                 log(&format!("plxnative-play: rk={rk} start"));
-                                crate::route::request_play(crate::route::surface_sid(), rk, &part, &vc, &ac, &title, "");
+                                // the dev `play` trigger names a rk on whatever server is current,
+                                // which is what `item_sid`'s fallback resolves to — stated through
+                                // it rather than by calling `surface_sid` directly, so this reads as
+                                // the one deliberate surface-relative play rather than another site
+                                // that forgot the item's own server.
+                                crate::route::request_play(
+                                    crate::route::item_sid(crate::plex::ServerId::UNSET),
+                                    rk,
+                                    &part,
+                                    &vc,
+                                    &ac,
+                                    &title,
+                                    "",
+                                );
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
                                 let fd = matches!(route, Route::Detail);
                                 start_playback(mt, resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail, &mut hud_nav);

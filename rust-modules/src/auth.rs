@@ -733,6 +733,18 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> usize {
     for &i in &order {
         let s = &sources[i];
         let id = crate::plex::register(&s.machine_id, &s.address, s.port as i32, &s.token);
+        // …and say WHOSE it is. Registering without this was the bug that made the whole shared-
+        // source feature invisible on the only path a real user takes: `ServerFacts` stayed unset,
+        // so every source read as owned with no handle, and each surface then correctly drew
+        // nothing — no "Shared by" on a detail page, no handle on a shelf heading or the Source
+        // chip, no owner on a failure read-out, and a friend's library pinned to Home by the
+        // ownership default. It looked like five separate features not working. The one
+        // `describe_server` call that existed was in `app.rs`'s DEV-TRIGGER path, which is exactly
+        // why a headless capture showed the handle and a signed-in television did not.
+        //
+        // `owned` comes from the roster rather than from an empty handle: a share whose
+        // `sourceTitle` plex.tv did not send is still a share.
+        crate::plex::describe_server(id, &s.name, &s.shared_by, s.owned);
         if primary == Some(i) {
             crate::plex::set_current(id);
         }
@@ -768,11 +780,11 @@ fn primary_index(sources: &[SourceRef]) -> usize {
 /// Leaves `current` alone (an owned entry sorts first, so the registry's own "first registration
 /// wins" already points at ours); the caller's `plex::install` of the primary is what retargets.
 ///
-/// **Called from [`start_switch`], which covers the boot picker and every later "Change profile".
-/// The one path it does NOT cover is `app.rs`'s straight-to-Home boot** — a stored session with a
-/// single Plex Home user, or any automated run — which installs the primary itself and never
-/// enters this module. That boot needs one line beside its `install_pms`:
-/// `crate::auth::install_stored_roster(&session);`.
+/// **Called from [`start_switch`]** (the boot picker and every later "Change profile") **and from
+/// `app.rs`'s straight-to-Home boot** — a stored session with a single Plex Home user, or any
+/// automated run — which installs the primary itself and never enters this module. That second call
+/// site was missing until 2026-08-14, and the symptom was the whole feature being absent on the most
+/// ordinary boot there is: one registered server, no shares, nothing to browse or attribute.
 pub fn install_stored_roster(sess: &Session) -> usize {
     let n = install_roster(&sess.sources, None);
     if n > 0 {
