@@ -3564,37 +3564,37 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::alt_sources::open(r);
                 }
             }
-            // …and a copy CHOSEN in that panel: open that server's own page for the film. The
-            // switch is performed here and not by the screen because re-pointing `client()`
-            // invalidates every store `activate_server` wipes — a ratingKey is per-server, so a
-            // hub catalog or browse grid left over from the source we are leaving would open a
-            // different film from every card on it.
-            //
-            // The trail is truncated to its ROOT, and the reason CHANGED when the identity work
-            // landed beside this: `Node::Detail`/`Node::Person` now carry the server their key
-            // belongs to, so it is no longer true that the pages behind this one cannot name their
-            // machine. What is still true is that RE-ENTERING one does not re-point `client()` —
-            // BACK restores a route, not a server — so a node from the source we just left would
-            // resolve its ratingKey against the machine we just moved to, which is the same wrong
-            // film by a longer path. `Node::Library` has no payload at all (browse.rs holds the
-            // section, and `activate_server` has just wiped it), so it cannot survive the move
-            // either way. BACK from the destination therefore reaches Home — of the source you
-            // switched to, which is where you now are. A reset to the root is the one trail move
-            // allowed on the press frame (the Library arm's rule): Home is `stack[0]`, so
-            // truncating is idempotent. Re-pointing on BACK is the follow-up that retires this.
+            // …and a copy CHOSEN in that panel: open that server's own page for the film. Handled
+            // here rather than by the screen for the same reason every other navigation request is
+            // — `app.rs` owns the route and the trail — and NOT because anything needs re-pointing.
             if let Some((sid, rk)) = crate::ui::detail::take_alt_open() {
-                if !matches!(route, Route::Detail) {
-                } else if crate::plex::set_current(sid) {
-                    log(&format!("altsources: source switched to slot {} for rk={rk}", sid.raw()));
-                    activate_server();
-                    trail.reset();
-                    nav_open(route, to_detail(sid, &rk), None, &mut nav_pending);
-                } else {
-                    // a copy whose source is not registered (a share dropped from the roster, or
-                    // the headless stand-in): say so and stay put, rather than opening this
-                    // ratingKey on whatever machine happens to be current — which would
-                    // confidently show a different film
-                    log(&format!("altsources: no client for slot {} — not navigating", sid.raw()));
+                // **Opening the other copy is a NAVIGATION, not a session change.**
+                //
+                // This used to `set_current(sid)` + `activate_server()` + `trail.reset()`. That
+                // wiped the section table and re-discovered only the newly-current server, so one
+                // press on "Also available" replaced the whole top tab strip with the friend's
+                // single library — owner-reported, and visible in the log as
+                // `altsources: source switched to slot 1` followed by `nsections=1`.
+                //
+                // Nothing needs re-pointing: `to_detail` carries the pair, `Detail` is parsed with
+                // that `sid`, and every surface the page draws — art, logo, cast, Related, Play,
+                // the watched toggle — resolves its own server from the item. Same rule as browsing
+                // a shared library (`browse::activate_source_of`), which is now a documented no-op:
+                // "current" is the SESSION's server, and neither of these is a session change.
+                //
+                // The trail survives too. It was reset because the pages behind could not name
+                // their machine; `Node::Detail`/`Node::Person` carry a `ServerId` now.
+                if matches!(route, Route::Detail) {
+                    if crate::plex::client_for(sid).is_some() {
+                        log(&format!("altsources: opening slot {} rk={rk}", sid.raw()));
+                        nav_open(route, to_detail(sid, &rk), None, &mut nav_pending);
+                    } else {
+                        // a copy whose source is not registered (a share dropped from the roster,
+                        // or the headless stand-in): say so and stay put, rather than opening this
+                        // ratingKey on whatever machine happens to be current — which would
+                        // confidently show a different film
+                        log(&format!("altsources: no client for slot {} — not navigating", sid.raw()));
+                    }
                 }
             }
 

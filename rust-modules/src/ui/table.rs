@@ -155,7 +155,10 @@ const ACCESSORY_W: f32 = 320.0;
 /// takes, applied once over header and rows together.
 const GROUP_DIM_A: f32 = 0.52;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
-const TOP_PAD: f32 = 20.0;
+/// The list's own air above its first row. `pub` because a panel that stacks something ABOVE the
+/// list (the Sources panel's level band) has to subtract it to put the SEAM on the space scale —
+/// otherwise the two paddings add and the gap lands between rungs.
+pub const TOP_PAD: f32 = 20.0;
 const BOT_PAD: f32 = 20.0;
 const SIDE: f32 = 12.0; // pill (row) inset from the panel's left/right
 const CONTENT_PAD: f32 = 20.0; // text/check padding inside the pill (mockup rowBase 13px 20px)
@@ -458,7 +461,11 @@ impl TableView {
                     0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                 return;
             }
-            let focused = gi == self.sel;
+            // **`list_focused` gates the INK, not just the pill.** `ink` is near-black and is only
+            // legible ON the accent pill; suppressing the pill while still flipping the ink drew
+            // black-on-panel rows, which is what the owner saw the moment focus moved to the
+            // Sources panel's level pills. The two are one decision and are read from one flag.
+            let focused = gi == self.sel && self.list_focused;
             let base = if focused { ink } else if row.dim { dimc } else { white };
             let row_bg = if focused { crate::ui::ACCENT } else { PANEL_BG };
             let cyc = sy + h * 0.5; // row vertical center

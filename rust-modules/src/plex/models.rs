@@ -168,6 +168,15 @@ pub struct Metadata {
     /// server something without already knowing which of its libraries will answer.
     #[serde(rename = "librarySectionTitle", default, deserialize_with = "de_str")]
     pub library_section_title: String,
+    /// Which LIBRARY on that server this row belongs to — the pin's grain.
+    ///
+    /// Present on every `/hubs` and `/hubs/continueWatching` row (verified live), which is what
+    /// lets Home honour a per-library pin without a per-library fetch: the whole-server hub request
+    /// answers with rows from every library, and this is the only field that says which. 0 = the
+    /// server did not send one, and an item with no library cannot be gated out — see
+    /// `pms::feeds_home_item`.
+    #[serde(rename = "librarySectionID", default, deserialize_with = "de_i64")]
+    pub library_section_id: i64,
     #[serde(default, deserialize_with = "de_i64")]
     pub year: i64,
     #[serde(rename = "contentRating", default)]

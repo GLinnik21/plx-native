@@ -284,6 +284,10 @@ static mut TOOL_RECTS: [Rect; 3] = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
 /// Which level of the Sources panel is showing. Browse opens first, EVERY time (picking is the
 /// frequent act; pinning is a thing you do once per friend), so this is not remembered across opens.
 static mut SRC_LEVEL: Level = Level::Browse;
+/// The Sources panel's level switch, as the shared travelling-capsule strip. A static for the same
+/// reason the top row's is: the springs must survive the frame, and there is exactly one of this
+/// control on screen.
+static mut SRC_STRIP: crate::ui::widgets::TabStrip = crate::ui::widgets::TabStrip::new();
 /// Focus is on the level pills rather than in the list. UP from the first row reaches them,
 /// LEFT/RIGHT swaps the level under them, DOWN returns to the rows. While it is true the table
 /// draws NO selection pill ([`TableView::list_focused`]), so the panel shows exactly one focus.
@@ -993,6 +997,19 @@ fn rail_jump(i: usize) {
 pub(crate) fn update(dt: f32) {
     unsafe { PHASE_MS += dt * 1000.0 };
 
+    // The Sources panel's level capsules travel, so they are STEPPED here like every other spring
+    // and only DRAWN in `draw_level_pills`. Stepped whether or not the panel is open — the springs
+    // then settle while it is closed and a re-open starts from rest rather than sliding in from
+    // wherever the last visit left them.
+    {
+        let rects = src_pill_rects(panel_rect());
+        let sel_i = if unsafe { addr_of!(SRC_LEVEL).read() } == Level::Browse { 0 } else { 1 };
+        let foc_i = if unsafe { addr_of!(SRC_ON_PILLS).read() } { sel_i } else { -1 };
+        unsafe {
+            (*addr_of_mut!(SRC_STRIP)).update(sel_i, foc_i, |i| rects.get(i).map(|r| (r.x, r.w)), dt);
+        }
+    }
+
     // ---- content cross-fade. FIRST, because the commit frame teleports SCROLL/GR/GC and the
     // wanted window below must be computed from the POST-swap scroll (the same reason that window
     // is computed before `pump`).
@@ -1342,7 +1359,16 @@ const SRC_PILL_H: f32 = crate::ui::widgets::CHIP_D;
 /// The Sources panel's level-switch band: the pill row with a `space` rung of air above and below
 /// it. The band is a CONSTANT, and both levels list the same libraries and end with the same
 /// separator + recheck row, so **the panel does not resize when the level swaps**.
-const SRC_LEVEL_H: f32 = SRC_PILL_H + 2.0 * theme::space::SM;
+/// The level band: the pill row plus the air above and below it.
+///
+/// **`space::SM` above, and below it exactly enough that the pill row and the first list row sit one
+/// `space::MD` rung apart.** The list brings its own `TableView::PAD_V/2` top padding, so a band
+/// that also spent a full rung underneath double-padded the seam — pill bottom to first row measured
+/// 16 + 20 = 36px, which is not a rung at all and read as a gap nobody chose. The subtraction is the
+/// opposite of a hand-tuned offset: it is what makes the SEAM land on the scale, and it stays right
+/// if either constant moves.
+const SRC_LEVEL_H: f32 =
+    SRC_PILL_H + theme::space::SM + (theme::space::MD - crate::ui::table::TOP_PAD);
 
 fn panel_rect() -> Rect {
     let (w, band) = if menu() == Menu::Source { (SRC_W, SRC_LEVEL_H) } else { (MENU_W, 0.0) };
@@ -2138,10 +2164,20 @@ fn draw_level_pills(p: Painter, panel: Rect) {
     unsafe { *addr_of_mut!(SRC_PILL_RECTS) = rects };
     let level = unsafe { addr_of!(SRC_LEVEL).read() };
     let on_pills = unsafe { addr_of!(SRC_ON_PILLS).read() };
+    // **The shared strip, so these capsules TRAVEL like every other tab row in the app.** They were
+    // per-pill `segment`/`focused` fills, which is the standalone model — the capsules that mark
+    // selection and focus were repainted onto a new pill instead of sliding to it, so this was the
+    // one tab row in the product that did not animate (owner-reported). `TabStrip` owns both
+    // capsules and their springs; the pills keep only their label and ink, which is exactly the
+    // division `TabPill::mix` exists for.
+    //
+    // `span` reads the SAME `rects` the pills are drawn from, which is the strip's own requirement:
+    // a capsule can then never land off a pill.
+    unsafe { (*addr_of!(SRC_STRIP)).draw(p, rects[0].y, SRC_PILL_H, false) };
     for (i, (label, lv)) in [(c"Browse", Level::Browse), (c"On Home", Level::OnHome)].into_iter().enumerate() {
+        let selected = if level == lv { 1.0 } else { 0.0 };
         TabPill::new(label.as_ptr(), theme::size::BODY, rects[i])
-            .segment(level == lv)
-            .focused(on_pills && level == lv)
+            .mix(if on_pills { selected } else { 0.0 }, selected)
             .draw(&Env::inert(), p);
     }
 }
