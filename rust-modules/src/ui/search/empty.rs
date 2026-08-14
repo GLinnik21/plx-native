@@ -30,7 +30,7 @@
 #![allow(dead_code)]
 
 use crate::ui::label::{Label, VAlign};
-use crate::ui::search::View;
+use crate::ui::search::{field, View};
 use crate::ui::widgets::{StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, Rect};
 // The retui trait, imported anonymously: `search::View` (the per-frame snapshot) already owns the
@@ -95,8 +95,10 @@ fn no_results_line(q: &str) -> String {
 
 /// The hint under either headline: what this screen searches, stated as a plain fact.
 ///
-/// `n` is how many sources are registered AND dialable; `name` is the one source's machine name
-/// when there is exactly one and the roster has described it.
+/// `n` is how many sources this screen searches; `name` is the one source's machine name when there
+/// is exactly one and the roster has described it. Both come from [`field::sources`] — the ONE
+/// registry projection this screen builds — because this line and the field's scope line are two
+/// sentences about the same fact and used to be written from two different reads of it.
 ///
 /// The design gives two strings, "across both sources" and "in &lt;server&gt;". A third rung is
 /// added here rather than stretching the first: the registry holds up to
@@ -112,31 +114,6 @@ fn scope_hint(n: usize, name: Option<&str>) -> String {
         (n, _) if n > 2 => format!("{WHAT} across all sources."),
         _ => format!("{WHAT}."),
     }
-}
-
-/// The registry's answer to "what is this screen searching": how many sources can actually be
-/// dialled, and — only when there is exactly one — what it is called.
-///
-/// Registered is not the same as reachable: `server_ids` walks every slot the account was granted,
-/// and a slot with no `Client` is one nothing can query. Counting those in would make the hint
-/// promise a breadth the fetch does not have.
-fn sources() -> (usize, Option<&'static str>) {
-    // Counted by walking, never collected: this runs on every presented frame, and a `Vec` built
-    // only to be measured is an allocation a still screen pays forever.
-    let mut n = 0usize;
-    let mut first = None;
-    for id in crate::plex::server_ids().filter(|&id| crate::plex::client_for(id).is_some()) {
-        first.get_or_insert(id);
-        n += 1;
-    }
-    // `&'static str` rather than an owned copy: `server_facts` hands out a reference into a leaked
-    // record that is never freed, so there is nothing to clone.
-    let name = (n == 1)
-        .then(|| first.and_then(crate::plex::server_facts))
-        .flatten()
-        .map(|f| f.name.as_str())
-        .filter(|s| !s.is_empty());
-    (n, name)
 }
 
 /// Draw whichever of the three states applies, or nothing.
@@ -183,7 +160,7 @@ pub(crate) fn draw(p: Painter, v: &View) {
         // kind of mixed typography that reads as an accident.
         _ => "You haven\u{2019}t searched yet".to_string(),
     };
-    let (n, name) = sources();
+    let (n, name) = field::sources();
     // The hint is elided on the same column as the headline. A Plex friendly name is free text and
     // routinely long, and `Label` paints past its frame rather than clipping to it (layout ≠ paint)
     // — so an unmeasured "…in <name>." runs off the copy column toward the frame edge.
