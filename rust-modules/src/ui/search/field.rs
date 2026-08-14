@@ -23,8 +23,10 @@
 //! [`run_layout`] and [`scope_text`] are **pure**, and host-tested below, because both are the kind
 //! of thing that is wrong by a few pixels or one word and invisible in a screenshot. They are not
 //! the whole risk, though — [`draw`] and [`draw_scope`] carry the composition (the fill branch, the
-//! scissor pair, three placements and the two-store projection), and that is where a defect hides
-//! from both the tests and the eye.
+//! scissor pair and three placements), and that is where a defect hides from both the tests and the
+//! eye. The registry projection the scope line is written from is no longer part of that: it is
+//! [`with_scope`], built once per change and shared with [`super::empty`] — see the section comment
+//! above it for what that fixed.
 #![allow(dead_code)]
 
 use crate::ui::label::Label;
@@ -44,6 +46,12 @@ const CARET_H: f32 = 34.0;
 const HINT_GAP: f32 = 4.0;
 /// Where the scope line starts — its own column on the field's row, clear of the 820-wide capsule.
 const SCOPE_X: f32 = 950.0;
+/// …and how much room it gets: the rest of the row, out to the app's own right margin. It is the
+/// LAST run on this row, so it is the one that gives way — elided to this rather than allowed to
+/// run off the panel. A `const` because the elide (in [`build`]) and the frame it is drawn into (in
+/// [`draw_scope`]) are now on opposite sides of the memo, and a budget measured in one place and
+/// drawn in the other is how a run comes to be elided to a width nothing clips it at.
+const SCOPE_W: f32 = crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X - SCOPE_X;
 /// Drawn whenever the query has nothing readable in it, focused or not. A `CStr` literal, so the
 /// one string this module knows at compile time costs no per-frame allocation.
 const PLACEHOLDER: &CStr = c"Search";
@@ -282,20 +290,119 @@ fn join<S: AsRef<str>>(v: &[S]) -> String {
     }
 }
 
-/// Read the registry, state the scope. The gate is [`crate::plex::server_count`], checked before
-/// anything is collected so a one-server install pays nothing at all for this.
-///
-/// **Known staleness, bounded and deliberate.** This is the first per-frame DRAW to read
-/// [`crate::plex::server_facts`], and neither `plex::describe_server` nor the auth worker that
-/// feeds it calls [`crate::ui::idle::invalidate`] — so on a settled Search screen the roster
-/// landing that turns "your server" into a real machine name is not presented until `idle`'s 2 s
-/// keepalive fires. The right fix is an `invalidate` at `describe`, which is a shared-module edit
-/// this unit deliberately does not make on its own; the fallback wording above is what keeps the
-/// intervening frames a sentence rather than a hole.
-fn draw_scope(p: Painter) {
-    if crate::plex::server_count() < 2 {
-        return;
+// ---- the projection, read ONCE ---------------------------------------------------------------
+//
+// **Both regions of this screen now speak from one registry read.** The scope line here and
+// `empty`'s "…in <server>." hint are two sentences about the same fact, and each used to build its
+// own projection inside its own draw: this file joined `plex::server_ids` × `server_facts` ×
+// `browse::sources()`'s reachability × `browse::library_titles` behind a `server_count() >= 2`
+// gate, while `empty` counted `server_ids()` and never looked at reachability at all. Two joins
+// over one registry is two answers to "what is a source", printed one line apart on the screen.
+//
+// It is MEMOISED for the second half of the same problem. Rebuilt inside a draw, that join cost a
+// `Vec<Scope>`, a `Vec<&str>` per source (`library_titles` collects over the whole section table),
+// two more from `name_set`'s partition, a `String` per label, `join`'s vec, a `format!`, `elide`'s
+// String and a `CString` — ~16 allocations per PRESENTED frame, live on exactly the multi-source
+// setup the line exists for, on the one screen that presents continuously while the user types,
+// for a sentence that changes about twice a session. Both neighbouring regions already refused it
+// — `recents` borrows where it could clone, and `empty`'s own count walked the roster rather than
+// collecting it — which made this the outlier. `widgets::with_tab_metrics` is the in-tree pattern
+// it follows: hold the result against a generation, rebuild only when the generation moves.
+
+/// Everything the projection reads, in a form that can be compared every frame without touching
+/// the heap. A key that misses an input is a STALE SENTENCE — the one failure the per-frame rebuild
+/// could not have — so each field names what it stands in for.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Key {
+    /// registered slots: a share being added, and the count [`scope_text`] gates on
+    servers: usize,
+    /// `browse`'s section-table shape — the LIBRARY titles a share is NAMED by ([`Scope::label`])
+    sections: u32,
+    /// one bit per slot: did it last answer. `browse`'s flag flips mid-session, and it is the
+    /// difference between "Searching …" and "… unreachable".
+    live: u32,
+    /// the published [`crate::plex::ServerFacts`] address per slot — name, handle and ownership.
+    /// `describe_server` publishes a FRESH leaked record on every call and frees none of them
+    /// (`plex::servers`' module doc: that leak is what makes its `&'static` sound), so the address
+    /// IS that slot's description generation — it moves exactly when the description does, and two
+    /// descriptions can never share one. The registry publishes no counter to read instead.
+    facts: [usize; crate::plex::MAX_SERVERS],
+}
+
+impl Key {
+    /// Allocation-free, and that is the whole point: this runs on every presented frame while the
+    /// projection behind it does not.
+    fn read() -> Key {
+        let srcs = crate::browse::sources();
+        let mut k = Key {
+            servers: crate::plex::server_count(),
+            sections: crate::browse::sections_gen(),
+            live: 0,
+            facts: [0; crate::plex::MAX_SERVERS],
+        };
+        // `server_ids` walks `0..server_count()` and registration is refused past `MAX_SERVERS`, so
+        // `i` is always both a bit of `live` and an index of `facts`; `take` says so to the reader
+        // rather than leaving it to be re-derived from two other modules.
+        for (i, sid) in crate::plex::server_ids().enumerate().take(crate::plex::MAX_SERVERS) {
+            // The same reading [`build`] uses: a source `browse`'s table has never adopted has not
+            // failed, so an absent one is live. The two must agree or the line changes without the
+            // key moving.
+            if srcs.iter().find(|s| s.sid == sid).map(|s| s.reachable).unwrap_or(true) {
+                k.live |= 1 << i;
+            }
+            k.facts[i] = crate::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize);
+        }
+        k
     }
+}
+
+/// What this screen says about SCOPE, projected from the registry once per change: the field's
+/// line, and the two facts `empty`'s hint is written from.
+struct ScopeState {
+    key: Key,
+    /// The line, elided to [`SCOPE_W`] and NUL-terminated — the exact bytes [`draw_scope`] hands to
+    /// `Label`. `None` when there is nothing to state (see [`scope_text`]).
+    line: Option<CString>,
+    /// How many sources this screen SEARCHES. `crate::search` fans out one query per
+    /// `plex::server_ids` slot and consults nothing else, so this is the whole registered roster
+    /// and `browse`'s reachability is deliberately NOT folded into it: that flag is what section
+    /// DISCOVERY last proved, a share that failed to list its libraries can still answer a search,
+    /// and narrowing the hint on it would state a scope the fetch does not have.
+    n: usize,
+    /// The one source's MACHINE name, only when there is exactly one and something has named it.
+    /// `&'static` because `server_facts` hands out a reference into a leaked record — there is
+    /// nothing to clone.
+    name: Option<&'static str>,
+}
+
+static mut SCOPE: Option<ScopeState> = None;
+
+/// Run `f` with this screen's scope projection, rebuilding it only when [`Key`] moves.
+///
+/// Deliberately a closure and not a `&'static` getter, for `widgets::with_tab_metrics`' reason: the
+/// borrow points into `SCOPE`, and a nested rebuild would free the `CString` a caller is still
+/// handing to `Label` as a raw `*const c_char`. So do NOT call this again from inside `f`.
+///
+/// **A memo can only rebuild on a frame that PRESENTS**, so each input above owes an
+/// [`crate::ui::idle::invalidate`] when it lands or the new sentence waits for `idle`'s 2 s
+/// keepalive. All three that move mid-session do: `plex::servers::describe` (added for this line
+/// exactly — the screen read "your server and your server" for two seconds after it knew better),
+/// `browse::adopt_sections`, and `browse::mark_source_reachable`. That replaces a "known staleness,
+/// bounded and deliberate" note this file carried saying the `describe` invalidate was still
+/// missing; it landed, and a stale caveat is worse than none.
+fn with_scope<R>(f: impl FnOnce(&ScopeState) -> R) -> R {
+    let key = Key::read();
+    // SAFETY: main thread only — every caller is a draw, and the UI draws on the SDL loop's thread.
+    // Same terms as `widgets::TAB_CACHE`.
+    let slot = unsafe { &mut *std::ptr::addr_of_mut!(SCOPE) };
+    if slot.as_ref().map(|s| s.key != key).unwrap_or(true) {
+        *slot = Some(build(key));
+    }
+    f(slot.as_ref().expect("just built"))
+}
+
+/// The join itself — everything that allocates, run only when [`Key`] says it must.
+fn build(key: Key) -> ScopeState {
     let srcs = crate::browse::sources();
     // Registration order is the fallback for OWNERSHIP, and it is a documented invariant rather
     // than a guess: `app.rs` registers every share AFTER `plex::install`, "so slot 0 is always the
@@ -303,7 +410,7 @@ fn draw_scope(p: Painter) {
     // roster lands, defaulting `owned` to true would call a friend's machine "your server", and
     // would make the share fallback unreachable on the one path it was written for.
     let first = crate::plex::server_ids().next();
-    let src: Vec<Scope> = crate::plex::server_ids()
+    let src: Vec<Scope<'static>> = crate::plex::server_ids()
         .map(|sid| {
             let f = crate::plex::server_facts(sid);
             Scope {
@@ -317,14 +424,39 @@ fn draw_scope(p: Painter) {
             }
         })
         .collect();
-    let Some(t) = scope_text(&src) else { return };
-    // The last run on this row, so it is the one that gives way: elided to the app's own right
-    // margin rather than allowed to run off the panel.
-    let budget = crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X - SCOPE_X;
-    let t = crate::text::elide(&t, budget, theme::size::CAPTION, 0, false);
-    let ct = CString::new(t).unwrap_or_default();
-    Label::new(ct.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .draw(p, Rect::new(SCOPE_X, FIELD.y, budget, FIELD.h));
+    let line = scope_text(&src)
+        .map(|t| CString::new(crate::text::elide(&t, SCOPE_W, theme::size::CAPTION, 0, false)).unwrap_or_default());
+    // A name nothing has supplied yet is DROPPED rather than replaced — `super::empty::scope_hint`
+    // then writes the sentence with no scope clause at all, which stays true whatever the roster
+    // turns out to be. The fallbacks above ([`UNNAMED_OWN`]) belong to the LINE, which has to stay
+    // a sentence with a hole in the middle of it; a hint with a whole clause to drop does not.
+    let name = (src.len() == 1).then(|| src[0].name).filter(|s| !s.is_empty());
+    ScopeState { key, line, n: src.len(), name }
+}
+
+/// How many sources this screen searches, and — only when there is exactly one — its machine name.
+/// [`super::empty`]'s hint is written from these two and nothing else, so it can no longer
+/// contradict the line [`draw_scope`] draws one row above it.
+///
+/// `empty` used to count this itself, as `server_ids().filter(|id| client_for(id).is_some())`. That
+/// filter was **inert** and is not carried over: `plex::servers::register_lazy` publishes the slot
+/// pointer and only *then* stores the count ("after the pointer: a visible count implies a live
+/// slot"), `server_ids` walks `0..count`, and nothing in a shipped build ever nulls a slot back —
+/// so every id it yields resolves to a `Client`. Keeping it implied a registered-but-undialable
+/// state the registry does not permit, which is a worse thing to leave inside a projection than one
+/// fewer branch.
+pub(super) fn sources() -> (usize, Option<&'static str>) {
+    with_scope(|s| (s.n, s.name))
+}
+
+/// State the scope, if there is anything to state. Everything this reads was resolved by
+/// [`with_scope`], so the draw is one `Label` on one already-elided run.
+fn draw_scope(p: Painter) {
+    with_scope(|s| {
+        let Some(line) = s.line.as_ref() else { return };
+        Label::new(line.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .draw(p, Rect::new(SCOPE_X, FIELD.y, SCOPE_W, FIELD.h));
+    });
 }
 
 #[cfg(test)]
@@ -536,5 +668,71 @@ mod tests {
     fn an_undescribed_roster_does_not_call_every_machine_yours() {
         let t = scope_text(&[own(""), share("", "")]).unwrap();
         assert_eq!(t, "Searching your server and a shared server");
+    }
+
+    // ---- the memo ------------------------------------------------------------------------------
+
+    /// Empty the registry AND `browse`'s source table around a test that needs real entries in
+    /// both, and hand both back empty — the discipline `plex::servers`' own tests document: a
+    /// client left registered at a port that closed is one another module's pump will dial on a
+    /// background thread, and a seeded source table is a fixture the Library screen's own tests
+    /// would otherwise inherit.
+    struct FreshRegistry(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    impl Drop for FreshRegistry {
+        fn drop(&mut self) {
+            crate::browse::reset();
+            crate::plex::reset_servers_for_test();
+        }
+    }
+    fn fresh_registry() -> FreshRegistry {
+        let g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        FreshRegistry(g)
+    }
+
+    /// **The key must move for every input the projection reads**, because one it misses is a
+    /// sentence that stays on screen after it stopped being true — the single failure mode the
+    /// per-frame rebuild this replaced could not have. Two of the four are graded here, and they
+    /// are the two no counter states outright: `browse`'s reachability flag (which flips
+    /// mid-session, and is the difference between "Searching …" and "… unreachable"), and the FACTS
+    /// address, which is a generation only because `plex::servers` never frees a description.
+    ///
+    /// The other two are read straight out of the counters that define them (`server_count` and the
+    /// section table's own generation) and cannot drift from what they stand for.
+    ///
+    /// This grades [`Key::read`] and never [`with_scope`]: building the projection measures and
+    /// elides text, and there is no font on the host tier.
+    #[test]
+    fn the_memo_key_moves_when_a_source_goes_quiet_or_is_described() {
+        let _g = fresh_registry();
+        // `register_for_test`, not the public `register`: the latter resolves the device id through
+        // `session::load`, which mints and PERSISTS a uuid a host test has no business writing, and
+        // it spawns a `serverinfo` worker against the fixture address.
+        let own = crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-field-test");
+        crate::plex::register_for_test("mach-friend", "10.0.0.2", 32400, "tok", "cid-field-test");
+
+        crate::browse::seed_sources_for_test(2, true);
+        let live = Key::read();
+        assert_eq!(live.servers, 2, "both registered slots are sources");
+        assert_eq!(live.live, 0b11, "…and both last answered");
+
+        // A share going quiet is `browse`'s flag alone. The seed also resets the section table, so
+        // the whole key moves for two reasons — the BIT is what this pins.
+        crate::browse::seed_sources_for_test(2, false);
+        assert_eq!(Key::read().live, 0, "a source that stopped answering must move the key");
+
+        // …and the roster naming a machine moves it through the facts address on its own: nothing
+        // else about the registry or the table changed, and the line goes from "your server" to a
+        // name the user recognises.
+        crate::browse::seed_sources_for_test(2, true);
+        let before = Key::read();
+        crate::plex::describe_server(own, "nas-home", "", true);
+        let after = Key::read();
+        assert_ne!(before, after, "a description landing must rebuild the line that speaks it");
+        assert_eq!(
+            (after.servers, after.live, after.sections),
+            (before.servers, before.live, before.sections),
+            "…through the facts address, which is the only input that changed"
+        );
     }
 }
