@@ -857,6 +857,18 @@ fn focus(h: Hit) {
 
 /// Hover moves focus — and only onto something the pointer is actually over.
 pub(crate) fn pointer_focus(mx: f32, my: f32) {
+    // **A hover is not a decision.** While the keyboard is up, moving focus out of the field runs
+    // `leave_field`, which COMMITS the partial query to the recents file and calls
+    // `textinput::stop()`. The Magic Remote's pointer wakes on the smallest movement, so a drift
+    // across the top strip — a gesture the user never made as input — would file half a term and
+    // put the panel away mid-word.
+    //
+    // Deliberately the whole hover and not just the field→elsewhere edge: while editing, the field
+    // IS where focus belongs, and a pointer that merely passes over a tile has said nothing about
+    // wanting to leave. A CLICK still moves focus, because that is a decision.
+    if editing() {
+        return;
+    }
     if let Some(h) = hit(mx, my) {
         focus(h);
     }
