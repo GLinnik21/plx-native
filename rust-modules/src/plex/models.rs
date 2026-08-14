@@ -150,8 +150,24 @@ pub struct Metadata {
     pub kind: String, // movie|show|season|episode|clip
     #[serde(rename = "ratingKey", default)]
     pub rating_key: String,
+    /// **The only PORTABLE identity Plex issues** — `plex://movie/6856…291d`, the metadata
+    /// provider's id, identical on every server that ever matched this film. Everything else
+    /// item-shaped (`ratingKey`, `librarySectionID`, `Part.key`, `Stream.id`) is a server-local
+    /// integer dense from 1.
+    ///
+    /// Measured across this household's two servers 2026-08-14: one film is `ratingKey` **2029**
+    /// on ours and **5274** on the share, and their copy is titled in another language entirely —
+    /// so matching copies by key offers a different film and matching by title misses this one.
+    /// Plex's own client matches these two, which is the behaviour "Also available" reproduces.
+    #[serde(default, deserialize_with = "de_str")]
+    pub guid: String,
     #[serde(default)]
     pub title: String,
+    /// The LIBRARY this row lives in, on the server that answered ("Movies", "Film Club"). Sent on
+    /// a cross-library query such as `/library/all?guid=…`, which is the one place the app asks a
+    /// server something without already knowing which of its libraries will answer.
+    #[serde(rename = "librarySectionTitle", default, deserialize_with = "de_str")]
+    pub library_section_title: String,
     #[serde(default, deserialize_with = "de_i64")]
     pub year: i64,
     #[serde(rename = "contentRating", default)]

@@ -3831,6 +3831,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if crate::metadata::pump_detail() {
                 crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
             }
+            // …and the cross-source resolve it kicked off. Route-unconditional for the same reason,
+            // and separate because it lands one round trip per source LATER than the page does —
+            // "Also available" appears when the other servers have answered, not when the page
+            // mounts. It invalidates from inside `alt_sources::install`, since a landing that grows
+            // the actions row must be drawn without waiting for a keypress.
+            crate::metadata::pump_alt_sources();
             crate::posters::poster_pump(3); // invalidates from inside, per texture installed
             let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 
