@@ -229,6 +229,12 @@ pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
         owned,
     };
     FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+    // A server learning its own name CHANGES PIXELS — the Search screen's scope line and the
+    // Library's Source chip both read it — and it lands asynchronously, well after the first frame.
+    // `ui::idle` gates the whole present on detected motion and cannot see a `static` being
+    // written, so without this the new name sat invisible until the 2 s keepalive or the next
+    // keypress: a screen showing "your server and your server" for two seconds after it knew better.
+    crate::ui::idle::invalidate();
 }
 
 /// `new` when it says something, else whatever was already known.

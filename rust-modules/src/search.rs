@@ -654,10 +654,43 @@ fn project(mc: &crate::plex::MediaContainer, sid: ServerId) -> Projection {
             out[k].push(Item::Media(parse_item(m, sid)));
         }
         for t in &hub.directory {
-            out[k].push(Item::Tag(tag_hit(t, sid)));
+            let hit = tag_hit(t, sid);
+            // **A tag arrives once per LIBRARY SECTION**, measured: a person in both the Movies and
+            // the TV Shows library comes back as two rows with the same `id` and `tagKey`, each
+            // carrying that section's own `count`. Drawn raw that is the same face twice; keeping
+            // only the first reports 5 credits for someone with 8.
+            //
+            // So fold on identity and SUM the counts. `tagKey` first because it is global — the
+            // same person on two SERVERS is also one person, and the round-robin merge will bring
+            // both here — with the local `id` as the fallback for a row that carries no guid, which
+            // a collection never does.
+            match out[k].iter_mut().find_map(|i| match i {
+                Item::Tag(e) if same_tag(e, &hit) => Some(e),
+                _ => None,
+            }) {
+                Some(e) => {
+                    e.count += hit.count;
+                    // whichever row happened to carry artwork wins; a section that has none
+                    // must not blank a face the other section supplied
+                    if e.thumb.is_empty() {
+                        e.thumb = hit.thumb;
+                    }
+                }
+                None => out[k].push(Item::Tag(hit)),
+            }
         }
     }
     out
+}
+
+/// Are these two rows the same tag? `tagKey` is plex.tv's and global; `id` is server-local and
+/// dense from 1, so it may only be compared **within one server** — two servers' id 921 are two
+/// different people, and folding on it across sources would merge strangers.
+fn same_tag(a: &TagHit, b: &TagHit) -> bool {
+    if !a.tag_key.is_empty() && !b.tag_key.is_empty() {
+        return a.tag_key == b.tag_key;
+    }
+    a.sid == b.sid && !a.id.is_empty() && a.id == b.id
 }
 
 /// Which shelf a hub feeds, or `None` for one this screen does not draw (`album`, `artist`,
@@ -788,6 +821,42 @@ mod tests {
         // …and the drawn order is KINDS, whatever the wire said
         let sh = merge(&[Source { status: Status::Answered, items: p }]);
         assert_eq!(sh.iter().map(|s| s.kind).collect::<Vec<_>>(), [Kind::Movie, Kind::Person]);
+    }
+
+    /// **A person in two libraries is one person.** The server answers per library SECTION, so the
+    /// same actor comes back twice with the same identity and each section's own `count` — which
+    /// drew the same face twice, and would have reported 5 credits for someone with 8 had the
+    /// duplicate simply been dropped. Device-observed before it was fixed.
+    #[test]
+    fn a_tag_that_arrives_once_per_library_section_folds_into_one_row_with_the_counts_summed() {
+        let mut mc = MediaContainer::default();
+        let mut actor = hub("actor", "actor");
+        actor.directory = vec![
+            // the Movies section: no artwork on this row
+            Tag { tag: "Wallace Shawn".into(), id: 921, tag_key: "gid-1".into(), count: 5, ..Default::default() },
+            // …and the TV Shows section, same person, and this is the row with a headshot
+            Tag {
+                tag: "Wallace Shawn".into(),
+                id: 4471,
+                tag_key: "gid-1".into(),
+                count: 3,
+                thumb: "/t.jpg".into(),
+                ..Default::default()
+            },
+            // a different person who happens to share the FIRST one's local id in another section
+            Tag { tag: "Dee Wallace".into(), id: 921, tag_key: "gid-2".into(), count: 2, ..Default::default() },
+        ];
+        mc.hub = vec![actor];
+
+        let p = project(&mc, ServerId::UNSET);
+        assert_eq!(
+            p[3].iter().map(|i| i.title()).collect::<Vec<_>>(),
+            ["Wallace Shawn", "Dee Wallace"],
+            "one row per PERSON, and a shared local id does not merge two of them"
+        );
+        let Item::Tag(first) = &p[3][0] else { panic!("a person is a Tag row") };
+        assert_eq!(first.count, 8, "the section counts are summed, not taken from whichever came first");
+        assert_eq!(first.thumb, "/t.jpg", "a section with no artwork must not blank a face another supplied");
     }
 
     /// A hub answers in `Metadata[]` OR `Directory[]` depending on its TYPE (`Hub::directory`), and

@@ -96,19 +96,40 @@ pub struct Session {
     /// libraries), never draw an empty Home.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub pinned: Vec<PinnedLib>,
-    /// The search terms the user actually searched, **most recent first** — what the Search
-    /// screen's empty-query state offers back (`crate::ui::search::recents`, which owns the cap,
-    /// the de-duplication and the ordering; this is only where they rest).
+    /// The search terms actually searched, most recent first — what the Search screen's
+    /// empty-query state offers back (`crate::ui::search::recents` owns the cap, the
+    /// de-duplication and the ordering; this is only where they rest).
     ///
-    /// They live here rather than in a file of their own for one reason: they are the ACCOUNT's,
-    /// and this is the file that is cleared on sign-out, so they are dropped with the credentials
-    /// they belong to instead of being left behind for whoever signs in next.
+    /// **Keyed by PROFILE, and that is the whole point of the shape.** They lived here as a bare
+    /// `Vec<String>` for one commit, which made them the account's rather than the person's — so
+    /// after a Plex Home switch the next person's empty search screen offered back what the
+    /// previous one had looked for. A search history is about as personal as watch state, which
+    /// this product already scopes per user, and a shared television is exactly where that
+    /// matters.
+    ///
+    /// Clearing on a switch would also have fixed the leak, and is the wrong fix: it costs you
+    /// your own history every time you hand the remote over and take it back.
+    ///
+    /// They live in this file rather than one of their own because it is the file cleared on
+    /// sign-out, so they go with the credentials they belong to instead of being left for whoever
+    /// signs in next.
     ///
     /// Soft-parsed (see [`de_soft_vec`]) for the reason every list in this struct is: a hand-edited
-    /// or half-written entry must cost that term and nothing more. Failing the `Session` over a
+    /// or half-written entry must cost that entry and nothing more. Failing the `Session` over a
     /// search term would sign the device out on every boot.
     #[serde(default, deserialize_with = "de_soft_vec")]
-    pub recent_searches: Vec<String>,
+    pub recent_searches: Vec<RecentSearches>,
+}
+
+/// One profile's search history.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct RecentSearches {
+    /// The Plex Home user's `uuid`, or **empty for the account owner** with no Home selection —
+    /// the same "empty means the owner" convention [`SourceRef`] uses for a handle. `uuid` and not
+    /// `id`, because it is the identity that survives a roster refetch.
+    pub user: String,
+    pub terms: Vec<String>,
 }
 
 /// One persisted who's-watching tile (avatar + PIN flag; no tokens live here).
@@ -272,6 +293,31 @@ impl Session {
     pub fn is_pinned(&self, machine_id: &str, key: i64) -> bool {
         self.pinned.iter().any(|p| p.machine_id == machine_id && p.key == key)
     }
+
+    /// One profile's search terms — empty for a profile that has never searched, which is the same
+    /// answer as "never chosen" and needs no distinction here.
+    pub fn recents_for(&self, user: &str) -> &[String] {
+        self.recent_searches.iter().find(|r| r.user == user).map(|r| &r.terms[..]).unwrap_or(&[])
+    }
+
+    /// Replace one profile's terms, leaving every OTHER profile's alone. That last part is the
+    /// reason this is a method rather than a field assignment at the call site: the writer holds a
+    /// whole `Session` and the obvious `Session { recent_searches: mine, ..s }` would silently
+    /// delete everybody else's history.
+    pub fn set_recents_for(&mut self, user: &str, terms: Vec<String>) {
+        if let Some(r) = self.recent_searches.iter_mut().find(|r| r.user == user) {
+            r.terms = terms;
+        } else if !terms.is_empty() {
+            self.recent_searches.push(RecentSearches { user: user.to_string(), terms });
+        }
+    }
+}
+
+/// Which profile's history is in play: the active Plex Home user's `uuid`, or `""` for the owner
+/// with no Home selection. One accessor, so the reader and the writer cannot key on different
+/// things — which would look exactly like the leak this scoping exists to prevent.
+pub fn current_profile_key() -> String {
+    current().map(|u| u.uuid).unwrap_or_default()
 }
 
 /// Read the persisted session and nothing else — **no minting, no write.** For readers that merely
@@ -539,15 +585,39 @@ mod tests {
     #[test]
     fn the_recent_search_terms_round_trip_through_the_session_file_format() {
         let s: Session = serde_json::from_str(
-            r#"{"client_id":"cid-1","recent_searches":["wallace","Гладиатор","the curse"]}"#,
+            r#"{"client_id":"cid-1","recent_searches":[
+                 {"user":"uu-1","terms":["wallace","Гладиатор","the curse"]}]}"#,
         )
         .expect("a session carrying terms parses");
         let s: Session = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).expect("re-read");
-        assert_eq!(s.recent_searches, ["wallace", "Гладиатор", "the curse"], "most recent first, in order");
+        assert_eq!(s.recents_for("uu-1"), ["wallace", "Гладиатор", "the curse"], "most recent first, in order");
 
         // absent entirely — every session file written before this landed
         let s: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
         assert!(s.recent_searches.is_empty());
+    }
+
+    /// **One profile cannot read another's history, and cannot delete it either.** A search
+    /// history is as personal as watch state, and a television is the one place several people
+    /// share an install — so this is scoped rather than cleared on a switch, which would have
+    /// stopped the leak at the price of losing your own list every time you handed the remote over.
+    #[test]
+    fn a_profiles_search_history_is_its_own() {
+        let mut s = Session { client_id: "cid".into(), ..Default::default() };
+        s.set_recents_for("uu-a", vec!["gromit".into()]);
+        s.set_recents_for("uu-b", vec!["эдем".into()]);
+
+        assert_eq!(s.recents_for("uu-a"), ["gromit"]);
+        assert_eq!(s.recents_for("uu-b"), ["эдем"]);
+        assert!(s.recents_for("uu-never-searched").is_empty(), "an unknown profile reads empty, not someone else's");
+        // the owner with no Plex Home selection keys on "" and is nobody else
+        assert!(s.recents_for("").is_empty());
+
+        // …and a write for one leaves the others intact — the bug `set_recents_for` exists to make
+        // unwriteable, since the obvious `Session { recent_searches: mine, ..s }` deletes everybody.
+        s.set_recents_for("uu-a", vec!["wallace".into(), "gromit".into()]);
+        assert_eq!(s.recents_for("uu-a"), ["wallace", "gromit"]);
+        assert_eq!(s.recents_for("uu-b"), ["эдем"], "the other profile's history survived the write");
     }
 
     /// And they degrade the same way every other list here does: one malformed term costs that
@@ -558,10 +628,10 @@ mod tests {
         let s: Session = serde_json::from_str(
             r#"{"client_id":"cid-1","account_token":"acct",
                 "server":{"address":"192.168.0.10","port":32400,"token":"t"},
-                "recent_searches":["wallace",null,42,{"oops":true},"gromit"]}"#,
+                "recent_searches":[{"user":"u","terms":["wallace","gromit"]},null,42,"nope"]}"#,
         )
         .expect("a bad term must not fail the file");
-        assert_eq!(s.recent_searches, ["wallace", "gromit"], "the three bad entries dropped");
+        assert_eq!(s.recents_for("u"), ["wallace", "gromit"], "the three bad entries dropped");
         assert_eq!(s.account_token, "acct");
         assert!(s.can_go_local(), "and the device can still stream");
 

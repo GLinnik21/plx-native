@@ -58,6 +58,9 @@ pub struct PmsMovie {
     pub(crate) dur_ns: i64,
     pub(crate) part: String,
     pub(crate) thumb: String,
+    /// The item's OWN thumb where [`PmsMovie::thumb`] holds a substitute — i.e. an episode's 16:9
+    /// still, empty on everything else. A landscape tile draws this; a portrait card draws `thumb`.
+    pub(crate) still: String,
     pub(crate) art: String,
     pub(crate) summary: String,
     pub(crate) rk: String,
@@ -211,6 +214,15 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
     // episode still doesn't fill a portrait card
     let thumb = if it.grandparent_thumb.is_empty() { &it.thumb } else { &it.grandparent_thumb };
     m.thumb = clean(thumb);
+    // …and the item's OWN thumb, unsubstituted. The line above is right for a POSTER shelf and
+    // wrong for a landscape one, and both exist: an episode's own thumb is a 16:9 still, so Home's
+    // portrait cards want the show poster, while a 420x236 tile wants the still — with the
+    // substitution applied, a search for a show drew the same fanart on every episode in the row.
+    //
+    // Kept as a second field rather than resolved per caller because `parse_item` runs on a worker
+    // and cannot know which shelf will draw the row. Empty on a movie, where `thumb` already IS
+    // the item's own.
+    m.still = if it.grandparent_thumb.is_empty() { String::new() } else { clean(&it.thumb) };
     m.art = clean(&it.art);
     m.summary = clean(&it.summary);
     m.rk = clean(&it.rating_key);
