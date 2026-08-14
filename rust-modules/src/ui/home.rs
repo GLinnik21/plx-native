@@ -1748,15 +1748,36 @@ mod tests {
     /// empty), so the row here is the Home pill alone and the band's last pill IS Home.
     #[test]
     fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
+        let _s = crate::testlock::serial(); // the count comes from `browse`'s table, a crate global
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();
-        assert_eq!(crate::ui::widgets::tab_count(), 1, "no sections discovered on the host");
+        crate::browse::reset();
+        assert_eq!(crate::ui::widgets::tab_count(), 1, "no sections discovered: the Home pill alone");
         set_hero_focus(c_int::MIN / 2);
         assert_eq!(hero_focus(), hero_focus_for_pill(0), "past the last pill clamps onto it");
         assert_eq!(hero_pill_index(hero_focus()), Some(0));
         set_hero_focus(999);
         assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "past the action row clamps to its end");
         set_hero_focus(saved);
+    }
+
+    /// The top band walks the PILLS the strip's projection produces, not the section table — with
+    /// several sources those are different lengths. Five libraries across two servers project to
+    /// three pills (your two, plus the music only they have), so RIGHT stops on the third and never
+    /// on a fourth that nothing would draw.
+    #[test]
+    fn the_top_band_walks_the_projected_pills_not_the_section_table() {
+        let _s = crate::testlock::serial();
+        let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = hero_focus();
+        crate::browse::seed_two_source_table_for_test();
+        assert_eq!(crate::browse::section_count(), 5, "five libraries…");
+        assert_eq!(crate::ui::widgets::tab_count(), 4, "…and Home + three pills");
+
+        set_hero_focus(c_int::MIN / 2); // walk RIGHT past the end of the row
+        assert_eq!(hero_pill_index(hero_focus()), Some(3), "the last pill is the last PILL, not the last library");
+        set_hero_focus(saved);
+        crate::browse::reset();
     }
 
     #[test]

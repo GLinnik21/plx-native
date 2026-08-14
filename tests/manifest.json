@@ -140,7 +140,7 @@
       "run_secs": 36,
       "warmup_s": 6,
       "_run_secs_note": "36, not the 22 every single-route scene uses, because a ROUTE-CHANGING scene splits its samples. The FPS heartbeat is once/sec and navosc bounces every 1400ms, so each route sees only about HALF the post-warmup samples — 22s gave route=home 4, one under the harness' >=5 minimum, and the scene failed for want of evidence rather than for want of frames. 36s leaves ~30 post-warmup seconds, ~15 per route: margin enough that an uneven bounce phase cannot starve either side. Any future two-route scene needs this same doubling.",
-      "comment": "One of the two scenes that change ROUTE. navosc bounces Home<->the first library section every 1400ms through the real nav_to path, so the page cross-fade (ui::nav) is perf-gated. route=home samples the settled hero, the fade-OUT and the fade-IN on the way back; the Library half is covered by library-scroll/library-switch.",
+      "comment": "One of the two scenes that change ROUTE. navosc bounces Home<->the first library TAB every 1400ms through the real nav_to path, so the page cross-fade (ui::nav) is perf-gated. It is a tab and no longer 'the first section': the strip is a projection of the section table (browse::tabs), so several libraries can share one pill and the two index spaces are not one addition apart. route=home samples the settled hero, the fade-OUT and the fade-IN on the way back; the Library half is covered by library-scroll/library-switch.",
       "triggers": {
         "plxnative-navosc": true
       },
