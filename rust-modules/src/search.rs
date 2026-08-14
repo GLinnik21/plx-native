@@ -127,8 +127,9 @@ pub(crate) struct TagHit {
     ///
     /// Resolving one anyway is possible and was measured, in case a later unit wants it: `GET
     /// /library/sections/{librarySectionID}/collections` returns `Metadata[]` with real `thumb`
-    /// paths, and the join is **`index` == this row's `id`** (or the `guid`) — the id here is NOT
-    /// the collection's `ratingKey`, which is a different number entirely. Note the shape of the
+    /// paths, and the join is **`index` == this row's `id`** — the id here is NOT the collection's
+    /// `ratingKey`, which is a different number entirely. (`guid` would join too, but this struct
+    /// does not keep it: add a field before reaching for that, rather than re-parsing the hub.) Note the shape of the
     /// cost, which is better than it first looks: **one request per library SECTION**, not per
     /// collection, and cacheable for the session. Neither of the two obvious shortcuts works —
     /// following `key` returns the collection's MEMBERS under the section's own generic art, and

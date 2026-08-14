@@ -16,7 +16,8 @@
 //! `plex::current_server()`, at the call site, where it is visible.
 //!
 //! The server is a FIELD on the slot, not a prefix on the key, deliberately: keys already run
-//! ~135 bytes into a fixed 256-byte array (see [`Pslot::key`]), and a `u16` compare is also the
+//! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`poster_key`])
+//! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
 //! cheaper half of the per-frame identity scan, so it goes first.
 use crate::img;
 use crate::plex::ServerId;
@@ -44,6 +45,26 @@ const PT_KEYLEN: usize = 256;
 /// [`PT_KEYLEN`] rather than written as a literal, so the gate cannot drift from the array it
 /// gates.
 const KEY_MAX: usize = PT_KEYLEN - 1;
+
+/// Can this key ever resolve to a picture? The store's ONE precondition, and it lives here for the
+/// same reason [`victim`] and [`idle_of`] were split out: it was duplicated across the entry
+/// points, none of those copies could be tested (reaching them drags in `gfx::delete_tex`, which
+/// no host test binary links), and the array it protects belongs to [`lookup`], not to whoever
+/// built the string.
+///
+/// **Empty** means no request could be built — an unknown server, or an item the server gave no
+/// art for (see [`poster_key`]).
+///
+/// **Longer than [`KEY_MAX`]** means [`set_key`] would TRUNCATE it, after which the stored key can
+/// never equal the probe that built it: every frame misses, claims a fresh slot and evicts a real
+/// poster — the whole store thrashing over one tile. `poster_key` refuses to hand such a path out,
+/// but it is not the only thing that can reach `lookup` (the three entry points take a raw
+/// `*const c_char`), so the check that matters is the one at the array.
+///
+/// Either way the answer is the same: no slot is claimed, and the tile draws its skeleton.
+fn is_fetchable(key: &str) -> bool {
+    !key.is_empty() && key.len() <= KEY_MAX
+}
 const P_EMPTY: c_int = 0;
 const P_WANT: c_int = 1;
 const P_LOADING: c_int = 2;
@@ -119,7 +140,7 @@ impl Pslot {
 /// break invisibly: with the key alone, server B's card is served from A's slot — same texture,
 /// wrong picture, and the wrong token on the fetch that filled it. The `u16` compare goes first
 /// because this runs for every slot of every probe of every visible tile, and it is the half that
-/// can reject without touching the 256-byte array.
+/// can reject without touching the [`PT_KEYLEN`]-byte array.
 fn slot_matches(s: &Pslot, srv: ServerId, key: &[u8]) -> bool {
     s.state != P_EMPTY && s.srv == srv && key_bytes(s) == key
 }
@@ -227,6 +248,17 @@ impl KeyMemo {
 }
 static mut KEY_MEMO: Option<KeyMemo> = None;
 
+/// The memo is a SECOND crate global, and it outlives `plex::reset_servers_for_test`. Entries are
+/// keyed `(slot, w, h, png)` and every test re-registers at slot 0, so without this a test is
+/// served the previous test's path for the same request box. That the key tests pass at all rests
+/// on `Client::new` drawing a process-unique `token_gen` from a monotone sequence — true today,
+/// incidental, and exactly the kind of thing a later simplification (per-server counters from 0)
+/// would break in a way nothing in this module would explain. Reset it explicitly instead.
+#[cfg(test)]
+fn reset_key_memo() {
+    unsafe { *std::ptr::addr_of_mut!(KEY_MEMO) = None };
+}
+
 /// Build `srv`'s transcode request path (also the store key). png=1 -> transparent clearLogo.
 /// The path (and token) come from that server's own `image_transcode_path` — the one place that
 /// assembles a /photo/:/transcode request — so this stays the LRU key AND the fetch path.
@@ -258,7 +290,18 @@ static mut KEY_MEMO: Option<KeyMemo> = None;
 ///    — but SEARCH makes it the normal case for a WHOLE SHELF, because a `/hubs/search`
 ///    `collection` row carries no `thumb` at all (nor a `ratingKey` — see `search::TagHit::thumb`).
 ///  * **A built path longer than a slot can key** (see [`KEY_MAX`]) — the cliff absolute URLs
-///    brought within sight, and the worst of the three if it is let through.
+///    brought within sight, and the worst of the three if it is let through. [`is_fetchable`]
+///    re-checks this at [`lookup`], which is where the array actually lives.
+///
+/// ## The INPUT end is not gated, and today that is arithmetic rather than design
+///
+/// `ui::widgets::tex_key` copies `src_path` into a 256-byte stack buffer before this ever sees it,
+/// and `cbuf::set_bytes` TRUNCATES rather than refusing — so two absolute URLs sharing a 255-byte
+/// prefix would collapse to one memo entry and one key. Nothing catches that; it is unreachable
+/// only because a 255-byte source encodes to at least 255 bytes, which plus ~88 of fixed request
+/// and token always exceeds [`KEY_MAX`], so the gate below refuses both. Shrink the fixed
+/// overhead, shorten the token or raise [`PT_KEYLEN`] and two people's headshots start resolving
+/// to one slot. If any of those three moves, gate the source at `tex_key` too.
 pub(crate) fn poster_key(srv: ServerId, dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
     if dst.is_null() || cap == 0 {
         return;
@@ -277,13 +320,37 @@ pub(crate) fn poster_key(srv: ServerId, dst: *mut c_char, cap: usize, src_path: 
         let s = memo.get_or_build(srv.raw(), &path, w, h, png != 0, c.token_gen(), || {
             c.image_transcode_path(&path, w as i64, h as i64, png != 0)
         });
-        // A path the slot array cannot hold is worse than no path: `set_key` would truncate it,
-        // the truncated key would never equal the probe that built it, and every frame would claim
-        // a fresh slot and evict a real poster. Refusing hands back the same skeleton an unknown
-        // server gets. Headroom today is comfortable and worth stating so a future shape can be
-        // judged against it: a headshot key measures ~177 bytes of the 255 (54 fixed + 89 encoded
-        // URL + 34 of token), an ordinary relative thumb ~140.
-        crate::cbuf::set(dst, cap, if s.len() <= KEY_MAX { s } else { "" });
+        // A path that cannot survive the round trip is worse than no path: whichever end truncates
+        // it, the stored key never equals the probe that built it, and every frame claims a fresh
+        // slot and evicts a real poster. Refusing hands back the same skeleton an unknown server
+        // gets. TWO ceilings, because there are two arrays and they are not the same size —
+        // [`KEY_MAX`], what a slot can hold, and the CALLER's `cap`, which `cbuf::set` truncates
+        // to `cap - 1`. `is_fetchable` re-checks the first at `lookup` for keys built by any other
+        // route; only here is `cap` in scope. Headroom today is comfortable, and worth stating so
+        // a future shape can be judged against it: a headshot key measures ~177 bytes of the 255
+        // (54 fixed + 89 encoded URL + 34 of token), an ordinary relative thumb ~140, and both
+        // callers pass a 352-byte buffer.
+        let fits = s.len() <= KEY_MAX && s.len() < cap;
+        if !fits {
+            warn_key_refused(s.len(), cap);
+        }
+        crate::cbuf::set(dst, cap, if fits { s } else { "" });
+    }
+}
+
+/// A refused key logs ONCE per process, with both ceilings and the length that missed them.
+///
+/// The latch is the whole design. This is a per-tile, per-frame path and the memo means a refusal
+/// REPEATS every frame, so an unlatched log would bury `/tmp/plxnative-events.log` — but silence
+/// is the failure `paths.rs` was fixed for (a font fell through to DroidSans while `init_text`
+/// still logged `ok=1`), and a silent refusal here is a tile that is a skeleton forever with
+/// nothing in the one file an issue report is asked for. Once is enough to name the cause.
+fn warn_key_refused(len: usize, cap: usize) {
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, Ordering::Relaxed) {
+        crate::log(&format!(
+            "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}, caller buffer {cap}) - tile stays a skeleton"
+        ));
     }
 }
 
@@ -375,6 +442,12 @@ type Hit = (c_uint, c_int, c_int);
 /// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
 /// difference between the paths, and it is entirely about the LRU bookkeeping.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
+    // The array's own precondition, checked before a slot can be claimed for a key that could
+    // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
+    // next candidate instead of retiring this frame's one warm here.
+    if !is_fetchable(key_s) {
+        return ((0, 0, 0), Warm::Known);
+    }
     let mut g = store();
     // hit?
     for i in 0..PT_CAP {
@@ -700,6 +773,7 @@ mod tests {
     impl Drop for Fresh {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
+            reset_key_memo();
         }
     }
     /// `register_for_test`, not the public `register`: the latter resolves the device id through
@@ -707,6 +781,7 @@ mod tests {
     fn one_server() -> (Fresh, ServerId, &'static str) {
         let g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
+        reset_key_memo();
         let tok = "tok-poster-test";
         let sid = crate::plex::register_for_test("poster-test", "127.0.0.1", 32400, tok, "cid-poster-test");
         (Fresh(g), sid, tok)
@@ -815,6 +890,21 @@ mod tests {
         let would_be = "b".repeat(KEY_MAX + 1);
         set_key(&mut s, &would_be);
         assert_ne!(key_bytes(&s), would_be.as_bytes(), "a truncated slot can never match its own probe");
+    }
+
+    /// The store's precondition, asserted where it actually lives.
+    ///
+    /// `poster_key` refusing is only half the guarantee: [`lookup`] takes a `&str` from three
+    /// `pub(crate)` entry points that each accept a raw `*const c_char`, so a key built by any
+    /// other route reaches the 256-byte array without passing the producer's gate. Testing
+    /// [`is_fetchable`] directly is the whole reason it was split out — `lookup` itself cannot be
+    /// called from a host test binary (it reaches `gfx::delete_tex`, and nothing here links GL).
+    #[test]
+    fn only_a_key_that_survives_a_slot_is_fetchable() {
+        assert!(!is_fetchable(""), "an empty key names no request");
+        assert!(is_fetchable("/photo/:/transcode?url=x"), "an ordinary key is fetchable");
+        assert!(is_fetchable(&"a".repeat(KEY_MAX)), "exactly what a slot holds is still fetchable");
+        assert!(!is_fetchable(&"a".repeat(KEY_MAX + 1)), "one byte past the array must never claim a slot");
     }
 
     /// A settled, drawable slot: READY, last touched on frame `frame` with LRU age `use_`.
