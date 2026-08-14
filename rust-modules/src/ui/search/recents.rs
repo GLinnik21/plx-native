@@ -134,7 +134,10 @@ fn with_terms<R>(f: impl FnOnce(&mut Vec<String>) -> R) -> R {
 fn cached(g: &mut Option<(u32, Vec<String>)>) -> &mut Vec<String> {
     let gen = crate::plex::session::current_gen();
     if g.as_ref().map(|(v, _)| *v) != Some(gen) {
-        *g = Some((gen, sanitize(crate::plex::session::peek().recent_searches)));
+        // Keyed on the PROFILE, not the account: the cache generation already moves on a Plex
+        // Home switch, and this is the read that has to answer differently when it does.
+        let who = crate::plex::session::current_profile_key();
+        *g = Some((gen, sanitize(crate::plex::session::peek().recents_for(&who).to_vec())));
     }
     // filled immediately above when it was not already the current generation
     &mut g.as_mut().expect("cache is populated").1
@@ -260,10 +263,16 @@ pub(crate) fn clear() {
 /// boot path and is never empty afterwards, so it is exactly the test for "something real came
 /// back": with no readable session the terms stay in memory for this run and are dropped with it.
 fn merged(s: &crate::plex::session::Session, terms: &[String]) -> Option<crate::plex::session::Session> {
-    if s.client_id.is_empty() || s.recent_searches == terms {
+    let who = crate::plex::session::current_profile_key();
+    if s.client_id.is_empty() || s.recents_for(&who) == terms {
         return None;
     }
-    Some(crate::plex::session::Session { recent_searches: terms.to_vec(), ..s.clone() })
+    // `set_recents_for`, never a struct update with `recent_searches:` — the field now holds EVERY
+    // profile's history, so assigning it here would drop everyone else's. That is the whole reason
+    // the setter exists rather than the field being written at this call site.
+    let mut next = s.clone();
+    next.set_recents_for(&who, terms.to_vec());
+    Some(next)
 }
 
 /// Write the list back to the session file, re-reading it first: the snapshot this store holds is
@@ -388,7 +397,7 @@ mod tests {
 
         let live = Session { client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default() };
         let next = merged(&live, &terms).expect("a real session takes the terms");
-        assert_eq!(next.recent_searches, terms);
+        assert_eq!(next.recents_for(&crate::plex::session::current_profile_key()), terms);
         assert_eq!(next.account_token, "acct", "everything else in the file is carried over untouched");
 
         // and an unchanged list is not a write: `remember` re-reads the file on every call

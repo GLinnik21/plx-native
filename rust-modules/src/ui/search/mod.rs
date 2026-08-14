@@ -493,7 +493,11 @@ pub(crate) fn draw() {
         results::draw(pg, &v);
     }
 
-    crate::ui::widgets::profile_chip(pk, Rect::new(crate::ui::consts::MARGIN_X, crate::ui::widgets::TOP_BAR_Y, 54.0, 54.0), 0.0);
+    // `CHIP_D`, not a literal 54: Home draws this same chip at 60, and Home<->Search is a
+    // chrome-CONTINUOUS cross-fade, so a six-pixel disagreement was visible as the avatar shrinking
+    // mid-transition — on this screen alone.
+    let d = crate::ui::widgets::CHIP_D;
+    crate::ui::widgets::profile_chip(pk, Rect::new(crate::ui::consts::MARGIN_X, crate::ui::widgets::TOP_BAR_Y, d, d), 0.0);
     crate::ui::widgets::draw_tab_row(pk);
 }
 

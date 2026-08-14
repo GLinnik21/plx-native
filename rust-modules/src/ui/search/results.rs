@@ -92,6 +92,10 @@ const COUNT_GAP: f32 = theme::space::SM;
 const SOURCE_PAD: f32 = theme::space::XS;
 /// Air kept under the lowest visible content when a shelf is revealed by scrolling.
 const BOTTOM_PAD: f32 = theme::space::LG;
+/// Headroom between the field's bottom edge and where scrolled content is cut. It is not spacing —
+/// nothing is drawn in it at rest — it is the allowance for the two things that paint above a
+/// shelf's own block top: the focused heading's `CardRow::lift()` and a magnified tile's glow.
+const BAND_CLEAR: f32 = theme::space::MD;
 
 /// Art is asked for at the size the REST OF THE APP asks for it, never at this shelf's own tile
 /// size: the store key is `(server, path, w, h, png)`, so a film already on a Home shelf is a
@@ -460,6 +464,20 @@ pub(crate) fn draw(p: Painter, v: &View) {
     }
     // `shift` is a SCROLL, as every other flow in this app spells it: content is drawn one shift
     // higher, so the whole region rides ONE translate and every y below stays a flow coordinate.
+    // Content scrolls UP, and has to be CUT above rather than painted over the chrome. The shelves
+    // ride one translate and nothing else bounds them, so a scrolled row rose behind the tab strip
+    // and the query capsule and was drawn ON TOP of both — device-observed, and invisible until
+    // something was actually scrolled.
+    //
+    // The cut is under the FIELD, not at the tab track's bottom edge: the field is the lowest thing
+    // this screen pins, so whatever clears it clears the strip above it too. The gap is headroom
+    // for the two things that legitimately paint ABOVE a shelf's own block top — the focused
+    // heading's lift and a magnified tile's glow — which a cut at `CONTENT_TOP` would shave at rest.
+    //
+    // Paired with `clip_clear` below, and deliberately AFTER the early return above: this is global
+    // GL scissor state, so a return between the two would leave the rest of the frame scissored.
+    let cut = super::FIELD.y + super::FIELD.h + BAND_CLEAR;
+    p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
     let pf = p.translate(0.0, -v.shift);
     let st: &Shelves = state();
     let (ks, n) = present();
@@ -472,6 +490,7 @@ pub(crate) fn draw(p: Painter, v: &View) {
             draw_shelf(pf, st, s, i, v, top);
         }
     }
+    p.clip_clear();
 }
 
 fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32) {
@@ -586,7 +605,13 @@ fn heading_flow(
 /// cache slot is already the right one); this shelf needs no change when it does.
 fn tile_art<'a>(kind: Kind, it: &'a Item) -> Art<'a> {
     match (kind, it) {
-        (Kind::Episode, Item::Media(m)) => Art::Thumb { sid: m.sid, key: &m.art, res: STILL_RES },
+        // The episode's OWN still, falling back to the show's fanart only when the server sent
+        // none. `m.art` alone drew the same picture on every episode of one show — the fanart IS
+        // the show's, so a row of six results for one series was six identical tiles.
+        (Kind::Episode, Item::Media(m)) => {
+            let key = if m.still.is_empty() { &m.art } else { &m.still };
+            Art::Thumb { sid: m.sid, key, res: STILL_RES }
+        }
         (_, Item::Media(m)) => Art::Poster(Some(m)),
         (Kind::Person, Item::Tag(t)) => Art::Person { sid: t.sid, key: &t.thumb, res: HEAD_RES },
         (_, Item::Tag(t)) if t.thumb.is_empty() => Art::Poster(None),

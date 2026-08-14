@@ -4000,9 +4000,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     match req.to {
                         Nav::Search { ref query } => {
-                            // Search sits ON Home rather than over it — the strip is continuous
-                            // chrome across the flip, exactly as Home<->Library is — so the trail
-                            // stays rooted where it is and BACK falls through to Home.
+                            // Search is a PEER of Home reached from the strip, so arriving resets
+                            // the trail exactly as arriving at Home does. Without it the trail kept
+                            // whatever was under it — reach Search from the Library and it is
+                            // `[Home, Library]` — so opening a result and pressing BACK landed on
+                            // the browse grid instead of Home. One press, two destinations,
+                            // decided by where the user happened to come in.
+                            //
+                            // `trail.reset()` and not a push: this screen mounts no node of its
+                            // own (nothing stacks ON Search, its results stack on Home), which is
+                            // the same reason `Route::Search` has no `Node` variant.
+                            trail.reset();
                             crate::ui::search::enter(query);
                             route = Route::Search;
                         }
