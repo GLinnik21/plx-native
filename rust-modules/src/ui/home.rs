@@ -1762,20 +1762,22 @@ mod tests {
     }
 
     /// The top band walks the PILLS the strip's projection produces, not the section table — with
-    /// several sources those are different lengths. Five libraries across two servers project to
-    /// three pills (your two, plus the music only they have), so RIGHT stops on the third and never
-    /// on a fourth that nothing would draw.
+    /// several sources those are different lengths. FOUR libraries across two servers project to
+    /// two pills (both servers provide both types), so RIGHT stops on the second and never on a
+    /// third that nothing would draw. The gap between the two counts is the whole point; it used to
+    /// be 5→3 because the fixture's fifth library was a music one, and music is no longer a type
+    /// this product has a level for.
     #[test]
     fn the_top_band_walks_the_projected_pills_not_the_section_table() {
         let _s = crate::testlock::serial();
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();
         crate::browse::seed_two_source_table_for_test();
-        assert_eq!(crate::browse::section_count(), 5, "five libraries…");
-        assert_eq!(crate::ui::widgets::tab_count(), 4, "…and Home + three pills");
+        assert_eq!(crate::browse::section_count(), 4, "four libraries…");
+        assert_eq!(crate::ui::widgets::tab_count(), 3, "…and Home + two pills");
 
         set_hero_focus(c_int::MIN / 2); // walk RIGHT past the end of the row
-        assert_eq!(hero_pill_index(hero_focus()), Some(3), "the last pill is the last PILL, not the last library");
+        assert_eq!(hero_pill_index(hero_focus()), Some(2), "the last pill is the last PILL, not the last library");
         set_hero_focus(saved);
         crate::browse::reset();
     }

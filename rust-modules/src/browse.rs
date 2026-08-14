@@ -473,35 +473,42 @@ fn project_sections(mc: &crate::plex::MediaContainer) -> Vec<(i64, String, SecKi
 ///
 /// It replaced an `is_show: bool`, and the reason is the projection rather than tidiness: "does any
 /// owned library have this kind" is the test that decides whether a friend's library gets its own
-/// pill, and with two values Music is indistinguishable from Movies — a friend's music library would
-/// silently ride your *Movies* pill and its content would be unreachable from the strip.
+/// pill, and with one value a second type would silently ride the *Movies* pill and its content
+/// would be unreachable from the strip.
+///
+/// **Movies and shows are the whole list, deliberately.** `artist` and `photo` briefly appeared
+/// here — the reasoning was that a friend sharing a type you do not own is the growth case the tab
+/// projection exists for, and dropping those at the wire made that case unreachable. It shipped, and
+/// a *Music* tab duly appeared on the dev set (owner verdict, 2026-08-14: "Music was just a tab in a
+/// mockup — remove it completely"). The reasoning was sound and the conclusion was still wrong,
+/// because the growth case is only worth reaching for a type the app can actually PLAY: below the
+/// grid an artist opens the movie detail page, which has nothing to play, so the pill led to a dead
+/// end that looked like a feature. Re-add a variant here in the commit that builds its level, not
+/// before — the projection is ready for it and needs no change.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SecKind {
     Movie,
     Show,
-    Music,
-    Photo,
 }
 
 impl SecKind {
-    /// The wire's `Directory.type`, or `None` for a type this product draws no level for.
+    /// The wire's `Directory.type`, or `None` for a type this product draws no level for —
+    /// `artist`, `photo`, and everything else PMS can serve. See the type's own doc: this returning
+    /// `None` is what keeps an unplayable library out of the strip, the Sources panel and the grid
+    /// in one place, rather than at three call sites that can disagree.
     pub(crate) fn from_wire(s: &str) -> Option<SecKind> {
         match s {
             "movie" => Some(SecKind::Movie),
             "show" => Some(SecKind::Show),
-            "artist" => Some(SecKind::Music),
-            "photo" => Some(SecKind::Photo),
             _ => None,
         }
     }
-    /// The Sources row's count noun ("185 films") — plural, and the singular-less form the row
+    /// The Sources row's count noun ("187 films") — plural, and the singular-less form the row
     /// falls back to when no count has landed is [`SecKind::plural`].
     pub(crate) fn noun(self) -> &'static str {
         match self {
             SecKind::Movie => "films",
             SecKind::Show => "shows",
-            SecKind::Music => "artists",
-            SecKind::Photo => "photos",
         }
     }
     /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
@@ -509,8 +516,6 @@ impl SecKind {
         match self {
             SecKind::Movie => "Films",
             SecKind::Show => "TV shows",
-            SecKind::Music => "Music",
-            SecKind::Photo => "Photos",
         }
     }
 }
@@ -1386,19 +1391,16 @@ fn maybe_spawn() {
         None => String::new(),
     };
     let mut filters: Vec<(String, String)> = Vec::new();
-    // The unwatched filter is a MOVIE/SHOW question, and only those two types answer it: shows
-    // advertise `unwatchedLeaves` (any unwatched episode), movies take a plain `unwatched=1`, and
-    // the comment this replaced already recorded that the plain form has odd semantics off type=1
-    // (verified live 2026-07-19). Sending it to a music or photo listing is asking a library that
-    // has no such state to filter by it — newly reachable, since those types now get a pill, so the
-    // Filter menu's switch is now one press away on them. Unset here rather than in the menu: the
-    // query is the one place that knows what it is asking, and a switch that changed nothing would
-    // be a worse answer than a switch that is simply not offered.
+    // The unwatched filter is a MOVIE/SHOW question, and those are now the only two types that
+    // reach here at all: shows advertise `unwatchedLeaves` (any unwatched episode), movies take a
+    // plain `unwatched=1`, and the comment this replaced already recorded that the plain form has
+    // odd semantics off type=1 (verified live 2026-07-19). The music/photo arm this match used to
+    // carry went with `SecKind`'s variants — see its doc; an unplayable type is refused at
+    // `from_wire` now, so there is no listing of one to send a filter to.
     if st.unwatched {
         match sec.kind {
             SecKind::Show => filters.push(("unwatchedLeaves".to_string(), "1".to_string())),
             SecKind::Movie => filters.push(("unwatched".to_string(), "1".to_string())),
-            SecKind::Music | SecKind::Photo => {}
         }
     }
     if let Some(g) = &st.genre {
@@ -1473,14 +1475,14 @@ fn maybe_spawn() {
             tests::a_source("mac-mini", "", true),
             tests::a_source("nas-home", "friend", true),
         ]);
+        // Our own server has BOTH types; the share has one library of each. The third row here
+        // used to be a Music library, standing in for "a type only a friend has" — that type is
+        // gone (see `SecKind`), so the growth case is expressed by the OWNED side instead, in the
+        // tests that need it: an owner with only Movies, a friend who also has Shows.
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
         append_sections(
             1,
-            vec![
-                (1, "Film Club".into(), SecKind::Movie),
-                (2, "Film Club".into(), SecKind::Show),
-                (3, "Film Club".into(), SecKind::Music),
-            ],
+            vec![(1, "Film Club".into(), SecKind::Movie), (2, "Film Club".into(), SecKind::Show)],
         );
     }
 
@@ -1726,27 +1728,31 @@ mod tests {
         reset();
     }
 
-    /// The case a BOOLEAN type could not express, and the reason [`SecKind`] exists. `is_show` has
-    /// two values, so "does an owned library have this kind" answered YES for a friend's MUSIC
-    /// library on the strength of your films: it got no pill, and nothing in it was reachable from
-    /// the strip at all. With a real type it gets exactly one, like any other missing type — and
-    /// `artist`/`photo` reaching the table at all is the other half of the same fix, since a type
-    /// dropped at discovery can never be missing from the projection either.
+    /// The case a BOOLEAN type could not express, and the reason [`SecKind`] exists: "does an owned
+    /// library have this kind" has to be asked of a real type, or a friend's library of a type you
+    /// do not own rides one of your pills and nothing in it is reachable from the strip.
+    ///
+    /// Stated here with an owner who has ONLY films and a friend who also shares shows. It used to
+    /// be stated with a friend's MUSIC library, which read better — the two servers differed by a
+    /// type neither could be confused for — but music is no longer a type this product has a level
+    /// for, and a test may not be the last place a deleted feature survives.
     #[test]
-    fn a_friends_music_library_is_a_missing_type_and_not_a_second_films_pill() {
+    fn a_friends_library_of_a_type_you_do_not_own_gets_its_own_pill() {
         let _g = crate::testlock::serial();
         seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (3, "Their Music".into(), SecKind::Music)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]); // we own films and nothing else
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (2, "Their Shows".into(), SecKind::Show)]);
 
-        assert_eq!(tab_count(), 3, "your two, plus the music nobody of yours provides");
-        assert_eq!(tab_title(2), "Their Music");
-        assert_eq!(tab_of_section(3), 2, "their music is its own pill, NOT your Movies one");
-        assert_eq!(tab_of_section(2), 0, "…while their films still ride yours");
-        // and the wire types this product has a level for, including the two that used to be
-        // dropped before they could ever reach the projection
-        assert_eq!(SecKind::from_wire("artist"), Some(SecKind::Music));
-        assert_eq!(SecKind::from_wire("photo"), Some(SecKind::Photo));
+        assert_eq!(tab_count(), 2, "your films, plus the shows nobody of yours provides");
+        assert_eq!(tab_title(1), "Their Shows");
+        assert_eq!(tab_of_section(2), 1, "their shows are their own pill, NOT your Movies one");
+        assert_eq!(tab_of_section(1), 0, "…while their films still ride yours");
+        // the wire types this product has a level for — and the ones it deliberately does not, which
+        // is what keeps an unplayable library out of the strip, the Sources panel and the grid at once
+        assert_eq!(SecKind::from_wire("movie"), Some(SecKind::Movie));
+        assert_eq!(SecKind::from_wire("show"), Some(SecKind::Show));
+        assert_eq!(SecKind::from_wire("artist"), None, "music has no level below the grid: no pill");
+        assert_eq!(SecKind::from_wire("photo"), None);
         assert_eq!(SecKind::from_wire("mixed"), None, "a type with no level is still refused");
         reset();
     }
@@ -1773,32 +1779,31 @@ mod tests {
         // caller in the app consumes these inside one frame with no append in between, which is
         // what makes the signature sound in the product and unsound in a test that spans landings.
         let row = || (0..tab_count()).map(|t| tab_title(t).to_string()).collect::<Vec<_>>();
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        // We own FILMS and nothing else. The owner used to hold both types here, which made the
+        // second half of this test need a third type (music) to have anything left over; with the
+        // product's list down to two, the un-owned type has to be one of them.
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
         let alone = row();
-        assert_eq!(alone, vec!["Movies", "TV Shows"], "your own libraries, and nothing else");
+        assert_eq!(alone, vec!["Movies"], "your own library, and nothing else");
 
         for src in 1..=3 {
             append_sections(
                 src,
-                vec![
-                    (1, "Film Club".into(), SecKind::Movie),
-                    (2, "Film Club".into(), SecKind::Show),
-                    (3, "Film Club".into(), SecKind::Movie),
-                ],
+                vec![(1, "Film Club".into(), SecKind::Movie), (3, "Film Club".into(), SecKind::Movie)],
             );
             assert_eq!(row(), alone, "source {src} added a pill — the strip must not grow by people");
         }
-        assert_eq!(section_count(), 11, "eleven libraries…");
-        assert_eq!(tab_count(), 2, "…and the two pills it started with");
+        assert_eq!(section_count(), 7, "seven libraries…");
+        assert_eq!(tab_count(), 1, "…and the one pill it started with");
 
         // …and a type NOBODY owns grows the row by exactly one however many people share it. Every
         // fixture above is a type we own, which is why this half needs saying separately: it is the
         // only branch of the projection that can admit a borrowed library at all.
         for src in 1..=3 {
-            append_sections(src, vec![(9, "Film Club".into(), SecKind::Music)]);
+            append_sections(src, vec![(9, "Their Shows".into(), SecKind::Show)]);
         }
-        assert_eq!(tab_count(), 3, "three friends sharing music are ONE Music pill");
-        assert_eq!(row().len(), 3);
+        assert_eq!(tab_count(), 2, "three friends sharing shows are ONE TV Shows pill");
+        assert_eq!(row().len(), 2);
         reset();
     }
 
@@ -1843,8 +1848,9 @@ mod tests {
         assert_ne!(sections_gen(), table0, "the TABLE's generation moved, twice");
         assert_eq!(tabs_gen(), g0, "…and the row did not, so it must not re-measure");
 
-        // …while a MISSING type is exactly what must invalidate it
-        append_sections(2, vec![(9, "Their Music".into(), SecKind::Music)]);
+        // …while a MISSING type is exactly what must invalidate it (we own films only, so their
+        // shows are the type nobody of ours provides)
+        append_sections(2, vec![(9, "Their Shows".into(), SecKind::Show)]);
         assert_ne!(tabs_gen(), g0, "a gained pill MUST re-measure the row");
         reset();
     }
