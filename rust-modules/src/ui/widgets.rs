@@ -1761,7 +1761,7 @@ static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
 /// PRESS frame: Library hands its *pending* section down here (`library::view_section`), which is
 /// what puts the capsule on the new pill while the grid is still dissolving under it.
 static mut TOP_STRIP: TabStrip = TabStrip::new();
-// label + width cache keyed on browse::sections_gen(): rebuilding the CStrings and
+// label + width cache keyed on browse::tabs_gen(): rebuilding the CStrings and
 // re-measuring every frame — on Home's hot path too — was a review-confirmed waste
 static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
 
@@ -1779,8 +1779,15 @@ pub(crate) fn tab_pill_at(mx: f32, my: f32) -> Option<usize> {
 }
 
 /// Run `f` with the tab row's labels + pill widths, rebuilding them only when
-/// `browse::sections_gen()` moves. Shared by the per-frame scroll step and the draw, so the two
+/// `browse::tabs_gen()` moves. Shared by the per-frame scroll step and the draw, so the two
 /// can't measure the strip differently.
+///
+/// The key is the STRIP's generation, not the section table's, and with several sources that is no
+/// longer the same number: the table's generation moves for every source whose libraries land and
+/// every count that arrives, while the row only changes when the projection does. Most of those
+/// landings fold onto pills already drawn (a friend's films ride your *Movies* pill), so keying on
+/// the table re-measured every pill in the row, several times a boot, on Home's hot path — for a
+/// strip that had not moved.
 ///
 /// Deliberately a closure and not a `&'static` getter: the borrow points into `TAB_CACHE`, and a
 /// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
@@ -1789,7 +1796,7 @@ pub(crate) fn tab_pill_at(mx: f32, my: f32) -> Option<usize> {
 fn with_tab_metrics<R>(f: impl FnOnce(&[std::ffi::CString], &[f32]) -> R) -> R {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
-    let gen = crate::browse::sections_gen();
+    let gen = crate::browse::tabs_gen();
     let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
     if cache.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
         let nsec = crate::browse::tab_count();
