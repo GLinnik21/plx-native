@@ -3167,8 +3167,19 @@ pub(crate) fn on_ok() -> bool {
                     crate::route::request_play_movie(m);
                 } else if let Some(d) = metadata::current() {
                     // a hub refetch can orphan the page's catalog row (the item left the hubs) —
-                    // the loaded Detail carries everything the string-based route entry needs
-                    crate::route::request_play(crate::route::surface_sid(), &d.rk, &d.part, &d.vcodec, &d.acodec, &d.title, "");
+                    // the loaded Detail carries everything the string-based route entry needs,
+                    // INCLUDING the server it was loaded from: `d.rk` is a key on `d.sid` and on no
+                    // other machine, so resolving it against the browsed surface is how a borrowed
+                    // film came to be played from our own server (or not at all).
+                    crate::route::request_play(
+                        crate::route::item_sid(d.sid),
+                        &d.rk,
+                        &d.part,
+                        &d.vcodec,
+                        &d.acodec,
+                        &d.title,
+                        "",
+                    );
                 } else {
                     return false;
                 }
@@ -3760,7 +3771,17 @@ fn play_episode(d: &metadata::Detail, ep: &metadata::Episode) -> bool {
         detail_rk: d.rk.clone(),
     }));
     set_resume(ep.resume_ms, ep.dur_ms);
-    crate::route::request_play(crate::route::surface_sid(), &ep.rk, &ep.part, &ep.vcodec, &ep.acodec, &hud_title, &hud_ctx);
+    // An episode belongs to its SHOW's server — `d.sid` — because that is the page these rows were
+    // fetched from. Same failure as the movie path if it is taken from the browsed surface instead.
+    crate::route::request_play(
+        crate::route::item_sid(d.sid),
+        &ep.rk,
+        &ep.part,
+        &ep.vcodec,
+        &ep.acodec,
+        &hud_title,
+        &hud_ctx,
+    );
     true
 }
 
