@@ -144,7 +144,9 @@ pub const PAD_V: f32 = TOP_PAD + BOT_PAD;
 const ROW_H: f32 = 60.0; // a plain row (label only) — mockup rowBase padding 13 + 34px label
 const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEADLINE + detail CAPTION)
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
-const HDR_H: f32 = 58.0; // panel header ("Audio"/"Subtitles"), HEADLINE
+// Panel header ("AUDIO"/"SUBTITLES", a server over its libraries). 58px in BOTH size classes and
+// whatever the header's own size — the band is fixed so a size change cannot reflow a panel.
+const HDR_H: f32 = 58.0;
 /// Measure a [`Section::accessory`] is elided to. It is the LAST run on the header line, so it is
 /// the one that gives way: a 34-character plex.tv handle truncates on a character and the library
 /// names underneath keep their full width.
@@ -170,8 +172,13 @@ const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade
 pub struct TableView {
     pub sections: Vec<Section>,
     pub sel: i32,  // global index across all sections' rows (headers are not selectable)
-    /// compact size class: BODY regular row labels + CAPTION headers (the small account popover;
-    /// the default HEADLINE-bold rows overwhelmed a 440px panel of one-word actions).
+    /// compact size class: BODY regular row LABELS instead of the default HEADLINE bold (the small
+    /// account popover; HEADLINE-bold rows overwhelmed a 440px panel of one-word actions). Set it
+    /// on every ACTION menu — the item context menu, account, more, and the library sort/filter/
+    /// genre menus all do; only a PICKER of title+detail rows stays on the default.
+    ///
+    /// It no longer affects HEADERS: those are CAPS at CAPTION in both classes, because the caps
+    /// are what make a header a label and a size that varied could tie with its own rows.
     pub compact: bool,
     // the highlight pill's top and bottom edges spring INDEPENDENTLY (content coords), so moving
     // to a taller/shorter row morphs the pill smoothly instead of snapping its height.
@@ -401,8 +408,17 @@ impl TableView {
                         p.rect(Rect::new(content_x, sy - DIV_H * 0.5, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
                             0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
                     }
-                    let hsz = if self.compact { theme::size::CAPTION } else { theme::size::HEADLINE };
-                    if let Ok(cs) = CString::new(sec.header.as_str()) {
+                    // **CAPS at CAPTION, one size in BOTH size classes.** The caps are what make a
+                    // header read as a label rather than as a row, which is why the size stops
+                    // varying: at HEADLINE — what the non-compact class used to draw — a header
+                    // ties with or outweighs the rows it heads, and on the Sources panel (a
+                    // two-line picker, so non-compact) that put the machine names on screen bigger
+                    // than the libraries they name. Design system, `TableView.prompt.md`.
+                    //
+                    // `to_uppercase`, not `to_ascii_uppercase`: a header is a machine name or a
+                    // library name and can be any script — the share measured here is Cyrillic.
+                    let hsz = theme::size::CAPTION;
+                    if let Ok(cs) = CString::new(sec.header.to_uppercase()) {
                         p.text(cs.as_ptr(), content_x, sy + 8.0, hsz, dimc, 0, 0);
                     }
                     // trailing accessory, one rung down and on the header's own baseline. Elided,
