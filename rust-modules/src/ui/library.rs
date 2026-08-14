@@ -1762,7 +1762,13 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
         // resolved through the CHIP the click landed on, exactly as the key path does. It used to
         // defer to `on_ok`, which reads the FOCUSED chip — `pointer_focus` above has just moved
         // focus there, so the two agreed by side effect rather than by construction.
-        open_chip_menu(chips()[i.min(chips().len().saturating_sub(1))]);
+        // `get`, not an index: the row can be EMPTY now (a one-source failure drops every chip it
+        // has), and `saturating_sub(1)` would then index an empty slice. Unreachable today because
+        // an undrawn chip parks its rect and the scan above tests `w > 0.5` — which is exactly the
+        // kind of "safe by a fact somewhere else" that stops being true when the row changes again.
+        if let Some(&c) = chips().get(i) {
+            open_chip_menu(c);
+        }
         return Action::None;
     }
     if status_btn_at(mx, my) {
