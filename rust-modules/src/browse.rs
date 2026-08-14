@@ -571,6 +571,22 @@ fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
 pub(crate) fn section_count() -> usize {
     sections().len()
 }
+/// The LIBRARY titles this source contributed, in table order — what a source is called in
+/// CONTENT, as opposed to [`BrowseSource::name`], which is its machine and belongs in the Sources
+/// list. A friend's server is experienced as the library it gave you ("LDN Films"), never as a
+/// hostname; `Search Screen.dc.html`'s scope line names it that way, and the app's own rule is
+/// "people in content, machines in settings".
+///
+/// Empty while the section table is still landing, which the caller must read as "not yet known"
+/// rather than "none" — the same trap `Session::pinned` documents.
+pub(crate) fn library_titles(sid: ServerId) -> Vec<&'static str> {
+    let srcs = sources();
+    sections()
+        .iter()
+        .filter(|s| srcs.get(s.src).map(|c| c.sid) == Some(sid))
+        .map(|s| s.title.as_str())
+        .collect()
+}
 pub(crate) fn section_title(i: usize) -> &'static str {
     sections().get(i).map(|s| s.title.as_str()).unwrap_or("")
 }
