@@ -715,9 +715,9 @@ mod tests {
             assert!(bottom <= floor, "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}");
         }
         // The ACTUAL numbers `super`'s layout note quotes, so a doc claim nobody can reproduce
-        // cannot come back: a poster shelf ends at 683 against a panel edge of 700.
+        // cannot come back: a poster shelf ends at 683 against a MEASURED panel edge of 756.
         assert_eq!(stack_top(&[Kind::Movie], 0) + HEAD_TO_ROW + CARD_H, 683.0);
-        assert_eq!(floor, 700.0);
+        assert_eq!(floor, 756.0);
     }
 
     /// The scroll rule is `card_row::reveal`'s, **not the mock's pin** — the module doc's point 1

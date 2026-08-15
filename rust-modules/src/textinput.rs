@@ -69,13 +69,9 @@
 
 use crate::app::SDL_WINDOW_INPUT_FOCUS;
 #[cfg(not(test))]
-use crate::app::{
-    SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_IsScreenKeyboardShown, SDL_StartTextInput, SDL_StopTextInput,
-};
+use crate::app::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
 #[cfg(test)]
-use host_test_sdl::{
-    SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_IsScreenKeyboardShown, SDL_StartTextInput, SDL_StopTextInput,
-};
+use host_test_sdl::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
 
 /// The four SDL entry points this module calls, stubbed for the HOST TEST BINARY only.
 ///
@@ -98,11 +94,6 @@ mod host_test_sdl {
     }
     /// No panel on the host, matching what the simulator's own boot probe reports (`support=0`).
     pub(super) unsafe fn SDL_HasScreenKeyboardSupport() -> c_int {
-        0
-    }
-    /// …and therefore never shown, which is what makes [`super::poll`] a no-op under test: with no
-    /// panel ever seen up, there is no dismissal to detect.
-    pub(super) unsafe fn SDL_IsScreenKeyboardShown(_w: *mut c_void) -> c_int {
         0
     }
     pub(super) unsafe fn SDL_StartTextInput() {}
@@ -215,7 +206,6 @@ pub(crate) fn start() {
             return;
         }
         *addr_of_mut!(STARTED) = true;
-        *addr_of_mut!(SEEN_UP) = false; // this session's panel has not risen yet — see `poll`
         // Anything typed BEFORE the field opened belongs to whatever was on screen then, not to
         // this query. That is not hypothetical on a desktop: SDL2's `SDL_VideoInit` ends with
         // `if (!SDL_HasScreenKeyboardSupport()) SDL_StartTextInput();`, so on macOS text events
@@ -259,49 +249,49 @@ pub(crate) fn stop() {
     }
 }
 
-/// Has the panel been up at least once this session? See [`poll`] — a `false` from
-/// `SDL_IsScreenKeyboardShown` means nothing until it has first been `true`.
-static mut SEEN_UP: bool = false;
+/// **`SDL_IsScreenKeyboardShown` DOES NOT ANSWER "is the panel on screen" on this firmware, and a
+/// feature built on it shipped a dead keyboard.** Recorded here rather than deleted, because it is
+/// the obvious API for a real problem and the next person will reach for it.
+///
+/// The problem is real: the television takes its own panel away after an idle spell and tells the
+/// app nothing — `SDL_TEXTINPUT` stops arriving, [`STARTED`] stays set, and the screen goes on
+/// drawing a focused field with a blinking caret over a keyboard that has left. The obvious fix is
+/// to poll `SDL_IsScreenKeyboardShown` and treat a `false` as the dismissal, latched behind a
+/// first `true` so the panel's ASYNCHRONOUS rise cannot be mistaken for one.
+///
+/// It does not work. Measured on 4.10.0, from the event log, three seconds after a successful
+/// `start` and with the panel plainly up and being typed on:
+///
+/// ```text
+/// [110976] key RETURN            ← OK on the field
+///          keyboard: start support=1 focus=1
+///          keyboard: dismissed by the compositor   ← the poll, while the panel was UP
+/// [113977] text src=35 'g'       ← …and every keystroke after it dropped on the floor
+/// ```
+///
+/// So the flag goes true and then false again while the panel is alive — it tracks something in
+/// LG's `text_model` activation (its `[TextModelInputPanelState]` callback is the likely source),
+/// not the surface. The latch cannot help: the spurious `false` arrives *after* the true. Anything
+/// that clears the editing state from this signal drops the user's typing, which is a total failure
+/// of the feature to avoid a cosmetic one.
+///
+/// What replaced it is in `ui::search::pump_text`: **an arriving `SDL_TEXTINPUT` is proof the panel
+/// is up**, so a commit that lands while the screen thinks it is not editing ADOPTS the panel
+/// instead of being dropped. That signal cannot lie, it needs no polling, and it self-heals every
+/// route into the mismatch rather than the one this was aimed at.
+const _: () = ();
 
-/// **Did the COMPOSITOR take the panel away?** Answers `true` exactly once per dismissal, and only
-/// for a dismissal we did not perform.
-///
-/// The panel has no close button, so every dismissal a user can *press* goes through [`stop`] — but
-/// the television takes it away on its own after an idle spell, device-observed 2026-08-15 and
-/// reported before that as "it automatically disappeared". Nothing tells the app: `SDL_TEXTINPUT`
-/// simply stops arriving, `STARTED` stays set, and the screen goes on drawing a focused field with
-/// a blinking caret over a keyboard that is not there — and, on this screen, holding its empty-state
-/// layout clear of a panel that has left.
-///
-/// `SDL_IsScreenKeyboardShown` is the only thing that knows, so this polls it. The [`SEEN_UP`] latch
-/// is the whole subtlety: the panel rises ASYNCHRONOUSLY over wayland, so it reads `false` for
-/// several frames immediately after [`start`], and acting on that would close the field on the frame
-/// it was opened. A `false` counts only after a `true`.
-///
-/// Clearing [`STARTED`] here is what keeps the next [`start`] real rather than a silent no-op —
-/// the same pairing failure `stop`'s doc describes, arriving from the outside this time. The panel
-/// re-raises fine afterwards (device-verified), so the driver's reopen wedge does not bite on this
-/// firmware even from the compositor's own path.
-pub(crate) fn poll() -> bool {
+/// Re-take ownership of a panel that is demonstrably already up — see the note above and
+/// `ui::search::pump_text`. Deliberately does NOT call `SDL_StartTextInput` (the panel is up; asking
+/// for it again re-issues a wayland IME activation for nothing) and deliberately does NOT clear
+/// [`PENDING`], because the whole reason this is being called is that a commit is waiting in it.
+pub(crate) fn adopt() {
     unsafe {
-        if !*addr_of!(STARTED) {
-            return false;
+        if *addr_of!(STARTED) {
+            return;
         }
-        let win = *addr_of!(WIN);
-        if win.is_null() {
-            return false;
-        }
-        if SDL_IsScreenKeyboardShown(win) != 0 {
-            *addr_of_mut!(SEEN_UP) = true;
-            return false;
-        }
-        if !*addr_of!(SEEN_UP) {
-            return false; // still rising — see the latch above
-        }
-        *addr_of_mut!(STARTED) = false;
-        *addr_of_mut!(SEEN_UP) = false;
-        log("keyboard: dismissed by the compositor");
-        true
+        *addr_of_mut!(STARTED) = true;
+        log("keyboard: adopted (text arrived with the panel up)");
     }
 }
 

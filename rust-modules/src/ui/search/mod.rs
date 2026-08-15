@@ -23,15 +23,16 @@
 //! ## The layout rule that explains the numbers
 //!
 //! With the keyboard raised, **nothing the app owns hides behind it**. The TV puts the panel over
-//! the bottom [`KEYBOARD_H`], so its top edge is at 700, and the field, the first shelf's heading
-//! and that shelf's full row of posters all finish above it: [`CONTENT_TOP`] 248 + [`HEAD_TO_ROW`]
-//! 60 + a 375-tall poster = **683**, seventeen clear. (This paragraph said 699 — "exactly on its
-//! top edge" — which is the number `CONTENT_TOP` = 264 would give, not the 248 the constant is and
-//! not what any of them draws. A stated equality nobody can reproduce is worse than the slack,
-//! because the next person tuning either constant balances against a figure that was never true;
-//! `results`' `the_first_shelfs_whole_row_clears_the_raised_keyboard` now asserts the real one, for
-//! every tile size a first shelf can have.) That clearance is also why nothing scrolls while the
-//! panel is up: the result set has to be stable under the user's eyes while they are still typing.
+//! the bottom [`KEYBOARD_H`], so its top edge is at **756** (measured, see that constant), and the
+//! field, the first shelf's heading and that shelf's full row of posters all finish above it:
+//! [`CONTENT_TOP`] 248 + [`HEAD_TO_ROW`] 60 + a 375-tall poster = **683**, seventy-three clear.
+//! (This paragraph has now been wrong twice, in opposite directions: first 699 — "exactly on its
+//! top edge", a number `CONTENT_TOP` = 264 would give and nothing draws — then 700, from a
+//! `KEYBOARD_H` nobody had measured. `results`'
+//! `the_first_shelfs_whole_row_clears_the_raised_keyboard` asserts the real figures, for every tile
+//! size a first shelf can have, which is why the correction was a two-line edit rather than an
+//! archaeology exercise.) That clearance is also why nothing scrolls while the panel is up: the
+//! result set has to be stable under the user's eyes while they are still typing.
 //!
 //! ## The ▼ handoff, which is the rule the whole state machine exists for
 //!
@@ -84,13 +85,27 @@ pub(crate) const HEAD_TO_ROW: f32 = 60.0;
 pub(crate) const LABEL_BLOCK: f32 = 114.0;
 /// How much of the panel the TV's keyboard covers. Not ours to draw or to style — this is the
 /// clearance the layout above keeps.
-pub(crate) const KEYBOARD_H: f32 = 380.0;
+///
+/// **MEASURED, off four device captures 2026-08-15**, not estimated: the panel's top edge is at
+/// y=756 on every one of them, to the pixel, which is the 324 `Search Screen.dc.html` states. It
+/// was 380 — a guess, 56px too tall — and the cost was not slack but a layout decision made against
+/// a number that was never true: [`MAX_RECENTS`] was cut to four because five would not clear a
+/// keyboard top edge 56px higher than the real one.
+///
+/// If a firmware ever moves it, this is the one constant to re-measure (a `DISPLAY` capture with the
+/// panel up, scan a column for the discontinuity) — everything else on this screen is derived.
+pub(crate) const KEYBOARD_H: f32 = 324.0;
 /// The field: 820 wide at the app's own side margin, on the one control height.
 pub(crate) const FIELD: Rect = Rect { x: 90.0, y: 148.0, w: 820.0, h: 60.0 };
-/// Terms kept. **Four, not five**: with the keyboard raised the header, the rows and the Clear
-/// control all have to finish above its top edge. The fifth is DROPPED, not scrolled — a list you
-/// cannot see the end of asks to be paged, and there is no paging in this product.
-pub(crate) const MAX_RECENTS: usize = 4;
+/// Terms kept. **Five**, which is `Search Screen.dc.html`'s number and was four here for a reason
+/// that turned out to be arithmetic against a wrong constant: the header, the rows and the Clear
+/// control all have to finish above the raised keyboard, and [`KEYBOARD_H`] claimed a panel 56px
+/// taller than the real one. At the measured height a full block ends at 690 against a panel edge
+/// of 756 — `recents`' own test grades the clearance rather than the count.
+///
+/// The sixth is DROPPED, not scrolled — a list you cannot see the end of asks to be paged, and
+/// there is no paging in this product.
+pub(crate) const MAX_RECENTS: usize = 5;
 
 /// The RESULT BAND's content cross-fade — the Library's [`Xfade`] doing the same job one screen
 /// over. A query change replaces everything below the field, and a replacement that CUTS reads as
@@ -531,14 +546,6 @@ pub(crate) fn update(dt: f32) {
     // not name either of them.
     crate::browse::discover_pump();
     crate::search::pump(dt);
-    // The television can take its own keyboard away after an idle spell, and tells nobody — so the
-    // field would go on wearing the accent fill and a blinking caret over a panel that had left,
-    // with the empty state still holding its layout clear of it. Treated as the Enter it stands in
-    // for: the term is recorded and the field settles, rather than a withdrawal, because nothing
-    // the user did says they took the search back.
-    if crate::textinput::poll() {
-        commit_query();
-    }
     // After `pump_text`, so a frame that typed a character draws a solid bar rather than whichever
     // phase the clock happened to be in.
     step_blink(dt, editing());
@@ -569,13 +576,36 @@ pub(crate) fn update(dt: f32) {
     }
 }
 
-/// Drain the keyboard and append what it committed. Text arriving while the panel is DOWN is
-/// dropped rather than typed: a commit that outlives its own field is the IME's parting shot, and
-/// silently extending a query the user has stopped editing is worse than losing a keystroke.
+/// Drain the keyboard and insert what it committed.
+///
+/// **A commit arriving while this screen thinks it is not editing ADOPTS the panel rather than
+/// being dropped**, and that rule is the answer to a class of bug rather than a nicety. A character
+/// can only come from a panel that is on screen, so the two states disagreeing means OURS is stale
+/// — and every way that happens ends the same way for the user: the keyboard is up, they are
+/// typing, and nothing appears. Device-observed twice in one day, from two different causes (the
+/// television dismissing and re-raising its own panel, and a `SDLK_DOWN` the PANEL forwarded to us
+/// being read as "leave the field"), which is exactly why this is keyed on the one signal that
+/// cannot lie instead of on detecting each cause.
+///
+/// It replaces the opposite rule — "text arriving while the panel is DOWN is the IME's parting shot
+/// and is dropped" — which was defending against a case that cannot occur on the television:
+/// `textinput::start` clears the queue, and text events are OFF until it is called. On a desktop
+/// they are on from `SDL_VideoInit`, so the adoption is gated on there being a real panel
+/// ([`crate::textinput::available`]) and the simulator keeps the old behaviour exactly.
 fn pump_text() {
     let commits = crate::textinput::drain();
-    if commits.is_empty() || !editing() {
+    if commits.is_empty() {
         return;
+    }
+    if !editing() {
+        if !crate::textinput::available() {
+            return; // no panel on this platform, so this is a desktop keystroke meant for nothing
+        }
+        crate::textinput::adopt();
+        unsafe { *addr_of_mut!(EDITING) = true };
+        // The insertion point goes to the END: we are joining a session already in progress and
+        // have no idea where the panel thinks the caret is.
+        set_caret(crate::search::query().len());
     }
     for s in &commits {
         insert_text(s);
