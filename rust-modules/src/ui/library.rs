@@ -2182,17 +2182,27 @@ pub(crate) fn draw() {
     // but the popovers Home and the detail page carry (the item context menu, the profile menu) are
     // NOT, so the rule belongs in the shared component rather than in a note per screen.
     if menu_open() {
-        let mp = pop().painter(0.45, 20.0);
-        let r = panel_rect();
-        mp.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-        if menu() == Menu::Source {
-            draw_level_pills(mp, r);
-        }
-        // ONE focus in the panel: the list draws its selection pill only while the level pills do
-        // not hold focus. Every other menu has no control outside its list, so this is always true
-        // for them.
-        table().list_focused = menu() != Menu::Source || unsafe { !addr_of!(SRC_ON_PILLS).read() };
-        table().draw(mp, table_rect());
+        // Split into TWO phases on purpose (`/tmp/plxnative-profile`): an open menu costs this
+        // screen ~2× its draw — measured `draw` 16 → 33-42 ms with the Sort panel up, which is
+        // the whole of the frame (`pump=0.0 swap=0.4 up=0`) and lands it either side of the vsync
+        // boundary, so frames alternate 16/33 and the rate reads 23-29. The two candidates are a
+        // full-screen alpha quad (`Popover::painter`'s scrim: 2.07M fragments over an
+        // already-drawn grid) and the panel's own list, and they are separable only by measuring
+        // them apart. Zero-overhead with the trigger off.
+        use crate::ui::profile::phase;
+        let mp = phase("menu.scrim", || pop().painter(0.45, 20.0));
+        phase("menu.panel", || {
+            let r = panel_rect();
+            mp.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+            if menu() == Menu::Source {
+                draw_level_pills(mp, r);
+            }
+            // ONE focus in the panel: the list draws its selection pill only while the level pills
+            // do not hold focus. Every other menu has no control outside its list, so this is
+            // always true for them.
+            table().list_focused = menu() != Menu::Source || unsafe { !addr_of!(SRC_ON_PILLS).read() };
+            table().draw(mp, table_rect());
+        });
     }
 }
 
