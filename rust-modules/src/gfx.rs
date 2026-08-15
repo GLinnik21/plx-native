@@ -141,21 +141,43 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     let y_top = y.max(0.0);
     let x1 = (x + w).min(SCR_W);
     let y1 = (y + h).min(SCR_H);
-    let (wi, hi) = ((x1 - x0).max(0.0), (y1 - y_top).max(0.0));
+    // Only the height is needed as an extent now — the x edges are rounded independently and
+    // differenced, same as the y ones.
+    let hi = (y1 - y_top).max(0.0);
     // The same uniform scale and centring offset `glViewport` was given, because the scissor box
     // has to land on the same pixels the viewport maps to. Deriving both from `surface` rather
     // than duplicating the arithmetic is what keeps them in step.
     let s = crate::surface::scale();
     let (vx, vy, _, _) = crate::surface::viewport();
+    // **Round each EDGE in physical space; derive the extent as the difference of the two rounded
+    // edges.** Never truncate the origin and the extent independently.
+    //
+    // The old form did exactly that — four separate `as c_int` — and because
+    // `trunc(a) + trunc(b) <= trunc(a + b)`, a box's far edge can fall SHORT of where the next
+    // box's near edge begins. Adjacent scissored bands could therefore only ever gap, never abut.
+    // With a hard-edged neighbour (`art_scrim`'s gradient quad takes `draw_rect`'s no-AA radius-0
+    // fast path, so it paints to an exact boundary) the row in between is covered by nothing and
+    // the artwork shows through it — a bright hairline the full width of the tile. Measured in the
+    // simulator: one row per seam, ~3x the brightness of its neighbours, its colour tracking the
+    // artwork underneath rather than any UI colour.
+    //
+    // Deriving both edges from the same expression on the same input is what makes it safe: band
+    // k's top and band k+1's bottom are then literally the same computation, so float error moves
+    // them together and no row can fall between. Rounding is also what the hard-edged quad
+    // actually paints (pixel-centre coverage), which truncation structurally cannot match.
+    //
+    // On a 1:1 surface every value here is already an integer, so this is bit-identical to what
+    // the television has always rendered — `snap` rounds in LOGICAL space, and at scale 1.0
+    // logical and physical are the same number. That equality is precisely what stopped being
+    // true the first time the app met a surface that was not 1920x1080.
+    let gx0 = vx + (x0 * s).round() as c_int;
+    let gx1 = vx + (x1.max(x0) * s).round() as c_int;
+    // GL y is bottom-up, so the box's BOTTOM comes from the band's logical bottom edge.
+    let gy0 = vy + ((SCR_H - (y_top + hi)) * s).round() as c_int;
+    let gy1 = vy + ((SCR_H - y_top) * s).round() as c_int;
     unsafe {
         glEnable(GL_SCISSOR_TEST);
-        // GL y is bottom-up: the box's bottom in GL space is SCR_H - (top + height)
-        glScissor(
-            vx + (x0 * s) as c_int,
-            vy + ((SCR_H - (y_top + hi)) * s) as c_int,
-            (wi * s) as c_int,
-            (hi * s) as c_int,
-        );
+        glScissor(gx0, gy0, (gx1 - gx0).max(0), (gy1 - gy0).max(0));
     }
 }
 /// Remove the scissor clip set by [`clip_set`].
