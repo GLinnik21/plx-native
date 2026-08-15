@@ -1685,6 +1685,17 @@ fn maybe_spawn() {
         );
     }
 
+    /// One more library landing on source `src`, for tests OUTSIDE this module — the discovery
+    /// worker's answer arriving late, which the Library screen's open Sources panel has to rebuild
+    /// for. Goes through the real [`append_sections`], so it moves [`sections_gen`] exactly as the
+    /// landing does; a test that wrote `SECTIONS` directly would prove nothing about that bump.
+    /// Same contract as [`seed_two_source_table_for_test`]: crate globals, so hold
+    /// [`crate::testlock::serial`] and `reset()` afterwards.
+    #[cfg(test)]
+    pub(crate) fn append_section_for_test(src: usize, key: i64, title: &str, kind: SecKind) {
+        append_sections(src, vec![(key, title.into(), kind)]);
+    }
+
 #[cfg(test)]
 mod tests {
     use super::*;
