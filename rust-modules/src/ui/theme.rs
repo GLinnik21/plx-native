@@ -325,6 +325,23 @@ pub const fn with_a(c: [f32; 4], a: f32) -> [f32; 4] {
 pub const fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3]]
 }
+/// [`mix`], **alpha included** — for CROSS-FADING one role into another over time, as opposed to
+/// spelling a token that sits between two of them.
+///
+/// The distinction is not pedantry, it is the reason both exist. `mix` keeps `a`'s alpha because a
+/// tint has one opacity and two hues; a cross-fade has two of each, and the pairs this app actually
+/// animates between differ in both — `CONTROL_IDLE_FILL` is `.92` where `ACCENT` is opaque, and
+/// `TEXT_TERTIARY` is opaque where `ROW_VALUE_INK_ON_DIM` is `.38`. Reaching for `mix` there lands
+/// the destination hue at the SOURCE's opacity, which on the search field's own hint run is a
+/// near-black at full strength over white.
+pub const fn cross(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
 /// Scale a token's rgb by `k` toward black, keeping its alpha — e.g. folding a scroll-darken into a
 /// layer tint. Pair with [`with_a`] when the alpha also changes.
 pub const fn dim(c: [f32; 4], k: f32) -> [f32; 4] {

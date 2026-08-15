@@ -817,7 +817,8 @@ Listed because each could change a decision above.
    value proposition against the incumbent is the thing the compliance work has to justify.
 7. **Multi-server users.** `auth.rs:392` filters `local && !relay`, falling back from owned to
    *shared* servers, and takes the first match. `stream.rs:239-253` is IPv4-dotted-quad only — no
-   DNS, no TLS, no chunked encoding. So remote-only servers, relay users, "Require secure
+   DNS and no TLS (it *does* decode chunked bodies; that was listed here as a third limitation and
+   never was one). So remote-only servers, relay users, "Require secure
    connections", IPv6 and hostname-addressed servers all dead-end at *"No local Plex server found on
    this network."* There is **no Settings screen and no manual server entry** anywhere in the route
    enum (`app.rs:670-685`).

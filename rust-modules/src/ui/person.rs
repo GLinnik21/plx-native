@@ -500,8 +500,8 @@ fn amb_target(sc: &Scene) -> [[f32; 4]; 4] {
 /// subject until the user asks for the shelves. There is nothing focusable in it (it is a scroll
 /// POSITION, see [`move_focus`]), and nothing to focus on the shelves yet either: they land a
 /// moment later, and DOWN goes to them.
-pub(crate) fn reopen(key: &str, guid: &str, name: &str, thumb: &str) {
-    crate::person::open(key, guid, name, thumb);
+pub(crate) fn reopen(sid: crate::plex::ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
+    crate::person::open(sid, key, guid, name, thumb);
     let sc = scene();
     // A WHOLESALE reset, not a field-by-field one: every default this page mounts with — focus on
     // the header, scroll and condense at 0, shelves at their left edge, EMPTY text runs — is already
@@ -518,8 +518,8 @@ pub(crate) fn reopen(key: &str, guid: &str, name: &str, thumb: &str) {
 
 /// [`reopen`] plus the flag app.rs routes on — the INTERACTIVE entry, called from `detail.rs`'s
 /// cast-row OK arm.
-pub(crate) fn open(key: &str, guid: &str, name: &str, thumb: &str) {
-    reopen(key, guid, name, thumb);
+pub(crate) fn open(sid: crate::plex::ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
+    reopen(sid, key, guid, name, thumb);
     scene().requested = true;
 }
 
@@ -572,10 +572,17 @@ pub(crate) fn on_ok() -> Action {
 // ---- update ----------------------------------------------------------------------------------
 
 pub(crate) fn update(dt: f32) {
+    // The focused card's IDENTITY, taken BEFORE the pump. The shelves are a merge across every
+    // source now (`person::merge_shelves`), and a landing re-divides the row's budget between them
+    // — so a bare column index silently comes to mean a different film the moment a slow share
+    // answers. Before this, a share landing two seconds in slid the card out from under the user's
+    // focus and the next OK opened something they were not looking at.
+    let was = focused_id();
     // `clamp_focus` and the dirty flag below both reach `scene()` themselves, so they run BEFORE
     // this function takes its own `&'static mut` — holding one across a call that mints a second is
     // aliasing UB, not a lint. (`detail.rs::update` carries the same note for the same reason.)
     if crate::person::pump() {
+        reseat(was);
         clamp_focus();
         scene().header_dirty = true; // a landing changes the header runs AND the flow
     }
@@ -602,6 +609,34 @@ pub(crate) fn update(dt: f32) {
     }
     let want = scroll_target(sc);
     sc.column.scroll.step(want, K_SCROLL, dt);
+}
+
+/// The focused card's IDENTITY — the `(server, ratingKey)` PAIR, never the bare key. The shelves
+/// merge two sources into one row and both servers number their items from 1, so a bare key names a
+/// card on neither of them in particular (`plex::same_item`). None while the header holds focus,
+/// which is a state [`reseat`] then correctly leaves alone.
+fn focused_id() -> Option<(crate::plex::ServerId, String)> {
+    focused_item().map(|m| (m.sid, m.rk.clone()))
+}
+
+/// Put focus back on the card it was on, wherever a landing has since moved it.
+///
+/// [`clamp_focus`] cannot do this: it range-clamps an INDEX, and the index is exactly what stops
+/// meaning the same thing when `person::merge_shelves` re-divides the row between the sources. A
+/// no-op when the card is gone (its source dropped out, or the cap pushed it off the row) — the
+/// clamp that follows then does what it always did.
+fn reseat(was: Option<(crate::plex::ServerId, String)>) {
+    let Some((sid, rk)) = was else { return };
+    let Some(p) = crate::person::current() else { return };
+    for kind in 0..NSHELF {
+        let found = p.shelf(kind).iter().position(|m| crate::plex::same_item((m.sid, &m.rk), (sid, &rk)));
+        if let Some(i) = found {
+            let sc = scene();
+            sc.focus_kind = kind;
+            sc.col[kind] = i as c_int;
+            return;
+        }
+    }
 }
 
 /// Keep the focus inside whatever the store currently holds — after a landing, and after every
@@ -779,7 +814,7 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     crate::ui::widgets::card(
         p,
         portrait,
-        Art::Person { key: &person.thumb, res: PORTRAIT_RES },
+        Art::Person { sid: person.sid, key: &person.thumb, res: PORTRAIT_RES },
         d * 0.5,
         false,
         1.0,
@@ -922,8 +957,19 @@ mod tests {
     }
 
     /// [`seed`] without the opening DOWN — for the tests that are about the header row itself.
+    ///
+    /// Mounts through [`super::reopen`], not `crate::person::open` directly, because `reopen` is
+    /// where the SCENE singleton is reset. The data-layer call alone left the previous test's
+    /// `col[]`/focus in place — `clamp_focus` clamps but never zeroes — so which column a fresh
+    /// page "opened" on depended on which test the serial lock ran before this one.
     fn seed_at_header(movies: usize, shows: usize) {
-        crate::person::open("161", "5d77682aeb5d26001f1de4b0", "Idina Menzel", "");
+        super::reopen(
+            crate::plex::ServerId::UNSET,
+            "161",
+            "5d77682aeb5d26001f1de4b0",
+            "Idina Menzel",
+            "",
+        );
         crate::person::install_for_test(
             (0..movies).map(|i| item(&format!("m{i}"))).collect(),
             (0..shows).map(|i| item(&format!("s{i}"))).collect(),
@@ -1015,6 +1061,38 @@ mod tests {
         crate::person::close();
     }
 
+    /// **The card under focus must stay the same CARD when a source lands**, not the same index.
+    /// The shelves are a merge, and `person::merge_shelves` re-divides the row's budget every time a
+    /// server answers — so the film at column 3 a moment ago can be a different film now. Before
+    /// [`reseat`], a share landing two seconds into the page slid the selection out from under the
+    /// user and the next OK opened something they were not looking at.
+    #[test]
+    fn a_landing_that_re_divides_the_shelf_keeps_focus_on_the_same_card() {
+        let _serial = crate::testlock::serial();
+        seed(4, 0);
+        move_focus(SDLK_RIGHT);
+        move_focus(SDLK_RIGHT); // on "m2"
+        let was = focused_id();
+        assert_eq!(was.as_ref().map(|(_, rk)| rk.as_str()), Some("m2"));
+
+        // the row is rebuilt with two rows inserted ahead of it — what a second source landing does
+        let rebuilt: Vec<PmsMovie> =
+            ["x0", "x1", "m0", "m1", "m2", "m3"].iter().map(|rk| item(rk)).collect();
+        crate::person::install_for_test(rebuilt, Vec::new());
+        reseat(was);
+        clamp_focus();
+        assert_eq!(scene().col[0], 4, "the index followed the card, instead of the card following the index");
+        assert_eq!(focused_item().map(|m| m.rk.clone()), Some("m2".to_string()));
+
+        // a card that is gone entirely leaves the clamp to do what it always did — never a panic
+        let was = focused_id();
+        crate::person::install_for_test(vec![item("z0")], Vec::new());
+        reseat(was);
+        clamp_focus();
+        assert_eq!(focused_item().map(|m| m.rk.clone()), Some("z0".to_string()));
+        crate::person::close();
+    }
+
     /// `leave()` must drop the un-consumed request. `requested` is a LATCH — `detail::on_ok`'s cast
     /// arm raises it and only app.rs's per-frame drain lowers it — so one left set here fires on an
     /// unrelated OK several screens later and teleports the user onto an actor page they never
@@ -1038,12 +1116,12 @@ mod tests {
     #[test]
     fn reopen_mounts_the_page_without_asking_to_be_routed_to() {
         let _serial = crate::testlock::serial();
-        reopen("77", "plex://person/77", "Peter Sallis", "/t.jpg");
+        reopen(crate::plex::ServerId::UNSET, "77", "plex://person/77", "Peter Sallis", "/t.jpg");
         assert!(!take_request(), "a trail re-entry must not ask app.rs to route again");
         assert_eq!(crate::person::current().map(|p| p.key.clone()), Some("77".to_string()));
         assert!(scene().on_header, "…and it is still a full mount: the page opens on its header");
 
-        open("78", "plex://person/78", "Nick Park", "/n.jpg");
+        open(crate::plex::ServerId::UNSET, "78", "plex://person/78", "Nick Park", "/n.jpg");
         assert!(take_request(), "the interactive entry is the one that raises the latch");
         crate::person::close();
     }

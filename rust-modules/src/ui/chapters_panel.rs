@@ -144,7 +144,7 @@ pub(crate) fn draw() {
         }
         let focused = i as c_int == sel;
         let card = Rect::new(x, CH_TOP, CH_W, CH_H);
-        crate::ui::widgets::draw_card(p, card, &ch.thumb, (480, 270), 10.0, focused, scale);
+        crate::ui::widgets::draw_card(p, card, crate::route::item_sid(crate::route::cur_sid()), &ch.thumb, (480, 270), 10.0, focused, scale);
         // name + timestamp beneath the card
         let ty = CH_TOP + CH_H + 26.0;
         let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
