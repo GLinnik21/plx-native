@@ -957,8 +957,13 @@ mod tests {
     }
 
     /// [`seed`] without the opening DOWN — for the tests that are about the header row itself.
+    ///
+    /// Mounts through [`super::reopen`], not `crate::person::open` directly, because `reopen` is
+    /// where the SCENE singleton is reset. The data-layer call alone left the previous test's
+    /// `col[]`/focus in place — `clamp_focus` clamps but never zeroes — so which column a fresh
+    /// page "opened" on depended on which test the serial lock ran before this one.
     fn seed_at_header(movies: usize, shows: usize) {
-        crate::person::open(
+        super::reopen(
             crate::plex::ServerId::UNSET,
             "161",
             "5d77682aeb5d26001f1de4b0",

@@ -3438,11 +3438,20 @@ mod tests {
         assert!(z.is_finite(), "…and does not divide by zero into a NaN that would poison every ink");
     }
 
+    /// The capsule/strip tests drive `Capsule::step`, whose landing frame `Spring::jump`s — and
+    /// `Spring::jump` reports to `ui::idle`'s process-global dirty flag. So they are serial by
+    /// obligation, not precaution (`xfade.rs`'s rule): under parallel libtest they intermittently
+    /// failed OTHER modules' "a settled screen asks for nothing" assertions.
+    fn serial_for_motion() -> std::sync::MutexGuard<'static, ()> {
+        crate::testlock::serial()
+    }
+
     /// The regression that would otherwise draw a bright capsule sweeping the whole strip on the
     /// first Library frame: an UNPLACED capsule lands on its pill, it does not fly to it. Alpha still
     /// fades in, because arriving in a row is a fade — the two are deliberately different motions.
     #[test]
     fn a_capsule_lands_on_its_first_pill_instead_of_flying_in_from_the_origin() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let p7 = span_of(&w, 7);
         let mut c = Capsule::new();
@@ -3456,6 +3465,7 @@ mod tests {
     /// plain while a bright capsule floats in the gutter between them.
     #[test]
     fn a_travelling_capsule_is_never_sitting_on_nothing() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let (p0, p1) = (span_of(&w, 0), span_of(&w, 1));
         let mut c = Capsule::new();
@@ -3480,6 +3490,7 @@ mod tests {
     /// failure, which is the whole reason [`CAP_LAND_A`] exists.
     #[test]
     fn focus_leaving_the_row_fades_in_place_and_coming_back_lands() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let (p2, p9) = (span_of(&w, 2), span_of(&w, 9));
         let mut c = Capsule::new();
@@ -3502,6 +3513,7 @@ mod tests {
     /// both, or neither — and the mixes it is inked with are exactly that answer.
     #[test]
     fn the_ink_a_pill_wears_is_exactly_the_capsule_over_it() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let settle = |sel: c_int, foc: c_int| {
             let mut s = TabStrip::new();
@@ -3529,6 +3541,7 @@ mod tests {
     /// label on each of two pills for the length of one travel, rather than a whole row dimming.
     #[test]
     fn a_travel_never_inks_more_than_one_pills_worth_of_label() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let mut s = TabStrip::new();
         let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
