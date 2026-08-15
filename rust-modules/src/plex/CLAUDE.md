@@ -115,6 +115,15 @@ a dead source is **absent** from Home and states itself in its own library secti
   field goes through `de_i64`/`de_f64` (in `models.rs`) whose untagged enum accepts int **and** string
   **and** bool. Omitting a lenient adapter doesn't just drop one field — serde fails the **whole
   `MediaContainer`** parse → empty result. When you add a model field, use the lenient adapter.
+- **The session file has FOUR writers and exactly one door for changing part of it.** `session.rs`'s
+  `update(|s| …)` does the read-modify-write under the module's own lock and writes through a
+  sibling tmp + `rename`; `save` is a whole-file REPLACE for the two flows that own the entire file
+  (sign-in, profile switch). Reach for `update` for anything that touches one field — the roster,
+  the search terms — because the others are workers and the two failures are both silent: a lost
+  update resumes the next boot as the wrong profile, and a torn `O_TRUNC` write is an unparseable
+  file, which is a QR code on the next boot rather than a stale roster. The lock is held across the
+  write's `sync_all`, so **nothing per-frame may read this file**; snapshot it (as
+  `ui::search::recents` does, keyed on `session::current_gen`).
 - **Track selection is server-side, via `PUT /library/parts/{id}`** (set the chosen audio/subtitle
   stream + subtitle burn), **not** query params on the stream URL. The server re-selects for the next
   decision; the client re-requests the part. See `[[audio-subtitle-track-switching]]`.

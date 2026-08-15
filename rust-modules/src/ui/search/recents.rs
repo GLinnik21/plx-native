@@ -354,13 +354,10 @@ pub(crate) fn clear() {
 ///
 /// This is a QUEUE, not a handoff. The SDL thread only ever REPLACES it, so it holds the newest
 /// list the user has committed and a burst of commits collapses into one write — and, because
-/// [`flush`] takes it *while holding* [`WRITING`], two workers racing to the file cannot land in
-/// the wrong order: the first one in writes the newest state and the second finds nothing to do.
+/// [`flush`] takes it *inside* the session file's own lock, two workers racing to the file cannot
+/// land in the wrong order: the first one in writes the newest state and the second finds nothing
+/// to do.
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
-
-/// Serializes the file half — one writer at a time, so two read-modify-writes cannot interleave.
-/// **Never taken on the SDL thread**, which is the whole point of the worker.
-static WRITING: Mutex<()> = Mutex::new(());
 
 struct Pending {
     /// Whose list this is, captured at COMMIT time. [`merged`] used to ask
@@ -384,6 +381,9 @@ struct Pending {
 /// silent sign-out, caused by a search term. `client_id` is minted once by `session::load` on the
 /// boot path and is never empty afterwards, so it is exactly the test for "something real came
 /// back": with no readable session the terms stay in memory for this run and are dropped with it.
+/// `session::update` refuses the same case one layer up, for every caller rather than this one;
+/// the test stays here because this is where it is *graded*, and because a rule worth having in
+/// two places is one whose cost is a string comparison.
 fn merged(s: &crate::plex::session::Session, who: &str, terms: &[String])
     -> Option<crate::plex::session::Session> {
     if s.client_id.is_empty() || s.recents_for(who) == terms {
@@ -429,22 +429,25 @@ fn persist() {
 ///
 /// Re-reads the session FILE rather than carrying one — the snapshot this module holds is only the
 /// terms, and everything else in that file (a roster refresh, a profile pick) may have moved since.
-/// Same read-modify-write `auth.rs` does for the roster, and for the same reason.
+/// Same read-modify-write `auth.rs` does for the roster, and now through the same door.
 ///
-/// It touches [`PENDING`] and [`WRITING`] and nothing else of this module's: not [`STORE`], not the
-/// glyph cache, not the profile key. That is the whole seam — everything it needs was read on the
-/// SDL thread by [`persist`].
+/// **The lock is `session`'s, not ours.** This module kept a `WRITING` mutex of its own, which
+/// serialized recents against recents and against nothing else — so the two writers that actually
+/// contend, this one and `auth`'s roster refresh, could still interleave a lost update or a torn
+/// file between them. [`crate::plex::session::update`] is the one authority now (its doc has the
+/// two failures), and the pending list is taken INSIDE it, which keeps the ordering property this
+/// worker has always had: whichever worker reaches the file first writes the newest state, and the
+/// second finds nothing to do. The second now pays a file read to discover that (`update` reads
+/// before it calls the closure) — a worker's read, on a path that runs once per committed term.
+///
+/// It touches [`PENDING`] and nothing else of this module's: not [`STORE`], not the glyph cache,
+/// not the profile key. That is the whole seam — everything it needs was read on the SDL thread by
+/// [`persist`].
 fn flush() {
-    // Held across the whole read-modify-write, and taken BEFORE the pending list, so ordering is
-    // decided here rather than by which worker the scheduler happens to run first.
-    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-    let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let Some(p) = pending else {
-        return; // an earlier worker already wrote this state
-    };
-    if let Some(next) = merged(&crate::plex::session::peek(), &p.who, &p.terms) {
-        crate::plex::session::save(&next);
-    }
+    crate::plex::session::update(|s| {
+        let p = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        merged(s, &p.who, &p.terms)
+    });
 }
 
 // ---- The drawing ------------------------------------------------------------------------------
