@@ -260,7 +260,11 @@ pub(crate) enum Action {
 
 static mut AREA: Area = Area::Grid;
 static mut TAB_F: usize = 1; // focused pill while AREA==Tabs (0 = Home)
-static mut TOOL_F: usize = 0; // focused toolbar chip (0 sort / 1 filter — both open a menu)
+/// Where the toolbar cursor was last WALKED to. Never read directly — the row it indexes changes
+/// length without input, so every reader goes through [`tool_f`], which clamps it to the row that
+/// is drawn. (It is not a chip identity either: the row is two chips long with one source and
+/// three with two — see [`Chip`].)
+static mut TOOL_F: usize = 0;
 static mut GR: usize = 0; // grid focus row
 static mut GC: usize = 0; // grid focus col
 static mut SCROLL: Spring = Spring::at(0.0);
@@ -496,13 +500,30 @@ fn chips() -> &'static [Chip] {
         (false, true) => &CHIPS_NONE,
     }
 }
+/// **The toolbar's focused chip INDEX — the ONE authority, read by the draw, by the walk and by
+/// the activation alike.** Nothing else may read `TOOL_F`.
+///
+/// The raw static is where the user last walked to, and the row's LENGTH moves under it without
+/// any input at all: a second source is granted, or a listing fails and `chips()` collapses
+/// `CHIPS_MANY` → `CHIPS_SOURCE_ONLY`, or a profile switch is absorbed by the `EPOCH` watchdog with
+/// no `enter()` to zero it. So the index is clamped to the row that is actually DRAWN, at the one
+/// point everything reads, because the failure of clamping it in only some of them is silent and
+/// asymmetric: `focused_chip` clamped and the draw did not, so the toolbar drew NO focused chip
+/// while OK still activated the clamped last one and RIGHT was dead against a length the ring was
+/// not standing in.
+///
+/// Clamping rather than resetting is deliberate: the raw value survives, so a row that grows back
+/// (the source answered again) returns focus to the chip the user actually walked to instead of
+/// dumping it at 0.
+fn tool_f() -> usize {
+    let n = chips().len();
+    unsafe { addr_of!(TOOL_F).read() }.min(n.saturating_sub(1))
+}
+
 /// The chip holding toolbar focus, or `None` when the row is EMPTY — which it is on a one-source
-/// failure, where every chip this toolbar has is a grid operation. `TOOL_F` is clamped here rather
-/// than everywhere it is read: the row's length changes the moment a second source is granted (and
-/// again the moment one stops answering), and a stale index must resolve to a chip that exists.
+/// failure, where every chip this toolbar has is a grid operation.
 fn focused_chip() -> Option<Chip> {
-    let c = chips();
-    c.get(unsafe { addr_of!(TOOL_F).read() }.min(c.len().saturating_sub(1))).copied()
+    chips().get(tool_f()).copied()
 }
 
 /// THE chip → menu map, and the ONE place a chip is turned into an action. Both activation paths
@@ -1227,10 +1248,13 @@ pub(crate) fn move_focus(sym: c_uint) {
                 }
             }
             Area::Toolbar => {
-                if sym == SDLK_LEFT && TOOL_F > 0 {
-                    TOOL_F -= 1;
-                } else if sym == SDLK_RIGHT && TOOL_F + 1 < chips().len() {
-                    TOOL_F += 1;
+                // walk from the DRAWN index (`tool_f`), never from the raw static: a step taken
+                // from a stale one moves the ring by more than one chip, or by none at all
+                let f = tool_f();
+                if sym == SDLK_LEFT && f > 0 {
+                    TOOL_F = f - 1;
+                } else if sym == SDLK_RIGHT && f + 1 < chips().len() {
+                    TOOL_F = f + 1;
                 } else if sym == SDLK_UP {
                     AREA = Area::Tabs;
                     TAB_F = own_pill();
@@ -2184,7 +2208,10 @@ pub(crate) fn draw() {
     crate::ui::widgets::profile_chip(pk, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
     crate::ui::widgets::draw_tab_row(pk);
 
-    let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && unsafe { addr_of!(TOOL_F).read() } == i;
+    // the focused index comes from `tool_f` — the same clamped authority `focused_chip` reads, so
+    // the chip wearing the ring and the chip OK activates are one chip
+    let tool_i = tool_f();
+    let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && tool_i == i;
     let strs = chip_strs();
     let mut x = MARGIN_X;
     let mut rects = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
@@ -2819,6 +2846,36 @@ mod tests {
         unsafe { TOOL_F = 2 };
         assert_eq!(focused_chip(), Some(Chip::Filter));
 
+        // ---- and the row SHRINKING under the focus index ------------------------------------
+        //
+        // The chip the toolbar DRAWS the ring on and the chip OK activates must be one chip. They
+        // were not: `focused_chip` clamped and the draw's `tool_focus` compared the raw `TOOL_F`,
+        // so a row that lost its grid chips drew no focused chip at all while OK still fired the
+        // clamped last one — and RIGHT was dead, because it too measured a stale index against the
+        // shorter row. Both now read [`tool_f`], which is why this asserts through it.
+        crate::browse::seed_sources_for_test(2, true);
+        assert_eq!(chips(), &CHIPS_MANY[..]);
+        unsafe { TOOL_F = 2 };
+        assert_eq!(tool_f(), 2, "the user walked to the end of the long row");
+        assert_eq!(focused_chip(), Some(Chip::Filter));
+
+        // the listing fails and `chips()` collapses under the cursor, with NO input in between
+        crate::browse::seed_sources_for_test(2, false);
+        assert_eq!(chips(), &CHIPS_SOURCE_ONLY[..]);
+        let i = tool_f();
+        assert!(i < chips().len(), "the focused index is inside the row that is drawn");
+        assert_eq!(chips().get(i).copied(), focused_chip(), "the ring and the press name one chip");
+        assert_eq!(focused_chip(), Some(Chip::Source));
+        // …and the walk measures the same row: there is nothing to the RIGHT of the only chip,
+        // which is a statement about the row on screen rather than about one the ring left behind
+        assert_eq!(i + 1, chips().len(), "RIGHT is at the end because the ring is on the last chip");
+
+        // the source answers again: the row grows back and focus returns to the chip the user
+        // actually walked to, rather than having been dumped at 0 while it was away
+        crate::browse::seed_sources_for_test(2, true);
+        assert_eq!((tool_f(), focused_chip()), (2, Some(Chip::Filter)));
+
+        crate::browse::reset();
         unsafe { TOOL_F = tool0 };
     }
 
