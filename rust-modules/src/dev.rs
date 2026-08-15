@@ -423,6 +423,23 @@ mod tests {
         assert_ne!(mk("aaaaaaaaaaaa"), mk("bbbbbbbbbbbb"), "two shares must be tellable apart");
     }
 
+    /// The tag is computed in TWO languages: `tests/run.py`'s `server_ref`/`describe_server` print
+    /// the same line for the same server, so a harness transcript and an event log can be read as
+    /// one story — and so that the harness, which also prints to a pasteable stream, is held to
+    /// this module's redaction contract rather than to its own.
+    ///
+    /// Nothing links the two implementations at build time, so the whole line is pinned to a
+    /// literal here. **If this assertion has to change, `run.py`'s copy changes with it.**
+    #[test]
+    fn the_shared_reference_is_the_same_tag_the_harness_prints() {
+        let v = super::parse_servers(
+            r#"[{"name":"Film Club","machine_id":"abcd1234efgh","host":"10.9.9.7",
+                 "port":31234,"token":"t","handle":"friend"}]"#,
+        )
+        .unwrap();
+        assert_eq!(v[0].describe(), "SHARED ref=71c955 port_set=true");
+    }
+
     /// `plxnative-servers` must NOT be exempt from the picker-suppression scan: it names a host and
     /// carries the token to trust it with, which is automation of the strongest kind. Listing it in
     /// DIAG would let a headless run boot to the who's-watching picker instead of Home.
