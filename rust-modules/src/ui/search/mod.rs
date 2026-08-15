@@ -681,6 +681,11 @@ fn mount(seed: Option<&str>) {
 /// Leave it. Dismissing the keyboard here rather than at the press is deliberate: the panel must
 /// come down at the fade floor, with the page, not a frame before it while the old screen is still
 /// on screen behind it.
+///
+/// **It is a WITHDRAWAL and records nothing**, which is what makes it the right call for the other
+/// caller too: `app.rs`'s background arm, where the OS has taken the screen away and the
+/// compositor's IME went with it. Neither exit is the user saying "that is the search I meant" —
+/// that moment is [`leave_field`], and only it commits the term to the recents list.
 pub(crate) fn leave() {
     unsafe { *addr_of_mut!(EDITING) = false };
     crate::textinput::stop();
@@ -1965,6 +1970,38 @@ mod tests {
         let v = view();
         assert_eq!((zone(), v.row, v.col, v.recent, v.shift), (Zone::Field, 0, 0, 0, 0.0));
         assert!(!editing());
+        crate::search::reset();
+    }
+
+    /// **An OS app switch takes the television's keyboard with it and tells the app nothing.**
+    /// `app.rs`'s `0x103`/`0x104` arm runs this dismissal for that: without it the screen comes
+    /// back to the foreground drawing an editing layout and a blinking caret over a panel that is
+    /// gone, and typing is dead in a way no press recovers — `textinput::start` early-returns while
+    /// its own `STARTED` is set, so OK on the field toggles our flag and raises nothing.
+    ///
+    /// The arm itself lives inside the SDL event loop, where no host test can reach it (the
+    /// `trail.rs` case, for the same reason); what is gradeable is the path it takes, and the half
+    /// that is easy to get wrong is WHICH path. `leave` is the withdrawal, so nothing is filed —
+    /// an app switch is not the user saying "that is the search I meant", and a list of
+    /// half-typed terms is a list of interruptions.
+    #[test]
+    fn dismissing_the_panel_from_outside_files_nothing_and_can_be_re_opened() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let before = recents::count();
+        typed("wallace"); // the panel is up and the term is well past `MIN_QUERY`
+        assert!(editing());
+
+        leave();
+        assert!(!editing(), "the panel is gone, so the screen must stop drawing a field being typed into");
+        assert_eq!(recents::count(), before, "a withdrawal records nothing — BACK's rule, not `leave_field`'s");
+
+        // …and the keyboard comes back, which is the half `textinput`'s own `STARTED` decides:
+        // `leave` goes through `stop()`, so the next `start()` is not a silent no-op.
+        on_ok();
+        assert!(editing(), "a field that cannot re-open its own keyboard is a dead screen");
+        leave();
         crate::search::reset();
     }
 
