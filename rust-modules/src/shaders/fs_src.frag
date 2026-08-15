@@ -38,6 +38,26 @@ void main(){
   }
   highp vec2 p = (v_uv - 0.5) * u_size;
   highp vec2 hsz = u_size * 0.5 - vec2(u_pad);
+  // INTERIOR EARLY-OUT. A rounded rect's edge work is only ever needed within a couple of pixels of
+  // its border, and a big panel is mostly not that: the Library's Sort popover is 640x700, so ~90%
+  // of its ~450K fragments were running sdBox + two smoothsteps to arrive at "solidly inside".
+  // Measured there at 7.1ms of a 33ms frame (`menu.panel`, via /tmp/plxnative-profile), which is
+  // what made an open menu drop the screen from 60 to ~30 - the frame lands either side of vsync,
+  // so it alternates 16/33ms rather than degrading smoothly.
+  //
+  // The test is the axis-aligned box inset by the corner radius and the rim width, which is
+  // CONSERVATIVE: with |p.x| < hsz.x - rad - m and the same in y, sdBox's q is negative on both
+  // axes, so d = max(q.x,q.y) - rad < -m. At m >= 2 that puts d below every threshold below -
+  // aFill's smoothstep(-1,1,d) is 1, the rim's smoothstep(-rimw-0.75, ...) is 0, and both focus
+  // terms are already 0 inside (the ring's (1-smoothstep(1.5,4,|d-5|)) vanishes for d << 0 and the
+  // glow carries step(0.0,d)). So this returns exactly what the full path would, and the branch is
+  // coherent across a tile, which is what makes it pay on a tiler.
+  highp float radm = max(u_radius, u_radR);
+  highp vec2 inner = hsz - vec2(radm + u_rimw + 2.0);
+  if (abs(p.x) < inner.x && abs(p.y) < inner.y) {
+    gl_FragColor = mix(u_colTop, u_colBot, vy);
+    return;
+  }
   highp float rad = (p.x > 0.0) ? u_radR : u_radius;
   float d = sdBox(p, hsz, rad);
   vec4 fill = mix(u_colTop, u_colBot, vy);
