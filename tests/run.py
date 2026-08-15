@@ -318,11 +318,17 @@ def resolve_shared_server(admin_token, spec):
 
     hit = next((r for r in res if matches(r)), None)
     if hit is None:
+        # The ONE place a share's name and machineIdentifier still reach stdout, and deliberately:
+        # they are the answer to the question this exit asks, which is "put one of these in your
+        # gitignored overlay". It is a fatal exit before anything runs, not a run transcript — but
+        # it is still pasteable, so it says so.
         known = "\n".join(f"    {r.get('name')!r}  machine_id={r.get('clientIdentifier')}  "
                           f"{'owned' if r.get('owned') else 'shared with you'}" for r in res)
         sys.exit(f"shared_server {want_mid or want_name!r} is not in this account's plex.tv "
                  f"resources (is it still shared with you?). Servers this account can reach:\n"
-                 f"{known or '    (none)'}")
+                 f"{known or '    (none)'}\n"
+                 f"  (a 'shared with you' row names somebody else's machine — copy what you need "
+                 f"into {os.path.basename(MANIFEST_LOCAL)}, don't paste this list into an issue.)")
 
     token = hit.get("accessToken")
     if not token:
@@ -556,6 +562,55 @@ RE_TOKEN = re.compile(r"(X-Plex-Token=)[^&\s]+")
 def redact(s):
     """Never let the PMS token reach stdout: replace any X-Plex-Token=<v> with <token>."""
     return RE_TOKEN.sub(r"\1<token>", s)
+
+
+# ---------------------------------------------------------------------------
+# Saying which server, without saying WHOSE
+# ---------------------------------------------------------------------------
+# The app already holds itself to a contract here -- `dev.rs`'s `DevServer::describe`, and the
+# `describe_redacts_everything_identifying_about_someone_elses_server` test that pins it: a SHARED
+# server names nothing that identifies it or its owner (no name, no handle, no address, no
+# machineIdentifier), only a stable non-reversible `ref=` so two lines about one server can be
+# correlated inside a single log. An OWNED server is the user's own machine and is unchanged.
+#
+# This harness prints to stdout, and a harness transcript is exactly as pasteable into an issue or a
+# PR body as an event log -- four PR bodies leaked these fields on 2026-08-14 and had to be redacted
+# after the fact, which a public repository does not really allow. So the two formatters below are
+# the same contract on this side of the wire, deliberately producing the SAME text the event log
+# does, so a transcript line and a device line about one server read as one server.
+def server_ref(machine_id):
+    """`dev.rs`'s `DevServer::reference`, byte for byte: FNV-1a over the machineIdentifier, low 24
+    bits, six hex digits. Not a cryptographic choice -- a legibility one. Matching the app's
+    arithmetic exactly is the point: the harness and the TV then agree on one tag per server, and
+    `dev.rs`'s `the_shared_reference_is_the_same_tag_the_harness_prints` pins the whole line to a
+    literal so the two copies cannot drift."""
+    h = 0xCBF29CE484222325
+    for b in (machine_id or "").encode():
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h & 0xFFFFFF:06x}"
+
+
+def describe_server(s):
+    """One RESOLVED server, for stdout. Redacted iff it is somebody else's (see above).
+
+    `handle` is the owner's plex.tv handle (`sourceTitle`), and empty means owned -- the same field,
+    with the same meaning, that `DevServer::describe` branches on.
+    """
+    if s.get("handle"):
+        port_set = "true" if int(s.get("port") or 0) > 0 else "false"
+        return f"SHARED ref={server_ref(s.get('machine_id'))} port_set={port_set}"
+    return f"{s.get('name')!r} @ {s.get('host')}:{s.get('port')} (machine_id={s.get('machine_id')})"
+
+
+def describe_spec(spec):
+    """The overlay's `shared_server` BLOCK, before anything is resolved (`--list`).
+
+    Offline there is no `sourceTitle` to branch on, so ownership is unknown -- and the stricter rule
+    is the safe one to guess. The `ref=` is the same tag a real run will print when the block names
+    a `machine_id`, so `--list` and the run correlate; matched-by-name has nothing to hash.
+    """
+    mid = spec.get("machine_id")
+    return f"SHARED ref={server_ref(mid)}" if mid else "SHARED ref=? (matched by name)"
 
 
 def codec_ids(lines):
@@ -1268,8 +1323,9 @@ def run_case(case, cfg, token, verbose):
     if cfg.get("inject_token"):
         print(f"    plxnative-token: <{cfg['user_label']}, redacted>")
     if srv_json:
-        s = cfg["shared_server"]
-        print(f"    plxnative-servers: <{s['name']} @ {s['host']}:{s['port']}, token redacted>")
+        # said the way the APP says it (`describe_server`): a share is a `ref=` tag and nothing
+        # else. The token was never printed here and still is not.
+        print(f"    plxnative-servers: <{describe_server(cfg['shared_server'])}, token redacted>")
 
     # 4. run + grade the log as it streams (run_secs is the cap, not the runtime)
     early = not cfg.get("no_early")
@@ -1439,8 +1495,8 @@ def run_fps_scene(scene, cfg, token):
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown or '(none)'}   run {run_secs}s, skip first {warmup} sample(s)")
     if srv_json:
-        s = cfg["shared_server"]
-        print(f"    plxnative-servers: <{s['name']} @ {s['host']}:{s['port']}, token redacted>")
+        # same redaction as the playback cases — see `describe_server`.
+        print(f"    plxnative-servers: <{describe_server(cfg['shared_server'])}, token redacted>")
 
     try:
         proc = make(["run", f"TV={tv}", f"RUN_SECS={run_secs}"], timeout=run_secs + 90)
@@ -1599,8 +1655,9 @@ def setup_shared(manifest, cfg, args, entries, what):
               f"{', '.join(e['name'] for e in named)}")
         return [e for e in entries if not e.get("needs_shared_server")], [e["name"] for e in named]
     cfg["shared_server"] = resolve_shared_server(read_token(), spec)
-    s = cfg["shared_server"]
-    print(f"second server: {s['name']} @ {s['host']}:{s['port']} (machine_id={s['machine_id']}) "
+    # The header line of the whole run, and the one most likely to be pasted somewhere. `handle`
+    # decides: a share is a `ref=` tag (`describe_server`), your own second machine is unchanged.
+    print(f"second server: {describe_server(cfg['shared_server'])} "
           f"— access token resolved from plex.tv, never printed")
     return entries, []
 
@@ -1663,10 +1720,12 @@ def main():
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")
         # Offline, so this reports what the OVERLAY says — nothing is resolved and plex.tv is not
         # called. It is still the answer to "will the [+2nd server] entries above actually run".
+        # `describe_spec` rather than `describe_server` for exactly that reason: with no resolved
+        # `sourceTitle` there is no way to tell a share from your own second machine here, and the
+        # stricter reading is the safe one to guess.
         ss = manifest.get("shared_server")
         if ss:
-            print(f"\nsecond server: {ss.get('name') or ss.get('machine_id')} "
-                  f"(machine_id={ss.get('machine_id') or 'by name'}) — configured; its access token "
+            print(f"\nsecond server: {describe_spec(ss)} — configured; its access token "
                   f"is resolved from plex.tv at run time")
         else:
             print(f"\nsecond server: not configured in {os.path.basename(MANIFEST_LOCAL)} — any "
