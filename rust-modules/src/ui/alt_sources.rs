@@ -49,7 +49,10 @@
 //! **The identity is the `guid` (`plex://movie/…`), never the `ratingKey`.** Every item-shaped
 //! integer in Plex is server-local and starts at 1, so both servers in this household have a
 //! `ratingKey` 4 and a section 1 (`docs/shared-servers.md` §1). Matching on one would confidently
-//! offer a different film. [`install`] is the seam the multi-server data layer feeds once it can
+//! offer a different film — which is why the STORE itself is keyed on the `(server, ratingKey)`
+//! PAIR and not on the key alone (see [`FOR_SID`]): a resolve outliving the page that asked for it
+//! is the normal case, not the exotic one.
+//! [`install`] is the seam the multi-server data layer feeds once it can
 //! ask each pinned source for its copy of a guid; until then the store is EMPTY at every mount, so
 //! [`is_available`] is false, the button is not drawn, and a one-server install pays nothing —
 //! not a query, not a control, not a row of layout.
@@ -126,11 +129,22 @@ const SCRIM_A: f32 = 0.45;
 /// How far the panel rises into place, matching those same chip menus.
 const RISE: f32 = 20.0;
 
-/// The item the store describes, as its ratingKey ON THE CURRENT SERVER — i.e. the page's own
-/// mounted rk. It is BOTH halves of a mailbox: [`install`] refuses a landing for any other item
-/// (a guid resolve that outlived the page it was asked for must not land on the next one), and it
-/// is the `rk` half of "which copy am I on now", the other half being the current server.
+/// The item the store describes, as the page's own mounted ratingKey. It does two jobs: with
+/// [`FOR_SID`] it is the mailbox key [`install`] matches a landing against (a guid resolve that
+/// outlived the page it was asked for must not land on the next one), and on its own it is the `rk`
+/// half of "which copy am I on now", whose other half is [`here_sid`].
 static mut FOR_RK: String = String::new();
+/// The SERVER that rk belongs to — stamped by [`reset`] from the row that opened the page, and the
+/// other half of the mailbox key.
+///
+/// Not decoration: every `ratingKey` Plex issues is a server-local integer dense from 1, so this
+/// household's two servers both have a film 4 (docs/shared-servers.md §1). A resolve is one round
+/// trip PER SOURCE and a dead share costs a full `connect(2)` timeout, so leaving our film 4 and
+/// opening the share's film 4 while one is out is ordinary — and the rk alone says they are the
+/// same page. The generation guard in `metadata::pump_alt_sources` cannot see it either: it only
+/// moves when a DETAIL lands, and the new page's has not. The panel would list the other machine's
+/// copies, its tick would be missing or on the wrong row, and OK would open a different film.
+static mut FOR_SID: ServerId = ServerId::UNSET;
 /// Every copy of that item, in the order the producer found them (this module orders them itself).
 static mut COPIES: Vec<AltCopy> = Vec::new();
 
@@ -163,7 +177,12 @@ fn copies() -> &'static [AltCopy] {
 /// Called by the detail page from every mount, BEFORE anything can be installed for the new item.
 /// It also closes the panel: a popover that survived the page under it would be listing another
 /// film's copies over this one's hero.
-pub(crate) fn reset(item_rk: &str) {
+///
+/// `item_sid` is the ROW's server, never `plex::current_server()` — a merged Home shelf holds rows
+/// from more than one machine, and the row is the only thing that knows which. An empty `item_rk`
+/// (the page closing, or a mount with no row yet) pairs with [`ServerId::UNSET`]: nothing can then
+/// land, which is the point.
+pub(crate) fn reset(item_sid: ServerId, item_rk: &str) {
     close();
     // ASSIGNMENT, not `ptr::write`: these are owning heap values, and `write` overwrites without
     // running the old one's destructor — which here would leak a `String` and a `Vec<AltCopy>` on
@@ -174,17 +193,24 @@ pub(crate) fn reset(item_rk: &str) {
         *addr_of_mut!(COPIES) = Vec::new();
         *addr_of_mut!(STAND_RK) = String::new();
     }
+    unsafe { addr_of_mut!(FOR_SID).write(item_sid) }; // `Copy`, so `write` is the right idiom here
 }
 
-/// Install the copies resolved for `item_rk` — the seam the multi-server data layer feeds.
+/// Install the copies resolved for `(item_sid, item_rk)` — the seam the multi-server data layer
+/// feeds.
 ///
 /// **A landing only applies while it is still the item being awaited**, the invariant
 /// `metadata::pump_detail` exists for: a guid resolve is a per-server round trip, so one asked for
 /// the page you just left can land on the page you just opened, and a wrong list here would offer
-/// to navigate to a different film. Repaints, so it invalidates the frame gate — a landing that
-/// grows the actions row must be visible without waiting for a keypress.
-pub(crate) fn install(item_rk: &str, list: Vec<AltCopy>) {
-    if item_rk != unsafe { (*addr_of!(FOR_RK)).as_str() } {
+/// to navigate to a different film.
+///
+/// The test is the PAIR, through `plex::same_item` — the one place that rule lives. An rk-only test
+/// passes for the SHARE's film 4 while our film 4's resolve is landing, which is not an edge case:
+/// both servers number their items from 1 (see [`FOR_SID`]). Repaints, so it invalidates the frame
+/// gate — a landing that grows the actions row must be visible without waiting for a keypress.
+pub(crate) fn install(item_sid: ServerId, item_rk: &str, list: Vec<AltCopy>) {
+    let here = (unsafe { addr_of!(FOR_SID).read() }, unsafe { (*addr_of!(FOR_RK)).as_str() });
+    if !crate::plex::same_item((item_sid, item_rk), here) {
         return;
     }
     unsafe { *addr_of_mut!(COPIES) = list }; // assignment — see [`reset`]
@@ -327,6 +353,11 @@ fn live_rows() -> Vec<AltRow> {
 ///
 /// `detail::mounted_sid` is the one derivation: the loaded item's server, else the page's own
 /// mounted sid, which was stamped from the row that opened it.
+///
+/// [`FOR_SID`] is not a second spelling of this and must not become one: it is the MAILBOX key,
+/// stamped by [`reset`] from the very same value on the very same call as `mounted_sid` (see
+/// `detail::mount_rk`), and read only by [`install`]. They agree by construction — which is also
+/// what makes the tick and the landing gate answer about one page.
 fn here_sid() -> ServerId {
     crate::ui::detail::mounted_sid()
 }
@@ -807,6 +838,57 @@ mod tests {
         assert_eq!(one_class_better("sd"), "720");
         assert_eq!(one_class_better(""), "");
         assert_eq!(one_class_better("weird"), "weird");
+    }
+
+    /// **The store is a MAILBOX keyed on the pair, and the pair is what the landing is matched
+    /// against.** A cross-source resolve is one round trip PER SOURCE and a share that has gone
+    /// away costs a whole `connect(2)` timeout, so one asked for the page you just left routinely
+    /// lands seconds after you have opened another — and with two servers registered "another
+    /// page with the same ratingKey" is the ordinary case, since both number their items from 1.
+    ///
+    /// Nothing upstream can catch it: `metadata::pump_alt_sources`' generation guard only moves
+    /// when a DETAIL lands, and the newly opened page's has not. So an rk-only test here put the
+    /// OTHER machine's copies on this hero, where the tick would be missing (no listed copy matches
+    /// the page) and OK would open a different film on a server you were not looking at.
+    ///
+    /// Touches the module's `static mut` store, so it holds `testlock::serial()` and empties the
+    /// store on the way OUT as well as in — `ui::detail`'s hero-row tests count the controls this
+    /// store produces, and a leaked list is a count they never touched.
+    #[test]
+    fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
+        struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                reset(ServerId::UNSET, "");
+            }
+        }
+        let _g = Fresh(crate::testlock::serial());
+        let two_sources =
+            || vec![copy(0, "Movies", "", "4", "1080"), copy(1, "Film Club", "friend", "318", "4k")];
+
+        // OUR film 4 is the page, and its resolve is out
+        reset(sid(0), "4");
+        assert!(!is_available(), "a fresh mount holds no copies");
+        // …and while it is out the user opens the SHARE's film 4 — the same key, another machine
+        reset(sid(1), "4");
+        install(sid(0), "4", two_sources());
+        assert!(!is_available(), "our copies are not news about the share's film");
+
+        // the control: the very same landing DOES install when the page is still the one that
+        // asked, so the refusal above is about the SERVER and not about the mechanism
+        reset(sid(0), "4");
+        install(sid(0), "4", two_sources());
+        assert!(is_available(), "the awaited landing installs");
+
+        // and the pre-existing rule is untouched: the same server, a different item
+        reset(sid(0), "4");
+        install(sid(0), "318", two_sources());
+        assert!(!is_available(), "a landing for another item on this server is still refused");
+
+        // a closed page (UNSET, empty rk) is a mailbox nothing can reach
+        reset(ServerId::UNSET, "");
+        install(sid(0), "4", two_sources());
+        assert!(!is_available(), "nothing lands on a page that is gone");
     }
 
     /// The panel hangs off the control that opened it, and is never over it or off the screen.

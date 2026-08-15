@@ -1135,14 +1135,15 @@ pub(crate) fn open(idx: c_int) {
     let v = view();
     v.selected = idx;
     reset_view_state(v);
-    crate::ui::alt_sources::reset(""); // …until the row below names the item this page is about
+    // …until the row below names the item this page is about
+    crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     if idx >= 0 {
         if let Some(m) = crate::pms::movie(idx as usize) {
             // the row's OWN server, never the current one — a merged shelf holds rows from more
             // than one, and the row is the only thing that knows which
             v.mounted_sid = m.sid;
             v.mounted_rk = m.rk.clone(); // keep the index reconcilable — see `reselect`
-            crate::ui::alt_sources::reset(&m.rk);
+            crate::ui::alt_sources::reset(m.sid, &m.rk);
             if !m.rk.is_empty() {
                 metadata::load_detail_now(m.sid, &m.rk);
             }
@@ -1164,9 +1165,9 @@ pub(crate) fn back() -> bool {
 
 /// Leave the detail page (drop the loaded item).
 pub(crate) fn close() {
-    // the panel is this page's, so it dies with it — and with an empty rk nothing can land in the
-    // store for a page that is gone
-    crate::ui::alt_sources::reset("");
+    // the panel is this page's, so it dies with it — and with an unset server and an empty rk
+    // nothing can land in the store for a page that is gone
+    crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     metadata::clear();
     // Both latches die with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
@@ -3558,8 +3559,9 @@ fn mount_rk(sid: crate::plex::ServerId, rk: &str) {
     v.mounted_sid = sid;
     reset_view_state(v);
     // point the copy list at the new item — a store still describing the previous film would draw
-    // its control on this hero and offer to navigate to its copies
-    crate::ui::alt_sources::reset(rk);
+    // its control on this hero and offer to navigate to its copies. BOTH halves of the identity:
+    // the other server's film with this rk is a different film, and its resolve may be in flight.
+    crate::ui::alt_sources::reset(sid, rk);
 }
 
 /// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
@@ -4583,7 +4585,7 @@ mod tests {
         // global: without this an alt test would leave a third control on the hero row and the
         // NEXT test to run would fail on a count it never touched. Tests that want the control
         // call `alt_arm` after mounting.
-        crate::ui::alt_sources::reset("");
+        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
         let set = hero_set();
         let v = view();
         v.section = 0;
@@ -4779,8 +4781,11 @@ mod tests {
         use crate::ui::alt_sources::{install, reset, AltCopy};
         let here = crate::plex::current_server();
         let theirs = crate::plex::ServerId::from_raw(here.raw().wrapping_add(1));
-        reset(rk);
+        // `reset` and `install` are the two ends of a MAILBOX keyed on `(server, rk)` — arming the
+        // store means naming the same page at both, exactly as a real mount and its landing do.
+        reset(here, rk);
         install(
+            here,
             rk,
             vec![
                 AltCopy {
@@ -4804,7 +4809,7 @@ mod tests {
         );
     }
     fn alt_clear() {
-        crate::ui::alt_sources::reset("");
+        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     }
 
     /// **The gate, as the actions row sees it.** One source and the row is what it always was — no
@@ -4843,12 +4848,14 @@ mod tests {
         // put a control on this row however many copies of the film it has.
         mount(Some(movie(0, 7_200_000)), 0);
         use crate::ui::alt_sources::{install, reset, AltCopy};
-        reset("m1");
+        let here = crate::plex::current_server();
+        reset(here, "m1");
         install(
+            here,
             "m1",
             vec![
-                AltCopy { sid: crate::plex::current_server(), library: "Movies".into(), rk: "m1".into(), ..Default::default() },
-                AltCopy { sid: crate::plex::current_server(), library: "4K Movies".into(), rk: "9".into(), ..Default::default() },
+                AltCopy { sid: here, library: "Movies".into(), rk: "m1".into(), ..Default::default() },
+                AltCopy { sid: here, library: "4K Movies".into(), rk: "9".into(), ..Default::default() },
             ],
         );
         assert_eq!(hero_btns(), 2, "two copies on ONE source are not 'also available elsewhere'");
