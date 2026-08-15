@@ -1405,10 +1405,13 @@ fn land_discovery() {
         }
         // …and back into the registry, so anything else that asks about this server gets the same
         // answer without a second `GET /`. `owned` is carried through unchanged: this describer
-        // learned a name, not a grant.
+        // learned a name, not a grant — which is what `describe_server_name` is FOR. It used to
+        // recompute it here as `handle.is_empty()`, three lines under a comment claiming the
+        // opposite, and that derivation is the one `ServerFacts::owned` documents as wrong: a share
+        // whose `sourceTitle` plex.tv did not send has no handle and is still a share, so every one
+        // of those flipped to "ours" the instant its friendly name landed.
         if let Some(s) = sources().get(si) {
-            let owned = s.handle.is_empty();
-            crate::plex::describe_server(s.sid, &name, "", owned);
+            crate::plex::describe_server_name(s.sid, &name);
         }
     }
     match what {

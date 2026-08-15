@@ -278,9 +278,19 @@ pub fn start_switch() {
 
 /// Sign out: forget the persisted session + roster and start a fresh login. The caller routes to
 /// [`Phase::Login`]-era screens (Route::Login).
+///
+/// **The server REGISTRY has to go with the session file**, and for a long time it did not. Clearing
+/// the file only stops the NEXT boot resuming: in this process every server the account was granted
+/// stayed in the registry with its live per-(user, server) token, so signing into a different
+/// account left both accounts' servers registered side by side — `pms::roster` merged both into
+/// Home, `browse` listed both in Sources, `search` fanned every query out over both, each with the
+/// departed account's credential. `plex::revoke_all` retires them and blanks their tokens; the
+/// slots are not reused, so nothing the new account registers can inherit the old one's per-server
+/// stores either.
 pub fn sign_out() {
     session::clear();
     session::set_current(None);
+    crate::plex::revoke_all();
     with_ctl(|c| *c = Ctl::default());
     start_login();
 }

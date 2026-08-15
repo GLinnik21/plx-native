@@ -413,9 +413,12 @@ impl Key {
             live: 0,
             facts: [0; crate::plex::MAX_SERVERS],
         };
-        // `server_ids` walks `0..server_count()` and registration is refused past `MAX_SERVERS`, so
-        // `i` is always both a bit of `live` and an index of `facts`; `take` says so to the reader
-        // rather than leaving it to be re-derived from two other modules.
+        // `i` is the position in the LIVE roster, not the slot number — a sign-out retires the
+        // slots below the registry's floor without renumbering what registers after them, so the
+        // two stopped agreeing. It does not have to be the slot: this is a fingerprint, and all it
+        // owes is that it moves when the roster does. `server_ids` yields at most `MAX_SERVERS`
+        // entries, so `i` is always both a bit of `live` and an index of `facts`; `take` says so to
+        // the reader rather than leaving it to be re-derived from two other modules.
         for (i, sid) in crate::plex::server_ids().enumerate().take(crate::plex::MAX_SERVERS) {
             // The same reading [`build`] uses: a source `browse`'s table has never adopted has not
             // failed, so an absent one is live. The two must agree or the line changes without the
@@ -514,10 +517,11 @@ fn build(key: Key) -> ScopeState {
 /// `empty` used to count this itself, as `server_ids().filter(|id| client_for(id).is_some())`. That
 /// filter was **inert** and is not carried over: `plex::servers::register_lazy` publishes the slot
 /// pointer and only *then* stores the count ("after the pointer: a visible count implies a live
-/// slot"), `server_ids` walks `0..count`, and nothing in a shipped build ever nulls a slot back —
-/// so every id it yields resolves to a `Client`. Keeping it implied a registered-but-undialable
-/// state the registry does not permit, which is a worse thing to leave inside a projection than one
-/// fewer branch.
+/// slot"), and nothing in a shipped build ever nulls a slot back — so every id `server_ids` yields
+/// resolves to a `Client`. It still does now that a sign-out RETIRES slots, because the retirement
+/// is a floor on that same walk and not a hole in it: `server_ids` and `client_for` turn away
+/// exactly the same ids. Keeping the filter implied a registered-but-undialable state the registry
+/// does not permit, which is a worse thing to leave inside a projection than one fewer branch.
 pub(super) fn sources() -> (usize, Option<&'static str>) {
     with_scope(|s| (s.n, s.name))
 }

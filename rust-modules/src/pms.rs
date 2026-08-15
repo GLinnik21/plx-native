@@ -937,10 +937,12 @@ fn sync_roster() {
     let mut srcs = lock_srcs();
     let mut out: Vec<Src> = Vec::with_capacity(want.len());
     for (sid, handle) in want {
-        // One slot, one source. A roster naming a slot twice is reachable (`plex::register` answers
-        // with `current()` when the table is full), and a second `Src` sharing a sid is worse than
-        // the mistake: every landing resolves to the first of them, so the other never un-latches
-        // its single flight and silently stops fetching for good.
+        // One slot, one source. The way a roster came to name a slot twice was `plex::register`
+        // answering with `current()` when the table was full; that now answers `ServerId::UNSET`,
+        // which resolves to nothing and never reaches this list. The guard stays because a second
+        // `Src` sharing a sid is worse than the mistake that produced it: every landing resolves to
+        // the first of them, so the other never un-latches its single flight and silently stops
+        // fetching for good.
         if out.iter().any(|x| x.sid == sid) {
             continue;
         }

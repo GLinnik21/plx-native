@@ -467,11 +467,27 @@ impl Source {
 
 static mut SRC: [Source; NSRC] = [const { Source::EMPTY }; NSRC];
 
-/// How many registry slots this store fans out over — **the one place a raw `ServerId` is clamped**
-/// (see [`NSRC`]). The roster only ever grows, so a slot past this count has never been asked
-/// anything and has nothing in its mailbox.
+/// The registry slots this store fans out over, as a RANGE — **the one place a raw `ServerId`
+/// becomes an index into [`SRC`]/[`SLOT`]/[`IN_FLIGHT`]** (see [`NSRC`]).
+///
+/// **A window, not a prefix, and that is not a refinement — `0..server_count()` was wrong.** Slot
+/// numbers are permanent and a sign-out RETIRES the departing account's slots without renumbering
+/// what registers after them (`plex::servers`' module doc), so after signing into a second account
+/// the live roster is `2..3` and not `0..1`: a prefix would have asked the revoked slots (which
+/// resolve to no client at all) and never asked the server the user is actually signed in to.
+/// The live window is contiguous by construction, which is what lets [`live_sources`] stay a
+/// borrow of the array rather than a collected `Vec` of references.
+fn slots() -> std::ops::Range<usize> {
+    let mut ids = crate::plex::server_ids();
+    let Some(first) = ids.next() else { return 0..0 };
+    let lo = first.raw() as usize;
+    let hi = (lo + 1 + ids.count()).min(NSRC);
+    lo.min(hi)..hi
+}
+
+/// How many sources this store fans out over — the width of [`slots`].
 fn nsrc() -> usize {
-    crate::plex::server_count().min(NSRC)
+    slots().len()
 }
 
 /// Post a finished fetch to its mailbox. MONOTONE: an older fetch landing late must never clobber a
@@ -526,9 +542,9 @@ pub(crate) fn pump(dt: f32) -> bool {
             }
         }
     }
-    let n = nsrc();
+    let live = slots();
     let mut landed = false;
-    for i in 0..n {
+    for i in live.clone() {
         unsafe {
             let cd = &mut (*addr_of_mut!(SRC))[i].retry_cd;
             if *cd > 0 {
@@ -556,9 +572,9 @@ pub(crate) fn pump(dt: f32) -> bool {
     // precisely the endless spinner `state_from`'s empty arm exists to prevent. Reachable in
     // practice: `/tmp/plxnative-search=<q>` forces the route whether or not a server was installed.
     if landed {
-        rebuild(n);
+        rebuild();
     }
-    let state = state_from(live_sources(n), terms(query()).is_some());
+    let state = state_from(live_sources(), terms(query()).is_some());
     let moved = state != self::state();
     if moved {
         crate::log(&format!("search: q='{}' state={}", query().trim(), state.name()));
@@ -613,19 +629,22 @@ fn record(i: usize, what: Option<Projection>) {
     }
 }
 
-/// The first `n` registry slots, as a slice — the one place a raw `static mut` array becomes a
-/// borrow. The whole array is taken first and sliced after, because `&(*addr_of!(SRC))[..n]`
-/// autorefs the raw pointer's target implicitly, which rustc denies outright
-/// (`dangerous_implicit_autorefs`).
-fn live_sources(n: usize) -> &'static [Source] {
+/// The LIVE registry slots, as a slice — the one place a raw `static mut` array becomes a borrow.
+/// The whole array is taken first and sliced after, because `&(*addr_of!(SRC))[r]` autorefs the raw
+/// pointer's target implicitly, which rustc denies outright (`dangerous_implicit_autorefs`).
+///
+/// [`slots`] is a window rather than a prefix (see its doc), so this slices with it: the records
+/// belonging to an account that signed out sit BELOW the window and must not reach the merge or the
+/// verdict.
+fn live_sources() -> &'static [Source] {
     let all: &'static [Source; NSRC] = unsafe { &*addr_of!(SRC) };
-    &all[..n]
+    &all[slots()]
 }
 
 /// Recompute the merged shelves from every source's last answer. The [`State`] is NOT set here —
 /// [`pump`] recomputes that every frame, landing or no landing (see the note there).
-fn rebuild(n: usize) {
-    let shelves = merge(live_sources(n));
+fn rebuild() {
+    let shelves = merge(live_sources());
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
     crate::log(&format!("search: q='{}' shelves={} items={}", query().trim(), shelves.len(), items));
     unsafe { *addr_of_mut!(SHELVES) = shelves };
@@ -870,12 +889,25 @@ mod tests {
 
     /// Take the crate-wide serialization lock, empty the server registry AND this store, so each
     /// test starts from a known table and leaves one behind. `route.rs`'s `fresh_registry`, plus
-    /// the store's own globals — the two move together here because [`nsrc`] reads the registry.
-    fn fresh() -> std::sync::MutexGuard<'static, ()> {
+    /// the store's own globals — the two move together here because [`slots`] reads the registry.
+    ///
+    /// It empties on the way OUT as well, `servers.rs`' own `Fresh` discipline and for a sharper
+    /// reason since [`slots`] became a window: a test that signs out leaves the registry's FLOOR
+    /// raised, and the next module to register a server without resetting first would find its own
+    /// slot numbering shifted under it. The reset runs while the lock is still held (a struct's own
+    /// `Drop` runs before its fields').
+    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    impl Drop for Fresh {
+        fn drop(&mut self) {
+            crate::plex::reset_servers_for_test();
+            reset();
+        }
+    }
+    fn fresh() -> Fresh {
         let g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset();
-        g
+        Fresh(g)
     }
 
     /// Park every source's fetch, so no host test spawns a worker: one would dial a `Client` whose
@@ -890,8 +922,31 @@ mod tests {
         }
     }
 
+    /// **The fan-out is a WINDOW into the mailboxes, not a prefix of them.** Slot numbers are
+    /// permanent and a sign-out retires the departing account's without renumbering what registers
+    /// after them, so the `0..server_count()` this used to walk would have asked two slots that
+    /// resolve to no client at all and never asked the server the user had just signed in to: a
+    /// Search screen that could only ever report failure, for every account after the first.
+    #[test]
+    fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
+        let _g = fresh();
+        register(2);
+        assert_eq!(slots(), 0..2);
+
+        crate::plex::revoke_all();
+        assert_eq!(slots(), 0..0, "there is nothing to ask while signed out");
+        assert_eq!(nsrc(), 0);
+        assert!(live_sources().is_empty(), "and the retired records reach neither the merge nor the verdict");
+
+        let sid = crate::plex::register_for_test("search-test-next", "127.0.0.1", 1, "tok", "cid-search-test");
+        assert_eq!(sid.raw(), 2, "the next account gets a fresh slot, above the retired ones");
+        assert_eq!(slots(), 2..3, "and the window follows it rather than starting at 0");
+        assert_eq!(nsrc(), 1);
+        assert_eq!(live_sources().len(), 1);
+    }
+
     /// A registered loopback slot. The port is never dialled — `hold_off` parks every spawn — so
-    /// this exists only to give [`nsrc`] a roster to fan out over. `register_for_test`, not the
+    /// this exists only to give [`slots`] a roster to fan out over. `register_for_test`, not the
     /// public `register`: the latter mints and PERSISTS a device uuid.
     fn register(n: usize) {
         for i in 0..n {
@@ -1149,6 +1204,7 @@ mod tests {
     #[test]
     fn set_query_gates_on_min_query_and_drops_the_previous_answer() {
         let _g = fresh();
+        register(1); // slot 0 has to be in the live window for the seeded answer below to be read
         set_query("w");
         assert_eq!(state(), State::Idle, "one character returns every hub empty — asking is pure latency");
         assert!(!settling(), "and nothing is owed a fetch");
@@ -1160,7 +1216,7 @@ mod tests {
 
         // seed an answer the honest way, then type on: it must not survive into the next query
         unsafe { (*addr_of_mut!(SRC))[0] = answered(0, vec![media("A Close Shave")]) };
-        rebuild(1);
+        rebuild();
         assert_eq!(shelves().len(), 1);
         set_query("wal");
         assert!(shelves().is_empty(), "results for a string that is no longer on screen");
@@ -1180,9 +1236,10 @@ mod tests {
     #[test]
     fn a_trailing_space_repaints_but_does_not_re_ask() {
         let _g = fresh();
+        register(1); // slot 0 has to be in the live window for the seeded answer below to be read
         set_query("wallace");
         unsafe { (*addr_of_mut!(SRC))[0] = answered(0, vec![media("A Close Shave")]) };
-        rebuild(1);
+        rebuild();
         let gen = GEN.load(Ordering::SeqCst);
 
         set_query("wallace ");
