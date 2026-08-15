@@ -778,7 +778,7 @@ pub(crate) fn draw() {
     // only by `results`' scissor — a razor edge in open ground, which is what got photographed.
     // `widgets::nav_scrim` is the shared treatment (the Library's, and the design system's
     // `route-screen` card); the scissor is a bound again, cutting inside the opaque band.
-    crate::ui::widgets::nav_scrim(p, CONTENT_TOP, v.shift);
+    crate::ui::widgets::nav_scrim(p, FIELD.y + FIELD.h, CONTENT_TOP, v.shift);
     field::draw(p, &v);
 
     // `CHIP_D`, not a literal 54: Home draws this same chip at 60, and Home<->Search is a
