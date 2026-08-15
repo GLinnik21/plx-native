@@ -65,6 +65,40 @@ devtriggers = []
 # orchestration — is compiled identically for both.
 hostsim = []
 
+# Warnings are ERRORS, for this crate, in every cargo invocation — build, check, test, clippy, the
+# ARM cross-build and the simulator alike. The tree reached zero warnings in all four
+# configurations on 2026-08-15 (five of them had been standing long enough to read as background
+# noise, three being `static_mut_refs` — a FUTURE HARD ERROR — and one a doc that claimed a caller
+# that did not exist). A count that only ever goes up is not a signal, so the floor is nailed down
+# rather than documented.
+#
+# **In `[lints]`, deliberately, and not `-D warnings` in RUSTFLAGS.** This table applies to THIS
+# crate alone. RUSTFLAGS reaches every dependency and — because `-Z build-std` compiles the
+# standard library from source — std itself, so a warning in code we neither own nor can patch
+# would break our build, and the usual escape (`--cap-lints`) cannot separate the two. Same
+# reasoning as `.cargo/config.toml`'s codegen flags: bind the rule to the thing it is about.
+#
+# Escape hatch while mid-edit, without touching the file — `--cap-lints` puts a CEILING on every
+# lint level, so the deny above comes back out as a warning and you still SEE it:
+#     RUSTFLAGS="--cap-lints=warn" cargo check --lib     # host
+#     make CAPLINTS=1 …                                  # cross-build, WERROR= for the C half
+# Use the make variable rather than exporting RUSTFLAGS at `make` — that variable REPLACES
+# `.cargo/config.toml`'s list wholesale, so it would silently drop `target-cpu=cortex-a9` and hand
+# you a binary that SIGILLs at boot. (`--config 'lints.rust.warnings="warn"'` does NOT work, though
+# it reads as if it should: `--config` overrides `.cargo/config.toml`, and `[lints]` is a MANIFEST
+# key. It fails closed — the build still errors — so the trap costs a rebuild, not a bad artifact.)
+#
+# `make check` is what must be clean before a commit. If a warning is genuinely wrong for a site,
+# the fix is a NARROW `#[allow]` carrying the reason — see `gfx.rs`'s `CapChain::out` or the
+# `cfg(test)`-only SDL declarations in `app.rs` for the shape.
+#
+# One warning survives all of this and is not a lint: `unstable feature specified for
+# -Ctarget-feature: neon`, which rustc emits on the command line for every ARM build. It cannot be
+# denied here and must not be — dropping the flag fails the build outright. Measurement and the
+# responsible crate are recorded in `.cargo/config.toml`.
+[lints.rust]
+warnings = "deny"
+
 [dependencies]
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

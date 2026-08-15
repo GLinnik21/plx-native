@@ -696,7 +696,7 @@ mod tests {
     /// is the part of the answer that does not change.
     #[test]
     fn many_shares_collapse_to_a_count_rather_than_becoming_a_list() {
-        let mut mk = |lib: &'static str, h: &'static str| {
+        let mk = |lib: &'static str, h: &'static str| {
             let mut s = share(lib, h);
             s.libs = vec![lib];
             s
