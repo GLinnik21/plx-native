@@ -201,8 +201,13 @@ pub fn load_into(
 }
 
 /// The C symbol a wrapper resolves: its own name, or an explicit override. Two wrappers may name
-/// the SAME symbol — which is how a variadic C function is bound here, by declaring one concrete
-/// non-variadic signature per call shape rather than carrying `...` through a macro.
+/// the SAME symbol — which is how a variadic C function is bound here: one wrapper per call shape,
+/// each naming the concrete types of its own trailing argument.
+///
+/// **Concrete types, but still declared `...`** — see the macro's `$dots` note. Spelling the
+/// trailing argument out is not the same as dropping the ellipsis, and on Apple ARM64 the
+/// difference is a SIGSEGV; this doc used to say the opposite in its last line and that is the bug
+/// it cost.
 #[macro_export]
 macro_rules! dynlib_sym {
     ($fname:ident) => { stringify!($fname) };
@@ -221,6 +226,29 @@ macro_rules! dynlib_sym {
 /// ```
 /// emits `mod avformat { pub fn load() -> Loaded; }` plus a module-level
 /// `unsafe fn av_read_frame(...) -> c_int` that dispatches through the resolved pointer.
+///
+/// # A VARIADIC C function: put `...` where C puts it, and spell the rest
+///
+/// Everything **after** the ellipsis is an argument this wrapper passes through the variadic part
+/// of the call — the trailing argument's type is fixed by the option id, which is how one C symbol
+/// is bound as three wrappers:
+///
+/// ```ignore
+/// fn curl_easy_setopt_ptr = "curl_easy_setopt"(h: *mut CURL, opt: c_int, ..., v: *const c_void)
+///     -> c_int;
+/// ```
+///
+/// That reads oddly and it is deliberate: it mirrors `curl.h`, where `h` and `opt` are the only
+/// NAMED parameters and everything else arrives through `va_arg`. Getting this wrong is not a
+/// style matter — the ellipsis selects a calling convention. **Apple's ARM64 ABI passes variadic
+/// arguments on the STACK** while named ones go in registers, so declaring all three as named
+/// leaves libcurl reading whatever was on the stack and dereferencing it: `EXC_BAD_ACCESS` inside
+/// `_platform_strlen`, from a `dlopen`'d library, with nothing in the app's own log.
+///
+/// It was latent for exactly as long as the desktop build could not open a libcurl at all, and it
+/// surfaced the moment one could — on the FIRST plex.tv call, i.e. sign-in, i.e. the first thing a
+/// new user does. ARM32 (the television) and x86-64 pass these two ways identically, which is
+/// precisely why no amount of device testing could have found it.
 #[macro_export]
 macro_rules! dynlib {
     (
@@ -228,7 +256,11 @@ macro_rules! dynlib {
         $modname:ident : [ $($cand:literal),+ $(,)? ] {
             $(
                 $(#[$fmeta:meta])*
-                fn $fname:ident $(= $sym:literal)? ( $($arg:ident : $argty:ty),* $(,)? ) $(-> $ret:ty)? ;
+                // The parameter list is captured as raw tokens and re-parsed by `dynlib_wrapper!`,
+                // which has one rule per shape (variadic / not). A `$(...)?` group cannot be used
+                // for this: a repetition in the OUTPUT needs a metavariable inside it to know how
+                // often to repeat, and an ellipsis is not one.
+                fn $fname:ident $(= $sym:literal)? ( $($params:tt)* ) $(-> $ret:ty)? ;
             )*
         }
     ) => {
@@ -253,27 +285,67 @@ macro_rules! dynlib {
         }
 
         $(
-            $(#[$fmeta])*
-            #[inline]
-            // The C symbol name IS the contract — `sws_getContext` cannot be spelled any other
-            // way. As an `extern` block these were exempt from the style lint; as generated Rust
-            // functions they are not.
-            #[allow(non_snake_case)]
-            pub(crate) unsafe fn $fname ( $($arg : $argty),* ) $(-> $ret)? {
-                // Relaxed, not Acquire: an Acquire load emits a full `dmb ish` on this ARM core,
-                // on EVERY FFmpeg call. It buys nothing here — the table is published by
-                // `ff::boot()` on the main thread before any pipeline thread exists, and
-                // `thread::spawn` is itself the synchronising edge for the workers.
-                let p = $modname::$fname.load(std::sync::atomic::Ordering::Relaxed);
-                if p.is_null() {
-                    $crate::dynlib::missing_symbol(
-                        $modname::CANDIDATES[0], $crate::dynlib_sym!($fname $(, $sym)?));
-                }
-                let f: extern "C" fn($($argty),*) $(-> $ret)? = std::mem::transmute(p);
-                f($($arg),*)
+            $crate::dynlib_wrapper! {
+                $(#[$fmeta])*
+                [$modname, $fname, $crate::dynlib_sym!($fname $(, $sym)?)]
+                ( $($params)* ) $(-> $ret)?
             }
         )*
 
+    };
+}
+
+/// One dispatching wrapper, in the two shapes a C function comes in. Split out of [`dynlib!`]
+/// because the choice is per FUNCTION, and a `macro_rules` arm chooses per INVOCATION — so the
+/// parameter list is handed over as tokens and matched again here.
+///
+/// Both arms are the same three steps: load the resolved pointer, refuse loudly if the load gate
+/// was skipped, transmute to the C signature and call. They differ only in that signature.
+#[macro_export]
+macro_rules! dynlib_wrapper {
+    // C-VARIADIC — the `...` sits where `curl.h` puts it, and every argument after it is passed
+    // through the variadic part of the call. See `dynlib!`'s doc for why this is not cosmetic.
+    (
+        $(#[$fmeta:meta])*
+        [$modname:ident, $fname:ident, $sym:expr]
+        ( $($arg:ident : $argty:ty),* , ... , $($varg:ident : $vargty:ty),+ $(,)? ) $(-> $ret:ty)?
+    ) => {
+        $(#[$fmeta])*
+        #[inline]
+        #[allow(non_snake_case)]
+        pub(crate) unsafe fn $fname ( $($arg : $argty,)* $($varg : $vargty),+ ) $(-> $ret)? {
+            let p = $modname::$fname.load(std::sync::atomic::Ordering::Relaxed);
+            if p.is_null() {
+                $crate::dynlib::missing_symbol($modname::CANDIDATES[0], $sym);
+            }
+            let f: unsafe extern "C" fn( $($argty,)* ... ) $(-> $ret)? = std::mem::transmute(p);
+            f($($arg,)* $($varg),+)
+        }
+    };
+    // The ordinary shape.
+    (
+        $(#[$fmeta:meta])*
+        [$modname:ident, $fname:ident, $sym:expr]
+        ( $($arg:ident : $argty:ty),* $(,)? ) $(-> $ret:ty)?
+    ) => {
+        $(#[$fmeta])*
+        #[inline]
+        // The C symbol name IS the contract — `sws_getContext` cannot be spelled any other way.
+        // As an `extern` block these were exempt from the style lint; as generated Rust functions
+        // they are not.
+        #[allow(non_snake_case)]
+        pub(crate) unsafe fn $fname ( $($arg : $argty),* ) $(-> $ret)? {
+            // Relaxed, not Acquire: an Acquire load emits a full `dmb ish` on this ARM core, on
+            // EVERY FFmpeg call. It buys nothing here — the table is published by `ff::boot()` on
+            // the main thread before any pipeline thread exists, and `thread::spawn` is itself the
+            // synchronising edge for the workers.
+            let p = $modname::$fname.load(std::sync::atomic::Ordering::Relaxed);
+            if p.is_null() {
+                $crate::dynlib::missing_symbol($modname::CANDIDATES[0], $sym);
+            }
+            let f: unsafe extern "C" fn($($argty),*) $(-> $ret)? = std::mem::transmute(p);
+            f($($arg),*)
+        }
     };
 }
 

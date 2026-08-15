@@ -75,6 +75,16 @@ full one-time setup + troubleshooting.
   headers by hand. Neither bug is visible from the other's side: `webosbrew-ipk-verify` reads a
   GNU-named archive fine, and the TV never gets far enough to miss a descriptor. `check-package.py`
   now asserts both. Full account: `docs/distribution.md` §9.
+- `make macapp` / `make macapp-zip` — **`pkg/PlxNative.app`: the app as a self-contained macOS
+  application**, for sending to somebody who has none of this installed. Same `hostsim` core the
+  simulator runs, built `--release --no-default-features` (so no dev counter, no `/tmp` trigger
+  surface, no FIFO, no capture listener), with every non-system dylib copied in and rewritten to
+  `@rpath`, ad-hoc codesigned. It signs in with the real QR flow and browses a real server; **it
+  cannot play video** — the Starfish/ACB seam does not exist off-device, so Play lands on the app's
+  failure read-out, exactly as in the simulator. Apple Silicon only, LAN only. `ci/mkmacapp.py` is
+  the recipe (its module doc names the three ways a Mac bundle silently ships broken);
+  `docs/macos-app.md` is the design note, and `docs/macos-app-readme.md` is what ships beside the
+  zip for the recipient.
 - **`RELEASE=1`** drops **both** default cargo features: `devtools` (the on-screen counter — the
   feature is contracted to be draw-only) and `devtriggers` (the whole `/tmp` surface, the remote
   FIFO and the capture listener — see `rust-modules/src/dev.rs`). It must be on
@@ -124,6 +134,14 @@ kills the process at `exec()` — before `main`, before the event log exists. So
   picks between them (`vp_mode()`). The two are complementary across all 14 firmwares.
 - Adding a new FFmpeg/curl call means **adding it to the `dynlib!` block**. There is no link error
   to catch you any more — the failure is a logged `Incomplete` at boot and a refusal to demux.
+- **A VARIADIC C function keeps its `...`, in the position `curl.h` puts it** —
+  `fn curl_easy_setopt_ptr = "curl_easy_setopt"(h: *mut CURL, opt: c_int, ..., v: *const c_void)`.
+  Naming the trailing argument's concrete type is right and is how one C symbol is bound as three
+  wrappers; moving it *before* the ellipsis is a different CALLING CONVENTION, because **Apple's
+  ARM64 ABI passes variadic arguments on the stack** while named ones go in registers. ARM32 and
+  x86-64 pass both ways identically, so this compiles, passes `make check`, runs on the television
+  — and SIGSEGVs inside libcurl's `strlen` on a Mac, at the first plex.tv call. It was the shape
+  the macro emitted until 2026-08-16; `docs/macos-app.md` §2 is the account.
 
 **FFmpeg is a third unlinked family, and it is no longer a version question at all: the app BUNDLES
 its own and PINS it.** This doc used to file FFmpeg beside curl and ACB as "SONAME moves,

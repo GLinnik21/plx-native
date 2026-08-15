@@ -20,10 +20,18 @@ const SIM_TAG: &str = if cfg!(feature = "hostsim") { " sim=1" } else { "" };
 
 /// OPENGL | FULLSCREEN on the television, which owns the whole panel.
 ///
-/// The simulator asks for OPENGL | RESIZABLE instead — a fullscreen grab on a desktop is hostile,
-/// and resizing is genuinely useful now that `surface::probe` letterboxes the logical canvas into
-/// whatever drawable it is given rather than cropping it.
-const SDL_WINDOW_FLAGS: u32 = if cfg!(feature = "hostsim") { 0x2 | 0x20 } else { 0x2 | 0x1 };
+/// The desktop asks for OPENGL | ALLOW_HIGHDPI — no fullscreen grab (hostile on a laptop) and
+/// **not RESIZABLE**: `surface::probe` reads the drawable once, at boot, so a dragged edge would
+/// leave the viewport describing a window that no longer exists, and the interface would sit in a
+/// 1920x1080-shaped corner of the new one with every pointer hit landing somewhere else. The window
+/// opens at an exact divisor of the canvas instead — see `desktop_window_size`.
+///
+/// ALLOW_HIGHDPI is what makes that divisor land on a **1:1 surface** on the Mac people actually
+/// have: without it a Retina display gives a drawable equal to the window in POINTS, which the
+/// compositor then doubles, so the whole interface is an upscale of a half-size render. With it,
+/// the 960x540-point window `desktop_window_size` picks on a laptop has a 1920x1080 drawable —
+/// `surface::scale() == 1.0`, the same 1:1 texel contract the television gets.
+const SDL_WINDOW_FLAGS: u32 = if cfg!(feature = "hostsim") { 0x2 | 0x2000 } else { 0x2 | 0x1 };
 /// `SDL_WINDOW_INPUT_FOCUS`. Note it is NOT among the flags requested above — no window flag can
 /// ask for it; SDL sets it when the compositor gives this surface the keyboard. Read, never asked
 /// for, and read by exactly one thing: `crate::textinput`, whose panel it silently gates.
@@ -74,6 +82,49 @@ const RESUME_REWIND_NS: i64 = 5_000_000_000;
 #[cfg(not(feature = "hostsim"))]
 extern "C" {
     fn SDL_webOSCursorVisibility(visible: c_int) -> c_int;
+}
+
+// Desktop-only window management. Apart for the mirror-image reason: a television owns the whole
+// panel and never asks how big a display is, so on that build these would be dead code — which
+// `[lints.rust] warnings = "deny"` makes a build failure, not a warning.
+#[cfg(feature = "hostsim")]
+extern "C" {
+    /// `SDL_GetDisplayUsableBounds` — the display minus the menu bar and the Dock, which is what
+    /// a window may actually occupy. The out parameter is an `SDL_Rect`: exactly four `c_int`.
+    fn SDL_GetDisplayUsableBounds(display: c_int, rect: *mut c_int) -> c_int;
+}
+
+/// The window size a DESKTOP should open at, in points: the authored 1920x1080 canvas divided by
+/// the smallest whole number that fits the usable display area.
+///
+/// **An exact divisor, never a best fit.** `surface::scale` will letterbox any drawable it is
+/// given, so an arbitrary size would *work* — it would just be soft, because every glyph and icon
+/// mask in this app is rasterized for a 1:1 surface (`gfx::snap`, and the crispness contract in
+/// `theme.rs`) and a fractional scale resamples all of it. 1/1, 1/2 and 1/3 keep whole texels whole.
+///
+/// The television is untouched by any of this: it takes the panel, and the canvas IS the surface.
+/// A Mac is the case the `surface` doc was written against — 1920x1080 exceeds the usable area of
+/// every laptop display Apple ships, so asking for it flatly would put the title bar above the
+/// screen and the bottom of the interface under the Dock.
+///
+/// Falls back to the canvas size if SDL cannot answer, which is the behaviour this replaced.
+#[cfg(feature = "hostsim")]
+fn desktop_window_size() -> (c_int, c_int) {
+    let mut r = [0 as c_int; 4]; // SDL_Rect: x, y, w, h
+    let ok = unsafe { SDL_GetDisplayUsableBounds(0, r.as_mut_ptr()) } == 0;
+    let (uw, uh) = (r[2], r[3]);
+    if !ok || uw <= 0 || uh <= 0 {
+        return (SCR_W, SCR_H);
+    }
+    // A little headroom under the usable bounds: a window flush against them reads as a fullscreen
+    // that went wrong rather than as a deliberate size.
+    for div in 1..=3 {
+        let (w, h) = (SCR_W / div, SCR_H / div);
+        if w <= (uw as f32 * 0.95) as c_int && h <= (uh as f32 * 0.95) as c_int {
+            return (w, h);
+        }
+    }
+    (SCR_W / 3, SCR_H / 3)
 }
 
 extern "C" {
@@ -777,7 +828,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         SDL_GL_SetAttribute(A_BLUE, 8);
         SDL_GL_SetAttribute(A_ALPHA, 8);
         SDL_GL_SetAttribute(A_BUFFER_SIZE, 32);
-        let win = SDL_CreateWindow(c"plxnative".as_ptr(), 0, 0, SCR_W, SCR_H, SDL_WINDOW_FLAGS);
+        // The television is placed at 0,0 at exactly canvas size and takes the panel. A desktop
+        // window is centred (`SDL_WINDOWPOS_CENTERED`) at whatever fits — see `desktop_window_size`.
+        #[cfg(feature = "hostsim")]
+        let (wx, wy, ww_req, wh_req) = {
+            let (w, h) = desktop_window_size();
+            (0x2FFF_0000u32 as c_int, 0x2FFF_0000u32 as c_int, w, h)
+        };
+        #[cfg(not(feature = "hostsim"))]
+        let (wx, wy, ww_req, wh_req) = (0, 0, SCR_W, SCR_H);
+        // The title is furniture a television never draws (no window manager, no decoration) and
+        // the first thing a desktop shows, so the two builds spell it differently: the device keeps
+        // the process-shaped name every log, `pidof` recipe and skill already uses.
+        #[cfg(feature = "hostsim")]
+        let title = c"PlxNative";
+        #[cfg(not(feature = "hostsim"))]
+        let title = c"plxnative";
+        let win = SDL_CreateWindow(title.as_ptr(), wx, wy, ww_req, wh_req, SDL_WINDOW_FLAGS);
         if win.is_null() {
             log("CreateWindow failed");
             return 1;

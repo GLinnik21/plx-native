@@ -556,7 +556,9 @@ sim-shot: sim
 
 # Copy the owner token out of the gitignored header into this instance's root, so the simulator
 # boots straight to a signed-in Home. Same mechanism `tests/run.py` uses on the TV; the value is
-# never echoed. plex.tv QR sign-in does not work here (see net.rs's SONAME candidate list).
+# never echoed. It is a SHORTCUT, not the only way in: plex.tv QR sign-in works on the desktop as
+# of 2026-08-16 (net.rs's candidate list gained macOS's libcurl, and `dynlib!` learned to bind a
+# variadic C function correctly) — this line used to say it could not.
 sim-token:
 	@mkdir -p $(SIM_DIR)
 	@printf '%s' '$(call cfg_macro,PMS_TOKEN)' > $(SIM_DIR)/plxnative-token
@@ -566,4 +568,22 @@ sim-token:
 sim-clean:
 	rm -rf $(SIM_DIR)
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe sim sim-run sim-shot sim-token sim-clean
+# ---------------------------------------------------------------------------------------------
+# PlxNative.app — the same host build, packaged as a SELF-CONTAINED macOS application you can send
+# to somebody who has none of this installed. `ci/mkmacapp.py` is the whole recipe and its module
+# doc is the account of the three ways it silently ships broken; `docs/macos-app.md` is the design
+# note (what it can and cannot do — chiefly: no video off-device).
+#
+# Its own target dir, per this file's rule for feature-set splits: this one is `--release
+# --no-default-features --features hostsim`, which is a fourth configuration, and sharing a dir
+# with `sim` would make each invocation rebuild the crate the other way round.
+MACAPP_TDIR ?= rust-modules/target-macapp
+
+macapp:
+	MACAPP_TDIR=$(MACAPP_TDIR) ci/mkmacapp.py
+
+# The artifact to actually send: a ditto archive (which preserves the signature) beside the bundle.
+macapp-zip:
+	MACAPP_TDIR=$(MACAPP_TDIR) ci/mkmacapp.py --zip
+
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip

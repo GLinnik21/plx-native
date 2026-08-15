@@ -47,15 +47,21 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PORT);
 
+    // No host is not an error — it is what a person who was SENT this app has. The boot host is
+    // only ever consulted by the two paths that already hold credentials (the stored session and
+    // the harness's injected token); with neither, `plex_run` goes to QR sign-in and plex.tv's
+    // `/api/v2/resources` supplies the address, exactly as on a television out of the box.
+    //
+    // The dev loop keeps its loud failure where it belongs: the Makefile's `SIM_PRE` refuses to
+    // launch when `SIM_PMS` is empty, so `make sim-run` still says "no PMS host" rather than
+    // silently booting a sign-in screen at somebody expecting Home.
     if host.is_empty() {
         eprintln!(
-            "plxnative-sim: no PMS host.\n\
-             usage: plxnative-sim <pms-host> [port]   (or set PLXNATIVE_PMS_HOST)\n\
-             \n\
-             The host must be a NUMERIC IP: stream.rs speaks HTTP/1.1 over a raw socket with no\n\
-             DNS resolver, on the simulator exactly as on the television."
+            "plxnative-sim: no PMS host given — starting the plex.tv sign-in flow.\n\
+             (pass one as `plxnative-sim <numeric-ip> [port]`, or set PLXNATIVE_PMS_HOST, to boot\n\
+             straight at a known server. It must be a NUMERIC IP: stream.rs speaks HTTP/1.1 over a\n\
+             raw socket with no DNS resolver, on the desktop exactly as on the television.)"
         );
-        std::process::exit(2);
     }
 
     // The instance root must exist before anything writes into it, and the event log is truncated

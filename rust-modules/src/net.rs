@@ -1,12 +1,14 @@
-//! `net` — a small blocking HTTPS client over the TV's **libcurl** (linked via `stub/libcurl.so`,
-//! SONAME `libcurl.so.5`; the real lib loads at runtime). The plain-HTTP numeric-IP socket in
+//! `net` — a small blocking HTTPS client over **whatever libcurl the machine already has**, bound
+//! at runtime by the candidate list below (nothing is linked, and `stub/` — which this line named
+//! for months after it was deleted — is gone). The plain-HTTP numeric-IP socket in
 //! [`crate::stream`] can't reach `plex.tv` (no DNS, no TLS); this fills that gap for the account /
 //! login calls only — the local PMS keeps using the faster `stream.rs` path. Every call is
 //! **blocking**, so callers must run it off the SDL main loop (the login poll + discovery threads).
 //!
 //! Only the curl *easy* API is used; the option/info integer constants are the stable public ABI
 //! values from `curl.h` (kept here so we don't need the header). TLS peer+host verification is ON
-//! (the device ships a CA bundle at `/etc/ssl/certs/ca-certificates.crt`, curl's default), and
+//! (the device ships a CA bundle at `/etc/ssl/certs/ca-certificates.crt`, curl's default; macOS
+//! uses its own trust store), and
 //! `NOSIGNAL` is set because we call from threads. Response bodies never carry into a log here —
 //! the account layer logs only status codes and non-sensitive fields.
 #![allow(non_camel_case_types)]
@@ -31,8 +33,18 @@ type curl_slist = c_void;
 // sufficient and what the compiler was already generating. This was hand-written once on the
 // belief that a macro could not express it — the blocker was never the variadics, only the
 // one-symbol-per-wrapper assumption.
+//
+// **The third name is macOS's, and it is what makes the desktop build able to SIGN IN.** The host
+// simulator and the `PlxNative.app` bundle run this same module, and on a Mac the two ELF SONAMEs
+// simply do not open — which is why signing in "did not work off-device" and was written up as an
+// unfixable property of the simulator. It was one missing candidate: macOS ships libcurl in the
+// dyld shared cache and `dlopen("libcurl.4.dylib")` resolves it with no install, no Homebrew and
+// nothing to bundle (verified 2026-08-16: the handle opens and `curl_easy_setopt` resolves).
+// It is LAST deliberately — a television never reaches it, so this costs the device nothing but
+// one extra failed `dlopen` in the already-fatal no-curl case, and the candidate list stays
+// ordered by "what the fleet actually answers to" first.
 crate::dynlib! {
-    curl: ["libcurl.so.4", "libcurl.so.5"] {
+    curl: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_global_init(flags: c_long) -> c_int;
     fn curl_version() -> *const c_char;
     fn curl_easy_init() -> *mut CURL;
@@ -40,9 +52,15 @@ crate::dynlib! {
     fn curl_easy_cleanup(handle: *mut CURL);
     fn curl_slist_append(list: *mut curl_slist, s: *const c_char) -> *mut curl_slist;
     fn curl_slist_free_all(list: *mut curl_slist);
-    fn curl_easy_setopt_ptr = "curl_easy_setopt"(handle: *mut CURL, option: c_int, v: *const c_void) -> c_int;
-    fn curl_easy_setopt_long = "curl_easy_setopt"(handle: *mut CURL, option: c_int, v: c_long) -> c_int;
-    fn curl_easy_getinfo_long = "curl_easy_getinfo"(handle: *mut CURL, info: c_int, out: *mut c_long) -> c_int;
+    // The three VARIADIC ones, and the `...` marks exactly what `curl.h` marks: the handle and the
+    // option id are the only named parameters, and the value arrives through `va_arg`. Spelling
+    // that value's type after the ellipsis is what lets one C symbol be bound as three wrappers;
+    // moving it BEFORE the ellipsis would compile, run on the television, and hand libcurl a
+    // garbage pointer on Apple ARM64 (see `dynlib!`'s doc — it is a stack-vs-register convention
+    // difference, and it took sign-in down inside `strlen`).
+    fn curl_easy_setopt_ptr = "curl_easy_setopt"(handle: *mut CURL, option: c_int, ..., v: *const c_void) -> c_int;
+    fn curl_easy_setopt_long = "curl_easy_setopt"(handle: *mut CURL, option: c_int, ..., v: c_long) -> c_int;
+    fn curl_easy_getinfo_long = "curl_easy_getinfo"(handle: *mut CURL, info: c_int, ..., out: *mut c_long) -> c_int;
 }}
 
 // curl.h option ids (CURLOPTTYPE_LONG=0, OBJECTPOINT=10000, FUNCTIONPOINT=20000).
@@ -92,7 +110,7 @@ pub fn global_init() -> bool {
             true
         }
         crate::dynlib::Loaded::NoLibrary => {
-            crate::log("net: no libcurl on this device (tried .so.4 and .so.5) — plex.tv sign-in unavailable");
+            crate::log("net: no libcurl on this device (tried .so.4, .so.5 and .4.dylib) — plex.tv sign-in unavailable");
             false
         }
         crate::dynlib::Loaded::Incomplete(soname, n) => {
