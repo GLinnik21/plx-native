@@ -594,9 +594,42 @@ fn field_hot() -> bool {
 
 // ---- entry / exit ----------------------------------------------------------------------------
 
-/// Mount the screen. `q` pre-seeds the field — the boot trigger's whole job, since a headless
-/// screenshot cannot type.
+/// Mount the screen with `q` in the field, REPLACING whatever was there. The only caller is the
+/// `/tmp/plxnative-search=<query>` boot trigger, whose whole job this is — a headless screenshot
+/// cannot type, so a seeded field is the only way an automated run reaches a populated result set.
+///
+/// **Every interactive way in is [`resume`], not this.** Pressing the Search pill is a
+/// navigation, and a navigation to a peer screen restores it (`library::enter`'s `restore_view`,
+/// one screen over); wiping the query the user is still reading is not an entry, it is a reset
+/// they did not ask for. See [`mount`] for what the two share and where they part.
 pub(crate) fn enter(q: &str) {
+    mount(Some(q));
+}
+
+/// Return to the screen the way this profile left it — the QUERY, the shelves under it and both
+/// cursors intact. Every interactive entry ([`crate::ui::widgets::Pill::Search`], from Home, from
+/// the Library, by remote or by pointer) comes through here.
+///
+/// **A first entry needs no special case, which is why there is no "have I been here" flag.** The
+/// store starts empty and stays empty until something is typed, so a resume onto a profile that
+/// has never searched seats exactly what [`enter`]`("")` would have: an empty field over the
+/// recents list, every cursor at 0. The two only diverge once there IS state, which is the whole
+/// point.
+pub(crate) fn resume() {
+    mount(None);
+}
+
+/// The one mount. `seed` is `Some` only for the boot trigger; `None` RETURNS to the screen.
+///
+/// What both do is seat the screen's ENTRY POSTURE — the field holds the remote, the keyboard is
+/// down, the strip cursor is under our own pill, the shelf flow is at the top. None of that is
+/// state the user would miss: the flow is frozen at 0 whenever the shelves do not hold focus
+/// anyway (`scroll_frozen`), and the ▼ handoff deliberately lands on shelf **0** rather than the
+/// shelf last left, with the COLUMN remembered — the module doc's Scroll note argues both.
+///
+/// What only the seeded form does is replace the query and re-park the cursors, because a seed is
+/// a different search and the cursors belong to the results of the old one.
+fn mount(seed: Option<&str>) {
     // Through `stop()`, not by clearing the flag: `textinput` keeps its OWN `STARTED`, and
     // `start()` is a no-op while that is set. Clearing `EDITING` alone would leave the two
     // disagreeing, after which no later press could ever raise the panel again — the same symptom
@@ -605,11 +638,10 @@ pub(crate) fn enter(q: &str) {
     leave();
     unsafe {
         *addr_of_mut!(ZONE) = Zone::Field;
-        *addr_of_mut!(ROW) = 0;
-        *addr_of_mut!(COL) = 0;
-        *addr_of_mut!(RECENT) = 0;
         // The strip opens under our own pill, the one the screen is drawn as SELECTED on, so ▲
-        // lands where the eye already is.
+        // lands where the eye already is. Re-seated on a RESUME too: the cursor may have been left
+        // parked on the Home pill by the very press that took the user away, and a Search screen
+        // drawing its focus ring on somebody else's pill is the one thing worse than losing it.
         *addr_of_mut!(STRIP) = crate::ui::widgets::search_pill();
         (*addr_of_mut!(SCROLL)) = Spring::at(0.0);
         // SEATED, not sprung: the screen mounts with the field already focused, so there is no
@@ -618,10 +650,27 @@ pub(crate) fn enter(q: &str) {
         // ~8 frames of a screen that is not moving.
         (*addr_of_mut!(HOT)) = Spring::at(1.0);
     }
-    crate::search::set_query(q);
-    // The caret lands at the END of a pre-seeded term, which is where a person who had just typed
-    // it would be standing — and is what makes the boot trigger's field behave like a typed one.
-    set_caret(q.len());
+    if let Some(q) = seed {
+        unsafe {
+            *addr_of_mut!(ROW) = 0;
+            *addr_of_mut!(COL) = 0;
+            *addr_of_mut!(RECENT) = 0;
+        }
+        // Stripped of control bytes, and NUL is the one that bites: this arrives from a FILE, and
+        // an interior NUL survives every `String` operation on the way in while `CString::new`
+        // refuses it at the far end — so the field's capsule and the empty state's own statement
+        // both go blank over a query the app still believes it is holding (`empty::draw` returns
+        // early; `field::draw` truncates for the same reason and keeps that guard as a belt).
+        // Filtered HERE because this is where untrusted text enters the query: the panel's own
+        // commits cannot carry one (`textinput::decode_text_at` cuts the string AT the NUL) and a
+        // recents pick is already refused by `recents::usable`.
+        let q: String = q.chars().filter(|c| !c.is_control()).collect();
+        crate::search::set_query(&q);
+        // The caret lands at the END of a pre-seeded term, which is where a person who had just
+        // typed it would be standing — and is what makes the boot trigger's field behave like a
+        // typed one.
+        set_caret(q.len());
+    }
     // Arriving is a content change like any other. `mount` (not `reload`) because there is nothing
     // on screen to fade OUT — the page transition has already covered that half.
     xf().mount();
@@ -1842,6 +1891,107 @@ mod tests {
         assert!(back(), "the first BACK takes the keyboard down");
         assert!(!editing());
         assert!(!back(), "the second leaves the screen — app.rs routes to Home");
+        crate::search::reset();
+    }
+
+    /// **The Search pill is a RETURN, not a reset**, and this is the difference between the two
+    /// mounts. Every interactive entry ran `enter("")`, which wipes the query, the shelves under
+    /// it and both cursors — on the one screen whose BACK-trail re-entry deliberately preserves
+    /// all three, and whose own `trail.rs` promises the state is kept "for as long as the profile
+    /// does". Walk to a result, press the Search pill on the way past, and the search you were
+    /// reading was gone.
+    #[test]
+    fn the_pill_returns_to_the_search_that_was_there_and_a_seed_replaces_it() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+
+        // A search in progress, with the cursors standing in its results and the strip cursor
+        // parked on somebody else's pill by the very press that took the user away.
+        crate::search::set_query("wallace");
+        let gen = crate::search::query_gen();
+        unsafe {
+            *addr_of_mut!(ZONE) = Zone::Strip;
+            *addr_of_mut!(STRIP) = 0;
+            *addr_of_mut!(ROW) = 2;
+            *addr_of_mut!(COL) = 5;
+            *addr_of_mut!(RECENT) = 3;
+            *addr_of_mut!(SCROLL) = Spring::at(400.0);
+            *addr_of_mut!(HOT) = Spring::at(0.0);
+        }
+
+        resume();
+        assert_eq!(crate::search::query(), "wallace", "the pill must not wipe the term still on screen");
+        // The SHELVES cannot be seeded from a host — they are a live server answer — so the proof
+        // is the store's own rule: `set_query` is the only thing that clears them, and it
+        // SUPERSEDES when it does. An unmoved generation is an unmoved result set.
+        assert_eq!(crate::search::query_gen(), gen, "the store was superseded, so its shelves went with it");
+        assert!(matches!(crate::search::state(), crate::search::State::Searching), "…and the request is still the one in flight");
+        let v = view();
+        assert_eq!((v.row, v.col, v.recent), (2, 5, 3), "both cursors survive the return");
+
+        // …and the ENTRY POSTURE is seated, which is not state the user misses: the flow is frozen
+        // at 0 whenever the shelves do not hold focus anyway, and the strip cursor comes back
+        // under OUR pill rather than the Home one it was left on.
+        assert_eq!(zone(), Zone::Field);
+        assert!(!editing(), "a return does not raise the television's keyboard");
+        assert_eq!(v.shift, 0.0);
+        assert_eq!(v.hot, 1.0, "the field mounts focused and SEATED, or it reports motion on arrival");
+        assert_eq!(unsafe { addr_of!(STRIP).read() }, crate::ui::widgets::search_pill());
+
+        // The seeded mount is the contrast, and it is what every pill press used to run: the query
+        // is replaced outright and every cursor re-parked. Right for the boot trigger, which is
+        // its one caller, and wrong for a navigation.
+        enter("");
+        assert_eq!(crate::search::query(), "");
+        assert_ne!(crate::search::query_gen(), gen, "a seed supersedes: the shelves go with the term");
+        let v = view();
+        assert_eq!((v.row, v.col, v.recent), (0, 0, 0));
+        crate::search::reset();
+    }
+
+    /// A FIRST entry needs no "have I been here" flag, which is why there is none: the store is
+    /// empty until something is typed, so a resume onto a profile that has never searched seats
+    /// exactly what a mount would have.
+    #[test]
+    fn resuming_a_profile_that_has_never_searched_is_a_clean_mount() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        unsafe { *addr_of_mut!(ZONE) = Zone::Results };
+        resume();
+        assert_eq!(crate::search::query(), "", "nothing was ever searched, so the field opens empty");
+        assert!(matches!(crate::search::state(), crate::search::State::Idle), "…and nothing was ever asked");
+        let v = view();
+        assert_eq!((zone(), v.row, v.col, v.recent, v.shift), (Zone::Field, 0, 0, 0, 0.0));
+        assert!(!editing());
+        crate::search::reset();
+    }
+
+    /// A seed arrives from a FILE, and a control byte in one is not the user's text. **NUL is the
+    /// one that bites**: it survives every `String` operation on the way in, and `CString::new`
+    /// refuses it at the far end — so `empty::draw` returns without drawing its statement and the
+    /// field's capsule blanks, leaving a Search screen showing nothing at all for a query the app
+    /// still believes it is holding.
+    ///
+    /// Filtered at the mount because that is where untrusted text enters the query. The panel's own
+    /// commits cannot carry one (`textinput::decode_text_at` ends the string AT the NUL) and a
+    /// recents pick is already refused by `recents::usable`, so this is the last way in.
+    #[test]
+    fn a_control_byte_in_the_seed_never_reaches_the_query() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        enter("wal\0lace");
+        assert_eq!(crate::search::query(), "wallace");
+        assert!(std::ffi::CString::new(crate::search::query()).is_ok(), "…so every run on this screen can be drawn");
+        assert_eq!(caret(), "wallace".len(), "and the caret is the LIVE string's end, not the seed's");
+        // a hand-edited file's tab or newline is not a query either
+        enter("a\tb\nc");
+        assert_eq!(crate::search::query(), "abc");
+        // …and an ordinary seed is untouched, trailing space and all — the field draws that
+        enter("wallace ");
+        assert_eq!(crate::search::query(), "wallace ");
         crate::search::reset();
     }
 

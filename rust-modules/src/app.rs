@@ -1251,10 +1251,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// a SHOW opened with one season already selected, which a node has no field for
             /// because a trail node names a PAGE, not a tab inside one.
             Open { node: Node, season: Option<c_int> },
-            /// The Search screen. It carries the query to seed the field with, which is empty for
-            /// every interactive entry and non-empty only for the boot trigger — a headless
-            /// screenshot cannot type, so that is how a shot reaches a populated result set.
-            Search { query: String },
+            /// The Search screen — a RETURN to it, which is why it carries nothing.
+            ///
+            /// It used to hold a `query: String` to seed the field with, and every one of the four
+            /// interactive entries passed `String::new()`: the pill wiped the term the user was
+            /// still reading, the shelves under it and both cursors, on a screen whose BACK-trail
+            /// re-entry (`Node::Search`) deliberately preserves all three. The seed's only real
+            /// caller was never this enum at all — `/tmp/plxnative-search=<q>` mounts through
+            /// `search::enter` directly, with no transition to carry a payload — so the field
+            /// existed to be empty. `search::resume` is what the commit arm calls now.
+            Search,
             /// BACK off a stacking page: pop the trail at the floor and re-enter what was under it.
             /// The destination is deliberately NOT spelled out here — `enter_node` handles every
             /// node, and re-deriving it at the press would mean peeking a trail the pop re-reads
@@ -1278,7 +1284,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // where the section pills start in the row is the strip's business, not this
                     // enum's, and the two must agree with what a CLICK on that pill resolves to.
                     Nav::Library(tab) => Some(crate::ui::widgets::pill_of(Pill::Section(*tab))),
-                    Nav::Search { .. } => Some(crate::ui::widgets::pill_of(Pill::Search)),
+                    Nav::Search => Some(crate::ui::widgets::pill_of(Pill::Search)),
                     Nav::Open { .. } | Nav::Back { .. } => None,
                 }
             }
@@ -1287,7 +1293,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             /// silent `false`, and a silent `false` is a bar that blinks out and back for no reason.
             fn wears_tab_bar(&self) -> bool {
                 match self {
-                    Nav::Home { .. } | Nav::Library(_) | Nav::Search { .. } => true,
+                    Nav::Home { .. } | Nav::Library(_) | Nav::Search => true,
                     // Detail and Person wear no bar today — but the NODE is the destination and can
                     // answer for itself, so ask it rather than hard-coding the answer a new stacking
                     // page would silently inherit.
@@ -1494,6 +1500,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // the zone and both cursors, and `search::enter` would reset every one of them —
                 // re-entering would land the user on an empty field over their own recents list
                 // (which is exactly what the first version of this did).
+                //
+                // Not even `search::resume`, which the PILL now takes: a BACK is a return to the
+                // exact spot, so the zone and the shelf scroll stay where the user left them — you
+                // came back to the tile you opened. `resume` re-seats those on purpose, because a
+                // pill press is an arrival at the screen rather than a return to a place in it.
                 Node::Home | Node::Library | Node::Search => {}
                 Node::Person { sid, key, guid, name, thumb } => {
                     // "already the one loaded?" through the trail's own person-identity rule
@@ -1850,7 +1861,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // itself — see its doc comment.)
             if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
                 match crate::ui::widgets::pill_at(pill) {
-                    Pill::Search => nav_to(*route, Nav::Search { query: String::new() }, nav),
+                    Pill::Search => nav_to(*route, Nav::Search, nav),
                     // that section's grid, through the page cross-fade: `library::enter` and the
                     // route flip both land at the fade floor, while the selection capsule starts
                     // travelling on THIS frame (`nav::view_tab`).
@@ -2747,7 +2758,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                         nav_to(route, Nav::Home { focus_pill: crate::ui::library::focused_pill() }, &mut nav_pending)
                                     }
                                     crate::ui::library::Action::GoSearch => {
-                                        nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending)
+                                        nav_to(route, Nav::Search, &mut nav_pending)
                                     }
                                     crate::ui::library::Action::Card | crate::ui::library::Action::None => {}
                                 }
@@ -3126,7 +3137,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         } else if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
                             // the centered tab pills work from BOTH hero and grid views
                             match crate::ui::widgets::pill_at(i) {
-                                Pill::Search => nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending),
+                                Pill::Search => nav_to(route, Nav::Search, &mut nav_pending),
                                 Pill::Section(tab) => nav_to(route, Nav::Library(tab), &mut nav_pending),
                                 // Home is the screen we are on, so a click there just parks focus
                                 // on the pill — in hero view, which is where the band's focus is
@@ -3171,7 +3182,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         let (cx, cy) = ptr_xy(&ev);
                         match crate::ui::library::click(cx, cy) {
                             crate::ui::library::Action::GoSearch => {
-                                nav_to(route, Nav::Search { query: String::new() }, &mut nav_pending);
+                                nav_to(route, Nav::Search, &mut nav_pending);
                             }
                             crate::ui::library::Action::GoHome => {
                                 // `library::click` has already parked focus on the Home pill, so
@@ -4119,7 +4130,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         trail.set_top_spot(s);
                     }
                     match req.to {
-                        Nav::Search { ref query } => {
+                        Nav::Search => {
                             // Search is a PEER of Home reached from the strip, so arriving RESETS
                             // the trail exactly as arriving at Home does — then stands on it. The
                             // reset is what stops the way in deciding the way out: reach Search
@@ -4131,7 +4142,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // no node of its own, a result opened from here stacked straight onto
                             // Home and BACK threw away the query and every shelf under it.
                             trail.reset();
-                            crate::ui::search::enter(query);
+                            // `resume`, NOT `enter("")`: the trail reset above throws away the way
+                            // IN, never the screen's own state. The pill is a way back to a search
+                            // you already made — `library::enter`'s `restore_view` one screen over
+                            // — and a fresh profile needs no special case for it, since the store
+                            // it returns to is empty until something is typed into it.
+                            crate::ui::search::resume();
                             trail.push(Node::Search);
                             route = Route::Search;
                         }
