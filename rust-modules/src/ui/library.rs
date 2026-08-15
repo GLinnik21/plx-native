@@ -270,9 +270,27 @@ static mut PREV_IDX: i64 = -1;
 static mut MENU: Menu = Menu::None;
 static mut POP: Popover = Popover::new();
 static mut TABLE: TableView = TableView::new();
-/// Source-row count the OPEN menu was built from (only one menu is ever open; 0 = "Loading…").
-/// update() rebuilds the menu in place when the live server list outgrows this.
+/// Row count the OPEN **value-list** menu was built from — Sort and Genre, whose rows ARE
+/// `browse::sorts()`/`genres()` (only one menu is ever open; 0 = "Loading…"). [`menu_stale`]
+/// rebuilds in place when the live list stops matching it, and `menu_commit` gates OK on it so a
+/// press on the "Loading…" row cannot resolve to a value that is not there.
+///
+/// The Sources panel does **not** key on this — see [`SRC_BUILT_GEN`].
 static mut MENU_BUILT: usize = 0;
+/// The section-table generation ([`crate::browse::sections_gen`]) the OPEN Sources panel was built
+/// from — its staleness key, and deliberately NOT a row count.
+///
+/// Sort and Genre can key on a count because the list they are built from is the list they show.
+/// The Sources panel's rows are `browse::source_rows()`, which is **kind-filtered** — only the
+/// libraries of the tab's own type — while the obvious count beside it, `section_count()`, counts
+/// every kind. Those two are equal only on an account with a single kind of library, so on any
+/// ordinary one (Movies *and* TV Shows) the guard never converged and the panel rebuilt itself —
+/// `source_groups()` + `source_rows()` String clones and a full `set_sections()` — on EVERY frame
+/// it was open, which is exactly the state this screen's own instrumentation measured as
+/// fill-rate-bound (`menu.panel` 16–42 ms). A generation cannot be compared against the wrong
+/// quantity, because it is not a count of anything: `browse::append_sections` bumps it when a
+/// source's libraries land, and that landing is the whole reason this rebuild exists.
+static mut SRC_BUILT_GEN: u32 = 0;
 static mut PHASE_MS: f32 = 0.0; // spinner phase accumulator
 /// The failure read-out's Try again pill, recorded at draw for the pointer (the `TOOL_RECTS` /
 /// `RAIL_RECTS` idiom). Parked OFF the panel rather than at the origin, because `Rect::contains`
@@ -1137,15 +1155,18 @@ pub(crate) fn update(dt: f32) {
         table().update(dt, table_rect().h - crate::ui::table::PAD_V);
         // async menu data landing while the popover is open — rebuild it in place (a Sort
         // menu stuck on "Loading…" whose OK secretly toggled the direction was a
-        // review-confirmed bug)
-        let built = unsafe { addr_of!(MENU_BUILT).read() };
-        match menu() {
-            Menu::Sort if built != crate::browse::sorts().len() => build_sort_menu(true),
-            Menu::Genre if built != crate::browse::genres().len() => build_genre_menu(true),
-            // a source's libraries landing while the list is open (its discovery is a worker) —
-            // rebuilt in place, same rule as a menu's value list arriving
-            Menu::Source if built != crate::browse::section_count() => build_source_menu(true),
-            _ => {}
+        // review-confirmed bug). Two matches over one enum, the `chip_menu`/`open_chip_menu`
+        // idiom: one DECIDES and is host-gradeable, one PERFORMS and measures text. A new menu
+        // stops both compiling.
+        if menu_stale() {
+            match menu() {
+                Menu::Sort => build_sort_menu(true),
+                Menu::Genre => build_genre_menu(true),
+                // a source's libraries landing while the list is open (its discovery is a worker) —
+                // rebuilt in place, same rule as a menu's value list arriving
+                Menu::Source => build_source_menu(true),
+                Menu::Filter | Menu::None => {}
+            }
         }
     }
 }
@@ -1461,6 +1482,27 @@ fn close_menu() {
     pop().close();
 }
 
+/// **Has the data under the OPEN menu moved since it was built?** The rebuild-on-landing test,
+/// split out of [`update`] as a value so it can be graded on the host — the rebuild itself goes
+/// through `TableView`, which measures text.
+///
+/// Every arm compares LIKE WITH LIKE, which is the whole content of this function: a menu's key is
+/// whatever it recorded at build time and nothing else. Sort and Genre record the length of the
+/// list their rows are; the Sources panel records the section-table GENERATION, because its rows
+/// are a kind-filtered projection whose count matches no other count in the app (see
+/// [`SRC_BUILT_GEN`] for the frame-per-frame rebuild that cost). `Filter` is static rows built from
+/// `view_*`, so it has no landing to wait for and is never stale.
+fn menu_stale() -> bool {
+    let built = unsafe { addr_of!(MENU_BUILT).read() };
+    let src_gen = unsafe { addr_of!(SRC_BUILT_GEN).read() };
+    match menu() {
+        Menu::Sort => built != crate::browse::sorts().len(),
+        Menu::Genre => built != crate::browse::genres().len(),
+        Menu::Source => src_gen != crate::browse::sections_gen(),
+        Menu::Filter | Menu::None => false,
+    }
+}
+
 // ---- the Sources list ------------------------------------------------------------------------
 
 /// THE ROW MODEL of the two-level Sources panel, pure over its inputs so it is host-testable
@@ -1544,13 +1586,18 @@ fn source_sel(rows: &[crate::browse::SrcRow], keep: Option<i32>) -> i32 {
 /// Build (or rebuild in place) the Sources panel at the current level.
 fn build_source_menu(keep: bool) {
     let level = unsafe { addr_of!(SRC_LEVEL).read() };
+    // READ THE GENERATION FIRST, before the projections it stamps. `source_groups`/`source_rows`
+    // only read, so nothing can move between here and the build today — but recording it after
+    // would silently adopt a landing this panel was not built from, and that is a rebuild lost
+    // rather than one too many.
+    let table_gen = crate::browse::sections_gen();
     let groups = crate::browse::source_groups();
     let rows = crate::browse::source_rows();
     let (secs, acts) = source_sections(level, &groups, &rows);
     let sel = source_sel(&rows, keep.then(|| table().sel));
     unsafe {
         *addr_of_mut!(SRC_ACTIONS) = acts;
-        MENU_BUILT = rows.len();
+        SRC_BUILT_GEN = table_gen;
         MENU = Menu::Source;
     }
     table().compact = false; // two-line rows: HEADLINE titles over CAPTION sub-lines
@@ -2773,6 +2820,60 @@ mod tests {
         assert_eq!(focused_chip(), Some(Chip::Filter));
 
         unsafe { TOOL_F = tool0 };
+    }
+
+    /// **The rebuild-on-landing guard has to CONVERGE**, and with two kinds of library it did not.
+    ///
+    /// The Sources panel records a key at build time and `update` rebuilds it in place when the
+    /// live one differs. Its key was `source_rows().len()` — KIND-FILTERED, only the libraries of
+    /// the tab's own type — compared against `browse::section_count()`, which counts every kind.
+    /// On any account with both Movies and TV Shows those two are never equal, so the panel rebuilt
+    /// itself (`source_groups()` + `source_rows()` String clones, then a whole `set_sections()`) on
+    /// every frame it was open — in the one state this screen's instrumentation measured as
+    /// fill-rate-bound. Keyed on the section-table GENERATION it converges, because a generation is
+    /// not a count of anything and cannot be compared against the wrong one.
+    ///
+    /// It must still catch the landing it exists for, so the second half appends a library the way
+    /// a discovery worker does and asserts both the rebuild and the row it brought.
+    #[test]
+    fn the_sources_panel_stops_rebuilding_once_the_table_stops_moving() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        let menu0 = menu();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+
+        // THE SHAPE THAT BROKE IT: the panel lists one kind, the section table holds two.
+        assert_eq!(crate::browse::section_count(), 4, "two sources, a Movies and a Shows library each");
+        assert_eq!(crate::browse::source_rows().len(), 2, "…of which the panel lists the tab's kind");
+        assert_ne!(
+            crate::browse::source_rows().len(),
+            crate::browse::section_count(),
+            "the two quantities the old guard compared can never meet here"
+        );
+
+        build_source_menu(false);
+        assert_eq!(menu(), Menu::Source);
+        let rows0 = unsafe { (*addr_of!(SRC_ACTIONS)).len() };
+        // …and it settles: every frame the panel stays open is a frame it does NOT rebuild
+        for frame in 0..3 {
+            assert!(!menu_stale(), "frame {frame} rebuilt a panel nothing had changed under");
+        }
+
+        // a source's libraries landing IS what this rebuild exists for, and still fires
+        crate::browse::append_section_for_test(1, 5, "Film Club Extra", crate::browse::SecKind::Movie);
+        assert!(menu_stale(), "a library landing under the open panel must rebuild it");
+        build_source_menu(true);
+        assert!(!menu_stale(), "…once, and then settle again");
+        assert_eq!(
+            unsafe { (*addr_of!(SRC_ACTIONS)).len() },
+            rows0 + 1,
+            "the rebuild is real — the new library is a row, not just a quieted guard"
+        );
+
+        close_menu();
+        crate::browse::reset();
+        unsafe { MENU = menu0 };
     }
 
     /// The whole point of the constant pitch: a Latin section and a Cyrillic one space their
