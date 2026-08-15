@@ -490,7 +490,18 @@ const IDENTITY: &str = "/identity";
 /// blame a server for a gap in this client. They come back when the curl control plane lands
 /// (`docs/shared-servers.md` §5 step 6), which is why `probe::candidates` already emits them.
 fn dialable(c: &Candidate) -> bool {
-    c.scheme == Scheme::Http && is_ipv4_literal(&c.address)
+    dial_target(c).is_some()
+}
+
+/// [`dialable`] and the PORT to dial, from one expression — so the predicate that admits a
+/// candidate and the number handed to the socket can never disagree.
+///
+/// The port comes from [`probe::dial_port`], which is what keeps `c.port as i32` from wrapping an
+/// out-of-range `i64` into a plausible port (its doc has the arithmetic). A candidate whose port
+/// cannot be dialled is refused here for the same reason a hostname is: it is a connection this
+/// client cannot open, not a server that failed to answer.
+fn dial_target(c: &Candidate) -> Option<i32> {
+    (c.scheme == Scheme::Http && is_ipv4_literal(&c.address)).then(|| probe::dial_port(c.port)).flatten()
 }
 
 /// Four decimal octets and nothing else — the exact address shape `stream.rs` can turn into a
@@ -601,9 +612,10 @@ fn get_identity(host: &str, port: i32) -> (i32, Vec<u8>) {
 /// their inputs at the spawn site. It is the trade `docs/shared-servers.md` §5 step 4 leaves open.
 fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&str, i32) -> (i32, Vec<u8>)) -> Reach {
     let mut tried = 0;
-    for c in plan.candidates.iter().filter(|c| dialable(c)) {
+    for c in plan.candidates.iter() {
+        let Some(port) = dial_target(c) else { continue };
         tried += 1;
-        let (status, body) = dial(&c.address, c.port as i32);
+        let (status, body) = dial(&c.address, port);
         match classify(status, &body, &plan.machine_id) {
             Outcome::Reachable => return Reach::At(c.clone()),
             Outcome::Unauthorized => {
@@ -1218,6 +1230,43 @@ mod tests {
         assert!(!dialable(&http_v4("2001:db8::1")));
         assert!(!dialable(&http_v4("203.0.113")), "three octets is not an address");
         assert!(!dialable(&http_v4("203.0.113.999")), "999 is not an octet");
+
+        // …and the PORT is part of "can this transport dial it". `4_294_999_696 as i32` is 32400,
+        // so without the range check `probe::dial_port` applies, a nonsense answer from plex.tv
+        // would have been dialled at the most ordinary port there is.
+        assert!(!dialable(&Candidate { port: 4_294_999_696, ..http_v4("203.0.113.9") }));
+        assert!(!dialable(&Candidate { port: 0, ..http_v4("203.0.113.9") }));
+        assert_eq!(dial_target(&http_v4("203.0.113.9")), Some(32400), "the predicate and the socket agree");
+    }
+
+    /// A candidate whose port cannot be dialled is SKIPPED, exactly as a hostname is — the next
+    /// address gets its turn, and the server is not written off for one broken connection.
+    ///
+    /// The failure this prevents is silent in both directions: with a wrapping `as i32` the app
+    /// dials port 32400 at that address, and whatever answers there is accepted the moment its
+    /// `machineIdentifier` matches — which, on a server that really is at 32400, it does.
+    #[test]
+    fn an_undialable_port_costs_that_candidate_and_not_the_server() {
+        let mut plan = probe::plan(&a_share());
+        let good = plan
+            .candidates
+            .iter()
+            .find(|c| dialable(c))
+            .cloned()
+            .expect("the share has one dialable candidate");
+        // ahead of it, the same server at another address, advertised on a port that wraps
+        plan.candidates.insert(
+            0,
+            Candidate { address: "192.0.2.55".into(), port: 4_294_999_696, ..good.clone() },
+        );
+
+        let d = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
+        assert!(matches!(probe_server(&plan, &|h, p| d.dial(h, p)), Reach::At(_)), "the good one still answers");
+        assert!(
+            !d.seen().iter().any(|s| s.starts_with("192.0.2.55")),
+            "the wrapping candidate was never dialled: {:?}",
+            d.seen()
+        );
     }
 
     /// **The address that reaches the session file is one this transport can dial — never an IPv6

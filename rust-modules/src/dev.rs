@@ -165,8 +165,12 @@ impl DevServer {
         format!("{:06x}", h & 0xff_ffff)
     }
     /// Are these credentials complete enough to reach the server at all?
+    ///
+    /// The port is judged by [`crate::plex::probe::dial_port`], not by `> 0`: `app.rs` registers
+    /// every server that passes this with `s.port as c_int`, and this file is a hand-written JSON
+    /// blob under `/tmp` — an out-of-range `i64` wraps in that cast into a port nobody wrote down.
     pub(crate) fn usable(&self) -> bool {
-        !self.host.is_empty() && !self.token.is_empty() && self.port > 0
+        !self.host.is_empty() && !self.token.is_empty() && crate::plex::probe::dial_port(self.port).is_some()
     }
 }
 
@@ -366,13 +370,19 @@ mod tests {
 
     /// Half a credential is worse than none — it reaches the server and 401s. The boot log says so
     /// per entry rather than installing it.
+    ///
+    /// The last entry is the one that is not obviously broken: `app.rs` registers whatever passes
+    /// this with `s.port as c_int`, and `4_294_999_696 as i32` is **32400**, so a hand-written
+    /// number no port can be would have installed a server pointing at the most ordinary port
+    /// there is. Judged by `plex::probe::dial_port`, it is refused like the rest.
     #[test]
     fn servers_incomplete_credentials_are_not_usable() {
         let v = super::parse_servers(
-            r#"[{"host":"10.0.0.9"},{"token":"t"},{"host":"10.0.0.9","port":0,"token":"t"}]"#,
+            r#"[{"host":"10.0.0.9"},{"token":"t"},{"host":"10.0.0.9","port":0,"token":"t"},
+                {"host":"10.0.0.9","port":4294999696,"token":"t"}]"#,
         )
         .unwrap();
-        assert!(v.iter().all(|s| !s.usable()), "no-token / no-host / no-port must all be rejected");
+        assert!(v.iter().all(|s| !s.usable()), "no-token / no-host / no-port / a port that wraps");
     }
 
     /// The one formatter this type has must not be a way for a token to reach the event log.
@@ -421,6 +431,23 @@ mod tests {
         };
         assert_eq!(mk("aaaaaaaaaaaa"), mk("aaaaaaaaaaaa"), "same machine, same tag");
         assert_ne!(mk("aaaaaaaaaaaa"), mk("bbbbbbbbbbbb"), "two shares must be tellable apart");
+    }
+
+    /// The tag is computed in TWO languages: `tests/run.py`'s `server_ref`/`describe_server` print
+    /// the same line for the same server, so a harness transcript and an event log can be read as
+    /// one story — and so that the harness, which also prints to a pasteable stream, is held to
+    /// this module's redaction contract rather than to its own.
+    ///
+    /// Nothing links the two implementations at build time, so the whole line is pinned to a
+    /// literal here. **If this assertion has to change, `run.py`'s copy changes with it.**
+    #[test]
+    fn the_shared_reference_is_the_same_tag_the_harness_prints() {
+        let v = super::parse_servers(
+            r#"[{"name":"Film Club","machine_id":"abcd1234efgh","host":"10.9.9.7",
+                 "port":31234,"token":"t","handle":"friend"}]"#,
+        )
+        .unwrap();
+        assert_eq!(v[0].describe(), "SHARED ref=71c955 port_set=true");
     }
 
     /// `plxnative-servers` must NOT be exempt from the picker-suppression scan: it names a host and

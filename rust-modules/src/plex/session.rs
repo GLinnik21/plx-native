@@ -221,9 +221,16 @@ impl SourceRef {
         let who = if self.owned { "ours".to_string() } else { format!("shared by {}", self.shared_by) };
         format!("{:?} {}:{} ({who})", self.name, self.address, self.port)
     }
-    /// Enough to dial: an address, a port, and the credential that server accepts.
+    /// Enough to dial: an address, a **dialable** port, and the credential that server accepts.
+    ///
+    /// The port goes through [`probe::dial_port`](super::probe::dial_port) rather than a bare
+    /// `> 0`, because this is the gate `auth::install_roster` filters on before `register(…,
+    /// s.port as i32, …)` — and the session file is not a trusted input: it is JSON on disk that a
+    /// hand edit, a truncated write or an older build can leave holding anything an `i64` can hold.
+    /// An out-of-range port wraps in that cast; here it costs the entry instead, and `de_soft_vec`
+    /// already establishes that one bad roster entry costs that entry and never the session.
     pub fn usable(&self) -> bool {
-        !self.address.is_empty() && self.port > 0 && !self.token.is_empty()
+        !self.address.is_empty() && super::probe::dial_port(self.port).is_some() && !self.token.is_empty()
     }
 }
 
@@ -278,8 +285,18 @@ where
 
 impl Session {
     /// True once we have a LAN server + a usable PMS token — i.e. we can run offline.
+    ///
+    /// The PORT is part of "we have a server", and this is the only gate in front of it: every
+    /// resume path (`app.rs`'s boot gate, `auth::cancel`) reads `server.port as i32` straight into
+    /// `plex::install` on the strength of this answer. A port outside `1..=65535` wraps in that
+    /// cast into a plausible one, so it is refused here — the app lands on sign-in, which is the
+    /// honest report for a session it cannot dial, rather than talking to a port nobody named. It
+    /// also covers `port` simply being ABSENT from an older file (`#[serde(default)]` = 0), which
+    /// could never have connected either.
     pub fn can_go_local(&self) -> bool {
-        !self.server.address.is_empty() && !self.pms_token().is_empty()
+        !self.server.address.is_empty()
+            && super::probe::dial_port(self.server.port).is_some()
+            && !self.pms_token().is_empty()
     }
     /// The token PMS calls use: the switched managed-user token if we have one, else the server
     /// access token (owner).
@@ -738,6 +755,43 @@ mod tests {
             assert!(s.sources.is_empty() && s.pinned.is_empty());
             assert!(s.can_go_local(), "the primary server is what boot runs on, roster or not");
         }
+    }
+
+    /// **A port is `i64` on disk and `i32` at the socket, and the narrowing used to be a bare
+    /// cast.** `4_294_999_696 as i32` is **32400** — the most ordinary port there is — so a session
+    /// file holding a number no port can be would have had the app quietly dial a server nobody
+    /// wrote down. `#[serde(default)]` cannot catch it either: the field parses fine, it is the
+    /// value that is impossible.
+    ///
+    /// Both gates the value reaches are stated here, because they fail differently and one does not
+    /// imply the other: a bad ROSTER entry costs that entry (`usable`, which
+    /// `auth::install_roster` filters on before registering), while a bad PRIMARY costs the resume
+    /// (`can_go_local`, the one gate in front of `plex::install`) and lands the app on sign-in.
+    #[test]
+    fn a_port_no_socket_could_take_is_refused_rather_than_wrapped() {
+        let s: Session = serde_json::from_str(
+            r#"{"client_id":"cid-1","account_token":"acct",
+                "server":{"machine_id":"aaaa1111","address":"192.168.0.10","port":32400,"token":"t"},
+                "sources":[{"machine_id":"aaaa1111","owned":true,"address":"192.168.0.10",
+                            "port":4294999696,"token":"tok-own"},
+                           {"machine_id":"bbbb2222","owned":false,"address":"203.0.113.9",
+                            "port":31234,"token":"tok-share"}]}"#,
+        )
+        .unwrap();
+        assert!(!s.sources[0].usable(), "32400 is what that number wraps to — it must not be dialled");
+        assert!(s.sources[1].usable(), "…and the entry beside it is untouched");
+        assert!(s.can_go_local(), "the PRIMARY is fine, so boot still resumes");
+
+        // …and the same number on the primary costs the resume instead, rather than dialling 32400
+        let bad: Session = serde_json::from_str(
+            r#"{"client_id":"c","server":{"address":"192.168.0.10","port":4294999696,"token":"t"}}"#,
+        )
+        .unwrap();
+        assert!(!bad.can_go_local(), "an undialable primary sends the user to sign-in, honestly");
+        // an absent port is the same answer for the same reason: it could never have connected
+        let none: Session =
+            serde_json::from_str(r#"{"client_id":"c","server":{"address":"192.168.0.10","token":"t"}}"#).unwrap();
+        assert!(!none.can_go_local());
     }
 
     /// One server must behave exactly as it did before the roster existed: the primary

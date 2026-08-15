@@ -1383,9 +1383,33 @@ fn maybe_discover() {
         *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((epoch, si, landing));
     });
     if !spawned {
-        // the flag is cleared only inside a successful mailbox take, and nothing will fill that
-        // mailbox — the `reset_clears_the_single_flight_flags_with_the_mailboxes` latch again
-        SRC_FETCHING.store(false, Ordering::SeqCst);
+        discovery_spawn_refused(si);
+    }
+}
+
+/// The OS refused a discovery worker ([`crate::task::spawn_small`] returned `false`) — release the
+/// single flight and back this source off.
+///
+/// Both halves are load-bearing and neither is enough alone.
+///
+/// * **Release**: `SRC_FETCHING` is cleared only inside a successful mailbox take, and nothing is
+///   ever going to fill that mailbox — the same latch
+///   `reset_clears_the_single_flight_flags_with_the_mailboxes` guards.
+/// * **Back off**, by the same [`SRC_RETRY_CD`] a failed landing arms. Releasing alone leaves
+///   [`maybe_discover`] re-picking this source on the very NEXT frame, and `task::spawn` logs every
+///   refusal (`task: spawn 'sources' REFUSED`) — so a machine under enough thread pressure to
+///   refuse a thread would write ~60 lines a second into the one file on-device triage reads. A
+///   quieter log is the wrong fix: retrying at 60 Hz cannot succeed either, because nothing about
+///   the refusal changes within a frame.
+///
+/// What it deliberately does NOT do is mark the source unreachable. Nothing was asked of the
+/// server, so the Sources list must not dim its group and the Library must not say it failed; only
+/// the next ATTEMPT moves. [`retry_cur_source`] clears this exactly as it clears a real failure, so
+/// the read-out's *Try again* still skips the wait.
+fn discovery_spawn_refused(si: usize) {
+    SRC_FETCHING.store(false, Ordering::SeqCst);
+    if let Some(s) = source_mut(si) {
+        s.retry_cd = SRC_RETRY_CD;
     }
 }
 
@@ -2202,6 +2226,50 @@ mod tests {
         mark_source_reachable(1, true); // …and it comes back
         assert!(sources()[1].reachable);
         assert_eq!(sources()[1].retry_cd, 0, "a server that answered is worth re-asking at once");
+        reset();
+    }
+
+    /// A REFUSED discovery spawn must back off, not retry at 60 Hz.
+    ///
+    /// `maybe_discover` runs once a frame, so releasing the single flight alone re-picks the same
+    /// source on the very next frame — and `task::spawn` logs every refusal, so the app would write
+    /// ~60 `task: spawn 'sources' REFUSED` lines a second into the one file on-device triage reads,
+    /// exactly when the machine is under enough thread pressure to be worth reading about.
+    ///
+    /// The other half is what it must NOT do: nothing was asked of the server, so the source stays
+    /// reachable and its discovery stays un-done. A refusal is ours, not theirs.
+    ///
+    /// Drives `discovery_spawn_refused` rather than `maybe_discover`, because there is no way to
+    /// make the OS refuse a thread on demand — and then runs a real second of frames through
+    /// `maybe_discover` to show the backoff actually holds the picker off. That call is safe here
+    /// precisely BECAUSE the backoff is armed: every source is un-ready, so it decrements the
+    /// counters and returns without dialling anything.
+    #[test]
+    fn a_refused_discovery_spawn_backs_off_instead_of_flooding_the_log() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        for i in 0..2 {
+            let s = source_mut(i).unwrap();
+            s.sections_done = false; // both still want discovery
+            s.counts_done = true;
+        }
+        SRC_FETCHING.store(true, Ordering::SeqCst); // as `maybe_discover` armed it before spawning
+
+        discovery_spawn_refused(1);
+
+        assert!(!SRC_FETCHING.load(Ordering::SeqCst), "the single flight must be released");
+        assert_eq!(sources()[1].retry_cd, SRC_RETRY_CD, "…and the next attempt is ~10s out, not 1 frame");
+        assert!(sources()[1].reachable, "a refused THREAD says nothing about their server");
+        assert!(!sources()[1].sections_done, "…and it is still a source waiting to be discovered");
+        assert_eq!(sources()[0].retry_cd, 0, "the other source is untouched");
+
+        // one second of frames: the picker must not come back to it
+        source_mut(0).unwrap().retry_cd = SRC_RETRY_CD; // so nothing in this table is dialable
+        for _ in 0..60 {
+            maybe_discover();
+        }
+        assert!(!SRC_FETCHING.load(Ordering::SeqCst), "no attempt was made in a whole second");
+        assert!(sources()[1].retry_cd > 0, "…and the backoff still has most of its cooldown left");
         reset();
     }
 
