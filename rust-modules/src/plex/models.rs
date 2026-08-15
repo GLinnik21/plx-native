@@ -414,13 +414,21 @@ pub struct Stream {
 ///   "role":"Elsa (voice)","thumb":"https://metadata-static.plex.tv/…jpg"}`.
 /// [`id`](Tag::id)/[`tag_key`](Tag::tag_key) are what make the person page reachable — either is
 /// the `personId` of `/library/people/{personId}[/media]` (docs/pms-api.md §2c).
+///
+/// **Every string here is [`de_str`], and that is not tidiness.** A strict `String` meeting a JSON
+/// `null` does not lose one field: serde fails the whole `MediaContainer`, so one null in one
+/// `Directory[]` row of one hub blanks the entire search — which reads as the transport having
+/// failed while the server is answering perfectly. The plain `#[serde(default)]` these carried
+/// fills an ABSENT field and does nothing at all for one that is present and null (`de_vec`'s doc
+/// states the same trap one container up), and a share is exactly the machine whose PMS version,
+/// scanner and agents are not ours.
 #[derive(Deserialize, Default)]
 pub struct Tag {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_str")]
     pub tag: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_str")]
     pub role: String, // Role[] only (character name)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_str")]
     pub thumb: String, // headshot — on the crew arrays (Director[]/Writer[]) as well as Role[]
     /// The tag's numeric library id — the `personId` of `/library/people/{id}[/media]`, and the
     /// value behind `?actor=<id>` on a section listing. 0 = absent.
@@ -428,13 +436,13 @@ pub struct Tag {
     pub id: i64,
     /// Plex's global person guid (`"5d77682aeb5d26001f1de4b0"`) — stable across servers, and the
     /// alternate `personId` (both forms verified live against the same record).
-    #[serde(rename = "tagKey", default)]
+    #[serde(rename = "tagKey", default, deserialize_with = "de_str")]
     pub tag_key: String,
     /// The server's own ready-made listing filter for this tag, e.g. `"actor=161"` /
     /// `"director=459"` — append it to `/library/sections/{k}/all?` to list ONE section's items
     /// for this person. Carries the tag's ROLE in the library (actor vs director vs writer),
     /// which `id` alone does not.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_str")]
     pub filter: String,
     /// How many items in this library carry the tag — Plex's count badge. NOT emitted by every
     /// server (this one omits it on `Role[]`), so 0 means "unknown", never "none".
@@ -449,7 +457,7 @@ pub struct Tag {
     // them there.
     /// The listing this tag opens — `/library/sections/1/all?collection=6068`. The only handle a
     /// COLLECTION hit gives you: those carry no `tagKey`, no `thumb` and no `ratingKey`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_str")]
     pub key: String,
     #[serde(rename = "librarySectionID", default, deserialize_with = "de_i64")]
     pub library_section_id: i64,
@@ -457,9 +465,9 @@ pub struct Tag {
     /// sections), `originalTitle`, or another hub's identifier — searching "arnold" returns films
     /// with `reason: actor`. Kept because a shelf that mixes direct and inferred hits without
     /// saying so reads as the server being wrong.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_str")]
     pub reason: String,
-    #[serde(rename = "reasonTitle", default)]
+    #[serde(rename = "reasonTitle", default, deserialize_with = "de_str")]
     pub reason_title: String,
 }
 
@@ -1012,6 +1020,59 @@ mod tests {
         let m = &search_hub(&mc, "movie").metadata[0];
         assert_eq!((m.year, m.library_section_id), (1993, 1));
         assert_eq!(m.rating_key, "1973");
+    }
+
+    /// **A JSON `null` in any string of a `Directory[]` row must cost that FIELD, never the
+    /// container.** `#[serde(default)]` fills an absent field and does nothing for one that is
+    /// present and null, so a strict `String` meeting one fails the whole `MediaContainer` — and
+    /// the search screen then draws the transport-failure read-out while the server is answering
+    /// correctly, over a hub it would have shown perfectly with the field empty.
+    ///
+    /// Reachable in exactly the place it is hardest to reproduce: a friend's server runs its own
+    /// PMS version, scanner and agents, so which of these it sends as `null` is not ours to
+    /// predict. Every string on the record is graded, one null per field in one body — the parse
+    /// has to survive all of them at once, since a container fails on the FIRST one it meets.
+    #[test]
+    fn a_null_string_anywhere_in_a_search_hub_costs_that_field_and_not_the_container() {
+        let json = br#"{"MediaContainer":{"size":1,"Hub":[
+          {"type":"actor","hubIdentifier":"actor","title":"Actors","size":2,"Directory":[
+            {"tag":null,"role":null,"thumb":null,"tagKey":null,"filter":null,"key":null,
+             "reason":null,"reasonTitle":null,"id":921,"count":5},
+            {"tag":"Wallace Shawn","tagKey":"5d776827151a60001f24ab18","id":921,"count":5,
+             "key":"/library/sections/1/all?actor=921","reason":"section","reasonTitle":"Movies"}
+          ]}]}}"#;
+        let mc = serde_json::from_slice::<Envelope>(json).expect("a null is a field, not a failure").media_container;
+        let rows = &search_hub(&mc, "actor").directory;
+        assert_eq!(rows.len(), 2, "the row with the nulls survives, and so does the one beside it");
+
+        let n = &rows[0];
+        for (name, got) in [
+            ("tag", &n.tag),
+            ("role", &n.role),
+            ("thumb", &n.thumb),
+            ("tagKey", &n.tag_key),
+            ("filter", &n.filter),
+            ("key", &n.key),
+            ("reason", &n.reason),
+            ("reasonTitle", &n.reason_title),
+        ] {
+            assert_eq!(got, "", "{name} came back as something other than the empty string");
+        }
+        // the numbers beside them are untouched — this is a per-field leniency, not a dropped row
+        assert_eq!((n.id, n.count), (921, 5));
+        // …and the intact row is exactly what it would have been on its own
+        assert_eq!(rows[1].tag, "Wallace Shawn");
+        assert_eq!((rows[1].reason.as_str(), rows[1].reason_title.as_str()), ("section", "Movies"));
+
+        // The same leniency the other way: a stringly-typed number is a string, not a failure.
+        // `reasonTitle` is a LIBRARY NAME, and a library called "2024" is one PMS is free to send
+        // as a bare number for.
+        let json = br#"{"MediaContainer":{"Hub":[
+          {"type":"collection","hubIdentifier":"collection","title":"Collections","size":1,"Directory":[
+            {"tag":1998,"key":"/library/sections/3/all?collection=7","reasonTitle":2024,"id":7}]}]}}"#;
+        let mc = serde_json::from_slice::<Envelope>(json).expect("lenient parse").media_container;
+        let c = &search_hub(&mc, "collection").directory[0];
+        assert_eq!((c.tag.as_str(), c.reason_title.as_str()), ("1998", "2024"));
     }
 
     /// A one-character query is a **200 with every hub empty** — not an error, and not an absent
