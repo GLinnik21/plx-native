@@ -1085,8 +1085,14 @@ fn reset_view_state(v: &mut DetailView) {
     v.hero_set = HeroSet::default();
     v.pending_season = -1;
     v.saved_col = [0; 6];
-    // a keep-focus latch belongs to the item that armed it — a new page must not inherit one
-    unsafe { *addr_of_mut!(KEEP_EP) = None };
+    // a keep-focus latch belongs to the item that armed it — a new page must not inherit one, nor
+    // the season restore ([`REFRESH`]) that arms it. Both self-retire (each tests the item it was
+    // armed for), and both are cleared here for the same reason `PENDING` is: a latch whose fetch
+    // never lands would otherwise sit armed for a page the user might come back to much later.
+    unsafe {
+        *addr_of_mut!(KEEP_EP) = None;
+        *addr_of_mut!(REFRESH) = None;
+    }
     // …and so do both navigation latches. `OPEN_REQ` is drained once per frame by app.rs, so one
     // that survives its page fires on an unrelated OK several screens later (the incident
     // `person.rs`'s `requested` latch records). `PENDING` normally retires itself — `pump_pending`
@@ -1169,11 +1175,13 @@ pub(crate) fn close() {
     // nothing can land in the store for a page that is gone
     crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     metadata::clear();
-    // Both latches die with the page — `reset_view_state`'s rule restated for the exit that mounts
+    // Every latch dies with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
     unsafe {
         *addr_of_mut!(OPEN_REQ) = None;
         *addr_of_mut!(PENDING) = None;
+        *addr_of_mut!(KEEP_EP) = None;
+        *addr_of_mut!(REFRESH) = None;
         *addr_of_mut!(ALT_REQ) = false;
         *addr_of_mut!(ALT_OPEN) = None;
     }
@@ -1553,6 +1561,11 @@ pub(crate) fn update(dt: f32) {
             v.card_scale.jump(1.0);
         }
     }
+    // AFTER pump_season, for the same reason `pump_pending` is: this is what ASKS for the season
+    // whose landing the block above then places, so running it first would have the two chasing each
+    // other by a frame. (`metadata::pump_detail` runs later in the frame than this whole function,
+    // in `app.rs` — which is why the latch is polled every frame rather than driven by the landing.)
+    pump_refresh();
     pump_pending(); // after pump_season: a landing season resets the episode focus this restores
     view().spin_ms += dt * 1000.0;
     // targets read view() internally — compute them before borrowing v for the springs
@@ -3155,28 +3168,21 @@ pub(crate) fn on_ok() -> bool {
             // one pure mapping (`hero_col` also corrects a focus the set shrank under)
             let action = hero_action(hero_col());
             if action == HeroAction::Watched {
-                // watched toggle: scrobble/unscrobble, then re-fetch so the button state, the
-                // resume bars and the Continue Watching shelf all reflect the new view state.
-                // **The ITEM's server, not the current one.** `rk` is a key on `d.sid` and on no
-                // other machine, and browsing a shared library no longer re-points `current` — so
-                // taken from `client()` this posted a BORROWED item's ratingKey to OUR server. Both
-                // servers number from 1, so that is not a no-op: the friend's film stays unwatched
-                // and an unrelated film of ours is marked instead. Nothing surfaces the mistake,
-                // because `refresh_view_state` then re-reads the page that did not change.
+                // Watched toggle. **The ITEM's server, not the current one** — `rk` is a key on
+                // `d.sid` and on no other machine, and browsing a shared library no longer re-points
+                // `current`, so resolved from `client()` this posted a BORROWED item's ratingKey to
+                // OUR server. Both servers number from 1, so that is not a no-op: the friend's film
+                // stays unwatched and an unrelated film of ours is marked instead.
                 //
-                // `client_for` returns None for a slot that is not registered, where `client()`
-                // panics; a watch-state write is exactly the operation that should be skipped and
-                // logged rather than taken to the wrong machine.
+                // The scrobble, the page re-read and the hub refetch all used to run right here, on
+                // the SDL thread — three blocking round-trip chains off one keypress. `viewstate`
+                // owns all three now: it flips this page and the shelves optimistically (so the
+                // button changes on this frame), writes on a worker, and calls `refresh_view_state`
+                // when the write lands. `Some("")` is "refresh the detail page, with no filmstrip
+                // position to protect" — the press was on the hero.
                 if let Some((sid, rk, watched)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.watched)) {
-                    match crate::plex::client_for(sid) {
-                        Some(c) if watched => c.unscrobble(&rk),
-                        Some(c) => c.scrobble(&rk),
-                        None => crate::log(&format!("watched: no client for slot {} — not written", sid.raw())),
-                    }
-                    // the page re-reads itself, season and all. No keep-focus target: the press was
-                    // on the hero, so there is no filmstrip position to protect.
-                    refresh_view_state("");
-                    crate::pms::refetch_hubs_reconcile(); // CW shelf changes with the view state
+                    let w = if watched { crate::viewstate::Write::Unwatched } else { crate::viewstate::Write::Watched };
+                    crate::viewstate::request(sid, &rk, w, Some(String::new()));
                 }
                 return false;
             }
@@ -3472,22 +3478,72 @@ pub(crate) fn focused_episode_rect() -> Option<Rect> {
 /// `keep_ep` is the episode this refresh is ABOUT, if any (the filmstrip menu passes the one it
 /// just toggled; the hero passes nothing) — see [`KEEP_EP`] for why the row would otherwise scroll
 /// itself away from the tile the user just acted on.
+///
+/// **ASYNC.** This used to be a blocking `load_detail_now` — 2 round trips for a movie, 5 for a
+/// show, straight off a keypress — with the season restore written on the next line because the
+/// refreshed item was already installed by then. That is what a WAN or sleeping share turns into
+/// seconds of frozen UI, so the fetch now goes through the ordinary detail mailbox and the restore
+/// is a LATCH ([`REFRESH`]) that [`pump_refresh`] applies when the landing arrives. The page is not
+/// cleared and no spinner appears: `CURRENT` keeps the item (optimistically edited by
+/// `metadata::set_watched_local`) for the whole window, so what the user sees is their press,
+/// corrected a beat later if the server disagrees.
 pub(crate) fn refresh_view_state(keep_ep: &str) {
     let Some((sid, rk, season)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.cur_season)) else {
         return;
     };
-    // BLOCKING: the season restore below reads the refreshed item, and a deferred landing would
-    // install cur_season 0 on top of it — clobbering the season the user was browsing.
-    metadata::load_detail_now(sid, &rk);
-    if season != 0 {
-        // Armed BEFORE the request, so a landing can never beat the latch into place. Season 0
-        // needs neither: `load_detail_now` already leaves the page on it, so no fetch lands and
-        // nothing resets the row.
-        if !keep_ep.is_empty() {
-            unsafe { *addr_of_mut!(KEEP_EP) = Some((keep_ep.to_string(), season)) };
-        }
-        metadata::load_season(season); // keep the season the user was browsing
+    // Armed BEFORE the request, so a landing can never beat the latch into place — the same
+    // ordering the blocking version needed for `KEEP_EP`, one level out.
+    unsafe {
+        *addr_of_mut!(REFRESH) = Some(Refresh { sid, rk: rk.clone(), season, keep_ep: keep_ep.to_string() })
+    };
+    metadata::request_detail(sid, &rk);
+}
+
+/// The season restore a [`refresh_view_state`] owes once its re-read lands.
+///
+/// It exists because a fresh detail fetch always comes back on season 0 (`fetch_full` fills
+/// `episodes` from `seasons[0]`), while the user is browsing whichever season they opened. The
+/// blocking version could put that back on the next statement; the async one has to wait for the
+/// landing, and this is what remembers what to put back.
+#[derive(Clone)]
+struct Refresh {
+    /// The item the refresh was asked for — matched as the (server, key) PAIR when it lands, so a
+    /// page walked to another machine's item with the same rk is not steered by this latch.
+    sid: crate::plex::ServerId,
+    rk: String,
+    /// The season INDEX the page was on (an index into `d.seasons`, which is what `cur_season` is).
+    season: usize,
+    /// The episode [`KEEP_EP`] must land the filmstrip back on; empty for the hero's own toggle.
+    keep_ep: String,
+}
+static mut REFRESH: Option<Refresh> = None;
+
+/// Apply a landed [`refresh_view_state`]. MAIN THREAD, once a frame from [`update`].
+///
+/// One-shot on the first frame the re-read is no longer in flight, whatever it produced —
+/// `metadata::pump_detail` catches `DETAIL_DONE` up on a FAILURE too, so a server that refused
+/// settles this rather than leaving the latch waiting for a landing that will never come. Every way
+/// it can fail to apply ends in the same place: the page keeps the item and the season it already
+/// had, which is what a failed refresh should look like.
+fn pump_refresh() {
+    if metadata::detail_loading() {
+        return; // the re-read is still out
     }
+    let Some(r) = (unsafe { (*addr_of_mut!(REFRESH)).take() }) else { return };
+    let Some(d) = metadata::current() else { return }; // page closed under it
+    if !crate::plex::same_item((d.sid, &d.rk), (r.sid, &r.rk)) {
+        return; // the user walked to another item — not ours to steer
+    }
+    if r.season == 0 || d.cur_season == r.season || r.season >= d.seasons.len() {
+        // Nothing to restore: season 0 is where a landing already leaves the page, an unchanged
+        // `cur_season` means the fetch failed and the browsed season is still listed, and a season
+        // that is no longer in the show is one the server has removed.
+        return;
+    }
+    if !r.keep_ep.is_empty() {
+        unsafe { *addr_of_mut!(KEEP_EP) = Some((r.keep_ep, r.season)) };
+    }
+    metadata::load_season(r.season); // back to the season the user was browsing
 }
 
 /// The episode the filmstrip must land back on when the next season fetch lands, and the season it
@@ -4643,7 +4699,7 @@ mod tests {
         mount(None, 0);
     }
 
-    use crate::metadata::{Detail, Episode};
+    use crate::metadata::{Detail, Episode, Season};
 
     /// Install `d` as the loaded item and park hero focus on `col`. Both statics are crate-wide
     /// (`metadata::CURRENT` and detail's own `VIEW`), so every caller holds `testlock::serial()`.
@@ -5212,6 +5268,76 @@ mod tests {
         reset_view_state(view());
         assert_eq!(take_kept_episode(), None, "a new page must not inherit the old page's latch");
 
+        mount(None, 0);
+    }
+
+    /// …and the OTHER half of that refresh, which the blocking version never needed: a fresh detail
+    /// fetch always comes back on season 0, so the season the user was browsing has to be put back
+    /// once the re-read LANDS. [`REFRESH`] is what remembers it, [`pump_refresh`] is what applies it,
+    /// and every way it can fail to apply must end in the page keeping what it already had.
+    ///
+    /// NB the successful arm below spawns a `/children` worker (`metadata::load_season`) that finds
+    /// no client and returns at once; the season mailbox's monotone guard is what keeps its landing
+    /// from reaching any later test, and `load_season_now` settles the spinner before this returns.
+    #[test]
+    fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_another_page() {
+        let _serial = crate::testlock::serial();
+        let show = |cur_season| Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "s1".into(),
+            is_show: true,
+            cur_season,
+            seasons: vec![
+                Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 0, viewed_leaf_count: 0 },
+                Season { rk: "sk2".into(), index: 2, title: "S2".into(), leaf_count: 0, viewed_leaf_count: 0 },
+            ],
+            episodes: vec![Episode { rk: "e1".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let arm = |rk: &str, season, keep: &str| unsafe {
+            *addr_of_mut!(REFRESH) = Some(Refresh {
+                sid: crate::plex::ServerId::UNSET,
+                rk: rk.to_string(),
+                season,
+                keep_ep: keep.to_string(),
+            })
+        };
+
+        // a re-read that landed leaves the page on season 0 — the latch puts it back on season 1,
+        // and arms the filmstrip to land on the episode whose state actually changed
+        metadata::clear(); // settles `detail_loading()`: the latch only fires once the re-read is in
+        mount(Some(show(0)), 0);
+        arm("s1", 1, "e1");
+        pump_refresh();
+        assert_eq!(metadata::current().unwrap().cur_season, 1, "back on the season the user was browsing");
+        assert_eq!(unsafe { (*addr_of!(KEEP_EP)).clone() }, Some(("e1".to_string(), 1)));
+        assert!(unsafe { (*addr_of!(REFRESH)).is_none() }, "…and the latch is one-shot");
+
+        // a FAILED re-read keeps the item AND its season, so there is nothing to put back and no
+        // second `/children` to spend on saying so
+        metadata::load_season_now(0); // settle the season mailbox the arm above kicked
+        unsafe { *addr_of_mut!(KEEP_EP) = None };
+        mount(Some(show(1)), 0);
+        arm("s1", 1, "e1");
+        pump_refresh();
+        assert_eq!(metadata::current().unwrap().cur_season, 1);
+        assert!(unsafe { (*addr_of!(KEEP_EP)).is_none() }, "no keep-focus latch is armed for a fetch nobody made");
+
+        // the user walked to ANOTHER item while the write was out: the latch is consumed and steers
+        // nothing — its season index would otherwise name a season of a show it knows nothing about
+        mount(Some(show(0)), 0);
+        arm("other-show", 1, "e1");
+        pump_refresh();
+        assert_eq!(metadata::current().unwrap().cur_season, 0, "the page on screen is left alone");
+        assert!(unsafe { (*addr_of!(REFRESH)).is_none() }, "and the latch is consumed all the same");
+
+        // …and a page that closed under the refresh is not a page to steer either
+        mount(None, 0);
+        arm("s1", 1, "e1");
+        pump_refresh();
+        assert!(unsafe { (*addr_of!(REFRESH)).is_none() });
+
+        unsafe { *addr_of_mut!(KEEP_EP) = None };
         mount(None, 0);
     }
 
