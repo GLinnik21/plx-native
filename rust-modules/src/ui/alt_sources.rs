@@ -555,15 +555,17 @@ fn dev_stand_in(_item_rk: &str) -> Option<Vec<AltCopy>> {
 #[cfg(not(test))]
 fn stand_in_slot() -> Option<ServerId> {
     let here = crate::plex::current_server();
-    let other = (0..crate::plex::server_count())
-        .map(|i| ServerId::from_raw(i as u16))
-        .find(|&id| id != here && crate::plex::client_for(id).is_some());
+    // `server_ids`, never `0..server_count()`: slot numbers are permanent and a sign-out retires
+    // the ones below the registry's floor, so the live roster is a window and not a prefix.
+    let other = crate::plex::server_ids().find(|&id| id != here && crate::plex::client_for(id).is_some());
     if let Some(id) = other {
         return Some(id); // a real second server is already registered — use it
     }
     let c = crate::plex::client_opt()?;
     let token = crate::dev::read("token").filter(|t| !t.is_empty())?;
-    Some(crate::plex::register(&format!("standin-{}", c.machine_id()), c.host(), c.port(), &token))
+    // …and a registry with no room left answers `UNSET`, which is no stand-in at all rather than
+    // one that resolves to whatever happens to be current.
+    Some(crate::plex::register(&format!("standin-{}", c.machine_id()), c.host(), c.port(), &token)).filter(|id| id.is_set())
 }
 
 /// [`dev_stand_in`]'s pure half — the two copies it describes, so the shape of what a device

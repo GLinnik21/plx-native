@@ -34,6 +34,25 @@
 //! structs for the life of the process (a household has a handful of servers, and registration
 //! happens on login / profile switch / server switch, never per frame), so "bounded and never
 //! freed" is cheaper than the refcount it replaces.
+//!
+//! ## Signing out: slots are REVOKED, never freed and never reused
+//!
+//! Because nothing is freed, a sign-out cannot remove a server from the table — and until
+//! [`revoke_all`] existed nothing tried, so the account that signed out stayed in the table with
+//! its live per-server tokens and the next account browsed, searched and built Home from BOTH.
+//! [`revoke_all`] raises a [`FLOOR`]: every slot below it is dead — invisible to [`ids`], resolved
+//! to `None` by [`client_for`], and blanked to an empty token so a `&'static Client` grabbed before
+//! the sign-out cannot dial with the old one either.
+//!
+//! **A revoked slot number is never handed out again**, not even to the same `machineIdentifier`.
+//! [`ServerId`]'s whole contract is that it names one server for the life of the process — it sits
+//! in UI state, in routes, in queued jobs — and every per-server store in the app (`search`'s
+//! mailboxes, `serverinfo`, `person`'s per-source records) is a flat array indexed by
+//! [`ServerId::raw`]. Reusing a number would file the previous account's results under the new
+//! account's server, which is the very leak this exists to close. The cost is that sign-out /
+//! sign-in cycles consume slots: past [`MAX_SERVERS`] registration is refused and says so in the
+//! log, which for a table of 16 and a household of one or two servers is a great many sign-outs
+//! inside one process.
 
 use super::client::Client;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
@@ -134,8 +153,18 @@ static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] = [const { AtomicPtr::new(std::pt
 /// [`ServerFacts`] per slot, published and leaked exactly as `SLOTS` is. A null slot is a server
 /// nobody has described yet — which is the honest state on a boot that never reached plex.tv.
 static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
-/// Slots populated so far. Only writers and the match scan read it; `client_for` does not.
+/// Slots populated so far — the high-water mark, MONOTONE for the life of the process. A revoked
+/// slot keeps its number (see the module doc), so this is not the number of servers: that is
+/// [`count`], which is this minus [`FLOOR`].
 static COUNT: AtomicUsize = AtomicUsize::new(0);
+/// The first slot that still belongs to the signed-in account. Raised to [`COUNT`] by
+/// [`revoke_all`]; everything below it is a credential of an account that has left.
+///
+/// One number rather than a flag per slot, because revocation is all-or-nothing: it is a SIGN-OUT,
+/// and there is no such thing as forgetting one server of an account you are still using. That is
+/// also what keeps the live roster CONTIGUOUS — `FLOOR..COUNT` — which the stores that index a flat
+/// array by [`ServerId::raw`] (`crate::search`) walk as a window.
+static FLOOR: AtomicUsize = AtomicUsize::new(0);
 /// The current/primary server as a raw `ServerId` — what `client()` answers with.
 static CURRENT: AtomicU32 = AtomicU32::new(ServerId::UNSET.0 as u32);
 /// Writers only (register / re-point / reset). Readers never take it — that is the whole point.
@@ -143,9 +172,21 @@ static WRITE: Mutex<()> = Mutex::new(());
 
 // ---- reads: the hot path ----
 
-/// The `Client` for one slot, `None` for [`ServerId::UNSET`] or an unpopulated slot.
+/// The `Client` for one slot, `None` for [`ServerId::UNSET`], an unpopulated slot, or one
+/// [`revoke_all`] has retired.
+///
+/// The revoked case is the reason this is the ONE door: ~30 call sites resolve a stored `ServerId`
+/// through it, they all already handle `None` (that is the contract for an unpopulated slot), and
+/// answering `None` here is what stops every one of them dialling the previous account's server
+/// with the previous account's token. `Relaxed` on the floor: it is a lone `usize` publishing
+/// nothing, and a reader that raced a sign-out by a microsecond would have read the old value a
+/// microsecond earlier anyway.
 pub fn client_for(id: ServerId) -> Option<&'static Client> {
-    let p = SLOTS.get(id.index()?)?.load(Ordering::Acquire);
+    let i = id.index()?;
+    if i < FLOOR.load(Ordering::Relaxed) {
+        return None;
+    }
+    let p = SLOTS.get(i)?.load(Ordering::Acquire);
     // SAFETY: a slot holds either null or a pointer from `Box::into_raw` that is NEVER freed
     // (see the module doc on the deliberate leak), published with a Release store paired to this
     // Acquire load. So a non-null read is always a fully-initialised, permanently-live `Client`.
@@ -189,22 +230,38 @@ pub fn client_opt() -> Option<&'static Client> {
     client_for(current())
 }
 
-/// How many servers are registered.
+/// How many servers are registered **and still ours** — a sign-out takes the whole table down to
+/// zero (see [`revoke_all`]).
+///
+/// Not a slot bound: slot numbers are permanent, so the live window is `FLOOR..COUNT` and the
+/// caller that wants slot NUMBERS wants [`ids`]. Reading this as `0..count()` is exactly how a
+/// query gets fanned out over the previous account's slots while the current account's go unasked.
 pub fn count() -> usize {
-    COUNT.load(Ordering::Acquire)
+    COUNT.load(Ordering::Acquire).saturating_sub(FLOOR.load(Ordering::Acquire))
 }
 
-/// Every registered slot, in registration order — **the granted roster**, since a server is only
-/// registered once the account was granted it. Registration order matters to the one caller
-/// (`browse`'s section table appends in it, and the session server registers first), so this is an
-/// ordered walk and not a set.
+/// Every LIVE slot, in registration order — **the granted roster**, since a server is only
+/// registered once the account was granted it, and only while that account is signed in.
+/// Registration order matters to the one caller (`browse`'s section table appends in it, and the
+/// session server registers first), so this is an ordered walk and not a set.
+///
+/// The range starts at [`FLOOR`], not at 0: a sign-out retires the slots below it without
+/// renumbering anything registered after (the module doc says why numbers are never reused).
 pub fn ids() -> impl Iterator<Item = ServerId> {
-    (0..count() as u16).map(ServerId)
+    let hi = COUNT.load(Ordering::Acquire);
+    (FLOOR.load(Ordering::Acquire).min(hi)..hi).map(|i| ServerId(i as u16))
 }
 
-/// What the roster says about one server, `None` until something has described it.
+/// What the roster says about one server, `None` until something has described it — and `None`
+/// again once [`revoke_all`] has retired it, on the same floor [`client_for`] applies. The pair has
+/// to answer alike or a stale `ServerId` held past a sign-out would still put the previous account's
+/// machine name and the person who shared it on screen, off a slot nothing can dial.
 pub fn facts(id: ServerId) -> Option<&'static ServerFacts> {
-    let p = FACTS.get(id.index()?)?.load(Ordering::Acquire);
+    let i = id.index()?;
+    if i < FLOOR.load(Ordering::Relaxed) {
+        return None;
+    }
+    let p = FACTS.get(i)?.load(Ordering::Acquire);
     // SAFETY: identical to `client_for`'s — a slot holds null or a `Box::into_raw` pointer that is
     // never freed, published Release and read Acquire.
     (!p.is_null()).then(|| unsafe { &*p })
@@ -237,6 +294,25 @@ pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
     crate::ui::idle::invalidate();
 }
 
+/// Record a server's MACHINE NAME and nothing else — for the describer that learned it from the
+/// server itself (`GET /` → `friendlyName`) and knows nothing whatever about the grant.
+///
+/// It exists because [`describe`]'s `owned` has no "unknown" spelling, so a name-only describer has
+/// to pass SOMETHING — and the one call site (`browse`'s discovery landing) computed it as
+/// `handle.is_empty()`, which is precisely the derivation [`ServerFacts::owned`] documents as
+/// wrong: a share whose `sourceTitle` plex.tv did not send has no handle and is still a share. So
+/// every such share flipped to "ours" the moment its friendly name arrived — un-attributing it on
+/// the detail page and the shelf headings, and pinning its libraries to Home by the ownership
+/// default. Carrying the stored flag through is the only honest answer, and doing it HERE rather
+/// than asking each call site to read [`facts`] back is what makes it unforgettable.
+///
+/// A slot nothing has described yet reads as ours, which is not a guess: the only registration that
+/// does not describe is [`install`], the SESSION path, whose server is the account's own.
+pub fn describe_name(id: ServerId, name: &str) {
+    let owned = facts(id).map(|f| f.owned).unwrap_or(true);
+    describe(id, name, "", owned);
+}
+
 /// `new` when it says something, else whatever was already known.
 fn pick(new: &str, old: Option<&str>) -> String {
     if new.is_empty() { old.unwrap_or_default().to_owned() } else { new.to_owned() }
@@ -264,7 +340,8 @@ fn publish(id: ServerId, c: Client) {
     SLOTS[id.0 as usize].store(p, Ordering::Release);
 }
 
-/// Register (or update) a server, returning its stable id.
+/// Register (or update) a server, returning its stable id — or [`ServerId::UNSET`] when the table
+/// is full and there was nowhere to put it.
 ///
 /// * an existing slot for the same server keeps its slot: the token is swapped IN PLACE, so
 ///   every `&'static Client` already handed out sees the new token — that is what the Plex Home
@@ -272,6 +349,14 @@ fn publish(id: ServerId, c: Client) {
 /// * unless the address moved (or the slot's machine id was empty and is now known), in which
 ///   case the slot is RE-POINTED: a fresh `Client` is published over the old pointer;
 /// * a server not in the table is appended.
+///
+/// **The full-table answer is a SENTINEL, and it used to be `current()`** — which reads as a
+/// successful registration and is a lie about a completely different machine. The caller's very
+/// next line is a `describe_server`, so a roster ingest that overflowed renamed the user's OWN
+/// server to the share it could not fit and captioned it "Shared by <friend>"; `pms::sync_roster`
+/// had to grow a de-duplication guard for the same return value. `ServerId::UNSET` resolves to
+/// nothing everywhere by construction — [`describe`], [`set_current`] and [`client_for`] all turn
+/// it away — so every caller degrades correctly without a full-table branch of its own.
 ///
 /// Does NOT steal `current` from an established server — only the first registration sets it
 /// (otherwise there is nothing for `client()` to answer with). Use [`set_current`] to switch,
@@ -308,9 +393,9 @@ pub(crate) fn register_with_client_id(machine_id: &str, host: &str, port: i32, t
 fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id: &dyn Fn() -> String) -> ServerId {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
-    let found = (0..n)
-        .map(|i| ServerId(i as u16))
-        .find(|&id| client_for(id).is_some_and(|c| same_server(c, machine_id, host, port)));
+    // LIVE slots only. A revoked slot for this very machine is not adopted: the previous account's
+    // grant on it is dead, and the number belongs to that account's stores forever (module doc).
+    let found = ids().find(|&id| client_for(id).is_some_and(|c| same_server(c, machine_id, host, port)));
 
     if let Some(id) = found {
         let c = client_for(id).expect("the matched slot is populated");
@@ -329,8 +414,10 @@ fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id
     }
 
     if n >= MAX_SERVERS {
-        crate::log("plex: server registry full — keeping the current server");
-        return current();
+        // The sentinel, not `current()` — see this function's doc for what the old answer did to
+        // the caller's `describe_server` one line later.
+        crate::log("plex: server registry full — this server was NOT registered");
+        return ServerId::UNSET;
     }
     let id = ServerId(n as u16);
     publish(id, Client::new(id, machine_id, host, port, token, &client_id()));
@@ -361,6 +448,40 @@ pub fn install(host: &str, port: i32, token: &str) {
     // (`register` already refreshed this server's self-description — see its doc.)
 }
 
+/// **Sign-out.** Retire every registered server: `client()` answers with nothing again, [`ids`]
+/// walks nothing, and each slot's token is blanked in place.
+///
+/// The blanking is the half that is easy to leave out and the half that matters most. Raising the
+/// floor stops anything RESOLVING a `ServerId` — but ~30 call sites take a `&'static Client` and
+/// hold it across a spawn (that is the whole reason the clients are leaked), so a worker already
+/// out when the user signed out still has a reference with a live per-(user, server) token on it.
+/// [`Client::set_token`] is in-place and every reference already handed out follows along, so after
+/// this the worst that reference can do is send a tokenless request and get a 401.
+///
+/// It does NOT free anything and does not lower [`COUNT`] — see the module doc on why a slot number
+/// is never handed out twice.
+pub(crate) fn revoke_all() {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let n = COUNT.load(Ordering::Acquire);
+    let floor = FLOOR.load(Ordering::Acquire);
+    for id in ids() {
+        if let Some(c) = client_for(id) {
+            c.set_token("");
+        }
+    }
+    // CURRENT first: for the instant between these two stores a reader must never see an id whose
+    // slot the floor has already killed, which is the one state `client()`'s `expect` would take.
+    CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
+    FLOOR.store(n, Ordering::Release);
+    if n > floor {
+        crate::log(&format!("plex: {} server(s) revoked — signed out", n - floor));
+    }
+    // The Sources list, the Search scope line and every shelf heading are drawn from this table,
+    // and `ui::idle` gates the whole present on detected motion — it cannot see a `static` being
+    // written. Same reason `describe` invalidates.
+    crate::ui::idle::invalidate();
+}
+
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
 /// (that is the ordinary lifecycle here, not a test-only wart) and must be called under
 /// [`crate::testlock::serial`] — the registry is a crate global.
@@ -378,6 +499,9 @@ pub(crate) fn reset_for_test() {
         f.store(std::ptr::null_mut(), Ordering::Release);
     }
     COUNT.store(0, Ordering::Release);
+    // The floor goes back with the count, or every test after one that signed out would register
+    // into slots the walk starts above — a table that reads as empty however much is in it.
+    FLOOR.store(0, Ordering::Release);
     CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
 }
 
@@ -575,5 +699,113 @@ mod tests {
         assert_eq!(moved, id);
         assert_eq!(count(), 1);
         assert_eq!(client_for(id).unwrap().host(), "10.0.0.9");
+    }
+
+    /// **Signing out takes the servers with it.** Nothing here can be freed, so the leak that
+    /// mattered was not memory: the account that left stayed in the table with its live
+    /// per-(user, server) tokens, and every roster walk in the app (`pms::roster`,
+    /// `browse::sync_roster`, `search`'s fan-out, the Sources list) is one of the two accessors
+    /// asserted here.
+    #[test]
+    fn signing_out_retires_every_slot_and_defangs_the_references_already_handed_out() {
+        let _g = fresh();
+        let a = reg("mach-A", "10.0.0.1", "tok-a");
+        let b = reg("mach-B", "10.0.0.2", "tok-b");
+        describe(b, "nas-home", "friend", false);
+        // the reference a worker took before the sign-out, which nothing can take back
+        let inflight: &'static Client = client_for(b).unwrap();
+        assert_eq!(token_of(inflight), "tok-b");
+
+        revoke_all();
+
+        assert_eq!(count(), 0, "no server is registered any more");
+        assert_eq!(ids().collect::<Vec<_>>(), Vec::new(), "and the roster walk yields nothing");
+        assert!(client_for(a).is_none() && client_for(b).is_none(), "a stored ServerId resolves to nothing");
+        assert!(client_opt().is_none() && !current().is_set(), "and `client()` has nothing to answer with");
+        // the description goes with the client: a stale id must not still name the friend who
+        // shared it, off a slot nothing can dial
+        assert!(facts(b).is_none(), "a slot that cannot be dialled is not described either");
+        // the in-flight reference is still READABLE — it was never freed, which is the whole
+        // reason these are leaked — but it can no longer dial as anybody
+        assert_eq!(inflight.host(), "10.0.0.2");
+        assert_eq!(token_of(inflight), "", "a worker mid-request must not carry the old credential");
+    }
+
+    /// The account that signs in next gets FRESH slot numbers, even for a machine the previous
+    /// account was also granted. `ServerId` names one server for the life of the process — it sits
+    /// in UI state, in routes, in queued jobs, and every per-server store in the app is a flat
+    /// array indexed by one — so re-adopting a revoked slot would file the new account's results
+    /// under the old account's rows.
+    #[test]
+    fn a_revoked_slot_is_never_resurrected_even_for_the_same_machine() {
+        let _g = fresh();
+        let before = reg("mach-A", "10.0.0.1", "tok-old");
+        revoke_all();
+
+        let after = reg("mach-A", "10.0.0.1", "tok-new");
+        assert_ne!(after, before, "the same machine, a new account, a new slot");
+        assert_eq!(count(), 1, "…and exactly one server is registered");
+        assert_eq!(ids().collect::<Vec<_>>(), vec![after], "the walk starts above the floor");
+        assert_eq!(token_of(client_for(after).unwrap()), "tok-new");
+        assert!(client_for(before).is_none(), "the retired slot stays retired");
+        // the first registration after a sign-out becomes current, exactly as it does at boot
+        assert!(std::ptr::eq(client(), client_for(after).unwrap()));
+
+        // and a description of the retired slot is still refused — it dials nothing
+        describe(before, "ghost", "nobody", false);
+        assert!(facts(before).is_none());
+    }
+
+    /// **A full table answers with a SENTINEL, not with `current()`.** The caller's next line is a
+    /// `describe_server`, so the old answer renamed the user's OWN server to whichever share had
+    /// nowhere to go and captioned it "Shared by <friend>" — `auth::install_roster` does exactly
+    /// this pair, and `pms::sync_roster` had to grow a de-duplication guard for the same value.
+    #[test]
+    fn a_registration_that_does_not_fit_is_refused_rather_than_aliased_onto_the_current_server() {
+        let _g = fresh();
+        let ours = reg("mach-ours", "10.0.0.1", "tok-ours");
+        describe(ours, "Mac mini", "", true);
+        for i in 1..MAX_SERVERS {
+            reg(&format!("mach-{i}"), &format!("10.0.1.{i}"), "tok");
+        }
+        assert_eq!(count(), MAX_SERVERS);
+
+        let refused = reg("mach-overflow", "10.0.9.9", "tok-overflow");
+        assert_eq!(refused, ServerId::UNSET, "there was nowhere to put it, and that is what it says");
+        assert_eq!(count(), MAX_SERVERS, "nothing was appended");
+
+        // the call site's very next line, verbatim — and it must land on nobody
+        describe(refused, "nas-home", "friend", false);
+        let f = facts(ours).expect("our own server is still described");
+        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("Mac mini", "", true), "ours was not renamed");
+        assert!(!set_current(refused), "and it cannot become the current server either");
+        assert!(std::ptr::eq(client(), client_for(ours).unwrap()));
+    }
+
+    /// [`describe_name`] is for the describer that learned a machine name off the server itself and
+    /// knows nothing about the grant. `owned` has no "unknown" in [`describe`], so that caller had
+    /// to pass something and computed it as `handle.is_empty()` — which is the derivation
+    /// [`ServerFacts::owned`] documents as wrong, and flipped every handle-less share to "ours" the
+    /// moment its friendly name arrived.
+    #[test]
+    fn naming_a_server_carries_its_ownership_through_untouched() {
+        let _g = fresh();
+        let a = reg("mach-A", "10.0.0.1", "tok-a");
+        let b = reg("mach-B", "10.0.0.2", "tok-b");
+        // the case the bug was invisible in: a share plex.tv sent no `sourceTitle` for, so there is
+        // no handle to derive anything from — and it is a share all the same
+        describe(a, "", "", false);
+        describe(b, "", "friend", false);
+
+        describe_name(a, "nas-home");
+        describe_name(b, "nas-loft");
+
+        assert_eq!(facts(a).map(|f| (f.name.as_str(), f.owned)), Some(("nas-home", false)), "a handle-less SHARE");
+        assert_eq!(facts(b).map(|f| (f.name.as_str(), f.handle.as_str(), f.owned)), Some(("nas-loft", "friend", false)));
+
+        // a slot nothing has described is one `install` put there, i.e. the account's own server
+        let c = reg("mach-C", "10.0.0.3", "tok-c");
+        describe_name(c, "Mac mini");
+        assert_eq!(facts(c).map(|f| (f.name.as_str(), f.owned)), Some(("Mac mini", true)));
     }
 }
