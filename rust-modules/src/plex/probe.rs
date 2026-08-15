@@ -116,10 +116,27 @@ pub enum Outcome {
     Unreachable,
 }
 
+/// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for
+/// anything outside `1..=65535`.
+///
+/// **The narrowing is the point.** `port` arrives from plex.tv (and from the session file, and from
+/// the `plxnative-servers` trigger) as an `i64`, because PMS and plex.tv both string-encode numbers
+/// and every numeric field here goes through the lenient `de_i64` — so what lands in a `Candidate`
+/// is whatever the JSON said, not whatever a port can be. `port as i32` on that WRAPS: an answer of
+/// `4_294_999_696` becomes `32400` and the app dials a port nobody advertised, quietly and with a
+/// plausible-looking result. Every site that turns an advertised port into a connection goes
+/// through here.
+///
+/// Out of range drops the CANDIDATE, never the server: another of its addresses may still be
+/// dialable, and the same rule already applies to an address this transport cannot speak to.
+pub fn dial_port(p: i64) -> Option<i32> {
+    (1..=65535).contains(&p).then_some(p as i32)
+}
+
 /// Would this connection be dialled at all? Rule 1 lives here, alone, so the reason it exists is
 /// readable in one place.
 fn is_usable(res: &Resource, c: &Connection) -> bool {
-    if c.address.is_empty() || c.port <= 0 {
+    if c.address.is_empty() || dial_port(c.port).is_none() {
         return false;
     }
     // A non-owned server's `local` address belongs to the OWNER's LAN unless our public address
@@ -490,6 +507,33 @@ mod tests {
                   {"address":"10.0.0.9","port":0,"uri":"","local":true}]}"#,
         );
         assert!(candidates(&res).is_empty(), "no address and no port are both nothing to dial");
+    }
+
+    /// A port is an `i64` all the way from plex.tv (`de_i64`, because these fields arrive
+    /// string-encoded) and an `i32` at the socket, and the narrowing used to be a bare `as` cast.
+    /// `4_294_999_696 as i32` is **32400** — so a broken or hostile answer could hand the app a
+    /// port nobody advertised, wearing the most ordinary value there is. The range check is what
+    /// makes that a dropped candidate instead.
+    #[test]
+    fn a_port_no_socket_could_take_is_not_a_candidate() {
+        assert_eq!(dial_port(32400), Some(32400));
+        assert_eq!(dial_port(1), Some(1), "the low edge is dialable");
+        assert_eq!(dial_port(65535), Some(65535), "so is the high one");
+        assert_eq!(dial_port(0), None);
+        assert_eq!(dial_port(-1), None);
+        assert_eq!(dial_port(65536), None, "one past the top of the range");
+        assert_eq!(dial_port(4_294_999_696), None, "the wrap that read as 32400");
+
+        // …and it is the CANDIDATE that goes, not the server: its other address survives.
+        let res = parse(
+            r#"{"name":"odd","clientIdentifier":"ffff6666","provides":"server","owned":true,
+                "connections":[
+                  {"protocol":"http","address":"10.0.0.9","port":4294999696,"uri":"","local":true},
+                  {"protocol":"http","address":"10.0.0.9","port":32400,"uri":"","local":true}]}"#,
+        );
+        let cs = candidates(&res);
+        assert!(!cs.is_empty(), "the good address is still dialable: {cs:#?}");
+        assert!(cs.iter().all(|c| c.port == 32400), "the wrapping one is gone: {cs:#?}");
     }
 
     /// The plan carries the identity a probe must check and the token it must send — the two things
