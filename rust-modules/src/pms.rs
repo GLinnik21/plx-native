@@ -1190,6 +1190,12 @@ pub(crate) fn reset() {
     *RESULTS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
     *lock_srcs() = Vec::new();
     SEEN.store(u64::MAX, Ordering::Relaxed);
+    // Adopt the section table's generation with the empty commit below: a bump from BEFORE this
+    // reset is already reflected in "nothing", so it is not owed a re-merge. Left unadopted, the
+    // next `pump` "caught up" on a generation some other era had moved and re-committed — freeing
+    // the HUBS strings out from under a `hub_title` borrow held across that pump, which is how the
+    // test suite read freed memory whenever another module's `browse::reset` ran in between.
+    LAST_SECTIONS_GEN.store(crate::browse::sections_gen(), Ordering::SeqCst);
     commit((Vec::new(), Vec::new(), Vec::new()));
 }
 // ---------------------------------------------------------------------------------------

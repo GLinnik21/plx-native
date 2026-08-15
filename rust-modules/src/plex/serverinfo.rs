@@ -270,10 +270,22 @@ mod tests {
     /// Registry state is a crate global, so this holds `testlock::serial()` (the registry's own
     /// tests do too) and it registers through the client-id seam — the plain `register` fetches
     /// server info, which on the host would mean a worker thread dialling a fictional address.
+    ///
+    /// The guard empties the registry on the way OUT as well as in — `servers`' own `Fresh`
+    /// discipline. This test used to reset only on entry, and the two servers it left behind read
+    /// as a live two-server roster to any later test that derives one: `pms::sync_roster` kept a
+    /// seeded source table alive on exactly that, and which test inherited the leak depended on
+    /// parallel completion order — the worst shape a flake can take.
     #[test]
     fn one_servers_plex_pass_is_never_read_as_the_others() {
         use super::super::servers;
-        let _g = crate::testlock::serial();
+        struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                servers::reset_for_test();
+            }
+        }
+        let _g = Fresh(crate::testlock::serial());
         servers::reset_for_test();
         let reg = |m: &str, host: &str| servers::register_with_client_id(m, host, 32400, "tok", "cid");
         let (a, b) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));

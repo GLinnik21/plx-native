@@ -186,22 +186,23 @@ pub(crate) fn view_tab(own: c_int) -> c_int {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    //! `PAGE`/`CONTINUOUS`/`TAB` are module `static mut`s, so every test here holds the module's own
-    //! [`NAV`] mutex for its whole body — the `home.rs` `FOCUS` / `library.rs` `PEND` precedent.
+    //! `PAGE`/`CONTINUOUS`/`TAB` are module `static mut`s — but a module-local mutex (the first
+    //! version's `NAV`, on the `home.rs` `FOCUS` precedent) is NOT enough here: driving the page
+    //! fade runs `Xfade::tick`, which reports to `ui::idle`'s process-global dirty flag, so every
+    //! test holds `crate::testlock::serial()` — `xfade.rs`'s own rule, "serial by obligation".
+    //! Under the local mutex these ran beside other modules' "a settled screen asks for nothing"
+    //! assertions and intermittently failed THEM, which is the worst shape a flake can take.
     //! Nothing here draws, so what these CANNOT say is whether the dip reads right on the panel or
     //! whether the tab bar visibly holds still through a swap; those are device captures.
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-    use std::sync::Mutex;
-
-    static NAV: Mutex<()> = Mutex::new(());
 
     /// One 60 Hz frame.
     const DT: f32 = 1.0 / 60.0;
 
     /// Stand-in for `detail::close` / `person::leave`: the teardown is a bare `fn()` here precisely
-    /// so a test can hand in one whose only effect is countable. Guarded by [`NAV`] like every
-    /// other static in this module.
+    /// so a test can hand in one whose only effect is countable. Guarded by the serial lock like
+    /// every other static in this module.
     static TORN: AtomicUsize = AtomicUsize::new(0);
     fn tear_down() {
         TORN.fetch_add(1, Relaxed);
@@ -245,7 +246,7 @@ mod tests {
     /// from the press frame until the destination takes over answering for itself.
     #[test]
     fn the_capsule_reads_the_queued_tab_from_the_press_frame_until_the_commit() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(true, Some(2), None);
         assert_eq!(view_tab(0), 2, "the capsule leaves on the PRESS frame, before any tick");
@@ -272,7 +273,7 @@ mod tests {
     /// rides the page exactly.
     #[test]
     fn continuous_chrome_never_dips_while_the_page_does() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(true, Some(1), None);
         let (commits, pa, ca) = run(40);
@@ -292,7 +293,7 @@ mod tests {
     /// must hand the selection straight back, and nothing may commit.
     #[test]
     fn a_withdrawn_transition_hands_the_row_straight_back() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(true, Some(3), None);
         run(2);
@@ -310,7 +311,7 @@ mod tests {
     /// rest of the fade and then never hide it — a blink in the middle of a transition.
     #[test]
     fn a_superseding_transition_cannot_un_hide_chrome_it_has_already_started_hiding() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(false, None, None);
         run(2);
@@ -332,7 +333,7 @@ mod tests {
     /// and every escape from the screen are inside the thing being faded.
     #[test]
     fn the_page_can_never_wedge_at_zero() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(true, Some(1), None);
         let (commits, pa, _) = run(600);
@@ -353,7 +354,7 @@ mod tests {
     /// looking at the page it empties.
     #[test]
     fn the_teardown_runs_at_the_floor_and_not_one_frame_before_it() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(false, None, Some(tear_down as fn()));
         assert_eq!(TORN.load(Relaxed), 0, "the press frame tears nothing down");
@@ -382,7 +383,7 @@ mod tests {
     /// transition at all: the user would be left standing on a detail page with no item loaded.
     #[test]
     fn a_back_inside_the_window_withdraws_the_teardown_with_the_route() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(false, None, Some(tear_down as fn()));
         run(2);
@@ -402,7 +403,7 @@ mod tests {
     /// out: the drop must SPEND it, or the next transition would inherit a teardown nobody queued.
     #[test]
     fn a_superseded_request_drops_its_teardown_and_cannot_leak_it_forward() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(false, None, Some(tear_down as fn()));
         let (commits, _, _) = run_as(40, false); // app.rs: `route != req.from`
@@ -421,7 +422,7 @@ mod tests {
     /// the page the new destination is stacking on top of, and the trail needs it there.
     #[test]
     fn retargeting_replaces_the_teardown_rather_than_keeping_the_old_one() {
-        let _g = NAV.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::testlock::serial();
         clear();
         begin(false, None, Some(tear_down as fn())); // BACK: close the page
         run(2);

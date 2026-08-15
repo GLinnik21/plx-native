@@ -471,8 +471,13 @@ mod tests {
         assert!(!acts.iter().flatten().any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
     }
 
+    /// This test and the next drive a live `TableView`, whose selection moves `Spring::jump` —
+    /// which reports to `ui::idle`'s process-global dirty flag. Serial by obligation, not
+    /// precaution (`xfade.rs`'s rule): run parallel, they intermittently failed OTHER modules'
+    /// "a settled screen asks for nothing" assertions.
     #[test]
     fn the_focus_walk_steps_over_the_separator_and_stops_at_the_ends() {
+        let _g = crate::testlock::serial();
         let mut t = TableView::new();
         let (sec, _) = build(&item(3, true), false);
         t.set_sections(vec![sec], 0, false);
@@ -496,6 +501,7 @@ mod tests {
 
     #[test]
     fn a_selection_landed_on_the_separator_settles_onto_a_real_row() {
+        let _g = crate::testlock::serial();
         let mut t = TableView::new();
         let (sec, _) = build(&item(3, true), false);
         t.set_sections(vec![sec], 2, false); // index 2 IS the separator
