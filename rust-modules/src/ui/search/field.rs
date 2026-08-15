@@ -218,7 +218,7 @@ impl Scope<'_> {
     ///
     /// **The two sides are named at different LEVELS, and that is the design rather than an
     /// inconsistency.** Your own server is one thing you own and recognise by its machine name
-    /// ("Gleb's Mac mini"); a share is experienced as the LIBRARY it gave you ("LDN Films"), and
+    /// ("Gleb's Mac mini"); a share is experienced as the LIBRARY it gave you ("Film Club"), and
     /// its hostname is a string that means nothing to anyone watching. `Search Screen.dc.html`
     /// writes exactly that pair, and `browse::BrowseSource::name` states the rule outright: the
     /// Sources list is "the only place in the app a machine is named".
@@ -294,7 +294,7 @@ fn scope_text(src: &[Scope]) -> Option<String> {
         let mut shares = live.iter().filter(|s| !s.owned && !s.handle.is_empty());
         if let (2, Some(s), None) = (live.len(), shares.next(), shares.next()) {
             // …unless the share is ALREADY being called by their name, which is what a share with
-            // several libraries falls back to. "bamx23 · bamx23" attributes a thing to itself.
+            // several libraries falls back to. "friend · friend" attributes a thing to itself.
             if s.label() != s.handle {
                 t.push_str(" · ");
                 t.push_str(s.handle);

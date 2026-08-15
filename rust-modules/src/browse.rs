@@ -573,7 +573,7 @@ pub(crate) fn section_count() -> usize {
 }
 /// The LIBRARY titles this source contributed, in table order — what a source is called in
 /// CONTENT, as opposed to [`BrowseSource::name`], which is its machine and belongs in the Sources
-/// list. A friend's server is experienced as the library it gave you ("LDN Films"), never as a
+/// list. A friend's server is experienced as the library it gave you ("Film Club"), never as a
 /// hostname; `Search Screen.dc.html`'s scope line names it that way, and the app's own rule is
 /// "people in content, machines in settings".
 ///
@@ -802,7 +802,7 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
     // The pin is an input to Home's merge (`pms::feeds_home`), and the merge re-runs off this
     // generation — without the bump the switch said `On`, the store agreed, and Home did not
     // change until something else happened to land. Reported on the device exactly that way:
-    // "LDN Films are enabled On Home but not on home".
+    // "Film Club is enabled On Home but not on home".
     SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
     crate::ui::idle::invalidate();
     true
