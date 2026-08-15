@@ -264,9 +264,20 @@ impl Client {
         crate::stream::http_put(&self.host, self.port, &self.with_token(path_no_token))
     }
 
-    /// POST whose body is discarded — /:/timeline (spec verb; params ride the query string).
-    pub(super) fn post_void(&self, path_no_token: &str) {
-        let _ = crate::stream::http_post(&self.host, self.port, &self.with_token(path_no_token), None);
+    /// POST whose body carries nothing to read — /:/timeline (spec verb; params ride the query
+    /// string) — reporting whether it reached the server and came back accepted.
+    ///
+    /// The POST twin of [`Client::get_ok`], and it exists for the same reason: this is a body-less
+    /// **write**, its caller is off the main thread, and the return value is the only thing that
+    /// can say the write landed. `false` covers a refused or timed-out connect as much as a
+    /// rejected status — a revoked token 401s and a sleeping server answers nothing at all, and
+    /// neither of those may read as a committed resume point.
+    ///
+    /// There is no discarding `post_void` beside it (as `get_void` sits beside `get_ok`): the
+    /// timeline is the only body-less POST in the layer, so a twin that dropped the outcome would
+    /// be a method with no callers.
+    pub(super) fn post_ok(&self, path_no_token: &str) -> bool {
+        crate::stream::http_post(&self.host, self.port, &self.with_token(path_no_token), None).is_some()
     }
 
     /// POST → parse the `{ "MediaContainer": … }` envelope — /playQueues (the returned ids).

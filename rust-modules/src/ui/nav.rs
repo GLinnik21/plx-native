@@ -41,7 +41,8 @@
 //! the caller's own pending value, exactly as the route is.
 //!
 //! It owns MOTION and the chrome rule only. The pending ROUTE is `app.rs`'s typed value, because
-//! `Route` is a `plex_run`-local enum and because a generic queue here would be a
+//! `Route` is a non-`pub` enum of the private `app` module that `ui/` cannot name, and because a
+//! generic queue here would be a
 //! `Box<dyn FnOnce>` behind a `static mut` — the same division `xfade.rs` already draws.
 //!
 //! Main-thread only; `static mut` with the screens' discipline.

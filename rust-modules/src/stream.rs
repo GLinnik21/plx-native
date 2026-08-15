@@ -1,6 +1,12 @@
 //! Blocking HTTP/1.1 GET over a raw TCP socket (was src/stream.c). Callers
 //! (posters/pms/player) allocate an `HttpStream` and pass `&hs`; this operates on it
 //! in place. Header/chunk parsing is bounds-checked (no OOB).
+//!
+//! Failures the return value cannot carry are reported to the event log instead: a non-2xx
+//! response (in [`http_open`], where the code is known and the socket is about to close) and a
+//! body that came up short of its `Content-Length` ([`short_body_line`]). Neither changes what any
+//! function returns — a truncated body is still handed to its caller — and no line built here
+//! carries a query string, which is [`log_endpoint`]'s rule and the reason it exists.
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uchar, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -80,6 +86,70 @@ impl HttpStream {
         self.status = 0;
         self.chunked = 0;
         self.chunk_left = 0;
+    }
+}
+
+/// The part of a request path that may be written to the event log: everything before the query.
+///
+/// Paths reaching this module routinely carry the PMS token in their query string —
+/// `plex::client::with_token` is the data layer's one token choke point and appends
+/// `X-Plex-Token=…` to what it is given, and the poster store's paths arrive with one already in
+/// them (`Client::fetch_built`, where the built path *is* the LRU key, so the key and the request
+/// have to be the same bytes). The event log is this app's support channel: a user is asked to paste
+/// `/tmp/plxnative-events.log` into a public issue thread, so a line carrying a query string is a
+/// credential leak rather than a possible one — the same rule, for the same reason, that
+/// `ui::stats` applies to the diagnostics panel. The endpoint on its own is what makes a line
+/// diagnosable ("which request failed") and it carries no secret.
+///
+/// `crate::redact_tokens` catches a line that gets this wrong on the way out; the policy is that
+/// nothing built here needs it.
+fn log_endpoint(path: &str) -> &str {
+    match path.find('?') {
+        Some(q) => &path[..q],
+        None => path,
+    }
+}
+
+/// The event-log line for a response body that came up short, or `None` when there is nothing to
+/// report. Pure, so the decision can be graded on the host without a socket.
+///
+/// [`http_read`] reports a clean end as 0 and a recv ERROR as -1 (a mid-body `SO_RCVTIMEO` firing,
+/// a reset), and the one-shot wrappers below hand back `Some(body)` for both — deliberately, since
+/// changing that would move every caller's behaviour. What the caller sees instead is a body short
+/// by however much never arrived: for `plex::client::get_json` that is a `serde_json` parse
+/// failure `.ok()`-folded to `None`, which is the same value a server that never answered
+/// produces. This line is the difference between those two.
+///
+/// `sized` is the whole subtlety, and it is why a chunked response cannot report a short body on
+/// length. Chunked framing carries no `Content-Length` to fall short of — the sizes are in the
+/// body — and [`http_read`]'s chunked branch never consults the field, counting DECODED bytes into
+/// `consumed`. A server that sent both headers anyway would therefore have the test comparing two
+/// different quantities, so chunked is excluded outright rather than left to rely on
+/// `content_length` having stayed -1 (RFC 9112 §6: with both present the chunked framing wins and
+/// the length is ignored, which is what the read path already does). A close-delimited body — no
+/// length, not chunked — has no completeness test at all, so there only a recv error can say the
+/// transfer ended early, and `want` says plainly that nothing knows how much was owed.
+fn short_body_line(method: &str, path: &str, consumed: i64, content_length: i64,
+                   chunked: bool, recv_err: bool) -> Option<String> {
+    let sized = !chunked && content_length >= 0;
+    if sized && consumed >= content_length {
+        return None; // whole, by the only measure the response gave us
+    }
+    if !sized && !recv_err {
+        return None; // nothing to fall short of, and the socket ended cleanly
+    }
+    let want = if sized { content_length.to_string() } else { "?".to_string() };
+    let why = if recv_err { "recv error" } else { "EOF" };
+    Some(format!("stream: {method} {} SHORT BODY got={consumed} want={want} ({why})",
+                 log_endpoint(path)))
+}
+
+/// [`short_body_line`] applied to a finished stream. The wrappers call it after their read loop;
+/// the fields it reads are counters, which `http_close` does not touch.
+fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_err: bool) {
+    if let Some(line) = short_body_line(method, path, hs.consumed, hs.content_length,
+                                        hs.chunked != 0, recv_err) {
+        crate::log(&line);
     }
 }
 
@@ -371,6 +441,17 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
 
         hs.bpos = hdr_end as c_int; // first body byte
         if hs.status < 200 || hs.status >= 300 {
+            // The code is known exactly here and the return value cannot carry it: the open
+            // reports a flat `-1` whatever went wrong. It does survive in the struct — `close_owned`
+            // touches only the fd — and three callers dig it back out afterwards (`http_put`,
+            // `auth::get_identity` and `ff.rs`'s demux open all read `hs_status` on the failure
+            // path). `http_get`/`http_post`, i.e. the whole `plex::client` data layer, and the AVIO
+            // seek reopen do not, so for them a 401 from a revoked token and a 500 from a sick
+            // server are one value.
+            //
+            // `status=0` is not a code any server sent: it is what the parse above leaves when the
+            // status line was not `HTTP/1.x` followed by exactly three digits.
+            crate::log(&format!("stream: {method} {} status={}", log_endpoint(&path_s), hs.status));
             close_owned(hs);
             return -1;
         }
@@ -515,13 +596,23 @@ pub(crate) fn http_get(host: &str, port: c_int, path: &str, extra: Option<&str>)
     }
     let mut body = Vec::new();
     let mut chunk = vec![0u8; 65536];
+    // The two non-positive returns are split rather than folded into one `r <= 0`: -1 is a recv
+    // ERROR and 0 a clean end, and `short_body_line` needs them apart to say which ended the
+    // transfer. Both still break, so what this function RETURNS is unchanged — a short body is
+    // handed back exactly as it is.
+    let mut recv_err = false;
     loop {
         let r = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
-        if r <= 0 {
+        if r < 0 {
+            recv_err = true;
+            break;
+        }
+        if r == 0 {
             break;
         }
         body.extend_from_slice(&chunk[..r as usize]);
     }
+    note_short_body("GET", path, &hs, recv_err);
     http_close(&mut *hs);
     Some(body)
 }
@@ -564,13 +655,19 @@ pub(crate) fn http_post(host: &str, port: c_int, path: &str, extra: Option<&str>
     }
     let mut body = Vec::new();
     let mut chunk = vec![0u8; 65536];
+    let mut recv_err = false; // see the read loop in `http_get` — same split, same reason
     loop {
         let r = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
-        if r <= 0 {
+        if r < 0 {
+            recv_err = true;
+            break;
+        }
+        if r == 0 {
             break;
         }
         body.extend_from_slice(&chunk[..r as usize]);
     }
+    note_short_body("POST", path, &hs, recv_err);
     http_close(&mut *hs);
     Some(body)
 }
@@ -868,5 +965,78 @@ mod tests {
         assert!(find_ci(hdr, b"\r\ntransfer-encoding: chunked").is_some());
         assert!(find_ci(hdr, b"\r\ncontent-range:").is_none(), "no false positives");
         assert!(find_ci(b"HT", b"\r\ncontent-length:").is_none(), "a needle longer than the hay");
+    }
+
+    /// The redaction rule these log lines rest on: what reaches the event log is the endpoint, and
+    /// a query string never is. `with_token` is "the ONLY place `X-Plex-Token` is appended"
+    /// (`plex/client.rs`'s own module doc) and it appends it to the QUERY, while the event log is
+    /// what a user pastes into a public issue thread — so this is graded on the token being
+    /// ABSENT, not on the split being pretty.
+    #[test]
+    fn a_logged_endpoint_drops_the_query_and_with_it_the_token() {
+        let p = "/library/metadata/4/children?includeChildren=1&X-Plex-Token=aBcD1234xyzQ";
+        assert_eq!(log_endpoint(p), "/library/metadata/4/children");
+        assert!(!log_endpoint(p).contains("X-Plex-Token"), "the token reached the log line");
+        assert!(!log_endpoint(p).contains("aBcD1234xyzQ"));
+        // A poster path arrives with the token already in it (`Client::fetch_built`).
+        let poster = "/photo/:/transcode?width=300&url=%2Flibrary%2F1&X-Plex-Token=aBcD1234xyzQ";
+        assert_eq!(log_endpoint(poster), "/photo/:/transcode");
+        assert_eq!(log_endpoint("/identity"), "/identity", "a path with no query is itself");
+        assert_eq!(log_endpoint("?X-Plex-Token=t"), "", "a path that is nothing but a query");
+    }
+
+    /// The completeness test itself. A body that reached its `Content-Length` reports nothing; one
+    /// that stopped short reports how far it got and what was owed, and names WHICH end it was —
+    /// a mid-body `SO_RCVTIMEO` (recv error) reads nothing like a peer that closed early (EOF),
+    /// which is why the read loops keep -1 and 0 apart rather than folding them into `r <= 0`.
+    #[test]
+    fn a_short_body_is_reported_and_a_complete_one_is_not() {
+        assert_eq!(short_body_line("GET", "/hubs?X-Plex-Token=t", 5000, 5000, false, false), None,
+                   "a body that reached its length is whole");
+        assert_eq!(short_body_line("GET", "/hubs", 5001, 5000, false, false), None,
+                   "…and one past it is not short either");
+
+        let l = short_body_line("GET", "/hubs?X-Plex-Token=aBcD1234xyzQ", 900, 5000, false, false)
+            .expect("a body 900 bytes into a 5000-byte response must be reported");
+        assert!(l.contains("SHORT BODY got=900 want=5000"), "{l}");
+        assert!(l.contains("/hubs") && !l.contains("aBcD1234xyzQ"), "the line leaked the query: {l}");
+        assert!(l.contains("EOF"), "a clean end must not read as an error: {l}");
+
+        let e = short_body_line("POST", "/playQueues", 900, 5000, false, true).expect("reported");
+        assert!(e.contains("recv error"), "a recv error must be named as one: {e}");
+        assert!(e.starts_with("stream: POST "), "the verb belongs on the line: {e}");
+
+        // No length at all — a close-delimited body. A clean end is the ONLY end it has, so
+        // silence; an error is still an error, with nothing to state as `want`.
+        assert_eq!(short_body_line("GET", "/x", 900, -1, false, false), None);
+        let u = short_body_line("GET", "/x", 900, -1, false, true).expect("reported");
+        assert!(u.contains("got=900 want=? (recv error)"), "{u}");
+    }
+
+    /// Chunked framing has no `Content-Length` to fall short of, and `http_read`'s chunked branch
+    /// counts DECODED bytes into `consumed` without ever reading the field — so the length test
+    /// must not run there, INCLUDING for a server that sent both headers, where the two numbers
+    /// are not the same quantity. Only a recv error can call a chunked transfer incomplete.
+    #[test]
+    fn a_chunked_response_cannot_report_a_short_body_on_length() {
+        assert_eq!(short_body_line("GET", "/x", 900, -1, true, false), None,
+                   "the ordinary chunked case: no length, clean end");
+        assert_eq!(short_body_line("GET", "/x", 900, 5000, true, false), None,
+                   "both headers present — the chunked framing wins, the length means nothing");
+        let e = short_body_line("GET", "/x", 900, 5000, true, true).expect("reported");
+        assert!(e.contains("want=?"), "a chunked transfer owes no stated length: {e}");
+    }
+
+    /// The constraint the reporting is bound by: it is observability only. A server that promises
+    /// 10 bytes and closes after 4 still hands the caller those 4 bytes as `Some(body)`, so what
+    /// the data layer does with them (`get_json`'s serde failure, `.ok()`-folded to `None`) is
+    /// decided exactly where it was — the event log is the only thing that gained a fact.
+    #[test]
+    fn a_truncated_body_is_still_returned_to_the_caller() {
+        let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcd".to_vec());
+        let body = http_get("127.0.0.1", port as c_int, "/x", None)
+            .expect("a truncated body is still a body — this must not become None");
+        assert_eq!(body.as_slice(), b"abcd", "the bytes that did arrive must be handed over intact");
+        h.join().unwrap();
     }
 }

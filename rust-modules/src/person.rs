@@ -50,10 +50,11 @@
 //!   is already global — plex.tv answers about the person, not about anybody's library — so fanning
 //!   it out would be the same request N times for one answer.
 //!
-//! The mailboxes, single-flight flags and retry countdowns are all arrays over ONE flat index
-//! ([`fx`]/[`un_fx`]), keyed on the registry **slot** rather than on a position in [`Person::srcs`]:
-//! a slot is stable for the life of the process, so a landing can never be applied to a different
-//! server because the source list moved under it.
+//! Every fetch's plumbing is indexed by ONE flat key ([`fx`]/[`un_fx`]): its mailbox and its
+//! single-flight claim as one [`Fetch`] ([`FETCH`]), its retry countdown beside them ([`RETRY_CD`],
+//! whose doc says why that one cannot join the struct). The key is the registry **slot** rather
+//! than a position in [`Person::srcs`]: a slot is stable for the life of the process, so a landing
+//! can never be applied to a different server because the source list moved under it.
 //!
 //! **The header still MOUNTS on what it was handed.** `Role[]` already carries the name and the
 //! headshot (`plex::Tag`), so the page draws instantly and the plex.tv fields fade in under the
@@ -285,7 +286,7 @@ const NKIND: usize = 3;
 /// The ONE fetch that is not per-server: plex.tv's biography, which is already global (module doc).
 /// It sits past every per-source mailbox, which is what keeps [`un_fx`] total.
 const F_PROFILE: usize = crate::plex::MAX_SERVERS * NKIND;
-/// Mailboxes, single-flight flags and retry countdowns, all over this one index space.
+/// Mailboxes, single-flight claims and retry countdowns, all over this one index space.
 const NFETCH: usize = F_PROFILE + 1;
 
 /// Mailbox index of source `sid`'s fetch of kind `k`, `None` for a `ServerId` that names no slot.
@@ -306,23 +307,21 @@ fn un_fx(i: usize) -> Option<(ServerId, usize)> {
     (i < F_PROFILE).then(|| (ServerId::from_raw((i / NKIND) as u16), i % NKIND))
 }
 
-/// The claim that fetch `i` is out. Cleared ONLY by a mailbox take, so anything that drops the
-/// mailbox ([`supersede`]) must clear it too — otherwise the fetch stays latched and the page
-/// spins forever. Same latch `browse.rs` documents on its `IN_FLIGHT` array.
-///
-/// It bounds spawns per *pump*, which is what matters; it is NOT a hard one-worker-at-a-time
-/// interlock, and claiming otherwise would be wrong. Two ways a second worker can briefly exist:
-/// [`supersede`] releases the claim while the old worker is still running, and a take releases it
-/// before the generation check (so a stale landing can free a NEWER fetch's claim, costing one
-/// duplicate request). Neither can wedge or corrupt — [`land`] is monotone on the generation and
-/// [`pump`] discards anything stale — and `browse.rs` has the identical shape.
-static IN_FLIGHT: [AtomicBool; NFETCH] = [const { AtomicBool::new(false) }; NFETCH];
 /// Frames left before fetch `i` may spawn again after a FAILED attempt (main-thread; [`pump`]
 /// decrements). Stops a fast-failing network from spawning a worker every frame. PER FETCH AND PER
 /// SOURCE on purpose, which is the third of `pms.rs`'s three multi-source lessons: a plex.tv
 /// biography that cannot be reached (the TV is on a LAN with no internet — the case this app is
 /// built to keep working) must not hold the shelves off for two seconds a go, and a share that
 /// takes eight seconds to time out must not put the server that IS answering on its ladder.
+///
+/// **The one piece of a fetch that stays its own array, and both halves of that are deliberate.**
+/// It is written by the main thread alone, which a static the workers share cannot express — a
+/// `Cell` is not `Sync`, and a `static mut` [`FETCH`] would put these writes inside an object
+/// worker threads hold references into. And unlike `search.rs`'s `Source::retry_cd`, which its doc
+/// records as never moving independently of the `status` beside it, this countdown genuinely moves
+/// on its own: [`pump`] ticks it every frame whether or not the fetch is claimed, [`apply`] arms it
+/// for a landing whose claim the take has already released, and [`maybe_spawn`] arms it for a
+/// source with no client — a fetch it never claimed at all.
 static mut RETRY_CD: [u32; NFETCH] = [0; NFETCH];
 /// ~2s at 60fps — the same backoff `browse.rs` uses for a failed page.
 const RETRY_FRAMES: u32 = 120;
@@ -356,29 +355,98 @@ struct Mail {
     gen: u32,
     what: Landing,
 }
-/// One mailbox per fetch, same index space as [`IN_FLIGHT`].
-static SLOT: [Mutex<Option<Mail>>; NFETCH] = [const { Mutex::new(None) }; NFETCH];
+
+/// One fetch's two WORKER-VISIBLE halves: the claim that it is out, and the mailbox its answer
+/// lands in. Bundled because they move together — the claim of a worker that is out is cleared by
+/// the take of the mail answering it ([`Fetch::take`]), so emptying that mailbox any other way
+/// owes the release ([`Fetch::clear`]), and a spawn that never happened owes it too
+/// ([`Fetch::release`]). Three methods, each spelling one of those, rather than two arrays and the
+/// same rule restated at every site that touches both.
+///
+/// The retry countdown is NOT a third field here; [`RETRY_CD`] documents why it cannot be.
+struct Fetch {
+    /// The claim that this fetch is out. Once a worker holds it, it is cleared ONLY by a mailbox
+    /// take, so anything that drops the mailbox ([`supersede`]) must clear it too — otherwise the
+    /// fetch stays latched and the page spins forever. Same latch `browse.rs` documents on its
+    /// `IN_FLIGHT` array.
+    ///
+    /// It bounds spawns per *pump*, which is what matters; it is NOT a hard one-worker-at-a-time
+    /// interlock, and claiming otherwise would be wrong. Two ways a second worker can briefly
+    /// exist: [`supersede`] releases the claim while the old worker is still running, and a take
+    /// releases it before the generation check (so a stale landing can free a NEWER fetch's claim,
+    /// costing one duplicate request). Neither can wedge or corrupt — [`land`] is monotone on the
+    /// generation and [`pump`] discards anything stale — and `browse.rs` has the identical shape.
+    in_flight: AtomicBool,
+    /// Where the worker posts what it came back with — the one half of a [`Fetch`] a worker
+    /// touches, the claim beside it being moved by the main thread alone. `None` means nothing has
+    /// landed since the last take.
+    slot: Mutex<Option<Mail>>,
+}
+
+impl Fetch {
+    const IDLE: Fetch = Fetch { in_flight: AtomicBool::new(false), slot: Mutex::new(None) };
+
+    /// Is the claim held? [`maybe_spawn`]'s first gate.
+    fn busy(&self) -> bool {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
+    /// Claim the fetch, on the way into a spawn.
+    fn claim(&self) {
+        self.in_flight.store(true, Ordering::SeqCst);
+    }
+
+    /// Release the claim without touching the mailbox — what a REFUSED spawn (`task.rs`'s thread
+    /// ceiling) owes, since nothing will ever land to release it, and the second half of
+    /// [`Fetch::clear`].
+    fn release(&self) {
+        self.in_flight.store(false, Ordering::SeqCst);
+    }
+
+    /// Take whatever landed, RELEASING the claim with it. The release does not depend on what the
+    /// mail turns out to be — an answer, a failure, or a generation the pump is about to discard —
+    /// because once a worker is out this take and [`supersede`] are the two things that can clear
+    /// its claim: hold it while dropping a landing and this fetch never spawns again.
+    ///
+    /// An EMPTY mailbox releases nothing, which is the other half of the rule: the claim it would
+    /// clear belongs to a worker still running, and the next frame would spawn a duplicate.
+    fn take(&self) -> Option<Mail> {
+        let mail = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        self.in_flight.store(false, Ordering::SeqCst);
+        Some(mail)
+    }
+
+    /// Drop the mailbox and release the claim with it — [`supersede`]'s per-fetch half. Releases
+    /// unconditionally, unlike [`Fetch::take`], and that difference is the point: the worker
+    /// holding this claim is still out, and what it will answer about is a person no longer open.
+    fn clear(&self) {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.release();
+    }
+}
+
+/// One [`Fetch`] per index of the [`fx`] space, the profile's included.
+static FETCH: [Fetch; NFETCH] = [const { Fetch::IDLE }; NFETCH];
 
 /// Post a finished fetch to its mailbox. MONOTONE: an older fetch landing late must never clobber
 /// a newer result the pump has not consumed yet. Named (not inlined in the worker closure) for the
 /// same reason as `metadata::land_detail` — the guard is the one piece of this machinery a test
 /// cannot reach through [`open`], because reaching it needs two overlapping real fetches.
 fn land(i: usize, gen: u32, what: Landing) {
-    let mut slot = SLOT[i].lock().unwrap_or_else(|e| e.into_inner());
+    let mut slot = FETCH[i].slot.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
         *slot = Some(Mail { gen, what });
     }
 }
 
 /// Invalidate everything in flight: bump the generation (a late landing is discarded), drop every
-/// mailbox, release the single-flight flags with them, and clear the retry backoffs. The ONE place
-/// those four move together — and it walks the WHOLE index space, not just the sources currently
-/// held, so a slot that has left the roster cannot leave a latched flag behind it.
+/// mailbox and the claim held with it ([`Fetch::clear`]), and clear the retry backoffs. The ONE
+/// place those three move together — and it walks the WHOLE index space, not just the sources
+/// currently held, so a slot that has left the roster cannot leave a latched claim behind it.
 fn supersede() {
     GEN.fetch_add(1, Ordering::SeqCst);
     for i in 0..NFETCH {
-        *SLOT[i].lock().unwrap_or_else(|e| e.into_inner()) = None;
-        IN_FLIGHT[i].store(false, Ordering::SeqCst);
+        FETCH[i].clear();
         unsafe { RETRY_CD[i] = 0 };
     }
 }
@@ -596,12 +664,10 @@ pub(crate) fn pump() -> bool {
                 RETRY_CD[i] -= 1;
             }
         }
-        let taken = SLOT[i].lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(r) = taken {
-            // the take ALWAYS releases the single-flight, whatever the landing turns out to be —
-            // dropping a stale one without this is how the flag latches forever
-            IN_FLIGHT[i].store(false, Ordering::SeqCst);
-            // …and EVERY landing repaints, the failures included. `ui::idle` gates the whole frame
+        // the take releases the single-flight claim with the mail, whatever the landing turns out
+        // to be — `Fetch::take` is where that rule lives
+        if let Some(r) = FETCH[i].take() {
+            // EVERY landing repaints, the failures included. `ui::idle` gates the whole frame
             // on a settled screen, so without this a shelf that arrives (or a spinner that should
             // stop) waits for the next keypress to become visible. This page had no such call at
             // all — the omission `search.rs`'s module doc warns the next store about.
@@ -706,11 +772,11 @@ fn apply(i: usize, what: Landing) -> bool {
             {
                 let s = &mut p.srcs[si];
                 // A landing addressed to a shelf list that has since been REPLACED must not settle
-                // the current one: the IN_FLIGHT doc allows a brief duplicate same-generation media
-                // worker, so a second media landing can swap this source's shelves while a roles
-                // batch for the first list is in flight. Refusing it (without arming the failure
-                // backoff — nothing failed) leaves `roled` false, and `address` simply re-asks with
-                // the keys that are now true.
+                // the current one: `Fetch::in_flight`'s doc allows a brief duplicate media worker
+                // at one generation, so a second media landing can swap this source's shelves while
+                // a roles batch for the first list is in flight. Refusing it (without arming the
+                // failure backoff — nothing failed) leaves `roled` false, and `address` simply
+                // re-asks with the keys that are now true.
                 if keys != s.shelf_keys() {
                     return false;
                 }
@@ -804,7 +870,7 @@ fn address(i: usize, p: &Person) -> Option<Vec<String>> {
 /// (the device's thread ceiling) or a transient network error simply retries after the backoff
 /// instead of latching the page on a spinner forever.
 fn maybe_spawn(i: usize) {
-    if IN_FLIGHT[i].load(Ordering::SeqCst) || unsafe { RETRY_CD[i] > 0 } {
+    if FETCH[i].busy() || unsafe { RETRY_CD[i] > 0 } {
         return;
     }
     let Some(p) = current() else { return };
@@ -814,7 +880,7 @@ fn maybe_spawn(i: usize) {
     // worker matches a credit row by either id space
     let guid = p.guid.clone();
     if i == F_PROFILE {
-        IN_FLIGHT[i].store(true, Ordering::SeqCst);
+        FETCH[i].claim();
         let spawned = crate::task::spawn_small("person", move || {
             // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
             // as an empty biography
@@ -822,7 +888,7 @@ fn maybe_spawn(i: usize) {
             land(i, gen, Landing::Profile(prof));
         });
         if !spawned {
-            IN_FLIGHT[i].store(false, Ordering::SeqCst);
+            FETCH[i].release();
         }
         return;
     }
@@ -842,7 +908,7 @@ fn maybe_spawn(i: usize) {
     // meaningless on any other machine, so filtering with it blanked every borrowed caption while
     // still paying for the batch.
     let local = p.srcs.iter().find(|s| s.sid == sid).and_then(|s| s.local.clone()).unwrap_or_default();
-    IN_FLIGHT[i].store(true, Ordering::SeqCst);
+    FETCH[i].claim();
     let spawned = crate::task::spawn_small("person", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an empty filmography / a source silently written off / no captions
@@ -879,10 +945,10 @@ fn maybe_spawn(i: usize) {
         land(i, gen, what);
     });
     if !spawned {
-        // nothing will ever fill the mailbox, and the flag is cleared only by a take — release it
+        // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never fetches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        IN_FLIGHT[i].store(false, Ordering::SeqCst);
+        FETCH[i].release();
     }
 }
 
@@ -1266,6 +1332,28 @@ mod tests {
         fx(sid, k).expect("a real slot")
     }
 
+    /// The claim and the mailbox are ONE thing, and [`Fetch::take`] is where that is spelled: the
+    /// claim goes with whatever it hands back — an answer, a failure, or a generation the pump is
+    /// about to discard — while an EMPTY mailbox releases nothing, because the claim it would clear
+    /// belongs to a worker still out and the next frame would spawn a duplicate. Asserted on the
+    /// pair directly, since both halves are properties of the take rather than of `pump`'s sweep.
+    #[test]
+    fn a_take_releases_the_claim_and_an_empty_mailbox_leaves_it_alone() {
+        let _serial = crate::testlock::serial();
+        let f = &FETCH[at(S0, K_ROLES)];
+        f.clear();
+
+        f.claim();
+        assert!(f.take().is_none(), "nothing has landed");
+        assert!(f.busy(), "an empty mailbox must not un-claim a worker still out");
+
+        land(at(S0, K_ROLES), GEN.load(Ordering::SeqCst), Landing::Roles(None));
+        assert!(f.take().is_some());
+        assert!(!f.busy(), "the claim must go with the mail — a FAILURE released it too");
+
+        f.clear();
+    }
+
     /// A late landing for the actor you already left must not repopulate the one you are looking
     /// at. `open` bumps the generation; `pump` drops anything older — and it must still clear the
     /// single-flight flag while doing so, or the NEW person can never fetch.
@@ -1276,7 +1364,7 @@ mod tests {
         let stale = GEN.load(Ordering::SeqCst);
         open(S0, "465", "5d777", "Cynthia Erivo", ""); // supersedes: the fetch above is now obsolete
 
-        IN_FLIGHT[at(S0, K_MEDIA)].store(true, Ordering::SeqCst);
+        FETCH[at(S0, K_MEDIA)].claim();
         hold_off();
         land(at(S0, K_MEDIA), stale, media(vec![PmsMovie::default()], Vec::new()));
         assert!(!pump(), "a superseded landing must not publish");
@@ -1286,7 +1374,7 @@ mod tests {
         assert!(p.shelf(0).is_empty(), "the previous actor's filmography leaked in");
         assert!(!p.landed, "a discarded landing must not settle the spinner");
         assert!(
-            !IN_FLIGHT[at(S0, K_MEDIA)].load(Ordering::SeqCst),
+            !FETCH[at(S0, K_MEDIA)].busy(),
             "the take must release the single-flight even for a landing it drops"
         );
         close();
@@ -1326,14 +1414,14 @@ mod tests {
         let _serial = crate::testlock::serial();
         open(S0, "161", "5d776", "Idina Menzel", "");
         for i in 0..NFETCH {
-            IN_FLIGHT[i].store(true, Ordering::SeqCst);
+            FETCH[i].claim();
             unsafe { RETRY_CD[i] = RETRY_FRAMES };
         }
 
         reset();
 
         for i in 0..NFETCH {
-            assert!(!IN_FLIGHT[i].load(Ordering::SeqCst), "fetch {i} stayed latched — the page wedges");
+            assert!(!FETCH[i].busy(), "fetch {i} stayed latched — the page wedges");
             assert_eq!(unsafe { RETRY_CD[i] }, 0);
         }
         assert!(current().is_none());

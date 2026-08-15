@@ -185,7 +185,10 @@ pub(crate) fn note_jump(changed: bool) {
 ///   caller's invalidate is skipped for exactly the landing that flips the player from Resolving
 ///   to Error. It repainted anyway only because the player route bypasses this gate outright
 /// - a poster texture uploaded (`posters::poster_pump`)
-/// - a hub refetch committing (`pms::pump`)
+/// - a hub catalog being installed (`pms::commit`) — EVERY install, whichever path built it: the
+///   boot fetch, a landing through `pms::pump`, a view-state edit, a roster sync, and the empty
+///   commit `pms::reset` performs. The call used to sit at the call sites instead, where two of
+///   the five did not make it
 /// - a view-state write's OPTIMISTIC edit (`viewstate::request` / `pms::edit_item`) and the refresh
 ///   its landing kicks (`viewstate::pump`) — a watched tick, a corner veil and a resume bar all
 ///   change with no spring behind any of them, and the press is the only thing that moved

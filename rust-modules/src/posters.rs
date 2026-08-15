@@ -629,6 +629,94 @@ pub(crate) fn poster_pump(budget: c_int) {
     }
 }
 
+/// Why the worker got no bytes to decode. Three arms rather than one flag because they send the
+/// reader to three different places: an unresolved server is registry state, no usable response is
+/// the network or the token, and a 2xx with nothing in it is an answer that arrived and was empty.
+#[derive(Clone, Copy)]
+enum ArtFail {
+    /// `plex::client_for` answered `None` — the slot names a server the registry does not resolve
+    /// (never registered, or below the floor a sign-out raised). No request was made.
+    NoServer,
+    /// The request produced no usable response, and this layer cannot take that apart any further:
+    /// `stream::http_open` returns -1 — and so `http_get` returns `None` — for a refused or
+    /// timed-out connect, a peer that closes mid-header, AND any status outside 200–299 alike.
+    ///
+    /// So this arm covers a 401 from a revoked token and a 404 for art that does not exist with
+    /// one word, and the second of those is not always a fault: [`logo_src`] asks for a `clearLogo`
+    /// an item may not have and reads the refusal as "there is none" (its own note — "the 404 lands
+    /// as `P_FAILED` and holds it"). A library holding one such item spends this arm's single line
+    /// on it. Read the line as "at least one art request on this server came back with nothing",
+    /// which is exactly what it says.
+    NoResponse,
+    /// A 2xx that carried zero bytes: something answered, and the answer held no picture. Split
+    /// from [`ArtFail::NoResponse`] because the request plainly reached a server that accepted it,
+    /// which rules out the address, the route and the token in one line.
+    Empty,
+}
+
+impl ArtFail {
+    /// The half of the log line that names the cause. Prose rather than a code, because the reader
+    /// is whoever opened `/tmp/plxnative-events.log` after being told artwork does not load.
+    fn why(self) -> &'static str {
+        match self {
+            ArtFail::NoServer => "the registry does not resolve this server (never registered, or revoked)",
+            ArtFail::NoResponse => "no usable response - refused/timed-out connect, or a status outside 2xx",
+            ArtFail::Empty => "the server answered 2xx with an empty body",
+        }
+    }
+}
+
+/// A fetch that produced no bytes logs ONCE per (cause, server), then goes quiet.
+///
+/// **Why it is logged at all.** `img::img_decode_rgba` reports a decode that failed (`img:
+/// decode-none …`), but that runs only once bytes have ARRIVED; the ways of arriving with NONE are
+/// this module's to speak for. And what it does about them is otherwise invisible: the slot goes
+/// `P_FAILED`, [`lookup`] keeps MATCHING that key and answering `(0, 0, 0)` for it, so the tile is
+/// a skeleton until the LRU walks back to the slot ([`victim`] counts `P_FAILED` as settled). A
+/// transport layer can only ever speak for one request; that the STORE gave up on this art is the
+/// store's to say — and a screen of skeletons with nothing in the event log naming them is the
+/// silence `paths.rs` was fixed for, where a font fell through to DroidSans while `init_text` still
+/// logged `ok=1`.
+///
+/// **Why it is latched**, exactly as [`warn_key_refused`] is: this is a per-SLOT path and a grid
+/// claims dozens of them at once, so one line per failure would be dozens per screen, and a log
+/// that scrolls itself away is as useless as a silent one.
+///
+/// **Why the SERVER is half the key.** With a friend's share registered beside our own, the
+/// interesting failure is the asymmetric one — ours answers and the share does not, because it is
+/// asleep or its token was revoked — and a cause-only latch would spend its single line on
+/// whichever failed first and hide the other for the rest of the process. [`crate::plex::MAX_SERVERS`]
+/// is 16, so the extra dimension is one `u32` of bits per slot.
+///
+/// **What is deliberately NOT in the line: the key.** It is a `/photo/:/transcode?…` path ending in
+/// `&X-Plex-Token=…` (see [`poster_key`], and the test that pins the token to the end of it), and
+/// `crate::redact_tokens`' own doc states the policy that backstop exists to make redundant — no
+/// call site formats a URL into a log line in the first place. The server is named by its registry
+/// SLOT NUMBER, the handle `plex: server slot N registered at …` already prints, and by nothing
+/// else: not the address, not the machine identifier, not the friendly name (which defaults to the
+/// owner's hostname). `ui/stats.rs`'s module doc argues the whole rule for the on-screen read-out.
+fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
+    // One word per server slot, one BIT per cause. Indexing by the SERVER (clamped) is what keeps
+    // the index in range by construction rather than by assumption: `ServerId::UNSET` is
+    // `u16::MAX`, and the three store entry points take a raw key from any caller, so a slot's id
+    // is not guaranteed to name a registry entry. Everything that does not name one shares the
+    // last word.
+    const NWORD: usize = crate::plex::MAX_SERVERS + 1;
+    static LOGGED: [AtomicU32; NWORD] = [const { AtomicU32::new(0) }; NWORD];
+    let bit = 1u32 << cause as u32;
+    let word = &LOGGED[(srv.raw() as usize).min(crate::plex::MAX_SERVERS)];
+    // fetch_or, not load-then-store: this loop runs on more than one thread (`posters_init` spawns
+    // two), so two workers can reach the same cause for the same server at once and only
+    // the one that flipped the bit may write the line.
+    if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+        crate::log(&format!(
+            "posters: art fetch FAILED on server {} - {} (tiles stay skeletons; further ones like this are silent)",
+            srv.raw(),
+            cause.why()
+        ));
+    }
+}
+
 /// BACKGROUND worker: claim a P_WANT slot, fetch+decode off-lock, publish P_DECODED.
 fn poster_worker() {
     loop {
@@ -666,12 +754,30 @@ fn poster_worker() {
         // that server's token, so the ordinary path would append a second one. (Going through
         // the client at all is the point — `crate::stream` used to be called from here, behind
         // the back of the layer whose module doc claims to be the only code that touches it.)
+        //
+        // The three ways to reach the decode with NOTHING are split apart only to be REPORTED —
+        // `warn_fetch_failed` carries the argument for why this module owes the log a line. Nothing
+        // about the outcome moves: each of them yields the same null pointer the folded `_ =>` arm
+        // did, and the state transition below is untouched.
         let mut w = 0i32;
         let mut h = 0i32;
-        let body = crate::plex::client_for(srv).and_then(|c| c.fetch_built(&key_s));
-        let px = match body {
-            Some(b) if !b.is_empty() => img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h),
-            _ => std::ptr::null_mut(),
+        let px = match crate::plex::client_for(srv) {
+            Some(c) => match c.fetch_built(&key_s) {
+                // bytes arrived: from here on a failure is the decoder's, and `img.rs` logs it
+                Some(b) if !b.is_empty() => img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h),
+                Some(_) => {
+                    warn_fetch_failed(srv, ArtFail::Empty);
+                    std::ptr::null_mut()
+                }
+                None => {
+                    warn_fetch_failed(srv, ArtFail::NoResponse);
+                    std::ptr::null_mut()
+                }
+            },
+            None => {
+                warn_fetch_failed(srv, ArtFail::NoServer);
+                std::ptr::null_mut()
+            }
         };
 
         let mut g = store();

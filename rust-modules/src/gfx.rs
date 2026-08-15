@@ -311,6 +311,15 @@ pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
             let mut buf = [0u8; 1024];
             glGetShaderInfoLog(s, 1024, std::ptr::null_mut(), buf.as_mut_ptr() as *mut c_char);
             let msg = CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy().into_owned();
+            // The EVENT log is the only surface anyone reads over ssh, and neither of the two lines
+            // below reaches it: `eprintln!` goes to /tmp/plxnative-stderr.log (main.c replaces
+            // stderr), and `process::exit` is a CLEAN exit, so the crash tracer never fires and
+            // /tmp/plxnative-crash.log stays empty. Without this the window flashes, the app is back
+            // at the launcher, the event log simply stops mid-boot, and triage correctly reports
+            // "not a crash" with nothing pointing at the shader. `eprintln!` stays because it costs
+            // nothing, NOT because it is the durable copy: `main.c` truncates both sinks at every
+            // launch, so neither survives the relaunch that `plxnative-crash.log` is append-only for.
+            log(&format!("shader compile FAILED — exiting: {msg}"));
             eprintln!("shader error: {msg}");
             std::process::exit(1);
         }
@@ -392,6 +401,11 @@ pub(crate) fn init_gl() {
         bind_core_profile_vao();
 
         PROG = link_program(VS_SRC.as_ptr(), FS_SRC.as_ptr()).unwrap_or_else(|| {
+            // Logged for the same reason as the compile failure in `gfx_compile`: stderr is not the
+            // event log and a clean exit is not a crash, so this line is the only trace the death
+            // leaves. The base program is the one every draw needs, hence the exit where the
+            // ambient/shadow/image programs below merely degrade.
+            log("base prog link FAILED — exiting");
             eprintln!("link failed");
             std::process::exit(1);
         });
@@ -909,7 +923,13 @@ struct CapChain {
     grab: c_uint,     // 1920x1080 back-buffer copy target
     mid: c_uint,      // 960x540 downscale target
     mid_fbo: c_uint,
-    out: c_uint,      // 480x270 downscale target
+    /// 480x270 downscale target. **Deliberately never read**, unlike `grab` and `mid`, which are
+    /// both sampled as the next pass's source: this is the LAST pass, and its frame leaves through
+    /// `glReadPixels` on `out_fbo`. Kept because it is the only handle on the texture object
+    /// backing that fbo — dropping the name leaks it unrecoverably, with nothing to delete or
+    /// re-attach it by. `#[allow]` rather than `_out` so it still reads as a live GL resource.
+    #[allow(dead_code)]
+    out: c_uint,
     out_fbo: c_uint,
     pending: bool,    // a frame was rendered into this chain, not yet read back
     pw: c_int,        // dims of the pending frame — LATCHED at write time (never
@@ -959,7 +979,7 @@ fn cap_target(w: c_int, h: c_int) -> Option<(c_uint, c_uint)> {
 
 fn cap_lazy_init() -> bool {
     unsafe {
-        if CAPST.is_some() {
+        if (*std::ptr::addr_of!(CAPST)).is_some() {
             return true;
         }
         let mk_chain = || -> Option<CapChain> {
@@ -992,7 +1012,9 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
         if CAP_LATCHED_OFF || !cap_lazy_init() {
             return None;
         }
-        let st = CAPST.as_mut().unwrap();
+        // through a raw pointer, not `&mut CAPST` (`static_mut_refs`, a future hard error). Sound
+        // for the same reason the direct form was: `cap_cycle` runs only on the GL (main) thread.
+        let st = (*std::ptr::addr_of_mut!(CAPST)).as_mut().unwrap();
         let w = st.parity;
         let r = 1 - w;
 

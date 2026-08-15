@@ -82,9 +82,10 @@ impl ReportStop {
 /// are captured BY VALUE at the spawn site. `rk` always was; the server was not, and the report
 /// resolved it per tick through `plex::client_opt()` — "whichever server is current *now*". A
 /// reporter for an item borrowed from a friend's share therefore wrote its resume point to whatever
-/// server the user had since navigated to, every ten seconds, invisibly: the POST's result is
-/// discarded, there is no host runtime to catch it, and the device harness grades progress from the
-/// app's own heartbeat rather than from the server it landed on.
+/// server the user had since navigated to, every ten seconds, invisibly: there is no host runtime to
+/// catch it, and the device harness grades progress from the app's own heartbeat rather than from
+/// the server it landed on. (`report_timeline` logs a report that fails to land now — but one that
+/// lands on the WRONG server does not fail, so that line would never have caught this.)
 pub(crate) fn timeline_thread(sid: crate::plex::ServerId, rk: String, stop: std::sync::Arc<ReportStop>) {
     use crate::plex::TimelineState;
     loop {

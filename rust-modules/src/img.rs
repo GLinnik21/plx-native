@@ -90,7 +90,26 @@ pub(crate) fn img_decode_rgba(buf: *const c_uchar, len: c_int,
     };
     let n = raw.len();
     let px = unsafe { malloc(n) } as *mut c_uchar;
-    if px.is_null() { return ptr::null_mut(); }
+    // The exit that is not the decoder's: the picture decoded, and it is the copy out into the
+    // `malloc`'d buffer the caller owns that came back null. The SIZE is the field worth having.
+    // `decode_limits` names this very allocation as one of the two that sit OUTSIDE the budget it
+    // sets, and puts the largest legitimate decode at ~21 MiB (1920×2880 RGBA) — on a set whose
+    // `pkg/appinfo.json` declares `requiredMemory: 60`. So `n` answers the first question a reader
+    // has: one outsized request, or a heap already full. Same `img:` prefix and the same
+    // `len=`/`magic=` tail as the two failures above, so one `img:` grep finds this line and those.
+    if px.is_null() {
+        // MARKER FIRST, and it takes no allocation: `log` borrows a `&str`, so a literal reaches
+        // the file with nothing asked of the heap. The detailed line below goes through `format!`,
+        // which allocates — from the same heap that just refused `n` bytes. For the common failure
+        // (one outsized request against a heap with room for small ones) that is fine and the
+        // second line lands. For the failure a reader most wants explained — a heap actually
+        // exhausted — Rust's allocation-error handler ABORTS, so the detailed line would take the
+        // process down in place of the diagnosis it was added to give. Ordered this way, the marker
+        // survives either outcome, and a marker with no detail after it IS the second diagnosis.
+        log("img: malloc-none");
+        log(&format!("img: malloc-none {n} bytes for {iw}x{ih} len={len} magic={magic}"));
+        return ptr::null_mut();
+    }
     unsafe {
         ptr::copy_nonoverlapping(raw.as_ptr(), px, n);
         if !w.is_null() { *w = iw; }
