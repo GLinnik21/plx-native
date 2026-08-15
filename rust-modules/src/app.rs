@@ -2237,6 +2237,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else if et == 0x103 || et == 0x104 {
                     // WILL/DID ENTER BACKGROUND
                     log(&format!("LIFECYCLE: background (playing={})", matches!(route, Route::Player { .. }) as i32));
+                    // **The TELEVISION'S KEYBOARD goes with the panel, and it is not ours to keep.**
+                    // The compositor tears its own IME down when it takes the screen away, and it
+                    // tells the app nothing — so a field left `editing` comes back to the
+                    // foreground drawing an editing layout and a blinking caret over a keyboard
+                    // that is gone, and typing is dead in a way no press can recover:
+                    // `textinput::start` early-returns while its own `STARTED` is set, so OK on the
+                    // field would toggle our flag and raise nothing. This is `leave` — the same
+                    // dismissal a route change runs (`leave_of`) — and deliberately NOT the commit
+                    // path `leave_field` takes: the OS moving the screen is not the user saying
+                    // "that is the search I meant", and a half-typed term must not be filed in
+                    // their recent searches by an app switch. Unconditional because `EDITING` is
+                    // this screen's alone and both calls under it are guarded, so it costs a
+                    // predictable nothing on every other route.
+                    crate::ui::search::leave();
                     if matches!(route, Route::Player { .. }) && !bg_was_playing {
                         // INTENDED, not published: this snapshot is the only thing the foreground
                         // restore has, and `suspend_bufferfeed` below drops the pending seek target
