@@ -273,6 +273,30 @@ impl Session {
         }
     }
 
+    /// **Is the profile currently watching the one [`Session::account_token`] belongs to?**
+    ///
+    /// That token is the account OWNER's (the Plex Home admin's). It is written once, by the QR
+    /// sign-in, and a profile switch never replaces it — the switched user's own account token is
+    /// fetched, used for one `/api/v2/resources`, and dropped. So anything asked of plex.tv with it
+    /// is answered ABOUT THE OWNER: every `accessToken` that comes back is the owner's
+    /// per-(user, server) grant, and a restricted profile's answer would have been a shorter list.
+    /// A caller that installs those tokens while somebody else is watching has swapped identities
+    /// under them, which is why this exists as a gate rather than as a display fact.
+    ///
+    /// `true` for the owner with or without Plex Home; `false` for a managed profile — **and false
+    /// when the roster cannot say.** "We cannot prove this is the owner" and "this is the owner"
+    /// must not be one value on a question whose wrong answer is another identity's credentials:
+    /// `home_users` is empty for "never fetched" as well as for "no Plex Home"
+    /// (see [`Session::account`]), so the two are only told apart by a uuid actually being set.
+    pub fn active_profile_is_admin(&self) -> bool {
+        if self.user.uuid.is_empty() {
+            // No Plex Home selection was ever made, so there is no managed profile to be: auth's
+            // single-user path enters Home on the owner's own server token without writing one.
+            return true;
+        }
+        self.home_users.iter().find(|u| u.uuid == self.user.uuid).map(|u| u.admin).unwrap_or(false)
+    }
+
     /// One source by `machineIdentifier` — the only key that identifies a server.
     pub fn source(&self, machine_id: &str) -> Option<&SourceRef> {
         if machine_id.is_empty() {
@@ -639,6 +663,40 @@ mod tests {
         let s: Session = serde_json::from_str(r#"{"client_id":"c","recent_searches":"wallace"}"#)
             .expect("a string where a list belongs parses");
         assert!(s.recent_searches.is_empty());
+    }
+
+    /// **Whose token is `account_token`, and is that who is watching?** It is the account OWNER's,
+    /// written once by the QR sign-in and never replaced by a profile switch — so a roster refresh
+    /// made with it answers about the owner, and installing those per-server tokens while a managed
+    /// profile is signed in swaps identities under them. For a RESTRICTED profile it also re-adds
+    /// the shares `auth::retoken` had correctly dropped, which is a re-grant and not a refresh.
+    #[test]
+    fn only_the_account_owners_own_profile_may_refresh_the_roster_with_the_account_token() {
+        let home = |uuid: &str| Session {
+            client_id: "cid".into(),
+            account_token: "acct".into(),
+            user: UserRef { uuid: uuid.into(), ..Default::default() },
+            home_users: vec![
+                HomeUserRef { uuid: "u-owner".into(), title: "Gleb".into(), admin: true, ..Default::default() },
+                HomeUserRef { uuid: "u-kid".into(), title: "Kid".into(), admin: false, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        assert!(home("u-owner").active_profile_is_admin(), "the owner's own tile");
+        assert!(!home("u-kid").active_profile_is_admin(), "a managed profile is not the account");
+
+        // An account with no Plex Home never writes a profile at all — auth's single-user path
+        // enters Home on the owner's server token — so an empty uuid IS the owner.
+        let solo = Session { client_id: "cid".into(), account_token: "acct".into(), ..Default::default() };
+        assert!(solo.active_profile_is_admin());
+
+        // …but an unknown uuid is NOT the owner. `home_users` is empty for "never fetched" as much
+        // as for "no Plex Home" (see `Session::account`), and on a question whose wrong answer is
+        // somebody else's credentials, "cannot prove it" must not read as "yes".
+        let mut unknown = home("u-kid");
+        unknown.home_users.clear();
+        assert!(!unknown.active_profile_is_admin());
+        assert!(!home("u-nobody").active_profile_is_admin());
     }
 
     /// The roster's own leniency must not weaken the roster the picker draws from: a managed user

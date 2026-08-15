@@ -755,10 +755,29 @@ fn discover_and_store(ac: &AccountClient) -> Discovery {
 ///
 /// Persists only when the roster actually CHANGED, because the session file is on flash and a
 /// rewrite per boot buys nothing.
+///
+/// **It runs for the account OWNER only, and that is a correctness gate rather than a policy.**
+/// The one credential this can ask plex.tv with is [`Session::account_token`], which belongs to the
+/// admin and is never replaced by a Plex Home switch — so every `accessToken` in the answer is the
+/// ADMIN's per-(user, server) grant. Installing those while a managed profile is watching swaps the
+/// wrong identity's token into every registered `Client` in place (that swap is what the ~30 call
+/// sites holding a `&'static Client` are built to follow) and then persists it: browsing and
+/// scrobbling as the account owner from someone else's profile. For a RESTRICTED profile it is
+/// worse than wrong, it is a re-grant — [`retoken`] had already dropped the servers that profile
+/// was not given, and this puts them back.
+///
+/// Re-keying the answer for the active profile afterwards is not available: the per-user tokens
+/// only exist in a `/api/v2/resources` fetched with THAT user's account token, which the switch
+/// obtains for one request and does not persist. So the honest answer is to skip, and the cost is
+/// named: a share granted while a managed profile is signed in appears when someone next switches
+/// profile (the switch re-keys the whole roster from its own response) or signs in again.
 pub fn refresh_roster_online() {
     let sess = session::load();
     if sess.account_token.is_empty() {
         return; // signed out; nothing to ask plex.tv with
+    }
+    if !sess.active_profile_is_admin() {
+        return log("auth: roster refresh skipped — the account token is the owner's, and a managed profile is active");
     }
     let _ = crate::task::spawn_small("roster-srv", move || {
         let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
@@ -777,17 +796,64 @@ pub fn refresh_roster_online() {
             }
         };
         install_roster(&found, None);
-        let changed = found.len() != sess.sources.len()
-            || found.iter().zip(sess.sources.iter()).any(|(a, b)| {
+        // Re-read FIRST, and compare against that: a profile pick may have landed meanwhile, and
+        // the snapshot this worker was spawned with is the older of the two answers.
+        let mut next = session::load();
+        let roster_changed = found.len() != next.sources.len()
+            || found.iter().zip(next.sources.iter()).any(|(a, b)| {
                 a.machine_id != b.machine_id || a.address != b.address || a.port != b.port || a.token != b.token
             });
+        let moved = reconcile_primary(&mut next.server, &found);
+        let changed = roster_changed || moved;
         log(&format!("auth: roster refresh — {} server(s){}", found.len(), if changed { ", persisted" } else { "" }));
         if changed {
-            let mut next = session::load(); // re-read: a profile pick may have landed meanwhile
             next.sources = found;
             session::save(&next);
         }
     });
+}
+
+/// Point the persisted PRIMARY at wherever the refreshed roster says that machine now answers.
+/// Returns whether anything moved, so the caller knows the save is owed.
+///
+/// [`Session::server`] and [`Session::sources`] are two records of the same servers and only the
+/// second was being rewritten here, so the moment the primary PMS changed LAN address the two
+/// disagreed permanently. Two symptoms, both durable and neither self-healing:
+///
+/// * `app.rs`'s boot gate dials `session.server`, so every boot went to the dead address first;
+/// * and `plex::install` of that address registers a SECOND slot for a machine already in the table
+///   — `servers::same_server` can only match on the address when the legacy `install` supplies no
+///   machine id — with the dead copy made `current`. The house's own server, listed twice, the
+///   working one not the one being used.
+///
+/// It cannot be fixed by re-running discovery either: the refresh persists `sources` only when they
+/// changed, so the very first boot after the move wrote the new address into the roster and left
+/// `server` stale, and every boot after that found the roster already correct and saved nothing.
+/// That is why the reconcile is part of the CHANGED decision and not a rider on it.
+///
+/// Matched on `machine_id` and nothing else — the identity that survives an address moving is the
+/// only thing that can decide this — and an empty id matches nothing, [`retoken`]'s rule: an entry
+/// that cannot be identified must never match a resource that also happens to have no id.
+fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
+    if server.machine_id.is_empty() {
+        return false;
+    }
+    let Some(s) = found.iter().find(|s| s.machine_id == server.machine_id && s.usable()) else { return false };
+    if server.address == s.address && server.port == s.port && server.token == s.token {
+        return false;
+    }
+    if server.address != s.address || server.port != s.port {
+        // The machine name and the address, never the token and never the machine id — the same
+        // line `SourceRef::describe` draws.
+        log(&format!("auth: primary {:?} now answers at {}:{}", server.name, s.address, s.port));
+    }
+    server.address = s.address.clone();
+    server.port = s.port;
+    // The token moves with the address because it came from the same answer: this is the OWNER's
+    // per-(user, server) grant, which is exactly what `ServerRef::token` means (and the refresh
+    // above only runs for the owner). `pms_token()` still prefers a switched profile's own token.
+    server.token = s.token.clone();
+    true
 }
 
 /// Register a roster with the [server registry](crate::plex::register), optionally naming which
@@ -1376,5 +1442,59 @@ mod tests {
         // and an entry with no identity cannot be re-keyed, and must never match by emptiness
         let anon = vec![source("", false, "old")];
         assert!(retoken(&anon, &[resource(r#"{"provides":"server","accessToken":"x"}"#)]).is_empty());
+    }
+
+    fn primary(machine_id: &str, address: &str, port: i64, token: &str) -> ServerRef {
+        ServerRef {
+            name: "Mac mini".into(),
+            machine_id: machine_id.into(),
+            address: address.into(),
+            port,
+            token: token.into(),
+        }
+    }
+
+    /// **The two records of the same server must not drift.** `Session::server` is what `app.rs`
+    /// boots on and `Session::sources` is what everything else reads, and the online roster refresh
+    /// only ever rewrote the second — so the day the house's PMS took a new LAN address, every boot
+    /// went on dialling the dead one, and `plex::install` of that address registered a SECOND slot
+    /// for a machine already in the table (the legacy install has no id to match on) with the dead
+    /// copy made current.
+    #[test]
+    fn a_primary_that_moved_is_followed_by_the_roster_refresh() {
+        let mut s = primary("aaaa1111", "192.168.0.10", 32400, "tok-own");
+        let mut moved = source("aaaa1111", true, "tok-own2");
+        moved.address = "192.168.0.42".into();
+        moved.port = 32400;
+        let share = source("bbbb2222", false, "tok-share");
+
+        assert!(reconcile_primary(&mut s, &[share.clone(), moved.clone()]), "the save is owed");
+        assert_eq!((s.address.as_str(), s.port), ("192.168.0.42", 32400));
+        assert_eq!(s.token, "tok-own2", "the grant came from the same answer as the address");
+        assert_eq!(s.machine_id, "aaaa1111", "the identity is the KEY here, never something to rewrite");
+
+        // idempotent — a refresh that learns nothing new must not force a flash write every boot
+        assert!(!reconcile_primary(&mut s, &[share.clone(), moved.clone()]));
+
+        // a roster that does not name this machine says nothing about it: our own box being off
+        // must not blank the address the next boot needs
+        let mut off = primary("aaaa1111", "192.168.0.10", 32400, "tok-own");
+        assert!(!reconcile_primary(&mut off, &[share.clone()]));
+        assert_eq!(off.address, "192.168.0.10");
+
+        // an entry with nothing to dial is not an address to adopt…
+        let mut half = moved.clone();
+        half.token.clear();
+        let mut s2 = primary("aaaa1111", "192.168.0.10", 32400, "tok-own");
+        assert!(!reconcile_primary(&mut s2, &[half]));
+        assert_eq!(s2.address, "192.168.0.10");
+
+        // …and a primary with no machine id cannot be matched at all — `retoken`'s rule, because an
+        // empty id must never match a roster entry that also happens to have none
+        let mut anon = primary("", "192.168.0.10", 32400, "tok-own");
+        let mut anon_src = source("", true, "tok-x");
+        anon_src.address = "10.9.9.9".into();
+        assert!(!reconcile_primary(&mut anon, &[anon_src]));
+        assert_eq!(anon.address, "192.168.0.10");
     }
 }
