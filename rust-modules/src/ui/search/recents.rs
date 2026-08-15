@@ -26,11 +26,17 @@
 //! [`crate::ui::widgets::Button`], so a verb never sits in the same column as the words you
 //! searched for.
 //!
-//! **Four terms, not five** ([`super::MAX_RECENTS`]). With the keyboard raised the header, the rows
-//! and the Clear control all have to finish above its top edge (`SCR_H - super::KEYBOARD_H` = 700);
-//! this block ends at [`BLOCK_BOTTOM`], which a host test pins against that line. The fifth term is
-//! DROPPED, not scrolled — a list you cannot see the end of asks to be paged, and there is no
-//! paging in this product.
+//! **Five terms** ([`super::MAX_RECENTS`]). With the keyboard raised the header, the rows and the
+//! Clear control all have to finish above its top edge (`SCR_H - super::KEYBOARD_H` = 756); this
+//! block ends at [`BLOCK_BOTTOM`], which a host test pins against that line. The sixth is DROPPED,
+//! not scrolled — a list you cannot see the end of asks to be paged, and there is no paging in this
+//! product.
+//!
+//! It was FOUR until 2026-08-15, and the cap was not the thing that was wrong: `KEYBOARD_H` was a
+//! guess 56px too tall, so the arithmetic said a fifth row would not clear a panel edge that does
+//! not exist. Measuring the real panel put the fifth back with 66px to spare. The lesson is in the
+//! test below rather than in the number — it grades the CLEARANCE, so the count is free to follow
+//! whatever the panel actually does.
 //!
 //! ## Persistence
 //!
@@ -599,16 +605,23 @@ mod tests {
         assert!(merged(&b, "uu-b", &list(&["gromit"])).is_none(), "…but the same profile's is a no-op");
     }
 
-    /// Four, not five. The cap drops the OLDEST, which is the only end that can be dropped without
-    /// contradicting "most recent first".
+    /// The cap drops the OLDEST, which is the only end that can be dropped without contradicting
+    /// "most recent first".
+    ///
+    /// Written against [`CAP`] rather than against a literal count — the cap is a LAYOUT answer
+    /// (see the clearance test), and it moved the day the keyboard was measured. A test that spelt
+    /// the number would have failed for a correct change and taught nothing about the rule.
     #[test]
     fn the_cap_drops_the_oldest_term() {
         assert_eq!(CAP, crate::ui::search::MAX_RECENTS, "the store keeps exactly what the screen shows");
+        // One more term than fits, newest last, so the survivors are the reverse of the tail.
+        let typed: Vec<String> = (0..CAP + 1).map(|i| format!("q{i}")).collect();
         let mut l = Vec::new();
-        for t in ["a", "b", "c", "d", "e"] {
+        for t in &typed {
             promote(&mut l, t);
         }
-        assert_eq!(l, list(&["e", "d", "c", "b"]), "the oldest fell off, order is newest-first");
+        let want: Vec<String> = typed[1..].iter().rev().cloned().collect();
+        assert_eq!(l, want, "the oldest fell off, order is newest-first");
         assert_eq!(l.len(), CAP);
     }
 
@@ -617,17 +630,28 @@ mod tests {
     /// repeats gone, length bounded.
     #[test]
     fn a_hand_edited_list_is_cleaned_up_on_the_way_in() {
-        let raw = list(&["laura", "", "  ", "LAURA", "wallace", "gromit", "feathers", "wendolene"]);
+        let raw = list(&["laura", "", "  ", "LAURA", "wallace", "gromit", "feathers", "wendolene", "grue"]);
         let got = sanitize(raw);
-        assert_eq!(got, list(&["laura", "wallace", "gromit", "feathers"]),
+        // The three rules, stated separately from the LENGTH so the cap can move on its own (see
+        // `the_cap_drops_the_oldest_term`): order preserved, blanks gone, the repeat collapsed onto
+        // its FIRST place, and whatever survives is bounded.
+        let kept = ["laura", "wallace", "gromit", "feathers", "wendolene", "grue"];
+        assert_eq!(got, list(&kept[..CAP.min(kept.len())]),
             "newest-first order kept, blanks dropped, the repeat collapsed onto its FIRST place");
+        assert!(got.len() <= CAP);
+        assert!(!got.iter().any(|t| t.trim().is_empty()), "a blank is not a term");
         assert_eq!(sanitize(Vec::new()), Vec::<String>::new());
     }
 
-    /// The layout rule the four-term cap exists to satisfy: with the keyboard raised, nothing this
+    /// The layout rule the term cap exists to satisfy: with the keyboard raised, nothing this
     /// screen owns may hide behind it. Graded here rather than by eye, because the failure is a
     /// control the user cannot see or reach — and every term in the design's own copy is short, so
     /// the case that breaks is a full list, which a screenshot of a fresh install never shows.
+    ///
+    /// **This asserts the clearance, not the count, and that is what made the count fixable.** The
+    /// cap was four against a `KEYBOARD_H` guessed 56px too tall; when the panel was finally
+    /// measured, the fifth row simply passed. A test written as `MAX_RECENTS == 4` would have had
+    /// to be edited to allow the fix, which is the difference between a test and a restatement.
     ///
     /// The clearance floor is the second half of the claim: the block must not merely *fit*, it has
     /// to sit a block gap clear of the panel, or the Clear control reads as attached to a piece of
