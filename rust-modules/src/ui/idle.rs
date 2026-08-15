@@ -186,6 +186,9 @@ pub(crate) fn note_jump(changed: bool) {
 ///   to Error. It repainted anyway only because the player route bypasses this gate outright
 /// - a poster texture uploaded (`posters::poster_pump`)
 /// - a hub refetch committing (`pms::pump`)
+/// - a view-state write's OPTIMISTIC edit (`viewstate::request` / `pms::edit_item`) and the refresh
+///   its landing kicks (`viewstate::pump`) — a watched tick, a corner veil and a resume bar all
+///   change with no spring behind any of them, and the press is the only thing that moved
 /// - a browse page landing (`browse::pump`)
 /// - a `Spring::jump` that actually teleported something (via [`note_jump`])
 /// - an `Xfade` ramp mid-flight, and a `Spinner` being drawn — the two time-driven animators

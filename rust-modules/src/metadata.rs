@@ -594,6 +594,57 @@ pub(crate) fn install_for_test(d: Option<Detail>) {
     unsafe { *addr_of_mut!(CURRENT) = d }
 }
 
+/// **OPTIMISTIC**, MAIN THREAD: flip what the LOADED item says about `(sid, rk)`'s watch state,
+/// before the server has been told. Returns whether anything on this page was about that item.
+///
+/// The detail page's twin of [`crate::pms::edit_item`], and it exists for the same reason: the write
+/// that justifies it now happens on a worker (`crate::viewstate`), so without this the hero's toggle
+/// and the filmstrip's checks would sit unchanged for as long as the item's server takes to answer —
+/// which on a share is seconds, and reads as the press having missed.
+///
+/// Two things can be about the item, and both are updated:
+/// * **the loaded item itself** — a movie, or the show whose hero toggle was pressed;
+/// * **one EPISODE of the loaded season** — the filmstrip's context menu, whose rk is a leaf of the
+///   show `CURRENT` holds. Its season's `viewedLeafCount` moves with it, because the season tab's
+///   tick is derived from that count ([`Season::watched`]) and a tick that disagreed with the
+///   episode row beneath it is precisely the "two surfaces describing one item two ways" this page
+///   already refuses elsewhere.
+///
+/// `resume_ms` is cleared with the flag for the same reason `pms::set_watched` clears it: the
+/// still's own resolver (`ui::detail::ep_state`) reads progress ahead of the watched mark, so an
+/// episode keeping its old `viewOffset` would still draw its resume bar and no check.
+///
+/// The landed refresh is the truth and silently corrects any of this; see [`crate::viewstate`].
+pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
+    unsafe {
+        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else { return false };
+        if crate::plex::same_item((d.sid, &d.rk), (sid, rk)) {
+            d.watched = on;
+            d.resume_ms = 0;
+            return true;
+        }
+        // An episode is only ever a leaf of the loaded show, so it is matched on the PAGE's server —
+        // `Episode` carries no `sid` of its own precisely because it cannot come from anywhere else.
+        if d.sid != sid {
+            return false;
+        }
+        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else { return false };
+        let was = d.episodes[i].watched;
+        d.episodes[i].watched = on;
+        d.episodes[i].resume_ms = 0;
+        if was != on {
+            let cur = d.cur_season;
+            if let Some(s) = d.seasons.get_mut(cur) {
+                // clamped to the season's own leaf count: a server that sent none leaves this 0, and
+                // `Season::watched` reads `leaf_count > 0` first, so an unknown season stays unknown
+                let step = if on { 1 } else { -1 };
+                s.viewed_leaf_count = (s.viewed_leaf_count + step).clamp(0, s.leaf_count.max(0));
+            }
+        }
+        true
+    }
+}
+
 /// drop the loaded detail (on leaving the detail page). Also supersedes any in-flight async
 /// fetch — otherwise a load requested on the way in lands after the page closed and silently
 /// repopulates CURRENT (and NOW, via `sync_now_playing`) behind whatever screen is now mounted.
@@ -2209,6 +2260,69 @@ mod tests {
         assert!(pump_season());
         assert_eq!(listed_eps(), ["ours-s2e1"]);
 
+        clear();
+    }
+
+    /// The OPTIMISTIC half of a view-state write (`crate::viewstate`): the page must show the press
+    /// on the frame it happens, because the write that justifies it is now on a worker and the
+    /// item's server may be a share that takes seconds to answer — or never answers at all.
+    ///
+    /// Three things have to move together, and the season count is the one that is easy to forget:
+    /// the tab's tick is derived from `viewedLeafCount` ([`Season::watched`]), so a tick left saying
+    /// the opposite of the episode row under it is the same "one item, two answers on one screen"
+    /// this page refuses everywhere else.
+    #[test]
+    fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_count() {
+        let _serial = crate::testlock::serial();
+
+        // the loaded item itself — the hero's own toggle
+        set_current_for_test(Some(Detail { sid: SRV_A, rk: "42".into(), resume_ms: 900_000, ..Default::default() }));
+        assert!(set_watched_local(SRV_A, "42", true));
+        assert!(current().unwrap().watched);
+        assert_eq!(current().unwrap().resume_ms, 0, "a watched item stops offering to resume");
+
+        // …and the SHARE's 42 is a different film, so neither its press nor ours reaches the other
+        assert!(!set_watched_local(SRV_B, "42", false), "another server's key names nothing here");
+        assert!(current().unwrap().watched, "and leaves this page exactly as it was");
+
+        // an EPISODE of the loaded show — the filmstrip's context menu
+        set_current_for_test(Some(Detail {
+            sid: SRV_A,
+            rk: "show".into(),
+            is_show: true,
+            cur_season: 1,
+            seasons: vec![
+                Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 3, viewed_leaf_count: 3 },
+                Season { rk: "sk2".into(), index: 2, title: "S2".into(), leaf_count: 3, viewed_leaf_count: 1 },
+            ],
+            episodes: vec![
+                Episode { rk: "e1".into(), watched: true, ..Default::default() },
+                Episode { rk: "e2".into(), resume_ms: 60_000, ..Default::default() },
+            ],
+            ..Default::default()
+        }));
+
+        assert!(set_watched_local(SRV_A, "e2", true), "an episode of the loaded season");
+        let d = current().unwrap();
+        assert!(d.episodes[1].watched);
+        assert_eq!(d.episodes[1].resume_ms, 0, "…and its still stops drawing a resume bar");
+        assert!(!d.watched, "marking one episode does not finish the show");
+        assert_eq!(d.seasons[1].viewed_leaf_count, 2, "the BROWSED season's count moves with it");
+        assert_eq!(d.seasons[0].viewed_leaf_count, 3, "and no other season's does");
+
+        // idempotent: pressing watched on an already-watched episode must not double-count the
+        // season, which would make a part-watched season read as finished
+        assert!(set_watched_local(SRV_A, "e2", true));
+        assert_eq!(current().unwrap().seasons[1].viewed_leaf_count, 2, "the count follows the FLIP");
+
+        // …and the reverse, clamped at zero rather than going negative
+        for _ in 0..5 {
+            assert!(set_watched_local(SRV_A, "e2", false));
+            assert!(set_watched_local(SRV_A, "e1", false));
+        }
+        assert_eq!(current().unwrap().seasons[1].viewed_leaf_count, 0, "never a negative remainder");
+
+        assert!(!set_watched_local(SRV_A, "not-here", true), "an rk on neither the item nor its row");
         clear();
     }
 

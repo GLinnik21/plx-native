@@ -38,6 +38,7 @@ mod shot; // simulator screenshots: read the frame back and write a PNG (see the
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
+mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 #[cfg(test)]
 pub(crate) mod testlock {
