@@ -55,6 +55,7 @@ const GL_FALSE: u8 = 0;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
 const GL_BLEND: c_uint = 0x0BE2;
 const GL_DITHER: c_uint = 0x0BD0;
+const GL_ONE: c_uint = 0x0001;
 const GL_SRC_ALPHA: c_uint = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
@@ -90,7 +91,7 @@ extern "C" {
     fn glEnable(cap: c_uint);
     fn glDisable(cap: c_uint);
     fn glScissor(x: c_int, y: c_int, w: c_int, h: c_int);
-    fn glBlendFunc(sfactor: c_uint, dfactor: c_uint);
+    fn glBlendFuncSeparate(src_rgb: c_uint, dst_rgb: c_uint, src_a: c_uint, dst_a: c_uint);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: c_uint);
     fn glFinish();
@@ -437,7 +438,28 @@ pub(crate) fn init_gl() {
         glActiveTexture(GL_TEXTURE0);
 
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // **SEPARATE, and the alpha half is the whole point.** Colour composites the ordinary way;
+        // ALPHA must ACCUMULATE (`GL_ONE`), because this surface is a wayland surface the compositor
+        // blends over the video plane — `system.rs` deliberately makes it non-opaque — so the alpha
+        // channel is not scratch space, it is what the television multiplies our picture by.
+        //
+        // With one `glBlendFunc` for both, alpha used `GL_SRC_ALPHA` as well and every partial-alpha
+        // draw over an opaque ground computed `dst.a = a² + dst.a(1−a)`: at a=.40 the surface fell to
+        // **0.76** where it had been 1. The colour was right and the SURFACE had a hole in it, and
+        // the compositor showed black through the hole — measured on the panel as 43 → 33, which is
+        // exactly `43 × 0.76`.
+        //
+        // It is near-invisible in a screenshot and a hard bar on the television, because sRGB 43 vs
+        // 33 is ~2× in luminance down there. Found through the search screen's navigation-bar scrim
+        // (reported as "on screenshot capture I see a pleasing fade, but on TV it is like a shadow"),
+        // but it was never that screen's bug: EVERY partial-alpha draw in this app punched the same
+        // hole — the Library's scrim, both hero scrims, `art_scrim`, every popover scrim, every page
+        // and content fade, every glyph drawn at less than full alpha. Fades have always come out a
+        // shade darker than authored on the panel and nothing but a photograph could show it.
+        //
+        // The player's transparent clear is unaffected in the right direction: over `dst.a = 0`,
+        // accumulating alpha gives `src.a`, which is what a HUD drawn over the video plane means.
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         // GL_DITHER is ON by default in GLES2; it dithers low-alpha gradients (the card shadow
         // penumbra) into a regular ordered-dither dot pattern visible along tile edges. The panel is
         // 888 and SURFACE_APP is snapped to exact 8-bit codes, so dithering buys nothing here — off.
