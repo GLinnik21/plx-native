@@ -367,11 +367,126 @@ pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
 
 /// Refetch the home hubs and reconcile the surfaces that index into the rebuilt catalog: an open
 /// detail page re-resolves its selected row (home's focus self-clamps at its read accessors).
-/// The ONE post-mutation refresh ritual — player exit and the watched toggle both call this.
+/// The ONE post-mutation refresh ritual — the player exit calls this.
+///
+/// **BLOCKING on the owned server**, because [`pms_fetch_hubs`] is. That is affordable on the
+/// player-exit path, which is already a teardown, and it is NOT affordable off a keypress — see
+/// [`request_refetch_hubs`], which is what the view-state writes use.
 pub(crate) fn refetch_hubs_reconcile() -> c_int {
     let n = pms_fetch_hubs();
     crate::ui::detail::reselect();
     n
+}
+
+/// Refetch the home hubs OFF the main thread — every source on a worker, the owned one included,
+/// landing through [`pump`] like any other fetch. **MAIN THREAD, NON-BLOCKING.**
+///
+/// The twin of [`refetch_hubs_reconcile`], and the difference is only which sources are inline.
+/// `pms_fetch_hubs` keeps the owned server synchronous because it is the BOOT fetch and Home cannot
+/// open without it; a refetch has a populated Home already on screen, so there is nothing to wait
+/// for and every reason not to — this is reached from a keypress (`viewstate`'s Mark as Watched /
+/// Remove from Deck), where a WAN server's `/hubs` pair is seconds of parked frame loop.
+///
+/// No reconcile call here: `pump` performs the same `detail::reselect` ritual when a landing
+/// actually commits, which is the only moment the catalog those surfaces index into has moved.
+pub(crate) fn request_refetch_hubs() {
+    HUB_GEN.fetch_add(1, Ordering::SeqCst); // supersede every retry already in flight
+    sync_roster();
+    let mut srcs = lock_srcs();
+    // A superseded worker's landing is dropped on the generation above, so releasing the
+    // single-flight latches here cannot double-apply anything — and without it a source whose
+    // worker was in flight across this call would stay latched and never fetch again. Same clause
+    // `pms_fetch_hubs` opens with, for the same reason.
+    for s in srcs.iter_mut() {
+        s.fetching = false;
+        retry_now(s); // from the bottom of the ladder: the user asked for this, in effect
+    }
+}
+
+/// A local, **optimistic** edit to what the shelves say about one item — applied before the write
+/// that justifies it has left the machine, so a press lands on the panel at once however far away
+/// the item's server is. See [`edit_item`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LocalEdit {
+    /// The item is now watched (`true`) or unwatched (`false`), everywhere it appears.
+    Watched(bool),
+    /// The item has been hidden from Continue Watching (`removeFromContinueWatching`) — it leaves
+    /// the deck and NOTHING else about it changes, which is exactly what that endpoint does.
+    LeftTheDeck,
+}
+
+/// Apply `edit` to every shelf row naming `(sid, rk)` and re-commit Home. Returns whether anything
+/// matched. **MAIN THREAD** — it rebuilds the catalog the UI holds `&'static` rows out of.
+///
+/// It edits each source's own last PROJECTION and re-runs the pure [`merge`], rather than splicing
+/// the committed catalog: `HubRow` addresses its cards as a `start`/`len` window into one flat
+/// `Vec`, and the hero pool holds indices into the same, so removing a row by hand means fixing up
+/// every window behind it and every pool slot — three chances to leave the three statics disagreeing,
+/// which is the exact class `commit`'s doc says they move together to avoid. Re-merging is arithmetic
+/// the module already trusts, and it also lets a shelf that lost a card refill from the budget.
+///
+/// This is one half of a pair and is useless alone: it is what the user SEES, and the refetch the
+/// write's landing kicks is what the server SAYS. Where they disagree the refetch wins, silently.
+pub(crate) fn edit_item(sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
+    let mut srcs = lock_srcs();
+    let mut hit = false;
+    for s in srcs.iter_mut() {
+        if let Some(b) = s.last.as_mut() {
+            hit |= apply_edit(b, sid, rk, edit);
+        }
+    }
+    if !hit {
+        return false; // the item is on no shelf (a Library-grid or Related item): nothing to redraw
+    }
+    let build = merge(&srcs);
+    drop(srcs); // before calling out — `detail::reselect` walks the catalog this replaces
+    commit(build);
+    crate::ui::detail::reselect(); // the post-mutation ritual every other commit performs
+    crate::ui::idle::invalidate(); // the tick/veil/bar changed with no spring behind it
+    true
+}
+
+/// [`edit_item`] on ONE source's projection. Pure — no statics, no I/O — so the rule is graded on
+/// the host rather than inferred from a screenshot.
+fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
+    let mine = |m: &PmsMovie| crate::plex::same_item((m.sid, &m.rk), (sid, rk));
+    match edit {
+        LocalEdit::Watched(on) => {
+            let mut hit = false;
+            for c in b.cw.iter_mut() {
+                if mine(&c.m) {
+                    set_watched(&mut c.m, on);
+                    hit = true;
+                }
+            }
+            for m in b.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
+                if mine(m) {
+                    set_watched(m, on);
+                    hit = true;
+                }
+            }
+            hit
+        }
+        LocalEdit::LeftTheDeck => {
+            let before = b.cw.len();
+            b.cw.retain(|c| !mine(&c.m));
+            b.cw.len() != before
+        }
+    }
+}
+
+/// The three fields one row's watch state is spread over, moved together.
+///
+/// `resume_ms` goes with them, and it is the half that is easy to miss: [`PmsMovie::resume_frac`]
+/// takes PRECEDENCE over the watched flag at the mark (`ui::widgets::poster_mark` — a re-watch in
+/// flight outranks a finished item), so a row left holding its old `viewOffset` would wear the
+/// progress bar it had before and show no tick at all — the press would read as having done
+/// nothing. An unscrobble genuinely clears `viewOffset` server-side, and a scrobbled item leaves
+/// the deck; where the server disagrees, its own refetch is a moment behind this and wins.
+fn set_watched(m: &mut PmsMovie, on: bool) {
+    m.watched = on;
+    m.unwatched = !on;
+    m.resume_ms = 0;
 }
 
 /// Fetch Home — BLOCKING for the owned server, off-thread for every other source. The boot /
@@ -1377,6 +1492,123 @@ mod tests {
         pump(0.0);
         assert_eq!(hub_len(0), 2, "neither may replace the current catalog");
         assert_eq!(hub_state(), HubState::Ready, "nor be counted as a failure of the current one");
+        reset();
+    }
+
+    // ---- the OPTIMISTIC local edit ---------------------------------------------------------
+    //
+    // The half of a view-state write the user actually sees (`crate::viewstate`): the shelves
+    // change on the frame of the press, and the refetch the write's landing kicks is what
+    // reconciles them. What is graded here is that the edit reaches every row the item occupies
+    // and that the re-merge leaves the three statics addressing each other correctly — the reason
+    // it edits each source's PROJECTION rather than splicing the committed catalog.
+
+    /// A row that is part-way through, i.e. the shape a Continue Watching card really has.
+    fn started(slot: u16, rk: &str) -> PmsMovie {
+        PmsMovie { dur_ns: 90 * 60 * 1_000_000_000, resume_ms: 30 * 60_000, unwatched: false, ..row(slot, rk) }
+    }
+
+    /// Every appearance of the item flips, deck and shelves alike — a home screen that marked one
+    /// of them and not the other would be two answers about one film on one screen. And the resume
+    /// point goes with the flag: `poster_mark` reads progress AHEAD of watched, so a row keeping its
+    /// old `viewOffset` wears its old bar and no tick, which reads as the press having done nothing.
+    #[test]
+    fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_bar() {
+        let _g = crate::testlock::serial();
+        reset();
+        let mut b = SourceBuild {
+            cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7") }],
+            shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])],
+        };
+
+        assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(true)));
+
+        assert!(b.cw[0].m.watched && !b.cw[0].m.unwatched, "the deck card");
+        assert_eq!(b.cw[0].m.resume_ms, 0, "…and its bar retires with the flag");
+        assert!(b.shelves[0].items[0].watched, "the same film on another shelf");
+        assert!(!b.shelves[0].items[1].watched, "and nothing else on it");
+
+        // …and the reverse toggle is the exact inverse, on a container as much as on a leaf
+        assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(false)));
+        assert!(!b.cw[0].m.watched && b.cw[0].m.unwatched);
+        reset();
+    }
+
+    /// An item on another server that happens to share the ratingKey is a DIFFERENT item — the rule
+    /// `plex::same_item` exists for, applied to the one edit that writes to a row rather than
+    /// reading one. A bare-key match here would tick a friend's film because you finished yours.
+    #[test]
+    fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
+        let _g = crate::testlock::serial();
+        reset();
+        let mut b = SourceBuild { cw: Vec::new(), shelves: vec![shelf(1, "Theirs", "h", &["7"])] };
+        assert!(!apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(true)), "nothing matched");
+        assert!(!b.shelves[0].items[0].watched);
+        reset();
+    }
+
+    /// Remove from Continue Watching is a HIDE and nothing else: the card leaves the deck, keeps its
+    /// resume point, and its appearances on every OTHER shelf are untouched — which is exactly what
+    /// the server does (`plex::Client::remove_from_continue_watching`). Marking it watched instead
+    /// would throw the position away, which is the mistake that endpoint exists to avoid.
+    #[test]
+    fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
+        let _g = crate::testlock::serial();
+        reset();
+        let mut b = SourceBuild {
+            cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7") }, CwItem { last_viewed_at: 8, m: started(0, "8") }],
+            shelves: vec![Shelf {
+                title: "Recently Added".into(),
+                hub_id: "home.movies.recent".into(),
+                items: vec![started(0, "7")],
+            }],
+        };
+
+        assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::LeftTheDeck));
+
+        assert_eq!(b.cw.len(), 1, "only the one asked for leaves");
+        assert_eq!(b.cw[0].m.rk, "8");
+        assert_eq!(b.shelves[0].items[0].rk, "7", "its other shelf keeps it");
+        assert_eq!(b.shelves[0].items[0].resume_ms, 30 * 60_000, "…with the position it had");
+        assert!(!b.shelves[0].items[0].watched, "…and its watch state untouched: this is a HIDE");
+        reset();
+    }
+
+    /// The reason the edit goes through the projection and the pure `merge` rather than splicing
+    /// `CATALOG`: a `HubRow` is a `start`/`len` WINDOW into one flat vec and the hero pool holds
+    /// indices into the same, so a row removed by hand means fixing every window behind it. Here the
+    /// deck loses a card and the shelf behind it must still draw exactly its own items.
+    #[test]
+    fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
+        let _g = crate::testlock::serial();
+        reset();
+        let build = SourceBuild {
+            cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7") }, CwItem { last_viewed_at: 8, m: started(0, "8") }],
+            shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["a", "b"])],
+        };
+        seed(vec![src(0, "", HubState::Ready, Some(build))]);
+        assert_eq!(rks(0), vec!["7", "8"], "the deck as it stands");
+        assert_eq!(rks(1), vec!["a", "b"]);
+
+        assert!(edit_item(sid(0), "7", LocalEdit::LeftTheDeck));
+
+        assert_eq!(rks(0), vec!["8"], "the card is gone from the deck");
+        assert_eq!(rks(1), vec!["a", "b"], "and the shelf behind it still names its own items");
+        assert_eq!(hub_count(), 2, "no shelf appeared or vanished");
+        reset();
+    }
+
+    /// An item on no shelf at all — a Library-grid or Related page press — must not re-commit Home
+    /// for nothing: the return value is what tells `viewstate` whether anything on screen moved, and
+    /// a commit here would free the catalog strings out from under a live `hub_title` borrow for no
+    /// reason at all.
+    #[test]
+    fn an_item_on_no_shelf_reports_no_edit_and_recommits_nothing() {
+        let _g = crate::testlock::serial();
+        reset();
+        seed(vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
+        assert!(!edit_item(sid(0), "not-on-home", LocalEdit::Watched(true)));
+        assert_eq!(hub_len(0), 2, "Home is exactly as it was");
         reset();
     }
 

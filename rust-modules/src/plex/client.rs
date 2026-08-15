@@ -250,6 +250,15 @@ impl Client {
         let _ = crate::stream::http_get(&self.host, self.port, &self.with_token(path_no_token), None);
     }
 
+    /// [`Client::get_void`], but reporting whether the request actually reached the server and came
+    /// back accepted. For the body-less **writes** whose caller is off the main thread and has no
+    /// other way to know — see [`super::library::Client::scrobble`]. `false` covers a refused or
+    /// timed-out connect as much as a rejected status, which is the distinction that matters here:
+    /// a share that is asleep answers nothing at all.
+    pub(super) fn get_ok(&self, path_no_token: &str) -> bool {
+        crate::stream::http_get(&self.host, self.port, &self.with_token(path_no_token), None).is_some()
+    }
+
     /// PUT (no body) — returns the HTTP status (all `select_streams` reads).
     pub(super) fn put(&self, path_no_token: &str) -> i32 {
         crate::stream::http_put(&self.host, self.port, &self.with_token(path_no_token))
