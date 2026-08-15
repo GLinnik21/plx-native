@@ -664,6 +664,54 @@ const CHIP_NAME_TAIL: f32 = 24.0;
 /// track sitting a few hundred px to its right.
 const CHIP_NAME_MAX: f32 = 320.0;
 
+// ---- the navigation bar's scrim ---------------------------------------------------------------
+
+/// How much scroll fully establishes the scrim — the design system's `--scrim-in`. It FADES IN
+/// over the first pixels rather than popping on at a 1px threshold, and because scroll here is
+/// spring-driven the appear inherits the spring's easing for free and cannot desync.
+const NAV_SCRIM_IN: f32 = 56.0;
+/// The alpha the ramp bends at — `--scrim-knee-a`.
+const NAV_SCRIM_KNEE_A: f32 = 0.40;
+/// The ramp's two segments, as drops ABOVE the content line: a steep fall to the knee, then a long
+/// gentle tail to nothing. The design system spells the pair per route and both of its routes agree
+/// on the SHAPE — Library `170 / 188 / 214` and the full-screen list route `106 / 124 / 150` are
+/// each `top − 44` and `top − 26`. So the shape is the shared thing and the content line is the
+/// caller's, which is what makes this one function rather than two sets of literals.
+const NAV_SCRIM_TAIL: f32 = 26.0;
+const NAV_SCRIM_STEEP: f32 = 18.0;
+
+/// **The navigation bar's scrim: content dissolving under the top chrome.** One element, because
+/// every full-screen route that scrolls a column under the bar needs exactly this and the design
+/// system already tokenises it that way (`--scrim-in`, `--scrim-knee-a`, and a per-route content
+/// line — `components/panels/route-screen.card.html` is its reference drawing).
+///
+/// `content_top` is the line the caller's own content starts at (the Library's grid top, Search's
+/// first shelf heading); `scroll` is how far that content has travelled up. Nothing is drawn at
+/// rest, which is what keeps a settled screen free of it entirely.
+///
+/// **It starts at y=0 and is OPAQUE for most of its height**, and that is the part that is easy to
+/// get wrong: the band is not a gradient hung under the bar, it is the bar's whole ground, with a
+/// ramp on its bottom edge. Starting it lower leaves a strip of live content above it — a poster's
+/// top edge appearing over the chrome, which is what the first version of this did on Search.
+///
+/// The caller draws it AFTER its content and BEFORE its chrome, which is the order that lets it be
+/// opaque; `library::draw` has always used that order and it is why its scissor is a bound rather
+/// than a treatment.
+pub(crate) fn nav_scrim(p: Painter, content_top: f32, scroll: f32) {
+    let a = (scroll / NAV_SCRIM_IN).clamp(0.0, 1.0);
+    if a <= 0.004 {
+        return;
+    }
+    let base = theme::SURFACE_APP;
+    let knee_col = theme::with_a(base, NAV_SCRIM_KNEE_A);
+    let (solid, knee) = (content_top - NAV_SCRIM_TAIL - NAV_SCRIM_STEEP, content_top - NAV_SCRIM_TAIL);
+    let ps = p.alpha(a); // the appear rides the cascade — all three bands together
+    let w = crate::ui::consts::SCR_W;
+    ps.rect(Rect::new(0.0, 0.0, w, solid), 0.0, base, base, 0.0);
+    ps.rect(Rect::new(0.0, solid, w, NAV_SCRIM_STEEP), 0.0, base, knee_col, 0.0);
+    ps.rect(Rect::new(0.0, knee, w, NAV_SCRIM_TAIL), 0.0, knee_col, theme::with_a(base, 0.0), 0.0);
+}
+
 /// The top-left profile chip's VISUAL (avatar texture, or an initial / person-glyph fallback,
 /// with the shared tile shadow + sheen). Shared by Home and the Library screen — each screen owns
 /// its rect + focus rule and calls this. The session lookup (mutex + UserRef clone) is

@@ -426,14 +426,19 @@ pub(crate) fn draw(p: Painter, v: &View) {
     // and the query capsule and was drawn ON TOP of both — device-observed, and invisible until
     // something was actually scrolled.
     //
-    // The cut is under the FIELD, not at the tab track's bottom edge: the field is the lowest thing
-    // this screen pins, so whatever clears it clears the strip above it too. The gap is headroom
-    // for the two things that legitimately paint ABOVE a shelf's own block top — the focused
-    // heading's lift and a magnified tile's glow — which a cut at `CONTENT_TOP` would shave at rest.
+    // **The cut is now ABOVE the field, and it is a bound rather than a treatment.** It sat just
+    // BELOW the field, which made it the only thing standing between a scrolling poster and the
+    // chrome — and a scissor is a razor: a tile crossing the capsule lost its top half to a hard
+    // horizontal line, which is what got photographed. `super::draw_scroll_scrim` does that job
+    // properly now (the Library's veil, and the draw order that lets it be opaque), so this only
+    // has to stop a tile reaching the tab strip, and it cuts inside the veil's own opaque band
+    // where the cut cannot be seen. `BAND_CLEAR` is still the headroom for the two things that
+    // legitimately paint above a shelf's block top — the focused heading's lift and a magnified
+    // tile's glow.
     //
     // Paired with `clip_clear` below, and deliberately AFTER the early return above: this is global
     // GL scissor state, so a return between the two would leave the rest of the frame scissored.
-    let cut = super::FIELD.y + super::FIELD.h + BAND_CLEAR;
+    let cut = super::FIELD.y - BAND_CLEAR;
     p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
     let pf = p.translate(0.0, -v.shift);
     let st: &Shelves = state();

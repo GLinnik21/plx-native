@@ -51,10 +51,12 @@ const SDL_MOUSEMOTION: u32 = 0x400;
 const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
 const SDL_MOUSEBUTTONUP: u32 = 0x402;
 const SDL_MOUSEWHEEL: u32 = 0x403;
-/// Text COMMITTED by the system keyboard — `crate::textinput`. Its sibling `SDL_TEXTEDITING`
-/// (0x302) is the IME's in-progress composition and is deliberately ignored: the search field
-/// shows what has been committed, so a preedit would put characters on screen that the query
-/// does not contain.
+/// The IME's in-progress COMPOSITION. Not acted on — the search field shows what has been
+/// committed, so a preedit would put characters on screen the query does not contain — but LOGGED,
+/// because the panel's word prediction is a replace and this is where its delete half would arrive
+/// if it arrives at all. See the `"edit"` arm in the event ladder.
+const SDL_TEXTEDITING: u32 = 0x302;
+/// Text COMMITTED by the system keyboard — `crate::textinput`.
 pub(crate) const SDL_TEXTINPUT: u32 = 0x303;
 // keysyms + the OK/BACK predicates live in ui::consts (the single keycode home)
 use crate::ui::consts::{
@@ -2194,7 +2196,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // silently draw nothing.
                 crate::ui::idle::invalidate();
                 let et = rd_u32(&ev, 0);
-                if et == SDL_KEYDOWN || et == SDL_KEYUP || et == SDL_TEXTINPUT {
+                if et == SDL_KEYDOWN || et == SDL_KEYUP || et == SDL_TEXTINPUT || et == SDL_TEXTEDITING {
                     // 48 bytes, not 32: a TEXTINPUT event's `text[32]` starts at +16 on the
                     // television (LG's `inputSource` shifts it), so it ENDS at exactly +48. At the
                     // old width the one event whose payload the offsets are most easily wrong
@@ -2203,7 +2205,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     for b in &ev[..48] {
                         hex.push_str(&format!("{b:02x}"));
                     }
-                    let what = if et == SDL_TEXTINPUT { "text" } else { "key" };
+                    let what = match et {
+                        SDL_TEXTINPUT => "text",
+                        // **The IME's PRE-EDIT, and the reason it is logged at all.** The panel's
+                        // word prediction is a REPLACE — tapping "summer" under a typed "summ"
+                        // means *delete what I was predicting on, then commit this* — and the app
+                        // sees only the commit, so the field reads "summsummer" (reported from the
+                        // couch 2026-08-15). Whether the delete half reaches us as `SDL_TEXTEDITING`
+                        // (`text_model.delete_surrounding_text` mapped onto SDL's pre-edit) or as
+                        // nothing at all decides whether the fix can be exact or has to be a
+                        // heuristic — and this arm is the only way to find out, since nothing in
+                        // the app has ever read this event.
+                        SDL_TEXTEDITING => "edit",
+                        _ => "key",
+                    };
                     log(&format!("[{}] {what} type=0x{et:x} raw={hex}", SDL_GetTicks()));
                 }
                 if et == SDL_QUIT {
