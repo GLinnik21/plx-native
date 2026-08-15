@@ -242,6 +242,29 @@ pub(crate) fn reveal_shelf(cur: f32, i: usize) -> f32 {
     reveal_of(cur, &k[..n], i)
 }
 
+/// The rect a DRAWN tile is recorded at for the pointer, cut to the band the user can actually
+/// see — or `None` when the whole tile is above it.
+///
+/// **What is painted and what is REACHABLE are not the same rect on this screen**, and that is the
+/// whole reason this exists. [`draw`]'s scissor cuts at `BAND_CLEAR` above the field, and the
+/// navigation scrim over everything above [`super::CHROME_BOTTOM`] is OPAQUE — so a shelf scrolled
+/// up under the chrome goes on being drawn (partly into the scissor's dead zone, partly behind a
+/// flat band) while its recorded rects went on claiming it was there to be pressed. The pointer
+/// then found tiles in blank top chrome: a hover re-seated focus, which yanks the flow to reveal a
+/// shelf nobody pointed at, and a click opened a poster that was not on screen.
+///
+/// It is this module's own cull rule at the other end. `on_axis` skips a shelf that is off the
+/// PANEL, before `strip` is entered; this trims the tile that is behind the CHROME, after `strip`
+/// has drawn it — and it FLOORS rather than dropping, so a tile crossing the line stays addressable
+/// on exactly the half of it that can be seen. The `> 0.5` is `super::find_rect`'s own rule about
+/// zero-extent rects, applied where the rect is made instead of only where it is scanned:
+/// `Rect::contains` is inclusive, so a rect floored to nothing would still answer on its own edge.
+fn hit_band(r: Rect, floor: f32) -> Option<Rect> {
+    let top = r.y.max(floor);
+    let bottom = r.y + r.h;
+    (bottom - top > 0.5).then(|| Rect::new(r.x, top, r.w, bottom - top))
+}
+
 // ---- screen state ------------------------------------------------------------------------------
 
 /// The owner annotation's own little state machine — see the module doc's point 2.
@@ -505,10 +528,16 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
         // the flow line less this frame's scroll — hit-testing happens in the untranslated screen
         // the user is actually pointing at. Scaled by the cell's own spring so the target matches
         // the tile as DRAWN, magnified or not.
+        //
+        // …and CUT to what is visible before it is recorded ([`hit_band`]): the paint is scissored
+        // and over-painted above the field, so a rect taken straight from the layout claims ground
+        // the tile does not hold.
         |_, k, x, _| {
             let r = Rect::new(x - row.scroll_x(), top + HEAD_TO_ROW - v.shift, sty.w, sty.h)
                 .scaled(row.scale(k));
-            super::note_tile_rect(i, k, r);
+            if let Some(r) = hit_band(r, super::CHROME_BOTTOM) {
+                super::note_tile_rect(i, k, r);
+            }
         },
     );
 }
@@ -756,6 +785,47 @@ mod tests {
         assert_eq!(stack_top(&ALL, last) + block_h(ALL[last]) - end, SCR_H - BOTTOM_PAD);
 
         assert_eq!(reveal_of(0.0, &ALL, 99), 0.0, "a shelf that is not there cannot scroll the page");
+    }
+
+    /// **What is drawn and what can be PRESSED are not the same rect above the field.** The paint
+    /// is scissored at `BAND_CLEAR` above it and the navigation scrim over everything higher is
+    /// opaque, so a shelf scrolled up under the chrome goes on being drawn while its recorded rects
+    /// went on claiming it was there. The pointer found tiles in blank top chrome: a hover
+    /// re-seated focus, which yanks the flow back to reveal a shelf nobody pointed at, and a click
+    /// opened a poster that was not on screen.
+    #[test]
+    fn a_tile_scrolled_under_the_chrome_is_not_a_pointer_target() {
+        let floor = crate::ui::search::CHROME_BOTTOM;
+        let tile = |y: f32| Rect::new(400.0, y, CARD_W, CARD_H);
+
+        // At rest the first shelf's row is well clear of the chrome, and its rect is recorded
+        // exactly as it was drawn — the common case must cost nothing.
+        let at_rest = tile(stack_top(&ALL, 0) + HEAD_TO_ROW);
+        let r = hit_band(at_rest, floor).expect("an on-screen tile is a target");
+        assert_eq!((r.y, r.h), (at_rest.y, at_rest.h));
+
+        // Crossing the line: only the visible part answers, and the column is untouched — this is
+        // a floor, not a cull.
+        let cross = tile(floor - 100.0);
+        let r = hit_band(cross, floor).expect("the part below the chrome is still a target");
+        assert_eq!((r.y, r.h), (floor, CARD_H - 100.0));
+        assert_eq!((r.x, r.w), (cross.x, cross.w));
+        assert!(!r.contains(r.x + 1.0, floor - 1.0), "…and nothing above the line is inside it any more");
+
+        // Fully above it: no rect at all, so `super::find_rect` never sees one. The exact-touch
+        // case is a real target and not a nicety — `Rect::contains` is inclusive, so a rect floored
+        // to nothing is clickable along its own edge (`library::STATUS_BTN`'s lesson, which
+        // `find_rect`'s `w > 0.5` states for the horizontal).
+        assert!(hit_band(tile(floor - CARD_H - 1.0), floor).is_none());
+        assert!(hit_band(tile(floor - CARD_H), floor).is_none(), "a tile ending ON the line is not one");
+        assert!(hit_band(tile(floor - CARD_H + 0.4), floor).is_none(), "nor is a sliver under half a pixel");
+
+        // …and the flow really does reach that state: revealing the last shelf — where a ▼ walk
+        // down the shelves ends — puts the first one's whole row above the chrome.
+        let deep = reveal_of(0.0, &ALL, ALL.len() - 1);
+        let row0 = tile(stack_top(&ALL, 0) + HEAD_TO_ROW - deep);
+        assert!(row0.y + row0.h < floor, "the first row is behind the chrome at {deep}px of scroll");
+        assert!(hit_band(row0, floor).is_none(), "…so nothing in it may answer the pointer");
     }
 
     /// The heading flow: title, one 16px gap, the count — and the source annotation ABSENT rather
