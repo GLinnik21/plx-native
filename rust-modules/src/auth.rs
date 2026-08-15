@@ -259,12 +259,16 @@ pub fn start_switch() {
             Some(us) if !us.is_empty() => {
                 let users: Vec<UserTile> = us.iter().map(UserTile::of).collect();
                 log(&format!("auth: roster refreshed n={}", users.len()));
-                let persist = with_ctl(|c| {
+                let roster = with_ctl(|c| {
                     c.session.home_users = users.iter().map(UserTile::to_ref).collect();
                     c.users = users;
-                    c.session.clone()
+                    c.session.home_users.clone()
                 });
-                session::save(&persist);
+                // Only the field this worker owns, and through the one door. A whole-session save
+                // from the CTL snapshot would put the stale `sources` back over the SERVER roster
+                // — which `refresh_roster_online` is refreshing at this very moment, since
+                // `start_switch` spawns both and neither can know which lands first.
+                session::update(|s| Some(Session { home_users: roster, ..s.clone() }));
             }
             _ => {
                 log("auth: roster refresh failed — keeping cached roster");
@@ -773,9 +777,13 @@ pub fn refresh_roster_online() {
             });
         log(&format!("auth: roster refresh — {} server(s){}", found.len(), if changed { ", persisted" } else { "" }));
         if changed {
-            let mut next = session::load(); // re-read: a profile pick may have landed meanwhile
-            next.sources = found;
-            session::save(&next);
+            // The re-read and the write are ONE step under `session`'s own lock. This was
+            // `session::load()` followed by `session::save()`, with a comment admitting the race
+            // it could not close: a profile pick landing between the two was rewritten with the
+            // pre-switch profile, and the next boot resumed as the wrong person. `update` also
+            // refuses outright if the file no longer holds a session — a sign-out during this
+            // fetch must not be undone by a roster we have no credentials for.
+            session::update(|s| Some(Session { sources: found, ..s.clone() }));
         }
     });
 }
