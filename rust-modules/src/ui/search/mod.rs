@@ -62,7 +62,7 @@
 //! user's eyes at the exact moment they asked for a small move. The COLUMN is remembered (and
 //! clamped), which is the half of "lands where you were" that costs nothing.
 
-use crate::ui::consts::{K_SCROLL, SDLK_BACKSPACE, SDLK_CLEAR, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{K_SCALE, K_SCROLL, SDLK_BACKSPACE, SDLK_CLEAR, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
 use crate::ui::xfade::Xfade;
 use crate::ui::{Painter, Rect, Spring};
 use std::os::raw::{c_int, c_uint};
@@ -179,6 +179,9 @@ pub(crate) struct View {
     pub(crate) caret: usize,
     /// Is the caret in its ON phase this frame? See [`BLINK_MS`].
     pub(crate) caret_on: bool,
+    /// How far the field is into its focused face, 0…1 — see [`HOT`]. A scalar and not a bool
+    /// precisely so the region can cross-fade rather than branch.
+    pub(crate) hot: f32,
 }
 
 /// What the screen reports for `app.rs` to perform. A screen never routes itself — the same rule
@@ -201,6 +204,20 @@ static mut STRIP: usize = 0;
 /// The shelves' vertical scroll. A [`Spring`], so `ui::idle` hears the motion for free (both
 /// integrators report) and this screen owes the frame gate no clock of its own.
 static mut SCROLL: Spring = Spring::at(0.0);
+/// How far the field is into its FOCUSED face, 0…1 — the one thing on this screen that changed
+/// state as a cut.
+///
+/// The capsule swaps between two complete faces (`CONTROL_IDLE_FILL`/`CONTROL_IDLE_INK` and
+/// `ACCENT`/`ACCENT_INK`), and it did it instantly while every other control in the app animates:
+/// the tab strip's capsules TRAVEL between pills, a card's focus pop is a spring, the season tabs
+/// share that spring by owner directive. A field that snapped from dark to white was the one place
+/// focus arrived without motion, which reads as a repaint rather than as a control taking the
+/// remote.
+///
+/// A [`Spring`], so `ui::idle` hears it for free and the fade cannot outlive its own frame — and at
+/// `K_SCALE`, the focus-pop rate, because that is what this IS: the same event a card answers with
+/// a pop, on a control whose only affordance is its fill.
+static mut HOT: Spring = Spring::at(0.0);
 /// The insertion point, a BYTE offset into `crate::search::query()`. Read through [`caret`], which
 /// clamps it into the CURRENT string — the query is the store's and can be replaced under us (a
 /// recents pick, `enter`'s pre-seed, a profile switch wiping the store), so a raw offset held here
@@ -296,6 +313,64 @@ fn next_boundary(q: &str, at: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// One commit from the panel, INSERTED or REPLACING — the difference being the panel's word
+/// prediction, which it does not tell us about.
+///
+/// **Tapping a prediction is a replace, and the delete half never arrives.** Typing `sum` and
+/// tapping the offered `summer` produced `sumsummer` (reported 2026-08-15). The event log settles
+/// what the panel actually sends, which is the whole reason this is a rule and not a guess — three
+/// single-character commits for the keys, then one commit of `"summer "`, and **nothing else**: no
+/// `SDL_TEXTEDITING`, no backspace keys, no `delete_surrounding_text` reaching SDL at all. The
+/// television simply assumes the field replaced the word it was predicting on.
+///
+/// So the signal is the commit's own LENGTH, which that log makes unambiguous: every key press
+/// arrives as exactly one character (Cyrillic included — `с`, `у`, `б` came one per event), and
+/// only the prediction bar ever commits more. [`replaces_word_at`] is that rule with its two
+/// guards, and its doc carries what each one is protecting.
+fn commit_text(text: &str) {
+    let q = crate::search::query();
+    if let Some(from) = replaces_word_at(q, caret(), text) {
+        let mut s = q.to_string();
+        s.replace_range(from..caret(), "");
+        set_caret(from);
+        crate::search::set_query(&s);
+    }
+    insert_text(text);
+}
+
+/// Where the word this commit REPLACES begins, or `None` to insert it plainly. Pure, because it is
+/// the whole of the rule above and the cases that must NOT fire are the ones worth grading.
+///
+/// Two guards, each protecting a case that would otherwise eat the user's text:
+///
+/// 1. **More than one character.** A single-character commit is a key press, always — so typing
+///    `a` twice stays `aa` rather than replacing itself, and the space bar is a space.
+/// 2. **The caret is at the END.** A prediction is offered on the word you are finishing; a
+///    multi-character commit landing mid-string is something else entirely (the `txt:` dev token
+///    is one), and replacing there would delete text on either side of an insertion point the user
+///    deliberately moved.
+///
+/// The word is the trailing run of non-whitespace before the caret, so a query that already ends in
+/// a space has nothing to replace and the commit simply appends — which is exactly right for a
+/// prediction offered on the NEXT word.
+///
+/// Deliberately **not** also requiring the commit to start with that word. A completion does
+/// (`sum` → `summer`), but the same bar offers CORRECTIONS, and those do not; the two guards above
+/// are what make the rule safe, and adding a prefix test would only leave corrections broken.
+fn replaces_word_at(q: &str, caret: usize, text: &str) -> Option<usize> {
+    if text.chars().count() < 2 || caret != q.len() {
+        return None;
+    }
+    let head = q.get(..caret)?;
+    // Past the separator, not onto it — and by its own BYTE length, since a multi-byte space (the
+    // one `remote.rs` lost the app to) would otherwise leave the index mid-codepoint.
+    let start = match head.rfind(char::is_whitespace) {
+        Some(i) => i + head[i..].chars().next().map_or(1, char::len_utf8),
+        None => 0,
+    };
+    (start < caret).then_some(start)
 }
 
 /// Insert committed text AT the caret, not at the end. The panel's `◀`/`▶` can put the insertion
@@ -491,8 +566,21 @@ fn view() -> View {
             // Read, never stepped: `update` owns the clock, so every region drawing this frame sees
             // one phase and the flip cannot land between two of them.
             caret_on: blink_on(addr_of!(BLINK_T).read()),
+            hot: addr_of!(HOT).read().pos.clamp(0.0, 1.0),
         }
     }
+}
+
+/// Does the field hold the remote? The spring's target, and the predicate `field` used to compute
+/// for itself — hoisted here because a state machine's own state belongs to the state machine, and
+/// because the spring and the draw reading two expressions of one question is how they come to
+/// disagree for a frame.
+///
+/// The keyboard being up counts as focus by itself: it is the strongest possible statement that
+/// this control has the remote, and a field that dimmed while you typed into it would be saying the
+/// opposite.
+fn field_hot() -> bool {
+    zone() == Zone::Field || editing()
 }
 
 // ---- entry / exit ----------------------------------------------------------------------------
@@ -515,6 +603,11 @@ pub(crate) fn enter(q: &str) {
         // lands where the eye already is.
         *addr_of_mut!(STRIP) = crate::ui::widgets::search_pill();
         (*addr_of_mut!(SCROLL)) = Spring::at(0.0);
+        // SEATED, not sprung: the screen mounts with the field already focused, so there is no
+        // state CHANGE to animate — gliding the fill up from idle on arrival would be a second
+        // fade under `nav`'s page transition, and would report motion to `ui::idle` for the first
+        // ~8 frames of a screen that is not moving.
+        (*addr_of_mut!(HOT)) = Spring::at(1.0);
     }
     crate::search::set_query(q);
     // The caret lands at the END of a pre-seeded term, which is where a person who had just typed
@@ -550,6 +643,9 @@ pub(crate) fn update(dt: f32) {
     // phase the clock happened to be in.
     step_blink(dt, editing());
     clamp_focus();
+    // AFTER the clamp, so a zone the clamp just handed back to the field lights it on the same
+    // frame rather than one late.
+    unsafe { (*addr_of_mut!(HOT)).step(f32::from(u8::from(field_hot())), K_SCALE, dt) };
     unsafe { (*addr_of_mut!(SCROLL)).step(scroll_target(), K_SCROLL, dt) };
     // The shelves' own springs, in the UPDATE phase — after `clamp_focus`, so they are handed a
     // seated cursor, and before `idle::should_present`, which is the whole reason this line exists.
@@ -608,7 +704,7 @@ fn pump_text() {
         set_caret(crate::search::query().len());
     }
     for s in &commits {
-        insert_text(s);
+        commit_text(s);
     }
 }
 
@@ -663,7 +759,6 @@ pub(crate) fn draw() {
     // has stopped being drawn cannot still be clicked.
     unsafe { (*addr_of_mut!(HIT_R)).clear() };
 
-    field::draw(p, &v);
     // Everything BELOW the field rides the content fade; the field itself does not (see [`XF`]).
     let pg = p.alpha(xf().alpha());
     match below() {
@@ -678,6 +773,13 @@ pub(crate) fn draw() {
     if has_query() {
         results::draw(pg, &v);
     }
+    // …THEN the navigation bar's scrim, THEN the chrome over it. The ORDER is the fix: this screen
+    // drew the field first and the shelves over it, so a poster crossing the capsule was stopped
+    // only by `results`' scissor — a razor edge in open ground, which is what got photographed.
+    // `widgets::nav_scrim` is the shared treatment (the Library's, and the design system's
+    // `route-screen` card); the scissor is a bound again, cutting inside the opaque band.
+    crate::ui::widgets::nav_scrim(p, CONTENT_TOP, v.shift);
+    field::draw(p, &v);
 
     // `CHIP_D`, not a literal 54: Home draws this same chip at 60, and Home<->Search is a
     // chrome-CONTINUOUS cross-fade, so a six-pixel disagreement was visible as the avatar shrinking
@@ -1128,6 +1230,10 @@ mod tests {
             *addr_of_mut!(RECENT) = 0;
             *addr_of_mut!(STRIP) = 0;
             *addr_of_mut!(SCROLL) = Spring::at(0.0);
+            // Seated on its target, exactly as `enter` seats it — a reset screen is SETTLED by
+            // definition, and a focus spring left at 0 under a focused field would report motion
+            // for its first frames and read as the idle gate being broken.
+            *addr_of_mut!(HOT) = Spring::at(1.0);
             *addr_of_mut!(CARET) = 0;
             *addr_of_mut!(BLINK_T) = 0.0;
             // The content fader is screen state like the rest of it, and a reset screen is SETTLED
@@ -1536,6 +1642,111 @@ mod tests {
         crate::search::set_query("é"); // 2 bytes: a clamp to len-1 would land mid-codepoint
         unsafe { *addr_of_mut!(CARET) = 1 };
         assert_eq!(caret(), 0, "…and rounds DOWN to a char boundary rather than panicking");
+        leave();
+        crate::search::reset();
+    }
+
+    /// The field's two faces CROSS-FADE, and the fade is a spring — so it owes the frame gate the
+    /// same two halves everything else that moves does. This is the "reports while running" half;
+    /// the quiet-at-rest half is `the_scroll_spring_reports_while_it_runs_and_goes_quiet_at_rest`,
+    /// which passes only because `enter`/`reset` SEAT this spring on its target (a focused field
+    /// mounting from 0 would report motion for its first frames).
+    #[test]
+    fn the_fields_focus_fade_runs_when_focus_leaves_it_and_settles() {
+        use crate::ui::idle;
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        idle::set_enabled(true);
+        const DT: f32 = 1.0 / 60.0;
+        let mut frame = |now: u32| {
+            idle::frame_begin(DT);
+            update(DT);
+            let asked = idle::should_present(now);
+            idle::note_present(now);
+            asked
+        };
+        frame(20_000); // discard the mount's own discrete invalidate
+
+        assert_eq!(view().hot, 1.0, "the screen mounts with the field focused and the fill seated");
+        // ▲ to the strip: the field is no longer hot, so the fill has somewhere to travel.
+        move_focus(SDLK_UP);
+        assert_eq!(zone(), Zone::Strip);
+        frame(20_016); // spends `move_focus`'s discrete invalidate
+        let mut ran = 0;
+        let mut t = 20_032;
+        for _ in 0..200 {
+            if !frame(t) {
+                break;
+            }
+            ran += 1;
+            t += 16;
+        }
+        assert!(ran > 4, "the fade must keep the panel awake while it travels (ran {ran} frames)");
+        assert!(ran < 120, "…and settle rather than ring forever");
+        assert!(view().hot < 0.02, "…arriving on the idle face (got {})", view().hot);
+
+        // …and back: ▼ returns to the field and the fill travels the other way.
+        move_focus(SDLK_DOWN);
+        frame(t);
+        assert!(frame(t + 16), "focus returning to the field must animate too");
+        for _ in 0..200 {
+            update(DT);
+        }
+        assert!(view().hot > 0.98, "…and arrive on the focused face (got {})", view().hot);
+        crate::search::reset();
+    }
+
+    /// **Tapping a word prediction is a REPLACE and the panel never says so.** Typing `sum` and
+    /// tapping the offered `summer` gave `sumsummer` — device-reported, and the event log shows why
+    /// there is no exact fix available: three single-character commits for the keys, then one
+    /// commit of `"summer "`, and no `SDL_TEXTEDITING`, no backspace keys, nothing else at all.
+    ///
+    /// So this is a rule, and a rule's tests are the cases it must NOT fire on.
+    #[test]
+    fn a_multi_character_commit_at_the_end_replaces_the_word_being_typed() {
+        // the reported case, exactly as the log has it — trailing space included
+        assert_eq!(replaces_word_at("sum", 3, "summer "), Some(0));
+        // …and mid-sentence, where only the LAST word goes
+        assert_eq!(replaces_word_at("the sum", 7, "summer "), Some(4));
+
+        // ---- the cases it must not fire on ----
+        // A single character is a KEY PRESS, always. Without this guard, typing a letter twice
+        // replaces it with itself and `aa` is impossible to type.
+        assert_eq!(replaces_word_at("a", 1, "a"), None);
+        assert_eq!(replaces_word_at("sum", 3, "m"), None);
+        assert_eq!(replaces_word_at("sum", 3, " "), None, "the space bar is a space");
+        // A caret the user MOVED is not a word being predicted on: a multi-character insertion
+        // there must land where they put it (this is the `txt:` dev token's path, and the ◀/▶ one).
+        assert_eq!(replaces_word_at("summer", 4, "XY"), None);
+        // Nothing to replace: the query ends in a space, so the prediction is for the NEXT word.
+        assert_eq!(replaces_word_at("the ", 4, "office "), None);
+        assert_eq!(replaces_word_at("", 0, "summer "), None);
+
+        // Multi-byte: the word boundary is found by BYTE index and must land on a char boundary,
+        // or the `replace_range` that follows panics inside the SDL event loop.
+        assert_eq!(replaces_word_at("суб", "суб".len(), "суббота "), Some(0));
+        let two = "я суб";
+        assert_eq!(replaces_word_at(two, two.len(), "суббота "), Some("я ".len()));
+    }
+
+    /// …and the same rule through the live store, since `commit_text` is what actually edits.
+    #[test]
+    fn the_prediction_replaces_rather_than_doubling_the_partial_word() {
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        typed("sum");
+        commit_text("summer ");
+        assert_eq!(crate::search::query(), "summer ", "the partial word is replaced, not doubled");
+        assert_eq!(caret(), "summer ".len());
+        // a second prediction on the next word appends, because there is no partial word to eat
+        commit_text("house ");
+        assert_eq!(crate::search::query(), "summer house ");
+        // …and ordinary typing after one is still ordinary typing
+        commit_text("a");
+        commit_text("a");
+        assert_eq!(crate::search::query(), "summer house aa");
         leave();
         crate::search::reset();
     }

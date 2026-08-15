@@ -43,19 +43,16 @@ const LGAP: f32 = (SCR_W - 2.0 * MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32
 const TOOL_Y: f32 = 134.0;
 const TOOL_H: f32 = 52.0;
 const GRID_TOP: f32 = 214.0;
-/// Top-chrome scrim fade, two piecewise-linear segments ≈ ease-out: a steep drop to
-/// [`SCRIM_KNEE_A`] by [`SCRIM_KNEE`], then a long gentle tail to 0 at `GRID_TOP`. One short
-/// linear ramp here read as a harsh bar shadow with a visible bottom edge; the knee keeps the
-/// toolbar chips (bottom y≈186) solidly backed while the tail crosses the RESTING popped card's
-/// top (`GRID_TOP - CARD_H*0.045 ≈ 197`) at ≤~26% — a soft entering-the-shadow veil, not a wash.
-const SCRIM_KNEE: f32 = 188.0;
-const SCRIM_KNEE_A: f32 = 0.40;
-/// The scrim FADES IN over the first px of scroll (alpha = `sc / SCRIM_IN`, clamped) instead of
-/// popping on at a 1px threshold. Scroll is spring-driven, so the appear inherits the spring's
-/// easing — scroll-linked, stateless, cannot desync. Fully established by 56px, before a
-/// scrolling poster meaningfully overlaps the chip row (tops reach the chips at ~28px, mid-sweep,
-/// where motion masks the 50% backing for the 2-3 frames it lasts).
-const SCRIM_IN: f32 = 56.0;
+// The top-chrome scrim's own numbers used to live here — a knee at 188, its .40 alpha, and a 56px
+// scroll-linked appear. They are `widgets::nav_scrim`'s now, DERIVED from `GRID_TOP` rather than
+// spelled: the design system tokenises this treatment for every full-screen route that scrolls a
+// column under the bar (`--scrim-in`, `--scrim-knee-a`, a per-route content line), and both of its
+// routes agree on the shape these literals happened to be. Search draws the identical element.
+//
+// What that shape buys, kept here because it is this screen's own measurement: the knee keeps the
+// toolbar chips (bottom y≈186) solidly backed while the tail crosses the RESTING popped card's top
+// (`GRID_TOP - CARD_H*0.045 ≈ 197`) at ≤~26% — a soft entering-the-shadow veil, not a wash. One
+// short linear ramp instead of the knee read as a harsh bar shadow with a visible bottom edge.
 /// Row pitch: card + the focused under-label band (title + caption) before the next row.
 const PITCH: f32 = CARD_H + 96.0;
 use crate::ui::widgets::TOP_BAR_Y; // the shared top-bar chrome lives in widgets
@@ -2125,20 +2122,11 @@ pub(crate) fn draw() {
 
     // ---- top chrome: scrim under it once the grid has scrolled, then chip + pills + toolbar --
     // (drawn AFTER the focused card, so the whole band — scrim included — covers it)
-    let ca = (sc / SCRIM_IN).clamp(0.0, 1.0);
-    if ca > 0.004 {
-        let base = theme::SURFACE_APP;
-        let ps = p.alpha(ca); // the appear fade rides the Painter cascade — all three bands together
-        ps.rect(Rect::new(0.0, 0.0, SCR_W, 170.0), 0.0, base, base, 0.0);
-        ps.rect(Rect::new(0.0, 170.0, SCR_W, SCRIM_KNEE - 170.0), 0.0, base, theme::with_a(base, SCRIM_KNEE_A), 0.0);
-        ps.rect(
-            Rect::new(0.0, SCRIM_KNEE, SCR_W, GRID_TOP - SCRIM_KNEE),
-            0.0,
-            theme::with_a(base, SCRIM_KNEE_A),
-            theme::with_a(base, 0.0),
-            0.0,
-        );
-    }
+    // The SHARED navigation-bar scrim — this screen's own three bands, hoisted into
+    // `widgets::nav_scrim` so Search draws the identical treatment instead of a second copy of it.
+    // The numbers are unchanged: that function derives `170 / 188` from `GRID_TOP` by the design
+    // system's own shape (`top − 44` and `top − 26`), which is what these literals always were.
+    crate::ui::widgets::nav_scrim(p, GRID_TOP, sc);
     // the Library screen has no chip focus stop (its top-band focus is the tab row), so the chip
     // never unfurls here — expand 0.
     let cd = crate::ui::widgets::CHIP_D;

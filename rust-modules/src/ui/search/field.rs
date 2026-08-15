@@ -36,7 +36,7 @@
 #![allow(dead_code)]
 
 use crate::ui::label::Label;
-use crate::ui::search::{View, Zone, FIELD};
+use crate::ui::search::{View, FIELD};
 use crate::ui::{theme, Painter, Rect};
 use std::ffi::{CStr, CString};
 
@@ -85,12 +85,16 @@ const UNNAMED_OWN: &str = "your server";
 const UNNAMED_SHARE: &str = "a shared server";
 
 pub(crate) fn draw(p: Painter, v: &View) {
-    // Focused and editing are one FILL: the keyboard being up is the strongest possible statement
-    // that this control has the remote, and a field that dimmed while you typed into it would be
-    // saying the opposite.
-    let hot = v.zone == Zone::Field || v.editing;
-    let (fill, ink) =
-        if hot { (theme::ACCENT, theme::ACCENT_INK) } else { (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK) };
+    // The two faces, CROSS-FADED on `super`'s focus spring rather than swapped — see `super::HOT`
+    // for why this control owes the rest of the app that motion, and `theme::cross` for why it is
+    // not `theme::mix` (both pairs differ in ALPHA as well as hue, and `mix` would land the
+    // destination colour at the source's opacity).
+    let hot = v.hot;
+    let fill = theme::cross(theme::CONTROL_IDLE_FILL, theme::ACCENT, hot);
+    let ink = theme::cross(theme::CONTROL_IDLE_INK, theme::ACCENT_INK, hot);
+    // The placeholder and the one-character hint share one quiet role, on whichever face is under
+    // them. They ride the same scalar, so nothing on this control can be half-swapped.
+    let hint_ink = theme::cross(theme::TEXT_TERTIARY, theme::ROW_VALUE_INK_ON_DIM, hot);
     let rad = FIELD.h * 0.5;
     // The card system's resting shadow, the same one every pill in `widgets::Button` carries: an
     // ACCENT capsule with no shadow measures barely above its surround and the shape disappears,
@@ -126,8 +130,7 @@ pub(crate) fn draw(p: Painter, v: &View) {
     if q.trim().is_empty() {
         // The caret is the insertion point, so it precedes the hint rather than sitting under it.
         let px = if v.editing { inner.x + caret_dx + CARET_W + HINT_GAP } else { inner.x };
-        let col = if hot { theme::ROW_VALUE_INK_ON_DIM } else { theme::TEXT_TERTIARY };
-        Label::new(PLACEHOLDER.as_ptr(), theme::size::BODY, col).draw(p, Rect::new(px, inner.y, inner.w, inner.h));
+        Label::new(PLACEHOLDER.as_ptr(), theme::size::BODY, hint_ink).draw(p, Rect::new(px, inner.y, inner.w, inner.h));
     } else {
         Label::new(cq.as_ptr(), theme::size::BODY, ink)
             .draw(p, Rect::new(inner.x + run_dx, inner.y, inner.w, inner.h));
@@ -139,8 +142,7 @@ pub(crate) fn draw(p: Painter, v: &View) {
     // One character in, after the insertion point — see [`GHOST`]. Placed off the caret's own slot
     // whether or not a bar is drawn, so the run does not shuffle sideways when the panel closes.
     if ghost_shown(q) {
-        let col = if hot { theme::ROW_VALUE_INK_ON_DIM } else { theme::TEXT_TERTIARY };
-        Label::new(GHOST.as_ptr(), theme::size::BODY, col).draw(
+        Label::new(GHOST.as_ptr(), theme::size::BODY, hint_ink).draw(
             p,
             Rect::new(inner.x + caret_dx + CARET_W + GHOST_GAP, inner.y, inner.w, inner.h),
         );
