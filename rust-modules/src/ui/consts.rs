@@ -9,9 +9,14 @@ pub const GAP: f32 = 30.0;
 pub const MARGIN_X: f32 = 90.0;
 pub const ROW_TITLE_H: f32 = 30.0;
 pub const ROW_PITCH: f32 = CARD_H + ROW_TITLE_H + 144.0; // 549: room for the shelf title above + the focused card's title AND caption below (clears the next shelf's title)
-/// Card top below the shelf's `row_y` origin (the hub title draws at `row_y − 34`): the air between
-/// a section title and its posters, held on magnification too because `title_lift` raises the title
-/// by the same amount the popped card's top rises.
+/// Hub-title cap top above the shelf's `row_y` origin — the heading draws at `row_y − TITLE_DY`,
+/// minus whatever `CardRow::lift` has raised it by. Named because it is a LAYOUT relationship two
+/// other constants here are derived against ([`CARD_DY`]'s air, [`GRID_TOP_Y`]'s clearance under the
+/// profile chip) and because the shelf heading is now a multi-run flow rather than one `p.text`.
+pub const TITLE_DY: f32 = 34.0;
+/// Card top below the shelf's `row_y` origin (the hub title draws at `row_y − `[`TITLE_DY`]): the air
+/// between a section title and its posters, held on magnification too because `title_lift` raises the
+/// title by the same amount the popped card's top rises.
 pub const CARD_DY: f32 = 26.0;
 pub const CONTENT_Y: f32 = 200.0;
 pub const GLOW_PAD: f32 = 48.0;
@@ -24,7 +29,7 @@ pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 /// the whole shelf by that much, so the peek is 17px shallower here to keep the composition the
 /// hero view was tuned to (828 → 811; card top = `PEEK_Y + CARD_DY` = 837, as the popped one was).
 pub const PEEK_Y: f32 = 811.0;
-// shelf top in grid view — leaves the first hub title (row_y − 34, lifted up to ~10 more when its
+// shelf top in grid view — leaves the first hub title (row_y − TITLE_DY, lifted up to ~10 more when its
 // leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 108)
 pub const GRID_TOP_Y: f32 = 176.0;
 
@@ -39,6 +44,17 @@ pub const SDLK_SELECT: c_uint = 77 | (1 << 30);
 pub const SDLK_ESCAPE: c_uint = 27;
 pub const SDLK_PAGEUP: c_uint = 75 | (1 << 30);
 pub const SDLK_PAGEDOWN: c_uint = 78 | (1 << 30);
+/// Backspace and Clear — **the system keyboard's own two edit keys**, and the reason they are named
+/// here rather than left as literals in the one screen that reads text.
+///
+/// The television's on-screen panel does not edit the field itself. It commits printable characters
+/// as `SDL_TEXTINPUT` and then forwards every EDIT intent to the app as an ordinary key, expecting
+/// the app to own the text: `◀`/`▶` arrive as [`SDLK_LEFT`]/[`SDLK_RIGHT`] and mean *move the
+/// caret*, its delete key arrives as [`SDLK_BACKSPACE`], and its **Clear all** button arrives as
+/// [`SDLK_CLEAR`] (wcode 156, sym `0x4000009C` — device-measured 2026-08-15). A screen that ignores
+/// them has a keyboard whose buttons visibly do nothing, which is exactly how this shipped.
+pub const SDLK_BACKSPACE: c_uint = 8;
+pub const SDLK_CLEAR: c_uint = 156 | (1 << 30);
 /// Magic-Remote CH▲/CH▼ rocker — webOS keyCodes 33/34 (page the Library grid). Matched
 /// alongside the SDLK_PAGE* syms; verify the raw wcodes in the event log on a new remote.
 pub const WCODE_CH_UP: c_uint = 33;

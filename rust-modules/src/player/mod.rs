@@ -254,6 +254,25 @@ fn error_shape(
         },
     }
 }
+/// The Plex Pass claim that applies to THIS failure: the subscription of the server the PLAYING
+/// item came from.
+///
+/// **Never `serverinfo::subscription()`**, which answers for whichever server is *current* — and
+/// `current` stays pinned to the primary while a borrowed film plays (`plex::servers`' own rule:
+/// browsing a share does not re-point it). Both polarities are wrong and both are silent: a film
+/// borrowed from a Pass-less share loses the "(server has no Plex Pass)" clause and the read-out's
+/// capsule, which is exactly the support fact issue #22 was reported without; and our own Pass-less
+/// server would put that capsule on a failure that came from a friend's Pass'd machine, asserting a
+/// fact about a server that has nothing to do with it. `serverinfo::subscription_of` exists for
+/// this, and `route::cur_sid` is the playing item's own server — captured once at `request_play`
+/// and installed by `apply_plan`, which runs before either signal that can flip the state to
+/// `Error` (the plan's own refusal and the engine it would otherwise have started).
+///
+/// MAIN THREAD, like every other reader of `route`'s playback state.
+fn playing_subscription() -> crate::plex::serverinfo::Subscription {
+    crate::plex::serverinfo::subscription_of(crate::route::cur_sid())
+}
+
 /// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
 /// `route::play_verdict` read main-thread state).
 pub(crate) fn error_now() -> ErrorShape {
@@ -263,7 +282,7 @@ pub(crate) fn error_now() -> ErrorShape {
     error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(),
-        crate::plex::serverinfo::subscription(),
+        playing_subscription(),
         crate::route::play_verdict(),
     )
 }
@@ -287,9 +306,15 @@ const FAILTEST_VERDICT: &str = "Cannot convert this item. Implementation for vid
 /// [`error_shape`] rather than short-circuiting it, so what is photographed is the real resolver.
 ///
 /// `player_hud::busy` has the other half — the state itself — for the same reason.
+///
+/// The subscription comes from [`playing_subscription`], the same reader the real path uses, so the
+/// arm being photographed is the real resolver on real state. `/tmp/plxnative-nopass` is what makes
+/// the capsule reachable and it applies to EVERY server, so the pairing the root `CLAUDE.md`
+/// documents is unaffected — but note the arm still has to be looked at from the player route,
+/// i.e. after a play, which is when `route::cur_sid` names a server at all.
 fn failtest_arm() -> Option<ErrorShape> {
     let arm = crate::dev::read("failtest")?;
-    let sub = crate::plex::serverinfo::subscription();
+    let sub = playing_subscription();
     Some(match arm.trim() {
         "audio" => error_shape(true, true, sub, None),
         "novideo" => error_shape(true, false, sub, None),
@@ -870,6 +895,69 @@ mod tests {
         let e = error_shape(false, true, Sub::No, Some(""));
         assert_eq!(e.readout, "The server cannot play or convert this file");
         assert!(e.detail.is_empty(), "an empty verdict draws no quote line at all");
+    }
+
+    /// **The subscription the read-out states is the FAILING ITEM's server's, not the current
+    /// one's** — the wiring the pure shape above cannot see, because it takes the tristate as an
+    /// argument.
+    ///
+    /// The two are routinely different: `plex::servers` keeps `current` pinned to the primary while
+    /// a borrowed film plays, so `serverinfo::subscription()` here answered for OUR server on every
+    /// failure of a share's item. Both polarities are silent and wrong. A film borrowed from a
+    /// Pass-less share dropped the "(server has no Plex Pass)" clause and the read-out's capsule —
+    /// the exact support fact issue #22 was reported without, on the exact configuration (someone
+    /// else's free server) that produced it. And with the primary free and the share Pass'd, the
+    /// capsule appeared on a failure nothing about a subscription explains, which is the confident
+    /// wrong answer `error_shape`'s tristate rule exists to prevent.
+    ///
+    /// Registry, subscription slots and `route`'s playing identity are all crate globals, so this
+    /// holds `testlock::serial()` and puts every one of them back on the way OUT — the discipline
+    /// `serverinfo`'s own multi-server test states, and the reason its `Fresh` guard has a `Drop`.
+    #[test]
+    fn the_failure_read_out_states_the_playing_items_server_not_the_current_one() {
+        use crate::plex::serverinfo::{store_for_test, Subscription as Sub};
+        struct Fresh {
+            _g: std::sync::MutexGuard<'static, ()>,
+            sid: crate::plex::ServerId,
+        }
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                crate::route::swap_cur_sid_for_test(self.sid);
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let _fresh = Fresh { _g: g, sid: crate::route::swap_cur_sid_for_test(crate::plex::ServerId::UNSET) };
+
+        let reg = |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
+        let (ours, theirs) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
+        // the slot arrays outlive `reset_servers_for_test` — start from the boot state explicitly
+        store_for_test(ours, Sub::Unknown, "");
+        store_for_test(theirs, Sub::Unknown, "");
+        // our own server has a Plex Pass; the friend's share does not
+        store_for_test(ours, Sub::Yes, "1.43.3.10861-cd85035e7");
+        store_for_test(theirs, Sub::No, "1.32.0.6918-free");
+        // …and browsing a share does NOT re-point `current`, which is the whole trap
+        assert!(crate::plex::set_current(ours));
+
+        crate::route::swap_cur_sid_for_test(theirs);
+        assert_eq!(playing_subscription(), Sub::No, "the borrowed film's own server is the one that failed");
+        let e = error_shape(true, true, playing_subscription(), None);
+        assert!(e.no_pass, "so the read-out draws the capsule…");
+        assert!(e.panel.contains("server has no Plex Pass"), "…and the panel states the fact: {}", e.panel);
+
+        // the inverse polarity: playing from OUR Pass'd server while `current` sits on the share
+        assert!(crate::plex::set_current(theirs));
+        crate::route::swap_cur_sid_for_test(ours);
+        assert_eq!(playing_subscription(), Sub::Yes, "the current server's answer is not this item's");
+        assert!(!error_shape(true, true, playing_subscription(), None).no_pass, "no capsule may be invented");
+
+        // before the first play there is no playing server, and "we have not heard" is the honest
+        // answer — never slot 0's, and never a blamed subscription
+        crate::route::swap_cur_sid_for_test(crate::plex::ServerId::UNSET);
+        assert_eq!(playing_subscription(), Sub::Unknown);
+        assert!(!error_shape(true, true, playing_subscription(), None).no_pass);
     }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> SubRect {

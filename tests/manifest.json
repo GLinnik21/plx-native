@@ -1,6 +1,7 @@
 {
   "version": 1,
   "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via /tmp/plxnative-* triggers (see README) and asserts on /tmp/plxnative-events.log. This file is INSTALLATION-INDEPENDENT: a case names the SHAPE of the item it needs (`item`, a symbolic key) and never a ratingKey. tests/manifest.local.json — gitignored, copy it from manifest.local.json.example — maps those keys to items on YOUR server and carries the pms host, tv address and test_user with them; run.py merges it over this file at load and refuses to run without it, naming any key it cannot resolve. The X-Plex-Token is read from src/config.local.h at runtime — it is NEVER stored in either file. Cases are derived from a survey of one real library; see library_gaps for combos no item in it could cover.",
+  "_shared_server_comment": "A case or fps scene that needs the app to hold TWO servers' credentials (a friend's SHARED server beside your own — its own machineIdentifier, its own access token, a 401 for anybody else's) declares `\"needs_shared_server\": true` here. That is installation-INDEPENDENT: WHICH server is named in manifest.local.json's optional `shared_server` block, and its access token is resolved from plex.tv at run time (nothing is stored). run.py then writes /tmp/plxnative-servers beside /tmp/plxnative-token — the app parses it in dev::servers() and logs `servers: <n> extra server(s) injected, <n> usable`, never a token. An installation with no `shared_server` SKIPS these entries with the reason printed; it never fails them. `./tests/run.py --shared-server` injects the second server into every case of one run, for bringing a screen up by hand.",
   "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the once/sec `loop=<n> route=<r> fps=<n>` heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest loop= >= loop_floor plus whichever of fps_floor / fps_ceiling the scene declares. loop= counts LOOP ITERATIONS (liveness only — a settled screen reads ~62 while swapping nothing); fps= counts FRAMES ACTUALLY SWAPPED and is the only real frame rate here. RENAMED 2026-08-01 with the old name REUSED: a pre-rename log's FPS= is this loop=, and its pres= is this fps=. `item` keys resolve through manifest.local.json exactly like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
   "fps_scenes": [
     {
@@ -131,6 +132,38 @@
       "_fps_floor_note": "Measured healthy median 18 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 8 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
     },
     {
+      "name": "search-type",
+      "tier": "ui",
+      "route": "search",
+      "loop_floor": 45,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-search": "th",
+        "plxnative-searchosc": true
+      },
+      "fps_floor": 20,
+      "comment": "The Search screen while it is being USED: a query in the field and focus travelling the result shelves, which is the shape the screen spends its whole life in. plxnative-search seeds the field (nothing here can type — the harness has no keyboard, and the TV's own panel is raised by the user, not by a trigger), plxnative-searchosc then steps focus every 350ms and reverses every 3s, exactly as homeosc and libosc do. The pairing is required: searchosc alone does not reach route=search, and the sample-count guard would fail the scene as 'never entered this screen' rather than passing it vacuously.",
+      "_fps_floor_note": "MEASURED on the dev set 2026-08-14: median 44 fps (min 14, max 60, n=14) with plxnative-searchosc stepping focus every 350ms. 20 is under half that median, the same margin fps:library-scroll takes (floor 25 against a 49 median) — a real regression has to halve the frame rate before this fires, and a STOPPED animator reads ~0.5/s from ui::idle's keepalive alone, so it cannot pass by freezing.\n\nIt replaced a 10 chosen as a frozen-vs-running discriminator while the screen was still being built, back when this scene was expected to FAIL by design. Both that note and its landing check are gone: the screen has landed, and the check it named (plex/mod.rs's 'no callers yet' admission) had rotted anyway.",
+      "_caret_note": "THE CARET BLINKS — this note said the opposite, quoting a ui/search/field.rs paragraph ('solid by design', 'a blinking caret would hold the GL loop awake forever') that the module itself has since retracted: BLINK_MS is 530ms and step_blink reports to ui::idle on the phase FLIP alone, so the cost is two presents a second while the panel is up and nothing while it is not. ui/search/mod.rs's the_caret_blinks_and_reports_only_on_the_flip grades both halves on the host.\n\nWhat this scene grades is still not the caret, and no fps scene can: the caret is drawn only while `editing`, i.e. with the television's own keyboard raised. plxnative-search seeds the field but leaves EDITING false (search::enter calls leave() first), raising the panel takes a real OK press on the field, and run_fps_scene has no key-injection path at all — only the playback cases do, via stream_case's inject=. So a caret scene needs a harness change AND would then measure a screen with a system panel over its bottom third, which is a different measurement; the blink's gate is the host test named above.\n\nWhat the fps_floor here does grade is the motion that exists while searching: the field's focus fill as focus enters and leaves it, and the shelves scrolling under the sweep. A frozen shelf spring or a field that stopped reporting to ui::idle::invalidate lands here.",
+      "_query_note": "'th' is the one installation-DEPENDENT value in this scene, and it is a literal rather than a symbolic key because run.py resolves items, not queries. Two characters is deliberate — search::MIN_QUERY is 2, so this is also the shortest query the server answers at all (a one-character query returns every hub empty, measured against PMS 1.43.3). It matches any library holding titles that begin with 'The'. If YOUR library returns nothing for it the shelves are empty, the sweep has nothing to travel, and this scene degrades to grading the tab strip's focus springs — change the literal to a term your library matches rather than lowering the floor."
+    },
+    {
+      "name": "search-idle",
+      "tier": "ui",
+      "route": "search",
+      "loop_floor": 30,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-search": "th"
+      },
+      "comment": "search-type's inverse, and the pair only means something together: the same screen with the oscillator taken away must STOP presenting. A settled result set — query landed, shelves built, posters in — is a still screen, so ui::idle's present gate has to take it to the keepalive. loop_floor still grades loop=, which counts LOOP iterations and not swaps, so a wedged loop cannot pass by presenting nothing. This is the only guard on the over-reporting direction, and over-reporting gives back the whole ~38-points-of-a-core saving while every floor in the suite still passes.",
+      "_fps_ceiling_note": "5, not home-idle's 3, because a search result set lands ASYNCHRONOUSLY across up to five shelves and — with a second source installed — one fan-out per server, so late poster arrivals waking the gate are likelier here than on a Home grid that has settled once. Graded on the 2nd-highest sample, so one such wake is tolerated and a sustained repaint is not. warmup_s is 8 for the same reason home-idle's is: the screen keeps presenting until the last poster has landed and its reveal spring has settled, and here that is behind a query round trip as well. MEASURED 2026-08-14: robust_max 1 fps (median 1, n=14) against the ceiling of 5 — the gate takes a settled result set to the keepalive with four shelves of posters and two sources landing asynchronously, which is the case the 5 was widened for.",
+      "_query_note": "The same literal search-type uses, and the same caveat: change it if your library matches nothing for it. This scene degrades more gently than its twin — with no results the screen shows the 'No results' statement, which settles too, so the ceiling still means something. It just stops proving the thing worth proving, which is that ARRIVING artwork does not leave the screen repainting forever."
+    },
+    {
       "name": "home-library-nav",
       "tier": "ui",
       "route": "home",
@@ -139,7 +172,7 @@
       "run_secs": 36,
       "warmup_s": 6,
       "_run_secs_note": "36, not the 22 every single-route scene uses, because a ROUTE-CHANGING scene splits its samples. The FPS heartbeat is once/sec and navosc bounces every 1400ms, so each route sees only about HALF the post-warmup samples — 22s gave route=home 4, one under the harness' >=5 minimum, and the scene failed for want of evidence rather than for want of frames. 36s leaves ~30 post-warmup seconds, ~15 per route: margin enough that an uneven bounce phase cannot starve either side. Any future two-route scene needs this same doubling.",
-      "comment": "One of the two scenes that change ROUTE. navosc bounces Home<->the first library section every 1400ms through the real nav_to path, so the page cross-fade (ui::nav) is perf-gated. route=home samples the settled hero, the fade-OUT and the fade-IN on the way back; the Library half is covered by library-scroll/library-switch.",
+      "comment": "One of the two scenes that change ROUTE. navosc bounces Home<->the first library TAB every 1400ms through the real nav_to path, so the page cross-fade (ui::nav) is perf-gated. It is a tab and no longer 'the first section': the strip is a projection of the section table (browse::tabs), so several libraries can share one pill and the two index spaces are not one addition apart. route=home samples the settled hero, the fade-OUT and the fade-IN on the way back; the Library half is covered by library-scroll/library-switch.",
       "triggers": {
         "plxnative-navosc": true
       },

@@ -2,6 +2,7 @@
 //! Button, CircleButton, TabPill, TransportButton, PageDots, Badge, plus the shared art-card
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
+use crate::plex::ServerId;
 use crate::pms::PmsMovie;
 use crate::ui::theme;
 use crate::ui::label::{HAlign, Label};
@@ -9,50 +10,68 @@ use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
-/// Build the transcode key for `path` on the stack. The ONE key builder the three resolvers below
-/// share, so a warm and the draw that follows it can never name two different slots — `(path, w, h,
-/// png)` IS the store key. Per-frame hot path (every visible tile): the NUL-terminated copy
-/// `poster_key` wants is made on the stack, no heap alloc.
-fn tex_key(path: &str, w: c_int, h: c_int, png: c_int) -> [u8; 352] {
+/// Build `srv`'s transcode key for `path` on the stack. The ONE key builder the resolvers below
+/// share, so a warm and the draw that follows it can never name two different slots — `(server,
+/// path, w, h, png)` IS the store key. Per-frame hot path (every visible tile): the
+/// NUL-terminated copy `poster_key` wants is made on the stack, no heap alloc.
+fn tex_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> [u8; 352] {
     let mut p = [0u8; 256];
     crate::cbuf::set_bytes(&mut p, path);
     let mut key = [0u8; 352];
-    crate::posters::poster_key(key.as_mut_ptr() as *mut c_char, key.len(), p.as_ptr() as *const c_char, w, h, png);
+    crate::posters::poster_key(srv, key.as_mut_ptr() as *mut c_char, key.len(), p.as_ptr() as *const c_char, w, h, png);
     key
 }
 
-/// build the transcode key on the stack and resolve it to a GL texture (0 until loaded).
+/// build the transcode key on the stack and resolve it to a GL texture (0 until loaded), for art
+/// on the server the user is browsing.
+///
+/// **A thumb path is only meaningful on the server that issued it** — rating keys are server-local
+/// integers from 1, so the same `/library/metadata/42/thumb/…` names a different film on a
+/// friend's share. This form says "the current server", which is the right answer for art that
+/// belongs to the screen (a section's own tiles, a person's headshot) and the wrong one for an
+/// item that came from somewhere else: those call [`resolve_tex_on`] with the item's own server.
 pub(crate) fn resolve_tex(path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
+    resolve_tex_on(crate::plex::current_server(), path, w, h, png)
+}
+
+/// [`resolve_tex`] for art belonging to a NAMED server.
+pub(crate) fn resolve_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
     if path.is_empty() {
         return 0;
     }
-    crate::posters::poster_get(tex_key(path, w, h, png).as_ptr() as *const c_char)
+    crate::posters::poster_get(srv, tex_key(srv, path, w, h, png).as_ptr() as *const c_char)
 }
 
-/// [`resolve_tex`] plus the DECODED pixel size of the texture — `(0, 0.0, 0.0)` until it is ready.
-/// For art that must be FIT or COVERED into its frame rather than stretched to it
+/// [`resolve_tex_on`] plus the DECODED pixel size of the texture — `(0, 0.0, 0.0)` until it is
+/// ready. For art that must be FIT or COVERED into its frame rather than stretched to it
 /// ([`Rect::cover`](crate::ui::Rect::cover)). The size is the store's own answer about the slot it
-/// just probed for the texture, so this is the SAME single lookup [`resolve_tex`] does — knowing the
-/// source aspect is free, and a screen never pays a second lock + key scan for it.
-pub(crate) fn resolve_tex_wh(path: &str, w: c_int, h: c_int, png: c_int) -> (u32, f32, f32) {
+/// just probed for the texture, so this is the SAME single lookup [`resolve_tex_on`] does — knowing
+/// the source aspect is free, and a screen never pays a second lock + key scan for it.
+///
+/// **There is deliberately no current-server twin of this or of [`warm_tex_on`].** Both had one and
+/// neither had a caller: every user is a hero backdrop or a prefetch of one, and a hero is exactly
+/// the art that belongs to an ITEM rather than to the screen. A bare form would be the shorter name
+/// autocomplete offers for the case where getting it wrong is a blank billboard.
+pub(crate) fn resolve_tex_wh_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> (u32, f32, f32) {
     if path.is_empty() {
         return (0, 0.0, 0.0);
     }
-    let key = tex_key(path, w, h, png);
-    let (tex, pw, ph) = crate::posters::poster_get_wh(key.as_ptr() as *const c_char);
+    let key = tex_key(srv, path, w, h, png);
+    let (tex, pw, ph) = crate::posters::poster_get_wh(srv, key.as_ptr() as *const c_char);
     (tex, pw as f32, ph as f32)
 }
 
-/// The prefetch twin of [`resolve_tex`]: build the same transcode key and hand it to
+/// The prefetch twin of [`resolve_tex_on`]: build the same transcode key and hand it to
 /// [`posters::poster_warm`](crate::posters::poster_warm) — start the fetch, take no texture, take no
 /// LRU protection. Same arguments on purpose, so a screen warms EXACTLY the key it will later
-/// resolve; a warm at a different size is a different slot and buys nothing.
-pub(crate) fn warm_tex(path: &str, w: c_int, h: c_int, png: c_int) -> crate::posters::Warm {
+/// resolve; a warm at a different size — or on a different server — is a different slot and buys
+/// nothing.
+pub(crate) fn warm_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> crate::posters::Warm {
     if path.is_empty() {
         return crate::posters::Warm::Known;
     }
-    let key = tex_key(path, w, h, png);
-    crate::posters::poster_warm(key.as_ptr() as *const c_char)
+    let key = tex_key(srv, path, w, h, png);
+    crate::posters::poster_warm(srv, key.as_ptr() as *const c_char)
 }
 
 /// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton), any
@@ -60,12 +79,15 @@ pub(crate) fn warm_tex(path: &str, w: c_int, h: c_int, png: c_int) -> crate::pos
 /// (the same thumbnail, but its EMPTY case draws a person glyph rather than a blank tile).
 pub(crate) enum Art<'a> {
     Poster(Option<&'a PmsMovie>),
-    Thumb { key: &'a str, res: (c_int, c_int) },
+    /// `sid` is the server `key` is a path on — an image-transcode path embeds a server-local
+    /// ratingKey, so a still or a poster fetched from another machine is a 404 or, worse, a
+    /// different item's picture. Every variant here carries one for that reason.
+    Thumb { sid: ServerId, key: &'a str, res: (c_int, c_int) },
     /// A credit's headshot (the Cast & Crew shelf). Distinct from [`Art::Thumb`] because a
     /// missing headshot is ROUTINE here — the server has one for most actors and for few crew —
     /// and an empty circle beside named circles reads as a broken image rather than as a person
     /// the metadata agent has no photo of.
-    Person { key: &'a str, res: (c_int, c_int) },
+    Person { sid: ServerId, key: &'a str, res: (c_int, c_int) },
 }
 
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
@@ -78,7 +100,14 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
     let r = if focused { frame.scaled(scale) } else { frame };
     match art {
         Art::Poster(m) => {
-            let t = m.map(|m| resolve_tex(&m.thumb, 250, 375, 0)).unwrap_or(0);
+            // **The ROW's server, not the current one.** A `thumb` path is a key on the server that
+            // issued it — image-transcode paths embed a server-local ratingKey — so the bare
+            // `resolve_tex` (which is `_on(current_server(), …)`) fetched every tile's art from
+            // whichever server was current. That was invisible only while browsing a shared library
+            // also re-pointed `current`; the moment that stopped, the Library grid of a friend's
+            // library drew skeletons for most tiles and OUR films for the few ratingKeys that
+            // happen to collide — both servers number from 1, so collisions are the normal case.
+            let t = m.map(|m| resolve_tex_on(m.sid, &m.thumb, 250, 375, 0)).unwrap_or(0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
@@ -108,16 +137,16 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 }
             }
         }
-        Art::Thumb { key, res } => {
-            let t = resolve_tex(key, res.0, res.1, 0);
+        Art::Thumb { sid, key, res } => {
+            let t = resolve_tex_on(sid, key, res.0, res.1, 0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
             }
         }
-        Art::Person { key, res } => {
-            let t = resolve_tex(key, res.0, res.1, 0);
+        Art::Person { sid, key, res } => {
+            let t = resolve_tex_on(sid, key, res.0, res.1, 0);
             if t != 0 {
                 p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
             } else {
@@ -277,10 +306,19 @@ pub(crate) const DISC_ICON_RATIO: f32 = 0.54;
 /// identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop about the centre +
 /// the focus treatment (soft drop-shadow + top sheen) when `focused` (the caller owns the `scale`
 /// spring).
-pub(crate) fn draw_card(p: Painter, frame: Rect, thumb: &str, res: (c_int, c_int), radius: f32, focused: bool, scale: f32) {
+pub(crate) fn draw_card(
+    p: Painter,
+    frame: Rect,
+    sid: ServerId,
+    thumb: &str,
+    res: (c_int, c_int),
+    radius: f32,
+    focused: bool,
+    scale: f32,
+) {
     // pop factor from the caller's scale spring (0 at rest → 1 at full focus scale) drives the folded shadow
     let f = if focused { ((scale - 1.0) / (CARD_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
-    card(p, frame, Art::Thumb { key: thumb, res }, radius, focused, scale, f);
+    card(p, frame, Art::Thumb { sid, key: thumb, res }, radius, focused, scale, f);
 }
 
 /// How many flat bands [`art_scrim`] uses for its corner region — see there for why they exist. 3 is
@@ -625,6 +663,64 @@ const CHIP_NAME_TAIL: f32 = 24.0;
 /// Name budget — a long profile name elides rather than growing the capsule into the CENTERED tab
 /// track sitting a few hundred px to its right.
 const CHIP_NAME_MAX: f32 = 320.0;
+
+// ---- the navigation bar's scrim ---------------------------------------------------------------
+
+/// How much scroll fully establishes the scrim — the design system's `--scrim-in`. It FADES IN
+/// over the first pixels rather than popping on at a 1px threshold, and because scroll here is
+/// spring-driven the appear inherits the spring's easing for free and cannot desync.
+const NAV_SCRIM_IN: f32 = 56.0;
+/// The alpha the ramp bends at — `--scrim-knee-a`.
+const NAV_SCRIM_KNEE_A: f32 = 0.40;
+/// Where the ramp bends, as a FRACTION of the gap between the chrome and the content: a steep fall
+/// to the knee over the first part, then a long gentle tail to nothing. The design system spells the
+/// two lines per route and both of its routes agree on the proportion — Library `170 / 188 / 214`
+/// and the full-screen list route `106 / 124 / 150` are each an 18px steep segment and a 26px tail,
+/// so the knee lands at `18/44` of the way down.
+///
+/// A FRACTION and not those two lengths, because the gap is the caller's: it is the air between the
+/// bottom of what the bar draws and the top of what scrolls, and the two screens do not have the
+/// same amount of it (the Library keeps 28px under its toolbar chips, Search 40 under its field).
+/// Spelled as a length, the ramp would start wherever `content_top − 44` happened to fall — which on
+/// the Library is 170, sixteen pixels ABOVE the chips' own bottom edge, so the chips sat on the
+/// fading part of their own backing instead of on solid ground. Visible on the panel and reported
+/// from the couch; the mock's Library numbers have it too.
+const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
+
+/// **The navigation bar's scrim: content dissolving under the top chrome.** One element, because
+/// every full-screen route that scrolls a column under the bar needs exactly this and the design
+/// system already tokenises it that way (`--scrim-in`, `--scrim-knee-a`, and a per-route content
+/// line — `components/panels/route-screen.card.html` is its reference drawing).
+///
+/// Two lines and a scroll. `chrome_bottom` is the lowest thing the BAR draws — the Library's toolbar
+/// chips, Search's query capsule — and everything above it stays solidly backed, so a control never
+/// sits on ground that is fading out from under it. `content_top` is where the caller's own scrolling
+/// content begins, and the veil has reached nothing by then. `scroll` is how far that content has
+/// travelled; nothing is drawn at rest, which keeps a settled screen free of it entirely.
+///
+/// **It starts at y=0 and is OPAQUE for most of its height**, and that is the part that is easy to
+/// get wrong: the band is not a gradient hung under the bar, it is the bar's whole ground, with a
+/// ramp on its bottom edge. Starting it lower leaves a strip of live content above it — a poster's
+/// top edge appearing over the chrome, which is what the first version of this did on Search.
+///
+/// The caller draws it AFTER its content and BEFORE its chrome, which is the order that lets it be
+/// opaque; `library::draw` has always used that order and it is why its scissor is a bound rather
+/// than a treatment.
+pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll: f32) {
+    let a = (scroll / NAV_SCRIM_IN).clamp(0.0, 1.0);
+    let gap = content_top - chrome_bottom;
+    if a <= 0.004 || gap <= 0.0 {
+        return;
+    }
+    let base = theme::SURFACE_APP;
+    let knee_col = theme::with_a(base, NAV_SCRIM_KNEE_A);
+    let knee = chrome_bottom + gap * NAV_SCRIM_KNEE_F;
+    let ps = p.alpha(a); // the appear rides the cascade — all three bands together
+    let w = crate::ui::consts::SCR_W;
+    ps.rect(Rect::new(0.0, 0.0, w, chrome_bottom), 0.0, base, base, 0.0);
+    ps.rect(Rect::new(0.0, chrome_bottom, w, knee - chrome_bottom), 0.0, base, knee_col, 0.0);
+    ps.rect(Rect::new(0.0, knee, w, content_top - knee), 0.0, knee_col, theme::with_a(base, 0.0), 0.0);
+}
 
 /// The top-left profile chip's VISUAL (avatar texture, or an initial / person-glyph fallback,
 /// with the shared tile shadow + sheen). Shared by Home and the Library screen — each screen owns
@@ -1030,7 +1126,8 @@ impl AmbientWash {
 }
 
 // ---- StatusOverlay: a centred "something is happening / something failed" read-out — a Spinner
-// (or nothing, for a terminal state) above one line of copy. The player HUD renders it for the
+// (or nothing, for a terminal state) above one line of copy, optionally a REASON under it and the
+// ONE action that answers it. The player HUD renders it for the
 // states where NO PICTURE IS ON THE PANEL (Resolving/Connecting/Buffering/Seeking before this
 // session's first frame, and Error, which is what a black screen used to be) — a seek over a live
 // picture belongs to the transport's inline spinner instead, and `player_hud::busy_surface` is the
@@ -1042,7 +1139,15 @@ impl AmbientWash {
 // screen (`Rect::FULL`); the person page's shelves are one band, so it passes the band; the player's
 // picture is the whole panel, so it passes `Rect::FULL` too. Carving the frame down to "avoid"
 // nearby chrome pushes the read-out OFF the optical centre, which is exactly what the player's
-// deleted `OVERLAY_BOTTOM` did — it centred the block at y=370 on a 1080 panel. ----
+// deleted `OVERLAY_BOTTOM` did — it centred the block at y=370 on a 1080 panel. The Library's
+// SECTION read-out is the one case where a smaller frame is the honest answer rather than a dodge:
+// it passes the content region because the chrome above it is still live, and that is the whole
+// difference between a section failing and the app failing (`Shared Sources.dc.html` D).
+//
+// **Up to three blocks, and each answers one question**: the verdict (what happened), the reason
+// (why, and what is NOT broken), the action (the one thing to press). Two of the three are
+// optional, and an absent one is ABSENT — no gap, no empty band, no draw call — so the read-outs
+// that carry only a caption are laid out exactly as they were before the other two existed. ----
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StatusKind {
     /// in flight — spinner + secondary copy
@@ -1051,24 +1156,77 @@ pub enum StatusKind {
     Failed,
     /// nothing to show, and that is the server's honest ANSWER rather than a fault — no spinner,
     /// de-emphasized copy. Distinct from `Failed` on purpose: an empty library is not an error and
-    /// must not wear the danger tint (Home's empty state; the Library grid's "nothing matches" is
-    /// the same read-out, still hand-rolled as a bare Label).
+    /// must not wear the danger tint.
+    ///
+    /// The TINT is this kind's; the ACTION is the caller's, and the two callers differ for a
+    /// reason. The Library's empty section offers none — the server answered, and asking it the
+    /// same question again gets the same answer. Home's empty hub offers *Refresh*, because there
+    /// the honest reading of "nothing yet" is a server still scanning its first library, and a
+    /// second look is what finds it. Neither is a retry of a failure.
     Empty,
 }
-pub struct StatusOverlay {
+/// The read-out's own type sizes. The verdict is reading text; the reason is one rung down because
+/// it EXPLAINS rather than states, and the action carries a control label, which is the verdict's
+/// rung again (`Button`'s rung everywhere else in the product).
+const STATUS_CAP_SZ: c_int = theme::size::BODY;
+const STATUS_REASON_SZ: c_int = theme::size::CAPTION;
+pub struct StatusOverlay<'a> {
     pub frame: Rect,
-    /// `&'static CStr` from `PlaybackState::caption()` — no lifetime hazard, no per-frame alloc.
-    pub caption: &'static core::ffi::CStr,
+    /// The VERDICT — one line naming what happened.
+    ///
+    /// Borrowed rather than `&'static`: a section read-out interpolates a machine name ("Can't
+    /// reach &lt;machine&gt;"), which no `c"…"` literal can carry. `&'static CStr` still coerces, so the
+    /// state-machine captions (`PlaybackState::caption()`, Home's hub states) are unchanged. The
+    /// `Label` rule applies to a runtime one — keep the `CString` alive for the whole draw frame.
+    pub caption: &'a core::ffi::CStr,
+    /// The line UNDER the verdict, in de-emphasized ink: why it happened, and — the job it exists
+    /// for — what is still fine. `None` = absent, not empty.
+    pub reason: Option<&'a core::ffi::CStr>,
+    /// The read-out's ONE control, drawn below the copy and hit-tested by the screen through
+    /// [`StatusOverlay::action_frame`], so the drawn pill and the rect a click lands in are one
+    /// expression. `None` = no control: while a fetch is in flight the spinner IS the state, and an
+    /// [`StatusKind::Empty`] answer has nothing to retry.
+    pub action: Option<&'a core::ffi::CStr>,
     pub kind: StatusKind,
     pub phase: u32,
+    /// whether the action pill holds focus (ignored when there is no action)
+    pub focused: bool,
 }
-impl StatusOverlay {
-    pub fn new(frame: Rect, caption: &'static core::ffi::CStr, kind: StatusKind) -> Self {
-        Self { frame, caption, kind, phase: 0 }
+
+/// The stacked read-out's geometry — the ONE place its three bands are placed, read by the draw and
+/// by [`StatusOverlay::action_frame`] so a screen's hit test cannot drift from the pill it sees.
+struct StatusBands {
+    cap: Rect,
+    reason: Option<Rect>,
+    /// top of the action pill (whether or not there is one)
+    action_y: f32,
+}
+
+impl<'a> StatusOverlay<'a> {
+    /// The action pill's height. The app's one action-control size — the hero rows' pill/disc
+    /// diameter, which `home.rs` aliases rather than restating.
+    pub const CTRL_H: f32 = 60.0;
+
+    pub fn new(frame: Rect, caption: &'a core::ffi::CStr, kind: StatusKind) -> Self {
+        Self { frame, caption, reason: None, action: None, kind, phase: 0, focused: false }
     }
     /// ms clock driving the spinner's rotation (ignored by `Failed`)
     pub fn phase(mut self, ms: u32) -> Self {
         self.phase = ms;
+        self
+    }
+    /// The line under the verdict — see [`StatusOverlay::reason`].
+    pub fn reason(mut self, r: &'a core::ffi::CStr) -> Self {
+        self.reason = Some(r);
+        self
+    }
+    /// The read-out's one control — see [`StatusOverlay::action`].
+    pub fn action(mut self, label: &'a core::ffi::CStr) -> Self {
+        self.action = Some(label);
+        self
+    }
+    pub fn focused(mut self, f: bool) -> Self {
+        self.focused = f;
         self
     }
     /// How far the read-out's ink reaches ABOVE the frame centre: the spinner ring plus its dots
@@ -1078,8 +1236,36 @@ impl StatusOverlay {
     pub fn above() -> f32 {
         Spinner::R_PAGE + theme::space::XS + Spinner::R_PAGE + Spinner::dot_r(Spinner::R_PAGE)
     }
+
+    /// Where the three blocks sit. Everything hangs off ONE anchor — the caption band, which keeps
+    /// the exact position it has always had (`Working` straddles the frame centre with the spinner
+    /// above it; a terminal state owns the centre alone) — and the optional blocks stack BELOW it on
+    /// `theme::space` rungs. That ordering is deliberate: adding a reason or an action cannot move
+    /// the read-outs that carry neither, so the player's and the person page's are untouched.
+    fn bands(&self) -> StatusBands {
+        let cy = self.frame.cy();
+        let cap_h = crate::text::text_height(STATUS_CAP_SZ, 0);
+        let cap_y = if self.kind == StatusKind::Working { cy + theme::space::XS } else { cy - cap_h * 0.5 };
+        let cap = Rect::new(self.frame.x, cap_y, self.frame.w, cap_h);
+        let mut below = cap_y + cap_h;
+        let reason = self.reason.map(|_| {
+            let h = crate::text::text_height(STATUS_REASON_SZ, 0);
+            let r = Rect::new(self.frame.x, below + theme::space::SM, self.frame.w, h);
+            below = r.y + h;
+            r
+        });
+        StatusBands { cap, reason, action_y: below + theme::space::LG }
+    }
+
+    /// The action pill's frame, or `None` when there is no action. The screen records this for its
+    /// pointer hit test; the draw builds its `Button` from the same call.
+    pub fn action_frame(&self) -> Option<Rect> {
+        let label = self.action?;
+        let w = Button::pill_w(label.as_ptr(), STATUS_CAP_SZ, false);
+        Some(Rect::new(self.frame.cx() - w * 0.5, self.bands().action_y, w, Self::CTRL_H))
+    }
 }
-impl View for StatusOverlay {
+impl View for StatusOverlay<'_> {
     fn draw(&self, e: &Env, p: Painter) {
         // spinner above, caption below, the pair centred on the frame
         let cy = self.frame.cy();
@@ -1088,23 +1274,26 @@ impl View for StatusOverlay {
             StatusKind::Failed => (theme::DANGER, false),
             StatusKind::Empty => (theme::TEXT_TERTIARY, false),
         };
+        let b = self.bands();
         // Both branches centre the caption the same way — by Label's cap band (VAlign::Middle,
         // the default). Working straddles the frame centre with the spinner above it; Failed owns
         // the centre alone. Using the cap band for one and a line-box metric for the other put the
         // two states on different baselines in the same frame.
-        let cap_h = crate::text::text_height(theme::size::BODY, 0);
-        let cap_y = if working {
+        if working {
             Spinner::new(self.frame.cx(), cy - Spinner::R_PAGE - theme::space::XS, Spinner::R_PAGE)
                 .phase(self.phase)
                 .tint(tint)
                 .draw(e, p);
-            cy + theme::space::XS
-        } else {
-            cy - cap_h * 0.5
-        };
-        Label::new(self.caption.as_ptr(), theme::size::BODY, tint)
-            .h(HAlign::Center)
-            .draw(p, Rect::new(self.frame.x, cap_y, self.frame.w, cap_h));
+        }
+        Label::new(self.caption.as_ptr(), STATUS_CAP_SZ, tint).h(HAlign::Center).draw(p, b.cap);
+        // The reason is NEVER in the verdict's ink: the tint is the severity of what happened, and
+        // this line's job is the opposite — it says what is still working.
+        if let (Some(r), Some(band)) = (self.reason, b.reason) {
+            Label::new(r.as_ptr(), STATUS_REASON_SZ, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, band);
+        }
+        if let (Some(label), Some(f)) = (self.action, self.action_frame()) {
+            Button::new(label.as_ptr(), STATUS_CAP_SZ, f).focused(self.focused).draw(e, p);
+        }
     }
 }
 
@@ -1677,15 +1866,128 @@ impl TabStrip {
 // sections>) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
 // Library screen so they read as one global tab bar; the pill rects live here so both
 // screens' pointer paths share [`tab_pill_at`]. ----
-/// Home + **every** discovered library section. Focus walking clamps to this — the invariant is
-/// still "a pill that can't be drawn must never be focusable", but it now holds by construction
+/// Home + every library section **that gets a pill**. Focus walking clamps to this — the invariant
+/// is still "a pill that can't be drawn must never be focusable", but it now holds by construction
 /// rather than by a cap: the strip scrolls horizontally inside its track (see
 /// [`tab_scroll_target`]), so every pill can be brought into view and every pill is focusable.
 /// This used to be a hard `MAX_TABS = 5`, which left a fifth `movie`/`show` section unreachable
 /// from the UI even though `browse` discovers it and the grid browses it fine.
+///
+/// It is `browse::tab_count`, NOT `section_count`, and the difference is a design call rather than
+/// a detail: **a pill is a TYPE, never a person**. The strip names your own libraries (plus any
+/// type only a friend has), source lives in the Library toolbar's Source chip one line below, and
+/// so the strip is the same width at one friend or at ten. With a single source the two counts are
+/// identical, which is why nothing about a one-server install changed.
 pub(crate) fn tab_count() -> usize {
-    1 + crate::browse::section_count()
+    1 + crate::browse::tab_count() + 1 // Home, the sections, then Search
 }
+/// The index of the Search pill: always the LAST one. That it goes last rather than first is the
+/// whole reason adding it cost nothing — `Home = 0, sections = 1..=n` is untouched, so every
+/// `pill - 1 → section` conversion in the app stays correct as written and only has to learn that
+/// one index is not a section. Prepending would have shifted all of them to `+2` at eight sites.
+pub(crate) fn search_pill() -> usize {
+    tab_count() - 1
+}
+/// Is `pill` the Search pill? Kept for a reader that only wants the yes/no — `ui/home.rs`'s
+/// top-band walk test, which asserts the last stop is not a library. Anything turning a pill into a
+/// DESTINATION wants [`pill_at`] instead, which answers the whole question rather than one third of
+/// it and cannot silently open a library for a pill it has never heard of. Derived FROM [`pill_at`]
+/// rather than comparing against [`search_pill`] a second time: one definition of which pill is
+/// Search, whichever way it is asked.
+pub(crate) fn is_search_pill(pill: usize) -> bool {
+    matches!(pill_at(pill), Pill::Search)
+}
+
+/// What a strip index MEANS — the tab row's vocabulary, so a reader gets a destination rather than
+/// an integer to do arithmetic on.
+///
+/// Six sites (four in `app.rs`, two in `library.rs`) used to spell the same three-way ladder out
+/// by hand — `if is_search_pill(i) { … } else if let Some(sec) = i.checked_sub(1) { … } else { Home }`
+/// — two of them byte-identical. That shape has one bad property that a name cannot fix: a pill
+/// this ladder has never heard of falls into the `checked_sub(1)` arm and opens a LIBRARY, at a
+/// section index `browse::tab_section` then clamps into range. So the wrong pill quietly browses
+/// the wrong shelf instead of failing. With the decision typed, adding a variant here is a
+/// non-exhaustive `match` at every one of those sites — a compile error, which is the only kind of
+/// reminder that reaches all six.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Pill {
+    /// pill 0 — always present, the strip's one fixed member
+    Home,
+    /// a TAB index into `browse::tabs` (0-based, Home already subtracted), NOT a section index:
+    /// several libraries can share one pill, and `browse::tab_section` is what resolves it
+    Section(usize),
+    /// the last pill (see [`search_pill`])
+    Search,
+}
+
+// The three below are each a one-line wrapper over a PURE half taking the Search pill's index. The
+// split is not ceremony: the pill count is projected from `browse`'s section table, a crate global
+// that several modules' tests read, so a test that SEEDS one to get a `Section` in the middle of
+// the strip perturbs every other test in the binary (it exposed an unrelated flake in
+// `ui::person`'s shelf tests the first time these were written that way). The pure halves need no
+// table, so the ladder is graded over strips this host will never build.
+
+/// Resolve a strip index. The ladder, written ONCE — [`Pill`]'s doc has the argument for why it is
+/// written once here rather than six times at the call sites.
+pub(crate) fn pill_at(i: usize) -> Pill {
+    pill_in(i, search_pill())
+}
+/// [`pill_at`] on a strip whose Search pill is at `search`.
+///
+/// Total, deliberately: an index past the last pill resolves to `Section(i - 1)`, exactly as the
+/// hand-written ladders did, and the section index is then clamped by `browse::tab_section` as it
+/// always was. Nothing can hand one in today (`tab_pill_at` matches drawn rects, and every screen's
+/// own cursor is clamped), so an `Option` here would only add a `None` arm to six `match`es that
+/// could never run.
+fn pill_in(i: usize, search: usize) -> Pill {
+    if i == search {
+        Pill::Search
+    } else if let Some(sec) = i.checked_sub(1) {
+        Pill::Section(sec)
+    } else {
+        Pill::Home
+    }
+}
+
+/// The index a [`Pill`] is drawn at — the inverse of [`pill_at`], for the places that name a
+/// destination and need the strip position it selects (`app.rs`'s `Nav::select_pill`).
+pub(crate) fn pill_of(p: Pill) -> usize {
+    pill_index(p, search_pill())
+}
+/// [`pill_of`] on a strip whose Search pill is at `search`.
+fn pill_index(p: Pill, search: usize) -> usize {
+    match p {
+        Pill::Home => 0,
+        Pill::Section(tab) => tab + 1,
+        Pill::Search => search,
+    }
+}
+
+/// The highest index a SECTION pill can have — the ceiling for a pill index DERIVED from a section
+/// (`library::own_pill`, which walks focus up into the row onto the pill representing the library
+/// being browsed).
+///
+/// It reads "the pill before Search", and that is only correct because Search sits last — a fact
+/// about the strip, not about the caller, so it is written here and not there. The call site used
+/// to spell it `search_pill().saturating_sub(1)`, a positional pun that would silently become "the
+/// pill before whatever ends up last" the day a second non-library pill was added.
+pub(crate) fn last_section_pill() -> usize {
+    last_section_in(search_pill())
+}
+/// [`last_section_pill`] on a strip whose Search pill is at `search`. With NO sections at all the
+/// strip is `Home | Search` and this is the HOME pill: an index past the last pill is a highlight
+/// on nothing, and Home is the one pill that always exists. That is the failed-discovery case,
+/// reachable since a failed source keeps the user on the screen instead of bailing out.
+fn last_section_in(search: usize) -> usize {
+    search.saturating_sub(1)
+}
+/// The Search pill is SQUARE: 60×60, the icon's own air rather than a word's, so a mark does not
+/// wear the padding a label needs (`Search Screen.dc.html`). Every other pill keeps
+/// [`TAB_PILL_PAD`].
+const TAB_ICON_PILL_W: f32 = TAB_PILL_H;
+/// The mark inside it, at 1.15× the strip's own type rung (BODY 28 → 32) — the design system's
+/// `--btn-icon-ratio`, the same ratio every icon-and-label control in the app uses.
+const TAB_ICON_D: f32 = 32.0;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 pub(crate) const TOP_BAR_Y: f32 = 44.0;
 /// SAME element, SAME geometry as the detail season tabs (user directive): one control height
@@ -1731,7 +2033,7 @@ static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
 /// PRESS frame: Library hands its *pending* section down here (`library::view_section`), which is
 /// what puts the capsule on the new pill while the grid is still dissolving under it.
 static mut TOP_STRIP: TabStrip = TabStrip::new();
-// label + width cache keyed on browse::sections_gen(): rebuilding the CStrings and
+// label + width cache keyed on browse::tabs_gen(): rebuilding the CStrings and
 // re-measuring every frame — on Home's hot path too — was a review-confirmed waste
 static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
 
@@ -1749,8 +2051,15 @@ pub(crate) fn tab_pill_at(mx: f32, my: f32) -> Option<usize> {
 }
 
 /// Run `f` with the tab row's labels + pill widths, rebuilding them only when
-/// `browse::sections_gen()` moves. Shared by the per-frame scroll step and the draw, so the two
+/// `browse::tabs_gen()` moves. Shared by the per-frame scroll step and the draw, so the two
 /// can't measure the strip differently.
+///
+/// The key is the STRIP's generation, not the section table's, and with several sources that is no
+/// longer the same number: the table's generation moves for every source whose libraries land and
+/// every count that arrives, while the row only changes when the projection does. Most of those
+/// landings fold onto pills already drawn (a friend's films ride your *Movies* pill), so keying on
+/// the table re-measured every pill in the row, several times a boot, on Home's hot path — for a
+/// strip that had not moved.
 ///
 /// Deliberately a closure and not a `&'static` getter: the borrow points into `TAB_CACHE`, and a
 /// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
@@ -1759,21 +2068,26 @@ pub(crate) fn tab_pill_at(mx: f32, my: f32) -> Option<usize> {
 fn with_tab_metrics<R>(f: impl FnOnce(&[std::ffi::CString], &[f32]) -> R) -> R {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
-    let gen = crate::browse::sections_gen();
+    let gen = crate::browse::tabs_gen();
     let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
     if cache.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
-        let nsec = crate::browse::section_count();
-        let mut labels: Vec<CString> = Vec::with_capacity(1 + nsec);
+        let nsec = crate::browse::tab_count();
+        let mut labels: Vec<CString> = Vec::with_capacity(1 + nsec + 1);
         labels.push(CString::new("Home").unwrap_or_default());
         for i in 0..nsec {
-            labels.push(CString::new(crate::browse::section_title(i)).unwrap_or_default());
+            labels.push(CString::new(crate::browse::tab_title(i)).unwrap_or_default());
         }
         // measure bold (the widest state) so pill widths don't change with focus; pill =
         // label + the season tabs' ±18 padding
-        let widths: Vec<f32> = labels
+        let mut widths: Vec<f32> = labels
             .iter()
             .map(|l| crate::text::text_width(l.as_ptr(), theme::size::BODY, 1) + 2.0 * TAB_PILL_PAD)
             .collect();
+        // The Search pill, last. It carries an EMPTY label so nothing here has to special-case a
+        // missing entry — `labels.len()` stays the pill count, which is what the draw and the hit
+        // test both walk — and a fixed square width, because a mark is not measured like a word.
+        labels.push(CString::default());
+        widths.push(TAB_ICON_PILL_W);
         *cache = Some((gen, labels, widths));
     }
     let (_, labels, widths) = cache.as_ref().unwrap();
@@ -1938,7 +2252,16 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 // booleans, or a mid-travel label could darken toward ACCENT_INK with nothing bright
                 // under it (`cap_cover` is the one rule both sides read).
                 let (fm, sm) = unsafe { &*addr_of!(TOP_STRIP) }.mixes((px, widths[i]));
-                TabPill::new(labels[i].as_ptr(), theme::size::BODY, r).mix(fm, sm).draw(&env, p);
+                if i + 1 == n {
+                    // The Search pill is a MARK, and it takes its ink from exactly the same
+                    // `mixed_ink` the labels do — so it darkens toward ACCENT_INK under the focus
+                    // capsule in step with its neighbours instead of being a separate colour story.
+                    let d = TAB_ICON_D;
+                    let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
+                    crate::ui::icons::draw(p, crate::ui::icons::Icon::Search, ir, TabPill::mixed_ink(fm, sm));
+                } else {
+                    TabPill::new(labels[i].as_ptr(), theme::size::BODY, r).mix(fm, sm).draw(&env, p);
+                }
             }
         }
         if scrolls {
@@ -1983,14 +2306,22 @@ impl ControlStyle {
     }
 }
 
-// ---- Button: a pill with a label and an optional leading icon, centered together as one group
-// (icon + gap + label is centered in the pill). Colour per `ControlStyle` (default Accent). The one
-// reusable action button — hero Play (Primary), detail/info actions (Accent), etc. ----
+// ---- Button: a pill with a label, an optional leading icon and an optional TRAILING accessory,
+// centered together as one group (icon + gap + label + gap + accessory is centered in the pill).
+// Colour per `ControlStyle` (default Accent). The one reusable action button — hero Play (Primary),
+// detail/info actions (Accent), etc. ----
 pub struct Button {
     pub frame: Rect,
     pub label: *const c_char,
     pub sz: c_int,
     pub icon: Option<crate::ui::icons::Icon>,
+    /// The TRAILING accessory glyph — a chevron saying the press opens a list rather than acting
+    /// ([`crate::ui::alt_sources`]'s *Also available*). Deliberately its own slot rather than a
+    /// second use of [`Button::icon`]: the leading icon is part of the label's own statement (the
+    /// Play triangle IS "play"), while this one is a disclosure mark about what the control DOES,
+    /// and the two are read in opposite directions. It is the same `›`-family mark
+    /// [`crate::ui::table::Row::ticon`] puts at a row's trailing edge, for the same reason.
+    pub trailing: Option<crate::ui::icons::Icon>,
     pub focused: bool,
     pub style: ControlStyle,
     /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
@@ -2008,10 +2339,15 @@ const BTN_KEYLINE_W: f32 = 1.5;
 
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, icon: None, focused: false, style: ControlStyle::Accent, progress: None }
+        Self { frame, label, sz, icon: None, trailing: None, focused: false, style: ControlStyle::Accent, progress: None }
     }
     pub fn icon(mut self, i: crate::ui::icons::Icon) -> Self {
         self.icon = Some(i);
+        self
+    }
+    /// Give this pill a trailing accessory — see [`Button::trailing`].
+    pub fn trailing_icon(mut self, i: crate::ui::icons::Icon) -> Self {
+        self.trailing = Some(i);
         self
     }
     pub fn focused(mut self, f: bool) -> Self {
@@ -2036,8 +2372,18 @@ impl Button {
     /// icon-only version had to send such callers off to `text::text_width` on their own. A second
     /// sizing path is exactly the drift this file exists to prevent.
     pub fn pill_w(label: *const c_char, sz: c_int, icon: bool) -> f32 {
+        Self::pill_w_full(label, sz, icon, false)
+    }
+
+    /// [`Button::pill_w`] with the TRAILING accessory counted too — the same one formula, taking
+    /// both of the button's optional slots rather than growing a second sizing path beside it (the
+    /// drift this file exists to prevent, and the exact reason `pill_w` gained its `icon` flag).
+    /// An accessory occupies one more icon box and one more gap, which is what [`Button::draw`]
+    /// lays out below.
+    pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: bool) -> f32 {
         let (isz, gap) = if icon { (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
-        isz + gap + crate::text::text_width(label, sz, 1) + BTN_PILL_AIR
+        let (tsz, tgap) = if trailing { (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
+        isz + gap + crate::text::text_width(label, sz, 1) + tgap + tsz + BTN_PILL_AIR
     }
 
     /// Turn the pill into its own countdown: `frac` of its width is filled with
@@ -2099,11 +2445,19 @@ impl View for Button {
         let tw = crate::text::text_width(self.label, self.sz, 1);
         let (isz, gap) =
             if self.icon.is_some() { (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
-        let gl = r.cx() - (isz + gap + tw) * 0.5;
+        let (asz, agap) =
+            if self.trailing.is_some() { (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP) } else { (0.0, 0.0) };
+        // the WHOLE run is centred — accessory included — which is why `pill_w_full` measures it:
+        // sizing the pill without the chevron and then drawing one would push the label off-centre
+        let gl = r.cx() - (isz + gap + tw + agap + asz) * 0.5;
         if let Some(icon) = self.icon {
             crate::ui::icons::draw(p, icon, Rect::new(gl, r.y + (r.h - isz) * 0.5, isz, isz), ink);
         }
         p.text(self.label, gl + isz + gap, ty, self.sz, ink, 0, 1); // left-aligned after the icon
+        if let Some(acc) = self.trailing {
+            let ax = gl + isz + gap + tw + agap;
+            crate::ui::icons::draw(p, acc, Rect::new(ax, r.y + (r.h - asz) * 0.5, asz, asz), ink);
+        }
     }
 }
 
@@ -2113,9 +2467,17 @@ impl View for Button {
 // centred bold CAPTION label; width hugs the label with a floor so short tags (CC) still read as a
 // chip. Returns the drawn width so callers can flow chips inline. ----
 pub(crate) enum BadgeStyle {
-    /// 2px border + knockout interior: border+label in `col`, interior filled `bg` (the surface
-    /// behind the chip — keeps the outline clean over a light focus pill or a dark panel).
-    Outlined { col: [f32; 4], bg: [f32; 4] },
+    /// 2px border + knockout interior: label in `col`, ring in `border`, interior filled `bg` (the
+    /// surface behind the chip — keeps the outline clean over a light focus pill or a dark panel).
+    ///
+    /// The ring is its OWN colour because the design system makes it one: a table row's chip is
+    /// `border: 2px solid (focused ? --accent-ink : --overlay-border)` with `color: ink`, i.e. the
+    /// stroke is a keyline and only the label carries the row's ink. Both callers passed `col` for
+    /// both, so every chip off a focus pill outlined at full [`theme::TEXT_PRIMARY`] — nearly twice
+    /// the ink the contract gives it, which is what made a FORCED/SDH tag read as loud as the track
+    /// name beside it. [`theme::OVERLAY_BORDER`] is the value, and its own doc has said
+    /// "outlined-badge / meta-badge border" the whole time it had no consumer.
+    Outlined { col: [f32; 4], border: [f32; 4], bg: [f32; 4] },
     /// solid translucent fill ([`theme::BADGE_FILL`]), label in [`theme::TEXT_HEADING`] — the
     /// About column's accessibility chips.
     Filled,
@@ -2264,9 +2626,9 @@ pub(crate) fn badge(p: Painter, x: f32, cy: f32, text: &str, icon: Option<crate:
     let w = badge_w(text, icon);
     let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
     let ink = match style {
-        BadgeStyle::Outlined { col, bg } => {
+        BadgeStyle::Outlined { col, border, bg } => {
             let bw = 2.0f32;
-            p.rrect(r, 6.0, 6.0, col); // border
+            p.rrect(r, 6.0, 6.0, border); // keyline
             p.rrect(Rect::new(r.x + bw, r.y + bw, r.w - 2.0 * bw, r.h - 2.0 * bw), 5.0, 5.0, bg);
             col
         }
@@ -2375,10 +2737,14 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
     let mut bx = x;
     // The caption sits on the SCORE's baseline, not on its own centre: the design aligns the row
     // by baseline (`align-items:baseline`), so a MICRO caption beside a LABEL number must share
-    // the number's baseline or it floats.
-    let base = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy)
-        + crate::text::text_cap_band(theme::size::LABEL, 1).1
-        - crate::text::text_cap_band(theme::size::MICRO, 1).1;
+    // the number's baseline or it floats. `text::baseline_y` is that rule, shared.
+    let base = crate::text::baseline_y(
+        theme::size::MICRO,
+        1,
+        theme::size::LABEL,
+        1,
+        crate::text::text_vcenter_y(theme::size::LABEL, 1, cy),
+    );
     p.text(cap.as_ptr(), bx, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0, 1);
     bx += crate::text::text_width(cap.as_ptr(), theme::size::MICRO, 1) + RATING_CAPTION_GAP;
 
@@ -2414,6 +2780,46 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── The strip's vocabulary: an index MEANS something ──────────────────────────────────────
+    //
+    // Driven through the pure halves (`pill_in`/`pill_index`/`last_section_in`), so no `browse`
+    // table is seeded and no crate global is read — see the note above them. That is also what
+    // lets these grade strips this host cannot build: one library, and none at all.
+
+    /// The ladder is a BIJECTION over the strip — every drawn index resolves to exactly one
+    /// destination and back — which is what lets [`pill_of`] PLACE the capsule for a destination
+    /// that [`pill_at`] will later resolve a click on. Swept over every strip size the app can
+    /// have, because the arm that matters is the one BETWEEN the ends and a two-pill strip has
+    /// no `Section` in it at all.
+    #[test]
+    fn every_strip_index_round_trips_through_the_typed_pill() {
+        for search in 1..8usize {
+            assert_eq!(pill_in(0, search), Pill::Home, "pill 0 is Home on every strip");
+            assert_eq!(pill_in(search, search), Pill::Search, "the last pill is never a library");
+            for sec in 0..search.saturating_sub(1) {
+                assert_eq!(pill_in(sec + 1, search), Pill::Section(sec), "a TAB index, Home already subtracted");
+            }
+            for i in 0..=search {
+                assert_eq!(pill_index(pill_in(i, search), search), i, "pill {i} of {search} did not round trip");
+            }
+        }
+    }
+
+    /// [`last_section_pill`]'s two answers. The interesting one is the SECOND: a strip with no
+    /// libraries at all (discovery failed, and the user stays on the screen) has no library pill
+    /// for a section-derived index to land on, and the fallback must be a pill that exists.
+    #[test]
+    fn the_section_ceiling_is_the_pill_before_search_and_falls_back_to_home() {
+        for search in 2..8usize {
+            let last = last_section_in(search);
+            assert_eq!(pill_in(last, search), Pill::Section(search - 2), "the last pill that IS a library");
+            assert!(last < search, "…and never Search itself");
+        }
+        // the failed-discovery strip: `Home | Search`, and nothing for a section to clamp onto
+        assert_eq!(last_section_in(1), 0, "with no sections the ceiling is HOME…");
+        assert_eq!(pill_in(last_section_in(1), 1), Pill::Home, "…so the clamp can never land on nothing");
+    }
 
     // ── The poster's state mark: one vocabulary, one mark at a time ───────────────────────────
     //
@@ -3032,11 +3438,20 @@ mod tests {
         assert!(z.is_finite(), "…and does not divide by zero into a NaN that would poison every ink");
     }
 
+    /// The capsule/strip tests drive `Capsule::step`, whose landing frame `Spring::jump`s — and
+    /// `Spring::jump` reports to `ui::idle`'s process-global dirty flag. So they are serial by
+    /// obligation, not precaution (`xfade.rs`'s rule): under parallel libtest they intermittently
+    /// failed OTHER modules' "a settled screen asks for nothing" assertions.
+    fn serial_for_motion() -> std::sync::MutexGuard<'static, ()> {
+        crate::testlock::serial()
+    }
+
     /// The regression that would otherwise draw a bright capsule sweeping the whole strip on the
     /// first Library frame: an UNPLACED capsule lands on its pill, it does not fly to it. Alpha still
     /// fades in, because arriving in a row is a fade — the two are deliberately different motions.
     #[test]
     fn a_capsule_lands_on_its_first_pill_instead_of_flying_in_from_the_origin() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let p7 = span_of(&w, 7);
         let mut c = Capsule::new();
@@ -3050,6 +3465,7 @@ mod tests {
     /// plain while a bright capsule floats in the gutter between them.
     #[test]
     fn a_travelling_capsule_is_never_sitting_on_nothing() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let (p0, p1) = (span_of(&w, 0), span_of(&w, 1));
         let mut c = Capsule::new();
@@ -3074,6 +3490,7 @@ mod tests {
     /// failure, which is the whole reason [`CAP_LAND_A`] exists.
     #[test]
     fn focus_leaving_the_row_fades_in_place_and_coming_back_lands() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let (p2, p9) = (span_of(&w, 2), span_of(&w, 9));
         let mut c = Capsule::new();
@@ -3096,6 +3513,7 @@ mod tests {
     /// both, or neither — and the mixes it is inked with are exactly that answer.
     #[test]
     fn the_ink_a_pill_wears_is_exactly_the_capsule_over_it() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let settle = |sel: c_int, foc: c_int| {
             let mut s = TabStrip::new();
@@ -3123,6 +3541,7 @@ mod tests {
     /// label on each of two pills for the length of one travel, rather than a whole row dimming.
     #[test]
     fn a_travel_never_inks_more_than_one_pills_worth_of_label() {
+        let _g = serial_for_motion();
         let w = widths_for(12);
         let mut s = TabStrip::new();
         let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));

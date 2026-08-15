@@ -14,8 +14,12 @@ path (`com.webos.media/load`, `start_playback()`) could not provide — that pat
 dead-ish reference, and `docs/buffer-feed-plan.md` records the pivot (treat it as history, not
 spec). The stream side: `PMS HTTP GET (raw TCP socket, stream.rs)` → demux → per-lane access-unit
 queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
-The demuxer is **`ff.rs` — the TV's own libavformat, over a custom AVIO on `stream.rs`** (design
-record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs` fallback is retired/deleted). It
+The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
+`stream.rs`** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs` fallback is
+retired/deleted). Ours ships beside the binary as `libav*-plx.so.*`, is `dlopen`'d by absolute path
+and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
+so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
+`CLAUDE.md` linking section for why. It
 emits Annex-B video AUs (param sets prepended at each keyframe) and raw AC3/EAC3/AAC audio frames,
 and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
@@ -110,8 +114,9 @@ count), `stream.rs`'s socket lifecycle, `route.rs`'s direct-play-vs-transcode se
 it before a deploy.
 
 But there is **no host *runtime*** — nothing above decodes a frame or touches Starfish/ACB (`ff.rs`
-gates its `#[link]` directives out of `cfg(test)` precisely so the pure logic stays host-testable; a
-test that actually calls FFmpeg fails to link, by design), and the host is Darwin while the TV is
+once gated `#[link]` directives out of `cfg(test)` to keep the pure logic host-testable; with
+everything on `dynlib!` those are gone, so a test that actually calls FFmpeg now fails by taking
+`dlopen`'s `None` branch on Darwin rather than by failing to link), and the host is Darwin while the TV is
 Linux, which is why `tools/sockprobe.c` exists. So anything about *playback behaviour* is only
 observable on device: deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps,
 seek/rebase, `RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root

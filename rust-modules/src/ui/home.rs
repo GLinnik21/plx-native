@@ -9,6 +9,7 @@ use crate::ui::consts::*;
 use crate::ui::icons::Icon;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
+use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0};
@@ -53,7 +54,11 @@ pub(crate) const HERO_COL_W: f32 = 660.0;
 /// The action row's top edge and control diameter. Module-level because the row SLIDES with its
 /// item while the page dots below it do NOT — two draw sites, one geometry, so they cannot drift.
 const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
-const HERO_CTRL_D: f32 = 60.0;
+/// The action row's control size IS the shared one — the same height the status read-out's own
+/// pill takes ([`StatusOverlay::CTRL_H`](crate::ui::widgets::StatusOverlay::CTRL_H)), which is not a
+/// coincidence to be restated as a second 60: this screen draws both, and the status screen's Retry
+/// stands in for this very row (see [`draw_status`]).
+const HERO_CTRL_D: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 /// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
 /// spring units: the old `pos > 0.995` cut retired the transition while the incoming layer still
@@ -160,8 +165,16 @@ fn g_fc() -> c_int {
 // Home grid is now N hub shelves of varying length (not the old fixed ROWS×COLS).
 // The Grid's CardRow array + each row's cell springs are sized to these maxima; the
 // *actual* counts come from pms::hub_count()/hub_len().
-const MAX_HUBS: usize = 16; // Continue Watching, On Deck, Recently Added, collections…
-const MAX_ITEMS: usize = 24; // cards per shelf
+// Continue Watching, On Deck, Recently Added, collections… — and, with a second server, whatever
+// the shares contribute. The number lives in `pms`, which BUDGETS against it: the shelf allowance
+// is divided between the sources there, so the two must be one constant or a share can be truncated
+// away by a cap the data layer never heard of.
+const MAX_HUBS: usize = crate::pms::MAX_SHELVES;
+// Cards per shelf. In `pms` for the same reason MAX_HUBS is: it is where the merged Continue
+// Watching shelf is TRUNCATED to it, and this file clamps the drawn focus to it while `col()` — the
+// index OK acts on — clamps only to the shelf's real length. One constant, so the ring and the
+// press can never disagree about which card is focused.
+const MAX_ITEMS: usize = crate::pms::MAX_SHELF_ITEMS;
 
 /// Rows the grid can actually address: the server's hub count clamped to the fixed `shelves`
 /// array. **Every `shelves[]` index site must go through this** — a server with 3-4 libraries
@@ -264,6 +277,56 @@ fn hero_item_at(i: c_int) -> Option<&'static PmsMovie> {
         return None;
     }
     crate::pms::hero_pool_item(i as usize)
+}
+
+/// Whose server hero page `i` came from, as the owner's handle — **empty for our own**, which is
+/// every page on a single-server install. [`hero_item_at`]'s twin, and it has to be one: the
+/// billboard is nobody's focused tile, so the shelf heading below it is describing something else
+/// entirely and the run on the meta line is the only thing on the screen that says whose the film is.
+fn hero_source_at(i: c_int) -> &'static str {
+    or_dev_source(if i < 0 { "" } else { crate::pms::hero_pool_source(i as usize) })
+}
+
+/// Whose server the CURRENT hero came from — [`hero_item`]'s twin, and it follows that function's
+/// empty-pool fallback rather than reporting "ours" for it: with nothing pooled the hero is the
+/// first card of the first shelf, so its source is that shelf's.
+fn hero_source() -> &'static str {
+    if crate::pms::hero_pool_len() == 0 {
+        return or_dev_source(crate::pms::hub_source(0));
+    }
+    hero_source_at(hero_index() as c_int)
+}
+
+/// [`dev_source`]'s stand-in when it is armed, else the real answer. **Both hero source accessors
+/// go through it**, and that is the point: a flip draws the outgoing page through `hero_source_at`
+/// and the incoming one through `hero_source`, so a stand-in applied to only one of them would pop
+/// the run into existence halfway through the slide — at exactly the moment the trigger exists to
+/// let someone judge it.
+fn or_dev_source(real: &'static str) -> &'static str {
+    dev_source().unwrap_or(real)
+}
+
+/// `/tmp/plxnative-shared=<handle>` — the SAME trigger the detail page's own source run reads
+/// (`metadata::fetch_detail`) and the Search results' owner annotation
+/// (`ui::search::results::owner_handle`), deliberately not a third one: one file arming every
+/// surface is the only way to see them agree.
+///
+/// **The trigger WINS WHEN ARMED**, which is the precedence every `/tmp/plxnative-*` read in this
+/// app has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session) and the
+/// phrase to grep for across the three sites. This one used to stand in only where the real answer
+/// was empty, which is the opposite rule to `metadata.rs`'s — so on a television with a real share
+/// installed, arming the trigger changed the detail page and left the hero saying something else,
+/// and the one thing this stand-in exists for is watching the surfaces agree. `Some("")` (an armed
+/// but EMPTY file) forces the absence of a handle rather than doing nothing, for the same reason.
+///
+/// Read once: the trigger surface is boot state, and a per-frame `stat` inside the hero's draw is
+/// not. Compiled out with the `devtriggers` feature, like every other trigger (`crate::dev`), and
+/// it is needed because the two things the design states about this run — that it sits inside the
+/// corner wedge, and that it ends well short of the last fifth of the frame — are things only a
+/// panel can settle.
+fn dev_source() -> Option<&'static str> {
+    static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
 }
 
 /// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info, 2 = chevron.
@@ -398,8 +461,12 @@ impl View for Backdrop {
         // this component already means by a texture that has not arrived: `reveal` reports 0, the
         // ground's skip test believes the texture rather than the spring, and `draw` paints nothing
         // — so the struct's promise that draw cannot disagree with the springs still holds.
+        // `_on(m.sid, …)`: with Home merged the hero rotation carries BORROWED items, whose `art`
+        // path is a key on their own server. The bare form resolves against whichever server is
+        // current and would draw the friend's billboard as a blank page.
         let art_of = |m: Option<&PmsMovie>| {
-            m.map(|m| crate::ui::widgets::resolve_tex_wh(&m.art, 1280, 720, 0)).unwrap_or((0, 0.0, 0.0))
+            m.map(|m| crate::ui::widgets::resolve_tex_wh_on(m.sid, &m.art, 1280, 720, 0))
+                .unwrap_or((0, 0.0, 0.0))
         };
         let live = env.sp < HERO_ART_CULL;
         self.tex = if live { art_of(hero_item()) } else { (0, 0.0, 0.0) };
@@ -665,10 +732,14 @@ fn prefetch_hero_neighbours() {
         let Some(m) = hero_item_at(i) else { continue };
         // the backdrop first: it is the full-screen layer, and the one whose absence reads as a blank
         // page. A missing logo only costs the title band a text→logotype swap.
-        if crate::ui::widgets::warm_tex(&m.art, 1280, 720, 0) == Warm::Claimed {
+        // the item's own server, matching the resolve the draw will make — a warm that named a
+        // different server than the draw would fetch the picture twice and use neither
+        if crate::ui::widgets::warm_tex_on(m.sid, &m.art, 1280, 720, 0) == Warm::Claimed {
             return;
         }
-        if crate::posters::logo_warm(hero_logo_rk(m)) == Warm::Claimed {
+        // the same server the draw will resolve against (`hero_logo`), or the warm names a
+        // different slot and buys nothing
+        if crate::posters::logo_warm(m.sid, hero_logo_rk(m)) == Warm::Claimed {
             return;
         }
     }
@@ -695,6 +766,111 @@ pub(crate) fn hero_stack_top(title_h: f32, meta_h: f32, syn_h: f32) -> f32 {
     HERO_TEXT_BOTTOM - (title_h + theme::space::MD + meta_h + syn_h)
 }
 
+/// **The hero meta line's right bound**, and the only width budget this line has ever had — three
+/// fifths of the frame.
+///
+/// The line is bottom-left copy over a full-bleed photograph, so it is legible only inside the
+/// corner wedge, which is gone by `widgets::HERO_SCRIM_W` (four fifths, 1536) and leaves the last
+/// fifth of the picture completely alone. Ending the line at three fifths keeps a whole fifth of the
+/// panel between it and that edge — "well short of the last fifth", the design's own words — so the
+/// run always sits where the wedge is still carrying weight, and never wanders into the side of the
+/// frame the composition is usually about.
+///
+/// It bounds the SOURCE run only. The line's own facts keep wrapping to [`HERO_COL_W`] exactly as
+/// they always have, which is what makes the annotation free for a single-server install and is why
+/// the handle is what truncates when the two together are too long: the run is the last thing on the
+/// line and a fact about where the item came from, so it is the right thing to lose first — and
+/// losing it is a truncation, never a second line. The hero column is a FOUR-line composition
+/// (title band, this line, three of synopsis) anchored on [`HERO_TEXT_BOTTOM`]; a fifth line would
+/// push the pinned action row into the peeking shelf.
+const HERO_META_R: f32 = 0.60 * SCR_W; // 1152
+/// [`HERO_META_R`] in the meta flow's own coordinates, whose origin is the text column's left edge.
+const META_FLOW_W: f32 = HERO_META_R - MARGIN_X;
+
+/// The words the run is made of. "Shared by friend" — the PERSON, not the machine: the same handle
+/// the shelf headings carry, never a server's own name.
+/// The hero's own caller has already returned for an empty handle, so the flattened form is safe
+/// here — the words live in [`crate::ui::fmt::shared_by`], which is where the detail page's facts
+/// row and the Library read-out get them too.
+fn shared_by(source: &str) -> String {
+    crate::ui::fmt::shared_by(source).unwrap_or_default()
+}
+
+/// The hero meta line's SOURCE annotation, flowed onto the end of a line whose own facts have
+/// already been laid out to `base_w`: `· Shared by friend`, after a middot at `TEXT_SEPARATOR`'s
+/// .45, both runs on the line's own **BODY** rung and one step of ink under it.
+///
+/// **With no source there is no flow at all** — no pad, no dot, no run, no draw call, and the meta
+/// line is left byte for byte the one it has always been. That is the design's "with one source,
+/// none of this is drawn" as absence rather than as a branch that draws nothing visible.
+///
+/// The rung is the part that does NOT travel from the detail page's version of this run. There it is
+/// `CAPTION`, because that line sits under a page of copy; here it is `BODY`, because this line is
+/// read from across the room. A rung is a role — what transfers is the step of INK
+/// (`TEXT_SECONDARY` → `TEXT_TERTIARY`), which is what makes the annotation quieter than the facts
+/// it joins on every screen that carries it.
+///
+/// `run(text, dx, budget, sz, bold, ink) -> advance` is the seam, as in [`heading_flow`]: the draw
+/// passes a closure that elides to `budget` and paints, the host tests pass one that measures. So
+/// the drawn flow and the graded one are one expression. Each run's `budget` is the distance from
+/// where it starts to [`META_FLOW_W`], which is what makes the line TRUNCATE instead of ever
+/// becoming two: there is no wrap in this flow to reach, only a right bound to elide against.
+/// Returns the whole line's advance, source run included.
+fn meta_source_flow(base_w: f32, source: &str, mut run: impl FnMut(&str, f32, f32, c_int, c_int, [f32; 4]) -> f32) -> f32 {
+    if source.is_empty() {
+        return base_w; // one source: the meta line is the item's facts and nothing else
+    }
+    let mut dx = base_w + SOURCE_PAD;
+    dx += run("\u{b7}", dx, META_FLOW_W - dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR);
+    dx += SOURCE_PAD;
+    dx += run(&shared_by(source), dx, META_FLOW_W - dx, theme::size::BODY, 0, theme::TEXT_TERTIARY);
+    dx
+}
+
+/// Draw [`meta_source_flow`] with its runs' cap tops on `y` — the meta line's own, since every run
+/// shares that line's rung and weight and therefore its cap band. `base_w` is how wide the facts
+/// ahead of it actually drew ([`meta_drawn_w`]); the runs ride the painter handed in, so the hero's
+/// slide carries the annotation with the line it belongs to.
+fn draw_meta_source(p: Painter, source: &str, x: f32, y: f32, base_w: f32) {
+    meta_source_flow(base_w, source, |s, dx, budget, sz, bold, ink| {
+        // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
+        match CString::new(crate::text::elide(s, budget, sz, bold, false)) {
+            Ok(cs) => {
+                let mut lab = Label::new(cs.as_ptr(), sz, ink).v(VAlign::CapTop);
+                if bold == 1 {
+                    lab = lab.bold();
+                }
+                lab.draw(p, Rect::new(x + dx, y, budget, 0.0))
+            }
+            Err(_) => 0.0,
+        }
+    });
+}
+
+/// How wide the meta line's own facts DREW, so the source run can be flowed onto their end rather
+/// than onto a guess. The line is a one-line [`TextView`], whose wrap rebuilds it as its words
+/// joined by single spaces — which is the string itself, since every separator on it is authored as
+/// one space — so a line that fits measures exactly. A line that did NOT fit was ellipsized to fill
+/// the column, and reports the column: the run then starts at the column's edge, one pad past the
+/// ellipsis. `truncates` shares the draw's memoized wrap, so asking costs nothing.
+///
+/// The clamp is not belt-and-braces. `truncates` answers "were WORDS left unplaced", and a single
+/// token too wide for the column leaves none — `TextView` ellipsizes that case in its own safety
+/// pass instead, so the measured string can be wider than anything that was drawn. Unclamped, the
+/// run would then start in mid-air past the ellipsis, and a truly absurd one could hand the flow a
+/// negative budget, which `text::elide` reads as "no bound at all" and would paint straight past
+/// the frame.
+fn meta_drawn_w(tv: &TextView<'_>, meta: &str, col_w: f32) -> f32 {
+    if tv.truncates(col_w) {
+        return col_w;
+    }
+    CString::new(meta)
+        .ok()
+        .map(|c| crate::text::text_width(c.as_ptr(), theme::size::BODY, 0))
+        .unwrap_or(0.0)
+        .min(col_w)
+}
+
 /// One hero item's sliding content column: title band (clearLogo or text) → small meta/kicker →
 /// synopsis. For an EPISODE the show is the star: the show's clearLogo/title in the title band and
 /// a "S1 E4 · Episode title" kicker — the episode's own name never headlines. The column is
@@ -704,12 +880,21 @@ pub(crate) fn hero_stack_top(title_h: f32, meta_h: f32, syn_h: f32) -> f32 {
 /// `theme::space` rung and every step advances by the *measured* height of the element just drawn —
 /// except the title band, whose height is the RESERVED `hero_logo::band_h` rather than the drawn
 /// logo's, so the stack cannot lurch the moment a texture lands (see `ui::hero_logo`).
-fn hero_content(hero: &PmsMovie, p: Painter, dx: f32) {
+///
+/// `source` is whose server this item came from, empty for our own ([`hero_source_at`]). It rides
+/// the meta line as that line's LAST run and changes nothing else about the column — including its
+/// height, which is measured from the facts alone: the annotation is bounded to one line by
+/// construction ([`meta_source_flow`]), so it can never reflow the stack it sits in.
+fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
     let tx = MARGIN_X;
     let col_w = HERO_COL_W;
     // a column the slide has carried off the panel costs a full text layout + glyph draws for
-    // nothing (same rule as the backdrop layer's cull)
-    if !on_axis(tx + dx, col_w, SCR_W, 0.0) {
+    // nothing (same rule as the backdrop layer's cull). The box is the column's — EXCEPT when a
+    // source run is on the meta line, which is the one thing here that draws outside the column
+    // (out to [`META_FLOW_W`]): culled on the column's width, a slide would take the whole block
+    // away while ~400px of that line was still on the panel, and the tail of the meta line would
+    // blink out ahead of the item it belongs to.
+    if !on_axis(tx + dx, if source.is_empty() { col_w } else { META_FLOW_W }, SCR_W, 0.0) {
         return;
     }
     let d_a = theme::TEXT_SECONDARY;
@@ -755,9 +940,17 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32) {
 
     // stack the measured blocks up from the anchor, then draw top-down
     let mut y = hero_stack_top(title_h, meta_h, syn_h);
-    HeroLogo::new(hero_logo_rk(hero), title, LogoRung::Hero).draw(p, Rect::new(tx, y, col_w, title_h));
+    HeroLogo::new(hero.sid, hero_logo_rk(hero), title, LogoRung::Hero).draw(p, Rect::new(tx, y, col_w, title_h));
     y += title_h + theme::space::MD;
     meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
+    // Guarded, because the ARGUMENT is the expensive part: `meta_drawn_w` builds a `CString` and
+    // runs an uncached `TTF_SizeUTF8` over the whole meta line, and Rust evaluates it before the
+    // call can decide there is nothing to draw. A single-server install has no source run and is
+    // documented as paying nothing for the feature — it was paying a measure per hero frame, twice
+    // per frame through a slide.
+    if !source.is_empty() {
+        draw_meta_source(p, source, tx, y, meta_drawn_w(&meta_tv, &meta, col_w));
+    }
     y += meta_h;
     if let Some(tv) = syn {
         tv.draw(p, Rect::new(tx, y + theme::space::SM, col_w, 0.0));
@@ -816,14 +1009,14 @@ impl View for Hero {
         if let Some((prev, dx_out, dx_in)) = hero_slide_state() {
             if let Some(ph) = hero_item_at(prev) {
                 let po = p.translate(dx_out, 0.0);
-                hero_content(ph, po, dx_out);
+                hero_content(ph, hero_source_at(prev), po, dx_out);
                 hero_actions(ph, env, po, dx_out, false);
             }
             let pi = p.translate(dx_in, 0.0);
-            hero_content(hero, pi, dx_in);
+            hero_content(hero, hero_source(), pi, dx_in);
             hero_actions(hero, env, pi, dx_in, true);
         } else {
-            hero_content(hero, p, 0.0);
+            hero_content(hero, hero_source(), p, 0.0);
             hero_actions(hero, env, p, 0.0, true);
         }
 
@@ -897,9 +1090,16 @@ impl View for Grid {
             // moves under it and STAYS up until none is, rather than tracking the pop)
             if env.sp > 0.02 {
                 let lift = self.shelves[r].lift();
-                if let Ok(t) = CString::new(crate::pms::hub_title(r)) {
-                    p.text(t.as_ptr(), MARGIN_X, row_y - 34.0 - lift, theme::size::HEADLINE, theme::with_a(theme::TEXT_PRIMARY, env.sp), 0, 1);
-                }
+                // the snap fade rides the painter's cascade alpha, not the ink: `with_a` REPLACES a
+                // token's alpha rather than multiplying it, and the separator token carries .45 of
+                // its own — baking `env.sp` into the colour would throw that away.
+                draw_heading(
+                    p.alpha(env.sp),
+                    crate::pms::hub_title(r),
+                    crate::pms::hub_source(r),
+                    MARGIN_X,
+                    row_y - TITLE_DY - lift,
+                );
             }
             for c in 0..crate::pms::hub_len(r) {
                 if r == env.fr as usize && c == env.fc as usize && env.sp > 0.5 {
@@ -947,6 +1147,73 @@ impl View for Grid {
             card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
         }
     }
+}
+
+/// Pad either side of the `·` that introduces a SOURCE annotation, on the shared gap scale — the
+/// same "hairline gap between two things that belong to one line" rung `detail::dotted_run` spends
+/// on its own dots. One value, because this screen states a source in two places — the shelf
+/// heading ([`heading_flow`]) and the hero's meta line ([`meta_source_flow`]) — and they are one
+/// annotation in two positions, not two spacings.
+const SOURCE_PAD: f32 = theme::space::XS;
+
+/// The shelf heading, flowed left→right from the heading origin: the hub's title, and — only when
+/// the row came from ANOTHER server — a quiet `· handle` naming that source ("Recently Added in
+/// Film Club · friend").
+///
+/// **With an empty source the annotation is ABSENT, not empty**: no gap, no dot, no second run, no
+/// draw call. That is the design's "with one source, none of this is drawn" implemented as absence
+/// rather than as a branch that draws nothing visible — so the ANNOTATION costs a single-server
+/// library nothing at all, in geometry, in draw calls and in ink.
+///
+/// The heading is NOT unchanged overall, and the difference is deliberate: its ink moved from
+/// `TEXT_PRIMARY` (`#f7fafc`) to `TEXT_HEADING` (`#ebf0f7`) in the same pass. Every shelf heading on
+/// Home is ~4% darker as a result, today, with no source string anywhere. That is a harmonization,
+/// not a side effect — `TEXT_HEADING` is the shared section-heading ink that `detail.rs` and
+/// `person.rs` already use, and Home was the one screen still inking its headings as body text.
+///
+/// Two runs and not one string because they are two SIZES, two weights and three inks, and
+/// `Painter::text` can express exactly one of each per call (`theme::TEXT_SEPARATOR`'s doc: a dot
+/// baked into a joined string is one run at one colour by construction). They are BASELINE-aligned
+/// via `text::baseline_y` — a `BODY` run top-aligned against a `HEADLINE` one reads as a
+/// superscript.
+///
+/// `run(text, dx, sz, bold, ink) -> advance` is the seam: the draw passes a closure that paints and
+/// returns `Painter::text`'s advance, the host tests pass one that measures. The drawn flow and the
+/// graded one are therefore ONE expression, not `dotted_run`/`dotted_run_w`'s two that have to be
+/// kept agreeing. Returns the total advance.
+///
+/// The flow is PURE — it takes no font metric, which is also why the host suite can drive it: the
+/// per-run baseline drop is resolved in [`draw_heading`], from the very `sz`/`bold` handed out here.
+fn heading_flow(title: &str, source: &str, mut run: impl FnMut(&str, f32, c_int, c_int, [f32; 4]) -> f32) -> f32 {
+    let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING);
+    if source.is_empty() {
+        return dx; // one source: the heading is the title and nothing else
+    }
+    dx += SOURCE_PAD;
+    dx += run("\u{b7}", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR);
+    dx += SOURCE_PAD;
+    dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY);
+    dx
+}
+
+/// Draw [`heading_flow`] with its title's cap top at `(x, y)`. Every run rides the painter handed
+/// in, so the snap fade and the row's heading `lift` move the whole heading together — an
+/// annotation that detached from its title mid-scroll would read as two objects.
+///
+/// Each run drops onto the TITLE's baseline (`text::baseline_y`, a no-op for the title itself,
+/// which is measured against its own tokens): the annotation is a rung down, and top-aligning a
+/// `BODY` run against a `HEADLINE` one would read as a superscript. That one line is the only part
+/// of this heading the host suite cannot grade — it opens no SDL_ttf, so there are no cap bands to
+/// measure (the same boundary `widgets`' anchor table works within); what the tests DO pin is the
+/// tokens it resolves from.
+fn draw_heading(p: Painter, title: &str, source: &str, x: f32, y: f32) {
+    heading_flow(title, source, |s, dx, sz, bold, ink| {
+        // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
+        match CString::new(s) {
+            Ok(cs) => p.text(cs.as_ptr(), x + dx, crate::text::baseline_y(sz, bold, theme::size::HEADLINE, 1, y), sz, ink, 0, bold),
+            Err(_) => 0.0,
+        }
+    });
 }
 
 /// Metadata caption under the FOCUSED poster: episodes read "S1 • E8", movies their year — the
@@ -1305,29 +1572,35 @@ fn status_read() -> Option<(&'static std::ffi::CStr, crate::ui::widgets::StatusK
 /// tinted caption alone) with its one control below. Deliberately independent of `hero_a` and of
 /// the snap — with no shelves there is nothing for the grid to show, so the message must not fade
 /// out as the snap drifts.
+///
+/// The Retry control is the COMPONENT's now, not this screen's. It was hand-built here — a
+/// `Button::pill_w` and a y measured from the panel centre — while the caption above it came from
+/// the shared read-out, so the two halves of one block were laid out by two different pieces of
+/// code and only agreed by inspection. The Library's section read-out draws the same pair, and two
+/// hand-rolled copies of it is exactly the drift `ui/CLAUDE.md`'s fourth rule exists to stop.
 fn draw_status(env: &Env, p: Painter) {
     let Some((caption, kind, action)) = status_read() else {
         return; // there is content: the hero owns the screen, and its own hit targets
     };
-    crate::ui::widgets::StatusOverlay::new(Rect::FULL, caption, kind)
+    let mut ov = crate::ui::widgets::StatusOverlay::new(Rect::FULL, caption, kind)
         .phase(unsafe { addr_of!(status_ms).read() } as u32)
-        .draw(env, p);
+        // Focus is `>= 0` rather than `== 0` because this row has exactly one button — LEFT/RIGHT
+        // must not be able to park focus on nothing.
+        .focused(hero_focus() >= 0);
+    if let Some(label) = action {
+        ov = ov.action(label);
+    }
+    ov.draw(env, p);
     // The status screen OWNS the hero action row's focus slot AND its pointer hit targets: the two
     // can never be on screen together (a status state means an empty catalog, which means
     // `hero_item()` is None and `Hero::draw` returns before recording anything), so the existing
-    // click path drives Retry with no second hit-test. Focus is `>= 0` rather than `== 0` because
-    // this row has exactly one button — LEFT/RIGHT must not be able to park focus on nothing.
+    // click path drives Retry with no second hit-test. The rect comes from the component that drew
+    // the pill, so a click can never land somewhere the button isn't.
     // parked OFF the panel rather than at the origin: `Rect::contains` is inclusive, so a
     // zero-size rect at (0,0) would "contain" a click at exactly (0,0)
     let none = Rect::new(-1.0, -1.0, 0.0, 0.0);
-    let Some(label) = action else {
-        unsafe { addr_of_mut!(hero_btns).write([none; HERO_NBTN]) };
-        return;
-    };
-    let w = Button::pill_w(label.as_ptr(), theme::size::BODY, false);
-    let btn = Rect::new((SCR_W - w) * 0.5, SCR_H * 0.5 + theme::space::XL, w, HERO_CTRL_D);
+    let btn = ov.action_frame().unwrap_or(none);
     unsafe { addr_of_mut!(hero_btns).write([btn, none, none]) };
-    Button::new(label.as_ptr(), theme::size::BODY, btn).focused(hero_focus() >= 0).draw(env, p);
 }
 
 /// Does the status screen own this activation? Retry is Home's ONLY control while a read-out is
@@ -1506,18 +1779,49 @@ mod tests {
     /// …and the clamp is actually WIRED to the pill count. The walk above drives the pure helper;
     /// this drives the real setter, which is the line the cap used to live on. The host has no
     /// section table (`browse::reset` — the only writer any test reaches — always leaves it
-    /// empty), so the row here is the Home pill alone and the band's last pill IS Home.
+    /// empty), so the row here is Home and Search: the two pills that exist whatever the account
+    /// turns out to hold. The band's last pill is therefore SEARCH, and this asserts the clamp
+    /// lands on it rather than on the last library — which on a fresh boot there is none of.
     #[test]
     fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
+        let _s = crate::testlock::serial(); // the count comes from `browse`'s table, a crate global
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();
-        assert_eq!(crate::ui::widgets::tab_count(), 1, "no sections discovered on the host");
+        crate::browse::reset();
+        assert_eq!(crate::ui::widgets::tab_count(), 2, "no sections discovered: Home and Search");
         set_hero_focus(c_int::MIN / 2);
-        assert_eq!(hero_focus(), hero_focus_for_pill(0), "past the last pill clamps onto it");
-        assert_eq!(hero_pill_index(hero_focus()), Some(0));
+        let last = crate::ui::widgets::search_pill();
+        assert_eq!(hero_focus(), hero_focus_for_pill(last), "past the last pill clamps onto it");
+        assert_eq!(hero_pill_index(hero_focus()), Some(last));
         set_hero_focus(999);
         assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "past the action row clamps to its end");
         set_hero_focus(saved);
+    }
+
+    /// The top band walks the PILLS the strip's projection produces, not the section table — with
+    /// several sources those are different lengths. FOUR libraries across two servers project to
+    /// two pills (both servers provide both types), so RIGHT stops past them and never on a
+    /// library-shaped pill that nothing would draw. The gap between the two counts is the whole
+    /// point; it used to be 5→3 because the fixture's fifth library was a music one, and music is
+    /// no longer a type this product has a level for.
+    ///
+    /// The row is Home + those two + Search, and the last stop is the SEARCH pill — which is the
+    /// other half of why the two counts must not be conflated: one end of the row is not a library
+    /// either.
+    #[test]
+    fn the_top_band_walks_the_projected_pills_not_the_section_table() {
+        let _s = crate::testlock::serial();
+        let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = hero_focus();
+        crate::browse::seed_two_source_table_for_test();
+        assert_eq!(crate::browse::section_count(), 4, "four libraries…");
+        assert_eq!(crate::ui::widgets::tab_count(), 4, "…and Home + two pills + Search");
+
+        set_hero_focus(c_int::MIN / 2); // walk RIGHT past the end of the row
+        assert_eq!(hero_pill_index(hero_focus()), Some(3), "the last pill is the last PILL, not the last library");
+        assert!(crate::ui::widgets::is_search_pill(3), "…and that pill is Search, not a section");
+        set_hero_focus(saved);
+        crate::browse::reset();
     }
 
     #[test]
@@ -1844,5 +2148,227 @@ mod tests {
         assert_eq!(hero_logo_rk(&orphan), "42", "…falling back to its own when the server sent no parent");
         let movie = PmsMovie { kind: 0, rk: "42".into(), show_rk: "7".into(), ..Default::default() };
         assert_eq!(hero_logo_rk(&movie), "42", "a movie is never keyed to a stray parent");
+    }
+
+    // ---- the shelf heading's source annotation (Shared Sources, deliverable C) ----------------
+    //
+    // Pure flow arithmetic: no focus state, so these deliberately do NOT take the `FOCUS` mutex
+    // (the same call as `the_home_hero_logo_never_reaches_the_top_bar`). The host suite opens no
+    // SDL_ttf — `text_width` answers 0 for every string — so the flow is graded through a
+    // SYNTHETIC metric whose width depends on the size and weight a run was measured at. That
+    // dependence is the point: it is what makes "the annotation is measured at its own tokens, not
+    // at the title's" an assertion rather than an intention.
+
+    /// One run the flow asked for, as recorded by the measuring closure.
+    struct Run {
+        text: String,
+        dx: f32,
+        sz: c_int,
+        bold: c_int,
+        ink: [f32; 4],
+    }
+
+    /// Drive [`heading_flow`] with the synthetic metric; returns its total advance + every run.
+    fn flow(title: &str, source: &str) -> (f32, Vec<Run>) {
+        let mut runs: Vec<Run> = Vec::new();
+        let w = heading_flow(title, source, |s, dx, sz, bold, ink| {
+            runs.push(Run { text: s.to_string(), dx, sz, bold, ink });
+            width_of(s, sz, bold)
+        });
+        (w, runs)
+    }
+    /// A stand-in for `Painter::text`'s advance — monotone in length, size and weight.
+    fn width_of(s: &str, sz: c_int, bold: c_int) -> f32 {
+        s.chars().count() as f32 * (sz as f32 + 6.0 * bold as f32)
+    }
+
+    /// (a) **The acceptance criterion for the whole feature.** With no source the heading is ONE
+    /// run — the title, at the title's own tokens — and its width is the title's own advance with
+    /// nothing added. No dot, no pad, no empty second run: absence, not an empty annotation.
+    #[test]
+    fn a_shelf_with_no_source_draws_exactly_the_title_and_nothing_else() {
+        let (w, runs) = flow("Recently Added", "");
+        assert_eq!(runs.len(), 1, "an empty source must produce no further runs at all");
+        assert_eq!(runs[0].text, "Recently Added");
+        assert_eq!(runs[0].dx, 0.0, "the title starts at the heading origin");
+        assert_eq!(w, width_of("Recently Added", theme::size::HEADLINE, 1), "the title's own advance, exactly");
+    }
+
+    /// (b) A source annotation can only ADD to the heading — the title in front of it is
+    /// untouched, and the flow grows by the dot, the handle and the two pads between them.
+    #[test]
+    fn a_shared_source_extends_the_heading_past_the_title() {
+        let (bare, _) = flow("Recently Added in Film Club", "");
+        let (annotated, runs) = flow("Recently Added in Film Club", "friend");
+        assert!(annotated > bare, "the annotation must extend the heading ({annotated} vs {bare})");
+        assert_eq!(runs.len(), 3, "title, separator, handle");
+        assert_eq!(runs[0].dx, 0.0, "the title still starts at the origin");
+        assert_eq!(
+            annotated,
+            bare + 2.0 * SOURCE_PAD
+                + width_of("\u{b7}", theme::size::BODY, 0)
+                + width_of("friend", theme::size::BODY, 0),
+            "the growth is exactly the dot, the handle and one pad either side of the dot"
+        );
+        assert_eq!(runs[1].dx, bare + SOURCE_PAD, "the dot is one pad past the title");
+        assert_eq!(
+            runs[2].dx,
+            runs[1].dx + width_of("\u{b7}", theme::size::BODY, 0) + SOURCE_PAD,
+            "the handle is one pad past the dot"
+        );
+    }
+
+    /// (c) Each run is measured and inked at the tokens the design names for IT — the annotation is
+    /// a rung down, regular against the title's bold, tertiary ink after a `.45` separator. Those
+    /// tokens are also what `draw_heading` resolves each run's baseline drop from, so pinning them
+    /// pins the alignment the host cannot measure.
+    #[test]
+    fn each_heading_run_carries_its_own_size_weight_and_ink() {
+        let (_, runs) = flow("Recently Added in Film Club", "friend");
+        assert_eq!((runs[0].sz, runs[0].bold), (theme::size::HEADLINE, 1), "the title is HEADLINE bold");
+        assert_eq!(runs[0].ink, theme::TEXT_HEADING, "…in the shared section-heading ink");
+        assert_eq!(runs[1].text, "\u{b7}");
+        assert_eq!((runs[1].sz, runs[1].bold), (theme::size::BODY, 0), "the separator is measured at BODY regular");
+        assert_eq!(runs[1].ink, theme::TEXT_SEPARATOR, "…at the separator token's own .45");
+        assert_eq!(runs[2].text, "friend");
+        assert_eq!((runs[2].sz, runs[2].bold), (theme::size::BODY, 0), "the handle is BODY regular, not the title's");
+        assert_eq!(runs[2].ink, theme::TEXT_TERTIARY);
+        assert!(
+            (runs[1].sz, runs[1].bold) == (runs[2].sz, runs[2].bold),
+            "the dot and the handle are one annotation: same rung, same weight, so they drop onto the title's baseline together"
+        );
+        assert!(runs[1].sz < runs[0].sz, "the annotation is a rung DOWN from the title — the drop is why it must be baseline-aligned");
+    }
+
+    // ---- the HERO's own source run (Shared Sources, deliverable C) ----------------------------
+    //
+    // The hero is not the focused tile of the shelf beneath it — it is an independent rotating
+    // billboard — so the heading below it attributes something else and this run is the only thing
+    // on the screen that says whose the film is. Same synthetic metric as the heading tests above,
+    // and the same reason for it. Pure: no focus state, no `FOCUS` mutex.
+
+    /// One meta run, plus the BUDGET it was given — which is the half the heading flow has no
+    /// equivalent of, and the half the truncation rule lives in.
+    struct MetaRun {
+        text: String,
+        dx: f32,
+        budget: f32,
+        sz: c_int,
+        bold: c_int,
+        ink: [f32; 4],
+    }
+
+    /// Drive [`meta_source_flow`] with the synthetic metric, eliding to the budget the way
+    /// `draw_meta_source`'s closure does (`text::elide` never returns a run wider than its budget).
+    /// Returns the whole line's advance + every run the flow asked for.
+    fn meta_flow(base_w: f32, source: &str) -> (f32, Vec<MetaRun>) {
+        let mut runs: Vec<MetaRun> = Vec::new();
+        let w = meta_source_flow(base_w, source, |s, dx, budget, sz, bold, ink| {
+            runs.push(MetaRun { text: s.to_string(), dx, budget, sz, bold, ink });
+            width_of(s, sz, bold).min(budget.max(0.0))
+        });
+        (w, runs)
+    }
+
+    /// **The one-source acceptance criterion.** With no source the hero meta line is exactly the
+    /// line it has always been: the flow asks for nothing, adds nothing to its advance, and issues
+    /// no draw call. Absence, not an empty annotation — which is what makes the run free for the
+    /// installs that will never see one.
+    #[test]
+    fn a_hero_from_our_own_server_draws_no_source_run_at_all() {
+        let (w, runs) = meta_flow(420.0, "");
+        assert!(runs.is_empty(), "an empty source must produce no runs, no pad and no dot");
+        assert_eq!(w, 420.0, "…and must not move the line's own end by a pixel");
+    }
+
+    /// A borrowed hero states whose it is, as the LAST run on its own meta line — after a middot,
+    /// one pad either side, in the design's own words ("the person, not the machine").
+    #[test]
+    fn a_borrowed_hero_states_its_owner_as_the_last_run_on_the_line() {
+        let base = 420.0;
+        let (w, runs) = meta_flow(base, "friend");
+        assert_eq!(runs.len(), 2, "the separator and the run, and nothing else");
+        assert_eq!(runs[0].text, "\u{b7}");
+        assert_eq!(runs[0].dx, base + SOURCE_PAD, "the dot is one pad past the facts");
+        assert_eq!(runs[1].text, "Shared by friend", "the person, not the machine");
+        assert_eq!(
+            runs[1].dx,
+            runs[0].dx + width_of("\u{b7}", theme::size::BODY, 0) + SOURCE_PAD,
+            "the run is one pad past the dot"
+        );
+        assert_eq!(
+            w,
+            base + 2.0 * SOURCE_PAD
+                + width_of("\u{b7}", theme::size::BODY, 0)
+                + width_of("Shared by friend", theme::size::BODY, 0),
+            "the line grows by exactly the dot, the run and one pad either side of the dot"
+        );
+    }
+
+    /// **The rung stays, the ink steps down.** The run keeps the line's own `BODY` — it is read
+    /// from across the room — and takes one step of ink, `TEXT_SECONDARY` → `TEXT_TERTIARY`. It is
+    /// deliberately NOT the detail page's `CAPTION`, which is that line's own rung and not a
+    /// property of the run: a rung is a role, and only the ink step travels between the two screens.
+    #[test]
+    fn the_hero_source_run_keeps_the_lines_rung_and_takes_one_step_of_ink() {
+        let (_, runs) = meta_flow(420.0, "friend");
+        for r in &runs {
+            assert_eq!((r.sz, r.bold), (theme::size::BODY, 0), "'{}' left the meta line's own rung", r.text);
+            assert_ne!(r.sz, theme::size::CAPTION, "the hero line is BODY — it is not E's line and must not shrink to it");
+        }
+        assert_eq!(runs[0].ink, theme::TEXT_SEPARATOR, "the middot carries the separator token's own .45");
+        assert_eq!(runs[1].ink, theme::TEXT_TERTIARY, "one step under the line's TEXT_SECONDARY, never level with it");
+        assert_ne!(runs[1].ink, theme::TEXT_SECONDARY);
+    }
+
+    /// **The measurement rule: the line never becomes two.** Every run is handed a finite budget
+    /// running to [`HERO_META_R`], so an over-long handle ELIDES where a wrapped block would have
+    /// spilled onto a second line — and the whole line still ends at the bound. The worst case is a
+    /// meta line whose own facts already filled the hero column: even then the run must have real
+    /// room, or the annotation would arrive as a bare ellipsis.
+    #[test]
+    fn an_over_long_handle_truncates_rather_than_wrapping() {
+        let ridiculous = "a-very-long-plex-account-handle-that-nobody-would-ever-choose";
+        for base in [0.0f32, 420.0, HERO_COL_W] {
+            let (w, runs) = meta_flow(base, ridiculous);
+            assert_eq!(runs.len(), 2, "base {base}: a long handle is still ONE run — there is no second line to go to");
+            for r in &runs {
+                assert!(r.budget > 0.0, "base {base}: '{}' was given no room at all ({})", r.text, r.budget);
+                assert!(r.dx + r.budget <= META_FLOW_W + 1e-3, "base {base}: '{}' may elide past the bound", r.text);
+            }
+            assert!(w <= META_FLOW_W + 1e-3, "base {base}: the line ran to {w}, past its {META_FLOW_W} bound");
+        }
+        // …and the room left at that worst case is a real annotation's worth rather than a stub —
+        // a QUARTER of the whole line, which is the guard that a future widening of the hero column
+        // (or a tightening of the bound) cannot quietly starve the run into a bare ellipsis. It is
+        // stated as a share of the line and not in pixels of text because the synthetic metric here
+        // is roughly twice the shipped font's advance; the share is a claim about the geometry,
+        // which is the part the host can actually speak for.
+        let (_, worst) = meta_flow(HERO_COL_W, "friend");
+        assert!(
+            worst[1].budget >= 0.25 * META_FLOW_W,
+            "a meta line whose facts fill the column leaves the run only {} of {META_FLOW_W}",
+            worst[1].budget
+        );
+    }
+
+    /// Where the bound IS: inside the corner wedge, and a full fifth of the panel short of the last
+    /// fifth of the frame — the side of the picture the composition is usually about, which the
+    /// wedge leaves alone entirely. Both ends are read from `widgets::hero_scrim_a` (the same closed
+    /// form the hero's legibility contract is graded on) rather than restated here, so a retune of
+    /// the wedge fails this instead of silently stranding the run outside it.
+    #[test]
+    fn the_meta_lines_bound_keeps_the_run_inside_the_hero_wedge() {
+        use crate::ui::widgets::hero_scrim_a;
+        assert!(hero_scrim_a(HERO_META_R, 1.0) > 0.0, "the line ends where the wedge has already given up");
+        let wedge_end = (0..=SCR_W as i32)
+            .map(|x| x as f32)
+            .find(|&x| hero_scrim_a(x, 1.0) <= 0.0)
+            .expect("the wedge must end inside the frame");
+        assert!(
+            HERO_META_R <= wedge_end - 0.2 * SCR_W,
+            "the bound ({HERO_META_R}) must stay a fifth of the panel short of the wedge's end ({wedge_end})"
+        );
+        assert!(HERO_META_R > MARGIN_X + HERO_COL_W, "…and past the text column, or the run has nowhere to go");
     }
 }

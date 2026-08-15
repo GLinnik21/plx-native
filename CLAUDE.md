@@ -35,8 +35,15 @@ full one-time setup + troubleshooting.
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
-- `make` — build `pkg/plxnative` (the ARM binary). Also compiles `ci/ffabi-assert.c` against BOTH
-  vendored FFmpeg header trees (n3.3 and n4.0), which is what proves `ff.rs`'s two ABI tables.
+- `make` — build `pkg/plxnative` (the ARM binary), and, first, the FFmpeg it ships
+  (`ci/build-ffmpeg.sh`; ~2 minutes cold, nothing after). Also compiles `ci/ffabi-assert.c` against
+  `vendor/ffmpeg-prefix/include` — **the headers the shipped libraries were built from**, installed
+  by the same invocation that produced them — which is what proves `ff.rs`'s ABI table. **One**
+  header tree, **one** table. This line long said BOTH vendored trees (n3.3 and n4.0) and *two*
+  tables, which was true while the app read the television's FFmpeg and had to select a table per
+  firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by asserting
+  `LIBAVFORMAT_VERSION_MAJOR == 63`), and the vendored trees are gone — so anyone who went looking
+  for them found `vendor/` holding nanosvg and nothing else.
 - `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
 - `make run` — close any running instance, wipe `/tmp/plxnative-events.log`, launch, keep alive
   `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
@@ -101,10 +108,11 @@ bundled in the NDK), so the Starfish C++ calls get real link-time symbol checkin
 those has the **same SONAME on every webOS release from 2.2.3 to 11.2.0**, which is what makes
 linking them normally the right call — check any of it with `tools/fwcompat.py --inventory`.
 
-**Three families are deliberately NOT linked**: FFmpeg (`libav*`, `libswscale`), `libcurl`, and
-`libAcbAPI`. Their SONAMEs move between releases — FFmpeg 55→57→58→59→60, curl `.so.5`→`.so.4`,
-and ACB is *deleted outright* at webOS 5.0 — and a `DT_NEEDED` entry is a hard requirement for one
-exact name, which cannot express "57 or 58". So they are **`dlopen`'d by SONAME candidate list**:
+**Two families are deliberately NOT linked because their SONAME MOVES**: `libcurl`
+(`.so.5`→`.so.4`) and `libAcbAPI` (*deleted outright* at webOS 5.0). A `DT_NEEDED` entry is a hard
+requirement for one exact name, which cannot express "either of these", and a name the device lacks
+kills the process at `exec()` — before `main`, before the event log exists. So they are
+**`dlopen`'d by SONAME candidate list**:
 
 - **`rust-modules/src/dynlib.rs`** is the one door. `dynlib!` takes a block shaped exactly like the
   `extern "C"` block it replaces and emits same-named wrappers, so call sites don't change.
@@ -116,6 +124,31 @@ exact name, which cannot express "57 or 58". So they are **`dlopen`'d by SONAME 
   picks between them (`vp_mode()`). The two are complementary across all 14 firmwares.
 - Adding a new FFmpeg/curl call means **adding it to the `dynlib!` block**. There is no link error
   to catch you any more — the failure is a logged `Incomplete` at boot and a refusal to demux.
+
+**FFmpeg is a third unlinked family, and it is no longer a version question at all: the app BUNDLES
+its own and PINS it.** This doc used to file FFmpeg beside curl and ACB as "SONAME moves,
+55→57→58→59→60", which is the wrong mental model to carry into any FFmpeg change today.
+`ci/build-ffmpeg.sh` cross-compiles FFmpeg **9.0** with the NDK — shared, LGPL-clean (no
+`--enable-gpl`), under a `-plx` build suffix: `libavutil-plx.so.61`, `libavcodec-plx.so.63`,
+`libavformat-plx.so.63`, plus `libswscale-plx.so.10` in dev builds only. `make deploy`/`make ipk`
+ship those `.so` files **beside the binary**, and `ff.rs::load_libraries` opens them by **absolute
+path out of `paths::app_dir()`**, in dependency order under `RTLD_GLOBAL` (they carry no rpath —
+FFmpeg's configure evals its flags and `$ORIGIN` does not survive), after which `boot()` refuses to
+demux unless the majors are exactly **63/63/61**. Both the suffix and the absolute path are
+load-bearing: webOS 11.2.0 ships FFmpeg 6 itself, so a bare SONAME could open the *television's*
+copy, and "which libavformat did we actually get" is precisely the question that cannot be answered
+over ssh. The reason to bundle was never the SONAME drift, which was survivable — it is that
+demuxers, parsers and bitstream filters live in a **registry, as data**, so no symbol table and no
+firmware inventory can answer "does this set's libavcodec have `h264_mp4toannexb`". Bundling makes
+both halves compile-time facts, and it is also webosbrew's published guidance.
+
+**One consequence settles a question that keeps getting re-opened: our FFmpeg has NO network.** It
+is configured `--disable-network` with `--enable-protocol=file` as the *only* protocol, so it
+cannot open a URL — http or https, on any firmware. Every byte reaches the demuxer through
+`stream.rs` and the custom AVIO, and that is not an accident of the current pipeline but a
+build-time fact you cannot route around. "Does the TV's FFmpeg have https?" is therefore not
+something to go and probe on a device; it is decided, and the answer is that no FFmpeg in this app
+has any transport of its own.
 
 **This replaced the old stub-`.so` trick, and `stub/` is deleted.** Empty `.so` files carrying the
 TV's SONAMEs got the link to succeed, but in doing so pinned the binary to webOS 4.x: on anything
@@ -167,8 +200,10 @@ threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Rea
 touching playback):** LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
 `BUFFERSTREAM` **buffer-feed** mode, the decoded sink bound to the hardware video plane via
 **`libAcbAPI` (ACB)** — in-process is what lets ACB bind the app-owned sink. The media pipeline
-is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`, the TV's own libavformat
-over a custom AVIO**) → AU queues with backpressure (`aq.rs`) → the pump `Feed()`s the Starfish
+is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`, over a custom AVIO on the
+FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
+`--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
+(`aq.rs`) → the pump `Feed()`s the Starfish
 pipeline. Two worker threads (demux, media/load) sit beside the main loop, which owns all
 ACB/Starfish control calls. Also linked and
 used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw-socket
@@ -176,15 +211,20 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Key files
 
-- `Makefile` — build/deploy/run/ipk; toolchain, the dual FFmpeg-ABI gate, TV ssh creds.
+- `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
+  (one header tree, not the old dual one), TV ssh creds.
 - `src/main.c` — the **boot shim** (crash tracer, event-log/stderr setup, process bring-up); calls
   the Rust `plex_run()`. `src/starfish.c` — the StarfishMediaAPIs C++/ACB seam. `src/svg.c` —
   nanosvg rasterizer. These three are the *entire* C side.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
-  playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the TV's own
-  libavformat), `stream.rs`/`aq.rs` (HTTP socket → AU pipeline), `net.rs` (libcurl/TLS), and the
-  Plex data layer.
+  playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
+  pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
+  → AU pipeline), `net.rs` (libcurl/TLS), and the Plex data layer (`plex/` — **its own
+  `rust-modules/src/plex/CLAUDE.md`**, which the rest of this file never pointed at: read it before
+  adding a PMS query, and before assuming there is one server. There is a REGISTRY behind
+  `client()` now — the app can hold a friend's shared server beside your own, each with its own
+  token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
@@ -192,14 +232,22 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
   `docs/ui-system-migration.md`.
-  (`rust-modules/src/stream.rs` — blocking HTTP/1.1 GET over a raw TCP socket: numeric IP,
-  Content-Length/close delimited, **no chunked decoding**, no DNS. `aq.rs` — one-producer/
+  (`rust-modules/src/stream.rs` — blocking HTTP/1.1 GET over a raw TCP socket: numeric IP, and a
+  body delimited by `Content-Length`, by close, **or by `Transfer-Encoding: chunked`, which it does
+  decode** (`HttpStream`'s `chunked`/`chunk_left`, the header match in `http_open`, and
+  `hs_next_chunk`). This line claimed "no chunked decoding" long after that stopped being true,
+  which makes `stream.rs` read as less capable than it is and sends work to `net.rs` that it would
+  have handled — its only real disqualifiers are **DNS and TLS**: it takes a numeric address and
+  speaks cleartext, nothing more. `aq.rs` — one-producer/
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
-- `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen` by SONAME candidate list) for
-  the three families whose SONAME moves between webOS releases: FFmpeg, curl, ACB. Replaced
-  `stub/`, which is deleted. `tools/fwcompat.py` grades the result; `docs/webos5-port.md` is the
-  full account.
+- `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
+  by absolute path). Two callers, for two different reasons: `net.rs` binds **curl** by candidate
+  list because its SONAME moves between releases, and `ff.rs` binds the **bundled FFmpeg** by
+  absolute path because ours ships beside the binary, on no library search path — not because any
+  version varies. (**ACB** is the same idea but not this module: `src/starfish.c` is C and does its
+  own `dlopen`.) Replaced `stub/`, which is deleted. `tools/fwcompat.py` grades the result;
+  `docs/webos5-port.md` is the full account.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
@@ -305,11 +353,18 @@ There **is** a host unit suite, and it is not the real gate — both halves matt
 them is how this section used to be wrong in three files at once.
 
 **Tier 1 — `make check` (host, sub-second).** `cd rust-modules && cargo test --lib` runs the whole
-host suite in **~0.3s** on the dev Mac, no TV involved (284 tests as of 2026-08-02, up from a
-documented 59 that was five times stale before anyone noticed — re-derive with
-`cargo test --lib -- --list | grep -c ': test'` rather than trusting this or the per-module counts
-below; the first version of this section was stale within one commit because two agents added tests
-to the same batch that documented it). **Run it with the same toolchain the Makefile does.** A bare
+host suite in **~0.3s** on the dev Mac, no TV involved. **Treat every test COUNT in this section as
+already wrong, including the one in this sentence.** 386 measured 2026-08-13; 284 on 2026-08-02; a
+documented 59 before that, which was five times stale before anyone noticed — and the first version
+of this paragraph was stale within one *commit*, because two agents were adding tests to the same
+batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
+count worth having is the one you take yourself, with
+`cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`. **The per-module counts
+below have the same disease and are worse**, because a stale one reads as precise rather than round
+— several were written when the module was a third its present size (`route.rs` and `ui/home.rs`
+are both well past the numbers they carry). Read those bullets as **what each module covers**,
+which is stable and is why they are here, and never as a census. **Run it with the same toolchain
+the Makefile does.** A bare
 `cargo test` uses the default toolchain; `make check` uses `cargo +$(RUST_NIGHTLY)`, and the two
 have disagreed — `task.rs`'s refused-spawn test passed 284/284 on stable while panicking inside
 `std` on nightly, which reads as flakiness and is not. Nightly is the gate, because `-Z build-std`
@@ -349,10 +404,12 @@ you get without waking a television. What it covers today, by module:
     so it is detected via inherent-vs-trait const resolution, with a `Send` control case).
 
   Three structural limits, all deliberate and all worth knowing before you trust a green run.
-  **(1) It cannot link the TV's libraries.** `ff.rs`'s four `#[link]` directives are
-  `cfg_attr(not(test))`-gated precisely so the crate's pure logic stays host-testable; the dev Mac
-  has no libavformat, so a test that actually *calls* FFmpeg or GL fails to link — that is the
-  intended boundary, not a bug. **(2) It runs on Darwin; the app runs on Linux, and they disagree**
+  **(1) It cannot run the native libraries, and it no longer fails by FAILING TO LINK.** `ff.rs`
+  used to carry four `cfg_attr(not(test))`-gated `#[link]` directives, so a host test that called
+  FFmpeg died at link time; those directives are gone (everything goes through `dynlib!` now), the
+  crate links unconditionally, and such a test instead takes `dlopen`'s `None` branch on Darwin.
+  Same boundary, quieter failure — a test that "passes" having never entered FFmpeg or GL is the
+  shape to watch for. **(2) It runs on Darwin; the app runs on Linux, and they disagree**
   — see `tools/sockprobe.c` above, where `shutdown`-during-`connect` behaves oppositely on the two
   kernels. A socket assertion that passes here is evidence about macOS, not about the TV.
   **(3) The app's async seams are process-wide**, so some tests are serialized rather than parallel:
@@ -379,6 +436,16 @@ device measurement), text rasterization, or anything about video (the 29-symbol 
 is absent; `player::ffi`'s host arm reports the seam's own "no video path" failure, so Play lands
 on the real failure read-out). Two bugs it has already found in DEVICE code: the glyph upload
 ignored `SDL_Surface::pitch` (`text.rs`), and `dev`/`remote`/`log` all hardcoded `/tmp`.
+**Two host-only traps that read as your change being broken.** (1) **`make sim-shot` HANGS on a
+settled screen** — `SIM_FRAME` is a count of *presented* frames (`shot.rs`, and `app.rs` says the
+same at the `shot` token: "presented frames only accrue when something repaints"), and `ui::idle`
+gates presents, so a screen that settles before frame N never reaches N. Arm
+`plxnative-noidle` in the instance root first; three agents lost time to this in one day. (2) macOS
+`libSDL2` is **sdl2-compat forwarding into SDL3**, so pushing a synthetic **`SDL_TEXTINPUT`** through
+`SDL_PushEvent` SIGSEGVs *inside SDL* — SDL3's text event carries a `char *text` where SDL2 carries
+an inline `char[32]`, and the shim dereferences it. No Rust panic, no log line, the process is just
+gone. The remote FIFO's key and `ck:` tokens are safe because every field they set is a scalar; see
+`docs/search.md` §3.
 
 **Tier 2 — the device, which is still the real gate.** Nothing on the host decodes a frame or talks
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
@@ -482,9 +549,15 @@ the perf gates), and `make test` = `deploy` + `run`.
   heartbeat. **Three assertions, and picking the wrong one is how a frozen animation ships:**
   `loop_floor` grades `loop=`, which counts LOOP iterations — it proves the app is alive, and cannot
   see a stopped animation at all; `fps_floor` grades `fps=` and is what proves an animation still
-  RUNS (`login-spinner`, the two `*-nav` scenes); `fps_ceiling` grades `fps=` from the other
-  side and proves a still screen stops (`home-idle`). A scene with no motion and only a `loop_floor`
-  gates nothing — three carry an `_idle_gate_note` saying exactly that. Every run also reports
+  RUNS (`login-spinner`, the two `*-nav` scenes, `search-type`); `fps_ceiling` grades `fps=` from the
+  other side and proves a still screen stops (`home-idle`, `search-idle`). The Search pair is the
+  clearest illustration that these are two halves of ONE question — same screen, same trigger, the
+  oscillator added or taken away. A scene with no motion and only a `loop_floor`
+  gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
+  one left**; this line said "three" long after the other two (`home-grid`, `library-scroll`) were
+  given oscillators and real `fps_floor`s, which is the fix that note asks for. The two other
+  `loop_floor`-only scenes are player-tier (`info-panel`, `track-menu`) and need no note, because
+  the present gate excludes the player route. Every run also reports
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
   18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"
@@ -526,7 +599,16 @@ the perf gates), and `make test` = `deploy` + `run`.
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
   and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
-  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), plus
+  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and the
+  Search pair: `/tmp/plxnative-search[=<query>]` (boot straight into Search with the field already
+  holding `<query>` — the seed is not a convenience, since neither the harness nor `sim-shot` can
+  type and the TV's own keyboard is raised by a user, so without it every headless look at this
+  screen is the empty state) and `/tmp/plxnative-searchosc` (sweep the result shelves' focus down↔up
+  perpetually, 350 ms per step reversing every 3 s — the same cadence as `libosc`/`homeosc`). The
+  oscillator does NOT reach the screen on its own: pair it with `plxnative-search`, and with a query
+  the library actually matches, or `fps:search-type` has no shelves to sweep. Design, and the
+  on-screen-keyboard research behind the field (three traps, two dead ends): **`docs/search.md`**.
+  Plus
   `/tmp/plxnative-navosc[=<ratingKey>]` (bounce the ROUTE every 1400 ms through the real press path —
   the only scenes that change route, and so the only ones that sample the whole-screen page
   cross-fade `ui::nav` draws. EMPTY = Home↔the first library section, the two pages that SHARE the
@@ -568,4 +650,10 @@ the perf gates), and `make test` = `deploy` + `run`.
   no session lands on the QR sign-in screen.
 - Normal interactive flow: who's-watching picker (multi-user) → Home; D-pad/pointer to focus a
   card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
-  scrub-seek, **BACK/Stop** returns.
+  scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
+  peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. Text
+  entry is the **television's own keyboard**, raised by plain `SDL_StartTextInput` — the backend is
+  in LG's Wayland driver, not the webOS extension API, which is why `SDL_webOS.h` looks like it has
+  no keyboard. The field, the shelves and every trap in that seam are **`docs/search.md`**, whose
+  status note says which halves are in the tree yet. Search is **server-only** by decision — Plex
+  Discover / Watchlist catalog results are out of scope.

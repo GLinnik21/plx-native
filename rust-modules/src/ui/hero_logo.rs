@@ -106,6 +106,11 @@ pub fn place(band: Rect, w: f32, h: f32, align: HAlign) -> Rect {
 /// fallbacks that used to paint an unbounded run now elide like home's always did.
 pub struct HeroLogo<'a> {
     rk: &'a str,
+    /// The server `rk` is a key on. A clearLogo is fetched through the image transcoder of the
+    /// server that holds the item, and `rk` names an item on that machine alone — resolving it
+    /// against whichever server is current drew no logo at all for a borrowed hero, which is how
+    /// this was reported ("detail page does not show logo image").
+    sid: crate::plex::ServerId,
     title: &'a str,
     rung: LogoRung,
     align: HAlign,
@@ -115,8 +120,8 @@ impl<'a> HeroLogo<'a> {
     /// `rk` is the ratingKey whose clearLogo to draw — for an episode hero that is the SHOW's
     /// (episodes have no clearLogo asset; keying to the episode 404s straight into a text fallback
     /// of the wrong title). `title` is the run drawn when there is no logo.
-    pub fn new(rk: &'a str, title: &'a str, rung: LogoRung) -> Self {
-        Self { rk, title, rung, align: HAlign::Left }
+    pub fn new(sid: crate::plex::ServerId, rk: &'a str, title: &'a str, rung: LogoRung) -> Self {
+        Self { rk, sid, title, rung, align: HAlign::Left }
     }
     /// Horizontal placement inside the band — the logo art and the text fallback share it, so the
     /// two cannot land on different edges.
@@ -130,7 +135,10 @@ impl<'a> HeroLogo<'a> {
     /// for both the logo tint and the fallback text (the value all three sites passed already).
     /// Draws only through `p`, so the caller's cascade alpha fades logo and fallback identically.
     pub fn draw(&self, p: Painter, band: Rect) {
-        if let Some((tex, sw, sh)) = crate::posters::logo_src(self.rk) {
+        // The hero draws the item the shelf under it has focused, and that shelf is the server
+        // being browsed — so its clearLogo is asked of the current server. An item that came from
+        // somewhere else (a merged Continue Watching row) names its own, once items carry one.
+        if let Some((tex, sw, sh)) = crate::posters::logo_src(self.sid, self.rk) {
             let (w, h) = fit(self.rung, sw, sh, band.w);
             // NOT pixel-snapped: a logo is SCALED content, and the crispness contract snaps
             // 1:1-texel content only (see the note above `theme.rs`'s size ladder).

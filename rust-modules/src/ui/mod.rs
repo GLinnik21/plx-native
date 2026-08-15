@@ -10,6 +10,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub mod account_menu; // Home top-left profile popover (change profile / sign out)
+pub mod alt_sources; // "Also available": the same item on a second pinned source, as a picker
 pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;
@@ -28,6 +29,7 @@ pub mod more_menu; // the player's `…` overflow popover (holds the Stats for n
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
+pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
@@ -280,6 +282,20 @@ impl Painter {
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self { dx: self.dx + dx, dy: self.dy + dy, ..self }
+    }
+    /// This painter's accumulated horizontal offset — what to ADD to a coordinate drawn through it
+    /// to get the screen x it lands on.
+    ///
+    /// Exposed for exactly one job: clamping a run against the PANEL edges from inside a translated
+    /// tree. A horizontally scrolled shelf draws through `translate(-scroll_x, 0)`, so a rect
+    /// handed to a child is a content coordinate — and `card_row`'s label clamp compared one of
+    /// those against `SCR_W` and pinned every focused caption at a fixed screen x once a row had
+    /// scrolled a screen's worth (device-observed on the Search episode shelf: the words under the
+    /// tile changed with focus while the block itself never moved). Reach for it only where a
+    /// SCREEN bound is genuinely the thing being tested; ordinary drawing must stay in the
+    /// painter's own space, which is the whole point of the cascade.
+    pub fn dx(self) -> f32 {
+        self.dx
     }
     #[inline]
     fn c(self, c: [f32; 4]) -> [f32; 4] {

@@ -8,7 +8,8 @@ Headless regression tests for the native webOS Plex player. There is no host-sid
   needs, the expected log signals, and the *shape* of the item it needs (`item`, a symbolic key
   like `movie_h264_ac3_1080p`) rather than any ratingKey.
 - `manifest.local.json` — **gitignored, one per installation**, and required. Maps each `item`
-  key to a ratingKey on *your* server, and carries your `pms` host, `tv` address and `test_user`.
+  key to a ratingKey on *your* server, and carries your `pms` host, `tv` address, `test_user` and
+  (optionally) the `shared_server` a two-source case needs.
   Copy it from `manifest.local.json.example` and fill it in; `run.py` merges it over the manifest
   at load and refuses to run without it, naming any key it cannot resolve.
 - `run.py` — the runner (Python 3 stdlib only; macOS system `python3` is fine).
@@ -26,6 +27,11 @@ logs, or writes it — progress URLs are redacted to `<token>` in output. The TV
 credentials are already in the committed `Makefile`, so the runner shells out to `make` /
 `sshpass` for device I/O (no new secret is introduced).
 
+Every other token the harness uses is **derived from that one at run time and stored nowhere**: the
+managed user's per-server token (below), and a second server's access token (further below). Both
+are written to a `/tmp/plxnative-*` file on the TV and are cleared by the same glob wipe — before
+every case, and again by `teardown()` on *every* exit path, including Ctrl-C and a crash.
+
 ## Test identity — runs as a managed user (no watch-history pollution)
 
 By default the harness plays **as the Plex Home managed user in `manifest.local.json` →
@@ -37,19 +43,88 @@ account stays clean. It works without storing any new secret:
   `userID` — which is what `test_user.id` is). The managed user must already have the libraries
   shared with it.
 - That token is used for the `/:/progress` resume seed **and** written to `/tmp/plxnative-token` on the
-  TV. The app reads `/tmp/plxnative-token` at boot and overrides its compiled-in owner token with it
-  (see `plex_run`), so the **app itself** plays and scrobbles as the managed user — not just the
-  seed. The token value is never printed (redacted to `<…, redacted>`), and `plxnative-token` is
+  TV. The binary carries **no** token, so this file is the only way an automated run gets PMS access
+  at all (see `plex_run`); the **app itself** then plays and scrobbles as the managed user, not just
+  the seed. The token value is never printed (redacted to `<…, redacted>`), and `plxnative-token` is
   cleared between cases like every other trigger.
 - Pass **`--owner`** to run as the `config.local.h` owner token instead (history *will* be
   affected). If the overlay has no `test_user`, the runner falls back to owner with a warning.
+
+## A second server (a friend's shared one)
+
+`/tmp/plxnative-token` carries exactly **one** token, and a shared server is a **separate
+authority**: its own `machineIdentifier`, its own per-(user,server) access token, and a 401 for
+anybody else's. So a screen that shows two sources at once could only ever be checked by hand, one
+capture at a time. `/tmp/plxnative-servers` is the second credential channel — **purely additive**:
+the primary server is still `plxnative-token` against the compiled-in host, unchanged, and a run
+that names one server behaves exactly as it always did.
+
+**Configure it once**, in the gitignored `manifest.local.json` (the block is optional — delete it if
+you have no such server):
+
+```json
+"shared_server": {
+  "machine_id": "aaaabbbbccccddddeeeeffff0000111122223333",
+  "name": "nas-home",
+  "host": "10.0.0.9",
+  "port": 32400
+}
+```
+
+- `machine_id` (the server's `clientIdentifier`) is the match key; `name` alone also works,
+  case-insensitively, but is not stable. **No token here** — `run.py` looks the server up in
+  `GET https://plex.tv/api/v2/resources` with the owner token from `config.local.h` and takes the
+  `accessToken` plex.tv returns for it, exactly like it does for `test_user`.
+- `host`/`port` are **optional but usually right to set**. Without them the runner picks a
+  connection from plex.tv and prints which — and for a *shared* server plex.tv's `local` flag means
+  the **owner's** LAN, not yours (a real one here advertises `10.9.9.5:32400 local=true`, which
+  the TV can never reach), so the public address is preferred instead, dotted quads before
+  hostnames (the app's transport has no DNS). Anything but a LAN address prints a NOTE saying so.
+- **Watch history:** there is no managed-user token for someone *else's* server, so a case that
+  plays from it plays as **you** on your friend's server. `test_user` isolation does not extend
+  there.
+
+**Ask for it per case**, in `manifest.json` (installation-independent — it says *that* a second
+server is needed, never *which*):
+
+```json
+{ "name": "shared_home_shelf", "needs_shared_server": true, ... }
+```
+
+- With `shared_server` configured, the runner resolves it **before touching the TV** and writes
+  `/tmp/plxnative-servers` for those cases only — a JSON array of
+  `{name, machine_id, host, port, token}` — beside `plxnative-token`. Value never on stdout; the
+  printed line is `plxnative-servers: <nas-home @ 10.0.0.9:32400, token redacted>`.
+- Without it, those cases are **SKIPPED**, with the reason, and appear as `[SKIP]` in the summary —
+  an installation with no friend's server is a normal installation. Anything unresolvable *is* a
+  loud exit that names it (server no longer shared, no `accessToken`, no address).
+- `./tests/run.py --shared-server` injects it into **every** case/scene of one run — for bringing a
+  second-source screen up by hand. It exits if the overlay has no `shared_server` block.
+- `./tests/run.py --list` marks such entries `[+2nd server]` and says whether one is configured.
+  It is offline: nothing is resolved, plex.tv is not called.
+
+On the device the app parses the file in `dev::servers()` (`rust-modules/src/dev.rs`) and logs
+
+```
+servers: #0 name="nas-home" 10.0.0.9:32400 mid=a348a464.. creds=ok
+servers: 1 extra server(s) injected, 1 usable
+```
+
+— never a token (`DevServer` has no `Debug`, and `describe()` prints everything but). That pair of
+lines is the headless proof the credentials arrived, and is what a shared-server case can assert on
+before any of its screen exists. `plxnative-servers` is deliberately **not** on `dev.rs`'s `DIAG`
+exemption list: it names a host *and* the token to trust it with, so like `plxnative-token` it marks
+the boot automated and skips the who's-watching picker — a run that landed on the picker would grade
+the wrong screen.
 
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`,
   and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `CLAUDE.md`).
 - `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in every
-  `<placeholder>` (PMS host/port, TV address, `test_user`, and a ratingKey per `item` key).
+  `<placeholder>` (PMS host/port, TV address, `test_user`, and a ratingKey per `item` key). Its
+  `shared_server` block is optional; delete it unless a second server is shared with your account
+  (see below).
 - The TV powered on and reachable (`root@<tv>`, the overlay's `tv`).
 - The PMS reachable at `http://<pms-host>:32400` (the overlay's `pms` block).
 - `src/config.local.h` present with `PMS_TOKEN`.
@@ -75,6 +150,9 @@ account stays clean. It works without storing any new secret:
 
 # run as the OWNER token instead of the overlay's test_user (history WILL be affected)
 ./tests/run.py --owner --filter dp_h264
+
+# hand the app a SECOND server's credentials for every case of this run (see below)
+./tests/run.py --shared-server --filter dp_h264
 ```
 
 The runner prints per-assertion PASS/FAIL with the failing evidence line, then a final
@@ -84,7 +162,8 @@ Add `--verbose` to print evidence for passing assertions too.
 ## FPS regression suite (`--fps`)
 
 A separate mode that guards **UI framerate**, not playback correctness. The app logs a once/sec
-`loop=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>] fps=<n>` heartbeat; each
+`loop=<n> route=<login|profiles|account|itemmenu|library|detail|person|search|player|home>
+[overlay=<info|chapters|menu|none>] fps=<n>` heartbeat; each
 *scene* in the manifest's `fps_scenes` sets its `plxnative-*` triggers (profiler **off**), runs, and
 asserts its gates. This is the automated form of the by-hand FPS hunting that found the hero /
 cast+about / info-panel regressions.
@@ -97,7 +176,7 @@ cast+about / info-panel regressions.
 > instead of grading a loop rate as a frame rate.
 
 ```bash
-# UI tier only — home hero, home grid, detail scroll transition. No video, no PMS token needed.
+# UI tier only — every scene whose `tier` is "ui". No video, no PMS token needed.
 ./tests/run.py --fps
 
 # add the player tier (info panel, track menu) — these decode video as the test_user, slower.
@@ -112,7 +191,12 @@ cast+about / info-panel regressions.
   gate (`ui::idle`) landed, a skipped frame is a 16 ms sleep, so `loop=` reads ~60 whether or not
   anything reached the panel:
   - `loop_floor` grades `loop=`. It proves the **app is alive**. It cannot see a stopped animation,
-    and on a settled screen it grades nothing at all (three scenes carry an `_idle_gate_note`).
+    and on a settled screen it grades nothing at all — `home-hero` carries an `_idle_gate_note`
+    saying so. It is the only one left: this line said "three scenes" long after the other two
+    (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
+    the fix that note asks for. The two remaining `loop_floor`-only scenes are `info-panel` and
+    `track-menu`, and they need no such note — the present gate **excludes the player route**
+    (`ui/idle.rs:57`), so their `loop_floor` still grades a fill rate the way it always did.
   - `fps_floor` grades `fps=` on the **median** — "is this screen still animating, at rate".
     The median and not the 2nd-lowest, because a frame rate is now intermittent *by design*: on a
     scene that bounces rather than animates continuously, a 1 s window can land wholly inside the
@@ -138,6 +222,20 @@ cast+about / info-panel regressions.
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
   pass. `detail-transition`'s item (`movie_in_home_catalog`) must be an **in-home-catalog
   (recently-added / on-deck) movie**.
+- **The Search pair only means something together.** `search-type` and `search-idle` are the same
+  screen with and without its oscillator: the first asserts an `fps_floor` (the shelves still move
+  under a travelling focus), the second an `fps_ceiling` (a settled result set stops presenting).
+  Run one without the other and half the question goes unasked, which is how a screen that repaints
+  forever passes a floor. Two things to know before reading a result:
+  - **Their `fps_floor` is the one number in this file that is not a device measurement.** They were
+    written while the search screen was still being built, so `search-type` carries a floor picked
+    only to separate a frozen animator (~0.5/s, `ui::idle`'s keepalive) from a running one. Raise it
+    to a real median the first time it runs green on a television — the scene's own
+    `_fps_floor_note` says so, and the neighbours all quote a date.
+  - **`plxnative-search`'s value is a literal query, not a symbolic key.** `run.py` resolves `item`
+    keys against your overlay; it has no notion of a query, so the manifest carries the text. If
+    your library matches nothing for it there are no shelves, and `search-type` degrades to grading
+    the tab strip. Change the literal, never the floor.
 - Validated by injection: reverting the glyph-cache fix (`TCACHE 160→48`) makes `detail-transition`
   fail (~34fps) while the unaffected home scenes still pass.
 - Same nonzero-exit-on-failure contract as the case suite. Tune floors / scenes in
@@ -258,6 +356,9 @@ Append an entry to `manifest.json` → `cases`:
   "covers": ["…"],
   "run_secs": 60,
   "setup": { "viewOffset_ms": 600000 },        // optional — seeds resume
+  "needs_shared_server": true,                 // optional — also inject a SECOND server's
+                                               // credentials (see "A second server" above);
+                                               // SKIPPED where none is configured
   "operations": [
     { "op": "play" },
     { "op": "seek", "mode": "inplace", "target_s": 140 }
