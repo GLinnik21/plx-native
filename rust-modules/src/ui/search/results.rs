@@ -338,17 +338,23 @@ fn focused_item(v: &View) -> Option<&'static Item> {
 /// machine with one server — which is every machine that can photograph it.
 fn owner_handle(v: &View) -> &'static str {
     let Some(it) = focused_item(v) else { return "" };
-    match crate::plex::server_facts(it.sid()).map(|f| f.handle.as_str()).unwrap_or("") {
-        "" => dev_source(),
-        real => real,
-    }
+    // **The trigger WINS WHEN ARMED** — see [`dev_source`].
+    dev_source().unwrap_or_else(|| crate::plex::server_facts(it.sid()).map(|f| f.handle.as_str()).unwrap_or(""))
 }
 
 /// The stand-in handle, read ONCE — the trigger surface is boot state, and a `stat` per frame
 /// inside a draw is not. Compiled out with the `devtriggers` feature, like every other trigger.
-fn dev_source() -> &'static str {
-    static SEEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SEEN.get_or_init(|| crate::dev::read("shared").unwrap_or_default())
+///
+/// **The trigger WINS WHEN ARMED**, the precedence every `/tmp/plxnative-*` read in this app has
+/// (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session) and the phrase to
+/// grep for — the same file is read by `metadata::fetch_detail` and `ui::home`'s `dev_source`, and
+/// this site used to stand in only where the real answer was empty, the opposite rule. On a set
+/// with a real share installed that made one screen answer with the stand-in and another with the
+/// truth, which is precisely what the stand-in exists to compare. An armed but EMPTY file forces
+/// the absence of a handle rather than doing nothing, for the same reason.
+fn dev_source() -> Option<&'static str> {
+    static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
 }
 
 // ---- update ------------------------------------------------------------------------------------

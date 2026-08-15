@@ -694,8 +694,12 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         // 2026-08-14. `ServerFacts::handle` is empty on our own server, which is exactly what this
         // field wants — absence, not an empty owner — so the mapping needs no special case.
         //
-        // dev: `/tmp/plxnative-shared=<handle>` still OVERRIDES, and is still the only way to make
-        // a single-server library look borrowed for a capture. It stamps the handle onto every item
+        // dev: **`/tmp/plxnative-shared` WINS WHEN ARMED** — the precedence every trigger in this
+        // app has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session), and
+        // the phrase to grep for, because the same stand-in is read by `ui::home`'s hero run and
+        // `ui::search::results`' owner annotation and the three must agree. A trigger exists to
+        // FORCE a state, so an armed one outranks the real answer, and an armed EMPTY file forces
+        // the absence of a handle rather than doing nothing. It stamps one handle onto every item
         // this session loads, which is what a fully-borrowed library looks like.
         source: crate::dev::read("shared")
             .unwrap_or_else(|| crate::plex::server_facts(sid).map(|f| f.handle.clone()).unwrap_or_default()),

@@ -524,6 +524,12 @@ pub(crate) fn pump() {
 ///   show that it got the rule right.
 ///
 /// `None` (and no stand-in) when the trigger is not armed or the item has not landed yet.
+///
+/// NB this is **not** one of the three "WINS WHEN ARMED" precedence sites (`metadata::fetch_detail`,
+/// `ui::home`'s `dev_source`, `ui::search::results`' `dev_source`), which pick between the trigger
+/// and a real answer. There is no real answer here to outrank: an unarmed trigger means no panel
+/// content at all, and an armed-but-EMPTY file means the same, because a copy list has to be
+/// attributed to somebody.
 #[cfg(not(test))]
 fn dev_stand_in(item_rk: &str) -> Option<Vec<AltCopy>> {
     let handle = crate::dev::read("shared").filter(|h| !h.is_empty())?;

@@ -297,36 +297,36 @@ fn hero_source() -> &'static str {
     hero_source_at(hero_index() as c_int)
 }
 
-/// The real answer, or [`dev_source`]'s stand-in when there is none. **Both hero source accessors
+/// [`dev_source`]'s stand-in when it is armed, else the real answer. **Both hero source accessors
 /// go through it**, and that is the point: a flip draws the outgoing page through `hero_source_at`
 /// and the incoming one through `hero_source`, so a stand-in applied to only one of them would pop
 /// the run into existence halfway through the slide — at exactly the moment the trigger exists to
 /// let someone judge it.
 fn or_dev_source(real: &'static str) -> &'static str {
-    if real.is_empty() {
-        dev_source()
-    } else {
-        real
-    }
+    dev_source().unwrap_or(real)
 }
 
-/// `/tmp/plxnative-shared=<handle>` — the SAME trigger the detail page's own source run reads, and
-/// deliberately not a second one: it stamps one handle onto every item a session loads, which is
-/// what a fully-borrowed library looks like, and one file arming both surfaces is the only way to
-/// see them agree. An empty file means no handle, exactly as it does there.
+/// `/tmp/plxnative-shared=<handle>` — the SAME trigger the detail page's own source run reads
+/// (`metadata::fetch_detail`) and the Search results' owner annotation
+/// (`ui::search::results::owner_handle`), deliberately not a third one: one file arming every
+/// surface is the only way to see them agree.
 ///
-/// It stands in ONLY where the real answer is empty, so it can never contradict a source the data
-/// layer actually has, and it is read once: the trigger surface is boot state, and a per-frame
-/// `stat` inside the hero's draw is not.
+/// **The trigger WINS WHEN ARMED**, which is the precedence every `/tmp/plxnative-*` read in this
+/// app has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session) and the
+/// phrase to grep for across the three sites. This one used to stand in only where the real answer
+/// was empty, which is the opposite rule to `metadata.rs`'s — so on a television with a real share
+/// installed, arming the trigger changed the detail page and left the hero saying something else,
+/// and the one thing this stand-in exists for is watching the surfaces agree. `Some("")` (an armed
+/// but EMPTY file) forces the absence of a handle rather than doing nothing, for the same reason.
 ///
-/// It is needed because this unit's whole visible half is unreachable in the product today — every
-/// `HubRow::source` is `""` until the multi-server layer lands — and the two things the design
-/// states about this run are things only a panel can settle: that it sits inside the corner wedge,
-/// and that it ends well short of the last fifth of the frame. Compiled out with the `devtriggers`
-/// feature, like every other trigger (`crate::dev`).
-fn dev_source() -> &'static str {
-    static SEEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SEEN.get_or_init(|| crate::dev::read("shared").unwrap_or_default())
+/// Read once: the trigger surface is boot state, and a per-frame `stat` inside the hero's draw is
+/// not. Compiled out with the `devtriggers` feature, like every other trigger (`crate::dev`), and
+/// it is needed because the two things the design states about this run — that it sits inside the
+/// corner wedge, and that it ends well short of the last fifth of the frame — are things only a
+/// panel can settle.
+fn dev_source() -> Option<&'static str> {
+    static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
 }
 
 /// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info, 2 = chevron.
