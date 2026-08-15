@@ -2404,6 +2404,23 @@ fn play_note(
     }
 }
 
+/// The Plex Pass claim that applies to THIS item: the subscription of the server it came from.
+///
+/// **Never `serverinfo::subscription()`**, which answers for whichever server is *current* — and
+/// `current` stays pinned to the primary while a shared library is browsed (`plex::servers`' rule),
+/// so a borrowed film's note was drawn from OUR server's answer. Both polarities are silent and
+/// wrong, which is why this is a named function rather than an inline call: with our own server
+/// Pass'd, a friend's free server converting a film says nothing at all where the design asks it to
+/// say "hardware conversion needs [PLEX PASS]"; with ours free, every borrowed film wears a warning
+/// about a subscription that is not the one doing the work. `subscription_of` exists for exactly
+/// this, and `Detail::sid` is the item's own server, captured at fetch time.
+///
+/// An item with no server on it ([`crate::plex::ServerId::UNSET`] — a host fixture, or a row parsed
+/// before any server was registered) reads as `Unknown`, which [`play_note`] is silent about.
+fn item_subscription(d: &metadata::Detail) -> crate::plex::serverinfo::Subscription {
+    crate::plex::serverinfo::subscription_of(d.sid)
+}
+
 /// The alert glyph's box on the facts row — the line's own type size, which is the 24-unit svg the
 /// mock inlines on a CAPTION line.
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
@@ -2448,7 +2465,7 @@ fn play_mode_bits(d: &metadata::Detail, after: bool) -> ([Bit; FACTS_BITS], usiz
         // the row-level separator, at the same air the date/extent pair either side of it uses
         push(Bit::Sep(theme::space::MD));
     }
-    match play_note(pv, d.hdr, crate::plex::serverinfo::subscription()) {
+    match play_note(pv, d.hdr, item_subscription(d)) {
         PlayNote::Quiet => push(Bit::Word(
             match pv {
                 crate::route::Preview::DirectPlay => c"Direct Play",
@@ -4063,6 +4080,59 @@ mod tests {
         ] {
             assert_eq!(super::play_note(pv, hdr, sub), want, "{pv:?} hdr={hdr} {sub:?}");
         }
+    }
+
+    /// **Which server the truth table above is asked ABOUT** — the half it cannot see, because it
+    /// takes the tristate as an argument.
+    ///
+    /// The note is a claim about the machine that would run the encoder, i.e. the ITEM's server.
+    /// This read `serverinfo::subscription()`, the CURRENT server's — and browsing a shared library
+    /// deliberately leaves `current` on the primary, so the two differ for every borrowed film.
+    /// Both polarities are silent: our Pass'd server hid a free share's soft note and its HDR
+    /// warning entirely (the two states the design added this row for), while a free primary put
+    /// "hardware conversion needs [PLEX PASS]" on a friend's Pass'd server's conversion, which is
+    /// the confident wrong answer pointing at a purchase that would fix nothing.
+    ///
+    /// The registry and the subscription slots are crate globals, so this holds `testlock::serial()`
+    /// and empties the registry on the way OUT as well as in.
+    #[test]
+    fn the_pass_note_judges_the_items_own_server_not_the_browsed_one() {
+        use crate::plex::serverinfo::{store_for_test, Subscription as Sub};
+        use crate::plex::ServerId;
+        struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _g = Fresh(crate::testlock::serial());
+        crate::plex::reset_servers_for_test();
+        let reg = |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
+        let (ours, theirs) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
+        // the slot arrays outlive `reset_servers_for_test` — start from the boot state explicitly
+        store_for_test(ours, Sub::Unknown, "");
+        store_for_test(theirs, Sub::Unknown, "");
+        store_for_test(ours, Sub::Yes, "1.43.3.10861-cd85035e7");
+        store_for_test(theirs, Sub::No, "1.32.0.6918-free");
+        // browsing the share does NOT re-point `current`, which is what made this look right
+        assert!(crate::plex::set_current(ours));
+
+        let on = |sid| Detail { sid, rk: "m1".into(), hdr: true, ..Default::default() };
+        assert_eq!(super::item_subscription(&on(theirs)), Sub::No, "a borrowed film asks the share");
+        assert_eq!(super::item_subscription(&on(ours)), Sub::Yes, "…and ours asks ours");
+        // which is the whole point: the same conversion, the same source, two different notes
+        assert_eq!(
+            super::play_note(crate::route::Preview::Converts, true, super::item_subscription(&on(theirs))),
+            super::PlayNote::Warn,
+            "the free share's HDR re-encode is the warning the design asks for"
+        );
+        assert_eq!(
+            super::play_note(crate::route::Preview::Converts, true, super::item_subscription(&on(ours))),
+            super::PlayNote::Quiet,
+            "and our Pass'd server's identical conversion says nothing"
+        );
+        // an item with no server on it is "we have not heard", never slot 0's answer
+        assert_eq!(super::item_subscription(&on(ServerId::UNSET)), Sub::Unknown);
     }
 
     // ---- the facts row's source credit (Shared Sources, deliverable E) ------------------------

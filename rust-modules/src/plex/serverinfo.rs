@@ -199,12 +199,36 @@ fn fetch_once(id: ServerId, c: &Client) {
 /// host-testable without a socket: above this line is a round trip, below it is per-slot state,
 /// and the property that matters — one server's answer never reaching another's reader — lives
 /// entirely below.
+///
+/// **This is an async LANDING, so it owes the present gate a poke.** It runs on a worker, seconds
+/// after boot or after a share is registered, and it changes what a SETTLED screen says: the stats
+/// panel's Server row, the detail hero's "hardware conversion needs \[PLEX PASS\]" note, and the
+/// failure read-out's capsule all read it. Without the [`crate::ui::idle::invalidate`] call the new
+/// fact arrives invisibly and the screen keeps stating the old one until the next keypress — bounded
+/// only by the 2 s keepalive, which is insurance and not pacing (that module's rule: *a new async
+/// landing that repaints must add a call there*). Unconditional rather than change-guarded: a
+/// re-registration that stores the same answer costs one frame, and a guard here would be a second
+/// place that has to agree with what the readers draw.
 fn store(id: ServerId, sub: Subscription, version: &str) {
     let Some(i) = slot(id) else { return };
     SUBSCRIPTION[i].store(sub as u8, Relaxed);
     if let Ok(mut g) = VERSION.lock() {
         g[i] = version.to_owned();
     }
+    crate::ui::idle::invalidate();
+}
+
+/// Test-only: publish one server's answer without a round trip.
+///
+/// [`store`] is this module's private seam, and the suites that need it are the ones grading its
+/// READERS — `player::playing_subscription` and `ui::detail::item_subscription`, both of which
+/// answer "whose server is this item on" and neither of which can reach a real PMS. Callers must
+/// hold `crate::testlock::serial()`: the slot arrays are crate globals, and they deliberately
+/// outlive `servers::reset_for_test` (they are keyed on the SLOT, not on the client), so a test
+/// must seed every slot it reads rather than assume a boot state.
+#[cfg(test)]
+pub(crate) fn store_for_test(id: ServerId, sub: Subscription, version: &str) {
+    store(id, sub, version);
 }
 
 impl Client {
@@ -323,5 +347,45 @@ mod tests {
         store(past_end, Subscription::Yes, "nowhere");
         assert_eq!(subscription_of(a), Subscription::Yes);
         assert_eq!(subscription_of(b), Subscription::No, "no write landed in a real slot");
+    }
+
+    /// **This is an async LANDING, so it owes the frame gate a poke.** The answer arrives on a
+    /// worker seconds after boot — later still for a share registered while the user is reading a
+    /// page — by which time the screen that reads it has settled and stopped presenting: the stats
+    /// panel's Server row, the detail hero's "hardware conversion needs [PLEX PASS]" note, and the
+    /// failure read-out's capsule. Without the `ui::idle::invalidate` inside [`store`] the new fact
+    /// reaches the panel only on the next keypress (bounded by the 2 s keepalive, which is
+    /// insurance and not pacing) — the "arrives invisibly" failure `ui::idle::invalidate`'s
+    /// call-site list exists to prevent.
+    ///
+    /// Takes `testlock::serial()`: the gate's flag is a crate global that `ui::idle`'s own
+    /// "a settled screen does not repaint" assertions read, so an unlocked test here would fail
+    /// ANOTHER module's tests intermittently — `ui::xfade`'s test module states the same rule, and
+    /// this borrows its isolation helper.
+    #[test]
+    fn a_landed_server_fact_asks_the_frame_gate_to_repaint() {
+        let _g = crate::testlock::serial();
+        // `frame_begin` forgets last frame's motion, `note_present` retires the 2 s keepalive, and
+        // `should_present` TAKES-AND-CLEARS — so each call answers for exactly the frames since the
+        // previous one, and nothing but the store below can be what answered.
+        let asked = || {
+            crate::ui::idle::set_enabled(true); // a test that disabled the gate leaves it off
+            crate::ui::idle::frame_begin(1.0 / 60.0);
+            crate::ui::idle::note_present(0);
+            crate::ui::idle::should_present(0)
+        };
+        asked(); // drain whatever the previous test left on the shared flag
+        assert!(!asked(), "the gate is quiet before the landing — or this proves nothing");
+
+        let id = ServerId::from_raw(0);
+        store(id, Subscription::No, "1.32.0.6918-free");
+        assert!(asked(), "a subscription that just landed must reach the screen stating it");
+
+        store(id, Subscription::Unknown, "");
+        assert!(asked(), "…and so must the boot state being put back");
+
+        // a write through an id that names no server publishes nothing, so it wakes nothing
+        store(ServerId::UNSET, Subscription::Yes, "nowhere");
+        assert!(!asked(), "a write that landed in no slot changed no screen");
     }
 }
