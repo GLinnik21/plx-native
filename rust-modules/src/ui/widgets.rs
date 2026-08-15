@@ -672,22 +672,31 @@ const CHIP_NAME_MAX: f32 = 320.0;
 const NAV_SCRIM_IN: f32 = 56.0;
 /// The alpha the ramp bends at — `--scrim-knee-a`.
 const NAV_SCRIM_KNEE_A: f32 = 0.40;
-/// The ramp's two segments, as drops ABOVE the content line: a steep fall to the knee, then a long
-/// gentle tail to nothing. The design system spells the pair per route and both of its routes agree
-/// on the SHAPE — Library `170 / 188 / 214` and the full-screen list route `106 / 124 / 150` are
-/// each `top − 44` and `top − 26`. So the shape is the shared thing and the content line is the
-/// caller's, which is what makes this one function rather than two sets of literals.
-const NAV_SCRIM_TAIL: f32 = 26.0;
-const NAV_SCRIM_STEEP: f32 = 18.0;
+/// Where the ramp bends, as a FRACTION of the gap between the chrome and the content: a steep fall
+/// to the knee over the first part, then a long gentle tail to nothing. The design system spells the
+/// two lines per route and both of its routes agree on the proportion — Library `170 / 188 / 214`
+/// and the full-screen list route `106 / 124 / 150` are each an 18px steep segment and a 26px tail,
+/// so the knee lands at `18/44` of the way down.
+///
+/// A FRACTION and not those two lengths, because the gap is the caller's: it is the air between the
+/// bottom of what the bar draws and the top of what scrolls, and the two screens do not have the
+/// same amount of it (the Library keeps 28px under its toolbar chips, Search 40 under its field).
+/// Spelled as a length, the ramp would start wherever `content_top − 44` happened to fall — which on
+/// the Library is 170, sixteen pixels ABOVE the chips' own bottom edge, so the chips sat on the
+/// fading part of their own backing instead of on solid ground. Visible on the panel and reported
+/// from the couch; the mock's Library numbers have it too.
+const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
 
 /// **The navigation bar's scrim: content dissolving under the top chrome.** One element, because
 /// every full-screen route that scrolls a column under the bar needs exactly this and the design
 /// system already tokenises it that way (`--scrim-in`, `--scrim-knee-a`, and a per-route content
 /// line — `components/panels/route-screen.card.html` is its reference drawing).
 ///
-/// `content_top` is the line the caller's own content starts at (the Library's grid top, Search's
-/// first shelf heading); `scroll` is how far that content has travelled up. Nothing is drawn at
-/// rest, which is what keeps a settled screen free of it entirely.
+/// Two lines and a scroll. `chrome_bottom` is the lowest thing the BAR draws — the Library's toolbar
+/// chips, Search's query capsule — and everything above it stays solidly backed, so a control never
+/// sits on ground that is fading out from under it. `content_top` is where the caller's own scrolling
+/// content begins, and the veil has reached nothing by then. `scroll` is how far that content has
+/// travelled; nothing is drawn at rest, which keeps a settled screen free of it entirely.
 ///
 /// **It starts at y=0 and is OPAQUE for most of its height**, and that is the part that is easy to
 /// get wrong: the band is not a gradient hung under the bar, it is the bar's whole ground, with a
@@ -697,19 +706,20 @@ const NAV_SCRIM_STEEP: f32 = 18.0;
 /// The caller draws it AFTER its content and BEFORE its chrome, which is the order that lets it be
 /// opaque; `library::draw` has always used that order and it is why its scissor is a bound rather
 /// than a treatment.
-pub(crate) fn nav_scrim(p: Painter, content_top: f32, scroll: f32) {
+pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll: f32) {
     let a = (scroll / NAV_SCRIM_IN).clamp(0.0, 1.0);
-    if a <= 0.004 {
+    let gap = content_top - chrome_bottom;
+    if a <= 0.004 || gap <= 0.0 {
         return;
     }
     let base = theme::SURFACE_APP;
     let knee_col = theme::with_a(base, NAV_SCRIM_KNEE_A);
-    let (solid, knee) = (content_top - NAV_SCRIM_TAIL - NAV_SCRIM_STEEP, content_top - NAV_SCRIM_TAIL);
+    let knee = chrome_bottom + gap * NAV_SCRIM_KNEE_F;
     let ps = p.alpha(a); // the appear rides the cascade — all three bands together
     let w = crate::ui::consts::SCR_W;
-    ps.rect(Rect::new(0.0, 0.0, w, solid), 0.0, base, base, 0.0);
-    ps.rect(Rect::new(0.0, solid, w, NAV_SCRIM_STEEP), 0.0, base, knee_col, 0.0);
-    ps.rect(Rect::new(0.0, knee, w, NAV_SCRIM_TAIL), 0.0, knee_col, theme::with_a(base, 0.0), 0.0);
+    ps.rect(Rect::new(0.0, 0.0, w, chrome_bottom), 0.0, base, base, 0.0);
+    ps.rect(Rect::new(0.0, chrome_bottom, w, knee - chrome_bottom), 0.0, base, knee_col, 0.0);
+    ps.rect(Rect::new(0.0, knee, w, content_top - knee), 0.0, knee_col, theme::with_a(base, 0.0), 0.0);
 }
 
 /// The top-left profile chip's VISUAL (avatar texture, or an initial / person-glyph fallback,

@@ -2126,7 +2126,11 @@ pub(crate) fn draw() {
     // `widgets::nav_scrim` so Search draws the identical treatment instead of a second copy of it.
     // The numbers are unchanged: that function derives `170 / 188` from `GRID_TOP` by the design
     // system's own shape (`top − 44` and `top − 26`), which is what these literals always were.
-    crate::ui::widgets::nav_scrim(p, GRID_TOP, sc);
+    // The fade starts BELOW the toolbar, not 44px above the grid: at the old fixed length it began
+    // at 170, sixteen pixels above the chips' own bottom edge, so a chip's lower half sat on ground
+    // that was already fading out from under it — visible on the panel. `TOOL_Y + TOOL_H` is the
+    // lowest thing this bar draws, which is exactly what the shared element wants.
+    crate::ui::widgets::nav_scrim(p, TOOL_Y + TOOL_H, GRID_TOP, sc);
     // the Library screen has no chip focus stop (its top-band focus is the tab row), so the chip
     // never unfurls here — expand 0.
     let cd = crate::ui::widgets::CHIP_D;
