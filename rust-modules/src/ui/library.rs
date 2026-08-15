@@ -196,14 +196,58 @@ fn fail_test() -> Option<FailTest> {
         })
     })
 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Which menu is open — **and, inside the variant, the key that menu was built from.**
+///
+/// The key belongs here because it means nothing anywhere else: it describes ONE panel, the one on
+/// screen. [`close_menu`] assigns `Menu::None`, which drops the key with the panel it described, so
+/// there is no state left over for a reader to pick up and no build-time record that can outlive
+/// the rows it was recorded from. A menu that has no landing to wait for carries no key at all —
+/// see [`Filter`](Menu::Filter).
+///
+/// Not `Copy` (the Sources panel's action list is a `Vec`), so [`menu`] hands out a borrow; the
+/// discipline that comes with that is written there.
+#[derive(Debug)]
 enum Menu {
     None,
     /// The **Sources list** — every library on every granted server, in two levels (see [`Level`]).
-    Source,
-    Sort,
+    Source {
+        /// The section-table generation ([`crate::browse::sections_gen`]) this panel was built
+        /// from — its staleness key, and deliberately NOT a row count.
+        ///
+        /// Sort and Genre can key on a count because the list they are built from is the list they
+        /// show. The Sources panel's rows are `browse::source_rows()`, which is **kind-filtered** —
+        /// only the libraries of the tab's own type — while the obvious count beside it,
+        /// `section_count()`, counts every kind. Those two are equal only on an account with a
+        /// single kind of library, so on any ordinary one (Movies *and* TV Shows) the guard never
+        /// converged and the panel rebuilt itself — `source_groups()` + `source_rows()` String
+        /// clones and a full `set_sections()` — on EVERY frame it was open, which is exactly the
+        /// state this screen's own instrumentation measured as fill-rate-bound (`menu.panel`
+        /// 16–42 ms). A generation cannot be compared against the wrong quantity, because it is not
+        /// a count of anything: `browse::append_sections` bumps it when a source's libraries land,
+        /// and that landing is the whole reason this rebuild exists.
+        gen: u32,
+        /// One action per global row index (see [`SrcAction`]) — including the separator, which
+        /// does nothing and can never be focused, but still occupies an index.
+        acts: Vec<SrcAction>,
+    },
+    /// Sort by — the value list `browse::sorts()`.
+    Sort {
+        /// Row count this menu was built from (0 = the "Loading…" row). [`menu_stale`] rebuilds it
+        /// in place when the live list stops matching, and [`menu_commit`] gates OK on it so a
+        /// press on "Loading…" cannot resolve to a value that is not there.
+        built: usize,
+    },
+    /// Filter — the unwatched switch and the way in to Genre.
+    ///
+    /// **No key**, because its rows are static: they are built from the `view_*` resolvers rather
+    /// than from a server list, so there is no landing they could be stale against and nothing to
+    /// rebuild in place ([`menu_stale`] says the same in its `false` arm).
     Filter,
-    Genre,
+    /// The Genre value list, drilled into from Filter.
+    Genre {
+        /// Row count this menu was built from — `Sort`'s key, over `browse::genres()`.
+        built: usize,
+    },
 }
 
 /// The toolbar's chips, as a TYPED list rather than positions.
@@ -271,30 +315,10 @@ static mut SCROLL: Spring = Spring::at(0.0);
 static mut FOCUS_S: Spring = Spring::at(1.0); // focused cell pop
 static mut PREV_S: Spring = Spring::at(1.0); // previously-focused cell shrinking back
 static mut PREV_IDX: i64 = -1;
+/// The open menu, **and its build-time key** — the two are one value, see [`Menu`].
 static mut MENU: Menu = Menu::None;
 static mut POP: Popover = Popover::new();
 static mut TABLE: TableView = TableView::new();
-/// Row count the OPEN **value-list** menu was built from — Sort and Genre, whose rows ARE
-/// `browse::sorts()`/`genres()` (only one menu is ever open; 0 = "Loading…"). [`menu_stale`]
-/// rebuilds in place when the live list stops matching it, and `menu_commit` gates OK on it so a
-/// press on the "Loading…" row cannot resolve to a value that is not there.
-///
-/// The Sources panel does **not** key on this — see [`SRC_BUILT_GEN`].
-static mut MENU_BUILT: usize = 0;
-/// The section-table generation ([`crate::browse::sections_gen`]) the OPEN Sources panel was built
-/// from — its staleness key, and deliberately NOT a row count.
-///
-/// Sort and Genre can key on a count because the list they are built from is the list they show.
-/// The Sources panel's rows are `browse::source_rows()`, which is **kind-filtered** — only the
-/// libraries of the tab's own type — while the obvious count beside it, `section_count()`, counts
-/// every kind. Those two are equal only on an account with a single kind of library, so on any
-/// ordinary one (Movies *and* TV Shows) the guard never converged and the panel rebuilt itself —
-/// `source_groups()` + `source_rows()` String clones and a full `set_sections()` — on EVERY frame
-/// it was open, which is exactly the state this screen's own instrumentation measured as
-/// fill-rate-bound (`menu.panel` 16–42 ms). A generation cannot be compared against the wrong
-/// quantity, because it is not a count of anything: `browse::append_sections` bumps it when a
-/// source's libraries land, and that landing is the whole reason this rebuild exists.
-static mut SRC_BUILT_GEN: u32 = 0;
 static mut PHASE_MS: f32 = 0.0; // spinner phase accumulator
 /// The failure read-out's Try again pill, recorded at draw for the pointer (the `TOOL_RECTS` /
 /// `RAIL_RECTS` idiom). Parked OFF the panel rather than at the origin, because `Rect::contains`
@@ -315,8 +339,6 @@ static mut SRC_STRIP: crate::ui::widgets::TabStrip = crate::ui::widgets::TabStri
 /// LEFT/RIGHT swaps the level under them, DOWN returns to the rows. While it is true the table
 /// draws NO selection pill ([`TableView::list_focused`]), so the panel shows exactly one focus.
 static mut SRC_ON_PILLS: bool = false;
-/// One action per global row index of the open Sources panel (see [`SrcAction`]).
-static mut SRC_ACTIONS: Vec<SrcAction> = Vec::new();
 /// The two level pills' rects, for the pointer.
 static mut SRC_PILL_RECTS: [Rect; 2] = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
 
@@ -547,11 +569,15 @@ fn open_chip_menu(c: Chip) {
 /// Which menu a chip opens, as a value — the testable half of [`open_chip_menu`], which is the
 /// half that performs it. They are written as one `match` each over the same enum, so a new chip
 /// is a compile error in both.
+///
+/// The keys are empty, and that is the honest answer here: a key describes a panel that was BUILT
+/// from a row set, and this function answers which menu a chip leads to. Its caller matches on the
+/// variant, never on the payload.
 #[cfg(test)]
 fn chip_menu(c: Chip) -> Menu {
     match c {
-        Chip::Source => Menu::Source,
-        Chip::Sort => Menu::Sort,
+        Chip::Source => Menu::Source { gen: 0, acts: Vec::new() },
+        Chip::Sort => Menu::Sort { built: 0 },
         Chip::Filter => Menu::Filter,
     }
 }
@@ -800,8 +826,25 @@ fn table() -> &'static mut TableView {
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
 }
-fn menu() -> Menu {
-    unsafe { addr_of!(MENU).read() }
+/// The open menu and its key, as a borrow — [`Menu`] owns a `Vec` and so cannot be read out by
+/// copy.
+///
+/// **Take what you need out of it before anything rebuilds.** Every builder ASSIGNS `MENU`, which
+/// drops the key this borrow points into: [`src_action`] copies its answer out, [`menu_stale`]
+/// compares and returns a `bool`, and an arm that calls a builder either binds nothing out of the
+/// variant or reads its key into a local first ([`menu_commit`]'s Sort arm).
+fn menu() -> &'static Menu {
+    unsafe { &*addr_of!(MENU) }
+}
+/// Install the open menu together with its key, dropping whatever the last one held.
+fn set_menu(m: Menu) {
+    unsafe { *addr_of_mut!(MENU) = m };
+}
+/// Is the SOURCES panel the open menu? Asked by the panel geometry (it is wider and carries a level
+/// band above its list), by both input ladders and by the draw, so it is one predicate rather than
+/// a `matches!` re-spelled at each of them.
+fn source_menu_open() -> bool {
+    matches!(menu(), Menu::Source { .. })
 }
 fn area() -> Area {
     unsafe { addr_of!(AREA).read() }
@@ -880,7 +923,7 @@ pub(crate) fn focused_item() -> Option<&'static PmsMovie> {
     crate::browse::item(focus_idx())
 }
 pub(crate) fn menu_open() -> bool {
-    menu() != Menu::None
+    !matches!(menu(), Menu::None)
 }
 
 // ---- enter / view persistence ---------------------------------------------------------------
@@ -931,9 +974,9 @@ pub(crate) fn enter(tab: usize, arrival: Arrival) {
             crate::ui::widgets::tab_row_reveal(crate::browse::tab_of_section(crate::browse::cur()) + 1);
         }
     }
+    set_menu(Menu::None);
     unsafe {
         AREA = Area::Grid;
-        MENU = Menu::None;
         TOOL_F = 0;
         PENDING = Pending::None; // whatever was queued before we left has just been flushed
         EPOCH = crate::browse::query_gen(); // AFTER `set_cur` above, so our own bump isn't foreign
@@ -1129,7 +1172,7 @@ pub(crate) fn update(dt: f32) {
     if crate::browse::letters().is_empty() {
         crate::browse::kick_letters();
     }
-    if menu() == Menu::Genre && crate::browse::genres().is_empty() {
+    if matches!(menu(), Menu::Genre { .. }) && crate::browse::genres().is_empty() {
         crate::browse::kick_genres();
     }
     unsafe {
@@ -1179,13 +1222,17 @@ pub(crate) fn update(dt: f32) {
         // review-confirmed bug). Two matches over one enum, the `chip_menu`/`open_chip_menu`
         // idiom: one DECIDES and is host-gradeable, one PERFORMS and measures text. A new menu
         // stops both compiling.
+        //
+        // Nothing is bound out of the variants here, deliberately: each of these rebuilds REPLACES
+        // `MENU` — key and all — so a field borrowed from the scrutinee would be dropped underneath
+        // the arm that is still running (see [`menu`]).
         if menu_stale() {
             match menu() {
-                Menu::Sort => build_sort_menu(true),
-                Menu::Genre => build_genre_menu(true),
+                Menu::Sort { .. } => build_sort_menu(true),
+                Menu::Genre { .. } => build_genre_menu(true),
                 // a source's libraries landing while the list is open (its discovery is a worker) —
                 // rebuilt in place, same rule as a menu's value list arriving
-                Menu::Source => build_source_menu(true),
+                Menu::Source { .. } => build_source_menu(true),
                 Menu::Filter | Menu::None => {}
             }
         }
@@ -1195,7 +1242,11 @@ pub(crate) fn update(dt: f32) {
 // ---- input: D-pad ---------------------------------------------------------------------------
 
 pub(crate) fn move_focus(sym: c_uint) {
-    if menu() == Menu::Source {
+    // FIRST, and the order is the panel's whole level layer: `menu_open()` below SUBSUMES the
+    // Sources panel (it is a menu), so a ladder that asked it first would swallow LEFT/RIGHT and
+    // leave the level pills unreachable. The test that fails if the two are ever folded together is
+    // `the_sources_panel_owns_left_right_for_its_levels_and_a_plain_popover_does_not`.
+    if source_menu_open() {
         // The level pills ARE a focus stop above the list: UP off the first row reaches them,
         // LEFT/RIGHT swaps the level under them, DOWN comes back into the rows.
         //
@@ -1379,7 +1430,9 @@ fn tab_pill_action(i: usize) -> Action {
 }
 
 pub(crate) fn on_ok() -> Action {
-    if menu() == Menu::Source && unsafe { addr_of!(SRC_ON_PILLS).read() } {
+    // Before the `menu_open()` rung below, which subsumes this one — see [`move_focus`]'s note on
+    // the same ordering. Reversed, OK on the pills would fall straight into `menu_commit`.
+    if source_menu_open() && unsafe { addr_of!(SRC_ON_PILLS).read() } {
         // OK on the level you are already showing means "into its list" — the level itself is
         // switched by LEFT/RIGHT, so there is nothing here for OK to toggle. Without this it fell
         // through and committed whichever row the list had remembered.
@@ -1418,13 +1471,13 @@ pub(crate) fn on_ok() -> Action {
 /// already focused) — the Netflix-2025 escape rule: first BACK reaches the tab bar.
 pub(crate) fn back() -> bool {
     match menu() {
-        Menu::Genre => {
+        Menu::Genre { .. } => {
             open_filter_menu(true);
             return true;
         }
         // the Sources panel has no drill-in level to walk back through: its two levels are peers,
         // reached sideways, so BACK dismisses the panel from either one
-        Menu::Source | Menu::Sort | Menu::Filter => {
+        Menu::Source { .. } | Menu::Sort { .. } | Menu::Filter => {
             close_menu();
             return true;
         }
@@ -1473,7 +1526,7 @@ const SRC_LEVEL_H: f32 =
     SRC_PILL_H + theme::space::SM + (theme::space::MD - crate::ui::table::TOP_PAD);
 
 fn panel_rect() -> Rect {
-    let (w, band) = if menu() == Menu::Source { (SRC_W, SRC_LEVEL_H) } else { (MENU_W, 0.0) };
+    let (w, band) = if source_menu_open() { (SRC_W, SRC_LEVEL_H) } else { (MENU_W, 0.0) };
     let ph = (table().measured_height() + band).clamp(120.0, SCR_H - 280.0);
     Rect::new(MARGIN_X, TOOL_Y + TOOL_H + 18.0, w, ph)
 }
@@ -1482,7 +1535,7 @@ fn panel_rect() -> Rect {
 /// cannot disagree about where the rows are.
 fn table_rect() -> Rect {
     let r = panel_rect();
-    if menu() == Menu::Source {
+    if source_menu_open() {
         Rect::new(r.x, r.y + SRC_LEVEL_H, r.w, r.h - SRC_LEVEL_H)
     } else {
         r
@@ -1501,8 +1554,11 @@ fn src_pill_rects(panel: Rect) -> [Rect; 2] {
         Rect::new(x0 + w0 + theme::space::SM, y, w1, SRC_PILL_H),
     ]
 }
+/// Dismiss the open menu. **The key goes with it** — it lives in the [`Menu`] variant, so
+/// `Menu::None` is not a flag sitting beside a row count and an action list that describe a panel
+/// nobody can see any more; it is the absence of them.
 fn close_menu() {
-    unsafe { MENU = Menu::None };
+    set_menu(Menu::None);
     pop().close();
 }
 
@@ -1514,15 +1570,17 @@ fn close_menu() {
 /// whatever it recorded at build time and nothing else. Sort and Genre record the length of the
 /// list their rows are; the Sources panel records the section-table GENERATION, because its rows
 /// are a kind-filtered projection whose count matches no other count in the app (see
-/// [`SRC_BUILT_GEN`] for the frame-per-frame rebuild that cost). `Filter` is static rows built from
-/// `view_*`, so it has no landing to wait for and is never stale.
+/// [`Menu::Source`]'s `gen` for the frame-per-frame rebuild that cost). `Filter` is static rows
+/// built from `view_*`, so it has no landing to wait for, carries no key and is never stale.
+///
+/// Reading the key off the OPEN variant is what makes "like with like" structural: there is no way
+/// to reach Sort's count while the Sources panel is up, because while it is up that count does not
+/// exist.
 fn menu_stale() -> bool {
-    let built = unsafe { addr_of!(MENU_BUILT).read() };
-    let src_gen = unsafe { addr_of!(SRC_BUILT_GEN).read() };
     match menu() {
-        Menu::Sort => built != crate::browse::sorts().len(),
-        Menu::Genre => built != crate::browse::genres().len(),
-        Menu::Source => src_gen != crate::browse::sections_gen(),
+        Menu::Sort { built } => *built != crate::browse::sorts().len(),
+        Menu::Genre { built } => *built != crate::browse::genres().len(),
+        Menu::Source { gen, .. } => *gen != crate::browse::sections_gen(),
         Menu::Filter | Menu::None => false,
     }
 }
@@ -1619,11 +1677,9 @@ fn build_source_menu(keep: bool) {
     let rows = crate::browse::source_rows();
     let (secs, acts) = source_sections(level, &groups, &rows);
     let sel = source_sel(&rows, keep.then(|| table().sel));
-    unsafe {
-        *addr_of_mut!(SRC_ACTIONS) = acts;
-        SRC_BUILT_GEN = table_gen;
-        MENU = Menu::Source;
-    }
+    // the panel IS its key: the generation these rows were projected from and one action per row,
+    // installed together and dropped together by [`close_menu`]
+    set_menu(Menu::Source { gen: table_gen, acts });
     table().compact = false; // two-line rows: HEADLINE titles over CAPTION sub-lines
     // `slide` = `keep`, and that is the level swap's whole promise kept in one argument: a rebuild
     // GLIDES (so the panel's scroll and highlight hold still while the words under them change),
@@ -1655,9 +1711,19 @@ fn set_source_level(l: Level) {
     build_source_menu(true);
 }
 
+/// What the row at global index `sel` of the OPEN Sources panel does.
+///
+/// The list is read out of the open variant, so this can only ever answer for the panel that is on
+/// screen — with any other menu up there is no list to index, rather than a leftover one that
+/// happens to be indexable. The answer is COPIED out because every rebuild assigns `MENU` and drops
+/// the list it was read from ([`build_source_menu`]).
 fn src_action(sel: i32) -> SrcAction {
-    let acts = unsafe { &*addr_of!(SRC_ACTIONS) };
-    usize::try_from(sel).ok().and_then(|i| acts.get(i)).copied().unwrap_or(SrcAction::None)
+    match menu() {
+        Menu::Source { acts, .. } => {
+            usize::try_from(sel).ok().and_then(|i| acts.get(i)).copied().unwrap_or(SrcAction::None)
+        }
+        _ => SrcAction::None,
+    }
 }
 
 fn open_sort_menu() {
@@ -1681,10 +1747,9 @@ fn build_sort_menu(keep: bool) {
         }
         sec = sec.row(row);
     }
-    unsafe { MENU_BUILT = sorts.len() };
     table().compact = true; // mock spec: menu rows read at BODY regular, not menu-bold
     table().set_sections(vec![sec], crate::browse::sort_idx() as i32, keep);
-    unsafe { MENU = Menu::Sort };
+    set_menu(Menu::Sort { built: sorts.len() });
     if !keep {
         pop().open();
     }
@@ -1731,10 +1796,9 @@ fn open_filter_menu(keep: bool) {
                 .chevron(true),
         );
     let sel = if keep { 1 } else { 0 };
-    unsafe { MENU_BUILT = 0 }; // filter L1 is static rows — no rebuild-on-landing path
     table().compact = true; // mock spec: menu rows read at BODY regular, not menu-bold
     table().set_sections(vec![sec], sel, keep);
-    unsafe { MENU = Menu::Filter };
+    set_menu(Menu::Filter); // static rows, so no key: there is no landing to be stale against
     if !keep {
         pop().open();
     }
@@ -1756,10 +1820,9 @@ fn build_genre_menu(keep: bool) {
         }
         sec = sec.row(Row::new(g.title.clone()).checked(active));
     }
-    unsafe { MENU_BUILT = genres.len() };
     table().compact = true; // mock spec: menu rows read at BODY regular, not menu-bold
     table().set_sections(vec![sec], sel, keep);
-    unsafe { MENU = Menu::Genre };
+    set_menu(Menu::Genre { built: genres.len() });
     if !keep {
         pop().open();
     }
@@ -1767,7 +1830,7 @@ fn build_genre_menu(keep: bool) {
 
 fn menu_commit(sel: i32) {
     match menu() {
-        Menu::Source => match src_action(sel) {
+        Menu::Source { .. } => match src_action(sel) {
             SrcAction::Library(s) => match unsafe { addr_of!(SRC_LEVEL).read() } {
                 // a pick, so the panel closes and the grid dissolves under it — exactly as a Sort
                 // pick does. It moves the TAB with the library when the two disagree, which is what
@@ -1791,10 +1854,11 @@ fn menu_commit(sel: i32) {
             }
             SrcAction::None => {}
         },
-        Menu::Sort => {
+        Menu::Sort { built } => {
             // gate on the row set the TABLE was built with, not the live sorts() — OK on the
-            // "Loading…" row must be a no-op, never a hidden direction toggle
-            let built = unsafe { addr_of!(MENU_BUILT).read() };
+            // "Loading…" row must be a no-op, never a hidden direction toggle. Copied out of the
+            // variant first: `close_menu` below drops the menu this key belongs to.
+            let built = *built;
             if built > 0 && sel >= 0 && (sel as usize) < built {
                 request(Pending::Sort(sel as usize));
             }
@@ -1810,7 +1874,7 @@ fn menu_commit(sel: i32) {
                 build_genre_menu(false);
             }
         }
-        Menu::Genre => {
+        Menu::Genre { .. } => {
             let genres_n = crate::browse::genres().len();
             if sel == 0 {
                 request(Pending::Genre(None));
@@ -2268,13 +2332,13 @@ pub(crate) fn draw() {
         phase("menu.panel", || {
             let r = panel_rect();
             mp.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-            if menu() == Menu::Source {
+            if source_menu_open() {
                 draw_level_pills(mp, r);
             }
             // ONE focus in the panel: the list draws its selection pill only while the level pills
             // do not hold focus. Every other menu has no control outside its list, so this is
             // always true for them.
-            table().list_focused = menu() != Menu::Source || unsafe { !addr_of!(SRC_ON_PILLS).read() };
+            table().list_focused = !source_menu_open() || unsafe { !addr_of!(SRC_ON_PILLS).read() };
             table().draw(mp, table_rect());
         });
     }
@@ -2317,7 +2381,7 @@ fn draw_level_pills(p: Painter, panel: Rect) {
 /// The level pill under the pointer, or None (rects recorded at draw; stale while closed, which is
 /// why every caller is already inside a `menu_open()` branch).
 fn src_pill_at(mx: f32, my: f32) -> Option<usize> {
-    if menu() != Menu::Source {
+    if !source_menu_open() {
         return None;
     }
     let rects = unsafe { addr_of!(SRC_PILL_RECTS).read() };
@@ -2479,6 +2543,28 @@ mod tests {
         *xf() = Xfade::new();
     }
 
+    /// Take the open menu OUT, leaving `Menu::None` — the save half of a save/restore around a test
+    /// that installs one. [`Menu`] owns a `Vec`, so it cannot be read out by copy the way the
+    /// screen's other statics can: a bitwise read would hand back a second owner of the same
+    /// allocation and both would free it.
+    fn take_menu() -> Menu {
+        std::mem::replace(unsafe { &mut *addr_of_mut!(MENU) }, Menu::None)
+    }
+    fn level() -> Level {
+        unsafe { addr_of!(SRC_LEVEL).read() }
+    }
+    fn on_pills() -> bool {
+        unsafe { addr_of!(SRC_ON_PILLS).read() }
+    }
+    /// How many rows the OPEN Sources panel is holding an action for — 0 for every other state,
+    /// since the list lives in the variant.
+    fn src_acts_len() -> usize {
+        match menu() {
+            Menu::Source { acts, .. } => acts.len(),
+            _ => 0,
+        }
+    }
+
     /// A fast double switch must commit ONCE, to the last thing pressed — the queue is one
     /// overwritten value, not a backlog. Deliberately kept off `browse`'s statics: with an empty
     /// section table `apply_section` early-returns, so this needs the module lock only.
@@ -2527,21 +2613,24 @@ mod tests {
     fn the_pill_the_user_is_holding_is_what_leaves_the_screen() {
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
-        let (area0, menu0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(MENU).read(), addr_of!(TAB_F).read()) };
+        let (area0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(TAB_F).read()) };
+        let menu0 = take_menu();
 
-        unsafe { AREA = Area::Tabs; MENU = Menu::None; TAB_F = 3 };
+        unsafe { AREA = Area::Tabs; TAB_F = 3 };
+        set_menu(Menu::None);
         assert_eq!(focused_pill(), Some(3), "the row holds focus — that pill crosses to Home");
 
-        unsafe { MENU = Menu::Sort };
+        set_menu(Menu::Sort { built: 0 });
         assert_eq!(focused_pill(), None, "a menu owns the frame; the row underneath is not focused");
-        unsafe { MENU = Menu::None };
+        set_menu(Menu::None);
 
         for a in [Area::Grid, Area::Toolbar, Area::Rail, Area::Status] {
             unsafe { AREA = a };
             assert_eq!(focused_pill(), None, "focus is not on the tab row");
         }
 
-        unsafe { AREA = area0; MENU = menu0; TAB_F = tab0 };
+        unsafe { AREA = area0; TAB_F = tab0 };
+        set_menu(menu0);
         clear();
     }
 
@@ -2820,10 +2909,11 @@ mod tests {
         let tool0 = unsafe { addr_of!(TOOL_F).read() };
 
         // chip → menu, one row per chip. A shifted row cannot satisfy this: it is keyed on the
-        // value, not on where the value sits.
-        assert_eq!(chip_menu(Chip::Source), Menu::Source);
-        assert_eq!(chip_menu(Chip::Sort), Menu::Sort);
-        assert_eq!(chip_menu(Chip::Filter), Menu::Filter);
+        // value, not on where the value sits. Matched on the VARIANT — a menu's payload is its
+        // build-time key and says nothing about which chip opens it.
+        assert!(matches!(chip_menu(Chip::Source), Menu::Source { .. }));
+        assert!(matches!(chip_menu(Chip::Sort), Menu::Sort { .. }));
+        assert!(matches!(chip_menu(Chip::Filter), Menu::Filter));
 
         // the row, in drawn order, in both shapes. **Source leads when it exists** — this is the
         // assertion that fails if anyone inserts another chip at index 0.
@@ -2896,7 +2986,7 @@ mod tests {
     fn the_sources_panel_stops_rebuilding_once_the_table_stops_moving() {
         let _s = crate::testlock::serial();
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
-        let menu0 = menu();
+        let menu0 = take_menu();
         crate::browse::reset();
         crate::browse::seed_two_source_table_for_test();
 
@@ -2910,8 +3000,8 @@ mod tests {
         );
 
         build_source_menu(false);
-        assert_eq!(menu(), Menu::Source);
-        let rows0 = unsafe { (*addr_of!(SRC_ACTIONS)).len() };
+        assert!(matches!(menu(), Menu::Source { .. }));
+        let rows0 = src_acts_len();
         // …and it settles: every frame the panel stays open is a frame it does NOT rebuild
         for frame in 0..3 {
             assert!(!menu_stale(), "frame {frame} rebuilt a panel nothing had changed under");
@@ -2923,14 +3013,128 @@ mod tests {
         build_source_menu(true);
         assert!(!menu_stale(), "…once, and then settle again");
         assert_eq!(
-            unsafe { (*addr_of!(SRC_ACTIONS)).len() },
+            src_acts_len(),
             rows0 + 1,
             "the rebuild is real — the new library is a row, not just a quieted guard"
         );
 
+        // …and the key is the panel's, not the screen's: closing takes the action list with it, so
+        // nothing is left behind for the next open to inherit
+        close_menu();
+        assert_eq!(src_acts_len(), 0, "the closed panel holds no rows to act on");
+        crate::browse::reset();
+        set_menu(menu0);
+    }
+
+    // ---- the input ladders, with a panel open ---------------------------------------------------
+    //
+    // Both ladders ([`move_focus`], [`on_ok`]) ask about the SOURCES panel before they ask whether
+    // any menu is open, and the order is load-bearing rather than stylistic: `menu_open()` is
+    // `!matches!(menu(), Menu::None)`, so it SUBSUMES `Menu::Source`. Tidy the two rungs into one
+    // arm and the panel's whole level layer goes away without a compile error and without a changed
+    // pixel until someone presses the key — LEFT/RIGHT stop reaching the pills, UP stops hopping
+    // onto them, and OK on them commits a row the user is not looking at. Both ladders are called
+    // from inside the SDL event loop (`app.rs`), where nothing can grade them; the order is pinned
+    // here, at the functions themselves.
+
+    /// **With the Sources panel open, LEFT/RIGHT belong to the level pills while UP/DOWN walk the
+    /// rows; with a plain popover open, UP/DOWN are the whole ladder.** Asserted as one test
+    /// because it is the same key at the same cursor position answering differently — which is
+    /// exactly what a merged arm would flatten.
+    #[test]
+    fn the_sources_panel_owns_left_right_for_its_levels_and_a_plain_popover_does_not() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let menu0 = take_menu();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+
+        // the panel lists the libraries of the browsed KIND across both sources (`source_rows` is
+        // kind-filtered), then the separator and the recheck row
+        open_source_menu();
+        assert!(matches!(menu(), Menu::Source { .. }));
+        assert_eq!(level(), Level::Browse, "Browse opens first, every time");
+        assert!(!on_pills(), "an open lands in the LIST");
+        assert_eq!(table().sel, 0, "…on the library being browsed");
+
+        // DOWN/UP walk the rows while the list holds focus
+        move_focus(SDLK_DOWN);
+        assert_eq!(table().sel, 1, "DOWN steps a row");
+        move_focus(SDLK_UP);
+        assert_eq!((table().sel, on_pills()), (0, false), "UP steps back, still in the list");
+
+        // UP off the FIRST row is the hop onto the level pills
+        move_focus(SDLK_UP);
+        assert!(on_pills(), "UP off row 0 reaches the pills");
+        assert_eq!(table().sel, 0, "…and the list REMEMBERS the row it left");
+
+        // …and up there LEFT/RIGHT are the level switch
+        move_focus(SDLK_RIGHT);
+        assert_eq!(level(), Level::OnHome, "RIGHT swaps the level under the pills");
+        move_focus(SDLK_RIGHT);
+        assert_eq!(level(), Level::OnHome, "…and holds: there is no third level to walk to");
+        move_focus(SDLK_LEFT);
+        assert_eq!(level(), Level::Browse);
+        assert_eq!(table().sel, 0, "the swap holds the cursor — nothing under the pills moves");
+        move_focus(SDLK_DOWN);
+        assert!(!on_pills(), "DOWN returns to the rows");
+
+        // ---- the same keys, against a plain popover ---------------------------------------------
+        open_filter_menu(false);
+        assert!(matches!(menu(), Menu::Filter));
+        assert_eq!(table().n_rows(), 2, "Unwatched only + Genre, this being a movie library");
+        for k in [SDLK_LEFT, SDLK_RIGHT] {
+            move_focus(k);
+            assert_eq!((table().sel, on_pills()), (0, false), "there is nothing sideways to walk to");
+        }
+        move_focus(SDLK_DOWN);
+        assert_eq!(table().sel, 1, "UP/DOWN are its whole ladder");
+        move_focus(SDLK_UP);
+        move_focus(SDLK_UP); // back at the first row, with no pill row above it
+        assert_eq!((table().sel, on_pills()), (0, false), "no other arm of this ladder hops onto pills");
+
         close_menu();
         crate::browse::reset();
-        unsafe { MENU = menu0 };
+        set_menu(menu0);
+        clear();
+    }
+
+    /// **OK on the level pills goes INTO the list; it commits nothing.** The pills are switched by
+    /// LEFT/RIGHT, so there is nothing there for OK to toggle — and because `menu_open()` subsumes
+    /// this state, a press that fell through to the rung below would pick whichever row the list
+    /// had remembered and close the panel, which is a library switch the user never asked for.
+    #[test]
+    fn ok_on_the_level_pills_enters_the_list_instead_of_committing_its_row() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let menu0 = take_menu();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+
+        open_source_menu();
+        // stand the list on a row that WOULD do something: the other source's library, which is not
+        // the one being browsed, so a commit is a visible queued switch rather than a no-op
+        table().sel = 1;
+        assert_eq!(src_action(1), SrcAction::Library(2));
+        unsafe { SRC_ON_PILLS = true };
+
+        assert!(matches!(on_ok(), Action::None));
+        assert!(!on_pills(), "OK on the level already showing means INTO its list");
+        assert!(matches!(menu(), Menu::Source { .. }), "the panel is still up — nothing was picked");
+        assert_eq!(pending(), Pending::None, "…and nothing was queued");
+        assert_eq!(table().sel, 1, "the row the list remembered is still the row it remembers");
+
+        // the very next press, now that the list holds focus, IS the commit — so the guard above is
+        // specific to the pills rather than a menu-wide swallow
+        assert!(matches!(on_ok(), Action::None));
+        assert_eq!(pending(), Pending::Section(2), "OK in the list picks that library");
+        assert!(matches!(menu(), Menu::None), "…and a Browse pick closes the panel");
+
+        crate::browse::reset();
+        set_menu(menu0);
+        clear();
     }
 
     /// The whole point of the constant pitch: a Latin section and a Cyrillic one space their

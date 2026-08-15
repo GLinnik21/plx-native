@@ -10,7 +10,10 @@
 //! run it on a background thread (the login-poll / discovery / switch threads), never the SDL loop.
 //!
 //! Tokens (`Pin.auth_token`, `Resource.access_token`, `SwitchedUser.auth_token`) are secrets: they
-//! are never logged here and never printed by callers.
+//! are never logged here and never printed by callers. What IS logged, on a failure only, is the
+//! **status**, the **shape** of the endpoint that returned it, and — for a body that will not
+//! deserialize — serde's error category and position. See [`decode`] for why the status is worth a
+//! line at all, and [`endpoint_shape`] for what a "shape" is allowed to contain.
 //!
 //! `discover.rs` is this client's op-file sibling: the plex.tv **metadata provider** speaks the
 //! same transport and the same identity headers, so it adds an `impl AccountClient` block rather
@@ -66,18 +69,12 @@ impl AccountClient {
     /// top of this ONE transport + identity choke point instead of hand-rolling a second one.
     pub(super) fn get<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
         let resp = crate::net::https_get(url, &self.headers())?;
-        if !resp.ok() {
-            return None;
-        }
-        serde_json::from_slice::<T>(&resp.body).ok()
+        decode("GET", url, resp)
     }
 
     fn post<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
         let resp = crate::net::https_post(url, &self.headers(), b"")?;
-        if !resp.ok() {
-            return None;
-        }
-        serde_json::from_slice::<T>(&resp.body).ok()
+        decode("POST", url, resp)
     }
 
     // ---- login (PIN/QR) ----
@@ -125,6 +122,111 @@ impl AccountClient {
         };
         self.post(&format!("{PLEX_TV}/api/v2/home/users/{uuid}/switch{q}"))
     }
+}
+
+/// Status + body → the typed DTO, with a LOG LINE for each of the two ways that fails.
+///
+/// `net::perform` names its **transport** failures well (`net: curl rc=60 — peer
+/// certificate could not be verified (CA store too old?)`) and returns `Some(Resp)` for every
+/// request that *completed*, whatever the server said in it. So the two failures that reach here
+/// arrive carrying no description of themselves: a status this client declines, and a 2xx body
+/// that will not deserialize. Both still leave by the same `None` — the callers' contract does not
+/// change — and the callers cannot tell them apart afterwards: `auth::discover_and_store` logs the
+/// pair as one line, `auth: resources request FAILED (no response/deser)`, and ends the sign-in at
+/// "Couldn't reach any Plex server — check the connection.", which is advice about a network for
+/// something that may be an identity. The status is what separates those two, and this function is
+/// where it exists.
+///
+/// Not every plex.tv status in the app comes through here: `auth.rs`'s QR-PNG fetch calls
+/// `net::https_get` directly and grades `r.ok()` itself. Every *typed* call does — both this
+/// file's and `discover.rs`'s, which is the point of `get` being the one door.
+fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) -> Option<T> {
+    if !resp.ok() {
+        // 401/403 earns a word of its own because the app has nowhere else to say it: the request
+        // arrived, and what plex.tv refused is the IDENTITY it carried — the token `headers()`
+        // attached. Downstream that becomes a verdict about a server or a network (see this
+        // function's doc for the exact copy), so the distinction has to be drawn in the line that
+        // still knows it.
+        let hint = match resp.status {
+            401 | 403 => " — plex.tv refused this identity (token no longer valid?)",
+            _ => "",
+        };
+        // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
+        // the shape and the two services share this door — `discover.provider.plex.tv` lines would
+        // otherwise read as coming from plex.tv proper.
+        crate::log(&format!("account: {verb} {} -> HTTP {}{hint}", endpoint_shape(url), resp.status));
+        return None;
+    }
+    match serde_json::from_slice::<T>(&resp.body) {
+        Ok(v) => Some(v),
+        // serde's CATEGORY and position, deliberately NOT its message: `Error`'s `Display` quotes
+        // the value it choked on (`invalid type: string "…"`), and the values on these endpoints
+        // include `Pin::auth_token` and `SwitchedUser::auth_token`. The category is the diagnostic
+        // half anyway — `Data` is one field's shape drifting, `Syntax` a body that is not JSON at
+        // all, `Eof` a truncated one — and the byte count separates "empty" from "a page of
+        // something else". The test below pins the reason, so this is not simplified back to `{e}`.
+        Err(e) => {
+            crate::log(&format!(
+                "account: {verb} {} -> HTTP {} but the body did not parse: {:?} at line {} col {} ({} bytes)",
+                endpoint_shape(url),
+                resp.status,
+                e.classify(),
+                e.line(),
+                e.column(),
+                resp.body.len()
+            ));
+            None
+        }
+    }
+}
+
+/// The **shape** of one of this client's URLs, for a log line: host + path, every id-shaped segment
+/// folded to `{id}`, and the query string dropped whole.
+///
+/// None of these URLs may be logged verbatim. The query carries [`AccountClient::switch_user`]'s
+/// `?pin=NNNN` — the managed user's PIN — so it goes entirely rather than field by
+/// field, which would need re-auditing every time a parameter is added. The path carries
+/// the pin id, about which `auth.rs` already says, where it declines to log it: "the id is a handle
+/// that redeems a credential, and the code is what authorizes it — and this file is the one we ask
+/// users to send us when something goes wrong."
+///
+/// The host is kept, because it is the half that says WHICH service answered — `plex.tv` (the
+/// account API) or `discover.provider.plex.tv` (the metadata provider, `discover.rs`) — and both
+/// are `const`s in this crate rather than anything a user or a server chose.
+fn endpoint_shape(url: &str) -> String {
+    let path = url.split('?').next().unwrap_or(url);
+    let path = path.split_once("://").map(|(_, rest)| rest).unwrap_or(path);
+    let mut out = String::with_capacity(path.len());
+    for (i, seg) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        // `i == 0` is the host, kept whole; everything after it is a path segment.
+        if i > 0 && id_shaped(seg) {
+            out.push_str("{id}");
+        } else {
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
+/// Is this path segment an identifier rather than a route name? Two shapes reach these endpoints: a
+/// decimal id (`/api/v2/pins/12345`) and a hex guid or uuid (`/api/v2/home/users/{uuid}/switch`,
+/// `/library/people/5d77682aeb5d26001f1de4b0`).
+///
+/// The rule is written to be safe in the direction that matters: an unrecognised id is worse than a
+/// folded route name. It still keeps every literal segment the two files that build these URLs use
+/// — `api`, `v2`, `pins`, `resources`, `home`, `users`, `switch` here and `library`, `people` in
+/// `discover.rs` — because each is either too short to be a guid or contains a letter past `f`.
+/// The test below enumerates them, so adding an endpoint whose name would fold is a failing test
+/// rather than a log line that no longer says which call failed.
+fn id_shaped(seg: &str) -> bool {
+    if seg.is_empty() {
+        return false;
+    }
+    seg.bytes().all(|b| b.is_ascii_digit())
+        || (seg.len() >= 8 && seg.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
 // ---- serde DTOs (only the fields the app consumes; all optional to tolerate shape drift) ----
@@ -270,7 +372,57 @@ pub struct HomeUser {
 
 #[cfg(test)]
 mod tests {
-    use super::Resource;
+    use super::{endpoint_shape, Pin, Resource};
+
+    /// The log's shape rule, on the exact URLs this file and `discover.rs` build. Both halves are
+    /// asserted: the route survives (or the line stops saying which call failed) and every
+    /// identifier does not — the pin id redeems the account token, the `?pin=` is a managed user's
+    /// PIN, and the person guid is an id no log needs.
+    #[test]
+    fn an_endpoint_shape_keeps_the_route_and_drops_every_identifier() {
+        // create_pin / resources / home_users: the query is dropped, the route is untouched.
+        assert_eq!(endpoint_shape("https://plex.tv/api/v2/pins?strong=false"), "plex.tv/api/v2/pins");
+        assert_eq!(
+            endpoint_shape("https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"),
+            "plex.tv/api/v2/resources"
+        );
+        assert_eq!(endpoint_shape("https://plex.tv/api/v2/home/users"), "plex.tv/api/v2/home/users");
+
+        // poll_pin: a decimal id folds — `auth.rs` refuses to log this number for a reason.
+        let shape = endpoint_shape("https://plex.tv/api/v2/pins/1234567");
+        assert_eq!(shape, "plex.tv/api/v2/pins/{id}");
+        assert!(!shape.contains("1234567"));
+
+        // switch_user: a uuid mid-path folds while the trailing route name survives, and the PIN
+        // in the query is gone with the rest of it.
+        let shape = endpoint_shape("https://plex.tv/api/v2/home/users/2b3c4d5e-6f70-4a81-9b2c-3d4e5f607182/switch?pin=4321");
+        assert_eq!(shape, "plex.tv/api/v2/home/users/{id}/switch");
+        assert!(!shape.contains("4321") && !shape.contains("2b3c"));
+
+        // discover.rs: the OTHER host is kept — it is which service answered — and the tagKey guid
+        // folds like any other id.
+        assert_eq!(
+            endpoint_shape("https://discover.provider.plex.tv/library/people/5d77682aeb5d26001f1de4b0"),
+            "discover.provider.plex.tv/library/people/{id}"
+        );
+    }
+
+    /// Why the parse-failure line logs serde's CATEGORY and position instead of the message: the
+    /// message quotes the value it choked on, and the values these endpoints return include the
+    /// account token (`Pin::auth_token`). A `{e}` here would put a body field in the event log —
+    /// the file users are asked to attach to a bug report.
+    #[test]
+    fn a_serde_error_message_quotes_the_value_and_the_category_does_not() {
+        // Matched rather than `unwrap_err`, which needs `T: Debug` — `Pin` has none, and a DTO
+        // that carries a token is one to keep out of a formatter anyway.
+        let e = match serde_json::from_slice::<Pin>(br#"{"id":"a-value-from-the-body"}"#) {
+            Ok(_) => panic!("a string where an i64 is expected must not parse"),
+            Err(e) => e,
+        };
+        assert!(e.to_string().contains("a-value-from-the-body"), "serde quotes the value: {e}");
+        assert_eq!(format!("{:?}", e.classify()), "Data", "the category names the KIND of failure only");
+        assert!(e.line() > 0 || e.column() > 0, "position is the other half that is safe to log");
+    }
 
     /// The real `/api/v2/resources` shape, both kinds of server in one array: ours (`owned`, with
     /// `sourceTitle`/`ownerId` sent as explicit **nulls**) and a share (`owned:false`, a handle in

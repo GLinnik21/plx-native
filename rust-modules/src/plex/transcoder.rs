@@ -272,11 +272,20 @@ impl Client {
     }
 
     /// GET /video/:/transcode/universal/stop — free the server-side encoder for `session`.
-    pub fn transcode_stop(&self, session: &str) {
+    /// Returns whether the request reached the server and came back accepted.
+    ///
+    /// Reported rather than discarded, for the reason [`Client::get_ok`] exists: this is a
+    /// body-less WRITE whose caller is off the main thread (`route::scrobble_stop`'s worker), and
+    /// the bool is the only thing that can say it landed. What a silently lost stop leaves behind is
+    /// specific — the server keeps ENCODING into a session nothing will read again, the leaked
+    /// server-side encoder `docs/parity-gaps.md` names on the retranscode path. Like
+    /// [`super::library::Client::scrobble`], it does not tell a 200 from a 404: `get_ok` is
+    /// `http_get`'s own success, which is the honest limit of a GET whose body carries nothing.
+    pub fn transcode_stop(&self, session: &str) -> bool {
         let q = QueryBuilder::new("/video/:/transcode/universal/stop")
             .str("session", session)
             .str("X-Plex-Client-Identifier", &self.client_id);
-        self.get_void(&q.build());
+        self.get_ok(&q.build())
     }
 }
 

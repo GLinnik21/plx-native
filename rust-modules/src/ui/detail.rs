@@ -577,7 +577,7 @@ fn selected() -> Option<&'static PmsMovie> {
 /// the hero is presenting as a series, where Play starts from 0.
 ///
 /// Both go through `metadata::resume_ns`, the same Plex rule the action applies, deliberately: keyed
-/// on a raw `resume_ms > 0` instead (as the home hero is), a 4-second offset or one past the 95%
+/// on a raw `resume_ms > 0` instead, a 4-second offset or one past the 95%
 /// end-of-item mark would label the pill "Resume" for a play that starts at 0, and hang a restart
 /// disc beside it that does nothing. The label and the control set have to promise what the press
 /// delivers.

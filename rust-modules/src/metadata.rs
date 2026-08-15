@@ -130,10 +130,16 @@ pub(crate) struct Season {
 
 impl Season {
     /// Every episode of this season is watched — the season-scope form of the container rule
-    /// `fetch_detail` applies to a show (`viewed >= leaf && leaf > 0`). It lives here, on the data,
-    /// so the season tab's tick and the coming "Mark Season Watched" row read ONE truth instead of
-    /// each re-deriving the comparison at its own site. The `leaf_count > 0` half is load-bearing:
-    /// a season the server sent no counts for is `0 >= 0`, which would otherwise read as watched.
+    /// `fetch_detail` applies to a show (`viewed >= leaf && leaf > 0`). The `leaf_count > 0` half is
+    /// load-bearing: a season the server sent no counts for is `0 >= 0`, which would otherwise read
+    /// as watched.
+    ///
+    /// **No caller outside its own tests.** This doc used to claim the season tab's tick read it —
+    /// that tick does not exist, and the two sites that DO spell the rule out (`fetch_detail`'s
+    /// container test below, `pms::unwatched`) hold a `PmsMovie`, not a `Season`, so neither can
+    /// call it. Kept for the "Mark Season Watched" row, and because the tests below are where the
+    /// `leaf_count > 0` guard is actually written down.
+    #[allow(dead_code)]
     pub(crate) fn watched(&self) -> bool {
         self.leaf_count > 0 && self.viewed_leaf_count >= self.leaf_count
     }
@@ -1140,7 +1146,14 @@ fn fetch_item_streams(sid: crate::plex::ServerId, rk: &str, d: &mut Detail) {
 fn fetch_seasons(sid: crate::plex::ServerId, rk: &str) -> Vec<Season> {
     let mc = match crate::plex::client_for(sid).and_then(|c| c.children(rk)) {
         Some(m) => m,
-        None => return Vec::new(),
+        None => {
+            // The empty Vec is the deliberate degrade (see `fetch_episodes`'s note), but by the
+            // time `fetch_full` prints `seasons=` the refusal and a show that genuinely has no
+            // seasons are the same zero — so the refusal has to say so HERE, or the log records a
+            // failed GET as a fact about the library.
+            crate::log(&format!("detail: rk={rk} — no season list (server unresolved, or it refused); the seasons= below is that, not a count"));
+            return Vec::new();
+        }
     };
     mc.metadata
         .iter()
@@ -1199,7 +1212,12 @@ fn convert_episode(x: &crate::plex::Metadata) -> Episode {
 fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
     let mc = match crate::plex::client_for(sid).and_then(|c| c.related(rk)) {
         Some(m) => m,
-        None => return Vec::new(),
+        None => {
+            // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
+            // an item with no related hub and a refused GET both reach `fetch_full`'s `related=0`.
+            crate::log(&format!("detail: rk={rk} /related did not answer — the related= below is that refusal"));
+            return Vec::new();
+        }
     };
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1234,13 +1252,35 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
     let t0 = std::time::Instant::now();
-    let mut d = fetch_detail(sid, rk)?;
+    // The ONE line that says a detail page was asked for and got nothing — the summary at the end
+    // of this function prints on success only, and nothing downstream can speak for the failure.
+    // Its worst shape is the page opened through `detail::open_rk`, which clears before requesting:
+    // `current()` is then None, `detail_loading()` settles the moment this lands so the spinner
+    // GOES, and the page sits on the catalog row's hero art with an empty body that nothing
+    // re-requests. The other request sites keep whatever was loaded, so they degrade more quietly —
+    // but all four are equally silent in the log without this, and byte-identical to the user
+    // never having pressed OK.
+    //
+    // Worded as "no metadata" rather than "the GET failed": `fetch_detail` is
+    // `client_for(sid)?.metadata(rk)?`, so this arm is also taken when the server id resolves to no
+    // client at all and no request was ever issued. One line for both is right — the page is equally
+    // empty either way — but it must not assert a round trip that may not have happened.
+    let Some(mut d) = fetch_detail(sid, rk) else {
+        crate::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"));
+        return None;
+    };
     if d.is_show {
         d.seasons = fetch_seasons(sid, rk);
         if let Some(s0) = d.seasons.first() {
             // a first-season failure is not worth failing the whole page over — the hero, cast
-            // and Related still load, and there is no previous list here to protect
-            d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_default();
+            // and Related still load, and there is no previous list here to protect. It is still
+            // named, because the `eps=` below cannot tell it from a season with no episodes.
+            d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
+                crate::log(&format!(
+                    "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
+                    s0.rk));
+                Vec::new()
+            });
         }
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
@@ -1377,7 +1417,13 @@ pub(crate) fn pump_detail() -> bool {
         return false; // superseded while in flight
     }
     DETAIL_DONE.store(r.gen, Ordering::SeqCst);
-    let Some(d) = r.d else { return false }; // fetch failed: keep the previously loaded item
+    // fetch failed: keep the previously loaded item. The mailbox carries no rk of its own, so the
+    // line naming WHICH page it was is written at the fetch site (`fetch_full`) — read it there
+    // rather than adding an anonymous one here. ONE arrival is not covered by that: a worker that
+    // PANICKED lands `None` too, and never reached `fetch_full`'s line. `task`'s panic logger names
+    // the thread and the source location, so the failure is in the log — it just is not in these
+    // words, and a `None` here with no `detail:` line above it is that case.
+    let Some(d) = r.d else { return false };
     // The LANDING is what defines which show's episodes are current, so the season supersede has
     // to happen here as well as at request time: a tab hop issued while this load was in flight
     // spawned a fetch against the OLD item, and its landing would patch these fresh episodes.

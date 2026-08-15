@@ -33,7 +33,9 @@ pub struct Remote {
 impl Remote {
     /// Create + open the control FIFO non-blocking. `O_RDWR` keeps a writer end open
     /// on our side so reads never hit EOF between host writes (the standard self-pipe
-    /// trick). Returns `None` on any failure — the app then just runs without a remote.
+    /// trick). Returns `None` on any failure — the app then just runs without a remote:
+    /// silently when the feature is off (the expected case in a release build), with a
+    /// logged errno when the FIFO itself could not be opened.
     pub fn open() -> Option<Remote> {
         // Gated HERE rather than at the call site, so there is exactly one door and the caller's
         // `remote.as_mut()` type-checks unchanged in both feature sets.
@@ -57,6 +59,31 @@ impl Remote {
             libc::mkfifo(path.as_ptr(), 0o666);
             let fd = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK);
             if fd < 0 {
+                // Logged, unlike the `dev::ENABLED` return above — that one is a build behaving
+                // as it was built, and a line for it would print on every release boot. This one
+                // is a real failure, and nothing downstream reports it: `app.rs` calls
+                // `Remote::open()` without branching on the answer, so the app runs on and every
+                // `ok` / `ck:X,Y` written to the FIFO is read by nobody. A `tools/stream-screen.py`
+                // session clicking a picture that never moves looks like a wedged app rather than
+                // a channel that was never opened.
+                //
+                // The errno is the diagnosis, precisely because the `mkfifo` above ignores EEXIST
+                // on purpose: `open` therefore attaches to whatever object already sits at this
+                // path, and errno is what says what was wrong with it. EACCES is the hazard
+                // CLAUDE.md already records for the event log — "never pre-create the event log
+                // on the TV — a root-owned file left in place is one it cannot write" — reaching
+                // the same 1777 `/tmp` from the same jailed uid, one path over.
+                //
+                // `last_os_error()` rather than a raw errno deref, as `capture.rs` does and for
+                // its reason: `__errno_location` is a glibc symbol, and reading errno portably is
+                // what keeps this crate compiling (and host-testing) off-device. Taken into a
+                // local BEFORE the path is rebuilt for the message, so nothing runs between the
+                // failed call and the read.
+                let err = std::io::Error::last_os_error();
+                crate::log(&format!(
+                    "remote: open {} failed ({err}) — no remote control this run",
+                    fifo_path().display()
+                ));
                 return None;
             }
             Some(Remote { fd, buf: String::new() })

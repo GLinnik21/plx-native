@@ -423,6 +423,72 @@ fn select(s: &mut Scene, idx: usize) {
     }
 }
 
+/// What a key MEANS on the picker — the ladder of [`key`] with its arms' effects lifted out.
+///
+/// The ORDER of those arms is the whole content of this function, and it is the screen's focus
+/// exclusivity stated as a decision: the footer arm precedes the roster arm, so while the Sign out
+/// pill holds focus the roster keys mean nothing and OK is the sign-out. [`update`] and [`draw`]
+/// say the same thing from the paint side — the row is handed `None` for its focus and no tile is
+/// drawn focused while `footer` is set — and a control that is not drawn as focused must not be
+/// the one that acts.
+///
+/// It is pure so that order can be graded on the host, which cannot reach it through [`key`]: the
+/// roster arm is gated on `auth::users()`, and every writer of that field sits behind a persisted
+/// session or a plex.tv round trip (`auth::start_switch`'s seed, its roster worker, and the
+/// sign-in thread's step 4). Both commits below the gate then have effects a unit run must not
+/// fire — `SignOut` clears the persisted session and starts the login thread, `Select` reaches
+/// `auth::select_profile`'s switch worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Act {
+    /// ▼ — put focus on the Sign out pill.
+    FocusFooter,
+    /// ▲ — take it back to the roster.
+    FocusRoster,
+    /// OK with the pill focused.
+    SignOut,
+    /// ◀/▶ along the roster, as a direction.
+    Step(c_int),
+    /// OK with a roster avatar focused.
+    Select,
+    /// The key means nothing here.
+    Ignore,
+}
+
+fn act(sym: c_uint, footer: bool, n: c_int) -> Act {
+    if sym == SDLK_DOWN {
+        Act::FocusFooter // the Sign out pill (reachable even while the roster is empty/loading)
+    } else if sym == SDLK_UP {
+        Act::FocusRoster
+    } else if footer {
+        if is_ok(sym) {
+            Act::SignOut // the phase→route follower lands on the QR sign-in
+        } else {
+            Act::Ignore
+        }
+    } else if n > 0 {
+        if sym == SDLK_LEFT {
+            Act::Step(-1)
+        } else if sym == SDLK_RIGHT {
+            Act::Step(1)
+        } else if is_ok(sym) {
+            Act::Select
+        } else {
+            Act::Ignore
+        }
+    } else {
+        Act::Ignore
+    }
+}
+
+/// ◀/▶ along the roster: clamped at both ends, no wrap.
+fn step_fc(fc: c_int, dir: c_int, n: c_int) -> c_int {
+    if dir < 0 {
+        (fc - 1).max(0)
+    } else {
+        (fc + 1).min(n - 1)
+    }
+}
+
 pub fn key(sym: c_uint, wcode: c_uint) {
     let s = scene();
     if s.pad.open {
@@ -439,22 +505,13 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         return;
     }
     let n = auth::users().len() as c_int;
-    if sym == SDLK_DOWN {
-        s.footer = true; // Sign out pill (reachable even while the roster is empty/loading)
-    } else if sym == SDLK_UP {
-        s.footer = false;
-    } else if s.footer {
-        if is_ok(sym) {
-            auth::sign_out(); // the phase→route follower lands on the QR sign-in
-        }
-    } else if n > 0 {
-        if sym == SDLK_LEFT {
-            s.fc = (s.fc - 1).max(0);
-        } else if sym == SDLK_RIGHT {
-            s.fc = (s.fc + 1).min(n - 1);
-        } else if is_ok(sym) {
-            select(s, s.fc as usize);
-        }
+    match act(sym, s.footer, n) {
+        Act::FocusFooter => s.footer = true,
+        Act::FocusRoster => s.footer = false,
+        Act::SignOut => auth::sign_out(),
+        Act::Step(d) => s.fc = step_fc(s.fc, d, n),
+        Act::Select => select(s, s.fc as usize),
+        Act::Ignore => {}
     }
 }
 
@@ -541,5 +598,165 @@ fn press(s: &mut Scene, k: u8) {
         // dots red for another try (update() watches the flow phase) — it used to close and
         // dump the user back on the picker for every typo
         s.pad.submitting = true;
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    //! The picker's key ladder, in two halves — and the split is forced by what a host can reach.
+    //!
+    //! [`act`], [`step_fc`] and the keypad walkers are pure, so they are graded directly and need
+    //! no lock. The live half drives the real `static mut SCENE` through [`key`], and presses only
+    //! keys whose arms stay inside this module — ▼/▲, and (with the pill focused) the ◀/▶ the
+    //! ladder ignores. **No test presses OK against the singleton**: on the pill that arm is
+    //! `auth::sign_out` (the persisted session cleared, `plex::revoke_all`, a login thread
+    //! started) and on an avatar it is `auth::select_profile`'s switch worker. Those two are what
+    //! [`act`] exists to make assertable without firing them.
+    //!
+    //! The live tests take this module's own [`SCENELOCK`] for their whole body (`home.rs`'s
+    //! `FOCUS` precedent — `SCENE` is screen-level `static mut`) and `crate::testlock::serial()`
+    //! as well, because the ladder reads `auth::users()`, which is a crate-wide global.
+    use super::*;
+    use std::sync::Mutex;
+
+    static SCENELOCK: Mutex<()> = Mutex::new(());
+
+    /// A freshly-entered picker: the scene allocated as [`init`] leaves it, focus as [`enter`]
+    /// leaves it. `init` replaces the whole `Scene`, so this is also the cleanup.
+    fn boot() {
+        init();
+        enter();
+    }
+
+    /// Focus opens on the roster, and ▼/▲ are the path to the Sign out pill and back. Driven
+    /// through the real [`key`] against the real scene, because where the screen *starts* is a
+    /// property of [`enter`] rather than of the ladder.
+    #[test]
+    fn focus_opens_on_the_roster_and_the_pill_is_one_step_down() {
+        let _s = crate::testlock::serial();
+        let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
+        boot();
+        assert!(!scene().footer, "a picker opens with the roster focused, not the footer");
+
+        key(SDLK_DOWN, 0);
+        assert!(scene().footer, "▼ off the roster is the Sign out pill");
+        key(SDLK_DOWN, 0);
+        assert!(scene().footer, "the pill is the last focus stop — ▼ again holds it");
+
+        key(SDLK_UP, 0);
+        assert!(!scene().footer, "▲ brings focus back to the roster");
+        key(SDLK_UP, 0);
+        assert!(!scene().footer, "and holds there — the roster is the first");
+    }
+
+    /// The ▼ arm's own claim — the pill is *"reachable even while the roster is empty/loading"* —
+    /// against an empty roster, which is the state this host is permanently in: every writer of
+    /// `auth::users()` sits behind a persisted session or a plex.tv round trip, so nothing a unit
+    /// run can do puts a tile on this screen.
+    #[test]
+    fn the_sign_out_pill_takes_focus_with_no_roster_on_screen() {
+        let _s = crate::testlock::serial();
+        let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
+        boot();
+        assert!(auth::users().is_empty(), "an unseeded roster is the case under test");
+
+        key(SDLK_DOWN, 0);
+        assert!(scene().footer, "the pill is focusable with nothing above it to leave");
+        assert!(!focus_is_avatar(), "and there is no avatar for the deferred OK activation to commit");
+
+        key(SDLK_RIGHT, 0);
+        assert_eq!(scene().fc, 0, "there is no tile to walk to");
+        assert!(scene().footer, "and ◀/▶ are not a way off the pill");
+    }
+
+    /// **The footer arm precedes the roster arm.** That order is what makes focus exclusive on the
+    /// input side: with the Sign out pill focused, ◀/▶ must not walk a cursor that is not drawn,
+    /// and OK must be the sign-out rather than a profile switch. Swapped, the second block below
+    /// answers `Step(-1)`/`Step(1)` and the OK loop answers `Select` on both sides — the pill
+    /// driving the hidden roster while it is still the control drawn as focused.
+    #[test]
+    fn the_pill_answers_every_key_while_it_holds_focus() {
+        const N: c_int = 3; // a roster with tiles in it — what makes the order observable at all
+
+        // roster focused: ◀/▶ walk it, OK commits the tile under the ring
+        assert_eq!(act(SDLK_LEFT, false, N), Act::Step(-1));
+        assert_eq!(act(SDLK_RIGHT, false, N), Act::Step(1));
+
+        // pill focused: the same two keys, and the roster is not what answers them
+        assert_eq!(act(SDLK_LEFT, true, N), Act::Ignore);
+        assert_eq!(act(SDLK_RIGHT, true, N), Act::Ignore);
+
+        // …and OK, in every code `is_ok` accepts, means one thing on each side
+        for ok in [SDLK_RETURN, SDLK_KP_ENTER, SDLK_SELECT] {
+            assert_eq!(act(ok, true, N), Act::SignOut, "OK on the pill signs out");
+            assert_eq!(act(ok, false, N), Act::Select, "OK on the roster commits the focused tile");
+        }
+
+        // ▼/▲ are the same statement whichever control holds focus, and with or without a roster
+        for footer in [false, true] {
+            for n in [0, N] {
+                assert_eq!(act(SDLK_DOWN, footer, n), Act::FocusFooter);
+                assert_eq!(act(SDLK_UP, footer, n), Act::FocusRoster);
+            }
+        }
+
+        // with no roster the bottom arm has nothing to offer — but the pill above it still acts
+        assert_eq!(act(SDLK_LEFT, false, 0), Act::Ignore);
+        assert_eq!(act(SDLK_RETURN, false, 0), Act::Ignore, "OK on an empty roster commits nothing");
+        assert_eq!(act(SDLK_RETURN, true, 0), Act::SignOut, "the pill signs out while the roster loads");
+    }
+
+    /// ◀/▶ clamp at both ends of the roster.
+    #[test]
+    fn the_roster_cursor_clamps_at_both_ends() {
+        assert_eq!(step_fc(1, -1, 3), 0);
+        assert_eq!(step_fc(0, -1, 3), 0, "◀ on the first tile holds it");
+        assert_eq!(step_fc(1, 1, 3), 2);
+        assert_eq!(step_fc(2, 1, 3), 2, "▶ on the last tile holds it");
+        assert_eq!(step_fc(0, 1, 1), 0, "a one-profile roster has nowhere to walk");
+    }
+
+    /// With the keypad up, [`key`] never reaches the picker's own ladder: the pad takes the key
+    /// first, so ▼ steps the keypad rows and the footer flag is untouched. The other half of
+    /// [`update`]'s "focus is exclusive, never on two controls at once".
+    #[test]
+    fn an_open_keypad_takes_the_key_before_the_picker_does() {
+        let _s = crate::testlock::serial();
+        let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
+        boot();
+        scene().pad = Pad { open: true, target: 0, ..Pad::new() };
+
+        key(SDLK_DOWN, 0);
+        assert_eq!(scene().pad.fr, 1, "▼ stepped the keypad row");
+        assert!(!scene().footer, "and did not focus the Sign out pill behind the scrim");
+
+        boot(); // the pad is scene state — leave the singleton where `enter` leaves it
+    }
+
+    /// The keypad's bottom row has a blank where a phone dial pad has nothing, and neither walk
+    /// may land focus on it: ◀ from `0` has no key to its left, and ▼ off `7` lands on `0` rather
+    /// than on the gap directly under it.
+    #[test]
+    fn the_keypad_walks_around_its_empty_cell() {
+        assert_eq!(KEYS[3][0], None, "the cell both walkers below have to step over");
+        assert_eq!(step_focus(3, 1, -1), 1, "◀ from 0 finds nothing to its left and holds");
+        assert_eq!(step_focus(3, 1, 1), 2, "▶ from 0 reaches delete");
+        assert_eq!(step_focus(0, 0, -1), 0, "a row edge clamps");
+        assert_eq!(step_focus(0, 2, 1), 2);
+        assert_eq!(nearest_col(3, 0), 1, "▼ off 7 lands on 0");
+        assert_eq!(nearest_col(3, 2), 2, "▼ off 9 lands on delete, which is under it");
+        assert_eq!(nearest_col(1, 1), 1, "an occupied column is kept as it is");
+    }
+
+    /// A PIN digit is read from whichever field carries it — SDL gives a printable key its ASCII
+    /// sym, and the remote's number buttons carry the same 48–57 range in `wcode`.
+    #[test]
+    fn a_pin_digit_is_read_from_either_field() {
+        assert_eq!(digit_of('7' as c_uint, 0), Some(b'7'), "a dev keyboard's sym");
+        assert_eq!(digit_of(0, 55), Some(b'7'), "the remote's wcode, same digit");
+        assert_eq!(digit_of('0' as c_uint, 0), Some(b'0'));
+        assert_eq!(digit_of(SDLK_LEFT, 0), None, "a D-pad key is not a digit");
+        assert_eq!(digit_of(SDLK_RETURN, 0), None, "nor is OK — 13 is below the digit range");
     }
 }

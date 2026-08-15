@@ -959,8 +959,8 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
 
 /// One hero item's action row — Play/Continue pill, info circle, chevron — at horizontal slide
 /// offset `dx`. It rides WITH its item, in the same phase as the text column and the backdrop art:
-/// the pill's label *is* the item's ("Continue" when that item has a resume point, else "Play"),
-/// and so is its width, so a row that stayed put would have to relabel and resize itself
+/// the pill's label *is* the item's ("Continue" when the press would actually resume it, else
+/// "Play"), and so is its width, so a row that stayed put would have to relabel and resize itself
 /// mid-flip — the one thing on screen contradicting the motion.
 ///
 /// The row sits at a FIXED y (the text column above is bottom-anchored, so the button-to-text air
@@ -978,7 +978,13 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     let pill_y = HERO_ROW_Y;
     let hf = hero_focus();
     let (cd, cgap) = (HERO_CTRL_D, 20.0f32); // control diameter + inter-control gap
-    let plabel = if hero.resume_ms > 0 { c"Continue" } else { c"Play" };
+    // The label asks the function the PRESS applies — `app.rs`'s `play_item_now` starts this item
+    // at `metadata::resume_ns`, which refuses an offset of 10s or less, or one past 95%. Keyed on
+    // a raw `resume_ms > 0`, a four-second offset (or one the server left past the end) labelled
+    // the pill "Continue" for a play that then began at 0. The detail page's own pill takes the
+    // same route for the same reason — the word has to promise what the press delivers.
+    let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
+    let plabel = if resumes { c"Continue" } else { c"Play" };
     let pw = Button::pill_w(plabel.as_ptr(), theme::size::BODY, true); // measured from the label it carries
     // local (painter-relative) frames, and the screen-space rects that mirror them
     let pill = Rect::new(tx, pill_y, pw, cd);
@@ -1236,9 +1242,18 @@ fn focused_caption(m: &PmsMovie) -> Option<CString> {
 /// The focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
 /// "<show> · 8 min left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
 /// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
+///
+/// "In progress" is [`PmsMovie::resume_frac`] — THE resume rule, and the same call `Grid::draw`
+/// makes for the BAR in the pass that asks for this caption. A hand-written
+/// `resume_ms > 0 && dur_ns > 0` here dropped that rule's end-guard, so a finished item whose
+/// server never cleared `viewOffset` drew NO bar (`resume_frac`'s answer) under a caption still
+/// promising "1 min left" — `fmt::time_left` floors at a minute, so it could not even read zero.
+/// One item, described two ways in one draw. Whether that tile also wore the watched TICK is a
+/// separate question with a separate answer: `widgets::poster_mark` reads `PmsMovie::watched`, so
+/// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
 fn cw_caption(m: &PmsMovie) -> Option<CString> {
     let show = m.show_title.as_str();
-    let s = if m.resume_ms > 0 && m.dur_ns > 0 {
+    let s = if m.resume_frac().is_some() {
         let left = crate::ui::fmt::time_left(m.dur_ns / 1_000_000 - m.resume_ms);
         if m.kind == 3 && !show.is_empty() {
             format!("{show} \u{00b7} {left}")
@@ -2148,6 +2163,36 @@ mod tests {
         assert_eq!(hero_logo_rk(&orphan), "42", "…falling back to its own when the server sent no parent");
         let movie = PmsMovie { kind: 0, rk: "42".into(), show_rk: "7".into(), ..Default::default() };
         assert_eq!(hero_logo_rk(&movie), "42", "a movie is never keyed to a stray parent");
+    }
+
+    /// The caption and the resume bar beside it are ONE claim about an item — `Grid::draw` takes
+    /// both in the same pass — so the caption's in-progress arm has to be exactly
+    /// [`PmsMovie::resume_frac`]'s answer. Re-derived here as `resume_ms > 0 && dur_ns > 0` it was
+    /// not: that pair has no end-guard, so a finished item whose server never cleared `viewOffset`
+    /// wore the watched tick with no bar and still read "1 min left". Pure — takes its item as an
+    /// argument, so no `FOCUS` mutex (the same call as the backdrop tests above).
+    #[test]
+    fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn() {
+        let ep = |resume_ms: i64| PmsMovie {
+            kind: 3,
+            dur_ns: 45 * 60 * 1_000_000_000,
+            resume_ms,
+            show_title: "Laura".into(),
+            ..Default::default()
+        };
+        // never started, stopped exactly at the end, and a stale offset PAST it
+        for m in [ep(0), ep(45 * 60_000), ep(60 * 60_000)] {
+            assert!(m.resume_frac().is_none(), "offset {} is not in progress", m.resume_ms);
+            let cap = cw_caption(&m).expect("a Continue Watching episode always captions");
+            assert!(
+                !cap.to_str().unwrap().contains("left"),
+                "offset {}: no bar, so the caption must not promise time remaining ({cap:?})",
+                m.resume_ms
+            );
+        }
+        let mid = ep(20 * 60_000);
+        assert!(mid.resume_frac().is_some(), "20 minutes into 45 IS in progress");
+        assert_eq!(cw_caption(&mid).unwrap().to_str().unwrap(), "Laura \u{00b7} 25 min left");
     }
 
     // ---- the shelf heading's source annotation (Shared Sources, deliverable C) ----------------

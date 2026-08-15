@@ -118,7 +118,7 @@ fn catalog() -> &'static Vec<PmsMovie> {
 
 /// catalog row `i`, or None. The reference stays valid until the next refetch (main-thread
 /// only — the same lifetime discipline the old raw `movie_ptr` had, now bounds-checked;
-/// `refetch_hubs_reconcile` is the one mutation ritual and re-resolves the open surfaces).
+/// [`commit`] is the one mutation and re-resolves the open surfaces itself).
 pub(crate) fn movie(i: usize) -> Option<&'static PmsMovie> {
     catalog().get(i)
 }
@@ -365,17 +365,14 @@ pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
     }
 }
 
-/// Refetch the home hubs and reconcile the surfaces that index into the rebuilt catalog: an open
-/// detail page re-resolves its selected row (home's focus self-clamps at its read accessors).
-/// The ONE post-mutation refresh ritual — the player exit calls this.
+/// Refetch the home hubs — the player exit's entry point. A pass-through to [`pms_fetch_hubs`]
+/// now that reconciling the surfaces that index into the rebuilt catalog is [`commit`]'s own job.
 ///
 /// **BLOCKING on the owned server**, because [`pms_fetch_hubs`] is. That is affordable on the
 /// player-exit path, which is already a teardown, and it is NOT affordable off a keypress — see
 /// [`request_refetch_hubs`], which is what the view-state writes use.
 pub(crate) fn refetch_hubs_reconcile() -> c_int {
-    let n = pms_fetch_hubs();
-    crate::ui::detail::reselect();
-    n
+    pms_fetch_hubs()
 }
 
 /// Refetch the home hubs OFF the main thread — every source on a worker, the owned one included,
@@ -387,8 +384,8 @@ pub(crate) fn refetch_hubs_reconcile() -> c_int {
 /// for and every reason not to — this is reached from a keypress (`viewstate`'s Mark as Watched /
 /// Remove from Deck), where a WAN server's `/hubs` pair is seconds of parked frame loop.
 ///
-/// No reconcile call here: `pump` performs the same `detail::reselect` ritual when a landing
-/// actually commits, which is the only moment the catalog those surfaces index into has moved.
+/// No reconcile call here, and none is owed anywhere: [`commit`] performs the re-selection and the
+/// repaint itself, at the only moment the catalog those surfaces index into actually moves.
 pub(crate) fn request_refetch_hubs() {
     HUB_GEN.fetch_add(1, Ordering::SeqCst); // supersede every retry already in flight
     sync_roster();
@@ -441,8 +438,6 @@ pub(crate) fn edit_item(sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
     let build = merge(&srcs);
     drop(srcs); // before calling out — `detail::reselect` walks the catalog this replaces
     commit(build);
-    crate::ui::detail::reselect(); // the post-mutation ritual every other commit performs
-    crate::ui::idle::invalidate(); // the tick/veil/bar changed with no spring behind it
     true
 }
 
@@ -1079,13 +1074,27 @@ fn sync_roster() {
         let build = merge(&srcs);
         drop(srcs); // before calling out — `detail::reselect` walks the catalog this replaces
         commit(build);
-        crate::ui::idle::invalidate();
-        crate::ui::detail::reselect(); // the same post-mutation ritual every other commit performs
     }
 }
 
-/// Install a finished merge: all three statics move together (they always have — a half-applied
-/// catalog once left a stale hero pool floating over emptied shelves).
+/// Install a finished merge — the whole post-mutation ritual, not just the stores.
+///
+/// All three statics move together (they always have — a half-applied catalog once left a stale
+/// hero pool floating over emptied shelves), and so do the two surfaces that index INTO them:
+/// `detail::reselect` re-resolves an open page's selected row against the rebuilt catalog (indices
+/// move, the rk is the stable identity; home's focus self-clamps at its read accessors), and
+/// `idle::invalidate` repaints a screen that may have settled — a shelf gaining or losing a card
+/// has no spring behind it, so nothing else would report the change to the frame gate.
+///
+/// Those two used to be the CALLER's to remember, and the five commit sites did not agree: three
+/// performed the pair, one ([`pms_fetch_hubs`]) reconciled only through a wrapper its other caller
+/// bypassed, and [`reset`] did neither. What kept that last omission from being visible is that
+/// `reset`'s one production caller routes away from the detail page first — not any property of
+/// `reset`. A ritual every caller must repeat is the defect class, so it lives here, where a new
+/// commit site cannot forget it and no site has to be checked against the others.
+///
+/// MAIN THREAD, and callers release the [`SRCS`] guard first: the re-selection re-enters this
+/// module ([`index_of_rk`]) to walk the catalog just replaced.
 fn commit(build: HubBuild) -> c_int {
     let (new_cat, new_hubs, new_pool) = build;
     let n = new_cat.len();
@@ -1094,6 +1103,8 @@ fn commit(build: HubBuild) -> c_int {
         *std::ptr::addr_of_mut!(HUBS) = new_hubs;
         *std::ptr::addr_of_mut!(HERO_POOL) = new_pool;
     }
+    crate::ui::detail::reselect();
+    crate::ui::idle::invalidate();
     n as c_int
 }
 
@@ -1250,16 +1261,14 @@ pub(crate) fn pump(dt: f32) {
     let build = (dirty || sections_moved).then(|| merge(&srcs));
     drop(srcs); // before calling out: `detail::reselect` walks the catalog this is about to replace
     if any_landed {
-        // A landing rewrites the shelves under a Home screen that may have gone idle (a failure
-        // repaints too — the status caption changes with it).
+        // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
+        // a failure rewrites no shelf but does change the status caption, under a Home screen that
+        // may have gone idle with nothing else on it to move.
         crate::ui::idle::invalidate();
     }
     if let Some(build) = build {
         let n = commit(build);
         crate::log(&format!("hubs: landed — {n} items, {} shelves", hub_count()));
-        // the same post-mutation ritual `refetch_hubs_reconcile` performs: an open detail page
-        // re-resolves its selected row against the rebuilt catalog
-        crate::ui::detail::reselect();
     }
 }
 
