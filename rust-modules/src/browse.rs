@@ -1947,9 +1947,9 @@ mod tests {
         assert_eq!(cur(), before.0);
         // …while a library the owner has CREATED since is appended, at the end, where it cannot
         // disturb an index anything is already holding.
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (4, "LDN Shows".into(), SecKind::Show)]);
+        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (4, "Club Shows".into(), SecKind::Show)]);
         assert_eq!(section_count(), 4);
-        assert_eq!(section_title(3), "LDN Shows");
+        assert_eq!(section_title(3), "Club Shows");
         assert_eq!(section_title(1), before.1, "and the row we were browsing is untouched");
         reset();
     }
