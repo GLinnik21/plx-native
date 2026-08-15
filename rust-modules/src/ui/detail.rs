@@ -1135,14 +1135,15 @@ pub(crate) fn open(idx: c_int) {
     let v = view();
     v.selected = idx;
     reset_view_state(v);
-    crate::ui::alt_sources::reset(""); // …until the row below names the item this page is about
+    // …until the row below names the item this page is about
+    crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     if idx >= 0 {
         if let Some(m) = crate::pms::movie(idx as usize) {
             // the row's OWN server, never the current one — a merged shelf holds rows from more
             // than one, and the row is the only thing that knows which
             v.mounted_sid = m.sid;
             v.mounted_rk = m.rk.clone(); // keep the index reconcilable — see `reselect`
-            crate::ui::alt_sources::reset(&m.rk);
+            crate::ui::alt_sources::reset(m.sid, &m.rk);
             if !m.rk.is_empty() {
                 metadata::load_detail_now(m.sid, &m.rk);
             }
@@ -1164,9 +1165,9 @@ pub(crate) fn back() -> bool {
 
 /// Leave the detail page (drop the loaded item).
 pub(crate) fn close() {
-    // the panel is this page's, so it dies with it — and with an empty rk nothing can land in the
-    // store for a page that is gone
-    crate::ui::alt_sources::reset("");
+    // the panel is this page's, so it dies with it — and with an unset server and an empty rk
+    // nothing can land in the store for a page that is gone
+    crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     metadata::clear();
     // Both latches die with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
@@ -2403,6 +2404,23 @@ fn play_note(
     }
 }
 
+/// The Plex Pass claim that applies to THIS item: the subscription of the server it came from.
+///
+/// **Never `serverinfo::subscription()`**, which answers for whichever server is *current* — and
+/// `current` stays pinned to the primary while a shared library is browsed (`plex::servers`' rule),
+/// so a borrowed film's note was drawn from OUR server's answer. Both polarities are silent and
+/// wrong, which is why this is a named function rather than an inline call: with our own server
+/// Pass'd, a friend's free server converting a film says nothing at all where the design asks it to
+/// say "hardware conversion needs [PLEX PASS]"; with ours free, every borrowed film wears a warning
+/// about a subscription that is not the one doing the work. `subscription_of` exists for exactly
+/// this, and `Detail::sid` is the item's own server, captured at fetch time.
+///
+/// An item with no server on it ([`crate::plex::ServerId::UNSET`] — a host fixture, or a row parsed
+/// before any server was registered) reads as `Unknown`, which [`play_note`] is silent about.
+fn item_subscription(d: &metadata::Detail) -> crate::plex::serverinfo::Subscription {
+    crate::plex::serverinfo::subscription_of(d.sid)
+}
+
 /// The alert glyph's box on the facts row — the line's own type size, which is the 24-unit svg the
 /// mock inlines on a CAPTION line.
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
@@ -2447,7 +2465,7 @@ fn play_mode_bits(d: &metadata::Detail, after: bool) -> ([Bit; FACTS_BITS], usiz
         // the row-level separator, at the same air the date/extent pair either side of it uses
         push(Bit::Sep(theme::space::MD));
     }
-    match play_note(pv, d.hdr, crate::plex::serverinfo::subscription()) {
+    match play_note(pv, d.hdr, item_subscription(d)) {
         PlayNote::Quiet => push(Bit::Word(
             match pv {
                 crate::route::Preview::DirectPlay => c"Direct Play",
@@ -3558,8 +3576,9 @@ fn mount_rk(sid: crate::plex::ServerId, rk: &str) {
     v.mounted_sid = sid;
     reset_view_state(v);
     // point the copy list at the new item — a store still describing the previous film would draw
-    // its control on this hero and offer to navigate to its copies
-    crate::ui::alt_sources::reset(rk);
+    // its control on this hero and offer to navigate to its copies. BOTH halves of the identity:
+    // the other server's film with this rk is a different film, and its resolve may be in flight.
+    crate::ui::alt_sources::reset(sid, rk);
 }
 
 /// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
@@ -4061,6 +4080,59 @@ mod tests {
         ] {
             assert_eq!(super::play_note(pv, hdr, sub), want, "{pv:?} hdr={hdr} {sub:?}");
         }
+    }
+
+    /// **Which server the truth table above is asked ABOUT** — the half it cannot see, because it
+    /// takes the tristate as an argument.
+    ///
+    /// The note is a claim about the machine that would run the encoder, i.e. the ITEM's server.
+    /// This read `serverinfo::subscription()`, the CURRENT server's — and browsing a shared library
+    /// deliberately leaves `current` on the primary, so the two differ for every borrowed film.
+    /// Both polarities are silent: our Pass'd server hid a free share's soft note and its HDR
+    /// warning entirely (the two states the design added this row for), while a free primary put
+    /// "hardware conversion needs [PLEX PASS]" on a friend's Pass'd server's conversion, which is
+    /// the confident wrong answer pointing at a purchase that would fix nothing.
+    ///
+    /// The registry and the subscription slots are crate globals, so this holds `testlock::serial()`
+    /// and empties the registry on the way OUT as well as in.
+    #[test]
+    fn the_pass_note_judges_the_items_own_server_not_the_browsed_one() {
+        use crate::plex::serverinfo::{store_for_test, Subscription as Sub};
+        use crate::plex::ServerId;
+        struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _g = Fresh(crate::testlock::serial());
+        crate::plex::reset_servers_for_test();
+        let reg = |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
+        let (ours, theirs) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
+        // the slot arrays outlive `reset_servers_for_test` — start from the boot state explicitly
+        store_for_test(ours, Sub::Unknown, "");
+        store_for_test(theirs, Sub::Unknown, "");
+        store_for_test(ours, Sub::Yes, "1.43.3.10861-cd85035e7");
+        store_for_test(theirs, Sub::No, "1.32.0.6918-free");
+        // browsing the share does NOT re-point `current`, which is what made this look right
+        assert!(crate::plex::set_current(ours));
+
+        let on = |sid| Detail { sid, rk: "m1".into(), hdr: true, ..Default::default() };
+        assert_eq!(super::item_subscription(&on(theirs)), Sub::No, "a borrowed film asks the share");
+        assert_eq!(super::item_subscription(&on(ours)), Sub::Yes, "…and ours asks ours");
+        // which is the whole point: the same conversion, the same source, two different notes
+        assert_eq!(
+            super::play_note(crate::route::Preview::Converts, true, super::item_subscription(&on(theirs))),
+            super::PlayNote::Warn,
+            "the free share's HDR re-encode is the warning the design asks for"
+        );
+        assert_eq!(
+            super::play_note(crate::route::Preview::Converts, true, super::item_subscription(&on(ours))),
+            super::PlayNote::Quiet,
+            "and our Pass'd server's identical conversion says nothing"
+        );
+        // an item with no server on it is "we have not heard", never slot 0's answer
+        assert_eq!(super::item_subscription(&on(ServerId::UNSET)), Sub::Unknown);
     }
 
     // ---- the facts row's source credit (Shared Sources, deliverable E) ------------------------
@@ -4583,7 +4655,7 @@ mod tests {
         // global: without this an alt test would leave a third control on the hero row and the
         // NEXT test to run would fail on a count it never touched. Tests that want the control
         // call `alt_arm` after mounting.
-        crate::ui::alt_sources::reset("");
+        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
         let set = hero_set();
         let v = view();
         v.section = 0;
@@ -4779,8 +4851,11 @@ mod tests {
         use crate::ui::alt_sources::{install, reset, AltCopy};
         let here = crate::plex::current_server();
         let theirs = crate::plex::ServerId::from_raw(here.raw().wrapping_add(1));
-        reset(rk);
+        // `reset` and `install` are the two ends of a MAILBOX keyed on `(server, rk)` — arming the
+        // store means naming the same page at both, exactly as a real mount and its landing do.
+        reset(here, rk);
         install(
+            here,
             rk,
             vec![
                 AltCopy {
@@ -4804,7 +4879,7 @@ mod tests {
         );
     }
     fn alt_clear() {
-        crate::ui::alt_sources::reset("");
+        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     }
 
     /// **The gate, as the actions row sees it.** One source and the row is what it always was — no
@@ -4843,12 +4918,14 @@ mod tests {
         // put a control on this row however many copies of the film it has.
         mount(Some(movie(0, 7_200_000)), 0);
         use crate::ui::alt_sources::{install, reset, AltCopy};
-        reset("m1");
+        let here = crate::plex::current_server();
+        reset(here, "m1");
         install(
+            here,
             "m1",
             vec![
-                AltCopy { sid: crate::plex::current_server(), library: "Movies".into(), rk: "m1".into(), ..Default::default() },
-                AltCopy { sid: crate::plex::current_server(), library: "4K Movies".into(), rk: "9".into(), ..Default::default() },
+                AltCopy { sid: here, library: "Movies".into(), rk: "m1".into(), ..Default::default() },
+                AltCopy { sid: here, library: "4K Movies".into(), rk: "9".into(), ..Default::default() },
             ],
         );
         assert_eq!(hero_btns(), 2, "two copies on ONE source are not 'also available elsewhere'");

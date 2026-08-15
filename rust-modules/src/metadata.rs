@@ -1233,7 +1233,7 @@ pub(crate) fn load_detail_now(sid: crate::plex::ServerId, rk: &str) {
             // never ran for anything opened this way — `plxnative-detail`, `open_rk_season`, and
             // home's play-a-show arm. Found by the button staying absent on a device that had two
             // copies of the guid.
-            request_alt_sources(&d.rk, &d.guid);
+            request_alt_sources(d.sid, &d.rk, &d.guid);
             unsafe { *addr_of_mut!(CURRENT) = Some(d) }
             // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor
             sync_now_playing();
@@ -1330,7 +1330,7 @@ pub(crate) fn pump_detail() -> bool {
     // Ask the other sources about this item BEFORE the move: the resolve needs the item's own
     // server and its portable guid, and this is the one place both are known on the main thread.
     // A page with no guid, or a one-server install, spawns nothing.
-    request_alt_sources(&d.rk, &d.guid);
+    request_alt_sources(d.sid, &d.rk, &d.guid);
     unsafe { *addr_of_mut!(CURRENT) = Some(d) }
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing();
@@ -1349,8 +1349,16 @@ pub(crate) fn pump_detail() -> bool {
 static ALT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 struct AltResult {
     gen: u32,
+    /// The SERVER the resolve was asked for — the other half of `rk`, and carried for exactly the
+    /// reason [`SeasonResult::sid`] is. A `ratingKey` is a server-local integer dense from 1
+    /// (docs/shared-servers.md §1), so leaving OUR film 4 and opening the SHARE's film 4 while a
+    /// resolve is out passes an rk-only test — and the generation guard cannot see that hop either,
+    /// since it only moves when a DETAIL lands and the new page's is still in flight. The panel
+    /// would then list the other machine's copies, and OK on one would open a different film.
+    sid: crate::plex::ServerId,
     /// The rk the resolve was asked FOR, carried so the landing can be matched against the page
-    /// that is mounted now — `alt_sources::install` refuses any other, and this is what lets it.
+    /// that is mounted now — `alt_sources::install` refuses any other pair, and this is what lets
+    /// it.
     rk: String,
     list: Vec<crate::ui::alt_sources::AltCopy>,
 }
@@ -1369,7 +1377,13 @@ static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(Non
 ///
 /// Sources are captured here, on the main thread, as a plain list of ids — the worker resolves each
 /// through `client_for` and never asks what is current.
-fn request_alt_sources(rk: &str, guid: &str) {
+///
+/// `sid` is the ITEM's own server, captured with `rk` at the call site because the two are one
+/// identity: it rides through [`AltResult`] to `alt_sources::install`, which refuses a landing for
+/// any other pair. Without it a resolve parked on a dead share's `connect(2)` timeout lands on
+/// whatever page holds the same ratingKey when it finally answers, which across two servers is the
+/// ordinary case rather than an exotic one.
+fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
     use std::sync::atomic::Ordering;
     let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -1388,7 +1402,7 @@ fn request_alt_sources(rk: &str, guid: &str) {
         // metadata id — not an address, a token or a machine — so it is safe to log, and it is the
         // only string that identifies WHICH lookup this was.
         crate::log(&format!("altsrc: asked {n} source(s) for {guid} -> {} copy(ies)", list.len()));
-        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, rk, list });
+        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, sid, rk, list });
     });
 }
 
@@ -1430,9 +1444,10 @@ pub(crate) fn pump_alt_sources() {
     if r.gen != ALT_GEN.load(Ordering::SeqCst) {
         return; // superseded: the page moved on while this was in flight
     }
-    // `install` re-checks the rk against the page actually mounted — this generation test alone
-    // cannot see a page that was opened, left and re-opened between spawn and landing.
-    crate::ui::alt_sources::install(&r.rk, r.list);
+    // `install` re-checks the (server, rk) PAIR against the page actually mounted — this generation
+    // test alone cannot see a page that was opened, left and re-opened between spawn and landing,
+    // and the rk alone cannot see the two servers' keys colliding, which they do by default.
+    crate::ui::alt_sources::install(r.sid, &r.rk, r.list);
 }
 
 /// True while a detail fetch is in flight — drives the detail page's loading spinner.
@@ -2004,6 +2019,59 @@ mod tests {
             .expect("parses")
             .media_container;
         assert!(mc.metadata.is_empty(), "size=0 is an answer, and it is an empty one");
+    }
+
+    /// **The cross-source resolve carries its SERVER through the mailbox, and the pump hands both
+    /// halves to the panel.** The generation guard beside it cannot stand in for this: `ALT_GEN`
+    /// only moves when a DETAIL lands, so a page opened while a resolve is out — the whole reason
+    /// this is asynchronous, since one dead share costs a `connect(2)` timeout — is a page whose
+    /// own detail is still in flight, and the landing sails through the generation test. The rk
+    /// then matched too, because both servers number their items from 1: the panel listed the
+    /// other machine's copies and OK on one opened a different film.
+    ///
+    /// Drives the real `pump_alt_sources` (the mailbox is filled directly, as the detail test does
+    /// for its failure case — there is no `land_alt` for a test to reach) and grades the panel's
+    /// own gate, which is the thing a user would see appear or not appear.
+    #[test]
+    fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused() {
+        let _serial = crate::testlock::serial();
+        use crate::ui::alt_sources::AltCopy;
+        // two copies on two sources — enough for `is_available`, which counts distinct SOURCES
+        let copies = || {
+            vec![
+                AltCopy { sid: SRV_A, rk: "4".into(), ..Default::default() },
+                AltCopy { sid: SRV_B, rk: "318".into(), ..Default::default() },
+            ]
+        };
+        let land = |gen: u32, sid: crate::plex::ServerId, rk: &str| {
+            *ALT_SLOT.lock().unwrap() = Some(AltResult { gen, sid, rk: rk.to_string(), list: copies() });
+        };
+
+        // our film 4 is the mounted page and its resolve is out…
+        crate::ui::alt_sources::reset(SRV_A, "4");
+        let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        // …and while it is out the user lands on the SHARE's film 4
+        crate::ui::alt_sources::reset(SRV_B, "4");
+        land(gen, SRV_A, "4");
+        pump_alt_sources();
+        assert!(!crate::ui::alt_sources::is_available(), "our copies are not news about the share's film");
+
+        // the control: the very same landing DOES reach the panel while the page is still ours
+        crate::ui::alt_sources::reset(SRV_A, "4");
+        let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        land(gen, SRV_A, "4");
+        pump_alt_sources();
+        assert!(crate::ui::alt_sources::is_available(), "the awaited landing installs");
+
+        // …and a SUPERSEDED landing is still dropped one layer earlier, by the generation
+        let stale = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        ALT_GEN.fetch_add(1, Ordering::SeqCst);
+        crate::ui::alt_sources::reset(SRV_A, "4");
+        land(stale, SRV_A, "4");
+        pump_alt_sources();
+        assert!(!crate::ui::alt_sources::is_available(), "a landing from a superseded resolve is dropped");
+
+        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     }
 
     /// The whole detail mailbox in one serial test — the statics are global, so splitting this
