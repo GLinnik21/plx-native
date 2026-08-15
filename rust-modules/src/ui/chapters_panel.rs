@@ -25,6 +25,12 @@ use crate::ui::widgets::CARD_FOCUS_SCALE;
 
 static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut SEL: c_int = 0;
+
+/// The highlighted chapter, for the focus probe (`crate::focusprobe`). The strip's LEFT/RIGHT arm
+/// in `app.rs` moves this and nothing else, so the fingerprint is blind to it without a reader.
+pub(crate) fn sel() -> c_int {
+    unsafe { addr_of!(SEL).read() }
+}
 static mut SCROLL: Spring = Spring::at(0.0); // horizontal scroll offset (px)
 static mut SCALE: Spring = Spring::at(1.0); // focused-card pop (springs 1.0 → FOCUS_SCALE on each move)
 

@@ -39,7 +39,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 9] = [
+const DIAG: [&str; 10] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -49,6 +49,11 @@ const DIAG: [&str; 9] = [
     "plxnative-remote",
     "plxnative-capture",
     "plxnative-noidle",
+    // The focus fingerprint ([`crate::focusprobe`]). Diagnostic for `noidle`'s reason and one of
+    // its own: it only READS focus and writes a log line, and a (route × key) characterization
+    // harness has to be able to observe the who's-watching picker, which a non-DIAG trigger would
+    // suppress — the observer would remove the screen it was armed to watch.
+    "plxnative-focus",
 ];
 
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?

@@ -18,6 +18,7 @@ mod devcaps; // what this SoC decodes — the TV's own codec table, read once at
 #[macro_use]
 mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases
 mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — the TV's own FFmpeg 3.3 via the stub-.so link
+mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod gfx;
 mod img;
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related

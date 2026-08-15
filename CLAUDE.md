@@ -310,8 +310,11 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   (`app.rs`, via `rd_u32`) reads raw bytes off the event: `+16` = state (u32), `+20` = webOS keycode
   (u32), `+24` = sym (u32). State low byte = pressed(1)/released(0); bit `0x100` = auto-repeat.
   Magic-Remote buttons are matched by these `wcode`s (e.g. PAUSE=72, PLAY=450, BACK=461/482, stop=413,
-  D-pad L/R alt 412/417; the wcodes live in `ui/consts.rs`). Preserve this raw-offset reading if you
-  touch input.
+  D-pad L/R alt 412/417; the wcodes live in `ui/consts.rs`, as `WCODE_*` — true of the L/R pair only
+  since 2026-08-15, when it was named; until then it was five bare literals in `app.rs` and this
+  sentence was false. One literal is left, and deliberately: BACK's secondary 461 is written out
+  inside `is_back`, in `consts.rs` itself, beside the constant and the comment explaining it).
+  Preserve this raw-offset reading if you touch input.
 - **Starfish/ACB ABI + bind-order rules** (the C++-from-C mangled-symbol seam, `Load` with
   `uid=NULL`, the exact ACB bind sequence, sourceInfo-verbatim, never feed audio to ACB, the
   3-arg taskId ABI) — moved to **`rust-modules/src/player/CLAUDE.md`**; read it before touching

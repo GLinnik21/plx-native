@@ -44,6 +44,14 @@ static mut ROWS: &[Action] = &[];
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
 }
+
+/// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the key
+/// ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes nothing
+/// else, so without this the fingerprint records the panel opening and closing and nothing between.
+/// Through `addr_of!` rather than the module's own `table()`, which hands out a `&'static mut`.
+pub(crate) fn sel() -> i32 {
+    unsafe { (*addr_of!(TABLE)).sel }
+}
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
 }
