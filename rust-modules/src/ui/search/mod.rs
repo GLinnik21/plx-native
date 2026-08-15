@@ -97,6 +97,15 @@ pub(crate) const LABEL_BLOCK: f32 = 114.0;
 pub(crate) const KEYBOARD_H: f32 = 324.0;
 /// The field: 820 wide at the app's own side margin, on the one control height.
 pub(crate) const FIELD: Rect = Rect { x: 90.0, y: 148.0, w: 820.0, h: 60.0 };
+/// Where the app's own chrome ends and the result band begins — the field's bottom edge.
+///
+/// It is the navigation scrim's OPAQUE floor: [`crate::ui::widgets::nav_scrim`] fills flat from the
+/// top of the panel down to here and only THEN ramps out to [`CONTENT_TOP`], so this is the line
+/// above which a scrolled shelf cannot be seen at all. Which makes it two things at once, and they
+/// must stay one number — the argument [`draw`] passes that function, and the floor
+/// [`results`] records its pointer rects against. A tile the user cannot see is a tile the pointer
+/// must not be able to reach.
+pub(crate) const CHROME_BOTTOM: f32 = FIELD.y + FIELD.h;
 /// Terms kept. **Five**, which is `Search Screen.dc.html`'s number and was four here for a reason
 /// that turned out to be arithmetic against a wrong constant: the header, the rows and the Clear
 /// control all have to finish above the raised keyboard, and [`KEYBOARD_H`] claimed a panel 56px
@@ -778,7 +787,7 @@ pub(crate) fn draw() {
     // only by `results`' scissor — a razor edge in open ground, which is what got photographed.
     // `widgets::nav_scrim` is the shared treatment (the Library's, and the design system's
     // `route-screen` card); the scissor is a bound again, cutting inside the opaque band.
-    crate::ui::widgets::nav_scrim(p, FIELD.y + FIELD.h, CONTENT_TOP, v.shift);
+    crate::ui::widgets::nav_scrim(p, CHROME_BOTTOM, CONTENT_TOP, v.shift);
     field::draw(p, &v);
 
     // `CHIP_D`, not a literal 54: Home draws this same chip at 60, and Home<->Search is a
