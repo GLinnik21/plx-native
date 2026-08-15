@@ -260,7 +260,11 @@ pub(crate) enum Action {
 
 static mut AREA: Area = Area::Grid;
 static mut TAB_F: usize = 1; // focused pill while AREA==Tabs (0 = Home)
-static mut TOOL_F: usize = 0; // focused toolbar chip (0 sort / 1 filter — both open a menu)
+/// Where the toolbar cursor was last WALKED to. Never read directly — the row it indexes changes
+/// length without input, so every reader goes through [`tool_f`], which clamps it to the row that
+/// is drawn. (It is not a chip identity either: the row is two chips long with one source and
+/// three with two — see [`Chip`].)
+static mut TOOL_F: usize = 0;
 static mut GR: usize = 0; // grid focus row
 static mut GC: usize = 0; // grid focus col
 static mut SCROLL: Spring = Spring::at(0.0);
@@ -270,9 +274,27 @@ static mut PREV_IDX: i64 = -1;
 static mut MENU: Menu = Menu::None;
 static mut POP: Popover = Popover::new();
 static mut TABLE: TableView = TableView::new();
-/// Source-row count the OPEN menu was built from (only one menu is ever open; 0 = "Loading…").
-/// update() rebuilds the menu in place when the live server list outgrows this.
+/// Row count the OPEN **value-list** menu was built from — Sort and Genre, whose rows ARE
+/// `browse::sorts()`/`genres()` (only one menu is ever open; 0 = "Loading…"). [`menu_stale`]
+/// rebuilds in place when the live list stops matching it, and `menu_commit` gates OK on it so a
+/// press on the "Loading…" row cannot resolve to a value that is not there.
+///
+/// The Sources panel does **not** key on this — see [`SRC_BUILT_GEN`].
 static mut MENU_BUILT: usize = 0;
+/// The section-table generation ([`crate::browse::sections_gen`]) the OPEN Sources panel was built
+/// from — its staleness key, and deliberately NOT a row count.
+///
+/// Sort and Genre can key on a count because the list they are built from is the list they show.
+/// The Sources panel's rows are `browse::source_rows()`, which is **kind-filtered** — only the
+/// libraries of the tab's own type — while the obvious count beside it, `section_count()`, counts
+/// every kind. Those two are equal only on an account with a single kind of library, so on any
+/// ordinary one (Movies *and* TV Shows) the guard never converged and the panel rebuilt itself —
+/// `source_groups()` + `source_rows()` String clones and a full `set_sections()` — on EVERY frame
+/// it was open, which is exactly the state this screen's own instrumentation measured as
+/// fill-rate-bound (`menu.panel` 16–42 ms). A generation cannot be compared against the wrong
+/// quantity, because it is not a count of anything: `browse::append_sections` bumps it when a
+/// source's libraries land, and that landing is the whole reason this rebuild exists.
+static mut SRC_BUILT_GEN: u32 = 0;
 static mut PHASE_MS: f32 = 0.0; // spinner phase accumulator
 /// The failure read-out's Try again pill, recorded at draw for the pointer (the `TOOL_RECTS` /
 /// `RAIL_RECTS` idiom). Parked OFF the panel rather than at the origin, because `Rect::contains`
@@ -478,13 +500,30 @@ fn chips() -> &'static [Chip] {
         (false, true) => &CHIPS_NONE,
     }
 }
+/// **The toolbar's focused chip INDEX — the ONE authority, read by the draw, by the walk and by
+/// the activation alike.** Nothing else may read `TOOL_F`.
+///
+/// The raw static is where the user last walked to, and the row's LENGTH moves under it without
+/// any input at all: a second source is granted, or a listing fails and `chips()` collapses
+/// `CHIPS_MANY` → `CHIPS_SOURCE_ONLY`, or a profile switch is absorbed by the `EPOCH` watchdog with
+/// no `enter()` to zero it. So the index is clamped to the row that is actually DRAWN, at the one
+/// point everything reads, because the failure of clamping it in only some of them is silent and
+/// asymmetric: `focused_chip` clamped and the draw did not, so the toolbar drew NO focused chip
+/// while OK still activated the clamped last one and RIGHT was dead against a length the ring was
+/// not standing in.
+///
+/// Clamping rather than resetting is deliberate: the raw value survives, so a row that grows back
+/// (the source answered again) returns focus to the chip the user actually walked to instead of
+/// dumping it at 0.
+fn tool_f() -> usize {
+    let n = chips().len();
+    unsafe { addr_of!(TOOL_F).read() }.min(n.saturating_sub(1))
+}
+
 /// The chip holding toolbar focus, or `None` when the row is EMPTY — which it is on a one-source
-/// failure, where every chip this toolbar has is a grid operation. `TOOL_F` is clamped here rather
-/// than everywhere it is read: the row's length changes the moment a second source is granted (and
-/// again the moment one stops answering), and a stale index must resolve to a chip that exists.
+/// failure, where every chip this toolbar has is a grid operation.
 fn focused_chip() -> Option<Chip> {
-    let c = chips();
-    c.get(unsafe { addr_of!(TOOL_F).read() }.min(c.len().saturating_sub(1))).copied()
+    chips().get(tool_f()).copied()
 }
 
 /// THE chip → menu map, and the ONE place a chip is turned into an action. Both activation paths
@@ -1137,15 +1176,18 @@ pub(crate) fn update(dt: f32) {
         table().update(dt, table_rect().h - crate::ui::table::PAD_V);
         // async menu data landing while the popover is open — rebuild it in place (a Sort
         // menu stuck on "Loading…" whose OK secretly toggled the direction was a
-        // review-confirmed bug)
-        let built = unsafe { addr_of!(MENU_BUILT).read() };
-        match menu() {
-            Menu::Sort if built != crate::browse::sorts().len() => build_sort_menu(true),
-            Menu::Genre if built != crate::browse::genres().len() => build_genre_menu(true),
-            // a source's libraries landing while the list is open (its discovery is a worker) —
-            // rebuilt in place, same rule as a menu's value list arriving
-            Menu::Source if built != crate::browse::section_count() => build_source_menu(true),
-            _ => {}
+        // review-confirmed bug). Two matches over one enum, the `chip_menu`/`open_chip_menu`
+        // idiom: one DECIDES and is host-gradeable, one PERFORMS and measures text. A new menu
+        // stops both compiling.
+        if menu_stale() {
+            match menu() {
+                Menu::Sort => build_sort_menu(true),
+                Menu::Genre => build_genre_menu(true),
+                // a source's libraries landing while the list is open (its discovery is a worker) —
+                // rebuilt in place, same rule as a menu's value list arriving
+                Menu::Source => build_source_menu(true),
+                Menu::Filter | Menu::None => {}
+            }
         }
     }
 }
@@ -1206,10 +1248,13 @@ pub(crate) fn move_focus(sym: c_uint) {
                 }
             }
             Area::Toolbar => {
-                if sym == SDLK_LEFT && TOOL_F > 0 {
-                    TOOL_F -= 1;
-                } else if sym == SDLK_RIGHT && TOOL_F + 1 < chips().len() {
-                    TOOL_F += 1;
+                // walk from the DRAWN index (`tool_f`), never from the raw static: a step taken
+                // from a stale one moves the ring by more than one chip, or by none at all
+                let f = tool_f();
+                if sym == SDLK_LEFT && f > 0 {
+                    TOOL_F = f - 1;
+                } else if sym == SDLK_RIGHT && f + 1 < chips().len() {
+                    TOOL_F = f + 1;
                 } else if sym == SDLK_UP {
                     AREA = Area::Tabs;
                     TAB_F = own_pill();
@@ -1461,6 +1506,27 @@ fn close_menu() {
     pop().close();
 }
 
+/// **Has the data under the OPEN menu moved since it was built?** The rebuild-on-landing test,
+/// split out of [`update`] as a value so it can be graded on the host — the rebuild itself goes
+/// through `TableView`, which measures text.
+///
+/// Every arm compares LIKE WITH LIKE, which is the whole content of this function: a menu's key is
+/// whatever it recorded at build time and nothing else. Sort and Genre record the length of the
+/// list their rows are; the Sources panel records the section-table GENERATION, because its rows
+/// are a kind-filtered projection whose count matches no other count in the app (see
+/// [`SRC_BUILT_GEN`] for the frame-per-frame rebuild that cost). `Filter` is static rows built from
+/// `view_*`, so it has no landing to wait for and is never stale.
+fn menu_stale() -> bool {
+    let built = unsafe { addr_of!(MENU_BUILT).read() };
+    let src_gen = unsafe { addr_of!(SRC_BUILT_GEN).read() };
+    match menu() {
+        Menu::Sort => built != crate::browse::sorts().len(),
+        Menu::Genre => built != crate::browse::genres().len(),
+        Menu::Source => src_gen != crate::browse::sections_gen(),
+        Menu::Filter | Menu::None => false,
+    }
+}
+
 // ---- the Sources list ------------------------------------------------------------------------
 
 /// THE ROW MODEL of the two-level Sources panel, pure over its inputs so it is host-testable
@@ -1544,13 +1610,18 @@ fn source_sel(rows: &[crate::browse::SrcRow], keep: Option<i32>) -> i32 {
 /// Build (or rebuild in place) the Sources panel at the current level.
 fn build_source_menu(keep: bool) {
     let level = unsafe { addr_of!(SRC_LEVEL).read() };
+    // READ THE GENERATION FIRST, before the projections it stamps. `source_groups`/`source_rows`
+    // only read, so nothing can move between here and the build today — but recording it after
+    // would silently adopt a landing this panel was not built from, and that is a rebuild lost
+    // rather than one too many.
+    let table_gen = crate::browse::sections_gen();
     let groups = crate::browse::source_groups();
     let rows = crate::browse::source_rows();
     let (secs, acts) = source_sections(level, &groups, &rows);
     let sel = source_sel(&rows, keep.then(|| table().sel));
     unsafe {
         *addr_of_mut!(SRC_ACTIONS) = acts;
-        MENU_BUILT = rows.len();
+        SRC_BUILT_GEN = table_gen;
         MENU = Menu::Source;
     }
     table().compact = false; // two-line rows: HEADLINE titles over CAPTION sub-lines
@@ -2137,7 +2208,10 @@ pub(crate) fn draw() {
     crate::ui::widgets::profile_chip(pk, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
     crate::ui::widgets::draw_tab_row(pk);
 
-    let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && unsafe { addr_of!(TOOL_F).read() } == i;
+    // the focused index comes from `tool_f` — the same clamped authority `focused_chip` reads, so
+    // the chip wearing the ring and the chip OK activates are one chip
+    let tool_i = tool_f();
+    let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && tool_i == i;
     let strs = chip_strs();
     let mut x = MARGIN_X;
     let mut rects = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
@@ -2772,7 +2846,91 @@ mod tests {
         unsafe { TOOL_F = 2 };
         assert_eq!(focused_chip(), Some(Chip::Filter));
 
+        // ---- and the row SHRINKING under the focus index ------------------------------------
+        //
+        // The chip the toolbar DRAWS the ring on and the chip OK activates must be one chip. They
+        // were not: `focused_chip` clamped and the draw's `tool_focus` compared the raw `TOOL_F`,
+        // so a row that lost its grid chips drew no focused chip at all while OK still fired the
+        // clamped last one — and RIGHT was dead, because it too measured a stale index against the
+        // shorter row. Both now read [`tool_f`], which is why this asserts through it.
+        crate::browse::seed_sources_for_test(2, true);
+        assert_eq!(chips(), &CHIPS_MANY[..]);
+        unsafe { TOOL_F = 2 };
+        assert_eq!(tool_f(), 2, "the user walked to the end of the long row");
+        assert_eq!(focused_chip(), Some(Chip::Filter));
+
+        // the listing fails and `chips()` collapses under the cursor, with NO input in between
+        crate::browse::seed_sources_for_test(2, false);
+        assert_eq!(chips(), &CHIPS_SOURCE_ONLY[..]);
+        let i = tool_f();
+        assert!(i < chips().len(), "the focused index is inside the row that is drawn");
+        assert_eq!(chips().get(i).copied(), focused_chip(), "the ring and the press name one chip");
+        assert_eq!(focused_chip(), Some(Chip::Source));
+        // …and the walk measures the same row: there is nothing to the RIGHT of the only chip,
+        // which is a statement about the row on screen rather than about one the ring left behind
+        assert_eq!(i + 1, chips().len(), "RIGHT is at the end because the ring is on the last chip");
+
+        // the source answers again: the row grows back and focus returns to the chip the user
+        // actually walked to, rather than having been dumped at 0 while it was away
+        crate::browse::seed_sources_for_test(2, true);
+        assert_eq!((tool_f(), focused_chip()), (2, Some(Chip::Filter)));
+
+        crate::browse::reset();
         unsafe { TOOL_F = tool0 };
+    }
+
+    /// **The rebuild-on-landing guard has to CONVERGE**, and with two kinds of library it did not.
+    ///
+    /// The Sources panel records a key at build time and `update` rebuilds it in place when the
+    /// live one differs. Its key was `source_rows().len()` — KIND-FILTERED, only the libraries of
+    /// the tab's own type — compared against `browse::section_count()`, which counts every kind.
+    /// On any account with both Movies and TV Shows those two are never equal, so the panel rebuilt
+    /// itself (`source_groups()` + `source_rows()` String clones, then a whole `set_sections()`) on
+    /// every frame it was open — in the one state this screen's instrumentation measured as
+    /// fill-rate-bound. Keyed on the section-table GENERATION it converges, because a generation is
+    /// not a count of anything and cannot be compared against the wrong one.
+    ///
+    /// It must still catch the landing it exists for, so the second half appends a library the way
+    /// a discovery worker does and asserts both the rebuild and the row it brought.
+    #[test]
+    fn the_sources_panel_stops_rebuilding_once_the_table_stops_moving() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        let menu0 = menu();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+
+        // THE SHAPE THAT BROKE IT: the panel lists one kind, the section table holds two.
+        assert_eq!(crate::browse::section_count(), 4, "two sources, a Movies and a Shows library each");
+        assert_eq!(crate::browse::source_rows().len(), 2, "…of which the panel lists the tab's kind");
+        assert_ne!(
+            crate::browse::source_rows().len(),
+            crate::browse::section_count(),
+            "the two quantities the old guard compared can never meet here"
+        );
+
+        build_source_menu(false);
+        assert_eq!(menu(), Menu::Source);
+        let rows0 = unsafe { (*addr_of!(SRC_ACTIONS)).len() };
+        // …and it settles: every frame the panel stays open is a frame it does NOT rebuild
+        for frame in 0..3 {
+            assert!(!menu_stale(), "frame {frame} rebuilt a panel nothing had changed under");
+        }
+
+        // a source's libraries landing IS what this rebuild exists for, and still fires
+        crate::browse::append_section_for_test(1, 5, "Film Club Extra", crate::browse::SecKind::Movie);
+        assert!(menu_stale(), "a library landing under the open panel must rebuild it");
+        build_source_menu(true);
+        assert!(!menu_stale(), "…once, and then settle again");
+        assert_eq!(
+            unsafe { (*addr_of!(SRC_ACTIONS)).len() },
+            rows0 + 1,
+            "the rebuild is real — the new library is a row, not just a quieted guard"
+        );
+
+        close_menu();
+        crate::browse::reset();
+        unsafe { MENU = menu0 };
     }
 
     /// The whole point of the constant pitch: a Latin section and a Cyrillic one space their
