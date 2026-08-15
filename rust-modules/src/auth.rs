@@ -259,12 +259,16 @@ pub fn start_switch() {
             Some(us) if !us.is_empty() => {
                 let users: Vec<UserTile> = us.iter().map(UserTile::of).collect();
                 log(&format!("auth: roster refreshed n={}", users.len()));
-                let persist = with_ctl(|c| {
+                let roster = with_ctl(|c| {
                     c.session.home_users = users.iter().map(UserTile::to_ref).collect();
                     c.users = users;
-                    c.session.clone()
+                    c.session.home_users.clone()
                 });
-                session::save(&persist);
+                // Only the field this worker owns, and through the one door. A whole-session save
+                // from the CTL snapshot would put the stale `sources` back over the SERVER roster
+                // — which `refresh_roster_online` is refreshing at this very moment, since
+                // `start_switch` spawns both and neither can know which lands first.
+                session::update(|s| Some(Session { home_users: roster, ..s.clone() }));
             }
             _ => {
                 log("auth: roster refresh failed — keeping cached roster");
@@ -796,20 +800,28 @@ pub fn refresh_roster_online() {
             }
         };
         install_roster(&found, None);
-        // Re-read FIRST, and compare against that: a profile pick may have landed meanwhile, and
-        // the snapshot this worker was spawned with is the older of the two answers.
-        let mut next = session::load();
-        let roster_changed = found.len() != next.sources.len()
-            || found.iter().zip(next.sources.iter()).any(|(a, b)| {
-                a.machine_id != b.machine_id || a.address != b.address || a.port != b.port || a.token != b.token
-            });
-        let moved = reconcile_primary(&mut next.server, &found);
-        let changed = roster_changed || moved;
-        log(&format!("auth: roster refresh — {} server(s){}", found.len(), if changed { ", persisted" } else { "" }));
-        if changed {
+        // The comparison, the primary reconcile and the write are ONE step under `session`'s own
+        // lock. Both halves of that were races before. Reading with `load` and writing with `save`
+        // let a profile pick land in between and be rewritten with the pre-switch profile, so the
+        // next boot resumed as the wrong person; and grading the change against this worker's
+        // spawn-time snapshot compared against the older of the two answers. `update` also refuses
+        // outright when the file no longer holds a session — a sign-out during this fetch must not
+        // be undone by a roster we no longer have the credentials for.
+        let n = found.len();
+        let persisted = session::update(move |s| {
+            let roster_changed = found.len() != s.sources.len()
+                || found.iter().zip(s.sources.iter()).any(|(a, b)| {
+                    a.machine_id != b.machine_id || a.address != b.address || a.port != b.port || a.token != b.token
+                });
+            let mut next = s.clone();
+            let moved = reconcile_primary(&mut next.server, &found);
+            if !(roster_changed || moved) {
+                return None;
+            }
             next.sources = found;
-            session::save(&next);
-        }
+            Some(next)
+        });
+        log(&format!("auth: roster refresh — {n} server(s){}", if persisted { ", persisted" } else { "" }));
     });
 }
 
