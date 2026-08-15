@@ -73,6 +73,15 @@ pub(crate) fn app_dir() -> &'static Path {
             }
         }
         if let Ok(exe) = std::env::current_exe() {
+            // A macOS **application bundle** puts the executable in `Contents/MacOS/` and its
+            // payload in `Contents/Resources/` — the layout every Mac tool, `codesign` included,
+            // expects. So on that one platform "next to the binary" is the wrong answer by one
+            // hop, and getting it wrong is the SILENT font failure this module's doc opens with:
+            // `text.rs` would fall through to a system face and still log `ok=1`.
+            if let Some(res) = macos_bundle_resources(&exe) {
+                crate::log(&format!("appdir: {} (macOS bundle)", res.display()));
+                return res;
+            }
             if let Some(parent) = exe.parent() {
                 if !parent.as_os_str().is_empty() {
                     crate::log(&format!("appdir: {} (from current_exe)", parent.display()));
@@ -90,6 +99,62 @@ pub(crate) fn app_dir() -> &'static Path {
 /// A file shipped inside the ipk, addressed by name.
 pub(crate) fn in_app_dir(name: &str) -> PathBuf {
     app_dir().join(name)
+}
+
+/// `…/Contents/Resources` when `exe` is the executable of a macOS **application bundle**, else
+/// `None` — the one platform where the app's payload is not the executable's own directory.
+///
+/// Structural, not name-based: it asks whether the two directories above the binary are literally
+/// `Contents/MacOS`, which is what makes something a bundle. A `PlxNative.app` renamed by the
+/// person it was sent to still answers yes; a loose `plxnative-sim` in `target-sim/debug` still
+/// answers no, so the dev loop is untouched.
+///
+/// Must not log — [`runtime_dir`] calls the sibling below and that function's doc explains why a
+/// log there deadlocks the process. Cheap enough to keep both on the same rule.
+#[cfg(target_os = "macos")]
+fn macos_bundle_resources(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    if macos.file_name()? != "MacOS" {
+        return None;
+    }
+    let contents = macos.parent()?;
+    if contents.file_name()? != "Contents" {
+        return None;
+    }
+    let res = contents.join("Resources");
+    res.is_dir().then_some(res)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_bundle_resources(_exe: &Path) -> Option<PathBuf> {
+    None
+}
+
+/// Where a **bundled macOS app** keeps everything it writes: `~/Library/Application
+/// Support/PlxNative`.
+///
+/// The default runtime root is `/tmp`, which is right on the television and wrong for a Mac app
+/// somebody was sent: `auth.json` lives in this root (see [`session_candidates`]), and `/tmp` is
+/// swept, so the friend would re-do the QR sign-in every few days without ever learning why. The
+/// app bundle itself is not an option either — it may sit in a read-only `/Applications`, and on a
+/// signed bundle writing inside `Contents/` invalidates the signature.
+///
+/// `None` unless this really is a bundle: a plain `make sim-run` keeps taking `/tmp` (or its
+/// `PLXNATIVE_RUNTIME_DIR` instance root) exactly as before, so no harness recipe moves.
+#[cfg(target_os = "macos")]
+fn macos_app_support() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    macos_bundle_resources(&exe)?;
+    let home = std::env::var_os("HOME")?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(home).join("Library/Application Support/PlxNative"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_app_support() -> Option<PathBuf> {
+    None
 }
 
 /// Where this instance's RUNTIME surfaces live — the `plxnative-*` dev triggers, the remote FIFO,
@@ -124,7 +189,9 @@ pub(crate) fn in_app_dir(name: &str) -> PathBuf {
 /// configuration that overrides it is the one that passed the value in.
 pub(crate) fn runtime_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| resolve_runtime_dir(std::env::var_os("PLXNATIVE_RUNTIME_DIR")))
+    DIR.get_or_init(|| {
+        resolve_runtime_dir(std::env::var_os("PLXNATIVE_RUNTIME_DIR"), macos_app_support())
+    })
 }
 
 /// The television's runtime root, and the only one a television build can ever have.
@@ -137,7 +204,11 @@ const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 /// binary — including the one asserting that an empty trigger reads as `Some("")`, which resolves
 /// its own write path through this same root. That is the crate-global-seam hazard `testlock`
 /// exists for, and here it is avoidable outright rather than lockable.
-fn resolve_runtime_dir(env: Option<std::ffi::OsString>) -> PathBuf {
+///
+/// `bundled` is the second-choice root for a host build that is a real macOS app bundle (see
+/// [`macos_app_support`]). It is a PARAMETER rather than a call inside, for the same testability
+/// reason: it reads `current_exe` and `HOME`, neither of which a test can pin.
+fn resolve_runtime_dir(env: Option<std::ffi::OsString>, bundled: Option<PathBuf>) -> PathBuf {
     // Tier-B `cfg!` rather than `#[cfg]`: both arms stay type-checked in every feature set, so the
     // host branch cannot rot while nobody is building the simulator.
     if ENV_STEERABLE {
@@ -145,6 +216,11 @@ fn resolve_runtime_dir(env: Option<std::ffi::OsString>) -> PathBuf {
             if !d.is_empty() {
                 return PathBuf::from(d);
             }
+        }
+        // An explicit instance root still wins — `make sim-shot` and every parallel-simulator
+        // recipe pass one, and a bundle handed a root must honour it.
+        if let Some(p) = bundled {
+            return p;
         }
     }
     PathBuf::from(DEFAULT_RUNTIME_DIR)
@@ -213,8 +289,42 @@ mod tests {
     /// silently follow the process's working directory.
     #[test]
     fn absent_or_empty_runtime_root_is_the_television() {
-        assert_eq!(super::resolve_runtime_dir(None), std::path::Path::new("/tmp"));
-        assert_eq!(super::resolve_runtime_dir(Some("".into())), std::path::Path::new("/tmp"));
+        assert_eq!(super::resolve_runtime_dir(None, None), std::path::Path::new("/tmp"));
+        assert_eq!(super::resolve_runtime_dir(Some("".into()), None), std::path::Path::new("/tmp"));
+    }
+
+    /// A macOS app bundle writes under `~/Library/Application Support`, and an explicit instance
+    /// root still beats it. Both halves matter: the first is what keeps a friend's sign-in from
+    /// being swept out of `/tmp`, the second is what keeps `make sim-shot`'s `PLXNATIVE_RUNTIME_DIR`
+    /// authoritative if the binary is ever run out of a bundle by the harness.
+    #[test]
+    fn a_bundled_app_writes_to_its_own_support_dir_unless_told_otherwise() {
+        if !super::ENV_STEERABLE {
+            return; // a television build has neither concept
+        }
+        let sup = std::path::PathBuf::from("/Users/x/Library/Application Support/PlxNative");
+        assert_eq!(super::resolve_runtime_dir(None, Some(sup.clone())), sup);
+        assert_eq!(super::resolve_runtime_dir(Some("".into()), Some(sup.clone())), sup);
+        assert_eq!(
+            super::resolve_runtime_dir(Some("/run/sim-a".into()), Some(sup)),
+            std::path::Path::new("/run/sim-a")
+        );
+    }
+
+    /// The bundle detector must answer on SHAPE — `…/Contents/MacOS/<exe>` — and must not be
+    /// fooled by a binary that merely sits in a directory called `MacOS`, nor confused by the
+    /// bundle having been renamed. Only meaningful where the function has a body.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn only_a_real_contents_macos_layout_reads_as_a_bundle() {
+        use std::path::Path;
+        // No `Contents` above it → not a bundle, whatever it is called.
+        assert!(super::macos_bundle_resources(Path::new("/x/MacOS/plxnative")).is_none());
+        // Right shape, but `Resources/` does not exist on this filesystem → still None, because
+        // the point of the probe is finding the payload, not recognising a layout.
+        assert!(super::macos_bundle_resources(Path::new("/x/Contents/MacOS/plxnative")).is_none());
+        // The dev-loop binary must keep resolving to its own directory.
+        assert!(super::macos_bundle_resources(Path::new("/repo/target-sim/debug/plxnative-sim")).is_none());
     }
 
     /// Two instances given different roots must not share a namespace — the whole point of the
@@ -225,8 +335,8 @@ mod tests {
         if !super::ENV_STEERABLE {
             return; // a television build cannot be redirected, by design
         }
-        let a = super::resolve_runtime_dir(Some("/run/sim-a".into())).join("plxnative-library");
-        let b = super::resolve_runtime_dir(Some("/run/sim-b".into())).join("plxnative-library");
+        let a = super::resolve_runtime_dir(Some("/run/sim-a".into()), None).join("plxnative-library");
+        let b = super::resolve_runtime_dir(Some("/run/sim-b".into()), None).join("plxnative-library");
         assert_ne!(a, b);
         assert!(a.is_absolute() && b.is_absolute());
     }
@@ -239,7 +349,10 @@ mod tests {
         if super::ENV_STEERABLE {
             return;
         }
-        assert_eq!(super::resolve_runtime_dir(Some("/anywhere".into())), std::path::Path::new("/tmp"));
+        assert_eq!(
+            super::resolve_runtime_dir(Some("/anywhere".into()), Some("/also/anywhere".into())),
+            std::path::Path::new("/tmp")
+        );
     }
 
     /// The preferred session path must stay OUTSIDE the app directory: appinstalld replaces the

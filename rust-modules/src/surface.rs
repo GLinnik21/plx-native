@@ -177,10 +177,20 @@ pub(crate) fn probe(win: *mut c_void) {
             LOGICAL_W as i32, LOGICAL_H as i32, scale()
         ));
         if (dw, dh) != (LOGICAL_W as i32, LOGICAL_H as i32) {
+            // The plea for a bug report belongs to the TELEVISION alone: there, a drawable that is
+            // not the canvas is a firmware doing something no set has been seen to do. On a desktop
+            // it is the ordinary case — the window is an exact divisor of the canvas by design
+            // (`app.rs`'s `desktop_window_size`) — and asking a Mac user for their webOS version
+            // reads as a malfunction. Same measurement either way; only the sentence differs.
+            let tail = if cfg!(feature = "hostsim") {
+                "This is expected on a desktop: the window is a whole fraction of the canvas."
+            } else {
+                "Please report this with your webOS version; the app has only ever been seen on a \
+                 1:1 surface."
+            };
             log(&format!(
                 "surface: drawable is NOT the {}x{} the UI is authored at — scaling the whole \
-                 interface by {:.3}. Text will be softer than on a 1:1 surface. Please report this \
-                 with your webOS version; the app has only ever been seen on a 1:1 surface.",
+                 interface by {:.3}. Text will be softer than on a 1:1 surface. {tail}",
                 LOGICAL_W as i32, LOGICAL_H as i32, scale()
             ));
         }

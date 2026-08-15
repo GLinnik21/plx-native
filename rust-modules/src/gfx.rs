@@ -680,8 +680,17 @@ pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zet
 }
 
 // --- seven-segment FPS digits (quads) ---
+//
+// The counter's ONLY caller is `app.rs`'s `#[cfg(feature = "devtools")]` draw site, so these three
+// items carry the same gate. Without it `--no-default-features` (i.e. `make RELEASE=1`, and the
+// macOS app bundle) fails the build outright rather than merely warning: `[lints.rust] warnings =
+// "deny"` in Cargo.toml turns the three `dead_code` findings into errors, and nothing in the dev
+// configuration can see that — the feature is on in every ordinary `make`, `make check` and
+// harness run.
+#[cfg(feature = "devtools")]
 const SEG: [u8; 10] = [0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F];
 
+#[cfg(feature = "devtools")]
 fn draw_digit(d: i32, x: f32, y: f32, s: f32, col: *const f32) {
     let w = 0.16 * s;
     // segments: 0 top,1 tr,2 br,3 bottom,4 bl,5 tl,6 mid — each {x,y,w,h}
@@ -706,6 +715,7 @@ fn draw_digit(d: i32, x: f32, y: f32, s: f32, col: *const f32) {
     }
 }
 
+#[cfg(feature = "devtools")]
 pub(crate) fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *const f32) {
     n = n.clamp(0, 999);
     let adv = s + 0.55 * s;

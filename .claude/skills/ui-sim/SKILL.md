@@ -149,16 +149,24 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   different GPU, driver and compositor. Every simulator heartbeat carries **`sim=1`** and the log's
   first line says so — if you see either, the number is not a perf result. Never quote `fps=` or
   `loop=` from a simulator as evidence about performance.
-- **Text rasterization truth.** Different FreeType, and the window is letterboxed (`scale≈0.86`
-  on a laptop panel), so glyphs are softer here by construction. Stem/bar weight, hinting and the
-  `theme::size` ladder are device questions — `tools/font-hint-audit.py` and a device capture.
+- **Text rasterization truth.** Different FreeType, so stem/bar weight, hinting and the
+  `theme::size` ladder stay device questions — `tools/font-hint-audit.py` and a device capture.
+  The window is no longer at an arbitrary fitted scale (`scale≈0.86` was the old fitted size): it
+  opens at an exact divisor of the 1920x1080 canvas and is not resizable, so on a Retina display
+  the drawable is 1920x1080 and `scale` is exactly 1.0. Check the `surface:` line — it prints the
+  drawable and the scale, and a 0.5 there means glyphs are downscaled and softer by construction.
 - **Anything about video.** There is no playback: the 29-symbol Starfish/ACB seam does not exist
   off-device, and `player::ffi`'s host arm reports the seam's own "no video path" failure. Pressing
   Play lands on the app's real failure read-out — which is correct behaviour, not a bug, and is
   also a convenient way to look at that screen.
 - **The video plane and UI transparency.** The wayland non-opaque trick is webOS-only.
-- **plex.tv sign-in.** `net.rs`'s curl SONAME candidates are `.so.4`/`.so.5` only, so libcurl does
-  not bind here; the simulator relies on the injected token (`make sim-token`).
+- ~~**plex.tv sign-in.**~~ **This one is FIXED as of 2026-08-16 and is no longer a limitation.**
+  The candidate list gained macOS's `libcurl.4.dylib` (which the dyld shared cache answers with no
+  install), and `dynlib!` learned to bind a variadic C function correctly — Apple's ARM64 ABI puts
+  variadic arguments on the stack, so the old non-variadic `curl_easy_setopt` binding SIGSEGV'd
+  inside libcurl the instant it could open one. The QR flow, discovery and the who's-watching
+  roster all run here now. `make sim-token` is still the faster way into a known server, and is
+  what headless recipes should keep using.
 - **Anything that smelled like a platform difference.** If a bug appears only in the simulator,
   suspect the simulator first — the seam is real code and it has had real bugs (a missing core-
   profile VAO drew nothing at all; a synthetic key layout mismatch swallowed every FIFO token).

@@ -36,6 +36,7 @@ tests/manifest.local.json
 rust-modules/target/
 rust-modules/target-release/
 rust-modules/target-sim/
+rust-modules/target-macapp/
 
 # dead prototype dir (code lives in rust-modules/ now)
 rust-poc/
@@ -73,3 +74,11 @@ pkg/.ffabi-ok
 # pkg/ via PLXNATIVE_APP_DIR, so it lands here on a host run; it can hold plex.tv and PMS
 # tokens, and this repository is public.
 pkg/auth.json
+
+# `make macapp` output: the macOS application bundle, its zip, and the recipient's README copy.
+# Build products, like pkg/plxnative and the .ipk above — and the bundle carries ~10 copied
+# Homebrew dylibs, which are neither ours to commit nor meaningful outside the machine that
+# assembled them. ci/mkmacapp.py rebuilds all three in about a minute.
+pkg/PlxNative.app/
+pkg/PlxNative-*.zip
+pkg/PlxNative-README.md
