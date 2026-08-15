@@ -888,6 +888,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // previous user's shelves on screen.
             crate::pms::reset();
             crate::person::reset(); // ditto for an open person page's shelves
+            // …and any view-state write still queued or owed a refresh. It belongs to the account
+            // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
+            crate::viewstate::reset();
             let nmov = crate::pms::pms_fetch_hubs();
             // section discovery (one small GET) so Home's library tab pills carry real titles
             let nsec = crate::browse::ensure_sections();
@@ -2031,32 +2034,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     nav_open(*route, to_detail(sid, &show_rk), (season > 0).then_some(season), nav);
                 }
                 Action::MarkWatched(rk, watched) => {
-                    // Same ritual as the detail page's watched toggle: flip it server-side, then
-                    // refetch the hubs so Continue Watching reflects it (a watched episode leaves the
-                    // shelf; its successor takes the slot). Blocking (~100ms LAN) and deliberately so
-                    // — the shelf must not still show the old state under the user's cursor.
-                    // `client_for(sid)`, never `client()`: the item may live on a share, and a
-                    // scrobble sent to the wrong machine marks a DIFFERENT film watched there.
-                    // A server we cannot resolve means the write never happened, and everything
-                    // below still repaints as though it had — so it says so in the log rather than
-                    // being the one dropped PMS write with no line at all.
-                    match crate::plex::client_for(sid) {
-                        Some(c) if watched => c.unscrobble(&rk),
-                        Some(c) => c.scrobble(&rk),
-                        None => log(&format!("item menu: rk={rk} watched toggle DROPPED — server {} is not registered", sid.raw())),
-                    }
-                    // …and when the popover was over the DETAIL page, that page is the surface the
-                    // user is watching: re-read the mounted show so the filmstrip's checks, the
-                    // season tab's tick and the hero's own toggle all show what was just committed.
-                    // The same refresh its hero watched toggle performs — one function, so the two
-                    // ways to mark something watched can't leave the page in two different states.
-                    // The rk rides along so the row lands back on the episode that changed (see
-                    // `detail::KEEP_EP`).
-                    if matches!(host, MenuHost::Detail) {
-                        crate::ui::detail::refresh_view_state(&rk);
-                    }
-                    let n = crate::pms::refetch_hubs_reconcile();
-                    log(&format!("item menu: rk={rk} watched={} → hubs refreshed ({n} items)", !watched as i32));
+                    // Same ritual as the detail page's watched toggle, and now the same CODE: flip
+                    // every surface that describes the item at once, write on a worker, refetch the
+                    // hubs when the write lands so Continue Watching reflects it (a watched episode
+                    // leaves the shelf; its successor takes the slot).
+                    //
+                    // All three used to run inline, on this thread, justified as "~100ms LAN and
+                    // deliberately so". That priced one server on one LAN; with a share registered
+                    // the item's server is routinely remote or asleep, and the same press parked the
+                    // whole UI for seconds — see `crate::viewstate`, which is where the reasoning,
+                    // the ordering rules and the `client_for(sid)`-never-`client()` note now live.
+                    //
+                    // When the popover was over the DETAIL page, that page is the surface the user is
+                    // watching, so it is re-read too — the rk rides along so the filmstrip lands back
+                    // on the episode that changed (`detail::KEEP_EP`).
+                    let w = if watched { crate::viewstate::Write::Unwatched } else { crate::viewstate::Write::Watched };
+                    let detail = matches!(host, MenuHost::Detail).then(|| rk.clone());
+                    crate::viewstate::request(sid, &rk, w, detail);
                 }
                 Action::RemoveFromDeck(rk) => {
                     // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
@@ -2064,20 +2058,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // left off. That is why this is NOT `unscrobble`, which would throw the position
                     // away. See `plex::Client::remove_from_continue_watching`.
                     //
-                    // Then the same blocking refetch the watched toggle does, for the same reason: the
-                    // card sits under the user's cursor and must not still be there after they removed
-                    // it. The shelf is sourced from `/hubs/continueWatching`, which is the hub this
-                    // action actually affects — built from `/hubs`'s `home.continue` it would come back
-                    // still listing the item (see `pms::build_hubs`).
-                    // …and the same honesty here: an unresolvable server is not a server that
-                    // said no, and `ok=false` alone cannot tell the two apart.
-                    let Some(c) = crate::plex::client_for(sid) else {
-                        log(&format!("item menu: rk={rk} deck removal DROPPED — server {} is not registered", sid.raw()));
-                        return;
-                    };
-                    let ok = c.remove_from_continue_watching(&rk);
-                    let n = crate::pms::refetch_hubs_reconcile();
-                    log(&format!("item menu: rk={rk} removed from deck ok={ok} → hubs refreshed ({n} items)"));
+                    // The card leaves the deck on THIS frame (`pms::LocalEdit::LeftTheDeck` — it must
+                    // not still sit under the user's cursor after they removed it) and the refetch
+                    // follows the write. The shelf is sourced from `/hubs/continueWatching`, which is
+                    // the hub this action actually affects — built from `/hubs`'s `home.continue` it
+                    // would come back still listing the item (see `pms::project`).
+                    //
+                    // No detail refresh: this row exists only on a Continue Watching card.
+                    crate::viewstate::request(sid, &rk, crate::viewstate::Write::RemoveFromDeck, None);
                 }
                 Action::PlayFromStart(rk) => {
                     // On the detail page the target is an episode of the LOADED SEASON, which the hub
@@ -4364,6 +4352,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if crate::metadata::pump_detail() {
                 crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
             }
+            // Server-side view-state WRITES (Mark as Watched / Unwatched, Remove from Deck): send
+            // the next queued one, land the last one's answer and kick the refresh it owes. Route-
+            // unconditional for the same reason as the two pumps around it — the user can walk off
+            // Home or off the detail page between pressing and the server answering, and the refresh
+            // is owed either way. Invalidates from inside, per landing.
+            crate::viewstate::pump();
             // …and the cross-source resolve it kicked off. Route-unconditional for the same reason,
             // and separate because it lands one round trip per source LATER than the page does —
             // "Also available" appears when the other servers have answered, not when the page

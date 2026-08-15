@@ -179,14 +179,22 @@ impl Client {
     }
 
     /// GET /:/scrobble — mark watched without a playback time (docs/pms-api.md §timeline).
-    /// On a show/season it marks every leaf watched.
-    pub fn scrobble(&self, rating_key: &str) {
-        self.get_void(&format!("/:/scrobble?key={rating_key}&identifier=com.plexapp.plugins.library"));
+    /// On a show/season it marks every leaf watched. Returns whether the server took it.
+    ///
+    /// The verdict used to be discarded (`get_void`), which was harmless while the call was inline
+    /// on the frame loop and the blocking refetch behind it re-read the truth a moment later. It is
+    /// not harmless now: the write runs on a worker (`crate::viewstate`) whose only report to the
+    /// main thread is this bool, and "the server never answered" is the case the whole move exists
+    /// for. It does NOT distinguish a 200 from a 404 — `get_ok` is `http_get`'s own success — which
+    /// is the honest limit of a GET whose body carries nothing.
+    pub fn scrobble(&self, rating_key: &str) -> bool {
+        self.get_ok(&format!("/:/scrobble?key={rating_key}&identifier=com.plexapp.plugins.library"))
     }
 
-    /// GET /:/unscrobble — mark unwatched (clears viewCount + viewOffset).
-    pub fn unscrobble(&self, rating_key: &str) {
-        self.get_void(&format!("/:/unscrobble?key={rating_key}&identifier=com.plexapp.plugins.library"));
+    /// GET /:/unscrobble — mark unwatched (clears viewCount + viewOffset). Reports like
+    /// [`Client::scrobble`].
+    pub fn unscrobble(&self, rating_key: &str) -> bool {
+        self.get_ok(&format!("/:/unscrobble?key={rating_key}&identifier=com.plexapp.plugins.library"))
     }
 
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
