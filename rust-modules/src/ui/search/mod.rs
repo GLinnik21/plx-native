@@ -256,7 +256,8 @@ static mut BLINK_T: f32 = 0.0;
 /// written twice, and the tile half of it shipped with nothing ever filling it.
 ///
 /// A `Vec`, because a shelf's tile count is the server's answer; it is CLEARED (never freed) each
-/// frame, so the allocation is paid once — `library::SRC_ACTIONS`' pattern.
+/// frame, so the allocation is paid once — the Library's Sources panel does the same, with its
+/// action list now carried inside the open `Menu::Source` variant rather than beside it.
 ///
 /// The rects **cannot be derived here**: a shelf's horizontal offset is the scroll spring inside
 /// its own `card_row::CardRow`, which lives in [`results`] and is invisible from this side. (This
@@ -562,7 +563,11 @@ fn step_results(sym: c_uint, row: usize, col: usize, lens: &[usize]) -> Option<(
 }
 
 /// Snapshot the state machine for this frame's regions.
-fn view() -> View {
+///
+/// `pub(crate)` for the focus probe (`crate::focusprobe`), which needs all five of the fields this
+/// already builds — zone, editing, row/col, recents cursor, caret. `View` was `pub(crate)` before
+/// this; only the constructor was private, so nothing new is exposed but the snapshot itself.
+pub(crate) fn view() -> View {
     unsafe {
         View {
             zone: addr_of!(ZONE).read(),
@@ -1584,7 +1589,7 @@ mod tests {
         // One frame whose verdict is DISCARDED, because `should_present` is what clears the
         // discrete flag and `reset` above raised one. Without it this grades the mount, not the
         // spring.
-        let mut settle = |now: u32| {
+        let settle = |now: u32| {
             idle::frame_begin(DT);
             update(DT);
             let asked = idle::should_present(now);
@@ -1722,7 +1727,7 @@ mod tests {
         reset();
         idle::set_enabled(true);
         const DT: f32 = 1.0 / 60.0;
-        let mut frame = |now: u32| {
+        let frame = |now: u32| {
             idle::frame_begin(DT);
             update(DT);
             let asked = idle::should_present(now);

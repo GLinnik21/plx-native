@@ -24,6 +24,12 @@ pub enum InfoAction {
 static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut FOCUS: c_int = 0; // index into the action-button column
 
+/// The focused action button, for the focus probe (`crate::focusprobe`). Same reason as the other
+/// panels: the card's UP/DOWN arm moves this alone, so nothing else in the log would show it.
+pub(crate) fn sel() -> c_int {
+    unsafe { addr_of!(FOCUS).read() }
+}
+
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
 }

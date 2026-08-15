@@ -86,6 +86,14 @@ static mut SID: crate::plex::ServerId = crate::plex::ServerId::UNSET;
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
 }
+
+/// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the key
+/// ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes nothing
+/// else, so without this the fingerprint records the panel opening and closing and nothing between.
+/// Through `addr_of!` rather than the module's own `table()`, which hands out a `&'static mut`.
+pub(crate) fn sel() -> i32 {
+    unsafe { (*addr_of!(TABLE)).sel }
+}
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
 }
@@ -207,8 +215,26 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
         sec = sec.row(Row::new("Remove from Deck").licon(Icon::Close));
         acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
     }
+    debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     (sec, acts)
 }
+
+/// Why [`build`] and [`build_episode`] both end in a length assertion, and why it is HERE rather
+/// than at the `present` that installs the pair.
+///
+/// `ACTS` is the index→action map — `on_ok` resolves the pressed row by its index into it — so a
+/// `sec.row` added without its `acts.push` cannot panic. It shifts every action below it by one,
+/// and the press performs its neighbour's. This is the menu where that is easiest to do, because
+/// it is the only one of the four whose row set is CONDITIONAL: three item kinds, an optional
+/// `Go to Show`, an optional deck row, and a state group shared with a second entry point.
+///
+/// The three sibling menus (`account_menu`, `more_menu`, `alt_sources`) assert at their equivalent
+/// of `present`. This one cannot usefully: `present` is reached only from `open`/`open_episode`,
+/// which no host test calls, and `debug_assert!` is compiled out of the `--release` build the
+/// Makefile ships — so an assertion there would be unreachable in the only configuration that can
+/// still run it. At the two builders it is exercised by all nine of this module's tests for free.
+const ACTS_PARALLEL: &str = "ACTS must stay one-to-one with the rows: a row without its action \
+                             shifts every action below it, and the press performs its neighbour's";
 
 /// The state group every menu ends with: the watched toggle, then (for a leaf) Play from Start.
 /// ONE builder, because these are the rows the menu exists for and they must read identically
@@ -253,6 +279,7 @@ fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, watched: b
 fn build_episode(rk: &str, watched: bool) -> (Section, Vec<Option<Action>>) {
     let mut acts: Vec<Option<Action>> = Vec::new();
     let sec = state_rows(Section::new(""), &mut acts, rk, watched, true);
+    debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     (sec, acts)
 }
 
