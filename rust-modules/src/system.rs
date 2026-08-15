@@ -12,6 +12,8 @@ const GL_RED_BITS: c_uint = 0x0D52;
 // SDL_SysWMinfo layout (32-bit): version u8[3]@0, subsystem int@4, info union@8
 
 extern "C" {
+    // the wayland grab is `cfg(not(hostsim))` — desktop SDL has no webOS surface to reach for
+    #[cfg_attr(feature = "hostsim", allow(dead_code))]
     fn SDL_GetWindowWMInfo(window: *mut c_void, info: *mut c_void) -> c_int;
     /// Fills `SDL_version` — three `Uint8`, major/minor/patch.
     fn SDL_GetVersion(ver: *mut u8);

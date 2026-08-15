@@ -68,7 +68,21 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 # NDK gcc default target is cortex-a9 / armv7-a / soft-float — portable across
 # webOS 3–6 and safe on the A53 (ARMv7 barriers are `dmb`, not the ARMv6 CP15
 # `mcr p15` that SIGILLs on ARMv8). So we do NOT pin -mcpu here.
-CFLAGS       = --sysroot=$(SYSROOT) -O2 -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
+# -Wall -Wextra -Werror: the C side is THREE files (the boot shim, the Starfish/ACB seam, the
+# nanosvg rasterizer) and it built without any of them until 2026-08-15 — so the crash tracer and
+# the 15-symbol C++ seam, the two places where a sloppy cast is least survivable, were compiled at
+# gcc's bare default. Turning all three on cost nothing: main.c and starfish.c were already clean,
+# and the only hit in the tree is inside vendored nanosvg, suppressed at its include in src/svg.c.
+#
+# -Werror is safe to pin HERE in a way it would not be on a moving toolchain: the NDK is a fixed
+# GCC 12 installed by `make setup-env`, so no compiler upgrade can invent a new diagnostic under
+# us. The Rust half of the same rule lives in rust-modules/Cargo.toml's `[lints]`. Both gates have
+# been verified to actually FAIL on a planted warning — the lesson of ci/check-package.py's
+# release witness, which never once fired in any configuration.
+#
+# Escape hatch while mid-edit: `make WERROR= …` (and see Cargo.toml for the Rust equivalent).
+WERROR      ?= -Werror
+CFLAGS       = --sysroot=$(SYSROOT) -O2 -Wall -Wextra $(WERROR) -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
 # DEBUG=1 keeps DWARF in the binary so a crash PC symbolizes to file:line instead of just
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
@@ -106,7 +120,15 @@ RUSTUP_HOME ?= $(HOME)/.rustup
 RUST_REMAP   = --remap-path-prefix=$(HOME)=/build \
                --remap-path-prefix=$(CARGO_HOME)=/cargo \
                --remap-path-prefix=$(RUSTUP_HOME)=/rustup
-RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon $(RUST_DEBUGINFO) $(RUST_REMAP)"
+# CAPLINTS=1 relaxes rust-modules/Cargo.toml's `[lints] warnings = "deny"` for ONE invocation:
+# --cap-lints puts a ceiling on every lint level, so a deny comes back out as a warning that still
+# prints. It goes through this variable rather than the caller exporting RUSTFLAGS, because that
+# environment variable REPLACES the list below wholesale — dropping target-cpu, and with it the
+# SIGILL guard. Pair with WERROR= to relax the C half: `make CAPLINTS=1 WERROR=`.
+ifeq ($(CAPLINTS),1)
+RUST_CAPLINTS = --cap-lints=warn
+endif
+RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_REMAP)"
 # -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
 # the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
 
@@ -431,6 +453,14 @@ test: deploy run
 # that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crate's own
 # `#[cfg(test)] mod tests` blocks (there are no integration tests in tests/ — that directory is the
 # on-device Python harness, a different thing entirely).
+# NB the suite APPENDS to `/tmp/plxnative-events.log` on the dev Mac, and deliberately cannot be
+# pointed elsewhere. Since 2026-08-15 enough of the tree logs its failures (stream, posters, img,
+# account, remote) that host tests exercising those paths write real lines. `PLXNATIVE_RUNTIME_DIR`
+# does NOT help: `paths::ENV_STEERABLE` is `cfg!(feature = "hostsim")`, off here, and widening it to
+# `cfg(test)` would silently retire `paths.rs`'s own test that a television build ignores that
+# variable — the suite is the only place that guarantee is ever checked. Host-side cosmetics are not
+# worth a device guarantee. The television is unaffected either way (`make run` and `tests/run.py`
+# both clear the log on the TV), so this is only about not confusing yourself locally.
 check: lint
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --lib
 

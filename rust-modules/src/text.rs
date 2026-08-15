@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
-use std::ptr::addr_of_mut;
+use std::ptr::{addr_of, addr_of_mut};
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 
@@ -236,7 +236,9 @@ pub(crate) fn init_text() {
         if !font_at(28, 0).is_null() {
             TEXT_OK = 1;
         }
-        log(&format!("init_text ok={}", TEXT_OK));
+        // read through a raw pointer, not `&TEXT_OK`: `format!` takes its arguments BY REFERENCE,
+        // which is a shared reference to a `static mut` (`static_mut_refs`, a future hard error)
+        log(&format!("init_text ok={}", *addr_of!(TEXT_OK)));
     }
 }
 

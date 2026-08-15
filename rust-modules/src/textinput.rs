@@ -84,6 +84,9 @@ use host_test_sdl::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartT
 ///
 /// **Only `test` is stubbed.** `hostsim` links desktop SDL2 and takes the real arm — which is the
 /// whole point, since the simulator is where the decode path can actually be exercised by typing.
+// the stubs carry SDL's own C names ON PURPOSE — `use`d unqualified by the arms below, so the call
+// sites read identically in both builds and a signature drift shows up as a type error there
+#[allow(non_snake_case)]
 #[cfg(test)]
 mod host_test_sdl {
     use std::os::raw::{c_int, c_void};

@@ -13,11 +13,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Vendored third-party code, compiled under the same -Wall -Wextra as our own: nanosvg's
+// `nsvgParseFromFile` compares an `ftell` result against `-1l` after storing it in a `size_t`
+// (nanosvg.h:3211), which is a real -Wsign-compare hit in code we do not own and must not diverge
+// from. Scoped to the includes so OUR functions below keep the full warning set.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
 #define NANOSVG_IMPLEMENTATION
 #define NANOSVG_ALL_COLOR_KEYWORDS
 #include "nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
 #include "nanosvgrast.h"
+#pragma GCC diagnostic pop
 
 // Rasterize `svg` (len bytes, need not be NUL-terminated) into a freshly malloc'd w*h*4
 // RGBA buffer, scaling the SVG to FIT w*h (uniform, centered). Author icons in #ffffff so

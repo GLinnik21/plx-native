@@ -12,6 +12,16 @@
 #   target-feature=-neon   NEON is unnecessary (VFP stays on) and dodges crates whose NEON
 #                          path needs unstable intrinsics.
 #
+# On that second flag rustc emits `unstable feature specified for -Ctarget-feature: neon` on every
+# ARM build, and it is the ONE warning this tree cannot clear — measured 2026-08-15, so do not
+# re-test it. Dropping the flag does not merely warn differently, it FAILS TO BUILD: 65 ×
+# `error[E0658]: use of unstable library feature stdarch_arm_neon_intrinsics`, all from
+# **simd-adler32 0.3.9** (a transitive dep, via png → flate2, i.e. the icon/artwork decode path),
+# whose ARM NEON arm is gated on intrinsics that are still unstable. So the choice is this warning
+# or no binary. It clears by itself if simd-adler32 stabilises its NEON path, or if the icon decode
+# stack drops it; nothing in this repo can fix it. `target-cpu=cortex-a9` is a different matter
+# entirely — that one is SIGILL-critical, and is not what the warning is about.
+#
 # CAUTION: the RUSTFLAGS *environment variable* replaces this list wholesale rather than
 # appending to it — and the Makefile now ALWAYS sets it, because --remap-path-prefix needs
 # $CARGO_HOME/$RUSTUP_HOME interpolated and a cargo config cannot expand an env var. So this
