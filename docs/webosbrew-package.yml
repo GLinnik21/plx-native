@@ -73,6 +73,9 @@ description: |
   **What it does**
 
   * Sign in on the TV with an on-screen QR code, pick a Plex Home profile, browse and play
+  * Every server your account can reach, at once — your own and any a friend has shared with you,
+    merged on the home screen and side by side in the library list
+  * Search across all of them from one field, typed with the television's own keyboard
   * Direct play wherever the TV can decode it, including HEVC, 4K and 10-bit; the server is asked
     to transcode only when it genuinely cannot
   * Resume, seek and scrub, chapters, audio and subtitle track switching (including image
@@ -82,8 +85,12 @@ description: |
   **Scope — please read before installing**
 
   * **Movies and TV shows only.** No music, photos, live TV or DVR.
-  * **A server on your local network.** The app connects only to a server it finds on the LAN;
-    remote-only and relay servers will not connect, and there is nowhere to enter an address.
+  * **Unencrypted connections to your server, including over the internet.** The app speaks plain
+    HTTP to a numeric address, with your access token in the URL — it has no TLS and no name
+    resolver. Your own server on your own LAN is reached there, as before; a library a friend has
+    shared is normally reached at a public address, and that traffic crosses the internet in clear
+    text. Servers behind Plex Relay, servers that require secure connections, and servers reachable
+    only by hostname or IPv6 cannot be dialled at all, and there is nowhere to enter an address.
   * **Two televisions have been watched, out of every set this installs on.** Video is verified on
     a 2019 LG (platform release 4.10.2) by the author, and reported working on a 2021 LG
     65UP7560AUD (6.5.2) by a webosbrew reviewer. Everything from webOS 4.0 up is checked only for
@@ -95,9 +102,10 @@ description: |
     and reports the codecs and resolutions it actually lists — but that table has no column for
     bit depth, so 10-bit is still claimed without asking.
 
-  Your library never leaves your network. The app talks to your own Plex Media Server, to plex.tv
-  to sign in, and to discover.provider.plex.tv for cast biographies. There is no analytics, no
-  telemetry and no crash reporting.
+  The app talks to the Plex Media Servers your account can reach, to plex.tv to sign in, and to
+  discover.provider.plex.tv for cast biographies — and to nothing else. There is no analytics, no
+  telemetry and no crash reporting. Sign-in to your Plex account is encrypted; traffic to a media
+  server is not (above).
 
   Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
 

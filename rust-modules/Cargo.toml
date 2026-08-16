@@ -3,7 +3,7 @@ name = "plxnative-modules"
 # THE version, in three places that ci/check-package.py keeps in step: here, pkg/appinfo.json
 # (which the ipk derives its filename and control entry from), and the X-Plex-Version this client
 # reports to both Plex services via env!("CARGO_PKG_VERSION") in src/plex/identity.rs.
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 # The crate is a staticlib and is never published to crates.io, so these are not for a registry —
 # they are so `cargo metadata` and any SBOM tool agree with the repo's own LICENSE, which is the
