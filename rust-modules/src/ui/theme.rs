@@ -443,6 +443,10 @@ pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = RED_400;
+/// Dev counter's two human-visible buffer phases. The renderer holds each for 30 returned swaps,
+/// so motion is visible instead of red/green frames blending into yellow at panel refresh rate.
+pub const DIAG_FLIP_A: [f32; 4] = GREEN_400;
+pub const DIAG_FLIP_B: [f32; 4] = RED_400;
 /// Section divider hairline.
 pub const HAIRLINE: [f32; 4] = with_a(WHITE, 0.10);
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).

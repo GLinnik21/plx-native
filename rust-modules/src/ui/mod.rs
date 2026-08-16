@@ -258,6 +258,7 @@ pub struct Painter {
     dx: f32,
     dy: f32,
     a: f32,
+    rgb: f32,
 }
 /// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
 /// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
@@ -275,13 +276,19 @@ fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
 
 impl Painter {
     pub const fn root() -> Self {
-        Self { dx: 0.0, dy: 0.0, a: 1.0 }
+        Self { dx: 0.0, dy: 0.0, a: 1.0, rgb: 1.0 }
     }
     pub fn alpha(self, m: f32) -> Self {
         Self { a: self.a * m, ..self }
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self { dx: self.dx + dx, dy: self.dy + dy, ..self }
+    }
+    /// Multiply the RGB written by every descendant primitive. With the frame clear multiplied by
+    /// the same value, this is algebraically the same result as a final full-screen black scrim,
+    /// without paying another 1920x1080 blended pass on the television.
+    pub fn rgb(self, m: f32) -> Self {
+        Self { rgb: self.rgb * m.clamp(0.0, 1.0), ..self }
     }
     /// This painter's accumulated horizontal offset — what to ADD to a coordinate drawn through it
     /// to get the screen x it lands on.
@@ -299,11 +306,22 @@ impl Painter {
     }
     #[inline]
     fn c(self, c: [f32; 4]) -> [f32; 4] {
-        [c[0], c[1], c[2], c[3] * self.a]
+        [c[0] * self.rgb, c[1] * self.rgb, c[2] * self.rgb, c[3] * self.a]
     }
     pub fn rect(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], focus: f32) {
         let (t, b) = (self.c(top), self.c(bot));
-        crate::gfx::draw_rect(r.x + self.dx, r.y + self.dy, r.w, r.h, 0.0, rad, t.as_ptr(), b.as_ptr(), focus);
+        crate::gfx::draw_rect(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            0.0,
+            rad,
+            t.as_ptr(),
+            b.as_ptr(),
+            focus,
+            self.rgb,
+        );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         let c = self.c(col);
@@ -356,7 +374,7 @@ impl Painter {
     /// caller's alpha cascade — shared by the sheened fill primitives below.
     #[inline]
     fn sheen_rim(self) -> [f32; 4] {
-        theme::with_a(theme::CARD_SHEEN, theme::CARD_SHEEN[3] * self.a)
+        self.c(theme::with_a(theme::CARD_SHEEN, theme::CARD_SHEEN[3]))
     }
     /// A rounded-rect FILL that also carries the 1px perimeter edge-sheen in the SAME pass (the
     /// no-texture counterpart of [`tex_stroked`](Self::tex_stroked)) — for skeleton / chip-disc tiles.
@@ -390,8 +408,9 @@ impl Painter {
     /// is behind a panel there is punch-through alpha, not a picture.
     /// `rest_dy` is how far this frame's painter has been slid from the panel's RESTING position —
     /// a popover's appear translate, and 0 for anything that does not move. The snapshot is grabbed
-    /// around the rest rect rather than around this frame's, so one opening costs one snapshot
-    /// instead of one per frame of the slide; `gfx::draw_blur_backdrop` has the full argument.
+    /// around the rest rect rather than around this frame's, so the slide itself does not invalidate
+    /// it. Cached glass stays at one snapshot; a dynamic policy may refresh independently;
+    /// `gfx::draw_blur_backdrop` has the full argument.
     #[must_use]
     pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4]) -> bool {
         let t = self.c(tint);
@@ -411,7 +430,7 @@ impl Painter {
     pub fn tex_carded(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4], f: f32) {
         let t = self.c(tint);
         let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
-        let shcol = theme::with_a(theme::CARD_SHADOW, sa * self.a);
+        let shcol = self.c(theme::with_a(theme::CARD_SHADOW, sa));
         let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
         crate::gfx::draw_tex_carded(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(),
             theme::CARD_SHEEN_W, self.sheen_rim().as_ptr(), pad, blur, shcol.as_ptr());
@@ -437,6 +456,7 @@ impl Painter {
         } else {
             k.map(|c| std::array::from_fn(|i| g[i] + (c[i] - g[i]) * a))
         };
+        let k = k.map(|c| c.map(|v| v * self.rgb));
         crate::gfx::draw_ambient(r.x + self.dx, r.y + self.dy, r.w, r.h, dim,
             k[0].as_ptr(), k[1].as_ptr(), k[2].as_ptr(), k[3].as_ptr());
     }
@@ -582,6 +602,15 @@ mod tests {
     //! The retui core's pure geometry. Ordinary parallel tests — `Rect` carries no state and
     //! reaches no crate global, so nothing here needs `testlock` or a module mutex.
     use super::*;
+
+    #[test]
+    fn painter_rgb_and_alpha_are_independent_multiplicative_cascades() {
+        let p = Painter::root().rgb(0.5).rgb(0.8).alpha(0.25).alpha(0.5);
+        let c = p.c([0.75, 0.5, 0.25, 0.8]);
+        assert_eq!(c, [0.3, 0.2, 0.1, 0.1]);
+        assert_eq!(p.rgb, 0.4);
+        assert_eq!(p.a, 0.125);
+    }
 
     /// Every field of `a` within `eps` of `b`'s.
     fn near(a: Rect, b: Rect, eps: f32) -> bool {

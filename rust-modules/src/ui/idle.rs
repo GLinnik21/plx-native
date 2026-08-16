@@ -125,10 +125,25 @@ thread_local! {
     /// velocity into "distance this frame", which is the only form in which a velocity can be
     /// judged visible. Same thread-local rationale as `MOVING`.
     static DT: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0 / 60.0) };
+
+    /// Last discrete-damage generation reported through [`should_present`] on this thread. Unlike
+    /// `DIRTY`, this is observational: it lets noidle report one-shot damage without consuming the
+    /// gate's sticky flag, preserving the rate-only diagnostic contract.
+    static PRESENT_DAMAGE_GEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
+    /// Discrete damage selected for this present, exposed so a host can combine its own scoped
+    /// spring motion with async/data landings without inheriting foreground-widget motion.
+    static PRESENT_DIRTY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 /// A discrete change happened; present once more. Taken-and-cleared by [`should_present`] — NOT by
 /// [`note_present`], so that a report raised during a draw survives to the frame it belongs to.
 static DIRTY: AtomicBool = AtomicBool::new(true);
+/// A frame requested for scheduling rather than because pixels changed (dynamic glass waiting for
+/// its sample slot). Kept separate so that wake-up cannot masquerade as host-underlay damage.
+static WAKE: AtomicBool = AtomicBool::new(false);
+/// Monotonic observation channel for discrete damage. `DIRTY` remains the sticky gate signal;
+/// this generation answers whether a new report arrived since the previous loop even under noidle.
+static DAMAGE_GEN: AtomicU32 = AtomicU32::new(0);
 /// `SDL_GetTicks` of the last present, for the [`KEEPALIVE_MS`] backstop.
 static LAST_PRESENT: AtomicU32 = AtomicU32::new(0);
 /// Presents since the last [`take_presents`] — the heartbeat's `fps=` field.
@@ -203,6 +218,14 @@ pub(crate) fn note_jump(changed: bool) {
 #[inline]
 pub(crate) fn invalidate() {
     DIRTY.store(true, Relaxed);
+    DAMAGE_GEN.fetch_add(1, Relaxed);
+}
+
+/// Buy a frame without claiming that UI pixels changed. Reports raised during a draw survive just
+/// like [`invalidate`], but [`present_dirty`] stays false on the frame this schedules.
+#[inline]
+pub(crate) fn wake() {
+    WAKE.store(true, Relaxed);
 }
 
 /// Start of an iteration: forget last frame's motion (the update phase is about to re-derive it)
@@ -211,6 +234,20 @@ pub(crate) fn invalidate() {
 pub(crate) fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
     DT.with(|d| d.set(dt));
+}
+
+/// Run one host page's update with an isolated view of spring motion, then merge its result back
+/// into the frame-wide motion bit. This is not dirty-rectangle tracking: it only prevents a modal's
+/// foreground springs from masquerading as movement in the page captured behind that modal.
+pub(crate) fn scoped_motion<T>(f: impl FnOnce() -> T) -> (T, bool) {
+    let before = MOVING.with(|m| m.replace(false));
+    let value = f();
+    let own = MOVING.with(|m| {
+        let own = m.get();
+        m.set(before || own);
+        own
+    });
+    (value, own)
 }
 
 /// Should this iteration draw and swap?
@@ -225,14 +262,40 @@ pub(crate) fn frame_begin(dt: f32) {
 /// `Spinner::draw` is the first such reporter, and with the flag cleared post-draw its report was
 /// destroyed on the frame it was raised, so the spinner would freeze on its very first link.
 pub(crate) fn should_present(now: u32) -> bool {
+    let damage_gen = DAMAGE_GEN.load(Relaxed);
+    let new_damage = PRESENT_DAMAGE_GEN.with(|seen| {
+        let changed = seen.get() != damage_gen;
+        seen.set(damage_gen);
+        changed
+    });
+    let moving = MOVING.with(|m| m.get());
     if !ENABLED.load(Relaxed) {
+        PRESENT_DIRTY.with(|c| c.set(new_damage));
         return true;
     }
+    let wake = WAKE.swap(false, Relaxed);
     let dirty = DIRTY.swap(false, Relaxed);
-    if MOVING.with(|m| m.get()) || dirty {
+    let dirty = dirty || new_damage;
+    let changed = moving || dirty || wake;
+    PRESENT_DIRTY.with(|c| c.set(dirty));
+    if changed {
         return true;
     }
     KEEPALIVE_MS != 0 && now.wrapping_sub(LAST_PRESENT.load(Relaxed)) >= KEEPALIVE_MS
+}
+
+/// Did new discrete damage (input, async data, a texture landing) select this present? Unlike
+/// [`present_changed`], this excludes every spring outside the host's own [`scoped_motion`] result.
+#[inline]
+pub(crate) fn present_dirty() -> bool {
+    PRESENT_DIRTY.with(|c| c.get())
+}
+
+/// Did any spring move during this update phase? A full-page glass host may combine this with
+/// [`present_dirty`]; a modal host should prefer its own [`scoped_motion`] result.
+#[inline]
+pub(crate) fn present_moving() -> bool {
+    MOVING.with(|m| m.get())
 }
 
 /// Record that a frame was presented. Deliberately does NOT clear the discrete flag — a report
@@ -267,8 +330,12 @@ mod tests {
         set_enabled(true);
         frame_begin(1.0 / 60.0);
         DIRTY.store(false, Relaxed);
+        WAKE.store(false, Relaxed);
         LAST_PRESENT.store(0, Relaxed);
         PRESENTS.store(0, Relaxed);
+        DAMAGE_GEN.store(0, Relaxed);
+        PRESENT_DAMAGE_GEN.with(|c| c.set(0));
+        PRESENT_DIRTY.with(|c| c.set(false));
         g
     }
 
@@ -333,6 +400,21 @@ mod tests {
         assert!(should_present(10_016), "a pixel of travel per frame is visible");
     }
 
+    #[test]
+    fn scoped_motion_keeps_host_and_foreground_motion_distinct() {
+        let _g = fresh();
+        frame_begin(1.0 / 60.0);
+        note_spring(0.0, 1.0, 0.0); // foreground motion before the host scope
+        let (_, host_moving) = scoped_motion(|| note_spring(1.0, 1.0, 0.0));
+        assert!(!host_moving, "a settled host must not inherit foreground motion");
+        assert!(should_present(10_000), "the frame-wide gate must retain that foreground motion");
+
+        frame_begin(1.0 / 60.0);
+        let (_, host_moving) = scoped_motion(|| note_spring(0.0, 1.0, 0.0));
+        assert!(host_moving, "host motion is reported to its glass owner");
+        assert!(should_present(10_016), "and remains part of frame-wide motion");
+    }
+
     /// The cap is what stops the relative term from growing past visibility on a deep scroll: at
     /// pos 1500 the relative threshold would be 1.5 px, which is a visible stop.
     #[test]
@@ -380,9 +462,20 @@ mod tests {
         frame_begin(1.0 / 60.0);
         invalidate();
         assert!(should_present(10_016));
+        assert!(present_dirty(), "a discrete landing is real content damage");
         note_present(10_016); // the frame it bought
         frame_begin(1.0 / 60.0);
         assert!(!should_present(10_032), "one landing must not pin the loop on");
+    }
+
+    #[test]
+    fn wake_buys_a_frame_without_reporting_content_damage() {
+        let _g = fresh();
+        note_present(10_000);
+        frame_begin(1.0 / 60.0);
+        wake();
+        assert!(should_present(10_016));
+        assert!(!present_dirty(), "but it is not host-underlay damage");
     }
 
     #[test]
@@ -392,6 +485,7 @@ mod tests {
         frame_begin(1.0 / 60.0);
         assert!(!should_present(10_000 + KEEPALIVE_MS - 1));
         assert!(should_present(10_000 + KEEPALIVE_MS));
+        assert!(!present_dirty(), "an insurance commit must not dirty dynamic glass");
     }
 
     /// The tick counter wraps every ~49 days, and the keepalive is the one place the gate does
@@ -489,6 +583,9 @@ mod tests {
         set_enabled(false);
         invalidate();
         assert!(should_present(10_000));
+        assert!(present_dirty());
+        assert!(should_present(10_000));
+        assert!(!present_dirty(), "noidle changes rate, not content damage");
         set_enabled(true);
         assert!(should_present(10_000), "the flag must still be there to consume");
         assert!(!should_present(10_000), "...and consumed exactly once");

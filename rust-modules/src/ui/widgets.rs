@@ -9,6 +9,263 @@ use crate::ui::label::{HAlign, Label};
 use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+// ---- backdrop glass -------------------------------------------------------------------------
+
+/// How a glass surface keeps its shared backdrop snapshot fresh.
+///
+/// The cadence is named in PRESENTS rather than hertz on purpose: it is at most 20 Hz when the UI
+/// is presenting at 60 Hz, and a clean settled page creates no private sampling clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GlassRefresh {
+    /// One snapshot when the surface appears; the owner invalidates again if its underlay changes.
+    Cached,
+    /// While the underlay is changing, snapshot on displayed frames 1, 4, 7… .
+    EveryThirdPresent,
+}
+
+/// Where a modal's black dim is applied relative to the glass capture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum GlassUnderlay {
+    /// Leave the host page unchanged. A Popover may draw its ordinary overlay scrim afterward.
+    Unchanged,
+    /// Multiply the opaque host page's RGB before drawing it; alpha and the glass above stay intact.
+    SourceRgb { peak_dim: f32 },
+}
+
+/// Reusable backdrop-glass policy. It owns no geometry and no animation: a `Popover` can hold it,
+/// and a standalone widget can use the same `activate` → `prepare` → `backdrop` sequence.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Glass {
+    refresh: GlassRefresh,
+    underlay: GlassUnderlay,
+}
+
+/// Per-visible-lifetime state for a [`Glass`] policy. Visibility/source state stays with its widget;
+/// recurring cadence is global because every owner shares the renderer's one snapshot chain.
+pub(crate) struct GlassState {
+    last_seen: u32,
+    active: bool,
+    last_source_rgb: f32,
+}
+
+impl GlassState {
+    pub(crate) const fn new() -> Self {
+        Self { last_seen: 0, active: false, last_source_rgb: 1.0 }
+    }
+
+    pub(crate) fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    #[inline]
+    fn needs_activation(&self, present: u32) -> bool {
+        !self.active || present.wrapping_sub(self.last_seen) > 1
+    }
+}
+
+/// The underlay transform resolved for one draw. Passing this value into the host page makes the
+/// source-dim boundary explicit; the glass widget itself is drawn later through an ordinary
+/// `Painter`, at full brightness.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GlassFrame {
+    source_rgb: f32,
+}
+
+impl GlassFrame {
+    pub(crate) const IDENTITY: Self = Self { source_rgb: 1.0 };
+
+    pub(crate) const fn source_rgb(self) -> f32 {
+        self.source_rgb
+    }
+
+    /// Compose independent underlay transforms before drawing their shared host page. RGB gains
+    /// multiply for the same reason two source-over black scrims would multiply transmittance.
+    pub(crate) fn combine(self, other: Self) -> Self {
+        Self { source_rgb: (self.source_rgb * other.source_rgb).clamp(0.0, 1.0) }
+    }
+}
+
+/// Successful swaps, not update iterations. Both route-gap detection and the shared three-present
+/// cadence derive from this serial, so skipped idle loops cannot advance either one.
+static GLASS_PRESENT_SERIAL: AtomicU32 = AtomicU32::new(0);
+
+/// Decision returned by the one global dynamic-snapshot clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DynamicStep {
+    None,
+    Wait,
+    Refresh,
+}
+
+/// Recurring cadence belongs to the shared snapshot chain, not to any one widget. If two widgets
+/// opened on different presents kept separate phases, their combined schedules could refresh 2/3
+/// or even every frame. `covered_present` also lets the first prepared owner mark a due capture as
+/// covering every other owner prepared before the underlay draw on that same present.
+#[derive(Clone, Copy)]
+struct DynamicClock {
+    last_refresh: u32,
+    covered_present: u32,
+    pending: bool,
+}
+
+impl DynamicClock {
+    const fn new() -> Self {
+        Self { last_refresh: 0, covered_present: 0, pending: false }
+    }
+
+    fn cover_now(&mut self, present: u32) {
+        self.last_refresh = present;
+        self.covered_present = present;
+        self.pending = false;
+    }
+
+    fn step(&mut self, present: u32, changed: bool) -> DynamicStep {
+        if changed && self.covered_present != present {
+            self.pending = true;
+        }
+        if !self.pending {
+            return DynamicStep::None;
+        }
+        if present.wrapping_sub(self.last_refresh) >= 3 {
+            self.cover_now(present);
+            DynamicStep::Refresh
+        } else {
+            DynamicStep::Wait
+        }
+    }
+}
+
+/// Main-render-thread state, like the renderer's snapshot cache it schedules.
+static mut DYNAMIC_CLOCK: DynamicClock = DynamicClock::new();
+
+/// Called exactly beside `idle::note_present`, after `SDL_GL_SwapWindow` returns.
+pub(crate) fn glass_presented() {
+    GLASS_PRESENT_SERIAL.fetch_add(1, Relaxed);
+}
+
+impl Glass {
+    const fn new(refresh: GlassRefresh, underlay: GlassUnderlay) -> Self {
+        Self { refresh, underlay }
+    }
+
+    /// Existing popover behaviour: source-over scrim and a cached snapshot.
+    pub(crate) const CACHED: Self = Self::new(GlassRefresh::Cached, GlassUnderlay::Unchanged);
+
+    /// A moving non-modal surface: dirty-aware, every-third-present backdrop; no page transform.
+    pub(crate) const DYNAMIC_BACKDROP: Self =
+        Self::new(GlassRefresh::EveryThirdPresent, GlassUnderlay::Unchanged);
+
+    /// The configuration approved on the Mali-T820 television: source RGB dimmed by 0.5 at full
+    /// appearance, with a dirty backdrop refreshed at most every third successful present. The
+    /// widget itself still draws on every presented frame.
+    pub(crate) const DYNAMIC: Self = Self::new(
+        GlassRefresh::EveryThirdPresent,
+        GlassUnderlay::SourceRgb { peak_dim: 0.5 },
+    );
+
+    /// Start a new visible lifetime and make its first snapshot immediately eligible.
+    pub(crate) fn activate(self, state: &mut GlassState) {
+        let present = GLASS_PRESENT_SERIAL.load(Relaxed);
+        state.last_seen = present;
+        state.active = true;
+        state.last_source_rgb = 1.0;
+        if matches!(self.refresh, GlassRefresh::EveryThirdPresent) {
+            unsafe { (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).cover_now(present) };
+        }
+        crate::gfx::blur_invalidate();
+        crate::ui::idle::wake();
+    }
+
+    #[inline]
+    fn source_rgb(self, visibility: f32) -> f32 {
+        match self.underlay {
+            GlassUnderlay::Unchanged => 1.0,
+            GlassUnderlay::SourceRgb { peak_dim } => {
+                1.0 - peak_dim.clamp(0.0, 1.0) * visibility.clamp(0.0, 1.0)
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn overlay_scrim_alpha(self, requested: f32) -> f32 {
+        match self.underlay {
+            GlassUnderlay::Unchanged => requested,
+            GlassUnderlay::SourceRgb { .. } => 0.0,
+        }
+    }
+
+    /// Resolve this frame before the host page is drawn. `visibility` is the modal's combined
+    /// appear × page alpha; `underlay_changed` must describe that host, not foreground widget
+    /// motion. Every dynamic owner sharing a host must prepare before any of them captures.
+    /// Invalidation happens here, while capture remains deferred until [`backdrop`](Self::backdrop),
+    /// after the underlay has painted.
+    #[must_use]
+    pub(crate) fn prepare(
+        self,
+        state: &mut GlassState,
+        visibility: f32,
+        underlay_changed: bool,
+    ) -> GlassFrame {
+        let present = GLASS_PRESENT_SERIAL.load(Relaxed);
+        // A widget not drawn for one or more successful presents crossed a route/surface lifetime.
+        // Its old snapshot may describe that other route, so returning is a fresh activation.
+        if state.needs_activation(present) {
+            self.activate(state);
+        }
+        state.last_seen = present;
+
+        let source_rgb = self.source_rgb(visibility);
+        let source_changed = source_rgb.to_bits() != state.last_source_rgb.to_bits();
+        state.last_source_rgb = source_rgb;
+
+        if matches!(self.refresh, GlassRefresh::EveryThirdPresent) {
+            let step = unsafe {
+                (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK))
+                    .step(present, underlay_changed || source_changed)
+            };
+            match step {
+                DynamicStep::Refresh => crate::gfx::blur_invalidate(),
+                DynamicStep::Wait => {
+                    // A discrete landing may have bought only this one frame. Keep the gate alive
+                    // just until the next global sampling slot so it cannot stay stale for 2 s.
+                    crate::ui::idle::wake();
+                }
+                DynamicStep::None => {}
+            }
+        }
+        GlassFrame { source_rgb }
+    }
+
+    /// Draw the captured backdrop only. The caller owns the material layered over it, which is
+    /// what lets the same policy serve a frosted panel and the sheened tab-track capsule.
+    #[must_use]
+    pub(crate) fn backdrop(
+        self,
+        p: Painter,
+        r: Rect,
+        rest_dy: f32,
+        radius: f32,
+        tint: [f32; 4],
+    ) -> bool {
+        p.backdrop_blur(r, rest_dy, radius, tint)
+    }
+
+    /// Standard popover ground: glass + frost where available, the existing opaque sheet fallback
+    /// on a driver that cannot render the chain.
+    pub(crate) fn panel(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
+        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0]) {
+            p.rect(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
+        } else {
+            p.rect(r, radius, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+        }
+    }
+}
 
 /// Build `srv`'s transcode key for `path` on the stack. The ONE key builder the resolvers below
 /// share, so a warm and the draw that follows it can never name two different slots — `(server,
@@ -2033,6 +2290,9 @@ static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
 /// PRESS frame: Library hands its *pending* section down here (`library::view_section`), which is
 /// what puts the capsule on the new pill while the grid is still dissolving under it.
 static mut TOP_STRIP: TabStrip = TabStrip::new();
+/// Live-trigger lifetime for the tab track's glass experiment. It uses the same reusable cadence
+/// machinery as a dynamic popover, without the modal's source-dim transform.
+static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 // label + width cache keyed on browse::tabs_gen(): rebuilding the CStrings and
 // re-measuring every frame — on Home's hot path too — was a review-confirmed waste
 static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
@@ -2217,27 +2477,37 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // `/tmp/plxnative-glasstabs` swaps that flat material for the popovers' backdrop glass — an
         // EXPERIMENT, behind a trigger, because the two cases are not alike. A popover opens over a
         // still page and snapshots once; this bar sits over a page that scrolls, flips its hero and
-        // cross-fades between routes, so its snapshot is stale the moment anything moves and has to
-        // be retaken on every drawn frame. That is the expensive shape this whole design avoids, and
-        // the trigger exists to put a number on it rather than to argue about it.
+        // cross-fades between routes, so it opts into the reusable dynamic policy: the bar itself
+        // draws every presented frame while a dirty snapshot refreshes at most every third present.
         //
         // **A modal takes the glass away**, and the reason is DISTANCE, not arithmetic. Two glass
-        // surfaces in a frame now share one grab (`gfx::blur_region_union`), so a pair of NEIGHBOURS
-        // is nearly free — but this bar sits at the top of the screen and a popover's panel in the
+        // surfaces in a frame converge on one grab (`gfx::blur_region_union`), so NEIGHBOURS avoid
+        // a second steady-state chain — but this bar sits at the top and a popover's panel in the
         // middle of it, and the union of the two is most of the frame, which is the whole-screen
-        // capture the region limit exists to avoid. It costs nothing to look at either: the bar is
-        // under the popover's own scrim, which is what the eye is reading there anyway.
-        if crate::dev::flag("glasstabs") && !crate::ui::popover::any_open() {
-            // Retake every frame: `ui::idle` only presents when something moved, so "every drawn
-            // frame" is already "every frame the background could have changed under us".
-            crate::gfx::blur_invalidate();
+        // capture the region limit exists to avoid. While the modal owns focus, keeping only its
+        // material is also the clearer hierarchy; the disabled bar falls back to its flat track.
+        let glass_on = crate::dev::flag("glasstabs") && !crate::ui::popover::any_open();
+        if glass_on {
+            let state = unsafe { &mut *std::ptr::addr_of_mut!(TAB_GLASS_STATE) };
+            let _ = Glass::DYNAMIC_BACKDROP.prepare(
+                state,
+                1.0,
+                crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+            );
             // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
-            if p.backdrop_blur(track, 0.0, track.h * 0.5, [1.0, 1.0, 1.0, 1.0]) {
+            if Glass::DYNAMIC_BACKDROP.backdrop(
+                p,
+                track,
+                0.0,
+                track.h * 0.5,
+                [1.0, 1.0, 1.0, 1.0],
+            ) {
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
             } else {
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
             }
         } else {
+            unsafe { (*std::ptr::addr_of_mut!(TAB_GLASS_STATE)).deactivate() };
             p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
         }
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
@@ -2806,6 +3076,66 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_glass_refreshes_on_every_third_successful_present() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(41);
+        assert_eq!(clock.step(42, true), DynamicStep::Wait);
+        assert_eq!(clock.step(43, false), DynamicStep::Wait, "pending damage survives");
+        assert_eq!(clock.step(44, false), DynamicStep::Refresh);
+        assert_eq!(clock.step(44, true), DynamicStep::None, "same-present owners are covered");
+        assert_eq!(clock.step(45, false), DynamicStep::None, "a clean keepalive does nothing");
+    }
+
+    #[test]
+    fn dynamic_glass_cadence_survives_the_present_counter_wrapping() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(u32::MAX - 1);
+        assert_eq!(clock.step(u32::MAX, true), DynamicStep::Wait);
+        assert_eq!(clock.step(0, false), DynamicStep::Wait);
+        assert_eq!(clock.step(1, false), DynamicStep::Refresh);
+    }
+
+    #[test]
+    fn staggered_dynamic_owners_share_one_global_cadence() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(10); // owner A opens
+        assert_eq!(clock.step(11, true), DynamicStep::Wait);
+        clock.cover_now(12); // owner B opens: its immediate shared capture covers A too
+        assert_eq!(clock.step(12, true), DynamicStep::None);
+        assert_eq!(clock.step(13, true), DynamicStep::Wait);
+        assert_eq!(clock.step(14, true), DynamicStep::Wait);
+        assert_eq!(clock.step(15, true), DynamicStep::Refresh);
+        assert_eq!(clock.step(15, true), DynamicStep::None, "B cannot schedule a second capture");
+    }
+
+    #[test]
+    fn glass_state_reactivates_after_deactivation_or_a_route_gap() {
+        let mut state = GlassState::new();
+        assert!(state.needs_activation(20));
+        state.active = true;
+        state.last_seen = 20;
+        assert!(!state.needs_activation(21), "idle time has no successful presents");
+        assert!(state.needs_activation(22), "another route presented in between");
+        state.deactivate();
+        assert!(state.needs_activation(21));
+    }
+
+    #[test]
+    fn approved_glass_dims_only_the_source_rgb() {
+        assert_eq!(Glass::CACHED.source_rgb(1.0), 1.0, "cached glass keeps its overlay scrim");
+        assert_eq!(Glass::DYNAMIC.source_rgb(0.0), 1.0, "an invisible modal changes nothing");
+        assert_eq!(Glass::DYNAMIC.source_rgb(0.5), 0.75, "half appearance applies half the peak dim");
+        assert_eq!(Glass::DYNAMIC.source_rgb(1.0), 0.5, "the saved TV configuration peaks at 0.5 RGB");
+        assert_eq!(Glass::DYNAMIC.source_rgb(9.0), 0.5, "visibility clamps instead of over-dimming");
+        assert_eq!(Glass::DYNAMIC.overlay_scrim_alpha(0.5), 0.0, "source dim must not double-dim");
+        assert_eq!(Glass::CACHED.overlay_scrim_alpha(0.5), 0.5, "cached glass keeps the ordinary scrim");
+        assert_eq!(
+            GlassFrame { source_rgb: 0.8 }.combine(GlassFrame { source_rgb: 0.5 }),
+            GlassFrame { source_rgb: 0.4 },
+        );
+    }
 
     // ── The strip's vocabulary: an index MEANS something ──────────────────────────────────────
     //
