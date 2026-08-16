@@ -3,6 +3,7 @@
 //! fade + slide-into-place, with an optional full-screen scrim. Each panel used to hand-wire its
 //! own `static OPEN + APPEAR` pair, so any motion change was a four-file edit.
 use crate::ui::{theme, Painter, Rect, Spring};
+use crate::ui::widgets::{Glass, GlassFrame, GlassState};
 
 /// Stiffness of the appear spring — the panels' shared open-motion constant, and the stiffness every
 /// other fade-into-place in the UI matches (the tab capsules' alpha, [`crate::ui::widgets::TabStrip`]).
@@ -20,10 +21,9 @@ static mut OPEN_COUNT: u32 = 0;
 /// the app goes through [`Popover::open`]/[`Popover::close`], so registering there is exact, costs
 /// nothing, and a panel added tomorrow is counted without touching this.
 ///
-/// Its user is the glass tab bar, and what it buys is stated at that call site: a popover FREEZES
-/// the page under it — that is the premise `open`'s own doc rests on — so a bar re-snapshotting the
-/// backdrop every frame while a menu is up is paying a full blur chain, under a modal scrim, for a
-/// picture that cannot have changed.
+/// Its user is the glass tab bar. A modal disables that bar because the two far-apart glass regions
+/// would union into most of the frame; the popover's own material is the only glass worth drawing
+/// while it is up. This remains true for both cached and dynamic popovers.
 pub(crate) fn any_open() -> bool {
     unsafe { *std::ptr::addr_of!(OPEN_COUNT) > 0 }
 }
@@ -31,23 +31,35 @@ pub(crate) fn any_open() -> bool {
 pub(crate) struct Popover {
     open: bool,
     appear: Spring,
+    glass: Glass,
+    glass_state: GlassState,
     /// The `rise` the last [`painter`](Self::painter) was asked for, so [`panel`](Self::panel) can
     /// work out how far this frame is from the panel's resting position. Stashed rather than passed
-    /// again because the two calls are one statement — every caller does `panel(painter(…), …)` —
-    /// and a second copy of the number is a second place for it to be wrong. A `Cell` because both
-    /// of those take `&self`, and this is main-thread draw state like everything else here.
+    /// again because the painter and panel belong to one draw choreography, and a second copy of the
+    /// number is a second place for it to be wrong. A `Cell` because both calls take `&self`, and
+    /// this is main-thread draw state like everything else here.
     rise: std::cell::Cell<f32>,
 }
 impl Popover {
     pub(crate) const fn new() -> Self {
-        Popover { open: false, appear: Spring::at(0.0), rise: std::cell::Cell::new(0.0) }
+        Self::with_glass(Glass::CACHED)
+    }
+    /// Opt this popover into a reusable glass policy. Existing callers stay cached through
+    /// [`new`](Self::new); a moving underlay must choose the dynamic policy explicitly.
+    pub(crate) const fn with_glass(glass: Glass) -> Self {
+        Popover {
+            open: false,
+            appear: Spring::at(0.0),
+            glass,
+            glass_state: GlassState::new(),
+            rise: std::cell::Cell::new(0.0),
+        }
     }
     /// (re)open: restart the fade+slide from 0.
     ///
-    /// Also drops any cached backdrop-blur snapshot, which is the WHOLE invalidation rule for
-    /// [`panel`](Self::panel): a popover opens over a page that is not moving and closes before it
-    /// moves again, so one capture per opening is exactly enough. Anything that starts animating
-    /// underneath an open panel owes `gfx::blur_invalidate` a call of its own.
+    /// Also starts this popover's glass lifetime. Cached glass takes one snapshot; dynamic glass
+    /// anchors its every-third-present cadence here. Anything outside that policy which changes the
+    /// underlay still owes `gfx::blur_invalidate` a call of its own.
     pub(crate) fn open(&mut self) {
         self.appear = Spring::at(0.0);
         // Both transitions are guarded on the flag actually CHANGING, not on the call: `open` is a
@@ -59,7 +71,7 @@ impl Popover {
             unsafe { *std::ptr::addr_of_mut!(OPEN_COUNT) += 1 };
         }
         self.open = true;
-        crate::gfx::blur_invalidate();
+        self.glass.activate(&mut self.glass_state);
     }
     /// Close is an instant hide (no exit animation — matches the panels' historical behavior).
     pub(crate) fn close(&mut self) {
@@ -67,6 +79,7 @@ impl Popover {
             unsafe { *std::ptr::addr_of_mut!(OPEN_COUNT) -= 1 };
         }
         self.open = false;
+        self.glass_state.deactivate();
     }
     pub(crate) fn is_open(&self) -> bool {
         self.open
@@ -81,6 +94,32 @@ impl Popover {
     pub(crate) fn appear(&self) -> f32 {
         self.appear.pos.clamp(0.0, 1.0)
     }
+
+    /// Prepare a source-dimmed host page BEFORE it draws. `underlay_changed` describes that page,
+    /// not this popover's own springs. Capture is still deferred to [`panel`], after the host page
+    /// is complete; this resolves only cadence invalidation and the RGB gain.
+    #[must_use]
+    pub(crate) fn prepare_present(&mut self, underlay_changed: bool) -> GlassFrame {
+        if !self.open {
+            return GlassFrame::IDENTITY;
+        }
+        let visibility = self.appear() * crate::ui::nav::page_alpha();
+        self.glass.prepare(
+            &mut self.glass_state,
+            visibility,
+            underlay_changed,
+        )
+    }
+
+    /// The panel painter without a full-screen scrim. Pair with [`prepare_present`](Self::prepare_present)
+    /// when the glass policy moves that black dim into the opaque host page instead.
+    pub(crate) fn content_painter(&self, rise: f32) -> Painter {
+        let a = self.appear();
+        self.rise.set(rise);
+        Painter::root()
+            .alpha(a * crate::ui::nav::page_alpha())
+            .translate(0.0, rise * (1.0 - a))
+    }
     /// Draw the optional modal scrim (peak alpha `scrim_a`; 0 = none) and return the content
     /// painter: faded by the appear state and sliding from `rise` px below (+, rises up into
     /// place) or above (−, drops down) to its rest position. The scrim draws on its OWN root
@@ -94,13 +133,13 @@ impl Popover {
     /// frame of the in-player panels, since playback has no page transition.
     pub(crate) fn painter(&self, scrim_a: f32, rise: f32) -> Painter {
         let a = self.appear();
-        self.rise.set(rise);
         let page = crate::ui::nav::page_alpha();
+        let scrim_a = self.glass.overlay_scrim_alpha(scrim_a);
         if scrim_a > 0.0 {
             let dim = theme::scrim_black(scrim_a * a * page);
             Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
         }
-        Painter::root().alpha(a * page).translate(0.0, rise * (1.0 - a))
+        self.content_painter(rise)
     }
 
     /// Draw the panel's GROUND at `r` with corner `rad` — frosted over a live backdrop blur where
@@ -117,28 +156,34 @@ impl Popover {
     ///
     /// Two consequences worth knowing. The window follows the panel through its entry SLIDE, which
     /// is what real glass does — the snapshot is of the page, not of the panel's final resting
-    /// place. And the snapshot is taken while the modal scrim is still ramping up, so the glass
-    /// stays a little brighter than the page dimming around it; that reads as the panel being lit
-    /// rather than as a mismatch, and chasing it would mean re-capturing every frame of the appear.
+    /// place. Cached popovers capture the scrim at their first draw; a source-dimmed dynamic policy
+    /// refreshes the moving underlay on its own successful-present cadence.
     ///
     /// **Not for the player's panels.** Behind those is punch-through alpha to the hardware video
     /// plane, which GL cannot read; they keep `p.rect(…, PANEL_TOP, PANEL_BOT, …)` on purpose.
     pub(crate) fn panel(&self, p: Painter, r: Rect, rad: f32) {
         // How far below (or above) its resting place this frame draws the panel — exactly the
         // translate `painter` just applied. The snapshot is grabbed around the REST rect, so the
-        // whole appear animation is served by one capture instead of ~29.
+        // slide itself never forces another capture; a dynamic refresh policy may still do so.
         let slide = self.rise.get() * (1.0 - self.appear());
-        if p.backdrop_blur(r, slide, rad, [1.0, 1.0, 1.0, 1.0]) {
-            p.rect(r, rad, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
-        } else {
-            p.rect(r, rad, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-        }
+        self.glass.panel(p, r, slide, rad);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_is_the_default_and_dynamic_glass_requires_an_explicit_opt_in() {
+        let mut cached = Popover::new();
+        let mut dynamic = Popover::with_glass(Glass::DYNAMIC);
+        assert_eq!(cached.glass, Glass::CACHED);
+        assert_eq!(dynamic.glass, Glass::DYNAMIC);
+        assert_eq!(cached.prepare_present(false), GlassFrame::IDENTITY);
+        assert_eq!(dynamic.prepare_present(false), GlassFrame::IDENTITY);
+        assert!(!cached.glass_state.is_active() && !dynamic.glass_state.is_active());
+    }
 
     /// The counter behind [`any_open`], driven through the four sequences that leak it if either
     /// transition is unguarded: a re-open (the same chip pressed twice), a redundant close (an arm

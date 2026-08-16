@@ -3041,6 +3041,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut iters_ct = 0i32;
         let mut loop_shown = 0i32;
         let mut running = true;
+        // Dev-only panel proof: advance a red/green counter phase only after SDL_GL_SwapWindow
+        // returns. Hold each colour for 30 swaps: per-buffer alternation blends yellow at 60 Hz,
+        // while this ~2 Hz change is human-visible and still freezes immediately with presentation.
+        #[cfg(feature = "devtools")]
+        let mut buffer_flip_count = 0u8;
 
         let mut held_key = HeldKey::IDLE;
         let mut scrubber = Scrub::IDLE;
@@ -4364,12 +4369,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
             // a bare units-per-second. The decision itself is taken just above `glViewport`.
             crate::ui::idle::frame_begin(dt);
-
             // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
             // commits (the spring-back bounce has played), run it for whichever CARD view armed the
             // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
             // on Home it opens the item menu below, and anywhere else it just springs back.
-            crate::ui::press::tick(now, dt);
+            let (_, press_moving) = crate::ui::idle::scoped_motion(|| {
+                crate::ui::press::tick(now, dt);
+            });
+            let mut home_underlay_moving = press_moving;
             if ok_armed {
                 // PRESS-AND-HOLD → the item context menu, on the latch `press::tick` has always set
                 // and nothing ever read (`LONG_MS`, `is_long`). It fires while the key is still DOWN,
@@ -4698,7 +4705,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // only when home is actually drawn — stepping its 16×24 cell springs during
                 // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
                 // route-agnostically right after `dt` above)
-                crate::ui::home::home_update(dt);
+                let (_, moving) = crate::ui::idle::scoped_motion(|| {
+                    crate::ui::home::home_update(dt);
+                });
+                home_underlay_moving |= moving;
             } else if matches!(route, Route::Library) {
                 // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene)
                 if lib_osc && now.wrapping_sub(lib_osc_last) > 350 {
@@ -4947,7 +4957,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         } else if matches!(route, Route::Search) {
                             crate::ui::search::draw();
                         } else {
-                            crate::ui::home::home_draw();
+                            // Resolve every glass owner before Home draws. Gains compose here so a
+                            // future neighbouring widget does not need to fork the page renderer.
+                            let mut glass_frame = crate::ui::widgets::GlassFrame::IDENTITY;
+                            if matches!(route, Route::Account) {
+                                glass_frame = glass_frame.combine(
+                                    crate::ui::account_menu::prepare_present(
+                                        home_underlay_moving || crate::ui::idle::present_dirty(),
+                                    ),
+                                );
+                            }
+                            crate::ui::home::home_draw(glass_frame);
                         }
                         if matches!(route, Route::Account) {
                             crate::ui::account_menu::draw(); // profile popover over Home
@@ -4966,7 +4986,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // are unaffected by whether the digits are painted.
                         #[cfg(feature = "devtools")]
                         {
-                            let loop_col = [0.4f32, 1.0, 0.55, 1.0];
+                            let loop_col = if buffer_flip_count < 30 {
+                                crate::ui::theme::DIAG_FLIP_A
+                            } else {
+                                crate::ui::theme::DIAG_FLIP_B
+                            };
                             crate::gfx::draw_number(loop_shown, SCR_W as f32 - 70.0, 64.0, 46.0, loop_col.as_ptr());
                         }
                     }
@@ -4986,6 +5010,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 #[cfg(feature = "hostsim")]
                 crate::shot::maybe_capture(vx, vy, vw, vh);
                 SDL_GL_SwapWindow(win);
+                #[cfg(feature = "devtools")]
+                {
+                    buffer_flip_count = (buffer_flip_count + 1) % 60;
+                }
+                crate::ui::widgets::glass_presented();
                 fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
                 // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
                 // idle gate skipped would pace the profiler's once-per-N-frames log off frames
@@ -4993,8 +5022,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 crate::ui::profile::frame_end();
                 // Same reason, same gate: the blur's region accounting is per DRAWN frame. It rolls
                 // "what every glass surface asked for this frame" into the region the next frame's
-                // first snapshot is taken at, which is how a frame holding more than one of them
-                // takes ONE capture instead of one each.
+                // first snapshot is taken at. Once that union is known, several surfaces share one
+                // capture; a first discovery frame may still need a second non-contained grab.
                 crate::gfx::blur_frame_end();
                 crate::ui::idle::note_present(now);
             } else {

@@ -37,22 +37,20 @@ in-app capture stream — same `glReadPixels` path — has never been able to se
 There is **one** snapshot chain and **one** live region in it. But the unit that costs money is the
 *region*, not the element, and that distinction decides whether a layout is affordable.
 
-**Elements that sit close together are nearly free to have side by side.** The fixed ~2.45 ms is paid
-once for a shared region; a neighbour only adds its own fragments at ~2.7 ns each.
-
-| | region | cost *(derived)* |
-|---|---|---|
-| one 200×60 button | 376×236 | ~2.7 ms |
-| two of them, 24 px apart, sharing a grab | 600×236 | **~2.9 ms** |
+**Elements that sit close together are the affordable way to have more than one.** They share the
+same five-pass snapshot chain; a neighbour grows its region and adds a composite, rather than
+starting another chain. Exact small-region cost is not claimed—the final measurements disproved
+the first two-point model's supposed fixed per-pass floor.
 
 **Elements far apart are the expensive case**, because their union is most of the screen — a bar at
 the top plus a sheet in the middle is the whole-screen grab again. That is why the glass tab bar
 drops to its flat material the moment any popover opens (`widgets.rs`, `popover::any_open`).
 
 **Implemented, and verified at runtime.** A snapshot is taken at the union of every region the
-*previous* frame asked for (`blur_region_union`, `blur_frame_end`), so a frame holding two glass
-surfaces takes ONE capture. Measured on the simulator with the glass tab bar and the account panel
-both live over the Home hero, 644 frames:
+*previous* frame asked for (`blur_region_union`, `blur_frame_end`). Once that union is known, a
+frame holding two glass surfaces takes one capture. The first frame that discovers a non-contained
+second surface may still take a second capture. Measured on the simulator with the glass tab bar
+and the account panel both live over the Home hero, 644 frames:
 
 ```
   1 x  reg=592,0  736x200      <- frame 1: the bar, nothing yet on record
@@ -78,15 +76,17 @@ if `gap + width ≤ 20 px`, i.e. never.)*
 **Design consequence:** glass belongs to things that are *together*. A row of glass controls is a
 reasonable ask; a glass control at one corner and a glass sheet at the other is not.
 
-### Neighbours do not refract each other
+### Neighbours normally do not refract each other
 
-The snapshot is taken before any glass is drawn, so A's rim displaces its sample into whatever the
-*page* holds under B — never into B itself. Two adjacent capsules each bend the background
-independently.
+After the shared union has converged, its snapshot is taken before any glass is drawn, so A's rim
+displaces its sample into whatever the *page* holds under B. Two adjacent capsules then bend the
+background independently. On the first discovery frame, a non-contained second caller can recapture
+after the first glass was drawn; production avoids that transition for the far-apart tab/modal pair
+by disabling tab glass while a popover is open.
 
-This differs from Apple's Liquid Glass, where neighbouring elements interact, and it is **not a bug
-that can be fixed**: for A to see B, B would have to be in the snapshot, which means drawn before it,
-which means drawn twice. Design around it rather than expecting the interaction.
+This differs from Apple's Liquid Glass, where neighbouring elements deliberately interact. The
+steady-state shared snapshot contains the host page, not the other glass widgets; design around that
+rather than depending on the incidental first-frame ordering above.
 
 ---
 
@@ -94,37 +94,67 @@ which means drawn twice. Design around it rather than expecting the interaction.
 
 This is the least intuitive limit and the one most likely to shape a layout.
 
-Measured cost model: **≈0.49 ms fixed per render pass + ≈2.7 ns per output fragment.** The chain is
-five passes, so **≈2.45 ms is paid before a single useful fragment**, whatever the element's size.
+The first full-screen measurements suggested **≈0.49 ms per pass + ≈2.7 ns per output fragment**,
+but that was a two-point sizing fit, not a hardware invariant. The final region-limited run measured
+the two-pass `blur.taps` phase at 0.74 ms, below the model's claimed 0.98 ms fixed floor. What the
+data does establish is qualitative: five passes carry enough overhead that cost does not fall in
+proportion to panel area.
 
-| element | region | snapshot cost (measured/derived) |
+| element | region | snapshot cost |
 |---|---|---|
 | Library Sort panel (470×630) | 630×790 | ~3.4 ms *(measured)* |
-| tab bar track (~710×76) | ~870×230 | ~3.0 ms *(derived)* |
-| a hypothetical 200×60 chip | 360×220 | ~2.7 ms *(derived)* |
+| Account dynamic panel | 608×396 | ~3.9 ms *(measured in the dynamic profile leg)* |
+| tab bar track (~710×76) | ~870×230 | not isolated on the final chain |
 
-A chip a twentieth the area of a panel costs about **four fifths** as much.
+The smaller Account region was not proportionally cheaper than Sort; run-to-run context and the
+serialized profiler matter more than an area-only prediction.
 
-**Design consequence:** one large glass surface is close to free relative to one small one. **Many
-small glass elements is the shape to avoid** — and since §2 allows only one live region anyway, the
-two rules point the same way: glass belongs to whole surfaces (a bar, a sheet, a card), never to
-scattered ornaments.
+**Design consequence:** do not estimate cost from area alone. **Many scattered glass elements is the
+shape to avoid**: five passes still have material overhead, while their union can grow through empty
+space. Prefer coherent surfaces (a bar, a sheet, a card) and measure each new geometry on the TV.
 
 ---
 
-## 4. It is free at rest, and charged while things move
+## 4. It is free at rest; moving glass uses the saved 3-present policy
 
-The snapshot is taken **once per opening** for anything over a still page, and **once per drawn
-frame** for anything over a moving one. `ui::idle` gates the whole frame, so a settled screen does
-not present and therefore does not blur at all.
+`widgets::Glass::CACHED`, the default, takes **one snapshot per opening** over a still page. A modal
+over moving opaque UI opts into `widgets::Glass::DYNAMIC`; a non-modal widget uses
+`Glass::DYNAMIC_BACKDROP` to get the same cadence without dimming its host. The widget itself is
+still drawn on every presented frame, while a dirty shared backdrop is refreshed on **at most every
+third successful present**. `DYNAMIC`'s source dim also changes during the opening fade, so it may
+refresh during appear even when the host itself is still. The name in code is
+`EveryThirdPresent`, not “20 Hz”, because 20 Hz is only the result while the UI is actually
+presenting at 60 Hz. `ui::idle` still gates the whole frame, so settled content creates no private
+blur clock and burns no presents.
 
-Measured on Home, glass tab bar over the hero, grid oscillating: worst frame **21.2 ms** with glass
-against **21.5 ms** without — indistinguishable. (The 3.4 ms above is an *upper bound* from the
-profiler, which brackets each pass with `glFinish` and so serializes work that normally pipelines
-with the rest of the draw.)
+The cadence and pending-damage state are global, like the snapshot chain: several neighbouring
+dynamic widgets cannot stagger their phases into a refresh on every frame. Each owner keeps only
+its visibility/source state and reports whether its **host underlay** moved; foreground modal
+motion is deliberately excluded. A one-shot data/texture landing between sample slots buys at most
+two follow-up presents to reach the next slot, while a pure 2-second compositor keepalive does not
+recapture a clean backdrop.
 
-**Design consequence:** glass over static chrome is genuinely free. Glass over content that scrolls,
-cross-fades or auto-flips is the case that costs, and it costs only while the motion lasts.
+Measured on the dev television over the moving Home hero:
+
+| policy | presented rate | pacing result |
+|---|---:|---|
+| no recurring snapshot, no scrim | 60.1 fps | clean test reference; not the complete cached preset |
+| snapshot every present | 52.6 fps | sustained overload |
+| snapshot every second present | 52.7 fps | rejected; 35–42 ms burst every measured second |
+| snapshot every third present | ~60 fps | accepted visually; periodic 33–36 ms update frames |
+
+The approved dynamic preset also replaces a black full-screen scrim with **source RGB dimming**:
+the opaque host page's clear, content and chrome are multiplied by the same transmittance before
+capture, while alpha and the glass drawn above remain unchanged. At the Account panel's 0.5 dim,
+the same every-third-present workload measured **40.8 fps with the blended scrim** (`n=19` valid
+heartbeat buckets) and **59.84 fps with source dim** (`n=38`). Source-dim's p95 worst-frame was
+34.3 ms and 10/38 one-second buckets contained a frame over 33 ms. This is legal only over an
+opaque GL page; it cannot dim the hardware video plane.
+
+**Design consequence:** cached glass over static chrome is genuinely free. Over moving content the
+supported tier is a 60 Hz UI target with a sample-held, roughly 20 Hz backdrop—not true 60 Hz blur.
+The user-approved television result is the reusable `Glass::DYNAMIC` preset rather than an Account-
+only trigger.
 
 ---
 
@@ -136,7 +166,7 @@ cross-fades or auto-flips is the case that costs, and it costs only while the mo
 | **Minimum short side** | **~60 px** | The bevel is 28 px from each edge, so below ~60 px an element is *all* rim and no interior — it still draws, and reads as a solid lozenge of refraction rather than a pane. It also loses the shader's interior early-out, so every fragment pays the full lens. The tab bar at 76 px has 20 px of interior and is close to the floor. *Derived from `GLASS_BEVEL`.* |
 | **Maximum bevel** | **~40 px** | Past that the ramp covers enough of the panel to be read as *shading* rather than as an edge, and the object stops looking like glass and starts looking vignetted. *Judgement, recorded in `GLASS_BEVEL`'s doc.* |
 | **Corner radius** | anything up to a capsule | The lens reuses the `sdBox` distance the rounding already computes, so a full capsule (`h * 0.5`, what the tab bar uses) costs nothing extra. |
-| **Slide during appear** | **≤ 20 px** (`POPOVER_MAX_RISE`) | The grab is sized to swallow the appear travel so one opening costs one snapshot. A popover that rises further than this must raise the constant — a host test fails if it does not, so this cannot be broken silently. |
+| **Slide during appear** | **≤ 20 px** (`POPOVER_MAX_RISE`) | The grab swallows the full travel, so the slide itself forces no extra capture. Dynamic cadence may still refresh during the appear. A larger rise must raise the constant; a host test fails otherwise. |
 
 ---
 
@@ -163,8 +193,10 @@ lens has to work with.
 
 ## 7. Where it can go today
 
-**Yes:** any popover or sheet over a UI page (Sort, Filter, Sources, item menu, account menu, alt
-sources — all already on it via `Popover::panel`), and the shared top tab bar.
+**Yes:** any popover or sheet over a UI page. Sort, Filter, Sources, item menu and alt sources already
+use cached glass through `Popover::panel`; Account is the first production dynamic user. A moving
+host opts in explicitly through `Popover::with_glass(Glass::DYNAMIC)`. Cached remains the default,
+so making the policy reusable does not silently turn every menu into a recurring capture workload.
 
 **The tab bar is all-or-nothing across Home, Library and Search.** It is *one control* — `nav`'s
 `chrome_alpha` exists so it holds still while the pages swap under it — so a material that changes
@@ -172,20 +204,21 @@ when you cross between those three breaks the one illusion that code was written
 all three or none; "glass on Home only" is not an option, however tempting the frame budget makes it.
 (It is still behind `/tmp/plxnative-glasstabs` and compiled out of a `RELEASE` build.)
 
-**No:** anything on the player route (§1), and anything that would put a second glass surface in the
-same frame (§2).
+**No:** anything on the player route (§1), and a second far-away glass cluster whose union would
+grow the snapshot toward the whole frame (§2). Neighbouring elements may share one cluster.
 
 ---
 
 ## 8. Quick reference for a design pass
 
-- One glass CLUSTER per screen state — neighbours are nearly free, opposite corners are not.
+- One glass CLUSTER per screen state — neighbours can share a chain; opposite corners grow its region.
 - Never over video.
-- Whole surfaces, not ornaments — small glass costs nearly as much as large.
-- Adjacent glass does not refract adjacent glass, only the page behind it.
+- Whole surfaces, not scattered ornaments — area alone does not predict the five-pass cost.
+- In steady state, adjacent glass samples the page rather than refracting adjacent glass.
 - Keep 68 px clear of the screen edge, 60 px minimum short side.
 - Put it over something with colour in it, or it is an expensive way to draw the flat material.
-- Over still chrome it is free; over moving content it costs ~3 ms a frame while the motion lasts.
+- Over still chrome it is free; moving glass targets every third successful present.
+- Source RGB dim is for opaque UI underlays only, never the hardware video plane.
 - The tab bar is one object across three screens — it cannot be glass on some of them.
 
 Implementation, the cost model's derivation and the two rejected optimisations are in

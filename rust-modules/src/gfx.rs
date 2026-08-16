@@ -213,6 +213,7 @@ static mut LOC_RADIUS: c_int = 0;
 static mut LOC_COLTOP: c_int = 0;
 static mut LOC_COLBOT: c_int = 0;
 static mut LOC_FOCUS: c_int = 0;
+static mut LOC_FOCUS_RGB: c_int = 0;
 static mut LOC_RADR: c_int = 0;
 static mut LOC_RIMW: c_int = 0;
 static mut LOC_RIMCOL: c_int = 0;
@@ -421,6 +422,7 @@ pub(crate) fn init_gl() {
         LOC_COLTOP = glGetUniformLocation(PROG, c"u_colTop".as_ptr());
         LOC_COLBOT = glGetUniformLocation(PROG, c"u_colBot".as_ptr());
         LOC_FOCUS = glGetUniformLocation(PROG, c"u_focus".as_ptr());
+        LOC_FOCUS_RGB = glGetUniformLocation(PROG, c"u_focus_rgb".as_ptr());
         LOC_RADR = glGetUniformLocation(PROG, c"u_radR".as_ptr());
         LOC_RIMW = glGetUniformLocation(PROG, c"u_rimw".as_ptr());
         LOC_RIMCOL = glGetUniformLocation(PROG, c"u_rimcol".as_ptr());
@@ -506,7 +508,19 @@ pub(crate) fn init_gl() {
     }
 }
 
-pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, top: *const f32, bot: *const f32, focus: f32) {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_rect(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    pad: f32,
+    radius: f32,
+    top: *const f32,
+    bot: *const f32,
+    focus: f32,
+    focus_rgb: f32,
+) {
     unsafe {
         use_prog(PROG);
         // Only the rounded/focus SDF path needs the AA bleed; a plain rect takes the fast-path fill
@@ -520,6 +534,11 @@ pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32, pad: f32, radius: f32, t
         glUniform4fv(LOC_COLTOP, 1, top);
         glUniform4fv(LOC_COLBOT, 1, bot);
         glUniform1f(LOC_FOCUS, focus);
+        // Fill/rim colours arrive pre-scaled by Painter::rgb. The focus ring/glow is generated in
+        // the shader, so it needs the same RGB gain explicitly while its alpha coverage stays put.
+        if focus > 0.001 {
+            glUniform1f(LOC_FOCUS_RGB, focus_rgb);
+        }
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -728,7 +747,7 @@ fn draw_digit(d: i32, x: f32, y: f32, s: f32, col: *const f32) {
         let sy = y + g[i][1] * s - w / 2.0;
         let sw = g[i][2] * s + w;
         let sh = g[i][3] * s + w;
-        draw_rect(sx, sy, sw, sh, 2.0, (w + 4.0) / 2.0 - 2.0, col, col, 0.0);
+        draw_rect(sx, sy, sw, sh, 2.0, (w + 4.0) / 2.0 - 2.0, col, col, 0.0, 1.0);
     }
 }
 
@@ -906,13 +925,14 @@ use crate::log;
 //
 // Four facts shape the whole design.
 //
-// 1. **It is captured ONCE, not per frame.** A popover opens over a page that is not moving — the
-//    Library grid does not animate under its Sort menu — so the snapshot is taken on the first
-//    frame the panel draws and reused until [`blur_invalidate`] says otherwise (which `Popover::open`
-//    calls). Per-frame this costs one textured quad, the same as any poster. The alternative,
-//    re-blurring every frame, is the version of this feature that cannot be afforded.
+// 1. **Snapshots are cached.** A popover over a still page captures on open and then costs one
+//    textured quad per drawn frame. A moving opaque UI page may opt into `widgets::Glass::DYNAMIC`,
+//    which invalidates at most every third successful present while its underlay is dirty; the
+//    widget still draws every present.
+//    Capturing every present was measured at 52.6 fps on the dev television and is not supported.
 // 2. **The capture is MID-FRAME.** `Painter`'s primitives are immediate GL calls, so the default
-//    framebuffer already holds exactly the page + scrim at the moment the panel is about to draw.
+//    framebuffer already holds exactly the prepared page (source-dimmed, or with an overlay scrim)
+//    at the moment the panel is about to draw.
 //    That is the only reason no render-target restructuring is needed: the "background" is a
 //    definition of *when*, not of *what*.
 //    **A tested and REJECTED hypothesis lives here**, recorded because it is the obvious next idea
@@ -922,10 +942,10 @@ use crate::log;
 //    flush anyway) should have been free. Built and measured on the dev set: **48.1 ms deferred vs
 //    45.3 ms mid-frame** — no difference, so the position costs nothing and the simpler code is the
 //    one to keep. The cost is elsewhere; see the measurements on [`blur_snapshot`].
-// 3. **Passes are the budget, not taps.** 1920x1080 → 960x540 → 480x270 (each an exact 2x, so
-//    bilinear IS a 2x2 box) then two Kawase passes at 480x270. Four passes, ~0.7M fragments total
-//    against 2.07M for a single full-screen one — and the blur radius comes mostly from the free
-//    downsample rather than from kernel width. `fs_blur.frag` argues the tap count.
+// 3. **Passes are a large part of the budget.** Two exact-2x reductions, two quarter-size Kawase
+//    passes and one half-size up-filter make five render passes. Region limiting cuts their
+//    fragments, but it does not make a small glass ornament free. The blur radius comes mostly
+//    from the downsample rather than from kernel width; `fs_blur.frag` argues the tap count.
 //    **Those figures are the 1:1 television**; every size here is derived from
 //    `surface::viewport()` at first use, not written down. The simulator found out why within an
 //    hour of this landing: its drawable is HALF the authored canvas, and a chain hard-coded to
@@ -975,8 +995,8 @@ const BLUR_TAPS: [f32; 2] = [1.5, 3.5];
 ///
 /// So the chain ends by going back UP one level through the same 4-tap filter (this is the "dual
 /// filter" half that was missing). The stored snapshot is then half-res and genuinely smooth, and
-/// the per-frame panel draw stays exactly one bilinear tap — the cost is one 0.5M-fragment pass,
-/// once per opening, and nothing at all per frame.
+/// the per-frame panel draw stays exactly one bilinear tap — the up-filter cost is paid only when
+/// the cached snapshot is refreshed, not while that snapshot is reused.
 const BLUR_UP_TAP: f32 = 1.25;
 const BLUR_PASS_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit between targets
 
@@ -1125,9 +1145,9 @@ static mut GL_NOISE: c_int = 0;
 
 /// Drop the cached snapshot: the next [`draw_blur_backdrop`] re-captures.
 ///
-/// `Popover::open` is the caller, which is the whole invalidation rule — a panel opens over a still
-/// page and closes before that page moves again. Anything that starts animating UNDER an open
-/// popover owes a call here, and would be the first thing to make this stale.
+/// `Popover::open` starts every cache lifetime. A cached policy stops there; a dynamic `Glass`
+/// policy also calls this on its configured successful-present cadence. Anything changing an
+/// underlay outside those policies still owes an explicit invalidation.
 pub(crate) fn blur_invalidate() {
     unsafe { BLUR_VALID = false };
 }
@@ -1150,12 +1170,11 @@ const BLUR_REACH: f32 = 68.0;
 const POPOVER_MAX_RISE: f32 = 20.0;
 /// What the snapshot actually grabs beyond the panel: [`BLUR_REACH`] plus the slide.
 ///
-/// **The slack is what makes one snapshot per opening possible.** A popover's first draw is at
+/// **The slack keeps the appear slide from forcing extra snapshots.** A popover's first draw is at
 /// `appear == 0`, so the region is established while the panel sits a full `rise` away from where it
-/// comes to rest; every later frame of the appear moves it back INTO that region. Cache hits are
-/// therefore containment tests against a region that never has to be retaken — key the cache on
-/// equality, or grab only `BLUR_REACH`, and one snapshot per opening becomes one per FRAME of the
-/// appear, which is a net loss over grabbing the whole screen once.
+/// comes to rest; every later frame moves it back INTO that region. Cache hits are therefore
+/// containment tests — key on equality, or grab only `BLUR_REACH`, and even a cached popover would
+/// recapture on every frame of its appear.
 const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
 
 /// The region a panel at `(x,y,w,h)` needs snapshotted, in authored coords, clamped to the screen.
@@ -1400,58 +1419,19 @@ fn blur_lazy_init() -> bool {
 /// the viewport and blend exactly, for the same reason the capture chain does: whatever runs after
 /// it assumes all three.
 ///
-/// **It costs ~9.5 ms, once per opening**, and that is the honest headline for this whole feature.
-/// Measured on the dev set, worst frame in the second a Library Sort menu opens: **18.5 ms without
-/// the blur, 47–49 ms with it**, repeatable across openings — the frame is ~3 vsync periods either
-/// way, since the Sort menu alone costs 13 ms a frame (`menu.scrim` 5.65 + `menu.panel` 7.3, both
-/// pre-existing phases). Everything else is free: a settled screen with the panel UP is 3.2–4.3 ms
-/// either way, and `menu.panel` moved 7.1 → 7.3–7.7 ms when the opaque sheet became frosted, so the
-/// glass shader itself is ~0.3 ms. The once-per-opening snapshot is what buys all of that.
+/// # Device measurements (2026-08-16)
 ///
-/// # The cost model, measured 2026-08-16
+/// The original full-screen chain measured 9.54 ms. Limiting every pass to the requested panel
+/// region reduced a 630×790 Sort snapshot to **3.43 ms** (`copy=.71`, reductions `1.23`, two taps
+/// `.74`, up `.75`). The approved dynamic Account scene measured about **3.9 ms per refresh**.
+/// These are `profile::phase` wall times with `glFinish` around every phase: useful conservative
+/// attribution, but not normal pipelined frame time or hardware GPU timestamps.
 ///
-/// Per-pass phases, four consecutive 60-frame aggregates on the Library grid, spread < 0.1 ms:
-///
-/// | phase | ms | what it is |
-/// |---|---|---|
-/// | `blur.copy` | 2.96 | `glCopyTexSubImage2D` of the whole 1920x1080 default framebuffer |
-/// | `blur.reduce1` | 1.90 | 1920x1080 → 960x540 |
-/// | `blur.reduce2` | 0.84 | 960x540 → 480x270 |
-/// | `blur.taps` | 1.68 | two 4-tap Kawase passes at 480x270 |
-/// | `blur.up` | 2.21 | one 4-tap pass back up to 960x540 |
-///
-/// The two reductions are the same operation at two sizes, which is what makes them solve the
-/// model: **~0.49 ms fixed per RENDER PASS, plus ~2.7 ns per output fragment.** (A fit that came
-/// out of splitting `reduce` in two — with the two lumped in one phase, four near-equal quarters
-/// fit a fixed cost per *phase* equally well, and the two models disagree about every change that
-/// removes a pass without removing a phase.)
-///
-/// **The fixed term is real and not the profiler's own `glFinish` pair**, which is the objection to
-/// answer before trusting any of it: `blur.taps` is TWO passes inside ONE phase, so per-pass
-/// predicts 2*(0.49 + 0.35) = 1.68 while per-phase-overhead predicts 1.20. It measures 1.68. The
-/// per-fragment term checks out independently against a phase from another module — `menu.scrim` is
-/// one full-screen rect, 2.07M fragments, predicted 5.65 ms and measured 5.65.
-///
-/// `blur.up` runs 0.31 ms over the 1-tap prediction and `blur.taps` runs exactly on it: extra taps
-/// are free at 480x270 and cost ~0.6 ns/fragment at 960x540, i.e. tap count only bites once the
-/// working set stops fitting.
-///
-/// # What that says about the two remaining fixes
-///
-/// Both were sized against the older lumped numbers and both move:
-///
-/// - **Grab only the panel's bounding box plus the blur's reach**, not the whole screen. A 630x860
-///   region is 0.54M pixels against 2.07M, so `copy` and every pass shrink with it — but the fixed
-///   term does not, and 5 passes carry 2.43 ms of it whatever the region. Model says ~9.5 → ~4.3 ms
-///   (55%), not the ~73% a purely per-fragment reading predicts.
-/// - **Merge the two reductions into one 4-tap 4x pass** (four diagonal taps at ±0.25 target texels
-///   land on the centres of the four 2x2 sub-blocks, so it is filter-identical to two 2x boxes).
-///   That is 2.74 ms of passes replaced by roughly 0.9–1.3, worth ~1.4–1.8 ms rather than the ~0.44
-///   the lumped model suggested — the best ratio of gain to lines left in the chain. It also FLIPS
-///   the stored parity, so [`blur_passes`] and its test move with it.
-///
-/// The floor after both is ~4 passes x 0.49 = 1.94 ms of fixed cost before a single useful
-/// fragment, so a region-limited 4-pass chain lands near 3.5 ms. There is no third act.
+/// Two full-size reduction points once suggested a `0.49 ms/pass + 2.7 ns/fragment` sizing model.
+/// The final region measurement (`blur.taps=.74` for two passes) does not satisfy a global
+/// `0.49 ms/pass` floor, so that fit is deliberately not used as an invariant or as proof that no
+/// further pass fusion can help. Use measured regions and end-to-end A/Bs; `docs/liquid-glass.md`
+/// records the current envelope.
 fn blur_snapshot(reg: [f32; 4]) {
     unsafe {
         if !blur_lazy_init() {
@@ -1502,13 +1482,12 @@ fn blur_snapshot(reg: [f32; 4]) {
         // The LAST reduction always lands in `a`, whatever `BLUR_REDUCTIONS` is, because that is
         // where the tap loop below expects its input.
         //
-        // **DO NOT merge these two into one 4-tap 4x pass. It was built and measured, and it is
-        // NOT faster: 2.89 ms against the pair's 2.74.** The idea is sound on paper and the filter
+        // A one-pass 4-tap 4x reduction was built against the old FULL-SCREEN chain and measured
+        // slower: 2.89 ms against the pair's 2.74. The idea is sound on paper and the filter
         // is exactly identical (a target texel covers a 4x4 source block; four bilinear fetches
         // placed on the four 2x2 sub-blocks' shared corners each return that sub-block's mean, so
         // the four averaged are all sixteen texels at equal weight — which is what a 2x box
-        // followed by a 2x box produces). The cost model said it should win ~1.4 ms by deleting a
-        // whole pass at ~0.49 ms of fixed cost.
+        // followed by a 2x box produces).
         //
         // What the model misses is LOCALITY. The merged pass gathers a 4x4 footprint per output
         // fragment out of a 1920-wide texture, and adjacent output fragments are four texels apart,
@@ -1516,6 +1495,8 @@ fn blur_snapshot(reg: [f32; 4]) {
         // fetch. The two-step version reads ADJACENT texels in both passes and streams. The gather
         // costs more than the pass it removes — measured on the dev set 2026-08-16, and the whole
         // reason `blur.reduce` is split into two phases is so a re-measurement is one log line away.
+        // The final region-limited viewport was never A/B'd against this alternative, so that old
+        // full-screen result is evidence for today's choice, not a universal rejection.
         //
         // Each entry is (target fbo, source tex, region size in the TARGET, source window). The
         // source window is the only thing the region added: `draw_tex_core` takes an explicit uv
@@ -1611,9 +1592,8 @@ fn blur_snapshot(reg: [f32; 4]) {
 /// `rest` is where the panel comes to REST, and it is the rect the region is built around — not
 /// `(x,y,w,h)`, which is where this frame draws it. A popover slides into place over its appear
 /// spring, so the two differ for the whole of that animation; keying the region on the moving rect
-/// would fail containment on nearly every frame of it and turn one snapshot per opening into one
-/// per frame, which is worse than never having limited the grab at all. Callers with no motion
-/// (the tab bar) pass their own rect twice.
+/// would fail containment on nearly every frame and add policy-independent captures throughout the
+/// slide. Callers with no motion (the tab bar) pass their own rect twice.
 pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32) -> bool {
     unsafe {
         // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second
@@ -1631,8 +1611,8 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
             // never `need` alone. A miss that replaces the region instead of growing it is what
             // makes two neighbouring glass controls ping-pong: each retakes the other's region
             // every frame, two full chains, worse than not limiting the grab at all. A second
-            // element inside one grab costs only its own fragments (~0.2 ms against ~2.7), which is
-            // what makes a ROW of glass controls affordable and a pair at opposite corners not.
+            // element inside one grab adds only its composite fragments; a pair at opposite
+            // corners instead expands the shared snapshot toward the whole frame.
             let want = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV), need);
             blur_snapshot(want);
         }
@@ -1980,13 +1960,13 @@ mod tests {
         }
     }
 
-    /// One snapshot per OPENING, not one per frame of the appear — the property the whole region
-    /// grab lives or dies on, and the one that is invisible in a screenshot.
+    /// The appear SLIDE never changes the requested region. Cached glass therefore needs no second
+    /// snapshot for the slide; a dynamic policy may still refresh for source or underlay changes.
     ///
     /// A popover's first draw is at `appear == 0`, a full `rise` from where it settles. If the
     /// region were keyed on the rect being drawn, every later frame would ask for a region shifted
-    /// a pixel or two and miss, so a feature meant to make one 9.5 ms capture cheaper would instead
-    /// run ~29 of them. `BLUR_MARGIN` carries the slide so containment holds for the whole slide.
+    /// a pixel or two and miss. `BLUR_MARGIN` carries the slide so containment holds for the whole
+    /// slide; any later recapture is then a policy decision, not an accidental geometry miss.
     #[test]
     fn g_the_appear_slide_never_forces_a_second_snapshot() {
         let (x, y, w, h) = (640.0f32, 240.0f32, 480.0f32, 600.0f32);
@@ -2036,8 +2016,8 @@ mod tests {
         assert!(blur_region_covers(want, bar.0, bar.1, bar.2, bar.3), "the bar is in the shared grab");
         assert!(blur_region_covers(want, btn.0, btn.1, btn.2, btn.3), "so is the button");
 
-        // ...and the sharing must be nearly free, which is the claim design is being given. The
-        // union may not cost much more AREA than the bar alone did.
+        // Keep neighbouring geometry from growing the shared AREA excessively. This is a geometry
+        // invariant, not a timing claim: the five-pass cost still has to be measured on hardware.
         let grow = (want[2] * want[3]) / (bar_only[2] * bar_only[3]);
         assert!(grow < 1.5, "a neighbour must ride the same grab, not double it (grew {grow}x)");
 

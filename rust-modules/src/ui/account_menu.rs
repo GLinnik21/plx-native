@@ -18,6 +18,7 @@ use crate::plex::session::Account;
 use crate::ui::consts::*;
 use crate::ui::popover::Popover;
 use crate::ui::table::{Row, Section, TableView};
+use crate::ui::widgets::{Glass, GlassFrame};
 use crate::ui::Rect;
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
@@ -35,7 +36,9 @@ pub enum Action {
 /// case, where naming an account we do not have would be the same lie in reverse).
 const HEADER_FALLBACK: &str = "Account";
 
-static mut POP: Popover = Popover::new(); // shared open/appear choreography
+/// The first production user of dynamic widget glass: Home stays at presentation rate while its
+/// dirty blurred backdrop is refreshed at most every third successful present through the policy.
+static mut POP: Popover = Popover::with_glass(Glass::DYNAMIC);
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
 /// mapping cannot drift from what was actually drawn.
@@ -174,15 +177,29 @@ pub fn update(dt: f32) {
     table().update(dt, ph - 40.0);
 }
 
+/// Resolve cadence + source RGB before Home draws. The snapshot itself is deliberately deferred
+/// until [`draw`], where the panel sits after every underlay pixel in draw order.
+pub fn prepare_present(underlay_changed: bool) -> GlassFrame {
+    if is_open() {
+        pop().prepare_present(underlay_changed)
+    } else {
+        GlassFrame::IDENTITY
+    }
+}
+
 pub fn draw() {
     if !is_open() {
         return;
     }
-    // scrim + fade, sliding DOWN into place from above the chip (negative rise)
+    use crate::ui::profile::phase;
+    // Glass::DYNAMIC routes this requested dim through the source prepass instead of drawing the
+    // 1920x1080 scrim. Keeping the ordinary painter call makes that policy own the distinction.
     let p = pop().painter(0.5, -16.0);
-    let r = panel_rect();
-    pop().panel(p, r, 24.0);
-    table().draw(p, r);
+    phase("acct.panel", || {
+        let r = panel_rect();
+        pop().panel(p, r, 24.0);
+        table().draw(p, r);
+    });
 }
 
 /// The (account state → header + rows) table, which is the whole of this bug: the words the menu

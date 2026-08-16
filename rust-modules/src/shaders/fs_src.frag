@@ -23,6 +23,7 @@ uniform highp float u_radius;
 uniform vec4 u_colTop;
 uniform vec4 u_colBot;
 uniform float u_focus;
+uniform float u_focus_rgb;
 uniform highp float u_radR;
 uniform float u_rimw;
 uniform vec4 u_rimcol;
@@ -70,7 +71,7 @@ void main(){
   if (u_focus > 0.001) {
     float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;
     float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);
-    rgb += vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow;
+    rgb += (vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow) * u_focus_rgb;
     a = max(a, max(ring, glow));
   }
   gl_FragColor = vec4(rgb, a);
