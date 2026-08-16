@@ -45,6 +45,8 @@ const A_GREEN: c_int = 1;
 const A_BLUE: c_int = 2;
 const A_ALPHA: c_int = 3;
 const A_BUFFER_SIZE: c_int = 4;
+const A_DEPTH: c_int = 6;
+const A_STENCIL: c_int = 7;
 const A_CTX_MAJOR: c_int = 17;
 const A_CTX_MINOR: c_int = 18;
 const A_CTX_PROFILE_MASK: c_int = 21;
@@ -2694,6 +2696,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         SDL_GL_SetAttribute(A_BLUE, 8);
         SDL_GL_SetAttribute(A_ALPHA, 8);
         SDL_GL_SetAttribute(A_BUFFER_SIZE, 32);
+        // ...and NO depth or stencil, which SDL would otherwise give us anyway: its defaults are
+        // 16 bits of depth and 0 of stencil, and asking for neither had simply never been written
+        // down. **This renderer has no use for either.** There is no `GL_DEPTH_TEST`, no
+        // `glDepthFunc`, no `glDepthMask` and no `glClear(GL_DEPTH_BUFFER_BIT)` anywhere in the
+        // crate — every screen is painter's-algorithm 2-D, drawn back to front — and the one
+        // scissor user (`gfx::clip_set`) is a scissor, not a stencil.
+        //
+        // On a TILER this is not merely 4 MB of address space. Midgard allocates the depth buffer
+        // per tile alongside colour and, unless the driver proves it dead, RESOLVES it to memory at
+        // end-of-frame: 1920x1080x2 bytes written per presented frame for a buffer nothing ever
+        // reads. `system.rs` logs what the config actually came back with — a request is not a
+        // grant, and the only honest confirmation is `FB bits: … depth=0`.
+        SDL_GL_SetAttribute(A_DEPTH, 0);
+        SDL_GL_SetAttribute(A_STENCIL, 0);
         // The television is placed at 0,0 at exactly canvas size and takes the panel. A desktop
         // window is centred (`SDL_WINDOWPOS_CENTERED`) at whatever fits — see `desktop_window_size`.
         #[cfg(feature = "hostsim")]
@@ -2756,6 +2772,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         crate::gfx::init_gl();
         crate::text::init_text();
         crate::gfx::init_image();
+        crate::gfx::init_blur();
         // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
         // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
         // still runs, and `net::global_init` has already said so in the event log.
@@ -4974,6 +4991,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // idle gate skipped would pace the profiler's once-per-N-frames log off frames
                 // that ran no phases at all.
                 crate::ui::profile::frame_end();
+                // Same reason, same gate: the blur's region accounting is per DRAWN frame. It rolls
+                // "what every glass surface asked for this frame" into the region the next frame's
+                // first snapshot is taken at, which is how a frame holding more than one of them
+                // takes ONE capture instead of one each.
+                crate::gfx::blur_frame_end();
                 crate::ui::idle::note_present(now);
             } else {
                 // The swap is this loop's ONLY blocking call — there is no SDL_Delay, nanosleep

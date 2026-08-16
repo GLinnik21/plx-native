@@ -500,7 +500,7 @@ pub(crate) fn draw() {
     }
     let p = pop().painter(SCRIM_A, RISE);
     let r = panel_rect();
-    p.rect(r, PANEL_RAD, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    pop().panel(p, r, PANEL_RAD);
     table().draw(p, r);
 }
 

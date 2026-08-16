@@ -375,6 +375,29 @@ impl Painter {
         let t = self.c(tint);
         crate::gfx::draw_tex(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
     }
+    /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.
+    ///
+    /// Returns whether it drew. `false` is not an error — the blur latches itself off on a driver
+    /// that cannot give it a render target (`gfx`'s backdrop-blur note), and a caller that gets it
+    /// must draw an opaque ground instead of a translucent one. Reach for
+    /// [`Popover::panel`](crate::ui::popover::Popover::panel) rather than this: it owns that pair,
+    /// so no screen has to carry the fallback itself.
+    ///
+    /// **Order is the argument**: this samples the DEFAULT FRAMEBUFFER as it stands, so it must be
+    /// called after everything meant to show through and before anything meant to sit on top.
+    /// Painter primitives are immediate, so "behind" means "already drawn this frame" — nothing
+    /// else. Never call it on the player route: the video plane is not in our framebuffer, so what
+    /// is behind a panel there is punch-through alpha, not a picture.
+    /// `rest_dy` is how far this frame's painter has been slid from the panel's RESTING position —
+    /// a popover's appear translate, and 0 for anything that does not move. The snapshot is grabbed
+    /// around the rest rect rather than around this frame's, so one opening costs one snapshot
+    /// instead of one per frame of the slide; `gfx::draw_blur_backdrop` has the full argument.
+    #[must_use]
+    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4]) -> bool {
+        let t = self.c(tint);
+        let (x, y) = (r.x + self.dx, r.y + self.dy);
+        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr())
+    }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.
     pub fn tex_stroked(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {

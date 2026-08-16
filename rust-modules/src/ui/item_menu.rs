@@ -357,7 +357,7 @@ pub(crate) fn draw() {
     // short beat into place off the card it belongs to
     let p = pop().painter(SCRIM_A, 14.0);
     let r = panel_rect();
-    p.rect(r, PANEL_RAD, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    pop().panel(p, r, PANEL_RAD);
     table().draw(p, r);
 }
 

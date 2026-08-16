@@ -2213,7 +2213,33 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // dark-material weight (`theme::TAB_TRACK_TOP` holds the reasoning): light enough to keep a
         // hint of the art, dark enough that the TEXT_TERTIARY plain segments hold contrast even over
         // near-white art
-        p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+        //
+        // `/tmp/plxnative-glasstabs` swaps that flat material for the popovers' backdrop glass — an
+        // EXPERIMENT, behind a trigger, because the two cases are not alike. A popover opens over a
+        // still page and snapshots once; this bar sits over a page that scrolls, flips its hero and
+        // cross-fades between routes, so its snapshot is stale the moment anything moves and has to
+        // be retaken on every drawn frame. That is the expensive shape this whole design avoids, and
+        // the trigger exists to put a number on it rather than to argue about it.
+        //
+        // **A modal takes the glass away**, and the reason is DISTANCE, not arithmetic. Two glass
+        // surfaces in a frame now share one grab (`gfx::blur_region_union`), so a pair of NEIGHBOURS
+        // is nearly free — but this bar sits at the top of the screen and a popover's panel in the
+        // middle of it, and the union of the two is most of the frame, which is the whole-screen
+        // capture the region limit exists to avoid. It costs nothing to look at either: the bar is
+        // under the popover's own scrim, which is what the eye is reading there anyway.
+        if crate::dev::flag("glasstabs") && !crate::ui::popover::any_open() {
+            // Retake every frame: `ui::idle` only presents when something moved, so "every drawn
+            // frame" is already "every frame the background could have changed under us".
+            crate::gfx::blur_invalidate();
+            // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
+            if p.backdrop_blur(track, 0.0, track.h * 0.5, [1.0, 1.0, 1.0, 1.0]) {
+                p.rect_sheened(track, track.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
+            } else {
+                p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+            }
+        } else {
+            p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+        }
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
         // scissor case (see the ui/CLAUDE.md clipping rule): a pill leaving the row is cut at the
         // pill area's edge — which is also the "there is more over there" affordance. Paired below.
