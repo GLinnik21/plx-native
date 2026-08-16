@@ -7,8 +7,14 @@
 use std::os::raw::{c_int, c_uint, c_void};
 
 const SDL_GL_ALPHA_SIZE: c_int = 3; // SDL_GLattr: RED=0,GREEN=1,BLUE=2,ALPHA=3
+/// `SDL_GL_DEPTH_SIZE` / `SDL_GL_STENCIL_SIZE` — same enum, 6 and 7. `app.rs` asks for zero of
+/// both; these read back what the driver actually granted, which is the only thing that settles it.
+const SDL_GL_DEPTH_SIZE: c_int = 6;
+const SDL_GL_STENCIL_SIZE: c_int = 7;
 const GL_ALPHA_BITS: c_uint = 0x0D55;
 const GL_RED_BITS: c_uint = 0x0D52;
+const GL_DEPTH_BITS: c_uint = 0x0D56;
+const GL_STENCIL_BITS: c_uint = 0x0D57;
 // SDL_SysWMinfo layout (32-bit): version u8[3]@0, subsystem int@4, info union@8
 
 extern "C" {
@@ -91,12 +97,30 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
         // over-allocated to 512 bytes (the TV's fork writes more than the headers declare).
         SDL_GetVersion(wmbuf.as_mut_ptr());
         let mut a: c_int = -1;
+        let mut d: c_int = -1;
+        let mut s: c_int = -1;
         SDL_GL_GetAttribute(SDL_GL_ALPHA_SIZE, &mut a);
+        SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &mut d);
+        SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &mut s);
         let mut abits: c_int = -1;
         let mut rbits: c_int = -1;
+        let mut dbits: c_int = -1;
+        let mut sbits: c_int = -1;
         glGetIntegerv(GL_ALPHA_BITS, &mut abits);
         glGetIntegerv(GL_RED_BITS, &mut rbits);
-        log(&format!("FB bits: alpha={abits} red={rbits} (config alpha={a})"));
+        // Deprecated in a desktop CORE profile (the simulator), where they leave the value alone
+        // and raise `GL_INVALID_ENUM` — harmless and once, at boot, and the SDL attributes above
+        // answer the same question portably. On the television's ES2 context both are legal.
+        glGetIntegerv(GL_DEPTH_BITS, &mut dbits);
+        glGetIntegerv(GL_STENCIL_BITS, &mut sbits);
+        // `depth=`/`stencil=` are here to be READ: `app.rs` asks for zero of each because nothing
+        // in this renderer uses them, and on a tiler a granted depth buffer is a per-frame
+        // write-back of 1920x1080x2 bytes nobody consumes. A non-zero here means the driver
+        // refused and the saving is not real.
+        log(&format!(
+            "FB bits: alpha={abits} red={rbits} depth={dbits} stencil={sbits} \
+             (config alpha={a} depth={d} stencil={s})"
+        ));
         // The wayland grab is webOS-only, and on a desktop it is not merely useless but UNSOUND.
         // The union is read as `*mut c_void` pairs at a 4-byte offset, which is fine for the
         // television's 32-bit pointers and a misaligned 64-bit dereference anywhere else — the

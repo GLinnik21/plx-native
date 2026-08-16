@@ -2331,7 +2331,7 @@ pub(crate) fn draw() {
         let mp = phase("menu.scrim", || pop().painter(0.45, 20.0));
         phase("menu.panel", || {
             let r = panel_rect();
-            mp.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+            pop().panel(mp, r, 24.0);
             if source_menu_open() {
                 draw_level_pills(mp, r);
             }

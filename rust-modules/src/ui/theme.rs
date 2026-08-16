@@ -265,6 +265,21 @@ pub const SURFACE_PANEL: [f32; 4] = NEUTRAL_650;
 pub const PANEL_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.985);
 /// Near-opaque sheet gradient — bottom stop (kept distinct; the gradient is deliberate).
 pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
+/// The FROSTED sheet's gradient — top stop: the same two greys as [`PANEL_TOP`]/[`PANEL_BOT`] at
+/// the alpha a real backdrop blur allows, and the same material as far as the palette is concerned.
+///
+/// It is a separate pair rather than a lower alpha passed at the call site because the two are not
+/// interchangeable: `.985` over an unknown background is the panel *being* its own ground, and this
+/// one is only legal ON TOP of [`Painter::backdrop_blur`](crate::ui::Painter::backdrop_blur) — a
+/// panel that draws it without one is a translucent hole onto whatever the page had there.
+/// [`Popover::panel`](crate::ui::popover::Popover::panel) is what keeps the two paired.
+///
+/// The value is the legibility floor, not a taste knob: at .72 a `TEXT_TERTIARY` sub-line still
+/// clears 4.5:1 over the brightest ground a blurred poster shelf produces (the blur removes detail,
+/// it does not cap luminance), and every rung below that was measured against a white poster.
+pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
+/// The frosted sheet's bottom stop — see [`PANEL_FROST_TOP`].
+pub const PANEL_FROST_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.72);
 /// The sign-in **QR card's** quiet-zone plate (`login.rs`) — a bright cool-white whose job is SCAN
 /// CONTRAST for a phone camera, not focus. It is a SURFACE, not a control fill, which is the whole
 /// reason it outlived the second control white it used to be (`FILL_PRIMARY`): a plate under a
@@ -446,6 +461,13 @@ pub const OVERLAY_FOCUS_PILL: [f32; 4] = with_a(WHITE, 0.14);
 pub const TAB_TRACK_TOP: [f32; 4] = scrim_black(TAB_TRACK_A_TOP);
 /// The track's bottom stop — see [`TAB_TRACK_TOP`].
 pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
+/// The tab track's stops when it is drawn as GLASS (`/tmp/plxnative-glasstabs`) — the same near-black
+/// ink at roughly half the weight, since a real backdrop behind it is doing the work the flat
+/// material had to do alone. Experimental, and paired with `Painter::backdrop_blur` exactly as
+/// [`PANEL_FROST_TOP`] is: without one they are a translucent hole onto the page.
+pub const TAB_GLASS_TOP: [f32; 4] = scrim_black(0.38);
+/// The glass track's bottom stop — see [`TAB_GLASS_TOP`].
+pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.46);
 /// The track material's two weights, exposed as alphas because the focused **profile chip** wears
 /// the same material and FADES it in with its unfurl (`scrim_black(A * e)`) — one material and one
 /// pair of weights whether it is painted at full strength or on the way in, which is what keeps the

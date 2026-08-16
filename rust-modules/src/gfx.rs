@@ -42,6 +42,8 @@ const FS_AMBIENT: &CStr = glsl!("shaders/fs_ambient.frag");
 const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
+const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
+const FS_GLASS: &CStr = glsl!("shaders/fs_glass.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
@@ -77,6 +79,7 @@ extern "C" {
     fn glGetUniformLocation(program: c_uint, name: *const c_char) -> c_int;
     fn glUniform4f(loc: c_int, x: f32, y: f32, z: f32, w: f32);
     fn glUniform2f(loc: c_int, x: f32, y: f32);
+    fn glUniform3f(loc: c_int, x: f32, y: f32, z: f32);
     fn glUniform1f(loc: c_int, x: f32);
     fn glUniform4fv(loc: c_int, count: c_int, value: *const f32);
     fn glUniform1i(loc: c_int, x: c_int);
@@ -235,7 +238,7 @@ static mut IPROG: c_uint = 0;
 static mut IL_RECT: c_int = 0;
 static mut IL_SCREEN: c_int = 0;
 static mut IL_TINT: c_int = 0;
-static mut IL_UVSCALE: c_int = 0;
+static mut IL_UVRECT: c_int = 0;
 static mut IL_RADIUS: c_int = 0;
 static mut IL_TEX: c_int = 0;
 static mut IL_RIMW: c_int = 0;
@@ -757,7 +760,7 @@ pub(crate) fn init_image() {
         IL_RECT = glGetUniformLocation(IPROG, c"u_trect".as_ptr());
         IL_SCREEN = glGetUniformLocation(IPROG, c"u_tscreen".as_ptr());
         IL_TINT = glGetUniformLocation(IPROG, c"u_tint".as_ptr());
-        IL_UVSCALE = glGetUniformLocation(IPROG, c"u_uvscale".as_ptr());
+        IL_UVRECT = glGetUniformLocation(IPROG, c"u_uvrect".as_ptr());
         IL_RADIUS = glGetUniformLocation(IPROG, c"u_iradius".as_ptr());
         IL_TEX = glGetUniformLocation(IPROG, c"u_tex".as_ptr());
         IL_RIMW = glGetUniformLocation(IPROG, c"u_rimw".as_ptr());
@@ -815,32 +818,55 @@ pub(crate) fn delete_tex(tex: c_uint) {
 /// The card-composite draw. `(x,y,w,h)` is the CARD rect; the quad is inflated by `pad` so the shadow
 /// penumbra fits, and `FS_IMG` remaps the texture back to the card. `rimw`/`rimcol` = the 1px edge
 /// sheen; `pad`/`shblur`/`shcol` = the soft (symmetric) drop-shadow (all zero ⇒ a plain rounded texture).
+/// The UV sub-rect `(offset.xy, scale.zw)` for a quad inflated by `pad` around a `w`×`h` card —
+/// i.e. "map the texture back onto the card, not onto the shadow ring".
+///
+/// Pure, and split out because it is the identity `vs_img.vert` used to hard-code as a scale about
+/// 0.5: `(a_pos - 0.5) * s + 0.5` is `a_pos * s + (0.5 - 0.5 * s)`. Keeping the algebra here (with
+/// a test) is what let the vertex shader take a general offset for [`draw_blur_backdrop`] without
+/// anyone having to re-derive the card path's numbers.
+#[inline]
+fn uv_rect_padded(w: f32, h: f32, qw: f32, qh: f32) -> [f32; 4] {
+    let sx = if w > 0.0 { qw / w } else { 1.0 };
+    let sy = if h > 0.0 { qh / h } else { 1.0 };
+    [0.5 - 0.5 * sx, 0.5 - 0.5 * sy, sx, sy]
+}
+
+/// The IPROG draw, with every term already in the shader's own units: `q*` is the QUAD (shadow
+/// inflation included), `uv` the source sub-rect it samples, `ch` the CARD half-size the SDF is
+/// measured against. [`draw_tex_impl`] folds a card's parameters into these; the blur backdrop
+/// supplies its own, because its UV window is a screen-space rect rather than a card.
 #[allow(clippy::too_many_arguments)]
-fn draw_tex_impl(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32, rimw: f32, rimcol: *const f32,
-    pad: f32, shblur: f32, shcol: *const f32) {
+fn draw_tex_core(tex: c_uint, qx: f32, qy: f32, qw: f32, qh: f32, uv: [f32; 4], radius: f32, tint: *const f32,
+    rimw: f32, rimcol: *const f32, chw: f32, chh: f32, shinv: f32, shcol: *const f32) {
     if tex == 0 {
         return;
     }
     unsafe {
-        let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
-        // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
-        // quad→card UV scale (1.0 when pad==0), and the shadow's 0.5/blur normaliser.
-        let uvsx = if w > 0.0 { qw / w } else { 1.0 };
-        let uvsy = if h > 0.0 { qh / h } else { 1.0 };
-        let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
         use_prog(IPROG); // IL_SCREEN / IL_TEX / texture unit 0 are set once at init
         glUniform4fv(IL_TINT, 1, tint);
-        glUniform2f(IL_UVSCALE, uvsx, uvsy);
+        glUniform4f(IL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
         glUniform1f(IL_RADIUS, radius);
         glUniform1f(IL_RIMW, rimw);
         glUniform4fv(IL_RIMCOL, 1, rimcol);
-        glUniform2f(IL_CH, w * 0.5, h * 0.5);
+        glUniform2f(IL_CH, chw, chh);
         glUniform1f(IL_SHINV, shinv);
         glUniform4fv(IL_SHCOL, 1, shcol);
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(IL_RECT, qx, qy, qw, qh);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_tex_impl(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32, rimw: f32, rimcol: *const f32,
+    pad: f32, shblur: f32, shcol: *const f32) {
+    let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
+    // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
+    // quad→card UV rect (identity when pad==0), and the shadow's 0.5/blur normaliser.
+    let uv = uv_rect_padded(w, h, qw, qh);
+    let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
+    draw_tex_core(tex, qx, qy, qw, qh, uv, radius, tint, rimw, rimcol, w * 0.5, h * 0.5, shinv, shcol);
 }
 
 const NO_RIM: [f32; 4] = [0.0, 0.0, 0.0, 0.0]; // rim/shadow disabled: alpha 0 ⇒ shader skips it
@@ -872,6 +898,779 @@ pub(crate) fn draw_tex_carded(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radiu
 }
 
 use crate::log;
+
+// ============================== backdrop blur ================================
+// The frosted ground under a popover panel: a blurred snapshot of what the frame had drawn BEHIND
+// it, sampled through the panel's own rounded rect. `track_menu.rs` carried "no true backdrop blur
+// on the GLES plane" as a standing assumption for a year; this is what replaces it.
+//
+// Four facts shape the whole design.
+//
+// 1. **It is captured ONCE, not per frame.** A popover opens over a page that is not moving — the
+//    Library grid does not animate under its Sort menu — so the snapshot is taken on the first
+//    frame the panel draws and reused until [`blur_invalidate`] says otherwise (which `Popover::open`
+//    calls). Per-frame this costs one textured quad, the same as any poster. The alternative,
+//    re-blurring every frame, is the version of this feature that cannot be afforded.
+// 2. **The capture is MID-FRAME.** `Painter`'s primitives are immediate GL calls, so the default
+//    framebuffer already holds exactly the page + scrim at the moment the panel is about to draw.
+//    That is the only reason no render-target restructuring is needed: the "background" is a
+//    definition of *when*, not of *what*.
+//    **A tested and REJECTED hypothesis lives here**, recorded because it is the obvious next idea
+//    and it is wrong on this part: that a mid-frame framebuffer read is expensive *because it is
+//    mid-frame* — a tiler must resolve the frame's deferred passes before the copy can see them,
+//    so moving the snapshot beside `capture::tick` (after the last draw, where the swap pays that
+//    flush anyway) should have been free. Built and measured on the dev set: **48.1 ms deferred vs
+//    45.3 ms mid-frame** — no difference, so the position costs nothing and the simpler code is the
+//    one to keep. The cost is elsewhere; see the measurements on [`blur_snapshot`].
+// 3. **Passes are the budget, not taps.** 1920x1080 → 960x540 → 480x270 (each an exact 2x, so
+//    bilinear IS a 2x2 box) then two Kawase passes at 480x270. Four passes, ~0.7M fragments total
+//    against 2.07M for a single full-screen one — and the blur radius comes mostly from the free
+//    downsample rather than from kernel width. `fs_blur.frag` argues the tap count.
+//    **Those figures are the 1:1 television**; every size here is derived from
+//    `surface::viewport()` at first use, not written down. The simulator found out why within an
+//    hour of this landing: its drawable is HALF the authored canvas, and a chain hard-coded to
+//    1920x1080 grabbed a rect that does not exist, then sampled a UV window that mapped to no part
+//    of the screen. On a 1:1 surface both bugs are invisible — which is the whole class of thing
+//    the desktop simulator is for. The chain is built once because the drawable never changes
+//    after `surface::probe` (no resize on either platform); a surface that could would owe this an
+//    invalidation.
+// 4. **Every Midgard trap the capture chain documents applies here**, because it is the same
+//    machinery: NPOT targets REQUIRE CLAMP_TO_EDGE + LINEAR (core ES2 samples them opaque black
+//    under the defaults, with no GL error), `glClear` before each pass spares the tile
+//    preserve-load, and RGBA FBO renderability is implementation-defined so completeness is
+//    checked and the feature LATCHES OFF rather than crashing. A latched-off blur draws nothing at
+//    all and the panel keeps its own opaque ground — the fallback is the old look, not a hole.
+//
+// Deliberately NOT used by the player's panels (track/chapters/info/overflow). There the frame
+// behind the popover is mostly alpha-0 punch-through to the hardware video plane, which GL cannot
+// read: blurring it would smear transparency, not video. `docs/` and the player HUD's own notes
+// say why that plane is unreachable; nothing here changes it.
+
+/// How many exact halvings the snapshot goes through before the blur taps — **the one knob that
+/// decides how much STRUCTURE survives behind the glass, which is a design question, not a perf
+/// one.**
+///
+/// 2 (quarter res) is a properly frosted panel: everything behind it is a colour field. But the
+/// lens in `fs_glass.frag` can only bend what is there, and a field of colour looks the same bent —
+/// so at 2 the refraction reads as a lit slab rather than as anything being displaced. 1 (half res)
+/// keeps coarse shapes recognisable, which is what gives the edge something to visibly distort, at
+/// the cost of a less anonymous background and ~1M more fragments through the tap passes.
+///
+/// This is the tension Apple resolves by blurring LESS than the obvious amount. Both are defensible
+/// and the choice belongs to whoever is looking at the television.
+const BLUR_REDUCTIONS: usize = 2;
+/// Kawase tap offsets, in TEXELS of the final target, one per pass. Widening between passes is
+/// what buys a wide penumbra from four taps; both are half-texel-aligned so GL_LINEAR resolves each
+/// tap as a 2x2 box. In texels rather than pixels on purpose — the target scales with the drawable,
+/// so the blur covers the same FRACTION of the screen on a half-size surface instead of shrinking.
+const BLUR_TAPS: [f32; 2] = [1.5, 3.5];
+/// The UP pass's tap offset, in texels of the target it writes.
+///
+/// **This pass is what stops the result looking like enlarged pixels rather than like blur**, and
+/// its absence was visible on the television before anything else was. Reducing to a quarter and
+/// then letting the panel draw magnify that in ONE bilinear tap is not a blur at all: bilinear
+/// magnification is piecewise linear, so the texel lattice survives as faint facets and creases,
+/// and the eye reads those as an upscaled image. No number of extra passes DOWN fixes it — the
+/// artefact is created by the magnification, after all of them.
+///
+/// So the chain ends by going back UP one level through the same 4-tap filter (this is the "dual
+/// filter" half that was missing). The stored snapshot is then half-res and genuinely smooth, and
+/// the per-frame panel draw stays exactly one bilinear tap — the cost is one 0.5M-fragment pass,
+/// once per opening, and nothing at all per frame.
+const BLUR_UP_TAP: f32 = 1.25;
+const BLUR_PASS_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit between targets
+
+/// The chain's four target sizes, from the drawable's canvas rect: two exact halvings.
+///
+/// Exact, not fitted — bilinear minification is a clean 2x2 box only at exactly 2x, and the
+/// capture chain's own note records what a single 4x pass costs instead (text shimmer). Odd
+/// dimensions floor, which loses at most a pixel column off a blurred backdrop and is not worth a
+/// second code path. Pure, so the halving and the floor are host-gradeable.
+/// How many passes the chain runs, and therefore which way up the snapshot is stored: every pass
+/// flips row order once. The reductions, the taps, and the up pass when there is a level to come
+/// back up to.
+///
+/// **One expression, deliberately.** It was inlined in two places and they disagreed the instant the
+/// up pass was added — one said four passes, the other five — which inverted the lens's v axis while
+/// leaving the sampling window correct. Nothing warns, and on a symmetric backdrop nothing shows.
+///
+#[inline]
+fn blur_passes() -> usize {
+    BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_REDUCTIONS >= 2)
+}
+#[inline]
+fn blur_is_bottom_up() -> bool {
+    blur_passes() % 2 == 0
+}
+
+#[inline]
+fn blur_dims(vw: c_int, vh: c_int) -> ((c_int, c_int), (c_int, c_int)) {
+    let mid = ((vw / 2).max(1), (vh / 2).max(1));
+    if BLUR_REDUCTIONS < 2 {
+        return (mid, mid); // the taps run at half res; `mid` is then only the first pass's target
+    }
+    (mid, ((mid.0 / 2).max(1), (mid.1 / 2).max(1)))
+}
+
+struct BlurChain {
+    grab: c_uint, // the canvas rect of the drawable, copied verbatim
+    gw: c_int,
+    gh: c_int,
+    gx: c_int, // where that rect starts in the drawable (letterbox offset)
+    gy: c_int,
+    mid: c_uint,
+    mid_fbo: c_uint,
+    mw: c_int,
+    mh: c_int,
+    a: c_uint, // quarter-size ping — and where the finished snapshot lands (even pass count)
+    a_fbo: c_uint,
+    b: c_uint, // pong, same size as `a`
+    b_fbo: c_uint,
+    sw: c_int,
+    sh: c_int,
+    /// The texture the finished snapshot lands in, and its size — `mid` after the up pass, or `a`
+    /// when there was no level to come back up to. Held rather than re-derived so the draw has one
+    /// thing to sample and no copy of the chain's shape.
+    out: c_uint,
+    /// Is the finished snapshot stored bottom-up (like the `glCopyTexSubImage2D` it started as)?
+    ///
+    /// Every pass flips row order once, so this is the parity of the pass count — and it is stored
+    /// rather than asserted because [`BLUR_REDUCTIONS`] is a knob: the chain ran an even number of
+    /// passes at one setting and an odd number at the other, and the first version of this hard-
+    /// coded "even" in a test. A wrong answer here draws the page upside down under the panel.
+    bottom_up: bool,
+    /// The AUTHORED region the live snapshot holds — what [`blur_region_covers`] tests a panel
+    /// against, and the space [`blur_uv_rect`] maps screen coordinates out of.
+    reg: [f32; 4],
+    /// That region in drawable px, a multiple of 4, sitting at the bottom-left of every target.
+    ///
+    /// **The targets are NOT resized to it**, and that is measured rather than assumed: with the
+    /// full-size allocations kept and only the viewports shrunk to a quarter of the area, the chain
+    /// went 9.54 → 5.62 ms on the dev set (2026-08-16). Midgard does not resolve tiles nothing drew
+    /// into, so a region costs its own area and not the framebuffer's — which is what makes this a
+    /// UV-and-viewport change instead of an allocator that has to guess a worst-case panel.
+    rw: c_int,
+    rh: c_int,
+}
+static mut BLURST: Option<BlurChain> = None;
+/// Latched off: no FBO, no program, or a failed copy. Callers draw no backdrop and keep their own
+/// ground — checked before every snapshot so a failure costs one log line, not a frame loop.
+static mut BLUR_OFF: bool = false;
+/// A snapshot exists AND still describes what is behind the panel.
+static mut BLUR_VALID: bool = false;
+static mut BPROG: c_uint = 0;
+static mut BL_RECT: c_int = 0;
+static mut BL_SCREEN: c_int = 0;
+static mut BL_UVRECT: c_int = 0;
+static mut BL_TEX: c_int = 0;
+static mut BL_TEXEL: c_int = 0;
+
+/// How far in from the panel's edge the lens reaches, in authored px. Wider reads as a thicker
+/// slab; past ~40 the "glass" starts to look like a vignette, because the ramp then covers enough
+/// of the panel to be seen as shading rather than as an edge.
+const GLASS_BEVEL: f32 = 28.0;
+/// Peak displacement at the rim, in authored px — how hard the edge bends what is behind it.
+///
+/// **Large on purpose, and it was three times smaller in the first version.** The source is a
+/// quarter-res blur with only coarse structure left in it, so a displacement small enough to
+/// "preserve detail" moves nothing an eye can find: the bend has to slide whole light and dark
+/// regions to be seen at all. The first attempt compensated with a sharper source at the rim,
+/// which reads as the panel getting thinner rather than as refraction — `fs_glass.frag` records
+/// why that was removed and this raised instead.
+const GLASS_LENS: f32 = 38.0;
+/// The lit chamfer's colour. A weight on the overlay ramp rather than a hue, per the theme rule —
+/// it is white light, and its ALPHA is the only thing tuned.
+const GLASS_EDGE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
+/// Direction TO the light in panel-local space (`+y` is DOWN, so a negative y is above), plus the
+/// shading applied to the chamfer facing away from it.
+///
+/// Up and a little to the left — the direction every drop shadow in this app is already cast from,
+/// so the panel is lit by the same imaginary lamp as the cards under it. The counter-shade is what
+/// keeps it from reading as an outline: a ring that is bright all the way round is a stroke, and a
+/// bevel that is bright on one side and dark on the other is an object.
+const GLASS_LIGHT: [f32; 3] = [-0.35, -0.94, 0.45];
+/// The rim's SPECULAR: `(axis.x, axis.y, tightness, strength)`.
+///
+/// The axis is the panel's diagonal, and the shader takes `abs` of the normal's projection onto it,
+/// so the reflection catches at **two opposite corners** — top-left and bottom-right — while the
+/// other two stay dark. That two-lobe asymmetry is the reading a single lobe cannot give: one lobe
+/// is a light source, two are a reflection of one, which is what a glass rim actually shows.
+///
+/// The tightness sets how far the catch RUNS along the perimeter either side of a corner, and it
+/// is the parameter that was wrong first. A rounded rect's normal is constant along each straight
+/// side, so the power is the only thing shaping the falloff: at 8 the term is 0.06 on a side
+/// against 1.0 on the corner arc, which is two bright dots and nothing else — measured at 265
+/// changed pixels on the panel. 3 gives ~0.35 on the sides, i.e. a highlight that travels along the
+/// edge and gathers at the corner, which is what a rim reflection looks like.
+const GLASS_SPEC: [f32; 4] = [-0.7071, -0.7071, 3.0, 0.80];
+/// Dither amplitude, as a fraction of full scale: one 8-bit quantum peak-to-peak (±half). Enough
+/// to break a band, below the level at which it reads as grain. Not optional — see `fs_glass.frag`.
+const GLASS_NOISE: f32 = 1.0 / 255.0;
+
+static mut GPROG: c_uint = 0;
+static mut GL_RECT: c_int = 0;
+static mut GL_SCREEN: c_int = 0;
+static mut GL_UVRECT: c_int = 0;
+static mut GL_TEX: c_int = 0;
+static mut GL_TINT: c_int = 0;
+static mut GL_RADIUS: c_int = 0;
+static mut GL_CH: c_int = 0;
+static mut GL_UVPX: c_int = 0;
+static mut GL_BEVEL: c_int = 0;
+static mut GL_LENS: c_int = 0;
+static mut GL_EDGE: c_int = 0;
+static mut GL_LIGHT: c_int = 0;
+static mut GL_SPEC: c_int = 0;
+static mut GL_NOISE: c_int = 0;
+
+/// Drop the cached snapshot: the next [`draw_blur_backdrop`] re-captures.
+///
+/// `Popover::open` is the caller, which is the whole invalidation rule — a panel opens over a still
+/// page and closes before that page moves again. Anything that starts animating UNDER an open
+/// popover owes a call here, and would be the first thing to make this stale.
+pub(crate) fn blur_invalidate() {
+    unsafe { BLUR_VALID = false };
+}
+
+/// How far outside a panel's own rect the snapshot must actually contain pixels, in authored px.
+///
+/// Two things reach out past the edge and both are drawn FROM outside it. The lens displaces its
+/// sample by up to [`GLASS_LENS`] (38) along the outward normal, so the rim shows what is beside the
+/// panel, not under it. And the chain's own kernel spreads: the taps are 1.5 and 3.5 texels at
+/// quarter res (4 authored px each) = 20, the up pass 1.25 at half res = 2.5, the reduction's box
+/// ~2 — about 24.5 together. 38 + 24.5 is 62.5; this rounds up.
+///
+/// Short of this the rim samples clamped edge texels, which reads as the glass smearing one colour
+/// outward — subtle, and exactly the kind of thing that looks like a shader bug rather than a
+/// too-small grab.
+const BLUR_REACH: f32 = 68.0;
+/// The largest `rise` any popover slides through ([`crate::ui::popover::Popover::painter`]'s second
+/// argument). It is 20 everywhere today; the assertion in the tests is what makes raising one a
+/// visible decision rather than a silent loss of margin.
+const POPOVER_MAX_RISE: f32 = 20.0;
+/// What the snapshot actually grabs beyond the panel: [`BLUR_REACH`] plus the slide.
+///
+/// **The slack is what makes one snapshot per opening possible.** A popover's first draw is at
+/// `appear == 0`, so the region is established while the panel sits a full `rise` away from where it
+/// comes to rest; every later frame of the appear moves it back INTO that region. Cache hits are
+/// therefore containment tests against a region that never has to be retaken — key the cache on
+/// equality, or grab only `BLUR_REACH`, and one snapshot per opening becomes one per FRAME of the
+/// appear, which is a net loss over grabbing the whole screen once.
+const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
+
+/// The region a panel at `(x,y,w,h)` needs snapshotted, in authored coords, clamped to the screen.
+///
+/// Clamping is not a special case: past the edge there is nothing to sample and `CLAMP_TO_EDGE`
+/// already gives the only answer available, so a panel against the frame simply gets a shorter
+/// margin on that side.
+#[inline]
+fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
+    let x0 = (x - BLUR_MARGIN).max(0.0);
+    let y0 = (y - BLUR_MARGIN).max(0.0);
+    let x1 = (x + w + BLUR_MARGIN).min(SCR_W);
+    let y1 = (y + h + BLUR_MARGIN).min(SCR_H);
+    [x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)]
+}
+
+/// The smallest region holding both — how a frame with more than one glass surface is served by ONE
+/// snapshot instead of two.
+///
+/// Either side may be the empty marker (a zero-width region), which is what the first frame after a
+/// reset carries; the union with it is the other side unchanged rather than a box anchored at the
+/// origin.
+#[inline]
+fn blur_region_union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    if a[2] <= 0.0 || a[3] <= 0.0 {
+        return b;
+    }
+    if b[2] <= 0.0 || b[3] <= 0.0 {
+        return a;
+    }
+    let x0 = a[0].min(b[0]);
+    let y0 = a[1].min(b[1]);
+    let x1 = (a[0] + a[2]).max(b[0] + b[2]);
+    let y1 = (a[1] + a[3]).max(b[1] + b[3]);
+    [x0, y0, x1 - x0, y1 - y0]
+}
+
+/// What every glass surface drawn in the PREVIOUS frame asked for, unioned — the region this frame's
+/// first snapshot is taken at, so a frame holding two of them takes ONE.
+///
+/// **The previous frame, not this one, and that is the whole trick.** A snapshot has to be taken by
+/// the first caller, before anything downstream has had a chance to say what it needs; the only
+/// honest predictor of the rest of the frame is what the last one contained. A tab bar plus a row of
+/// controls therefore costs two snapshots on the single frame the set CHANGES and one on every frame
+/// after — it converges in one frame and, just as importantly, SHRINKS in one frame when a surface
+/// goes away, which a monotonically growing union never would.
+static mut BLUR_WANT_PREV: [f32; 4] = [0.0; 4];
+/// The same union, accumulating over the frame in progress. Rolled into [`BLUR_WANT_PREV`] by
+/// [`blur_frame_end`].
+static mut BLUR_WANT_CUR: [f32; 4] = [0.0; 4];
+
+/// Close the frame's region accounting. Called once per DRAWN frame, beside `profile::frame_end` —
+/// inside the idle gate, because a frame the gate skipped drew no glass and must not be allowed to
+/// forget what the last drawn one needed.
+pub(crate) fn blur_frame_end() {
+    unsafe {
+        BLUR_WANT_PREV = *std::ptr::addr_of!(BLUR_WANT_CUR);
+        BLUR_WANT_CUR = [0.0; 4];
+    }
+}
+
+/// Does a cached `reg` still serve a panel at `(x,y,w,h)` — i.e. does it hold every pixel the rim
+/// will reach for? Containment, never equality: see [`BLUR_MARGIN`].
+#[inline]
+fn blur_region_covers(reg: [f32; 4], x: f32, y: f32, w: f32, h: f32) -> bool {
+    let need = [
+        (x - BLUR_REACH).max(0.0),
+        (y - BLUR_REACH).max(0.0),
+        (x + w + BLUR_REACH).min(SCR_W),
+        (y + h + BLUR_REACH).min(SCR_H),
+    ];
+    reg[0] <= need[0] + 0.5
+        && reg[1] <= need[1] + 0.5
+        && reg[0] + reg[2] >= need[2] - 0.5
+        && reg[1] + reg[3] >= need[3] - 0.5
+}
+
+/// The authored region in DRAWABLE pixels, offset from the canvas rect's top-left, with the size
+/// rounded to a multiple of 4.
+///
+/// Four, because the chain halves twice and a target derived by integer division from an unaligned
+/// size does not tile back onto its source — the second reduction would sample half a texel off and
+/// the snapshot would creep sideways as a panel moved. Rounding is OUTWARD on the origin and the
+/// far edge, then the size is trimmed back to a multiple of 4, which can only ever give away a
+/// pixel or three of the margin.
+#[inline]
+fn blur_region_px(reg: [f32; 4], gw: c_int, gh: c_int) -> (c_int, c_int, c_int, c_int) {
+    let sx = gw as f32 / SCR_W;
+    let sy = gh as f32 / SCR_H;
+    let x0 = ((reg[0] * sx).floor() as c_int).clamp(0, gw) & !3;
+    let y0 = ((reg[1] * sy).floor() as c_int).clamp(0, gh) & !3;
+    let x1 = (((reg[0] + reg[2]) * sx).ceil() as c_int + 3).clamp(0, gw);
+    let y1 = (((reg[1] + reg[3]) * sy).ceil() as c_int + 3).clamp(0, gh);
+    let rw = ((x1 - x0) & !3).clamp(4, gw - x0);
+    let rh = ((y1 - y0) & !3).clamp(4, gh - y0);
+    (x0, y0, rw & !3, rh & !3)
+}
+
+/// The UV window into the snapshot that a screen-space rect samples.
+///
+/// **The v axis may run backwards, and which way is not a constant.** Every target in the chain is
+/// rendered through `vs_img.vert`, which flips row order once per pass, so the snapshot's storage
+/// order is the parity of the pass count — bottom-up (like the `glCopyTexSubImage2D` it started as)
+/// after an even number, top-down after an odd one, and [`BLUR_REDUCTIONS`] changes which. The
+/// caller passes what the chain actually did. Pure, and tested: an inverted backdrop is the failure
+/// this shape hides, and it looks deliberate enough to survive a glance.
+///
+/// `reg` is the authored region the snapshot holds and `span` the FRACTION of the output texture it
+/// occupies — the chain writes into the bottom-left corner of full-size targets rather than into
+/// resized ones, so a region is never the whole texture. With the whole screen grabbed and a span of
+/// 1 this is exactly the expression it always was, which is what the first test here pins.
+#[inline]
+fn blur_uv_rect(x: f32, y: f32, w: f32, h: f32, reg: [f32; 4], span: [f32; 2], bottom_up: bool) -> [f32; 4] {
+    let fx = (x - reg[0]) / reg[2];
+    let fw = w / reg[2];
+    let fy = (y - reg[1]) / reg[3];
+    let fh = h / reg[3];
+    if bottom_up {
+        return [fx * span[0], (1.0 - fy) * span[1], fw * span[0], -fh * span[1]];
+    }
+    [fx * span[0], fy * span[1], fw * span[0], fh * span[1]]
+}
+
+/// Build the chain at BOOT, beside [`init_image`].
+///
+/// Measured, and the reason this is not left lazy: the first menu opening paid **48.1 ms** against
+/// **33.4 ms** for every one after it — a shader link plus ~11 MB of texture allocation, landing on
+/// a frame the user is looking at. Worse, it lands on the WORST one: a first open also drops the
+/// appear animation to 19 presented frames where a later open holds 28. Everything else here is
+/// deliberately paid on demand; this part is not, because "on demand" means "while something is
+/// animating".
+///
+/// It is still safe to call nothing at all: [`draw_blur_backdrop`] builds the chain itself if this
+/// never ran, which is what keeps the host tests and any future entry point honest.
+pub(crate) fn init_blur() {
+    if !blur_lazy_init() {
+        log("blur: chain unavailable — panels keep their opaque ground");
+    }
+}
+
+fn blur_lazy_init() -> bool {
+    unsafe {
+        if BLUR_OFF {
+            return false;
+        }
+        if (*std::ptr::addr_of!(BLURST)).is_some() {
+            return true;
+        }
+        BPROG = match link_program(VS_IMG.as_ptr(), FS_BLUR.as_ptr()) {
+            Some(p) => p,
+            None => {
+                log("blur: prog link failed — backdrop blur off");
+                BLUR_OFF = true;
+                return false;
+            }
+        };
+        BL_RECT = glGetUniformLocation(BPROG, c"u_trect".as_ptr());
+        BL_SCREEN = glGetUniformLocation(BPROG, c"u_tscreen".as_ptr());
+        BL_UVRECT = glGetUniformLocation(BPROG, c"u_uvrect".as_ptr());
+        BL_TEX = glGetUniformLocation(BPROG, c"u_tex".as_ptr());
+        BL_TEXEL = glGetUniformLocation(BPROG, c"u_texel".as_ptr());
+        // Per-program constant uniforms, set once (uniforms are per-program state): this program
+        // only ever draws one full-target quad, so its rect and UV window never change either.
+        use_prog(BPROG);
+        glUniform2f(BL_SCREEN, SCR_W, SCR_H);
+        glUniform1i(BL_TEX, 0);
+        glUniform4f(BL_RECT, 0.0, 0.0, SCR_W, SCR_H);
+        glUniform4f(BL_UVRECT, 0.0, 0.0, 1.0, 1.0);
+
+        GPROG = match link_program(VS_IMG.as_ptr(), FS_GLASS.as_ptr()) {
+            Some(p) => p,
+            None => {
+                log("blur: glass prog link failed — backdrop blur off");
+                BLUR_OFF = true;
+                return false;
+            }
+        };
+        GL_RECT = glGetUniformLocation(GPROG, c"u_trect".as_ptr());
+        GL_SCREEN = glGetUniformLocation(GPROG, c"u_tscreen".as_ptr());
+        GL_UVRECT = glGetUniformLocation(GPROG, c"u_uvrect".as_ptr());
+        GL_TEX = glGetUniformLocation(GPROG, c"u_tex".as_ptr());
+        GL_TINT = glGetUniformLocation(GPROG, c"u_tint".as_ptr());
+        GL_RADIUS = glGetUniformLocation(GPROG, c"u_iradius".as_ptr());
+        GL_CH = glGetUniformLocation(GPROG, c"u_ch".as_ptr());
+        GL_UVPX = glGetUniformLocation(GPROG, c"u_uvpx".as_ptr());
+        GL_BEVEL = glGetUniformLocation(GPROG, c"u_bevel".as_ptr());
+        GL_LENS = glGetUniformLocation(GPROG, c"u_lens".as_ptr());
+        GL_EDGE = glGetUniformLocation(GPROG, c"u_edge".as_ptr());
+        GL_LIGHT = glGetUniformLocation(GPROG, c"u_light".as_ptr());
+        GL_SPEC = glGetUniformLocation(GPROG, c"u_spec".as_ptr());
+        GL_NOISE = glGetUniformLocation(GPROG, c"u_noise".as_ptr());
+        use_prog(GPROG);
+        glUniform2f(GL_SCREEN, SCR_W, SCR_H);
+        glUniform1i(GL_TEX, 0);
+        // Material constants and the orientation term: all fixed for the life of the process, and
+        // uniforms are per-program state, so none of them belongs in the draw.
+        glUniform1f(GL_BEVEL, GLASS_BEVEL);
+        glUniform1f(GL_LENS, GLASS_LENS);
+        glUniform4fv(GL_EDGE, 1, GLASS_EDGE.as_ptr());
+        glUniform3f(GL_LIGHT, GLASS_LIGHT[0], GLASS_LIGHT[1], GLASS_LIGHT[2]);
+        glUniform4fv(GL_SPEC, 1, GLASS_SPEC.as_ptr());
+        glUniform1f(GL_NOISE, GLASS_NOISE);
+        // `GL_UVPX` is NOT set here. It was, back when the grab was always the whole screen and one
+        // authored pixel was therefore always `1/SCR_W` of the texture — but the snapshot is a
+        // REGION now and that ratio moves with it, so it belongs to the draw. `draw_blur_backdrop`
+        // says what goes wrong if it is left behind.
+        use_prog(PROG);
+
+        let (gx, gy, gw, gh) = crate::surface::viewport();
+        let ((mw, mh), (sw, sh)) = blur_dims(gw, gh);
+        let build = || -> Option<BlurChain> {
+            let grab = cap_tex(gw, gh);
+            let (mid, mid_fbo) = fbo_target(mw, mh, "blur")?;
+            let (a, a_fbo) = fbo_target(sw, sh, "blur")?;
+            let (b, b_fbo) = fbo_target(sw, sh, "blur")?;
+            // The up pass exists only when there is a level to come back up to; with one reduction
+            // `mid` IS the tap target, so the chain ends where it already is.
+            let ups = BLUR_REDUCTIONS >= 2;
+            Some(BlurChain { grab, gw, gh, gx, gy, mid, mid_fbo, mw, mh, a, a_fbo, b, b_fbo, sw, sh,
+                out: if ups { mid } else { a },
+                bottom_up: blur_is_bottom_up(),
+                // No live snapshot yet; `BLUR_VALID` is what gates reading these, and the first
+                // `blur_snapshot` sets both to a real region before anything samples them.
+                reg: [0.0, 0.0, SCR_W, SCR_H], rw: gw, rh: gh })
+        };
+        match build() {
+            Some(c) => {
+                BLURST = Some(c);
+                true
+            }
+            None => {
+                BLUR_OFF = true; // fbo_target already logged the status
+                false
+            }
+        }
+    }
+}
+
+/// Grab the frame as drawn so far and reduce it to the small blurred snapshot.
+///
+/// Main-thread only, and it must run with the default framebuffer bound. Restores framebuffer 0,
+/// the viewport and blend exactly, for the same reason the capture chain does: whatever runs after
+/// it assumes all three.
+///
+/// **It costs ~9.5 ms, once per opening**, and that is the honest headline for this whole feature.
+/// Measured on the dev set, worst frame in the second a Library Sort menu opens: **18.5 ms without
+/// the blur, 47–49 ms with it**, repeatable across openings — the frame is ~3 vsync periods either
+/// way, since the Sort menu alone costs 13 ms a frame (`menu.scrim` 5.65 + `menu.panel` 7.3, both
+/// pre-existing phases). Everything else is free: a settled screen with the panel UP is 3.2–4.3 ms
+/// either way, and `menu.panel` moved 7.1 → 7.3–7.7 ms when the opaque sheet became frosted, so the
+/// glass shader itself is ~0.3 ms. The once-per-opening snapshot is what buys all of that.
+///
+/// # The cost model, measured 2026-08-16
+///
+/// Per-pass phases, four consecutive 60-frame aggregates on the Library grid, spread < 0.1 ms:
+///
+/// | phase | ms | what it is |
+/// |---|---|---|
+/// | `blur.copy` | 2.96 | `glCopyTexSubImage2D` of the whole 1920x1080 default framebuffer |
+/// | `blur.reduce1` | 1.90 | 1920x1080 → 960x540 |
+/// | `blur.reduce2` | 0.84 | 960x540 → 480x270 |
+/// | `blur.taps` | 1.68 | two 4-tap Kawase passes at 480x270 |
+/// | `blur.up` | 2.21 | one 4-tap pass back up to 960x540 |
+///
+/// The two reductions are the same operation at two sizes, which is what makes them solve the
+/// model: **~0.49 ms fixed per RENDER PASS, plus ~2.7 ns per output fragment.** (A fit that came
+/// out of splitting `reduce` in two — with the two lumped in one phase, four near-equal quarters
+/// fit a fixed cost per *phase* equally well, and the two models disagree about every change that
+/// removes a pass without removing a phase.)
+///
+/// **The fixed term is real and not the profiler's own `glFinish` pair**, which is the objection to
+/// answer before trusting any of it: `blur.taps` is TWO passes inside ONE phase, so per-pass
+/// predicts 2*(0.49 + 0.35) = 1.68 while per-phase-overhead predicts 1.20. It measures 1.68. The
+/// per-fragment term checks out independently against a phase from another module — `menu.scrim` is
+/// one full-screen rect, 2.07M fragments, predicted 5.65 ms and measured 5.65.
+///
+/// `blur.up` runs 0.31 ms over the 1-tap prediction and `blur.taps` runs exactly on it: extra taps
+/// are free at 480x270 and cost ~0.6 ns/fragment at 960x540, i.e. tap count only bites once the
+/// working set stops fitting.
+///
+/// # What that says about the two remaining fixes
+///
+/// Both were sized against the older lumped numbers and both move:
+///
+/// - **Grab only the panel's bounding box plus the blur's reach**, not the whole screen. A 630x860
+///   region is 0.54M pixels against 2.07M, so `copy` and every pass shrink with it — but the fixed
+///   term does not, and 5 passes carry 2.43 ms of it whatever the region. Model says ~9.5 → ~4.3 ms
+///   (55%), not the ~73% a purely per-fragment reading predicts.
+/// - **Merge the two reductions into one 4-tap 4x pass** (four diagonal taps at ±0.25 target texels
+///   land on the centres of the four 2x2 sub-blocks, so it is filter-identical to two 2x boxes).
+///   That is 2.74 ms of passes replaced by roughly 0.9–1.3, worth ~1.4–1.8 ms rather than the ~0.44
+///   the lumped model suggested — the best ratio of gain to lines left in the chain. It also FLIPS
+///   the stored parity, so [`blur_passes`] and its test move with it.
+///
+/// The floor after both is ~4 passes x 0.49 = 1.94 ms of fixed cost before a single useful
+/// fragment, so a region-limited 4-pass chain lands near 3.5 ms. There is no third act.
+fn blur_snapshot(reg: [f32; 4]) {
+    unsafe {
+        if !blur_lazy_init() {
+            return;
+        }
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return };
+
+        // Drain first: `glGetError` reports the OLDEST error since it was last called, so checking
+        // it after the copy without clearing it attributes somebody else's (possibly harmless, and
+        // possibly from another module entirely) to this one — which is exactly how the first
+        // version of this turned itself off on a healthy driver.
+        while glGetError() != GL_NO_ERROR {}
+        // Split into phases on purpose (`/tmp/plxnative-profile`): the ~30 ms this costs is a
+        // WHOLE-FRAME worst-frame measurement, so which step owns it was a guess until these
+        // existed. The candidates are a 1920x1080 framebuffer read (8.3 MB, and a barrier on a
+        // tiler) and five render-target passes; they are separable only by measuring them apart.
+        // Zero-overhead with the trigger off.
+        use crate::ui::profile::phase;
+        // The region, in drawable px and 4-aligned, landing at the BOTTOM-LEFT of every target. Each
+        // pass then draws a full quad into a viewport of the region's own size and samples the
+        // matching corner of its source, so the whole chain is the same shape it always was, one
+        // scale factor down. Targets keep their full allocation — measured, see `BlurChain::rw`.
+        let (rx, ry, rw, rh) = blur_region_px(reg, c.gw, c.gh);
+        // Source windows, per pass: the fraction of each texture the live region occupies.
+        let win = |uw: c_int, uh: c_int, tw: c_int, th: c_int| {
+            (uw as f32 / tw as f32, uh as f32 / th as f32)
+        };
+        let e = phase("blur.copy", || {
+            glBindTexture(GL_TEXTURE_2D, c.grab);
+            // `glCopyTexSubImage2D` reads the framebuffer bottom-left-origin while the region is
+            // measured from the canvas TOP, so the row has to be flipped into window space here.
+            // Getting this wrong grabs a strip from the other end of the screen — which under a
+            // blur looks like a plausible backdrop, just not the one behind the panel.
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, c.gx + rx, c.gy + c.gh - (ry + rh), rw, rh);
+            glGetError()
+        });
+        if e != GL_NO_ERROR {
+            // The same failure `capture` guards: a window config without alpha bits makes the copy
+            // a silent no-op, which would read as "the blur is black" rather than as a fault.
+            log(&format!("blur: CopyTexSubImage error=0x{e:x} — backdrop blur off"));
+            BLUR_OFF = true;
+            return;
+        }
+
+        glDisable(GL_BLEND);
+        // The exact-2x reductions (bilinear == a 2x2 box at exactly 2x, which is where most of the
+        // radius comes from), then the Kawase passes ping-ponging between the two small targets.
+        // The LAST reduction always lands in `a`, whatever `BLUR_REDUCTIONS` is, because that is
+        // where the tap loop below expects its input.
+        //
+        // **DO NOT merge these two into one 4-tap 4x pass. It was built and measured, and it is
+        // NOT faster: 2.89 ms against the pair's 2.74.** The idea is sound on paper and the filter
+        // is exactly identical (a target texel covers a 4x4 source block; four bilinear fetches
+        // placed on the four 2x2 sub-blocks' shared corners each return that sub-block's mean, so
+        // the four averaged are all sixteen texels at equal weight — which is what a 2x box
+        // followed by a 2x box produces). The cost model said it should win ~1.4 ms by deleting a
+        // whole pass at ~0.49 ms of fixed cost.
+        //
+        // What the model misses is LOCALITY. The merged pass gathers a 4x4 footprint per output
+        // fragment out of a 1920-wide texture, and adjacent output fragments are four texels apart,
+        // so nothing is reused between them and the texture cache misses on essentially every
+        // fetch. The two-step version reads ADJACENT texels in both passes and streams. The gather
+        // costs more than the pass it removes — measured on the dev set 2026-08-16, and the whole
+        // reason `blur.reduce` is split into two phases is so a re-measurement is one log line away.
+        //
+        // Each entry is (target fbo, source tex, region size in the TARGET, source window). The
+        // source window is the only thing the region added: `draw_tex_core` takes an explicit uv
+        // rect, where the plain `draw_tex` these used to call hard-codes the whole texture — which
+        // with a region grabbed into a corner would stretch the entire (mostly stale) target across
+        // the pass and blur the region together with whatever the last panel left behind it.
+        let (r2w, r2h) = ((rw / 2).max(1), (rh / 2).max(1));
+        let (r4w, r4h) = ((rw / 4).max(1), (rh / 4).max(1));
+        let reductions: &[(c_uint, c_uint, c_int, c_int, (f32, f32))] = if BLUR_REDUCTIONS >= 2 {
+            &[
+                (c.mid_fbo, c.grab, r2w, r2h, win(rw, rh, c.gw, c.gh)),
+                (c.a_fbo, c.mid, r4w, r4h, win(r2w, r2h, c.mw, c.mh)),
+            ]
+        } else {
+            &[(c.a_fbo, c.grab, r2w, r2h, win(rw, rh, c.gw, c.gh))]
+        };
+        // ONE PHASE PER PASS, deliberately: this split is what MEASURED the cost model above, and
+        // it is left in place because it is the only way to re-measure it. `phase` takes a
+        // `&'static str`, so the names are written out rather than indexed.
+        for (i, &(fbo, src, w, h, uv)) in reductions.iter().enumerate() {
+            let name = if i == 0 { "blur.reduce1" } else { "blur.reduce2" };
+            phase(name, || {
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glViewport(0, 0, w, h);
+                glClear(GL_COLOR_BUFFER_BIT);
+                // NO_RIM, never a null pointer: `draw_tex_core` hands both colours straight to
+                // `glUniform4fv`, which dereferences them unconditionally — a null segfaults inside
+                // the driver with no Rust panic and no log line (caught by the simulator, 2026-08-16).
+                draw_tex_core(src, 0.0, 0.0, SCR_W, SCR_H, [0.0, 0.0, uv.0, uv.1], 0.0,
+                    BLUR_PASS_TINT.as_ptr(), 0.0, NO_RIM.as_ptr(), 0.0, 0.0, 0.0, NO_RIM.as_ptr());
+            });
+        }
+        // The taps run at whichever level the reductions ended on: quarter with two, half with one.
+        let (tw, th) = if BLUR_REDUCTIONS >= 2 { (r4w, r4h) } else { (r2w, r2h) };
+        let tap_uv = win(tw, th, c.sw, c.sh);
+        glViewport(0, 0, tw, th);
+        phase("blur.taps", || {
+        for (i, taps) in BLUR_TAPS.iter().enumerate() {
+            // even pass -> a into b, odd -> b into a; with an even tap count the finished snapshot
+            // lands back in `a`, which is what `draw_blur_backdrop` samples.
+            let (fbo, src) = if i % 2 == 0 { (c.b_fbo, c.a) } else { (c.a_fbo, c.b) };
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glClear(GL_COLOR_BUFFER_BIT);
+            use_prog(BPROG); // already bound unless the 2x reduction path ran `draw_tex`; a no-op then
+            glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+            // Offsets stay in TEXELS of the texture, which the region does not change — the texture
+            // is the same size, only less of it is live.
+            glUniform2f(BL_TEXEL, taps / c.sw as f32, taps / c.sh as f32);
+            glBindTexture(GL_TEXTURE_2D, src);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+        });
+
+        // Back UP one level through the same filter — the half of a dual-filter blur that stops the
+        // result reading as enlarged pixels. See `BLUR_UP_TAP`. `mid` is free by now: it was the
+        // first reduction's target and nothing has read it since the second reduction.
+        phase("blur.up", || {
+            if c.out != c.a {
+                glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
+                glViewport(0, 0, r2w, r2h);
+                glClear(GL_COLOR_BUFFER_BIT);
+                use_prog(BPROG);
+                glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+                glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
+                glBindTexture(GL_TEXTURE_2D, c.a);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            }
+        });
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        let (vx, vy, vw, vh) = crate::surface::viewport();
+        glViewport(vx, vy, vw, vh);
+        glEnable(GL_BLEND);
+        // Publish what was actually grabbed, not what was asked for: `blur_region_px` aligns and
+        // clamps, so the region the draw maps out of is the aligned one or the panel's sampling
+        // window is off by up to three drawable pixels — a slow sideways creep as a panel moves.
+        let sx = c.gw as f32 / SCR_W;
+        let sy = c.gh as f32 / SCR_H;
+        let live = [rx as f32 / sx, ry as f32 / sy, rw as f32 / sx, rh as f32 / sy];
+        if let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() {
+            c.reg = live;
+            c.rw = rw;
+            c.rh = rh;
+        }
+        BLUR_VALID = true;
+    }
+}
+
+/// Draw the frosted backdrop for a panel at `(x,y,w,h)` with corner `radius`, capturing the
+/// snapshot first if there isn't a live one. Returns whether anything was drawn — `false` means the
+/// feature is latched off and the caller's own ground is the whole panel.
+///
+/// `rest` is where the panel comes to REST, and it is the rect the region is built around — not
+/// `(x,y,w,h)`, which is where this frame draws it. A popover slides into place over its appear
+/// spring, so the two differ for the whole of that animation; keying the region on the moving rect
+/// would fail containment on nearly every frame of it and turn one snapshot per opening into one
+/// per frame, which is worse than never having limited the grab at all. Callers with no motion
+/// (the tab bar) pass their own rect twice.
+pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32) -> bool {
+    unsafe {
+        // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second
+        // glass element is on record even if the first one is what ends up taking the capture.
+        let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
+        BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
+        // Containment, not equality: a region grabbed around the panel at rest already holds
+        // everything the panel needs at every point of its slide. `blur_invalidate` is what forces
+        // a retake when the PAGE changes; this only retakes when the cached region cannot serve.
+        let stale = (*std::ptr::addr_of!(BLURST))
+            .as_ref()
+            .is_none_or(|c| !blur_region_covers(c.reg, x, y, w, h));
+        if !BLUR_VALID || stale {
+            // Grab what the LAST frame turned out to need, unioned with what this caller needs —
+            // never `need` alone. A miss that replaces the region instead of growing it is what
+            // makes two neighbouring glass controls ping-pong: each retakes the other's region
+            // every frame, two full chains, worse than not limiting the grab at all. A second
+            // element inside one grab costs only its own fragments (~0.2 ms against ~2.7), which is
+            // what makes a ROW of glass controls affordable and a pair at opposite corners not.
+            let want = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV), need);
+            blur_snapshot(want);
+        }
+        if BLUR_OFF || !BLUR_VALID {
+            return false;
+        }
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false };
+        // How much of `out` the region occupies. `out` is `mid` after the up pass (half res) or `a`
+        // without one (whatever the reductions ended at), so the live size follows the same rule.
+        let span = if c.out == c.mid {
+            [(c.rw / 2) as f32 / c.mw as f32, (c.rh / 2) as f32 / c.mh as f32]
+        } else {
+            let d = 1 << BLUR_REDUCTIONS;
+            [(c.rw / d) as f32 / c.sw as f32, (c.rh / d) as f32 / c.sh as f32]
+        };
+        let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
+        use_prog(GPROG);
+        glBindTexture(GL_TEXTURE_2D, c.out);
+        // **Per DRAW, not per init.** This is the UV travelled by one authored screen pixel, and it
+        // is what turns the lens's displacement (in px) into a texture offset. It was a boot-time
+        // constant of `1/SCR_W` while the grab was always the whole screen; against a region it is
+        // `span / region size`, which for a 770px-wide region is 2.5x larger. Left at the old value
+        // the 38px lens would have silently become a ~15px one — the rim would still refract, just
+        // less, with nothing anywhere to say so.
+        glUniform2f(
+            GL_UVPX,
+            span[0] / c.reg[2],
+            if c.bottom_up { -span[1] / c.reg[3] } else { span[1] / c.reg[3] },
+        );
+        glUniform4fv(GL_TINT, 1, tint);
+        glUniform4f(GL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
+        glUniform1f(GL_RADIUS, radius);
+        glUniform2f(GL_CH, w * 0.5, h * 0.5);
+        glUniform4f(GL_RECT, x, y, w, h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        true
+    }
+}
 
 // ============================== UI self-capture ==============================
 // GL side of the dev capture stream (crate::capture): grab our own back buffer,
@@ -959,8 +1758,10 @@ fn cap_tex(w: c_int, h: c_int) -> c_uint {
     upload_rgba(0, w, h, std::ptr::null())
 }
 
-/// Texture + FBO pair; None (and latch-off by the caller) if incomplete.
-fn cap_target(w: c_int, h: c_int) -> Option<(c_uint, c_uint)> {
+/// Texture + FBO pair; None (and latch-off by the caller) if incomplete. `who` names the feature
+/// in the failure line — two chains build targets this way now (capture and the backdrop blur) and
+/// a bare "FBO incomplete" says nothing about which one just turned itself off.
+fn fbo_target(w: c_int, h: c_int, who: &str) -> Option<(c_uint, c_uint)> {
     unsafe {
         let t = cap_tex(w, h);
         let mut f: c_uint = 0;
@@ -970,7 +1771,7 @@ fn cap_target(w: c_int, h: c_int) -> Option<(c_uint, c_uint)> {
         let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         if st != GL_FRAMEBUFFER_COMPLETE {
-            log(&format!("capture: FBO {w}x{h} incomplete (status=0x{st:x}) — capture off"));
+            log(&format!("{who}: FBO {w}x{h} incomplete (status=0x{st:x}) — {who} off"));
             return None;
         }
         Some((t, f))
@@ -984,8 +1785,8 @@ fn cap_lazy_init() -> bool {
         }
         let mk_chain = || -> Option<CapChain> {
             let grab = cap_tex(CAP_W, CAP_H);
-            let (mid, mid_fbo) = cap_target(CAP_MID_W, CAP_MID_H)?;
-            let (out, out_fbo) = cap_target(CAP_OUT_W, CAP_OUT_H)?;
+            let (mid, mid_fbo) = fbo_target(CAP_MID_W, CAP_MID_H, "capture")?;
+            let (out, out_fbo) = fbo_target(CAP_OUT_W, CAP_OUT_H, "capture")?;
             Some(CapChain { grab, mid, mid_fbo, out, out_fbo, pending: false, pw: 0, ph: 0, read_fbo: 0, flip: false })
         };
         match (mk_chain(), mk_chain()) {
@@ -1090,5 +1891,246 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
 
         st.parity = r;
         got
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The card path's UV rect is EXACTLY the identity `vs_img.vert` used to hard-code before it
+    /// took a general offset — `(a_pos - 0.5) * s + 0.5`. Graded at both ends of the quad rather
+    /// than on the numbers, because "the offset is 0.5 - 0.5*s" is the claim that matters and the
+    /// arithmetic is the thing that would silently drift.
+    #[test]
+    fn a_padded_uv_rect_still_maps_the_quad_back_onto_the_card() {
+        let (w, h) = (250.0f32, 375.0f32); // a poster
+        for pad in [0.0f32, 1.0, 24.0] {
+            let (qw, qh) = (w + 2.0 * pad, h + 2.0 * pad);
+            let uv = uv_rect_padded(w, h, qw, qh);
+            let at = |a: f32, i: usize| uv[i] + a * uv[i + 2];
+            // the card's own edges sit at UV 0 and 1; the shadow ring falls outside, symmetrically
+            let (u0, u1) = (at(pad / qw, 0), at((pad + w) / qw, 0));
+            let (v0, v1) = (at(pad / qh, 1), at((pad + h) / qh, 1));
+            assert!((u0).abs() < 1e-5 && (u1 - 1.0).abs() < 1e-5, "x edges wrong at pad={pad}: {u0} {u1}");
+            assert!((v0).abs() < 1e-5 && (v1 - 1.0).abs() < 1e-5, "y edges wrong at pad={pad}: {v0} {v1}");
+        }
+        // pad == 0 must be the identity, or every flat blit resamples itself
+        assert_eq!(uv_rect_padded(w, h, w, h), [0.0, 0.0, 1.0, 1.0]);
+        // a degenerate card must not divide by zero into a NaN UV (a black quad on device)
+        assert!(uv_rect_padded(0.0, 0.0, 8.0, 8.0).iter().all(|v| v.is_finite()));
+    }
+
+    /// The backdrop window samples the SCREEN POSITION it is drawn at, out of a bottom-up snapshot.
+    /// The v axis therefore runs backwards; getting that wrong draws the page upside down under the
+    /// panel, which is the one failure that looks deliberate enough to survive a glance.
+    #[test]
+    fn b_blur_uv_rect_reads_the_panel_s_own_place_on_screen() {
+        const FULL: [f32; 4] = [0.0, 0.0, SCR_W, SCR_H];
+        const ALL: [f32; 2] = [1.0, 1.0];
+        // a panel occupying the whole screen must map to the whole snapshot, either way up — and
+        // this is also the identity that says the region generalised the old expression rather than
+        // replacing it: whole screen grabbed, whole texture used, same four numbers as before.
+        assert_eq!(blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, FULL, ALL, true), [0.0, 1.0, 1.0, -1.0]);
+        assert_eq!(blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, FULL, ALL, false), [0.0, 0.0, 1.0, 1.0]);
+        let (x, y, w, h) = (640.0f32, 240.0f32, 480.0f32, 600.0f32);
+        for bottom_up in [true, false] {
+            let uv = blur_uv_rect(x, y, w, h, FULL, ALL, bottom_up);
+            let at = |a: f32, i: usize| uv[i] + a * uv[i + 2];
+            // a_pos 0 is the panel's TOP-left in screen space, whichever way the snapshot is stored
+            assert!((at(0.0, 0) - x / SCR_W).abs() < 1e-6, "left edge (bottom_up={bottom_up})");
+            assert!((at(1.0, 0) - (x + w) / SCR_W).abs() < 1e-6, "right edge (bottom_up={bottom_up})");
+            let (top, bot) = if bottom_up { (1.0 - y / SCR_H, 1.0 - (y + h) / SCR_H) } else { (y / SCR_H, (y + h) / SCR_H) };
+            assert!((at(0.0, 1) - top).abs() < 1e-6, "top edge (bottom_up={bottom_up})");
+            assert!((at(1.0, 1) - bot).abs() < 1e-6, "bottom edge (bottom_up={bottom_up})");
+            assert_eq!(uv[3] < 0.0, bottom_up, "the v axis runs backwards only bottom-up");
+        }
+    }
+
+    /// A REGION-limited snapshot must put the panel in the same place on screen as a full-screen one
+    /// did — the whole point being that only the grab changed, never what the glass shows.
+    ///
+    /// The trap this pins is that there are now TWO scale factors between a screen pixel and a
+    /// texel: the region is a fraction of the screen, and the region is itself only a fraction of
+    /// the (still full-size) target it was rendered into. Drop either and the backdrop is offset or
+    /// zoomed — visible as the glass showing something plausible that is not what is behind it.
+    #[test]
+    fn f_a_region_snapshot_samples_exactly_what_a_full_screen_one_did() {
+        let panel = (640.0f32, 240.0f32, 480.0f32, 600.0f32);
+        let (x, y, w, h) = panel;
+        let reg = blur_region(x, y, w, h);
+        // the region is the panel plus the reach, and the panel is strictly inside it
+        assert!(reg[0] <= x - BLUR_REACH && reg[1] <= y - BLUR_REACH);
+        assert!(reg[0] + reg[2] >= x + w + BLUR_REACH && reg[1] + reg[3] >= y + h + BLUR_REACH);
+        // the region occupies this much of a full-size target (1920 -> 480 quarter-res, say)
+        let (rw, rh) = (reg[2] / SCR_W * 480.0, reg[3] / SCR_H * 270.0);
+        let span = [rw / 480.0, rh / 270.0];
+        for bottom_up in [true, false] {
+            let uv = blur_uv_rect(x, y, w, h, reg, span, bottom_up);
+            let full = blur_uv_rect(x, y, w, h, [0.0, 0.0, SCR_W, SCR_H], [1.0, 1.0], bottom_up);
+            // Both windows must cover the same FRACTION of a texel grid that has the same texel
+            // SIZE — i.e. the region window is the full-screen one scaled by the region's own share
+            // of the screen. Sizes first: a mismatch here is the panel showing a zoomed backdrop.
+            assert!((uv[2] - full[2]).abs() < 1e-5, "u span (bottom_up={bottom_up})");
+            assert!((uv[3] - full[3]).abs() < 1e-5, "v span (bottom_up={bottom_up})");
+            // ...then the origin, in TEXELS of the quarter-res target, against where the panel
+            // actually is inside the region. This is the half that a forgotten region offset breaks.
+            let want_u = (x - reg[0]) / SCR_W * 480.0;
+            assert!((uv[0] * 480.0 - want_u).abs() < 1e-3, "u origin (bottom_up={bottom_up})");
+        }
+    }
+
+    /// One snapshot per OPENING, not one per frame of the appear — the property the whole region
+    /// grab lives or dies on, and the one that is invisible in a screenshot.
+    ///
+    /// A popover's first draw is at `appear == 0`, a full `rise` from where it settles. If the
+    /// region were keyed on the rect being drawn, every later frame would ask for a region shifted
+    /// a pixel or two and miss, so a feature meant to make one 9.5 ms capture cheaper would instead
+    /// run ~29 of them. `BLUR_MARGIN` carries the slide so containment holds for the whole slide.
+    #[test]
+    fn g_the_appear_slide_never_forces_a_second_snapshot() {
+        let (x, y, w, h) = (640.0f32, 240.0f32, 480.0f32, 600.0f32);
+        // grabbed once, around the panel at REST
+        let reg = blur_region(x, y, w, h);
+        for step in 0..=32 {
+            // every frame of a rise-from-below appear, from fully displaced to settled
+            let slide = POPOVER_MAX_RISE * (1.0 - step as f32 / 32.0);
+            assert!(blur_region_covers(reg, x, y + slide, w, h), "missed at slide {slide}");
+        }
+        // and the guard that keeps that true: the grab must exceed the reach by the whole slide
+        assert!(BLUR_MARGIN >= BLUR_REACH + POPOVER_MAX_RISE);
+        // a panel somewhere else entirely is NOT covered — containment must still be a real test,
+        // or a second panel would silently reuse the first one's backdrop
+        assert!(!blur_region_covers(reg, 40.0, 40.0, w, h));
+    }
+
+    /// Two glass surfaces in one frame must converge to ONE grab, and it must SHRINK again when one
+    /// of them goes away.
+    ///
+    /// This is the whole argument for taking the snapshot at the previous frame's union rather than
+    /// at the caller's own region. Replace-on-miss (what the first version did) makes a pair of
+    /// neighbouring controls ping-pong forever — each retakes the other's region every frame, two
+    /// full chains, strictly worse than never having limited the grab. Growing monotonically instead
+    /// fixes that and breaks the other direction: the union would keep a departed panel's area for
+    /// the rest of the session, so the tab bar would go on grabbing half the screen long after the
+    /// menu that needed it closed.
+    ///
+    /// Both halves are graded here, as the sequence the renderer actually runs.
+    #[test]
+    fn i_two_glass_surfaces_share_one_grab_and_give_it_back() {
+        let _g = crate::testlock::serial();
+        let bar = (500.0f32, 40.0, 900.0, 76.0);
+        let btn = (520.0f32, 150.0, 200.0, 60.0);
+        let take = |prev: [f32; 4], r: (f32, f32, f32, f32)| {
+            blur_region_union(prev, blur_region(r.0, r.1, r.2, r.3))
+        };
+
+        // FRAME 1 — the button appears beside the bar. Nothing was on record, so the bar grabs its
+        // own region and the button, not covered by it, has to take a second.
+        let bar_only = take([0.0; 4], bar);
+        assert!(!blur_region_covers(bar_only, btn.0, btn.1, btn.2, btn.3), "the pair really do not nest");
+        let want = blur_region_union(bar_only, blur_region(btn.0, btn.1, btn.2, btn.3));
+
+        // FRAME 2 — that union is what the frame ended holding, so the bar's retake takes it, and
+        // the button is served by the same capture. One chain for two surfaces.
+        assert!(blur_region_covers(want, bar.0, bar.1, bar.2, bar.3), "the bar is in the shared grab");
+        assert!(blur_region_covers(want, btn.0, btn.1, btn.2, btn.3), "so is the button");
+
+        // ...and the sharing must be nearly free, which is the claim design is being given. The
+        // union may not cost much more AREA than the bar alone did.
+        let grow = (want[2] * want[3]) / (bar_only[2] * bar_only[3]);
+        assert!(grow < 1.5, "a neighbour must ride the same grab, not double it (grew {grow}x)");
+
+        // FRAME 3 — the button is gone, so only the bar declares anything, and the region collapses
+        // back. A union that only ever grew would keep the button's area for the whole session.
+        let after = take([0.0; 4], bar);
+        assert_eq!(after, bar_only, "the grab shrinks back the frame after a surface leaves");
+    }
+
+    /// The region in drawable px: aligned to 4, inside the canvas, never empty.
+    ///
+    /// Four because the chain halves twice — a size that is not a multiple of 4 does not tile back
+    /// onto its source and the second reduction samples half a texel off, which shows up as the
+    /// backdrop creeping sideways as a panel moves rather than as anything obviously broken.
+    #[test]
+    fn h_the_region_lands_on_a_4_aligned_rect_inside_the_drawable() {
+        for (gw, gh) in [(1920, 1080), (960, 540)] {
+            for panel in [(640.0f32, 240.0f32, 480.0f32, 600.0f32), (0.0, 0.0, 1.0, 1.0),
+                          (SCR_W - 2.0, SCR_H - 2.0, 2.0, 2.0), (0.0, 0.0, SCR_W, SCR_H)] {
+                let reg = blur_region(panel.0, panel.1, panel.2, panel.3);
+                let (rx, ry, rw, rh) = blur_region_px(reg, gw, gh);
+                assert_eq!((rw % 4, rh % 4), (0, 0), "4-aligned size ({gw}x{gh}, {panel:?})");
+                assert_eq!((rx % 4, ry % 4), (0, 0), "4-aligned origin ({gw}x{gh}, {panel:?})");
+                assert!(rw > 0 && rh > 0, "never empty ({gw}x{gh}, {panel:?})");
+                assert!(rx >= 0 && ry >= 0 && rx + rw <= gw && ry + rh <= gh,
+                    "inside the canvas ({gw}x{gh}, {panel:?}) -> {rx},{ry} {rw}x{rh}");
+            }
+        }
+    }
+
+    /// The chain sizes itself off the DRAWABLE, which is the bug the simulator caught: hard-coded
+    /// 1920x1080 targets grabbed a rect that does not exist on a half-size surface, and every
+    /// number downstream was then measured against a canvas nothing had been copied into.
+    ///
+    /// Graded as a PROPERTY of the reduction count rather than against literals. The first version
+    /// asserted `(1920,1080) -> ((960,540),(480,270))`, which failed the moment [`BLUR_REDUCTIONS`]
+    /// was turned down — correctly, and usefully, but a knob's setting is not a fact to pin.
+    #[test]
+    fn c_blur_dims_halve_exactly_from_whatever_the_drawable_is() {
+        for (vw, vh) in [(1920, 1080), (960, 540)] {
+            // the television, then the desktop simulator's half-size drawable
+            let ((mw, mh), (sw, sh)) = blur_dims(vw, vh);
+            assert_eq!((mw, mh), (vw / 2, vh / 2), "the first pass is always one exact halving");
+            let want = (vw >> BLUR_REDUCTIONS, vh >> BLUR_REDUCTIONS);
+            assert_eq!((sw, sh), want, "the tap target is {BLUR_REDUCTIONS} exact halvings down");
+        }
+        // odd dimensions floor rather than round up past the source (a target larger than its
+        // source is a magnification pass, which is not what any of this is for)
+        let ((mw, mh), (sw, sh)) = blur_dims(1919, 1079);
+        assert!(mw <= 1919 / 2 && mh <= 1079 / 2 && sw <= mw && sh <= mh);
+        // and a surface too small to halve must still give legal (>=1) targets, not a zero-sized
+        // texture the driver reports as an incomplete FBO
+        assert_eq!(blur_dims(1, 1), ((1, 1), (1, 1)));
+    }
+
+    /// The chain's shape, at whatever [`BLUR_REDUCTIONS`] is currently set to.
+    ///
+    /// This test used to assert the pass count was EVEN, which was true and is not a property —
+    /// it was an accident of one setting of a knob that exists to be changed. What must hold is
+    /// that the tap loop still lands in `a`, that the taps widen, and that the reduction count is
+    /// one of the two the snapshot code actually implements.
+    #[test]
+    fn d_the_blur_chain_keeps_its_shape_at_either_reduction_setting() {
+        assert!((1..=2).contains(&BLUR_REDUCTIONS), "blur_snapshot only builds 1 or 2 reductions");
+        assert_eq!(BLUR_TAPS.len() % 2, 0, "an odd tap count leaves the snapshot in `b`, which nothing samples");
+        assert!(BLUR_TAPS.windows(2).all(|w| w[1] > w[0]), "taps must WIDEN between passes");
+        // The pass count must include the up pass. It did not, in two places that had each written
+        // the expression out for themselves, and the disagreement inverted the lens's v axis while
+        // leaving the sampling window right — a defect with no symptom on a symmetric backdrop.
+        //
+        assert_eq!(blur_passes(), BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_REDUCTIONS >= 2));
+        assert_eq!(blur_is_bottom_up(), blur_passes() % 2 == 0);
+    }
+
+    /// The parity the whole chain hangs on, pinned at the CURRENT shape and tied to its reader.
+    ///
+    /// Anything that adds or removes a pass flips which way up the snapshot is stored, and that is
+    /// the failure with no symptom: the sampling window stays right, the panel still shows the page,
+    /// and what is behind the glass is simply upside down — invisible on a blurred, largely
+    /// symmetric backdrop. It very nearly shipped that way twice: once when the up pass landed
+    /// beside a pass count written out in two places, and again while merging the two reductions
+    /// into one (a change that turned out not to be worth making — see [`blur_snapshot`] — but
+    /// which did silently invert this on the way through).
+    #[test]
+    fn e_the_snapshots_stored_order_matches_what_reads_it() {
+        // grab (bottom-up, as `glCopyTexSubImage2D` leaves it) -> reduce -> reduce -> tap -> tap -> up
+        assert_eq!(blur_passes(), 5, "two reductions, two taps, one up pass");
+        assert!(!blur_is_bottom_up(), "an odd pass count leaves the grab's order inverted");
+        // The two readers of that parity must not be able to disagree: the sampling window and the
+        // lens displacement both take it from `blur_is_bottom_up`, and a v axis that runs backwards
+        // in one and forwards in the other bends the backdrop the wrong way at the rim.
+        let uv = blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, [0.0, 0.0, SCR_W, SCR_H], [1.0, 1.0],
+            blur_is_bottom_up());
+        assert!(uv[3] > 0.0, "top-down storage means the window's v span runs forwards");
     }
 }

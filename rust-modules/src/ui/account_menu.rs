@@ -18,7 +18,7 @@ use crate::plex::session::Account;
 use crate::ui::consts::*;
 use crate::ui::popover::Popover;
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::{theme, Rect};
+use crate::ui::Rect;
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -181,7 +181,7 @@ pub fn draw() {
     // scrim + fade, sliding DOWN into place from above the chip (negative rise)
     let p = pop().painter(0.5, -16.0);
     let r = panel_rect();
-    p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    pop().panel(p, r, 24.0);
     table().draw(p, r);
 }
 
