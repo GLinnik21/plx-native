@@ -406,12 +406,20 @@ deploy: pkg/plxnative $(FFMPEG_STAGED)
 # so there is exactly ONE copy of the SAM incantation. It leaves the app running and
 # the subscription pid in $$LP; how to observe the app is the caller's business.
 #
+# The two profiler JSONLs are cleared here for the same reason and under the same rule as the
+# event log: they are OUTPUTS the app creates, and a root-owned leftover is one the jailed app
+# cannot open — which disables the profiler with a single `Permission denied` line that is easy to
+# scroll past. Clearing an output is not disarming a trigger: `make run` deliberately preserves
+# `/tmp/plxnative-*` scene triggers, including `plxnative-profile` and `plxnative-hwcnt`, so a
+# profiling run is armed once and repeated.
+#
 # Only `rm -f` the log — never pre-create it. The app runs jailed under its own uid
 # (not root), so a root-owned 644 file left in place is one the app cannot write: the
 # log stays 0 bytes and every assertion reads as a total regression. `tail -F` retries
 # until the app creates the file itself, which is exactly what -F is for.
 BOOT_SH = (luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
-	  fuser -k $(APPDIR)/plxnative 2>/dev/null; rm -f /tmp/plxnative-events.log; \
+	  fuser -k $(APPDIR)/plxnative 2>/dev/null; \
+	  rm -f /tmp/plxnative-events.log /tmp/plxnative-gputime.jsonl /tmp/plxnative-hwcnt.jsonl; \
 	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & LP=$$!;
 
 run:
@@ -531,6 +539,11 @@ threadprobe: tools/threadprobe.c
 sockprobe: tools/sockprobe.c
 	$(CC) $(CFLAGS) -o pkg/sockprobe tools/sockprobe.c -lpthread
 
+# tools/mali-hwcnt-probe.c — userspace-only validation of the exact Midgard r12p0 vinstr ABI used
+# by the in-app profiler.  It is standalone, never linked into or deployed with the application.
+mali-hwcnt-probe: tools/mali-hwcnt-probe.c
+	$(CC) $(CFLAGS) -o pkg/mali-hwcnt-probe tools/mali-hwcnt-probe.c
+
 # ---------------------------------------------------------------------------------------------
 # The desktop UI simulator — the same app core against a desktop SDL2 + desktop GL, no television.
 #
@@ -616,4 +629,11 @@ macapp:
 macapp-zip:
 	MACAPP_TDIR=$(MACAPP_TDIR) ci/mkmacapp.py --zip
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip
+# Retrieve whichever profiler JSONL the last run produced. Both are fetched best-effort because a
+# leg arms exactly one of the two modes, never both.
+fetch-profile:
+	-$(SCP) root@$(TV):/tmp/plxnative-gputime.jsonl pkg/plxnative-gputime.jsonl
+	-$(SCP) root@$(TV):/tmp/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
+	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output on the TV"
+
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile

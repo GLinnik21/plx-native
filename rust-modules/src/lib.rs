@@ -17,9 +17,14 @@ mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` featu
 mod devcaps; // what this SoC decodes — the TV's own codec table, read once at boot (the capability profile + direct-play gate derive from it)
 #[macro_use]
 mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases
+mod egl; // boot-time EGL capability probe (extensions, swap behaviour, buffer age) — diagnostic only
 mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — the TV's own FFmpeg 3.3 via the stub-.so link
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod gfx;
+#[cfg(feature = "devtriggers")]
+mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
+#[cfg(feature = "devtriggers")]
+mod gpu_timer; // async EXT_disjoint_timer_query timing; no glFinish on the timing path
 mod img;
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)

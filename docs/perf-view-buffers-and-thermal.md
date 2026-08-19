@@ -39,7 +39,9 @@ That is the fill-rate pass you already did, working against you. It made the pri
 
 ### The whole-screen arithmetic
 
-Using the project's own measured phase numbers (profiler-ON, ~2.3× `glFinish` inflation, documented in `ui-fillrate-perf` memory and at `ui/profile.rs:6-8`):
+The following arithmetic used the old serialized `glFinish` profiler and is retained only as the
+historical argument that led to this design. Its `÷2.3` conversion is not a valid measured GPU
+baseline; rerun the comparison with asynchronous timer queries before using these values:
 
 - One **opaque full-screen rect** on this GPU: the redundant `SURFACE_APP` pass deleted from `Backdrop::draw` took `hm.backdrop` **4.5 → 0.13 ms** profiled ⇒ that single pass ≈ **4.4 ms profiled ≈ 1.9 ms real**.
 - A whole **Home grid** frame's content: `hm.backdrop 0.13` + `hm.grid 8.0` ≈ **8.1 ms profiled ≈ 3.5 ms real** for 14 card composites plus the wash.
