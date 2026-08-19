@@ -18,6 +18,7 @@ pub mod consts;
 pub mod detail;
 pub mod fmt; // shared duration/clock display formatters
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
+pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
 pub mod home;
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting

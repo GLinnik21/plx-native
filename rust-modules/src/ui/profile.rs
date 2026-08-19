@@ -323,8 +323,13 @@ mod imp {
             if let Some(raw) = state.raw.as_mut() {
                 let _ = write!(
                     raw,
-                    "{{\"type\":\"phase\",\"name\":\"{name}\",\"serialized_wall_ns\":{wall_ns},\"start_gpu_ns\":{},\"end_gpu_ns\":{},\"start_event\":{},\"end_event\":{},\"flush\":",
-                    before.timestamp_ns, interval.timestamp_ns, before.event_id, interval.event_id
+                    "{{\"type\":\"phase\",\"name\":\"{name}\",\"serialized_wall_ns\":{wall_ns},\"start_gpu_ns\":{},\"end_gpu_ns\":{},\"start_event\":{},\"end_event\":{},\"load\":{},\"flush\":",
+                    before.timestamp_ns, interval.timestamp_ns, before.event_id, interval.event_id,
+                    // Which LOAD-DIAL step this sample belongs to, or -1. A cycled sweep is one
+                    // JSONL holding several configurations; without this the distributions cannot
+                    // be separated after the fact, and a mean over the whole file names a value
+                    // that never occurred (the `SPREAD=` lesson, one level up).
+                    crate::ui::glassload::step_index()
                 );
                 let _ = write_words(raw, &before.words);
                 let _ = write!(raw, ",\"interval\":");
@@ -349,7 +354,10 @@ mod imp {
         sw: i32,
         sh: i32,
     ) {
-        if !enabled() && !crate::gpu_timer::enabled() {
+        // …or whenever the LOAD DIAL is armed. The region a leg actually blurred is the one thing
+        // that cannot be recovered afterwards, and requiring a profiler to see it means it can only
+        // be seen in runs whose frame rate the profiler has already changed.
+        if !enabled() && !crate::gpu_timer::enabled() && !crate::ui::glassload::armed() {
             return;
         }
         let config = format!(

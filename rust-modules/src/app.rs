@@ -2983,6 +2983,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // (empty = 1/4 per axis; a number selects the divisor, powers of two from 4). Absent, the
         // shipped glCopyTexSubImage2D + two-reduction capture path is used, which is what makes
         // this an A/B rather than a replacement.
+        // dev: /tmp/plxnative-glassload is the backdrop-glass LOAD DIAL — a sweep of glass-surface
+        // count, size and refresh cadence that cycles its own steps inside one launch, so legs are
+        // interleaved by construction. /tmp/plxnative-navblur is the blurred-route-transition
+        // prototype. Both live in `ui::glassload`; both are absent from a release build.
+        if let Some(v) = crate::dev::read("glassload") {
+            crate::ui::glassload::configure(&v);
+        }
+        if let Some(v) = crate::dev::read("navblur") {
+            crate::ui::glassload::configure_navblur(&v);
+        }
         if let Some(v) = crate::dev::read("blurdirect") {
             let scale = if v.is_empty() { 4 } else { v.parse().unwrap_or(0) };
             crate::gfx::set_blur_direct(scale);
@@ -4580,6 +4590,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 }
             }
+            // dev: an `acct` step on the LOAD DIAL asks for the REAL Account popover, so the
+            // shipped surface and a synthetic one can be interleaved inside ONE launch. Assigning
+            // the route directly (rather than through `nav_to`) is deliberate: the question is what
+            // the PANEL costs, and a page transition on the step boundary would put a cross-fade in
+            // the middle of the leg being measured.
+            if crate::ui::glassload::armed() {
+                let want = crate::ui::glassload::wants_account();
+                if want && route == Route::Home {
+                    crate::ui::account_menu::open();
+                    route = Route::Account;
+                } else if !want && route == Route::Account {
+                    crate::ui::account_menu::close();
+                    route = Route::Home;
+                }
+            }
             // dev: navosc bounces the route Home↔Library through the real request path (the
             // `home-library-nav` FPS scene). Route-unconditional, because it is the ROUTE it drives;
             // it goes through `nav_to` rather than assigning `route` so the scene measures exactly
@@ -4903,6 +4928,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
                 // region to be declared before rendering begins. See `egl.rs`.
                 crate::egl::frame_damage();
+                // dev: the backdrop-glass LOAD DIAL and the blurred-transition prototype
+                // (`/tmp/plxnative-glassload`, `/tmp/plxnative-navblur`). Both are no-ops when
+                // their trigger is absent. HERE and not below the gate, because the dial's cadence
+                // is counted in PRESENTS — a loop iteration the gate skipped drew no glass — and
+                // because a step rollover invalidates the snapshot, which must precede every glass
+                // surface in the frame exactly as `Glass::prepare` does.
+                crate::ui::glassload::prepare(now);
                 // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
                 // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
                 // is the entire logical->physical mapping — nothing else in the renderer knows the
@@ -5029,6 +5061,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if matches!(route, Route::ItemMenu { .. }) {
                             crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
                         }
+                        // dev: the blurred route transition, then the load dial's glass surfaces.
+                        // LAST on the non-player path, so the snapshot either takes is of the
+                        // COMPLETE page — which is the honest source for a surface that sits on
+                        // top of everything, and the one thing the tab track (drawn inside the
+                        // page) cannot have.
+                        crate::ui::glassload::draw_nav_blur();
+                        crate::ui::glassload::draw();
                         // The on-screen counter, off the player route (chrome over video). It draws
                         // `loop_shown` — LOOP ITERATIONS, the same number the heartbeat logs as
                         // `loop=`, NOT the frame rate. It also necessarily FREEZES on a settled
@@ -5175,7 +5214,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
                 if total > framedrop_thresh {
                     log(&format!(
-                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} cap={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} snap={:.2}",
+                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} cap={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snap={:.2}",
+                        crate::ui::glassload::step_index(),
                         crate::ui::home::snap_pos()
                     ));
                 }
@@ -5216,11 +5256,25 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // a settled screen doing its job, `loop=0` is an app in trouble, and `fps=0` on its
                 // own is not a fault at all. Note the on-screen counter still draws `loop=`.
                 let pres = crate::ui::idle::take_presents();
+                // dev: which LOAD-DIAL step these frames belong to. Absent unless the dial is
+                // armed, and after `fps=` / before `worstframe=` so both harness regexes are
+                // untouched. It is the whole reason one cycled run can be split per configuration.
+                // `snap=` is the blur refreshes actually taken in that second — the measured
+                // refresh RATE, which is the one thing a cadence claim cannot be trusted without.
+                let ld = if crate::ui::glassload::armed() {
+                    format!(
+                        " load={} snap={}",
+                        crate::ui::glassload::step_index(),
+                        crate::gfx::take_blur_snapshots()
+                    )
+                } else {
+                    String::new()
+                };
                 if framedrop_on {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres} worstframe={fd_worst:.1}ms{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld} worstframe={fd_worst:.1}ms{SIM_TAG}"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld}{SIM_TAG}"));
                 }
             }
         }
