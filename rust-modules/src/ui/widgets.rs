@@ -1166,7 +1166,21 @@ impl View for CircleButton {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
         let (face, ink) = self.style.colors(self.focused);
-        p.rect(r, r.w * 0.5, face, face, 0.0);
+        let rad = r.w * 0.5;
+        if ctl_hidden_in_source(self.focused) {
+            return;
+        }
+        // The resting card shadow, which every control in this family carries and this one did not:
+        // a disc over artwork nobody chose has the tile's problem, and `Button` had already been
+        // given the same constant for the same reason. A GLASS face drops it — see
+        // [`ctl_glass_shadow`].
+        if !ctl_glass_on() || self.focused || ctl_glass_shadow() {
+            p.shadow(r, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                     theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        }
+        if !control_glass(p, r, rad, face, self.focused) {
+            p.rect(r, rad, face, face, 0.0);
+        }
         if let Some(icon) = self.icon {
             // vector glyph centred on the disc at the shared DISC_ICON_RATIO box, so every round
             // control carries its icon at one ratio.
@@ -2698,6 +2712,22 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // show, since its cost is the page's draw calls rather than the region's area, so the two
         // paths need to be comparable on it.
         let glass_on = tab_glass_on(track.w);
+        // The resting card shadow under the track — `/tmp/plxnative-tracksh` while it is being
+        // judged. Every CONTROL in this app carries this pair and the track carries neither, which
+        // is why a row of buttons reads as sitting ON the page while the bar reads as printed into
+        // it. The design system's own recreation gives the track two inset lines and no outer
+        // shadow, and gives a PANEL `0 30px 70px` — a standing container is not supposed to float.
+        // Whether a 76px bar over artwork can afford to look printed is a question for the panel,
+        // not for the rule, so the shadow is here to be looked at rather than argued about.
+        if crate::dev::flag("tracksh") {
+            p.shadow(
+                track,
+                track.h * 0.5,
+                theme::CARD_SHADOW_REST_BLUR,
+                theme::CARD_SHADOW_REST_DY,
+                theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A),
+            );
+        }
         if glass_on {
             // PREPARE is deliberately not here — see `tab_glass_prepare`. Resolving cadence during
             // the page draw invalidates the backdrop after any earlier owner has already captured
@@ -2840,6 +2870,120 @@ pub enum ControlStyle {
     /// so focus reads identically across every control in the family.
     Keyline,
 }
+/// Live-trigger lifetime for the CONTROL glass experiment — its own state, because a control row
+/// and the tab track are far apart and must never be asked for one region.
+static mut CTL_GLASS_STATE: GlassState = GlassState::new();
+
+/// Resolve the control row's glass cadence before the page it sits on draws — the same contract
+/// [`tab_glass_prepare`] documents, for the same reason.
+pub(crate) fn ctl_glass_prepare() {
+    if !ctl_glass_on() {
+        return;
+    }
+    let state = unsafe { &mut *std::ptr::addr_of_mut!(CTL_GLASS_STATE) };
+    let _ = Glass::DYNAMIC_BACKDROP.prepare(
+        state,
+        1.0,
+        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+    );
+}
+
+/// Would controls wear glass this frame, ignoring whether we are inside a source pass?
+fn ctl_glass_wanted() -> bool {
+    crate::dev::flag("glassctl") && !crate::ui::popover::any_open()
+}
+
+/// Are controls wearing glass this frame? `/tmp/plxnative-glassctl`.
+fn ctl_glass_on() -> bool {
+    ctl_glass_wanted() && !crate::gfx::blur_source_pass()
+}
+
+/// **Must this control draw NOTHING, because the page is being rendered as its own backdrop?**
+///
+/// A surface may not appear in its own backdrop, and a control is the harder case: the tab row is
+/// one function that can return early, while a control is a leaf inside the ordinary page draw.
+/// Left in, the direct source pass records the control's opaque .92 plate AND its resting shadow
+/// into the snapshot the glass face then samples — the same double-darkening the track measured
+/// (flat 52,60,38 against "glass" 33,38,26 over a uniform hero), plus a shadow the material would
+/// carry around inside itself.
+///
+/// A FOCUSED control is exempt and keeps drawing: it is opaque by design, it is not sampling
+/// anything, and it genuinely is part of what is behind its neighbours.
+fn ctl_hidden_in_source(focused: bool) -> bool {
+    !focused && crate::gfx::blur_source_pass() && ctl_glass_wanted()
+}
+
+/// Does a glass control keep the resting card shadow? `/tmp/plxnative-glasssh`.
+///
+/// Off by default, and the reference is the argument: Apple's own glass controls cast nothing —
+/// a pane that borrows the colour of what it covers is IN the surface, not floating over it, and a
+/// drop shadow says the opposite. The opaque plate still carries its shadow, because an opaque
+/// plate really is an object on top of the picture.
+fn ctl_glass_shadow() -> bool {
+    crate::dev::flag("glasssh")
+}
+
+/// A control's IDLE face, as glass. Returns false when the caller must paint its ordinary opaque
+/// plate instead — which is every focused control, always.
+///
+/// **Focus is the exception, deliberately.** The design system reserves the FILL for focus —
+/// "nothing here is filled by rank, only by focus" — so a focused control is a near-white `ACCENT`
+/// plate and stops being a material. That is also what keeps the row readable: exactly one thing on
+/// it is opaque, and it is the thing the remote is pointing at.
+///
+/// The rim is the container rim, not the tile sheen: [`theme::GLASS_RIM`] round the perimeter and
+/// the boost to [`theme::GLASS_RIM_LIGHT`] on the side facing the light, weighted by the surface
+/// normal — so a disc's highlight sits on its crown and fades to nothing at its equator, which is
+/// the same lamp every card shadow in this app is cast from.
+///
+/// The design system's standing rule is that a control is NEVER glass, and its stated reason —
+/// "60px against a 28px bevel is all rim and no interior" — was an argument about the SHEET
+/// treatment, which [`crate::gfx::GlassRim::Line`] has since answered: there is no 28px ramp on a
+/// container any more. What has not been answered is the budget, and that is why this is a trigger:
+/// controls are scattered, and what a glass surface costs is the UNION of every glass rectangle in
+/// the frame grown 88px a side.
+/// A glass control face's alpha, and `/tmp/plxnative-glassctldim=<0..1>` to sweep it.
+///
+/// **0.55, and the reason it can be so much lower than the tab track's 0.72 is the INK.** The
+/// track's idle labels are [`theme::TEXT_TERTIARY`]; a control's are pure white
+/// ([`theme::CONTROL_IDLE_INK`]). Against the worst artwork a hero can be — white — the face is
+/// `a x NEUTRAL_600 + (1-a) x white`, and the app's own 3:1 bar for large ink is first cleared at
+/// **a = 0.50**:
+///
+/// | a | contrast | | a | contrast |
+/// |---|---|---|---|---|
+/// | .40 | 2.38 | | .65 | 4.85 |
+/// | **.50** | **3.11** | | .72 | 6.09 |
+/// | .55 | 3.58 | | .92 | 11.98 |
+///
+/// So .55 sits one step inside the floor and is a real transparency: the shipped opaque face is
+/// .92, which lets 8% of the backdrop through — i.e. nothing. This is the whole answer to "can a
+/// control be glass here": the track could not, because a blur removes detail and not brightness
+/// and its ink needed .72 anyway; a control can, because white ink buys back the room.
+const CTL_GLASS_A: f32 = 0.55;
+
+fn ctl_glass_face(face: [f32; 4]) -> [f32; 4] {
+    let a = crate::dev::read("glassctldim")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|a| (0.0..=1.0).contains(a))
+        .unwrap_or(CTL_GLASS_A);
+    theme::with_a(face, a)
+}
+
+fn control_glass(p: Painter, r: Rect, rad: f32, face: [f32; 4], focused: bool) -> bool {
+    if focused || !ctl_glass_on() {
+        return false;
+    }
+    // `Line`, not `Bevelled`, and here the design's own arithmetic is the argument rather than the
+    // counter-argument: a 60px disc against a 28px ramp would be all rim and no interior.
+    if !Glass::DYNAMIC_BACKDROP.backdrop(p, r, 0.0, rad, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Line) {
+        return false;
+    }
+    let f = ctl_glass_face(face);
+    p.rect_rimmed(r, rad, f, f, theme::GLASS_RIM, theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3]);
+    true
+}
+
 impl ControlStyle {
     /// (fill, ink) for this style at the given focus state.
     pub(crate) fn colors(self, focused: bool) -> ([f32; 4], [f32; 4]) {
@@ -2960,7 +3104,7 @@ impl Button {
             p.rrect(r, rad, rad, theme::PILL_KEYLINE);
             let s = BTN_KEYLINE_W;
             p.rrect(Rect::new(r.x + s, r.y + s, r.w - 2.0 * s, r.h - 2.0 * s), rad - s, rad - s, bg);
-        } else {
+        } else if !control_glass(p, r, rad, bg, self.focused) {
             p.rrect(r, rad, rad, bg);
         }
         let Some(frac) = self.progress else { return };
@@ -2979,12 +3123,18 @@ impl View for Button {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
         let (bg, ink) = self.style.colors(self.focused);
+        if ctl_hidden_in_source(self.focused) {
+            return;
+        }
         // Every control in this family carries the card system's RESTING shadow. Without it an
         // ACCENT capsule over a white frame measures ~1.2:1 against its surround — the shape
         // vanishes and only the dark label survives, floating. The discs and the shelves already
-        // solved this; the pills were the one control that hadn't.
-        p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        // solved this; the pills were the one control that hadn't. A GLASS face drops it — see
+        // [`ctl_glass_shadow`].
+        if !ctl_glass_on() || self.focused || ctl_glass_shadow() {
+            p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                     theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        }
         self.plate(p, bg);
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
