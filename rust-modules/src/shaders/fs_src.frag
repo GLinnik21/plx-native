@@ -27,9 +27,25 @@ uniform float u_focus_rgb;
 uniform highp float u_radR;
 uniform float u_rimw;
 uniform vec4 u_rimcol;
+// Extra rim weight on the side FACING THE LIGHT — straight up. 0 disables it and the branch below
+// costs nothing. It exists because a container's top edge carries a brighter line than its
+// perimeter (the design system's `--glass-rim-light` over `--glass-rim`), and the honest way to
+// stop that line is to let it FADE where the surface turns away, not to scissor it: a hard cut
+// lands at the widest point of a cap and reads as the outline breaking off mid-air.
+uniform float u_rimtop;
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
   highp vec2 q = abs(p) - b + vec2(r);
   return length(max(q,0.0)) + min(max(q.x,q.y),0.0) - r;
+}
+// The gradient of that field — the outward normal. Two cases, exactly the two terms of sdBox: the
+// rounded corner (either component of q positive) and the flat sides. Same construction as
+// fs_glass.frag's, and evaluated only on rim fragments of a surface that asked for a top line.
+highp vec2 sdBoxNormal(highp vec2 p, highp vec2 b, highp float r){
+  highp vec2 sg = sign(p);
+  highp vec2 q = abs(p) - b + vec2(r);
+  highp vec2 m = max(q, 0.0);
+  if (m.x > 0.0 || m.y > 0.0) return sg * normalize(m + vec2(1e-5));
+  return sg * (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
 }
 void main(){
   float vy = v_uv.y;
@@ -65,9 +81,27 @@ void main(){
   float aFill = 1.0 - smoothstep(-1.0, 1.0, d);
   vec3 rgb = fill.rgb * aFill;
   float a = aFill * fill.a;
-  float rim = smoothstep(-u_rimw - 0.75, -u_rimw + 0.75, d) * (1.0 - smoothstep(-0.5, 0.5, d)) * u_rimcol.a;
-  rgb += u_rimcol.rgb * rim;
+  // THE RIM, and the division is the whole of it. This fragment is blended with straight alpha
+  // (GL_SRC_ALPHA), so what reaches the screen is `rgb * a` — and adding the rim to `rgb` therefore
+  // draws it at `rim * a`, not at `rim`. With an OPAQUE fill a is 1 and the two are the same, which
+  // is why every tile's edge-sheen has always looked right and why this went unnoticed. Over a
+  // TRANSLUCENT fill it silently under-delivers (the flat tab track's .22 sheen was landing at
+  // .10), and over a HOLLOW one — `Painter::rring`, and a container's rim drawn on its own — it
+  // inverts: `rgb` is `rimcol * rim` and `a` is `rim`, so the line arrives at `rim` squared while
+  // still darkening the destination by `1 - rim`. A translucent stroke was drawing a shadow.
+  //
+  // Dividing by the output alpha cancels the blend's own multiply, so `u_rimcol.a` is the weight
+  // the line lands at, over any fill. Opaque callers are bit-identical: a == 1.
+  float rimShape = smoothstep(-u_rimw - 0.75, -u_rimw + 0.75, d) * (1.0 - smoothstep(-0.5, 0.5, d));
+  float rim = rimShape * u_rimcol.a;
+  if (u_rimtop > 0.001) {
+    // +y is DOWN here (v_uv runs top to bottom), so the top edge's normal is (0,-1) and this is 1
+    // there, 0 at the widest point of either cap, and 0 across the whole bottom. Continuous by
+    // construction: the extra weight dies out along the arc instead of being cut off on it.
+    rim += rimShape * u_rimtop * max(-sdBoxNormal(p, hsz, rad).y, 0.0);
+  }
   a = max(a, rim);
+  rgb += u_rimcol.rgb * (rim / max(a, 1.0 / 512.0));
   if (u_focus > 0.001) {
     float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;
     float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);

@@ -2161,17 +2161,38 @@ impl TabStrip {
     ///
     /// Call this BEFORE the pill loop: the capsules are the pills' ground, and a label drawn under an
     /// opaque focus capsule is a label nobody can read.
-    pub(crate) fn draw(&self, p: Painter, top: f32, h: f32, plated: bool) {
-        let cap = |c: &Capsule, col: [f32; 4]| {
+    pub(crate) fn draw(&self, p: Painter, top: f32, h: f32, plated: bool, glass: bool) {
+        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>| {
             let (x, w) = c.span();
             let a = c.alpha();
             // sub-code alpha or a sub-pixel width is nothing on screen but still a full rrect pass
             if a > 0.004 && w > 0.5 {
-                p.alpha(a).rrect(Rect::new(x, top, w, h), h * 0.5, h * 0.5, col);
+                let r = Rect::new(x, top, w, h);
+                match rim {
+                    // On a GLASS track the selection plate is a piece of the same material, not a
+                    // white wash: its own perimeter line and its own brighter top edge, exactly as
+                    // the track wears them. Without an edge a translucent plate over a translucent
+                    // band has nothing to be bounded BY — it lands differently on each side of
+                    // itself and reads as a smudge, which is what the first device photograph of
+                    // this bar showed and what no amount of fill alpha fixes.
+                    Some(rc) => p.alpha(a).rect_rimmed(
+                        r,
+                        h * 0.5,
+                        col,
+                        col,
+                        rc,
+                        theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3],
+                    ),
+                    None => p.alpha(a).rrect(r, h * 0.5, h * 0.5, col),
+                }
             }
         };
-        cap(&self.sel, if plated { theme::TAB_PLATE_SELECTED_OVER } else { theme::OVERLAY_FOCUS_PILL });
-        cap(&self.foc, crate::ui::ACCENT);
+        let sel_col = if plated { theme::TAB_PLATE_SELECTED_OVER } else { theme::OVERLAY_FOCUS_PILL };
+        cap(&self.sel, sel_col, (glass && !plated).then_some(theme::GLASS_RIM));
+        // The FOCUS capsule keeps its flat near-white fill whatever the track is made of: it is the
+        // one thing on this row that must not read as a material, because the material is what
+        // everything else here is and focus has to be the exception.
+        cap(&self.foc, crate::ui::ACCENT, None);
     }
     /// The `(focus, selected)` mixes pill `pill` (content-space `(x, w)`) should ink itself with —
     /// hand straight to [`TabPill::mix`].
@@ -2701,18 +2722,29 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 // .22 and belongs to a card; and not the shader's own hairline, which sits UNDER
                 // the scrim (`GlassRim::Line` turns it off) and so cannot be a weight.
                 //
-                // Two lines, because one light: .14 the whole way round, .28 along the top. The
-                // second is a straight run between the caps' tangents rather than a stroked arc —
-                // the perimeter line carries the curve, and 1px at .28 has no room to be wrong
-                // about where it ends.
-                p.rect_rimmed(track, track.h * 0.5, gt, gb, theme::GLASS_RIM);
-                let cap_r = track.h * 0.5;
-                p.rect(
-                    Rect::new(track.x + cap_r, track.y, track.w - 2.0 * cap_r, theme::CARD_SHEEN_W),
-                    0.0,
-                    theme::GLASS_RIM_LIGHT,
-                    theme::GLASS_RIM_LIGHT,
-                    0.0,
+                // Two lines, because one light: .14 the whole way round, .28 along the top.
+                //
+                // The second is the SAME ring, scissored to the upper half — not a straight run
+                // between the caps' tangents, which is what it was for one build and which reads
+                // as a bright line floating over the bar with two cut ends. `inset 0 1px 0` on a
+                // rounded box follows the arc; a segment that stops where the curve begins leaves
+                // the .14 perimeter to carry on alone at half the weight, and over a dark hero the
+                // eye reads the step as the line ending rather than as the edge turning.
+                // Photographed over three heroes before it was believed.
+                // ONE ring, two weights: [`theme::GLASS_RIM`] .14 the whole way round, plus the
+                // difference up to [`theme::GLASS_RIM_LIGHT`] .28 on the edge that faces the light.
+                // The boost is a function of the surface normal, so it dies out along each cap's
+                // arc. It was a second ring scissored to the top half for one build, and the
+                // scissor lands exactly on the widest point of a cap — a hard step from .28 to .14
+                // in the middle of a curve, which reads as the outline snapping off. Reported from
+                // a screenshot before it was measured.
+                p.rect_rimmed(
+                    track,
+                    track.h * 0.5,
+                    gt,
+                    gb,
+                    theme::GLASS_RIM,
+                    theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3],
                 );
             } else {
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
@@ -2748,7 +2780,7 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // pills' ground. This strip is NOT plated — it sits inside the tab-bar track above, which
         // already is the ground, so the pills paint no fill of their own at all here.
         let cp = p.translate(x0 - sx, 0.0);
-        unsafe { &*addr_of!(TOP_STRIP) }.draw(cp, TOP_BAR_Y, TAB_PILL_H, false);
+        unsafe { &*addr_of!(TOP_STRIP) }.draw(cp, TOP_BAR_Y, TAB_PILL_H, false, glass_on);
         rects.reserve(n);
         for i in 0..n {
             // ONE prefix sum per pill: `tab_pill_x` is O(i), and it was walked twice here — once for

@@ -355,7 +355,7 @@ impl Painter {
     pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
         let c = self.c(col);
         const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
-        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, HOLLOW.as_ptr(), w, c.as_ptr());
+        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, HOLLOW.as_ptr(), w, c.as_ptr(), 0.0);
     }
     /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
     /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
@@ -382,20 +382,22 @@ impl Painter {
     pub fn rect_sheened(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4]) {
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.sheen_rim();
-        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
+        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), 0.0);
     }
     /// [`rect_sheened`](Self::rect_sheened) with the rim colour named rather than assumed — for a
     /// surface whose edge is not the tiles' [`theme::CARD_SHEEN`]. Same single pass.
-    pub fn rect_rimmed(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4]) {
+    /// `rim_top` is extra weight on the edge facing UP, fading to nothing where the surface turns
+    /// away — a container's brighter top line, continuous round its caps. 0 for a plain perimeter.
+    pub fn rect_rimmed(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32) {
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
-        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
+        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), rim_top * self.a);
     }
     /// Flat rounded-rect fill + the 1px perimeter edge-sheen in one pass (the flat-colour placeholder tile).
     pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {
         let c = self.c(col);
         let rim = self.sheen_rim();
-        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, c.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
+        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, c.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), 0.0);
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
         let t = self.c(tint);
