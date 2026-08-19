@@ -211,8 +211,11 @@ cast+about / info-panel regressions.
   breadcrumb pointing at when a real soak is worth running.
 - **`loop_floor`s have margin** (50 for the steady home scenes, 45 for the transition/player) so
   normal 55–60 jitter passes while a real regression drops well below. **This margin used to be
-  justified here by "the panel GPU thermally throttles" — that is an unmeasured hypothesis, not a
-  finding**, and it is the only place in the repo the claim appears. Nothing has ever measured a
+  justified here by "the panel GPU thermally throttles" — that was an unmeasured hypothesis, and it
+  is now MEASURED AND REFUTED**: a control leg holds 60/60/60 across six runs on a set up 2 h 15 m
+  under continuous load, while arming the HWCNT profiler drops that same leg to 45. The 50 fps
+  readings in the archived notes belong to the instrument, not to the panel. Keep the margin for
+  jitter; do not keep the story. Nothing has ever measured a
   temperature on this device (no `thermal_zone`, no `cpufreq`, Mali runtime-PM reports
   `unsupported`), the observed slow scenes are exactly the two with the most full-screen passes,
   and 50 fps is also precisely the European panel refresh on this SKU. Discriminate with a soak
