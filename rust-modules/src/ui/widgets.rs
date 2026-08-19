@@ -21,12 +21,21 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 pub(crate) enum GlassRefresh {
     /// One snapshot when the surface appears; the owner invalidates again if its underlay changes.
     Cached,
-    /// While the underlay is changing, snapshot on displayed frames 1, 4, 7… .
+    /// Snapshot on every present on which the underlay actually CHANGED.
     ///
-    /// The THREE is [`DEFAULT_DYNAMIC_PERIOD`] and the variant keeps that name because three is
-    /// what ships; the profiling trigger `/tmp/plxnative-glasshz` moves the shared period, so read
-    /// this as "every Nth present, N = 3 unless a developer said otherwise".
-    EveryThirdPresent,
+    /// It was every THIRD such present until 2026-08-19, and the three was a cost guess made
+    /// before anything was measured. Measured, on the direct source path: raising the cadence from
+    /// one-in-three to one-in-one costs **+0.07% of the frame and zero frames** — the scene holds
+    /// 60.0 fps flat across two interleaved rounds. On the capture path the same change costs
+    /// +9.2% and about five frames, because a capture refresh frame does not fit inside a vsync
+    /// slot; that is the whole reason the direct path had to land first.
+    ///
+    /// The "changed" half is NOT a cadence and does not go away: a settled page still takes no
+    /// snapshots at all, which is what keeps a still screen free of a private sampling clock.
+    /// [`DEFAULT_DYNAMIC_PERIOD`] is now 1, and `/tmp/plxnative-glasshz` still moves it, because
+    /// the cost curve it produced is a property of ONE scene and the next screen to wear glass
+    /// will have to be measured too.
+    EveryChangedPresent,
 }
 
 /// Where a modal's black dim is applied relative to the glass capture.
@@ -113,8 +122,12 @@ enum DynamicStep {
 /// ([`set_dynamic_period`]); absent, this reads 3 and the app behaves exactly as it always has.
 static DYNAMIC_PERIOD: AtomicU32 = AtomicU32::new(DEFAULT_DYNAMIC_PERIOD);
 
-/// The shipped presents-per-refresh cadence for [`GlassRefresh::EveryThirdPresent`].
-const DEFAULT_DYNAMIC_PERIOD: u32 = 3;
+/// The shipped presents-per-refresh cadence for [`GlassRefresh::EveryChangedPresent`].
+///
+/// One, measured: at 1/4 source scale on the direct path this is +0.07% of the frame against the
+/// old three, and 60.0 fps either way. See the variant's doc for the capture-path figure, which is
+/// two orders of magnitude worse and is why this could not have been the default before.
+const DEFAULT_DYNAMIC_PERIOD: u32 = 1;
 
 /// Override the shared dynamic cadence, in PRESENTS per refresh. Returns the value actually
 /// installed: 0 is meaningless (a refresh every zero frames) and anything past 8 is a cadence no
@@ -189,13 +202,13 @@ impl Glass {
 
     /// A moving non-modal surface: dirty-aware, every-third-present backdrop; no page transform.
     pub(crate) const DYNAMIC_BACKDROP: Self =
-        Self::new(GlassRefresh::EveryThirdPresent, GlassUnderlay::Unchanged);
+        Self::new(GlassRefresh::EveryChangedPresent, GlassUnderlay::Unchanged);
 
     /// The configuration approved on the Mali-T820 television: source RGB dimmed by 0.5 at full
     /// appearance, with a dirty backdrop refreshed at most every third successful present. The
     /// widget itself still draws on every presented frame.
     pub(crate) const DYNAMIC: Self = Self::new(
-        GlassRefresh::EveryThirdPresent,
+        GlassRefresh::EveryChangedPresent,
         GlassUnderlay::SourceRgb { peak_dim: 0.5 },
     );
 
@@ -205,7 +218,7 @@ impl Glass {
         state.last_seen = present;
         state.active = true;
         state.last_source_rgb = 1.0;
-        if matches!(self.refresh, GlassRefresh::EveryThirdPresent) {
+        if matches!(self.refresh, GlassRefresh::EveryChangedPresent) {
             unsafe { (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).cover_now(present) };
         }
         crate::gfx::blur_invalidate();
@@ -254,7 +267,7 @@ impl Glass {
         let source_changed = source_rgb.to_bits() != state.last_source_rgb.to_bits();
         state.last_source_rgb = source_rgb;
 
-        if matches!(self.refresh, GlassRefresh::EveryThirdPresent) {
+        if matches!(self.refresh, GlassRefresh::EveryChangedPresent) {
             let step = unsafe {
                 (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).step(
                     present,
@@ -3183,8 +3196,27 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 mod tests {
     use super::*;
 
-    /// The shipped cadence, spelled out at the value the app actually runs.
-    const P: u32 = DEFAULT_DYNAMIC_PERIOD;
+    /// A cadence of THREE, which is no longer the shipped default and is the point.
+    ///
+    /// These tests were written against `DEFAULT_DYNAMIC_PERIOD` and broke the day it moved from
+    /// three to one — which is the wrong thing for them to be sensitive to. What they exist to
+    /// prove is the MECHANISM: every Nth qualifying present, damage pending across the gap, one
+    /// capture shared by every owner in a present, and a counter that wraps. None of that is a
+    /// property of N, so N is pinned here and the shipped value is asserted separately by
+    /// [`the_shipped_cadence_is_every_changed_present`]. A period of one would also make three of
+    /// the four assertions below unreachable, since nothing would ever `Wait`.
+    const P: u32 = 3;
+
+    /// The shipped default, asserted in ONE place so moving it is a one-line decision with a
+    /// measurement behind it rather than a cascade through the cadence tests.
+    #[test]
+    fn the_shipped_cadence_is_every_changed_present() {
+        assert_eq!(
+            DEFAULT_DYNAMIC_PERIOD, 1,
+            "measured on the direct source path: one-in-one costs +0.07% of the frame against \
+             one-in-three, and 60.0 fps either way"
+        );
+    }
 
     #[test]
     fn dynamic_glass_refreshes_on_every_third_successful_present() {

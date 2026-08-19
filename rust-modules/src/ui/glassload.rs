@@ -9,7 +9,7 @@
 //! * **how many** glass surfaces are on the panel,
 //! * **how large** each one is (and therefore how large the one shared snapshot region is),
 //! * **how often** the snapshot refreshes, in presents,
-//! * (with `/tmp/plxnative-blurdirect`) at what **source scale** it is produced.
+//! * how large the one shared snapshot region ends up, which is what actually sets the price.
 //!
 //! ## Why it is a SWEEP rather than a flag
 //!

@@ -74,7 +74,7 @@ ALL_TRIGGERS = [
     "plxnative-play", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
     # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)
     "plxnative-detailosc", "plxnative-info", "plxnative-chapters", "plxnative-profile",
-    "plxnative-hwcnt", "plxnative-blurdirect", "plxnative-glassboth", "plxnative-glasshz",
+    "plxnative-hwcnt", "plxnative-glassboth", "plxnative-glasshz",
     "plxnative-tabglassdim",
     # boot-flow triggers (heroidx pins the hero + bypasses the who's-watching picker; pickuser forces it)
     "plxnative-heroidx", "plxnative-pickuser",

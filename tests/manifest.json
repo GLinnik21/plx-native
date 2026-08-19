@@ -223,6 +223,24 @@
         "plxnative-play": "$rk",
         "plxnative-menu": "0"
       }
+    },
+    {
+      "name": "home-acct-glass",
+      "tier": "ui",
+      "route": "account",
+      "loop_floor": 45,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-acct": true,
+        "plxnative-homeosc": true,
+        "plxnative-heroidx": 0
+      },
+      "_floor_note": "THE BACKDROP BLUR HAD NO SCENE AT ALL until 2026-08-19, which is how the tab track's material shipped ungraded and how three separate whole-frame claims about the blur went unchallenged for a day. The Account popover is the app's only shipping Glass::DYNAMIC surface, so this is the scene that exercises the chain: glCopyTexSubImage2D, two reductions, two Kawase taps, the up pass and the fs_glass composite, every third present. 45 rather than home-grid's 50 because the popover is a full-screen scrim plus a panel over the live grid — the same tier item-menu and library-switch take for the same reason.",
+      "_trigger_note": "plxnative-homeosc is load-bearing TWICE over. It keeps the grid presenting (ui::idle would otherwise settle the screen), and it keeps the UNDERLAY CHANGING — Glass::DYNAMIC only invalidates when the underlay actually moved, so on a still Home the blur chain never runs and this scene would grade a cached texture. plxnative-heroidx pins the billboard so the 8s auto-flip cannot wake the gate mid-window and widen the spread.",
+      "fps_floor": 25,
+      "_fps_floor_note": "MEASURED on the dev set 2026-08-19, both profilers disarmed: median 60 fps (min 15, max 60, n=13), loop median 60. The scene holds the vsync cap with the glass up, the direct source path and a refresh on every changed present — which is the whole claim this scene exists to keep true. 25 is 42% of that median, the same margin fps:library-scroll takes (25 against a 49 median), and it is graded on the MEDIAN, so the min of 15 is expected: the oscillator steps focus every 350ms and the spring settles inside that period, so a 1s window can land mostly in real idle.\n\nIt cannot be passed by freezing: ui::idle's keepalive alone reads ~0.5/s. It also cannot be passed by a DEAD blur chain that still presents — for that, read `snap=` on the heartbeat, which counts snapshots actually taken.\n\nOne run, not three. Widen it rather than tighten it if it ever flaps.",
+      "_route_note": "`account`, not `home`: the Account popover is a ROUTE of its own (app.rs names it in the heartbeat), so a scene keyed on home matches zero samples and fails as \"never entered this screen\" — which is exactly what the first run of this scene did."
     }
   ],
   "cases": [
