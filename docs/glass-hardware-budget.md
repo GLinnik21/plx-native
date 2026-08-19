@@ -19,7 +19,7 @@ what kind of ornament it is:
 
 | what you draw | price per screen pixel | 7.8 ms buys you |
 |---|---|---|
-| a flat photograph (the hero image) | **~4 ns** | the whole screen twice over |
+| a flat photograph (the hero image) | **~4 ns** | most of the screen |
 | a poster card (art + rim + shadow) | **~15 ns** | ~4 poster tiles, or ¼ of the screen |
 | **backdrop glass** (blur + frost + rim) | **~16–30 ns**, plus a refresh charge (§3.2) | ~1/8 of the screen |
 
@@ -50,8 +50,10 @@ edge to fall off — there is a **slope, and it starts at the first glass surfac
 60 Hz, so **60 fps means "it fits" and tells you nothing about how much room is left**; that is why
 §3's table also gives milliseconds.
 
-Milliseconds are `1000 / fps` — the true average time one frame took. A **cost** is that minus the
-16.67 ms a 60 fps frame is allowed. The base frame (8.9 ms) is not measured directly; it is the
+Milliseconds are `1000 / fps` — the true average time one frame took. **A "cost" throughout this
+document is the work a thing adds to the frame: its frame time minus the 8.9 ms base.** So a cost
+under 7.8 ms fits inside 60 fps and a cost above it does not, which is why every 60 fps row reads
+"fits (≤7.8 ms)" rather than "free". The base frame (8.9 ms) is not measured directly; it is the
 intercept of the poster-card ramp in §3.3, whose straight line fits its four loaded points to within
 0.5 ms and then predicts the fifth — the last card count that still holds 60 fps — to within 0.1 ms.
 Treat it as good to about ±1 ms.
@@ -112,10 +114,11 @@ its margin is nearly all of it.**
 Read the 608x396 rows again, in order: never **60**, every 6th **52**, every 3rd **45**, every 2nd
 **40**, every frame **47**.
 
-* **Not refreshing at all is free.** A glass surface over a page that is not moving costs nothing
-  beyond its own composite, and at 608x396 that fits inside the budget. So does the tab bar (§8).
-* **The first refresh is most of the price.** Never → every-sixth-frame costs 10.4 ms.
-  Every-sixth → every-single-frame costs 2 ms more.
+* **Not refreshing at all is nearly free.** A glass surface over a page that is not moving costs
+  only its own composite, and at 608x396 that fits inside the budget. So does the tab bar (§8).
+* **The first refresh is most of the price.** Not refreshing costs under 7.8 ms; refreshing every
+  sixth frame costs 10.4; every third 13.4; every second 16.1; every frame 12.4. Almost the whole
+  bill arrives with the first refresh you allow, and the rate barely moves it after that.
 * **It is not monotone.** Every-second-frame is the *worst* setting measured, worse than refreshing
   every single frame.
 
@@ -134,26 +137,26 @@ instead whether the backdrop needs to be live at all — *that* is worth 10 ms.
 
 | what | area drawn | fps | frame | cost |
 |---|---|---|---|---|
-| 4 poster tiles (300x450) | 540,000 | **60** | 16.7 ms | fits exactly |
-| 5 poster tiles | 675,000 | **53** | 18.9 ms | +2.2 ms |
-| 6 poster tiles | 810,000 | **48** | 20.8 ms | +4.2 ms |
-| 7 poster tiles | 945,000 | **45** | 22.2 ms | +5.6 ms |
-| 8 poster tiles | 1,080,000 | **40** | 25.0 ms | +8.3 ms |
-| 12 poster tiles | 1,620,000 | **35** | 28.6 ms | +11.9 ms |
-| 12 poster tiles, all focused | 1,620,000 | **34** | 29.4 ms | +12.7 ms |
-| one full-screen card | 2,074,000 | **35** | 28.6 ms | +11.9 ms |
-| one full-screen flat photograph | 2,074,000 | **57** | 17.5 ms | +0.9 ms |
+| 4 poster tiles (300x450) | 540,000 | **60** | 16.7 ms | 7.9 ms — the last one that fits |
+| 5 poster tiles | 675,000 | **53** | 18.9 ms | 10.0 ms |
+| 6 poster tiles | 810,000 | **48** | 20.8 ms | 12.0 ms |
+| 7 poster tiles | 945,000 | **45** | 22.2 ms | 13.4 ms |
+| 8 poster tiles | 1,080,000 | **40** | 25.0 ms | 16.1 ms |
+| 12 poster tiles | 1,620,000 | **35** | 28.6 ms | 19.7 ms |
+| 12 poster tiles, all focused | 1,620,000 | **34** | 29.4 ms | 20.5 ms |
+| one full-screen card | 2,074,000 | **35** | 28.6 ms | 19.7 ms |
+| one full-screen flat photograph | 2,074,000 | **57** | 17.5 ms | 8.7 ms |
 
 **Cards are linear in area and the line is clean**: `frame = 8.87 ms + 14.7 ns x (card pixels)`,
 which fits every loaded point above to within 0.5 ms and correctly predicts, to within 0.1 ms, that
 four tiles is the last count that still holds 60. So:
 
-* **A poster tile of 300x450 costs about 2 ms.** You can have four before the frame slips.
+* **Each poster tile of 300x450 costs about 2 ms.** You can have four before the frame slips.
 * **Focus does not change the price.** Twelve focused tiles cost 0.8 ms more than twelve resting
-  ones — the focus glow and grown shadow are within measurement noise of free.
-* **A photograph is nearly free by comparison** — a full-screen one costs 0.9 ms, about a
-  twentieth of a full screen of cards. Big art is not what costs; *card treatment* is.
-* **A poster wall the size of the panel costs about 12 ms** and lands the app at 35 fps.
+  ones — the focus glow and the grown shadow are within measurement noise of free.
+* **A photograph is less than half the price of the same area in cards** — a full-screen one costs
+  8.7 ms against a full-screen card's 19.7. Big art is not what costs; *card treatment* is.
+* **A poster wall the size of the panel costs about 20 ms** and lands the app at 35 fps.
 
 **How many cards can this hardware carry, and what happens at the limit?** Directly: **four
 poster tiles is the last count that holds 60 fps**, and every tile after that costs about 2 ms, so
@@ -238,9 +241,9 @@ cross-fades a full-bleed blur slab over it, with a tab-track-shaped glass capsul
   **6 frames instead of 13**. Whether that reads as a soft blur bloom or as a stutter is a
   judgement to make on the panel, not from this table — but it is half frame rate, and you should
   expect to *see* it in the ramp.
-* **Averaged over normal navigation it costs about 7 fps** — a second containing one route change
-  measured 49–54 fps against 60 with nothing happening. Navigation is not continuous, so this is
-  not a standing cost.
+* **Averaged over normal navigation it costs about 8 fps** — bouncing between two routes every
+  1.4 s, the once-a-second frame rate ran 49–56 with a mean of 52, against a flat 60 with nothing
+  happening. Navigation is not continuous in real use, so this is a transient, not a standing cost.
 * **The tab bar's glass must ride the same cache.** Mode 2, which gives the capsule its own
   backdrop, costs 60 → 16 fps. Do not design around it.
 * **What that means visually:** with one cache the capsule over the blur reads as a *tinted, rimmed
