@@ -431,7 +431,7 @@ pub(crate) fn draw() {
     for (i, r) in layout(step).into_iter().enumerate() {
         match step.kind {
             Kind::Glass => {
-                if p.backdrop_blur(r, 0.0, PANEL_RADIUS, [1.0, 1.0, 1.0, 1.0]) {
+                if p.backdrop_blur(r, 0.0, PANEL_RADIUS, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Bevelled) {
                     crate::ui::profile::phase("glass.frost", || {
                         p.rect(r, PANEL_RADIUS, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
                     });
@@ -528,7 +528,7 @@ pub(crate) fn draw_nav_blur() -> bool {
     }
     let p = Painter::root();
     let full = Rect::new(-NAV_BLEED, -NAV_BLEED, SCR_W + 2.0 * NAV_BLEED, SCR_H + 2.0 * NAV_BLEED);
-    let drew = p.backdrop_blur(full, 0.0, 0.0, [1.0, 1.0, 1.0, amount]);
+    let drew = p.backdrop_blur(full, 0.0, 0.0, [1.0, 1.0, 1.0, amount], crate::gfx::GlassRim::Bevelled);
     // Mode 2: a PRIVATE cache for the surface above. There is one snapshot chain in this renderer,
     // so the only way to give the capsule a backdrop that includes the slab beneath it is to take
     // the whole chain again — which is precisely the cost a second cache would have.
@@ -536,7 +536,7 @@ pub(crate) fn draw_nav_blur() -> bool {
         crate::gfx::blur_invalidate();
     }
     let cap = nav_capsule();
-    if p.backdrop_blur(cap, 0.0, cap.h * 0.5, [1.0, 1.0, 1.0, amount]) {
+    if p.backdrop_blur(cap, 0.0, cap.h * 0.5, [1.0, 1.0, 1.0, amount], crate::gfx::GlassRim::Line) {
         p.alpha(amount).rect_sheened(cap, cap.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
     }
     drew

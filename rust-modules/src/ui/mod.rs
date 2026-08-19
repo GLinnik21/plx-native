@@ -384,6 +384,13 @@ impl Painter {
         let rim = self.sheen_rim();
         crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
     }
+    /// [`rect_sheened`](Self::rect_sheened) with the rim colour named rather than assumed — for a
+    /// surface whose edge is not the tiles' [`theme::CARD_SHEEN`]. Same single pass.
+    pub fn rect_rimmed(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4]) {
+        let (t, b) = (self.c(top), self.c(bot));
+        let rim = self.c(rim);
+        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
+    }
     /// Flat rounded-rect fill + the 1px perimeter edge-sheen in one pass (the flat-colour placeholder tile).
     pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {
         let c = self.c(col);
@@ -412,11 +419,13 @@ impl Painter {
     /// around the rest rect rather than around this frame's, so the slide itself does not invalidate
     /// it. Cached glass stays at one snapshot; a dynamic policy may refresh independently;
     /// `gfx::draw_blur_backdrop` has the full argument.
+    /// `rim` is the one thing a surface says about the material — a sheet's 28px chamfer, or the
+    /// standing track's single line. See [`crate::gfx::GlassRim`].
     #[must_use]
-    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4]) -> bool {
+    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4], rim: crate::gfx::GlassRim) -> bool {
         let t = self.c(tint);
         let (x, y) = (r.x + self.dx, r.y + self.dy);
-        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr())
+        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr(), rim)
     }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.
