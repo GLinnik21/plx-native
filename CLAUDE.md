@@ -582,7 +582,13 @@ the perf gates), and `make test` = `deploy` + `run`.
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
   18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"
-  line in `tests/README.md` is an unmeasured hypothesis**, not a finding. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
+  story is MEASURED AND REFUTED** (2026-08-19): a control leg holds 60/60/60 across six runs on a
+  set up 2 h 15 m under continuous load, and what actually produces a 50 fps reading is **arming a
+  profiler** — `frame.ui` brackets every frame with two `glFinish`es and drops a 60 fps leg to 45.
+  **Never quote `fps=` from a run with `/tmp/plxnative-profile` or `/tmp/plxnative-hwcnt` armed**;
+  take pacing in a separate unarmed run. What this hardware WILL give you, priced in frames and
+  milliseconds for design rather than in cycles, is **`docs/glass-hardware-budget.md`**; the
+  instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
   heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly.

@@ -539,8 +539,8 @@ cannot save — the rule is: *no texture may be deleted or re-uploaded between `
 precede them); `Painter.z`; the primitives
 record; `gfx::draw_number` ported to `Painter::rect` (it is the one `gfx` bypass and the `System`
 band depends on it); `frame_clear` hoisted from the five screens into `compose_head`;
-`profile::phase` pushes `Op::Mark` and `flush` calls `glFinish` at marks when armed (**not** a
-follow-up — `phase` is the only fill-attribution tool and would otherwise report ~0 for everything);
+`profile::phase` pushes `Op::Mark` and `flush` starts/ends the selected asynchronous timer query at
+marks when armed (**not** a follow-up — otherwise recorded commands would sit outside the phase);
 `frame::stats()` into `FRAMEDROP`. **Acceptance:** pixel-diff zero on home / detail / library /
 player+menu **plus** a cold-poster boot (skeleton `rect_sheened`), a fading-in About panel
 (`text_fade`, `ambient`) and a chip-focused Home (`focus_shadow`) — the four obvious captures miss

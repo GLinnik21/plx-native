@@ -374,8 +374,8 @@ and is the correct thing to sacrifice.
 ## (G) Step 8 — share the scroll/cull/hero infra (DONE; supersedes the "stop at 7a" valve)
 
 The old §E stopped at 7a and the 6.3 valve refused to promote detail's below-hero blocks, citing
-"reflow/perf **with no test**." That blocker went stale once the draw profiler (`ui::profile`,
-glFinish-bracketed per-phase GPU ms, `/tmp/plxnative-profile`) + the once/sec `FPS=` log landed — reflow and
+"reflow/perf **with no test**." That blocker went stale once the draw profiler (`ui::profile`;
+now asynchronous timer-query GPU time under `/tmp/plxnative-profile`) + the once/sec `FPS=` log landed — reflow and
 fill-rate are now directly measurable on-device. So the migration was extended to unify the two
 screens' *shared* machinery (both are: backdrop → top hero that fades as content scrolls up → hand-rolled
 off-screen culling, since `Painter` has no clip/scissor):
