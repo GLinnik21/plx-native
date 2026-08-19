@@ -951,12 +951,38 @@ pub(crate) fn hero_ground_armed() -> bool {
 /// The CALLER owns the preconditions, because they are all facts about the screen's own state: the
 /// art must be there and be the only layer (a hero FLIP slides two of them, and one quad cannot
 /// carry a scrim over both), and the wedge must actually be wanted. Anything else falls back.
+/// The one-pass ground's WEDGE field, exactly as `fs_hero.frag` evaluates it from the same four
+/// numbers. Pure, and written twice on purpose: a GLSL expression cannot be graded by `make check`,
+/// so this is the copy the tests pin against [`hero_scrim_quads`] — the shipped picture — at every
+/// corner of both its quads. If the shader and this ever disagree, the test is the one that is
+/// right and the shader is the bug.
+pub(crate) fn hero_ground_wedge_a(wedge: [f32; 4], x: f32, y: f32) -> f32 {
+    let u = (x / wedge[1]).clamp(0.0, 1.0);
+    let v = ((y - wedge[2]) / (wedge[3] - wedge[2])).clamp(0.0, 1.0);
+    wedge[0] * (1.0 - u) * v
+}
+
+/// The one-pass ground's atmospheric RAMP field, as `fs_hero.frag` evaluates it — two linear
+/// segments meeting at `ramp[1]`, from `(ramp[0], 0)` through `(ramp[1], ramp[2])` to
+/// `(SCR_H, ramp[3])`. Same contract as [`hero_ground_wedge_a`]: the tests pin it against the
+/// screen's own curve.
+pub(crate) fn hero_ground_ramp_a(ramp: [f32; 4], y: f32) -> f32 {
+    let t0 = ((y - ramp[0]) / (ramp[1] - ramp[0])).clamp(0.0, 1.0);
+    let t1 = ((y - ramp[1]) / (crate::ui::consts::SCR_H - ramp[1])).clamp(0.0, 1.0);
+    ramp[2] * t0 + (ramp[3] - ramp[2]) * t1
+}
+
+/// The wedge's four shader parameters for a hero at `strength` — the ONE place they are derived,
+/// so the draw and the test cannot read two different geometries.
+pub(crate) fn hero_ground_wedge(strength: f32) -> [f32; 4] {
+    [hero_scrim_a(0.0, strength), HERO_SCRIM_W, HERO_SCRIM_TOP, HERO_SCRIM_KNEE]
+}
+
 pub(crate) fn hero_ground(p: Painter, tex: u32, r: Rect, art_a: f32, ramp: [f32; 4], strength: f32) {
     // The wedge's own geometry, in the same authored units [`hero_scrim_quads`] builds its corners
     // from — and its peak through the very function the legibility table is graded on, so the one
     // pass and the four quads cannot be two different curves.
-    let wedge = [hero_scrim_a(0.0, strength), HERO_SCRIM_W, HERO_SCRIM_TOP, HERO_SCRIM_KNEE];
-    p.hero_ground(tex, r, art_a, ramp, wedge);
+    p.hero_ground(tex, r, art_a, ramp, hero_ground_wedge(strength));
 }
 
 /// The profile chip's diameter: ONE control height with the tab pills and the circle-button
@@ -3174,6 +3200,84 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one-pass hero ground's WEDGE field must be the four-quad wedge, not a lookalike. Graded
+    /// at every corner of both quads [`hero_scrim_quads`] builds, because a bilinear quad IS its
+    /// corners — reproduce those and the interiors follow, since both expressions are the same
+    /// product of two linear factors. This is the test that would have caught a swapped feather
+    /// range or a peak taken at the wrong x.
+    #[test]
+    fn the_one_pass_ground_reproduces_the_wedge_at_every_corner_of_both_quads() {
+        for strength in [0.0f32, 0.35, 1.0] {
+            let wedge = hero_ground_wedge(strength);
+            let (q, n) = hero_scrim_quads(strength, false);
+            assert_eq!(n, 2, "home's hero has no right wedge");
+            for (r, k) in q.iter().take(n) {
+                // (tl, tr, br, bl) — the order `Painter::grad4` and `fs_ambient.frag` agree on
+                for (corner, (x, y)) in [
+                    (k[0], (r.x, r.y)),
+                    (k[1], (r.x + r.w, r.y)),
+                    (k[2], (r.x + r.w, r.y + r.h)),
+                    (k[3], (r.x, r.y + r.h)),
+                ] {
+                    let one = hero_ground_wedge_a(wedge, x, y);
+                    assert!(
+                        (one - corner[3]).abs() < 1e-6,
+                        "strength {strength} at ({x}, {y}): one-pass {one} vs quad {}",
+                        corner[3]
+                    );
+                }
+            }
+        }
+    }
+
+    /// …and the ATMOSPHERIC ramp must be the SCREEN's own curve, sampled where it bends. Home's is
+    /// a two-stop ramp with a midpoint knee and detail's a single linear stop, so the parameters
+    /// are the caller's — this pins the packing (`y0, knee, a_knee, a_foot`) against the curve the
+    /// legibility table is graded on, at both stops and either side of each.
+    #[test]
+    fn the_one_pass_ground_reproduces_the_screens_atmospheric_ramp() {
+        for hero_a in [0.2f32, 0.6, 1.0] {
+            let ramp = crate::ui::home::base_scrim_ramp(hero_a);
+            for y in [0.0f32, 200.0, HERO_BASE_SCRIM_Y0, 400.0, 600.0, 702.0, 900.0, crate::ui::consts::SCR_H] {
+                let one = hero_ground_ramp_a(ramp, y);
+                let quads = crate::ui::home::base_scrim_a(y, hero_a);
+                assert!(
+                    (one - quads).abs() < 1e-6,
+                    "hero_a {hero_a} at y {y}: one-pass {one} vs screen {quads}"
+                );
+            }
+        }
+    }
+
+    /// The whole reason one pass can stand in for three: two straight-alpha layers of ONE ink
+    /// compose as `a1 + a2 - a1*a2`, and the art under them folds into the same single blend. This
+    /// is `fs_hero.frag`'s algebra, executed — if it is wrong the panel shows a differently-lit
+    /// hero and nothing else in the suite would notice.
+    #[test]
+    fn one_blend_lands_where_three_stacked_ones_do() {
+        let over = |dst: f32, src: f32, a: f32| dst * (1.0 - a) + src * a;
+        for dst in [0.0f32, 0.31, 1.0] {
+            for art in [0.0f32, 0.62, 1.0] {
+                for aa in [0.0f32, 0.4, 1.0] {
+                    for a1 in [0.0f32, 0.25, 0.72] {
+                        for a2 in [0.0f32, 0.5, 0.72] {
+                            const INK: f32 = 0.04;
+                            let three = over(over(over(dst, art, aa), INK, a1), INK, a2);
+                            let b = a1 + a2 - a1 * a2;
+                            let s = 1.0 - (1.0 - aa) * (1.0 - b);
+                            let src = (art * aa * (1.0 - b) + INK * b) / s.max(1.0 / 4096.0);
+                            let one = over(dst, src, s);
+                            assert!(
+                                (one - three).abs() < 1e-5,
+                                "dst {dst} art {art} A {aa} a1 {a1} a2 {a2}: {one} vs {three}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn dynamic_glass_refreshes_on_every_third_successful_present() {

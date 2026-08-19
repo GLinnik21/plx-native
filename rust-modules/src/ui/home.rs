@@ -532,13 +532,12 @@ impl View for Backdrop {
             && a_in > 0.01
             && crate::ui::widgets::hero_ground_armed();
         if folded {
-            let sa = base_scrim_bottom_a(env.hero_a);
             crate::ui::widgets::hero_ground(
                 p,
                 self.tex.0,
                 art_rect(self.tex, sp, 0.0),
                 a_in * (1.0 - sp),
-                [HERO_BASE_SCRIM_Y0, BASE_SCRIM_Y1, sa * BASE_SCRIM_MID_K, sa],
+                base_scrim_ramp(env.hero_a),
                 env.hero_a,
             );
         }
@@ -607,6 +606,15 @@ pub(crate) fn base_scrim_bottom_a(hero_a: f32) -> f32 {
 /// function so the paint and the legibility contract cannot read different numbers. It is the base
 /// the hero wedge composites over; `widgets`' anchor table grades
 /// `1 − (1 − base_scrim_a) · (1 − hero_scrim_a)` against the real text ys.
+/// This screen's atmospheric ramp as the FOUR numbers the one-pass ground takes —
+/// `(y0, knee, alpha at the knee, alpha at the foot)`. The ONE place they are derived, so
+/// [`base_scrim_a`]'s curve, the two quads `Backdrop::draw` paints and the field `fs_hero.frag`
+/// evaluates are three readings of one thing rather than three curves that happen to agree.
+pub(crate) fn base_scrim_ramp(hero_a: f32) -> [f32; 4] {
+    let sa = base_scrim_bottom_a(hero_a);
+    [HERO_BASE_SCRIM_Y0, BASE_SCRIM_Y1, sa * BASE_SCRIM_MID_K, sa]
+}
+
 pub(crate) fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
     let sa = base_scrim_bottom_a(hero_a);
     let mid = sa * BASE_SCRIM_MID_K;
