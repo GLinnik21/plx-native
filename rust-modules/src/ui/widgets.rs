@@ -260,7 +260,9 @@ impl Glass {
     /// on a driver that cannot render the chain.
     pub(crate) fn panel(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
         if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0]) {
-            p.rect(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
+            crate::ui::profile::phase("glass.frost", || {
+                p.rect(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
+            });
         } else {
             p.rect(r, radius, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
         }
@@ -2250,7 +2252,7 @@ pub(crate) const TOP_BAR_Y: f32 = 44.0;
 /// SAME element, SAME geometry as the detail season tabs (user directive): one control height
 /// (the 60px circle-button CD family) and the season tabs' ±18 label padding — the two rows
 /// must be indistinguishable as a control.
-const TAB_PILL_H: f32 = 60.0;
+pub(crate) const TAB_PILL_H: f32 = 60.0;
 const TAB_PILL_PAD: f32 = 18.0;
 /// UNIFORM inset from the tab-bar track to the pills inside it, on every side: the pill (r=30) and
 /// the track (r=38) stay CONCENTRIC (outer radius = inner radius + gap), so an end pill's corner
@@ -2293,6 +2295,37 @@ static mut TOP_STRIP: TabStrip = TabStrip::new();
 /// Live-trigger lifetime for the tab track's glass experiment. It uses the same reusable cadence
 /// machinery as a dynamic popover, without the modal's source-dim transform.
 static mut TAB_GLASS_STATE: GlassState = GlassState::new();
+
+/// Is the shared tab track wearing glass this frame?
+///
+/// `/tmp/plxnative-glassboth` lifts the popover exclusion for measurement only. That exclusion
+/// exists because this bar sits at the top and a popover's panel in the middle, and the union of
+/// the two is most of the frame — the whole-screen capture the region limit exists to avoid.
+fn tab_glass_on() -> bool {
+    crate::dev::flag("glasstabs")
+        && (!crate::ui::popover::any_open() || crate::dev::flag("glassboth"))
+        && !crate::gfx::blur_source_pass()
+}
+
+/// Resolve the tab track's glass cadence BEFORE the page it sits on draws.
+///
+/// Every dynamic glass owner has to prepare before any of them captures — `Glass::prepare`'s own
+/// contract — and this one used to break it by preparing inside `draw_tab_row`, i.e. in the middle
+/// of the page draw. On the capture path that merely meant an extra chain now and then. On the
+/// direct path it was measurable: the pre-page snapshot was taken, the tab track then invalidated
+/// it from inside the page, and the capture path re-did the whole thing — both paths running in
+/// one frame. Call this beside the other owners' `prepare_present`.
+pub(crate) fn tab_glass_prepare() {
+    if !tab_glass_on() {
+        return;
+    }
+    let state = unsafe { &mut *std::ptr::addr_of_mut!(TAB_GLASS_STATE) };
+    let _ = Glass::DYNAMIC_BACKDROP.prepare(
+        state,
+        1.0,
+        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+    );
+}
 // label + width cache keyed on browse::tabs_gen(): rebuilding the CStrings and
 // re-measuring every frame — on Home's hot path too — was a review-confirmed waste
 static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
@@ -2486,14 +2519,22 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // middle of it, and the union of the two is most of the frame, which is the whole-screen
         // capture the region limit exists to avoid. While the modal owns focus, keeping only its
         // material is also the clearer hierarchy; the disabled bar falls back to its flat track.
-        let glass_on = crate::dev::flag("glasstabs") && !crate::ui::popover::any_open();
+        // Never while this page is being drawn as a blur SOURCE: `Glass::prepare` mutates the one
+        // process-wide `DynamicClock`, which is keyed on presents rather than on draws, so a
+        // second call in the same present would consume that present's refresh slot on behalf of a
+        // surface nobody sees. The flat track is also the right source pixel — glass over glass is
+        // not what is behind the panel.
+        // `/tmp/plxnative-glassboth` lifts the popover exclusion for measurement ONLY. The
+        // exclusion exists because this bar sits at the top and a popover's panel in the middle,
+        // and the union of the two is most of the frame — the whole-screen capture the region
+        // limit exists to avoid. It is also the one scene where the direct path's advantage should
+        // show, since its cost is the page's draw calls rather than the region's area, so the two
+        // paths need to be comparable on it.
+        let glass_on = tab_glass_on();
         if glass_on {
-            let state = unsafe { &mut *std::ptr::addr_of_mut!(TAB_GLASS_STATE) };
-            let _ = Glass::DYNAMIC_BACKDROP.prepare(
-                state,
-                1.0,
-                crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
-            );
+            // PREPARE is deliberately not here — see `tab_glass_prepare`. Resolving cadence during
+            // the page draw invalidates the backdrop after any earlier owner has already captured
+            // one, which on the direct path means the snapshot is taken and then thrown away.
             // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
             if Glass::DYNAMIC_BACKDROP.backdrop(
                 p,
@@ -2507,7 +2548,15 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
             }
         } else {
-            unsafe { (*std::ptr::addr_of_mut!(TAB_GLASS_STATE)).deactivate() };
+            // NOT during a blur source pass. `tab_glass_on` is false there by design — the flat
+            // track is the right source pixel — but deactivating on that basis makes the NEXT
+            // frame's `prepare` see an inactive state, call `activate`, and invalidate the
+            // backdrop. The cadence then runs at the present rate instead of every third one:
+            // measured 50 refreshes/s against the intended 20, and an 11% whole-frame regression
+            // that looked exactly like the direct path being slow.
+            if !crate::gfx::blur_source_pass() {
+                unsafe { (*std::ptr::addr_of_mut!(TAB_GLASS_STATE)).deactivate() };
+            }
             p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
         }
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
