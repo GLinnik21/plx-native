@@ -354,7 +354,10 @@ mod imp {
         sw: i32,
         sh: i32,
     ) {
-        if !enabled() && !crate::gpu_timer::enabled() {
+        // …or whenever the LOAD DIAL is armed. The region a leg actually blurred is the one thing
+        // that cannot be recovered afterwards, and requiring a profiler to see it means it can only
+        // be seen in runs whose frame rate the profiler has already changed.
+        if !enabled() && !crate::gpu_timer::enabled() && !crate::ui::glassload::armed() {
             return;
         }
         let config = format!(

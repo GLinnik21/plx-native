@@ -14,29 +14,37 @@ This note prices them in **frames and milliseconds**, which is the currency you 
 **You have 16.7 milliseconds per frame at 60 fps. The Home page with its grid moving already
 spends 8.9 of them. About 7.8 ms are left, and that is the whole budget.**
 
-Every ornament is charged by the **screen area it covers**, at a price per pixel that depends on
-what kind of ornament it is:
+**Ordinary drawing is charged by the screen area it covers**, at a price per pixel set by what kind
+of thing it is. These add up, so you can plan with them:
 
 | what you draw | price per screen pixel | 7.8 ms buys you |
 |---|---|---|
 | a flat photograph (the hero image) | **~4 ns** | most of the screen |
 | a poster card (art + rim + shadow) | **~15 ns** | ~4 poster tiles, or ¼ of the screen |
-| **backdrop glass** (blur + frost + rim) | **~16–30 ns**, plus a refresh charge (§3.2) | ~1/8 of the screen |
 
-**Glass is the most expensive thing this app can draw** — about **2x a poster card and 4–7x a
-photograph, per pixel** (the two instruments used bracket it in that range) — and it is charged
-**every frame it is on screen**, not once when it appears, plus a refresh charge on top.
+**Backdrop glass is charged differently, and this is the single thing to take away.** Its visible
+slab is about 16 ns/px, dearer than anything else the app draws — but that is the small half of the
+bill. The large half is the blur *behind* it, and what that costs is set by **the rectangle the
+renderer has to blur**, in whole 16.7 ms steps.
 
-Three consequences you can act on immediately:
+Four consequences you can act on immediately:
 
-* **A glass panel about a quarter of the screen (608x396) costs you 60 → 45 fps.** That is the
-  shipped Account panel's size. It is affordable *because it is a modal you are looking at*, not
-  because it is cheap.
-* **A full-screen glass blur costs 60 → 24 fps.** That is 32.8 ms of work against a 7.8 ms budget —
-  four times over — and no refresh setting changes it: refreshed every third frame or captured once
-  and frozen, it measured 24 fps either way. At that size the only lever is **area** (§5).
-* **The number of glass surfaces is free; their total area is everything.** One panel, two panels
-  or four panels covering the same footprint all measured 45 fps. Draw as many as the layout wants.
+* **What glass is charged for is the RECTANGLE THAT HAS TO BE BLURRED — your surface grown by 88
+  pixels on every side, and unioned across every glass surface in the frame.** Not the surface. Keep
+  that rectangle **under about 300,000 pixels and you stay at 60 fps**; past it you drop to 45, and
+  it steps down from there. **The shipped Account panel sits just inside that line and is free**
+  (measured, §3.4).
+* **Glass steps your frame rate rather than sliding it: 60 → 45 → 36 → 30.** The blur refreshes on
+  one frame in three, and that frame either fits in one 16.7 ms slot or takes two, or three. You are
+  buying whole slots, so there is no partial credit — see §3.2, where the model reproduces every
+  glass measurement in this document exactly.
+* **A full-screen glass blur costs 60 → 24 fps.** 32.8 ms of work against a 7.8 ms budget — four
+  times over — and no refresh setting changes it: refreshed every third frame or captured once and
+  frozen, it measured 24 fps either way (§5).
+* **How MANY glass surfaces you draw is free. WHERE you put them is not.** One, two or four surfaces
+  inside the same footprint all measured 45 fps. But two identical surfaces moved to opposite corners
+  — the same glass, the same pixels — went 45 → 36, because the one shared blur then has to cover
+  the whole screen and everything between them. **Keep glass together.**
 
 **Nothing broke.** Pushed to four large panels with a full-screen blur refreshed every frame, the
 set ran at 19 fps and kept running: no crash, no stutter cliff, no thermal collapse. There is no
@@ -68,51 +76,61 @@ that has stopped repainting costs nothing at all.
 
 ### 3.1 Backdrop glass
 
-The "region" column is the rectangle the renderer has to snapshot and blur: **your panel grown by
-88 pixels on every side**, because the glass rim bends in pixels from outside itself. You do not
-control it, but it is why a small panel is not as cheap as its own size suggests.
+**Index everything on the blurred REGION, not on the surface.** The renderer has to snapshot and
+blur your surface grown by **88 pixels on every side** — the glass rim bends in pixels from outside
+itself — and where a frame holds several glass surfaces it blurs **one rectangle containing all of
+them**. That rectangle is what you are charged for. You do not set it directly; you set it by how
+big your surfaces are and how far apart you put them.
 
-Refresh cadence is how often the blurred snapshot behind the glass is retaken. `every 3rd frame`
-is what the app ships today. `never` means it was captured once and then reused — a truly static
+`every 3rd frame` is the cadence the app ships. `never` means captured once and reused — a static
 backdrop under a still page.
 
-| panel (authored px) | its area | region blurred | refresh | fps | frame | **cost** |
-|---|---|---|---|---|---|---|
-| — none — | 0 | — | — | **60** | 16.7 ms | — |
-| 300 x 200 | 60,000 | 179,000 | every 3rd | **60** | 16.7 ms | fits (≤7.8 ms) |
-| 450 x 300 | 135,000 | 298,000 | every 3rd | **60** | 16.7 ms | fits, only just |
-| **1148 x 76** (the tab bar) | 87,000 | 334,000 | never | **60** | 16.7 ms | fits (≤7.8 ms) |
-| **1148 x 76** (the tab bar) | 87,000 | 334,000 | every 3rd | **45–46** | 21.7–22.2 ms | **+13 ms** |
-| 608 x 396 (Account-panel size) | 241,000 | 448,000 | never | **60** | 16.7 ms | fits (≤7.8 ms) |
-| 608 x 396 | 241,000 | 448,000 | every 6th | **52** | 19.2 ms | +10.4 ms |
-| 608 x 396 | 241,000 | 448,000 | every 3rd | **45** | 22.2 ms | +13.4 ms |
-| 608 x 396 | 241,000 | 448,000 | every 2nd | **40** | 25.0 ms | +16.1 ms |
-| 608 x 396 | 241,000 | 448,000 | every frame | **47** | 21.3 ms | +12.4 ms |
-| 960 x 540 (a quarter panel) | 518,000 | 813,000 | never | **44** | 22.7 ms | +13.9 ms |
-| 960 x 540 | 518,000 | 813,000 | every 3rd | **36** | 27.8 ms | +18.9 ms |
-| 960 x 540 | 518,000 | 813,000 | every frame | **36** | 27.8 ms | +18.9 ms |
-| 1324 x 456 | 604,000 | 948,000 | every 3rd | **36** | 27.8 ms | +18.9 ms |
-| **1920 x 1080** (full screen) | 2,074,000 | 2,074,000 | never | **24** | 41.7 ms | **+32.8 ms** |
-| 1920 x 1080 | 2,074,000 | 2,074,000 | every 3rd | **24** | 41.7 ms | +32.8 ms |
-| 1920 x 1080 | 2,074,000 | 2,074,000 | every frame | **19** | 52.6 ms | +43.8 ms |
-| 4 panels of 900 x 520 | 1,872,000 | 2,074,000 | every frame | **19** | 52.6 ms | +43.8 ms |
+| glass in the frame | surface px | **blurred region** | refresh | fps | cost |
+|---|---|---|---|---|---|
+| — none — | 0 | — | — | **60** | — |
+| 300 x 200 panel | 60,000 | 179,000 | every 3rd | **60** | fits (≤7.8 ms) |
+| 295 x 295 panel | 87,000 | 222,000 | every 3rd | **60** | fits |
+| one 300 x 300 panel | 90,000 | 230,000 | every 3rd | **60** | fits |
+| **the shipped Account popover** (440 x 220) | 97,000 | **241,000** | every 3rd | **60** | **fits** |
+| 450 x 300 panel | 135,000 | 298,000 | every 3rd | **60** | fits, only just |
+| 1148 x 76 (the tab bar) | 87,000 | 334,000 | every 3rd | **45** | +13.4 ms |
+| two 300 x 300 panels, adjacent | 180,000 | 384,000 | every 3rd | **45** | +13.4 ms |
+| 608 x 396 panel | 241,000 | 452,000 | every 3rd | **45** | +13.4 ms |
+| 960 x 540 panel | 518,000 | 813,000 | every 3rd | **36** | +18.9 ms |
+| 1324 x 456 panel | 604,000 | 948,000 | every 3rd | **36** | +18.9 ms |
+| **two 300 x 300 panels, opposite corners** | 180,000 | **2,074,000** | every 3rd | **36** | +18.9 ms |
+| 1920 x 1080 panel | 2,074,000 | 2,074,000 | every 3rd | **24** | +32.8 ms |
+| 1920 x 1080 panel | 2,074,000 | 2,074,000 | every frame | **19** | +43.8 ms |
 
-**How many surfaces you draw does not matter.** One 608x396 panel, two 292x396 panels and four
-140x396 panels — same footprint, same region — all measured **45 fps**, exactly. Cost follows area
-and nothing else. Split a control into as many glass pieces as the design wants.
+Every region figure above is the one the renderer *logged for that leg*, not one computed from the
+layout — the dial prints `blur_config` on every run, and the numbers here are read off it.
 
-**Small is not cheap, and the reason is the 88-pixel margin.** The tab bar is only 87,000 pixels — a
-third of the Account panel — yet at the shipped refresh cadence it costs the same. §8 tested this
-directly and the answer is clean: **the shape of the surface does not matter at all; the size of the
-rectangle that has to be blurred behind it does.** A 1148x76 bar and a 295x295 square cover the same
-87,000 pixels, but grown by 88 on every side the bar's region is 334,000 pixels and the square's is
-222,000 — and that difference alone is 60 fps against 46. **A wide thin surface is expensive because
-its margin is nearly all of it.**
+**The 60 fps line is at about 300,000 region pixels.** 298,000 held 60 (marginally — its worst
+second was 56); 334,000 did not. Everything design can put on this screen sits on one side of that
+number or the other.
+
+**Count is free; distance is not.** One 608x396 panel, two 292x396 and four 140x396 — same
+footprint, same region — all measured **45 fps exactly**. But the two-surface rows above are the
+sharper lesson: two *identical* 300x300 panels cost **45 fps adjacent and 36 fps in opposite
+corners**. Same glass, same 180,000 pixels of it, and the region went from 384,000 to the entire
+panel because the one shared snapshot had to span them. **A row of glass controls is cheap. A glass
+control at the top and another at the bottom is a full-screen blur.**
+
+**Small is not automatically cheap.** The tab bar covers only 87,000 pixels — a third of the 608x396
+panel — and costs the same, because a 1148-pixel-wide bar grown by 88 a side is a 334,000-pixel
+region. §8 shows the surface's *shape* costs nothing on its own; it is the margin that gets you.
 
 ### 3.2 The blur's refresh rate is a weak and badly-behaved lever
 
-Read the 608x396 rows again, in order: never **60**, every 6th **52**, every 3rd **45**, every 2nd
-**40**, every frame **47**.
+One surface, one region, only the cadence moving (a 608x396 panel, region 452,000 px):
+
+| refresh | fps | cost |
+|---|---|---|
+| never (captured once, then reused) | **60** | fits (≤7.8 ms) |
+| every 6th frame | **52** | 10.4 ms |
+| every 3rd frame (what ships) | **45** | 13.4 ms |
+| every 2nd frame | **40** | 16.1 ms |
+| every frame | **47** | 12.4 ms |
 
 * **Not refreshing at all is nearly free.** A glass surface over a page that is not moving costs
   only its own composite, and at 608x396 that fits inside the budget. So does the tab bar (§8).
@@ -123,11 +141,29 @@ Read the 608x396 rows again, in order: never **60**, every 6th **52**, every 3rd
   every single frame.
 
 **Why, and it is the most useful mental model in this document.** The panel hands out a slot every
-16.7 ms. A frame either fits in one slot or takes two. Your frame rate is 60 divided by the average
-number of slots a frame needs — and **a slot is charged whole**. Refreshing the blur every third
-frame makes one frame in three heavy: that frame takes two slots, the other two take one, four slots
-for three frames, and 60 x 3/4 is exactly the **45 fps** measured. The light frames cannot give their
-spare time back.
+16.7 ms. A frame either fits in one slot or takes two, or three. Your frame rate is 60 divided by the
+average number of slots a frame needs — and **a slot is charged whole**, so a refresh that overruns
+by a little costs the same as one that overruns by a lot.
+
+At the shipped every-third-frame cadence that gives an exact law: two light frames of one slot each
+plus one refresh frame of **N** slots, so `fps = 60 x 3 / (2 + N)`. **Every glass measurement in this
+document lands on an integer N**, with no exceptions and nothing in between:
+
+| blurred region | slots the refresh frame needs | fps |
+|---|---|---|
+| up to ~300,000 px | 1 | **60** |
+| ~330,000 – 450,000 px | 2 | **45** |
+| ~800,000 – 2,074,000 px | 3 | **36** |
+| (extrapolating) | 4 | **30** |
+
+Thirteen measured glass configurations, four distinct region sizes, and the slot count came out as
+exactly 3.00, 4.00 and 5.00 slots per three frames. That is why glass **steps** your frame rate
+instead of sliding it, and it is the practical form of the budget: you are not buying milliseconds
+of blur, you are buying whether the refresh frame fits in one slot.
+
+(The model accounts for the shape of the cadence table above but not for the every-second-frame
+inversion, which reproduced in two runs and stays unexplained — see §10. It is another reason not to
+plan around a particular cadence.)
 
 So: **do not design around "we'll refresh it slowly to save money."** Spreading the same work over
 fewer, heavier frames does not help, because the overrun is rounded up every time it happens. Decide
@@ -170,24 +206,83 @@ arithmetic — a full panel of cards adds **12.7 million instruction words** to 
 issues 15.5 million, so +82%, close to a doubling — and right that it is the first thing design
 controls that can miss vsync. What it gets wrong is the shape of the failure: not a cliff, a slope.
 
-### 3.4 Everything on one scale
+### 3.4 The reconciliation — and a correction to an earlier draft of this note
+
+Two other agents measured the **shipped Account glass panel** at **60 fps** against a glass-absent
+control. An earlier draft of this document had a row reading "608x396 glass, 45 fps", labelled *"the
+Account panel's size"*. Both were careful, both had their profilers disarmed, and 45 against 60 on
+one nominal configuration is a factor that would change every row here.
+
+**They were measuring different surfaces, and the mislabelling was mine.** `608x396` is the Account
+popover's **blurred region**; the popover itself is **440 x 220**. The old row drew a *panel* of
+608x396 — two and a half times the area, and a region of 784x576, nearly twice as large.
+
+Settled in one launch, one scene, all legs interleaved, both profilers disarmed:
+
+| leg | route | logged region | measured refreshes/s | fps |
+|---|---|---|---|---|
+| control, no glass | home | — | 0 | **60** |
+| **the real shipped Account popover** | account | **608 x 396** | 18 | **60** |
+| a dial panel at the popover's own geometry (440x220) | home | 616 x 400 | 20 | **60** |
+| the old "608x396" row | home | 784 x 576 | 15 | **45** |
+
+Three things this establishes, beyond the correction itself:
+
+* **The shipped Account glass is free** — 60 fps, in my own instrument, interleaved with the control
+  in the same launch. The other agents' number is the one that generalises.
+* **The instrument is not the problem.** A synthetic panel at the shipped panel's geometry measures
+  the same 60 fps as the shipped panel. The dial does nothing the real path does not, so the area
+  law holds and its constant is right — it just has to be indexed on the region.
+* **The cadence was verified, not assumed.** Every leg now reports the blur refreshes it actually
+  took: 20/s where 60 frames present at every-third (60/3), 15/s where 45 present (45/3), and 18/s
+  for the shipped panel, whose policy additionally skips refreshes when the page underneath has not
+  changed. No leg silently refreshed at a rate other than the one it claimed.
+
+**And one more correction to the record, on the same theme.** The archive carries a pair of GPU-cycle
+figures — a first glass panel costing **+11.4%** of frame cycles and a second, larger one only
+**+3.4%** — which has been read as *"the first surface pays for the machinery and extra ones are
+nearly free"*. **Do not use that pair to reason about frames.** Two things are wrong with the
+reading. First, the geometry: those two legs were the Account popover (region 241,000 px) and then
+the Account popover **plus the tab bar**, whose union is 1324x456 = **604,000 px**. The second
+surface did not slot into the first one's rectangle — it is at the top of the screen while the panel
+is in the middle, so the union grew by 363,000 px, slightly *more* than the tab bar's own region
+would have been alone. In frames, §3.1's curve puts a 604,000-px region at 45 fps or below, so that
+"nearly free" second surface is in fact the expensive one. Second, those cycle figures come from
+profiled runs, and §7 shows what a profiler does to this measurement: it drops the control leg from
+60 fps to 45 and compresses the legs together. **Cycles are for saying where work sits; frames are
+for saying what it costs.** The frames version of the rule is §3.1's: extra surfaces are free when
+they fit inside the rectangle you were already blurring, and expensive when they enlarge it.
+
+**A logging trap worth recording**, because it nearly became a second theory: the profiler's
+`blur_config` line prints `quarter=480x270` on **every** capture-path leg regardless of surface size,
+which reads as "the capture path blurs the whole screen no matter what". It does not. `480x270` is
+the *allocation* of the blur chain's small targets, which are made full-screen-sized once at boot and
+never resized; the blurred area is the `aligned=` field on the same line, and it tracked the region
+exactly in all thirteen legs. Read `aligned=`, never `quarter=`.
+
+### 3.5 Everything on one scale
 
 Per screen pixel covered, on this hardware, measured:
+
+For everything that is **just drawn** — art, photographs, fills — the price is per pixel covered and
+you can add it up:
 
 ```
 flat photograph          4 ns/px    ▏
 poster card (large)     10 ns/px    ▍
 poster card (300x450)   15 ns/px    ▋      <- the penumbra ring costs more on small tiles
-glass, full screen      16 ns/px    ▋
-glass, quarter screen   27 ns/px    █▎     <- fewer pixels, so the fixed parts weigh more
+glass composite         16 ns/px    ▋      <- the visible slab, WITHOUT its blur
 ```
 
 You have **7.8 ms**. Multiply and see if it fits.
 
-For **glass that refreshes**, add the blur of the region behind it. That is not a per-pixel price —
-it is a whole extra slot on the frames it happens, which is why §3.2 says what it says. As a
-planning rule: **a blurred region up to about 300,000 pixels (your panel + 88 a side) still holds 60
-fps at the shipped cadence; past that you drop to the mid-40s, and it falls from there.**
+**Glass does not work that way and must not be added up like this.** Its composite is only the small
+half of the bill; the large half is the blur behind it, which is charged in whole 16.7 ms slots
+according to how big the shared blurred rectangle is (§3.1, §3.2). The planning rule for glass is a
+single number:
+
+> **Keep the union of every glass surface in the frame, grown by 88 pixels a side, under about
+> 300,000 pixels. Inside that you keep 60 fps. Outside it you get 45, then 36.**
 
 ---
 
@@ -203,7 +298,10 @@ These are not budget items. They are unavailable at any frame rate.
 2. **There is exactly one blur cache.** Every glass surface in a frame samples the *same* blurred
    snapshot, taken once, of one rectangle that is the union of what all of them asked for. Two
    glass surfaces far apart therefore drag that rectangle out toward the whole screen and get
-   charged for the space between them. Adjacent glass is nearly free; scattered glass is not.
+   charged for the space between them. **Measured:** two identical 300x300 panels cost **45 fps
+   side by side and 36 fps in opposite corners** — the same glass, and a blurred region that grew
+   from 384,000 pixels to all 2,074,000 of them. Adjacent glass is nearly free; scattered glass is a
+   full-screen blur wearing a disguise.
 3. **Glass on top of glass shows nothing new.** Because of (2), a glass surface sitting over an
    area that is already blurred samples the identical pixels: you get its tint, its rim and its
    edge refraction, but no additional blur. Giving the upper surface its own backdrop needs a
@@ -297,7 +395,9 @@ full-screen blur refreshed every single frame. The frame rate fell continuously 
 the curve. The set simply runs slower.
 
 The only edge that matters is the **60 fps boundary**, and it sits at about **7.8 ms of extra
-work** — roughly a quarter of the screen in poster cards, or an eighth of it in glass.
+work** — roughly a quarter of the screen in poster cards. For glass the same boundary is better
+stated in its own terms: **a blurred region of about 300,000 pixels**, which is a panel of roughly
+450x300 or anything smaller, kept together with any other glass in the frame.
 
 **What binds is shader arithmetic — not memory, not the CPU, not the display.** Four independent
 measurements say so:
@@ -394,10 +494,12 @@ edge for the glass rim to have something to bend.
 
 **Two rules fall out of this, and they are the ones most likely to change a layout:**
 
-1. **Compact glass is cheap glass.** Prefer a chunky panel to a long thin strip. If a strip is what
-   the design wants, its cost is set by its *length*, not its area.
+1. **Compact glass is cheap glass.** Prefer a chunky panel to a long thin strip. A strip's cost is
+   set by its *length* — 1148 + 176 = 1324 pixels of region across — not by its area. This is the
+   same rule as "keep glass together" (§3.1) seen from inside one surface instead of between two.
 2. **The shipped tab-bar glass is affordable exactly when the page under it is still.** Over a
-   settled screen it is free; over a scrolling grid it costs 60 → 46 fps.
+   settled screen it is free; over a scrolling grid it costs 60 → 46 fps. That is a real design
+   choice, not a bug: the bar is glass while you are reading, and expensive only while you scroll.
 
 ---
 
@@ -412,9 +514,9 @@ and a dial that has to be re-armed between legs makes that a deploy per leg. Eve
 every counter sample is stamped with which configuration was live, and
 `tools/analyze-loadsweep.py` splits one log into per-configuration distributions after the fact.
 
-**The runs.** Five locked device batches on 2026-08-19 (the television is shared, so each batch was
+**The runs.** Six locked device batches on 2026-08-19 (the television is shared, so each batch was
 a deploy plus its measurements inside one lock — a deploy in one lock and a measurement in another
-would be measuring somebody else's binary). Thirteen measurement legs across nine distinct sweeps,
+would be measuring somebody else's binary). Fifteen measurement legs across eleven distinct sweeps,
 6-second steps, 2–4 full cycles each, 8–16 usable heartbeat samples per configuration after
 discarding the two seconds around every step change. Scene throughout: Home, focus sweeping the grid
 continuously (`plxnative-homeosc`), repaint-skipping disabled (`plxnative-noidle`), so every
@@ -437,11 +539,22 @@ minus first third) was 0.00–0.50 fps.
 configuration) supplied §6's per-pixel arithmetic and the cycles-equal-arithmetic-halved
 relationship. Counter runs were never used for frame rates, for the reason §7 gives.
 
+**Two things every leg now reports, and both were added because a claim about them turned out to be
+wrong.** Each run logs the region it actually blurred (`blur_config … aligned=`), because the region
+is the thing that cannot be recovered afterwards and it is what this whole note is indexed on; and
+each heartbeat carries `snap=`, the blur refreshes actually taken that second, because "it refreshes
+every third frame" is a claim about code until it is a number in a log. The measured refresh rates
+came out at exactly presents ÷ 3 in every synthetic leg.
+
 **Corrections made along the way.** The dial's own layout is unit-tested so a configuration that
 does not fit on screen reports what it actually drew rather than what was asked for; the log line
 names the drawn count and drawn area for every step. A first attempt at the surface-count question
 grew the blurred region along with the count and would have blamed area on count — the sweep was
-rebuilt to hold the footprint constant.
+rebuilt to hold the footprint constant. And the largest correction of all is §3.4: a row of this
+table was named after the Account panel's *blurred region* and drawn as a *panel*, which made the
+shipped surface look 15 fps more expensive than it is. It was caught by two other agents measuring
+the real thing and disagreeing, and settled by putting the real thing and the synthetic one on the
+same dial in the same launch.
 
 ---
 
@@ -464,6 +577,11 @@ rebuilt to hold the footprint constant.
   accounts for the shape of the cadence curve but not for that specific inversion, which reproduced
   in two runs. It is a real effect and it is unexplained; do not build a plan on any cadence's exact
   number without re-measuring it.
+* **How a cycle count relates to a frame rate.** §3.4 shows a pair of archived cycle figures reading
+  as "a second glass surface is nearly free" while the frames say it is the expensive one. Both were
+  measured honestly; they are different currencies, and no conversion between them has been
+  established on this hardware. Take costs from frame-rate measurements and use cycles only to say
+  where inside a frame the work sits.
 * **Any configuration below the 60 fps line.** Six rows in this document read "60 fps", which means
   only "it fits". Their true cost could be anything from nothing up to the full 7.8 ms, and the
   headroom they consume is invisible until something else is added. If a design stacks two such

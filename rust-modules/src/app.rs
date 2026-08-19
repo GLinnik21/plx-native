@@ -4581,6 +4581,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 }
             }
+            // dev: an `acct` step on the LOAD DIAL asks for the REAL Account popover, so the
+            // shipped surface and a synthetic one can be interleaved inside ONE launch. Assigning
+            // the route directly (rather than through `nav_to`) is deliberate: the question is what
+            // the PANEL costs, and a page transition on the step boundary would put a cross-fade in
+            // the middle of the leg being measured.
+            if crate::ui::glassload::armed() {
+                let want = crate::ui::glassload::wants_account();
+                if want && route == Route::Home {
+                    crate::ui::account_menu::open();
+                    route = Route::Account;
+                } else if !want && route == Route::Account {
+                    crate::ui::account_menu::close();
+                    route = Route::Home;
+                }
+            }
             // dev: navosc bounces the route Home↔Library through the real request path (the
             // `home-library-nav` FPS scene). Route-unconditional, because it is the ROUTE it drives;
             // it goes through `nav_to` rather than assigning `route` so the scene measures exactly
@@ -5225,8 +5240,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // dev: which LOAD-DIAL step these frames belong to. Absent unless the dial is
                 // armed, and after `fps=` / before `worstframe=` so both harness regexes are
                 // untouched. It is the whole reason one cycled run can be split per configuration.
+                // `snap=` is the blur refreshes actually taken in that second — the measured
+                // refresh RATE, which is the one thing a cadence claim cannot be trusted without.
                 let ld = if crate::ui::glassload::armed() {
-                    format!(" load={}", crate::ui::glassload::step_index())
+                    format!(
+                        " load={} snap={}",
+                        crate::ui::glassload::step_index(),
+                        crate::gfx::take_blur_snapshots()
+                    )
                 } else {
                     String::new()
                 };
