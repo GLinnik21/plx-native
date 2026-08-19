@@ -2329,6 +2329,29 @@ static mut TOP_STRIP: TabStrip = TabStrip::new();
 /// machinery as a dynamic popover, without the modal's source-dim transform.
 static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 
+/// The glass track's two scrim stops, with a dev override on the DENSITY.
+///
+/// `/tmp/plxnative-tabglassdim=<0..1>` replaces [`theme::TAB_GLASS_TOP`]'s alpha and keeps the
+/// authored 0.08 spread to the bottom stop, so a sweep moves ONE variable. Absent, the theme's own
+/// values are returned and the draw is byte-identical.
+///
+/// It exists because the shipped values are the one thing in this material nobody had graded. The
+/// flat track is `scrim_black(0.72..0.82)` and is sized to make the pills legible over ARBITRARY
+/// artwork; the glass track halves that to 0.38/0.46 on the argument that a real backdrop behind it
+/// does the work the flat material had to do alone. Over a poster grid it does not: a quarter-res
+/// Kawase blur of a wall of posters still has large colour blobs, so the track comes out mottled,
+/// one pill sits on a dark patch and its neighbour on a bright one, and the sheen's rim picks up
+/// whatever colour it is over. Photographed on the television before this knob existed.
+fn tab_glass_stops() -> ([f32; 4], [f32; 4]) {
+    let spread = theme::TAB_GLASS_BOT[3] - theme::TAB_GLASS_TOP[3];
+    match crate::dev::read("tabglassdim").and_then(|v| v.parse::<f32>().ok()) {
+        Some(a) if (0.0..=1.0).contains(&a) => {
+            (theme::scrim_black(a), theme::scrim_black((a + spread).min(1.0)))
+        }
+        _ => (theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT),
+    }
+}
+
 /// Is the shared tab track wearing glass this frame?
 ///
 /// `/tmp/plxnative-glassboth` lifts the popover exclusion for measurement only. That exclusion
@@ -2576,7 +2599,8 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 track.h * 0.5,
                 [1.0, 1.0, 1.0, 1.0],
             ) {
-                p.rect_sheened(track, track.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
+                let (gt, gb) = tab_glass_stops();
+                p.rect_sheened(track, track.h * 0.5, gt, gb);
             } else {
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
             }
