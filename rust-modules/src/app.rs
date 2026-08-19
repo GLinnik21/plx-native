@@ -2994,6 +2994,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if let Some(spec) = crate::dev::read("drawmask") {
             crate::ui::overdraw::set_mask(&spec);
         }
+        // dev: /tmp/plxnative-heroground — draw the hero's photograph and BOTH of its scrim fields
+        // in one pass instead of the art plus four blended gradient quads over it. Absent, the
+        // shipped four-quad path draws, which is what makes this an A/B on one binary.
+        if crate::dev::flag("heroground") {
+            crate::ui::widgets::set_hero_ground(true);
+            log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
+        }
         match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
             (Some(_), Some(_)) => {
                 log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");

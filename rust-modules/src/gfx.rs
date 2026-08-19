@@ -43,6 +43,7 @@ const FS_AMBIENT: &CStr = glsl!("shaders/fs_ambient.frag");
 const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
+const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl!("shaders/fs_glass.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
@@ -291,6 +292,22 @@ static mut IL_RIMCOL: c_int = 0;
 static mut IL_CH: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
+// ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
+// Its own program because it is the SAME quad the art already draws, only carrying two more
+// closed-form fields — nothing else in the app wants them, and the card composite must not pay for
+// them. Off unless `ui::widgets::hero_ground` is armed; `HPROG == 0` (a link failure) falls the
+// caller back to the four-quad path, which is the shipped picture.
+static mut HPROG: c_uint = 0;
+static mut HL_RECT: c_int = 0;
+static mut HL_SCREEN: c_int = 0;
+static mut HL_TINT: c_int = 0;
+static mut HL_UVRECT: c_int = 0;
+static mut HL_TEX: c_int = 0;
+static mut HL_ORG: c_int = 0;
+static mut HL_INK: c_int = 0;
+static mut HL_RAMP: c_int = 0;
+static mut HL_RAMPA: c_int = 0;
+static mut HL_WEDGE: c_int = 0;
 
 /// The `#version` + compatibility preamble prepended to every shader, chosen by the DRIVER's GLSL
 /// version rather than by platform.
@@ -860,7 +877,71 @@ pub(crate) fn init_image() {
         use_prog(IPROG);
         glUniform2f(IL_SCREEN, SCR_W, SCR_H);
         glUniform1i(IL_TEX, 0);
+        init_hero();
         use_prog(PROG);
+    }
+}
+
+/// Link the hero-ground program. A failure is not fatal and is not a hole in the picture: the
+/// caller keeps the four-quad path, which is what every build has always drawn.
+fn init_hero() {
+    unsafe {
+        HPROG = match link_program(VS_IMG.as_ptr(), FS_HERO.as_ptr()) {
+            Some(p) => p,
+            None => {
+                log("hero-ground prog link failed — the four-quad hero path stays");
+                return;
+            }
+        };
+        HL_RECT = glGetUniformLocation(HPROG, c"u_trect".as_ptr());
+        HL_SCREEN = glGetUniformLocation(HPROG, c"u_tscreen".as_ptr());
+        HL_TINT = glGetUniformLocation(HPROG, c"u_tint".as_ptr());
+        HL_UVRECT = glGetUniformLocation(HPROG, c"u_uvrect".as_ptr());
+        HL_TEX = glGetUniformLocation(HPROG, c"u_tex".as_ptr());
+        HL_ORG = glGetUniformLocation(HPROG, c"u_org".as_ptr());
+        HL_INK = glGetUniformLocation(HPROG, c"u_ink".as_ptr());
+        HL_RAMP = glGetUniformLocation(HPROG, c"u_ramp".as_ptr());
+        HL_RAMPA = glGetUniformLocation(HPROG, c"u_rampa".as_ptr());
+        HL_WEDGE = glGetUniformLocation(HPROG, c"u_wedge".as_ptr());
+        use_prog(HPROG);
+        glUniform2f(HL_SCREEN, SCR_W, SCR_H);
+        glUniform1i(HL_TEX, 0);
+    }
+}
+
+/// Is the hero-ground program usable? `false` means its link failed and the caller must draw the
+/// art and the scrims the way it always has.
+#[inline]
+pub(crate) fn hero_ground_ok() -> bool {
+    unsafe { HPROG != 0 }
+}
+
+/// Draw the hero ground: the art quad `(x,y,w,h)` with the atmospheric ramp and the corner wedge
+/// evaluated per fragment. `ramp` is `(y0, knee, alpha_at_knee, alpha_at_foot)` and `wedge` is
+/// `(peak, width, feather_top, feather_knee)`, both in authored pixels with the alphas already
+/// carrying the painter's cascade. See `fs_hero.frag` for the composite this replaces.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_hero_ground(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const f32,
+    ink: *const f32, ramp: [f32; 4], wedge: [f32; 4]) {
+    if tex == 0 || unsafe { HPROG } == 0 || culled(x, y, w, h) || gate(Class::Image, x, y, w, h) {
+        return;
+    }
+    // Reciprocals on the CPU: Midgard has no uniform pre-shader, so a divide written in the
+    // fragment shader is paid on every one of two million fragments (the same fold `draw_tex_impl`
+    // makes for the card composite's `shinv`).
+    let inv = |d: f32| if d.abs() > 0.001 { 1.0 / d } else { 0.0 };
+    unsafe {
+        use_prog(HPROG);
+        glUniform4fv(HL_TINT, 1, tint);
+        glUniform4fv(HL_INK, 1, ink);
+        glUniform4f(HL_UVRECT, 0.0, 0.0, 1.0, 1.0);
+        glUniform2f(HL_ORG, x + w * 0.5, y + h * 0.5);
+        glUniform4f(HL_RAMP, ramp[0], inv(ramp[1] - ramp[0]), ramp[1], inv(SCR_H - ramp[1]));
+        glUniform2f(HL_RAMPA, ramp[2], ramp[3] - ramp[2]);
+        glUniform4f(HL_WEDGE, wedge[0], inv(wedge[1]), wedge[2], inv(wedge[3] - wedge[2]));
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform4f(HL_RECT, x, y, w, h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
 
