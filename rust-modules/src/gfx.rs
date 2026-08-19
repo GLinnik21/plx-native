@@ -1140,6 +1140,21 @@ struct BlurChain {
     rw: c_int,
     rh: c_int,
 }
+/// Snapshots actually taken since the last heartbeat — the REFRESH RATE, measured rather than
+/// assumed.
+///
+/// It exists because "check your cadence actually is what you think" is rule 7 of this
+/// investigation's methodology and every other way of checking it needs a profiler armed, which
+/// changes the frame rate being measured. A counter costs one relaxed increment on a path that
+/// already does a framebuffer copy, and it turns "the blur refreshed every third present" from a
+/// claim about the code into a number in the log.
+pub(crate) static BLUR_SNAPSHOTS: AtomicU32 = AtomicU32::new(0);
+
+/// Take and clear the snapshot count, for the once/sec heartbeat.
+pub(crate) fn take_blur_snapshots() -> u32 {
+    BLUR_SNAPSHOTS.swap(0, Ordering::Relaxed)
+}
+
 static mut BLURST: Option<BlurChain> = None;
 /// Latched off: no FBO, no program, or a failed copy. Callers draw no backdrop and keep their own
 /// ground — checked before every snapshot so a failure costs one log line, not a frame loop.
@@ -1524,6 +1539,7 @@ fn blur_snapshot(reg: [f32; 4]) {
             return;
         }
         let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return };
+        BLUR_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
 
         // Drain first: `glGetError` reports the OLDEST error since it was last called, so checking
         // it after the copy without clearing it attributes somebody else's (possibly harmless, and
@@ -1833,6 +1849,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             return false;
         }
         let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false };
+        BLUR_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
         let step = scale as c_int;
         let (rx, ry, rw, rh) = blur_region_px_align(reg, c.gw, c.gh, step);
         let (tw, th) = ((rw / step).max(1), (rh / step).max(1));

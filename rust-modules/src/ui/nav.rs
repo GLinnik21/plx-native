@@ -152,8 +152,37 @@ pub(crate) fn tick(dt: f32) -> bool {
 }
 
 /// The cascade alpha for PAGE CONTENT — everything a screen draws that does not survive the swap.
+///
+/// **Except under the `/tmp/plxnative-navblur` prototype**, where it is a flat 1: that experiment
+/// replaces the grey trough with a full-bleed blur cross-faded OVER the page (see
+/// [`crate::ui::glassload`]), and a page that also dipped would be measuring and showing both
+/// transitions at once. Everything else about the transition is unchanged — the same schedule, the
+/// same one-frame floor, the same deferred route flip and teardown — so [`blur_amount`] is exactly
+/// the ramp the dip would have ridden, read the other way up.
 pub(crate) fn page_alpha() -> f32 {
+    if unsafe { addr_of!(BLUR_DISSOLVE).read() } {
+        return 1.0;
+    }
     page_ref().alpha()
+}
+
+/// Dev only: swap the dip for a blurred dissolve. Latched at boot by `app.rs` from the trigger.
+static mut BLUR_DISSOLVE: bool = false;
+
+/// Arm the blurred-dissolve prototype. Boot-time only; nothing reads it more than once a frame.
+pub(crate) fn set_blur_dissolve(on: bool) {
+    unsafe { BLUR_DISSOLVE = on };
+}
+
+/// How strongly the transition's blur slab should cover the page, 0 at rest and 1 at the floor —
+/// the fade the dip would have ridden, inverted. Always 0 unless the prototype is armed, so the
+/// caller needs no second test.
+pub(crate) fn blur_amount() -> f32 {
+    if unsafe { addr_of!(BLUR_DISSOLVE).read() } {
+        1.0 - page_ref().alpha()
+    } else {
+        0.0
+    }
 }
 
 fn page_ref() -> &'static Xfade {
