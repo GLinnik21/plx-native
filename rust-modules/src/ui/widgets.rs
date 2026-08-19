@@ -305,13 +305,32 @@ impl Glass {
 
     /// Standard popover ground: glass + frost where available, the existing opaque sheet fallback
     /// on a driver that cannot render the chain.
+    ///
+    /// **The same edge as the standing track, and that is a decision taken by looking.** The design
+    /// system gives a SHEET a 28px chamfer ramp on top of the line — "so a sheet reads as THICK
+    /// rather than outlined" — and the track no ramp at all. Drawn side by side in one frame the
+    /// two do not read as one material: the panel is a lit slab with a soft band down its top edge
+    /// and a shade along its bottom, the bar is a crisp outline, and the panel wins the eye for
+    /// reasons that have nothing to do with which one you are meant to be reading. A panel over a
+    /// dark ground shows nothing BUT that bevel, which is the case where the argument for it is
+    /// weakest and its cost highest.
+    ///
+    /// So a container is a container: [`crate::gfx::GlassRim::Line`], and the rim drawn OVER the
+    /// material at [`theme::GLASS_RIM`] with the boost to [`theme::GLASS_RIM_LIGHT`] on the side
+    /// facing the light — the same two weights, the same lamp, the same one pixel. Thickness now
+    /// comes from the frost and the shadow the panel already had, not from a ramp that covers a
+    /// quarter of it.
+    ///
+    /// The OPAQUE fallback takes the rim too. A glass panel and a solid one are one object in two
+    /// materials, and an edge is not part of what makes them different.
     pub(crate) fn panel(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
-        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Bevelled) {
+        let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
+        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Line) {
             crate::ui::profile::phase("glass.frost", || {
-                p.rect(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
+                p.rect_rimmed(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, theme::GLASS_RIM, boost);
             });
         } else {
-            p.rect(r, radius, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+            p.rect_rimmed(r, radius, theme::PANEL_TOP, theme::PANEL_BOT, theme::GLASS_RIM, boost);
         }
     }
 }
