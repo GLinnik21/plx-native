@@ -5039,7 +5039,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if route_wears_tab_bar(route) {
                             crate::ui::widgets::tab_glass_prepare();
                         }
-                        crate::ui::widgets::ctl_glass_prepare();
                         if matches!(route, Route::Account) {
                             glass_frame = glass_frame.combine(
                                 crate::ui::account_menu::prepare_present(
