@@ -2762,6 +2762,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // A `focus=0` HERE is not yet a verdict: the flag arrives with the wayland keyboard
         // `enter`, which needs the event loop below. `textinput::start` logs it again at the
         // moment the field asks for the panel, which is the reading that decides anything.
+        // What EGL this set has — extension string, swap behaviour, buffer age. One boot-time
+        // read, logged and used for nothing: `docs/egl-partial-update-and-damage.md` is what it
+        // was for. Deliberately NOT a new link dependency; see `egl.rs`'s module doc for why
+        // `-lEGL` would kill the process at exec() on the very firmwares this app runs on.
+        crate::egl::probe();
         crate::textinput::bind(win);
         let wflags = SDL_GetWindowFlags(win);
         log(&format!("keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -2769,6 +2774,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)));
 
         crate::system::sys_grab_wayland(win);
+        // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
+        // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
+        // that has nothing behind it. See `system.rs`'s section on it.
+        crate::system::opaque_region_init();
         crate::gfx::init_gl();
         crate::text::init_text();
         crate::gfx::init_image();
@@ -4861,6 +4870,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 
             let player = matches!(route, Route::Player { .. });
+            // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
+            // is absent. Route-scoped and edge-triggered — see `system.rs`.
+            crate::system::opaque_route(player);
             // ---- whole-frame present gate (`ui::idle`) --------------------------------------
             // A screen with nothing moving on it does not need to be re-sent to the panel. This
             // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
@@ -4887,6 +4899,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
             let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) = (fd_pc_pump, fd_pc_pump, fd_pc_pump);
             if present {
+                // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
+                // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
+                // region to be declared before rendering begins. See `egl.rs`.
+                crate::egl::frame_damage();
                 // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
                 // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
                 // is the entire logical->physical mapping — nothing else in the renderer knows the
@@ -5049,6 +5065,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 #[cfg(feature = "hostsim")]
                 crate::shot::maybe_capture(vx, vy, vw, vh);
                 SDL_GL_SwapWindow(win);
+                // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
+                // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
+                crate::egl::late_probe();
                 #[cfg(feature = "devtools")]
                 {
                     buffer_flip_count = (buffer_flip_count + 1) % 60;
