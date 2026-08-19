@@ -2993,6 +2993,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if let Some(v) = crate::dev::read("navblur") {
             crate::ui::glassload::configure_navblur(&v);
         }
+        // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
+        // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
+        // present (60 Hz while the UI presents at 60), 3 is what ships (~20 Hz), 4 is 15 Hz.
+        // ABSENT, nothing here runs and the cadence is exactly the shipped one. It is a profiling
+        // knob, so it also turns on the heartbeat's `glass=` field (refreshes per second), which
+        // is the only way to check the cadence that RAN against the one that was asked for.
+        let glass_hz_armed = if let Some(v) = crate::dev::read("glasshz") {
+            let asked: u32 = v.parse().unwrap_or(0);
+            let got = crate::ui::widgets::set_dynamic_period(asked);
+            log(&format!("blur: dynamic cadence asked={asked} presents-per-refresh={got}"));
+            true
+        } else {
+            false
+        };
         if let Some(v) = crate::dev::read("blurdirect") {
             let scale = if v.is_empty() { 4 } else { v.parse().unwrap_or(0) };
             crate::gfx::set_blur_direct(scale);
@@ -5256,16 +5270,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // a settled screen doing its job, `loop=0` is an app in trouble, and `fps=0` on its
                 // own is not a fault at all. Note the on-screen counter still draws `loop=`.
                 let pres = crate::ui::idle::take_presents();
-                // dev: which LOAD-DIAL step these frames belong to. Absent unless the dial is
-                // armed, and after `fps=` / before `worstframe=` so both harness regexes are
-                // untouched. It is the whole reason one cycled run can be split per configuration.
-                // `snap=` is the blur refreshes actually taken in that second — the measured
-                // refresh RATE, which is the one thing a cadence claim cannot be trusted without.
-                let ld = if crate::ui::glassload::armed() {
+                // dev: which LOAD-DIAL step these frames belong to, the blur refreshes
+                // actually TAKEN in that second, and the cadence in force. Absent unless the
+                // dial or the cadence knob is armed, and placed after `fps=` / before
+                // `worstframe=` so both harness regexes are untouched. `snap=` is the one
+                // thing a cadence claim cannot be trusted without: it is the rate that RAN,
+                // not the rate that was requested.
+                let ld = if crate::ui::glassload::armed() || glass_hz_armed {
                     format!(
-                        " load={} snap={}",
+                        " load={} snap={} period={}",
                         crate::ui::glassload::step_index(),
-                        crate::gfx::take_blur_snapshots()
+                        crate::gfx::take_blur_snapshots(),
+                        crate::ui::widgets::dynamic_period()
                     )
                 } else {
                     String::new()

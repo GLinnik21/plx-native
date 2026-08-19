@@ -22,6 +22,10 @@ pub(crate) enum GlassRefresh {
     /// One snapshot when the surface appears; the owner invalidates again if its underlay changes.
     Cached,
     /// While the underlay is changing, snapshot on displayed frames 1, 4, 7… .
+    ///
+    /// The THREE is [`DEFAULT_DYNAMIC_PERIOD`] and the variant keeps that name because three is
+    /// what ships; the profiling trigger `/tmp/plxnative-glasshz` moves the shared period, so read
+    /// this as "every Nth present, N = 3 unless a developer said otherwise".
     EveryThirdPresent,
 }
 
@@ -103,6 +107,30 @@ enum DynamicStep {
     Refresh,
 }
 
+/// Presents per dynamic backdrop refresh. **3 is the shipped cadence** — about 20 Hz while the UI
+/// presents at 60 — and this static exists so the cadence cost curve can be measured on the
+/// television without a second binary. `/tmp/plxnative-glasshz` is the only writer
+/// ([`set_dynamic_period`]); absent, this reads 3 and the app behaves exactly as it always has.
+static DYNAMIC_PERIOD: AtomicU32 = AtomicU32::new(DEFAULT_DYNAMIC_PERIOD);
+
+/// The shipped presents-per-refresh cadence for [`GlassRefresh::EveryThirdPresent`].
+const DEFAULT_DYNAMIC_PERIOD: u32 = 3;
+
+/// Override the shared dynamic cadence, in PRESENTS per refresh. Returns the value actually
+/// installed: 0 is meaningless (a refresh every zero frames) and anything past 8 is a cadence no
+/// glass surface would survive looking at, so both clamp instead of being refused — a profiling
+/// knob that silently does nothing is worse than one that says what it did.
+pub(crate) fn set_dynamic_period(presents: u32) -> u32 {
+    let n = presents.clamp(1, 8);
+    DYNAMIC_PERIOD.store(n, Relaxed);
+    n
+}
+
+/// The live presents-per-refresh cadence.
+pub(crate) fn dynamic_period() -> u32 {
+    DYNAMIC_PERIOD.load(Relaxed)
+}
+
 /// Recurring cadence belongs to the shared snapshot chain, not to any one widget. If two widgets
 /// opened on different presents kept separate phases, their combined schedules could refresh 2/3
 /// or even every frame. `covered_present` also lets the first prepared owner mark a due capture as
@@ -125,14 +153,16 @@ impl DynamicClock {
         self.pending = false;
     }
 
-    fn step(&mut self, present: u32, changed: bool) -> DynamicStep {
+    /// `period` is presents per refresh and is passed in rather than read here, so the tests below
+    /// state the cadence they are asserting instead of depending on a process-wide static.
+    fn step(&mut self, present: u32, changed: bool, period: u32) -> DynamicStep {
         if changed && self.covered_present != present {
             self.pending = true;
         }
         if !self.pending {
             return DynamicStep::None;
         }
-        if present.wrapping_sub(self.last_refresh) >= 3 {
+        if present.wrapping_sub(self.last_refresh) >= period.max(1) {
             self.cover_now(present);
             DynamicStep::Refresh
         } else {
@@ -226,8 +256,11 @@ impl Glass {
 
         if matches!(self.refresh, GlassRefresh::EveryThirdPresent) {
             let step = unsafe {
-                (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK))
-                    .step(present, underlay_changed || source_changed)
+                (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).step(
+                    present,
+                    underlay_changed || source_changed,
+                    dynamic_period(),
+                )
             };
             match step {
                 DynamicStep::Refresh => crate::gfx::blur_invalidate(),
@@ -3126,37 +3159,85 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 mod tests {
     use super::*;
 
+    /// The shipped cadence, spelled out at the value the app actually runs.
+    const P: u32 = DEFAULT_DYNAMIC_PERIOD;
+
     #[test]
     fn dynamic_glass_refreshes_on_every_third_successful_present() {
         let mut clock = DynamicClock::new();
         clock.cover_now(41);
-        assert_eq!(clock.step(42, true), DynamicStep::Wait);
-        assert_eq!(clock.step(43, false), DynamicStep::Wait, "pending damage survives");
-        assert_eq!(clock.step(44, false), DynamicStep::Refresh);
-        assert_eq!(clock.step(44, true), DynamicStep::None, "same-present owners are covered");
-        assert_eq!(clock.step(45, false), DynamicStep::None, "a clean keepalive does nothing");
+        assert_eq!(clock.step(42, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(43, false, P), DynamicStep::Wait, "pending damage survives");
+        assert_eq!(clock.step(44, false, P), DynamicStep::Refresh);
+        assert_eq!(clock.step(44, true, P), DynamicStep::None, "same-present owners are covered");
+        assert_eq!(clock.step(45, false, P), DynamicStep::None, "a clean keepalive does nothing");
     }
 
     #[test]
     fn dynamic_glass_cadence_survives_the_present_counter_wrapping() {
         let mut clock = DynamicClock::new();
         clock.cover_now(u32::MAX - 1);
-        assert_eq!(clock.step(u32::MAX, true), DynamicStep::Wait);
-        assert_eq!(clock.step(0, false), DynamicStep::Wait);
-        assert_eq!(clock.step(1, false), DynamicStep::Refresh);
+        assert_eq!(clock.step(u32::MAX, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(0, false, P), DynamicStep::Wait);
+        assert_eq!(clock.step(1, false, P), DynamicStep::Refresh);
     }
 
     #[test]
     fn staggered_dynamic_owners_share_one_global_cadence() {
         let mut clock = DynamicClock::new();
         clock.cover_now(10); // owner A opens
-        assert_eq!(clock.step(11, true), DynamicStep::Wait);
+        assert_eq!(clock.step(11, true, P), DynamicStep::Wait);
         clock.cover_now(12); // owner B opens: its immediate shared capture covers A too
-        assert_eq!(clock.step(12, true), DynamicStep::None);
-        assert_eq!(clock.step(13, true), DynamicStep::Wait);
-        assert_eq!(clock.step(14, true), DynamicStep::Wait);
-        assert_eq!(clock.step(15, true), DynamicStep::Refresh);
-        assert_eq!(clock.step(15, true), DynamicStep::None, "B cannot schedule a second capture");
+        assert_eq!(clock.step(12, true, P), DynamicStep::None);
+        assert_eq!(clock.step(13, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(14, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(15, true, P), DynamicStep::Refresh);
+        assert_eq!(clock.step(15, true, P), DynamicStep::None, "B cannot schedule a second capture");
+    }
+
+    /// A period of one refreshes on EVERY present with a dirty underlay — the 60 Hz end of the
+    /// cadence sweep. It must still refuse a second capture on a present already covered, or two
+    /// glass owners would run the chain twice in one frame and the cost curve would measure that.
+    #[test]
+    fn a_period_of_one_refreshes_every_dirty_present_but_only_once_each() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(70);
+        assert_eq!(clock.step(71, true, 1), DynamicStep::Refresh);
+        assert_eq!(clock.step(71, true, 1), DynamicStep::None, "already covered this present");
+        assert_eq!(clock.step(72, true, 1), DynamicStep::Refresh);
+        assert_eq!(clock.step(73, false, 1), DynamicStep::None, "a clean present still refreshes nothing");
+    }
+
+    /// A longer period waits longer and no more than that: the wait count is `period - 1`.
+    #[test]
+    fn a_longer_period_waits_exactly_that_many_presents() {
+        for period in 2..=8u32 {
+            let mut clock = DynamicClock::new();
+            clock.cover_now(0);
+            for present in 1..period {
+                assert_eq!(
+                    clock.step(present, true, period),
+                    DynamicStep::Wait,
+                    "period {period} refreshed early at present {present}"
+                );
+            }
+            assert_eq!(clock.step(period, true, period), DynamicStep::Refresh, "period {period}");
+        }
+    }
+
+    /// `/tmp/plxnative-glasshz` writes this static and nothing else does. Zero would be a refresh
+    /// every zero frames, so it clamps rather than dividing the cadence by nothing.
+    #[test]
+    fn the_cadence_override_clamps_and_reports_what_it_installed() {
+        // A crate-wide static, so this takes the shared globals lock rather than a local one.
+        let _g = crate::testlock::serial();
+        let restore = dynamic_period();
+        assert_eq!(set_dynamic_period(0), 1, "zero presents per refresh is not a cadence");
+        assert_eq!(dynamic_period(), 1);
+        assert_eq!(set_dynamic_period(4), 4);
+        assert_eq!(set_dynamic_period(99), 8, "past 8 is clamped, not refused");
+        set_dynamic_period(restore);
+        assert_eq!(dynamic_period(), DEFAULT_DYNAMIC_PERIOD, "the default is what ships");
     }
 
     #[test]
