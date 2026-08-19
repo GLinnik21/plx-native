@@ -97,7 +97,10 @@ extern "C" {
     fn glBlendFuncSeparate(src_rgb: c_uint, dst_rgb: c_uint, src_a: c_uint, dst_a: c_uint);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: c_uint);
+    #[cfg(feature = "devtriggers")]
     fn glFinish();
+    #[cfg(feature = "devtriggers")]
+    fn glFlush();
     fn glGenTextures(n: c_int, textures: *mut c_uint);
     fn glDeleteTextures(n: c_int, textures: *const c_uint);
     fn glPixelStorei(pname: c_uint, param: c_int);
@@ -139,6 +142,18 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// takes bottom-left *window pixels*. So it needs both the Y flip and the logical→physical scale,
 /// which is 1.0 on every television seen so far (`surface::scale`) and would otherwise clip the
 /// wrong band of the screen.
+/// Where authored coordinates land in the CURRENTLY BOUND target, as the same `(vx, vy, scale)`
+/// triple `glViewport` was given, plus the live box a [`clip_clear`] must restore.
+///
+/// `None` means framebuffer 0, and [`clip_set`] then reads `surface::viewport()`/`scale()` exactly
+/// as it always has. It is `Some` only for the duration of [`blur_snapshot_direct`]'s scene draw,
+/// which renders the page into a small FBO through a scaled, negative-origin viewport. Without
+/// this, every `Painter::clip` inside that draw would compute a full-resolution screen box — the
+/// scissor is the one drawing call that is not in logical coordinates — and clip a completely
+/// different part of the picture, while `clip_clear`'s bare `glDisable` would additionally throw
+/// away the region clamp for the rest of the pass.
+static mut CLIP_TARGET: Option<(c_int, c_int, f32, c_int, c_int)> = None;
+
 pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     let x0 = x.max(0.0);
     let y_top = y.max(0.0);
@@ -150,8 +165,13 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     // The same uniform scale and centring offset `glViewport` was given, because the scissor box
     // has to land on the same pixels the viewport maps to. Deriving both from `surface` rather
     // than duplicating the arithmetic is what keeps them in step.
-    let s = crate::surface::scale();
-    let (vx, vy, _, _) = crate::surface::viewport();
+    let (vx, vy, s) = match unsafe { CLIP_TARGET } {
+        Some((tx, ty, ts, _, _)) => (tx, ty, ts),
+        None => {
+            let (vx, vy, _, _) = crate::surface::viewport();
+            (vx, vy, crate::surface::scale())
+        }
+    };
     // **Round each EDGE in physical space; derive the extent as the difference of the two rounded
     // edges.** Never truncate the origin and the extent independently.
     //
@@ -184,8 +204,18 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     }
 }
 /// Remove the scissor clip set by [`clip_set`].
+///
+/// While a render-target override is active this restores that target's LIVE BOX rather than
+/// disabling the test: the box is the direct pass's only clamp on where the page may write, and a
+/// bare `glDisable` in the middle of the scene draw would let the rest of the page spill across
+/// the tap targets' other content.
 pub(crate) fn clip_clear() {
-    unsafe { glDisable(GL_SCISSOR_TEST) }
+    unsafe {
+        match CLIP_TARGET {
+            Some((_, _, _, tw, th)) => glScissor(0, 0, tw, th),
+            None => glDisable(GL_SCISSOR_TEST),
+        }
+    }
 }
 
 /// clear the framebuffer to an opaque color — the retui frame's first op, so the
@@ -197,11 +227,22 @@ pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
     }
 }
 
-/// Block until the GPU has finished all queued commands. Used ONLY by the draw profiler
-/// (`ui::profile`) to attribute per-phase GPU cost — it serializes the pipeline, so never call it
-/// on the normal render path.
+/// Block until the GPU has finished all queued commands. Used ONLY as a completion boundary and
+/// coarse wall-clock aid for the draw profiler (`ui::profile`) — it is not a GPU timestamp and it
+/// serializes the pipeline, so never call it on the normal render path.
+#[cfg(feature = "devtriggers")]
 pub(crate) fn gl_finish() {
     unsafe { glFinish() }
+}
+
+/// Submit everything queued without waiting for it. Unlike [`gl_finish`] this does not stall the
+/// CPU, which is what lets the asynchronous timer path use it: on a tile-based Midgard GPU the
+/// fragment work for a render target is only issued when that target's pass is flushed, so a
+/// `GL_TIME_ELAPSED` interval closed before the flush contains no submitted job and reports a
+/// cost of essentially zero. Profiler-only, for the same reason `gl_finish` is.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn gl_flush() {
+    unsafe { glFlush() }
 }
 
 static mut PROG: c_uint = 0;
@@ -521,6 +562,9 @@ pub(crate) fn draw_rect(
     focus: f32,
     focus_rgb: f32,
 ) {
+    if culled(x, y, w, h) {
+        return;
+    }
     unsafe {
         use_prog(PROG);
         // Only the rounded/focus SDF path needs the AA bleed; a plain rect takes the fast-path fill
@@ -549,6 +593,9 @@ pub(crate) fn draw_rect(
 /// the same fill pass — the no-texture (skeleton / chip disc) counterpart of [`draw_tex_stroked`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32) {
+    if culled(x, y, w, h) {
+        return;
+    }
     unsafe {
         use_prog(PROG);
         let aa = AA_BLEED; // a sheened tile is always rounded → always SDF path
@@ -571,6 +618,9 @@ pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top
 /// colour (see [`draw_grad4`]), so this is what keeps every ambient wash a ground that REPLACES what
 /// is under it rather than a translucent film over it.
 pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
+    if culled(x, y, w, h) {
+        return;
+    }
     unsafe {
         let c3 = |p: *const f32, i: usize| *p.add(i);
         use_prog(APROG); // AL_SCREEN is set once at init (uniforms are per-program state)
@@ -591,6 +641,9 @@ pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const 
 /// `GL_SRC_ALPHA`/`GL_ONE_MINUS_SRC_ALPHA` set at init, so this composites over whatever is already
 /// on the panel — which is the whole point of having it beside the opaque wash.
 pub(crate) fn draw_grad4(x: f32, y: f32, w: f32, h: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
+    if culled(x, y, w, h) {
+        return;
+    }
     unsafe {
         use_prog(APROG); // AL_SCREEN is set once at init (uniforms are per-program state)
         glUniform4f(AL_RECT, x, y, w, h);
@@ -603,6 +656,9 @@ pub(crate) fn draw_grad4(x: f32, y: f32, w: f32, h: f32, tl: *const f32, tr: *co
 }
 
 pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
+    if culled(x, y, w, h) {
+        return;
+    }
     unsafe {
         use_prog(PROG);
         // Rounded corners always take the SDF path, so always give the edge band its bleed.
@@ -623,6 +679,9 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
 
 /// [`draw_rrect`] with the focus edge-sheen baked in (flat fill + `rimw`-px inset rim in `rimcol`).
 pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32, rimw: f32, rimcol: *const f32) {
+    if culled(x, y, w, h) {
+        return;
+    }
     unsafe {
         use_prog(PROG);
         let aa = AA_BLEED;
@@ -646,6 +705,9 @@ pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad
 /// into `y`. No-ops if the program failed to link. Own GL program (bound lazily via [`use_prog`]),
 /// so it doesn't disturb the base shader's uniforms.
 pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, off: f32, col: *const f32) {
+    if culled(x, y, w, h) {
+        return;
+    }
     unsafe {
         if SPROG == 0 {
             return;
@@ -858,7 +920,7 @@ fn uv_rect_padded(w: f32, h: f32, qw: f32, qh: f32) -> [f32; 4] {
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core(tex: c_uint, qx: f32, qy: f32, qw: f32, qh: f32, uv: [f32; 4], radius: f32, tint: *const f32,
     rimw: f32, rimcol: *const f32, chw: f32, chh: f32, shinv: f32, shcol: *const f32) {
-    if tex == 0 {
+    if tex == 0 || culled(qx, qy, qw, qh) {
         return;
     }
     unsafe {
@@ -907,11 +969,17 @@ pub(crate) fn draw_tex_stroked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radi
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tex_carded(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32,
     rimw: f32, rimcol: *const f32, pad: f32, shblur: f32, shcol: *const f32) {
-    CARD_CT.fetch_add(1, Ordering::Relaxed);
+    // Not during a blur source pass: these are read once a frame by the framedrop tool as "cards
+    // the panel composited", and a second page draw would report twice the real number.
+    if !blur_source_pass() {
+        CARD_CT.fetch_add(1, Ordering::Relaxed);
+    }
     // the inflated (shadow) quad crossing a screen edge ⇒ some shadow fragments are drawn off-screen
     // (viewport-clipped, but still rasterized). Counts partial+full; fully-off-screen ⇒ a cull miss.
     if x - pad < 0.0 || y - pad < 0.0 || x + w + pad > SCR_W || y + h + pad > SCR_H {
-        CARD_OFF.fetch_add(1, Ordering::Relaxed);
+        if !blur_source_pass() {
+            CARD_OFF.fetch_add(1, Ordering::Relaxed);
+        }
     }
     draw_tex_impl(tex, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol);
 }
@@ -1262,15 +1330,32 @@ fn blur_region_covers(reg: [f32; 4], x: f32, y: f32, w: f32, h: f32) -> bool {
 /// pixel or three of the margin.
 #[inline]
 fn blur_region_px(reg: [f32; 4], gw: c_int, gh: c_int) -> (c_int, c_int, c_int, c_int) {
+    blur_region_px_align(reg, gw, gh, 4)
+}
+
+/// The same rounding, to an arbitrary power-of-two `align`.
+///
+/// The capture path needs 4 because it halves twice and both halvings must stay registered. The
+/// direct path renders the scene straight in at 1/`scale`, so its region has to divide by `scale`
+/// exactly or the viewport offset below lands on a fraction of a target pixel and the backdrop
+/// creeps sideways as the panel moves.
+fn blur_region_px_align(
+    reg: [f32; 4],
+    gw: c_int,
+    gh: c_int,
+    align: c_int,
+) -> (c_int, c_int, c_int, c_int) {
+    let mask = !(align - 1);
+    let slack = align - 1;
     let sx = gw as f32 / SCR_W;
     let sy = gh as f32 / SCR_H;
-    let x0 = ((reg[0] * sx).floor() as c_int).clamp(0, gw) & !3;
-    let y0 = ((reg[1] * sy).floor() as c_int).clamp(0, gh) & !3;
-    let x1 = (((reg[0] + reg[2]) * sx).ceil() as c_int + 3).clamp(0, gw);
-    let y1 = (((reg[1] + reg[3]) * sy).ceil() as c_int + 3).clamp(0, gh);
-    let rw = ((x1 - x0) & !3).clamp(4, gw - x0);
-    let rh = ((y1 - y0) & !3).clamp(4, gh - y0);
-    (x0, y0, rw & !3, rh & !3)
+    let x0 = ((reg[0] * sx).floor() as c_int).clamp(0, gw) & mask;
+    let y0 = ((reg[1] * sy).floor() as c_int).clamp(0, gh) & mask;
+    let x1 = (((reg[0] + reg[2]) * sx).ceil() as c_int + slack).clamp(0, gw);
+    let y1 = (((reg[1] + reg[3]) * sy).ceil() as c_int + slack).clamp(0, gh);
+    let rw = ((x1 - x0) & mask).clamp(align, (gw - x0).max(align));
+    let rh = ((y1 - y0) & mask).clamp(align, (gh - y0).max(align));
+    (x0, y0, rw & mask, rh & mask)
 }
 
 /// The UV window into the snapshot that a screen-space rect samples.
@@ -1423,9 +1508,10 @@ fn blur_lazy_init() -> bool {
 ///
 /// The original full-screen chain measured 9.54 ms. Limiting every pass to the requested panel
 /// region reduced a 630×790 Sort snapshot to **3.43 ms** (`copy=.71`, reductions `1.23`, two taps
-/// `.74`, up `.75`). The approved dynamic Account scene measured about **3.9 ms per refresh**.
-/// These are `profile::phase` wall times with `glFinish` around every phase: useful conservative
-/// attribution, but not normal pipelined frame time or hardware GPU timestamps.
+/// `.74` (now reported separately as `blur.tap1`/`blur.tap2`), up `.75`). The approved dynamic Account scene measured about **3.9 ms per refresh**.
+/// These are legacy `profile::phase` wall times with `glFinish` around every phase. They are not
+/// normal pipelined frame time or hardware GPU timestamps, so they are historical sizing clues,
+/// not the baseline for the direct-render experiment.
 ///
 /// Two full-size reduction points once suggested a `0.49 ms/pass + 2.7 ns/fragment` sizing model.
 /// The final region measurement (`blur.taps=.74` for two passes) does not satisfy a global
@@ -1444,11 +1530,9 @@ fn blur_snapshot(reg: [f32; 4]) {
         // possibly from another module entirely) to this one — which is exactly how the first
         // version of this turned itself off on a healthy driver.
         while glGetError() != GL_NO_ERROR {}
-        // Split into phases on purpose (`/tmp/plxnative-profile`): the ~30 ms this costs is a
-        // WHOLE-FRAME worst-frame measurement, so which step owns it was a guess until these
-        // existed. The candidates are a 1920x1080 framebuffer read (8.3 MB, and a barrier on a
-        // tiler) and five render-target passes; they are separable only by measuring them apart.
-        // Zero-overhead with the trigger off.
+        // Split into exact phases for the asynchronous timer-query and serialized HWCNT diagnostic
+        // modes. The candidates are a framebuffer copy/resolve and five render-target passes.
+        // The phase wrapper is an inline passthrough in a release build.
         use crate::ui::profile::phase;
         // The region, in drawable px and 4-aligned, landing at the BOTTOM-LEFT of every target. Each
         // pass then draws a full quad into a viewport of the region's own size and samples the
@@ -1532,23 +1616,24 @@ fn blur_snapshot(reg: [f32; 4]) {
         // The taps run at whichever level the reductions ended on: quarter with two, half with one.
         let (tw, th) = if BLUR_REDUCTIONS >= 2 { (r4w, r4h) } else { (r2w, r2h) };
         let tap_uv = win(tw, th, c.sw, c.sh);
-        glViewport(0, 0, tw, th);
-        phase("blur.taps", || {
         for (i, taps) in BLUR_TAPS.iter().enumerate() {
-            // even pass -> a into b, odd -> b into a; with an even tap count the finished snapshot
-            // lands back in `a`, which is what `draw_blur_backdrop` samples.
-            let (fbo, src) = if i % 2 == 0 { (c.b_fbo, c.a) } else { (c.a_fbo, c.b) };
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-            glClear(GL_COLOR_BUFFER_BIT);
-            use_prog(BPROG); // already bound unless the 2x reduction path ran `draw_tex`; a no-op then
-            glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
-            // Offsets stay in TEXELS of the texture, which the region does not change — the texture
-            // is the same size, only less of it is live.
-            glUniform2f(BL_TEXEL, taps / c.sw as f32, taps / c.sh as f32);
-            glBindTexture(GL_TEXTURE_2D, src);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
+            phase(name, || {
+                glViewport(0, 0, tw, th);
+                // even pass -> a into b, odd -> b into a; with an even tap count the finished
+                // snapshot lands back in `a`, which is what `draw_blur_backdrop` samples.
+                let (fbo, src) = if i % 2 == 0 { (c.b_fbo, c.a) } else { (c.a_fbo, c.b) };
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glClear(GL_COLOR_BUFFER_BIT);
+                use_prog(BPROG); // already bound unless the reduction path ran `draw_tex`
+                glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+                // Offsets stay in TEXELS of the texture, which the region does not change — the
+                // texture is the same size, only less of it is live.
+                glUniform2f(BL_TEXEL, taps / c.sw as f32, taps / c.sh as f32);
+                glBindTexture(GL_TEXTURE_2D, src);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            });
         }
-        });
 
         // Back UP one level through the same filter — the half of a dual-filter blur that stops the
         // result reading as enlarged pixels. See `BLUR_UP_TAP`. `mid` is free by now: it was the
@@ -1576,12 +1661,296 @@ fn blur_snapshot(reg: [f32; 4]) {
         let sx = c.gw as f32 / SCR_W;
         let sy = c.gh as f32 / SCR_H;
         let live = [rx as f32 / sx, ry as f32 / sy, rw as f32 / sx, rh as f32 / sy];
+        crate::ui::profile::note_blur_config(
+            live, rx, ry, rw, rh, c.gw, c.gh, c.mw, c.mh, c.sw, c.sh,
+        );
         if let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() {
             c.reg = live;
             c.rw = rw;
             c.rh = rh;
         }
         BLUR_VALID = true;
+    }
+}
+
+/// Scale divisor for the DIRECT backdrop path; 0 means the capture path (the shipped default).
+///
+/// Set once at boot from `/tmp/plxnative-blurdirect`. Only powers of two from 4 up are accepted,
+/// because the taps ping-pong between `a` and `b`, which are allocated at a quarter of the canvas:
+/// a scale of 2 would need a second half-size target and 2 MB more, which is a separate question
+/// from whether the architecture is worth having at all.
+static mut BLUR_DIRECT: u32 = 0;
+
+/// True only while [`blur_snapshot_direct`] is running the page draw as a blur SOURCE.
+///
+/// Three things in the tree must behave differently during that pass, and every one of them is a
+/// correctness issue rather than a nicety:
+///
+/// * `draw_blur_backdrop` must refuse outright. `home_draw` contains a glass owner of its own (the
+///   tab track, under `plxnative-glasstabs`), so without this the source pass re-enters
+///   `blur_snapshot`, which copies framebuffer 0 — reading the panel while an FBO is bound — and
+///   then rebinds framebuffer 0 and the full-resolution viewport in the middle of the pass.
+/// * `ui::profile::phase` must not select. The page's own phases (`hm.grid`, `main.ui`, …) would
+///   otherwise record twice per frame under one name, mixing a quarter-resolution sample into the
+///   full-resolution mean that the whole experiment is priced by.
+/// * the per-frame card counters must not accumulate, or the framedrop tool reports twice the
+///   composites the panel actually shows.
+static mut BLUR_IN_PASS: bool = false;
+
+/// Is the page currently being drawn as a low-resolution blur source rather than for the panel?
+#[inline]
+pub(crate) fn blur_source_pass() -> bool {
+    unsafe { BLUR_IN_PASS }
+}
+
+/// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
+static mut CULL_RECT: Option<[f32; 4]> = None;
+
+/// Should this quad be skipped entirely?
+///
+/// The scissor bounds what a source pass may WRITE, but on a tile-based GPU it does not stop the
+/// tiler binning geometry or the fragment jobs walking tiles: measured on the television, a source
+/// pass whose live area is 152x99 processed **1193 tiles where 70 would do**, because the viewport
+/// that maps authored space into the target necessarily spans the whole canvas. Refusing the draw
+/// call is the only thing that removes the work, and it is exact rather than conservative — the
+/// backdrop is a crop of the page, so a quad that misses the region cannot contribute a fragment
+/// to it.
+///
+/// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
+#[inline]
+pub(crate) fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
+    match unsafe { CULL_RECT } {
+        None => false,
+        // A slack margin covers the AA bleed and the SDF rim, which paint a pixel or so beyond the
+        // rect every primitive declares.
+        Some(r) => {
+            const SLACK: f32 = 4.0;
+            x + w < r[0] - SLACK
+                || y + h < r[1] - SLACK
+                || x > r[0] + r[2] + SLACK
+                || y > r[1] + r[3] + SLACK
+        }
+    }
+}
+
+/// Restores framebuffer 0 and everything the source pass changed, ON EVERY EXIT PATH.
+///
+/// This is a `Drop` guard and not straight-line code for one specific reason: `home_draw` opens
+/// with `ui::guard`, which CATCHES a panic and returns normally. A panic anywhere in the page
+/// would otherwise leave the FBO bound with the region viewport set — and nothing else in the app
+/// ever binds framebuffer 0, so every subsequent frame would render into a 480x270 texture and the
+/// television would show a frozen picture with no crash, no log line and no way back.
+struct DirectPass;
+
+impl Drop for DirectPass {
+    fn drop(&mut self) {
+        unsafe {
+            BLUR_IN_PASS = false;
+            CLIP_TARGET = None;
+            CULL_RECT = None;
+            glDisable(GL_SCISSOR_TEST);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            let (vx, vy, vw, vh) = crate::surface::viewport();
+            glViewport(vx, vy, vw, vh);
+            glEnable(GL_BLEND);
+        }
+    }
+}
+
+/// Is the direct path armed, and at what axis divisor? `None` selects the capture path.
+#[inline]
+pub(crate) fn blur_direct_scale() -> Option<u32> {
+    let scale = unsafe { BLUR_DIRECT };
+    (scale >= 4).then_some(scale)
+}
+
+/// Arm the direct backdrop path at 1/`scale` per axis. `scale < 4` disarms it.
+pub(crate) fn set_blur_direct(scale: u32) {
+    unsafe { BLUR_DIRECT = if scale.is_power_of_two() { scale } else { 0 } };
+}
+
+/// The region a direct source pass should be taken at THIS frame, or `None` to do nothing.
+///
+/// `Some` requires three things at once: the direct path armed, a refresh actually due, and a
+/// region to take it at. The region is the PREVIOUS drawn frame's complete union — the same
+/// `BLUR_WANT_PREV` the capture path unions into, and the only thing known this early, because the
+/// current frame's needs are recorded by the glass surfaces themselves and they have not drawn
+/// yet. On the first frame a panel appears that union is empty and this answers `None`; the
+/// capture path then takes that one frame the way it always has, and the direct path picks it up
+/// from the next present onward. One frame of the old behaviour at activation is the price of
+/// hooking before the page draws, which is the only place a second scene pass can go.
+pub(crate) fn blur_direct_region() -> Option<[f32; 4]> {
+    unsafe {
+        blur_direct_scale()?;
+        if BLUR_VALID {
+            return None;
+        }
+        let prev = *std::ptr::addr_of!(BLUR_WANT_PREV);
+        (prev[2] > 0.0 && prev[3] > 0.0).then_some(prev)
+    }
+}
+
+/// The backdrop source, rendered by DRAWING THE SCENE AGAIN at 1/`scale` per axis, instead of
+/// copying framebuffer 0 and reducing it twice.
+///
+/// This is the experiment `docs/backdrop-blur-profiling.md` sizes. The capture path spends a
+/// `glCopyTexSubImage2D` of the region plus two 2x reduction passes to arrive at a quarter-
+/// resolution image of what is behind the panel; the renderer is immediate-mode and holds no
+/// display list, but it is also a pure function of UI state, so the same image can be produced by
+/// running the page draw a second time into a small target. Three passes replace six.
+///
+/// # How the scene lands in a cropped, scaled target with no shader change
+///
+/// Both vertex shaders map an authored pixel with `ndc = px / u_screen * 2 - 1` and emit
+/// `-ndc.y`. Nothing in that depends on the target's size, so a SCALED, NEGATIVE-ORIGIN viewport
+/// is enough to place any sub-rectangle of the authored canvas anywhere in any target:
+///
+/// ```text
+/// glViewport(-rx/scale, -(gh - ry - rh)/scale, gw/scale, gh/scale)
+/// ```
+///
+/// Solving `vx + (rx/gw)*vw == 0` and `vx + ((rx+rw)/gw)*vw == rw/scale` gives `vw = gw/scale` and
+/// `vx = -rx/scale`; the y row falls out the same way once the shaders' flip is accounted for, and
+/// lands on the canvas-bottom distance because GL's viewport origin is bottom-left while the
+/// region is measured from the canvas top. A negative viewport origin is ordinary — the viewport
+/// is an affine map, not a clip — and the scissor below is what bounds the writes.
+///
+/// # Orientation, which is the easiest thing here to get wrong
+///
+/// The scene shaders' flip puts authored y=0 at the target's TOP row, so the direct render is
+/// stored bottom-up — the same orientation `glCopyTexSubImage2D` produces, since a window copy is
+/// bottom-up too. The chain that follows is three passes where the capture path runs five, and
+/// both are ODD, so the finished snapshot is top-down either way and `bottom_up` stays `false`.
+/// Neither [`blur_uv_rect`] nor the `u_uvpx` V sign in `fs_glass` changes. That is luck, not
+/// design; if a pass is ever added or removed here, this is the line that has to move with it.
+///
+/// Returns `false` if it could not run, in which case the caller must fall back to the capture
+/// path — the snapshot is left untouched and no GL state has changed.
+pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool {
+    unsafe {
+        let Some(scale) = blur_direct_scale() else { return false };
+        if !blur_lazy_init() {
+            return false;
+        }
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false };
+        let step = scale as c_int;
+        let (rx, ry, rw, rh) = blur_region_px_align(reg, c.gw, c.gh, step);
+        let (tw, th) = ((rw / step).max(1), (rh / step).max(1));
+        // The taps ping-pong through `a`/`b`, so the scene has to fit them. At scale 4 the live
+        // area is exactly their allocation; anything larger is a caller error, not a clamp.
+        if tw > c.sw || th > c.sh {
+            log(&format!("blur direct: {tw}x{th} exceeds the {}x{} tap targets", c.sw, c.sh));
+            return false;
+        }
+        // `glViewport` takes integers and the divisions below carry the scale, so a canvas that
+        // does not divide by `scale` would place the region a fraction of a target pixel out and
+        // the backdrop would creep as the panel moved. The region itself is already aligned.
+        if c.gw % step != 0 || c.gh % step != 0 {
+            log(&format!("blur direct: canvas {}x{} does not divide by {scale}", c.gw, c.gh));
+            return false;
+        }
+        while glGetError() != GL_NO_ERROR {}
+
+        let vx = -rx / step;
+        let vy = -(c.gh - ry - rh) / step;
+        use crate::ui::profile::phase;
+        phase("blur.scene", || {
+            // Armed before anything else, and disarmed by `DirectPass::drop` however this exits.
+            BLUR_IN_PASS = true;
+            let _restore = DirectPass;
+            glBindFramebuffer(GL_FRAMEBUFFER, c.a_fbo);
+            glViewport(vx, vy, c.gw / step, c.gh / step);
+            // The viewport places the image; the scissor is what stops the rest of the page
+            // writing over the tap targets' other content — and it bounds `glClear`, which is
+            // viewport-independent. `home_draw` opens with its own `frame_clear`, so the ground
+            // is laid inside this box rather than across the whole allocation.
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(0, 0, tw, th);
+            // The same triple the viewport just took, so `Painter::clip` lands on the same pixels.
+            CLIP_TARGET = Some((vx, vy, c.gw as f32 / SCR_W / step as f32, tw, th));
+            // Authored-space bounds for the draw-call cull. `reg` is already what the region was
+            // aligned to, so this and the scissor describe the same rectangle.
+            CULL_RECT = Some([
+                rx as f32 * SCR_W / c.gw as f32,
+                ry as f32 * SCR_H / c.gh as f32,
+                rw as f32 * SCR_W / c.gw as f32,
+                rh as f32 * SCR_H / c.gh as f32,
+            ]);
+            // The scene expects the ordinary blend state; `glBlendFuncSeparate` is set once at
+            // init and never changed, so enabling is the whole requirement.
+            glEnable(GL_BLEND);
+            draw_scene();
+        });
+
+        glDisable(GL_BLEND);
+        let win = |uw: c_int, uh: c_int, tex_w: c_int, tex_h: c_int| {
+            (uw as f32 / tex_w as f32, uh as f32 / tex_h as f32)
+        };
+        let tap_uv = win(tw, th, c.sw, c.sh);
+        // Hold the AUTHORED radius fixed as the source resolution moves: a tap offset is in source
+        // texels, and a texel covers `scale` authored pixels, so the offsets that give the shipped
+        // look at quarter resolution have to shrink in proportion at any finer divisor. Without
+        // this a scale sweep changes two variables at once and measures neither.
+        let tap_k = 4.0 / scale as f32;
+        for (i, taps) in BLUR_TAPS.iter().enumerate() {
+            let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
+            phase(name, || {
+                glViewport(0, 0, tw, th);
+                let (fbo, src) = if i % 2 == 0 { (c.b_fbo, c.a) } else { (c.a_fbo, c.b) };
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glClear(GL_COLOR_BUFFER_BIT);
+                use_prog(BPROG);
+                glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+                let off = taps * tap_k;
+                glUniform2f(BL_TEXEL, off / c.sw as f32, off / c.sh as f32);
+                glBindTexture(GL_TEXTURE_2D, src);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            });
+        }
+
+        // Up to half resolution, exactly as the capture path does, so `out` is `mid` and the glass
+        // draw is bit-for-bit the same consumer in both modes. At a divisor beyond 4 this is a
+        // larger magnification than 2x, which is precisely the quality question the scale sweep is
+        // for; the filter itself is unchanged.
+        let (r2w, r2h) = ((rw / 2).max(1), (rh / 2).max(1));
+        phase("blur.up", || {
+            glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
+            glViewport(0, 0, r2w, r2h);
+            glClear(GL_COLOR_BUFFER_BIT);
+            use_prog(BPROG);
+            glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+            glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
+            glBindTexture(GL_TEXTURE_2D, c.a);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        });
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        let (vx, vy, vw, vh) = crate::surface::viewport();
+        glViewport(vx, vy, vw, vh);
+        glEnable(GL_BLEND);
+        let e = glGetError();
+        if e != GL_NO_ERROR {
+            log(&format!("blur direct: GL error=0x{e:x} — falling back to the capture path"));
+            BLUR_DIRECT = 0;
+            return false;
+        }
+
+        let sx = c.gw as f32 / SCR_W;
+        let sy = c.gh as f32 / SCR_H;
+        let live = [rx as f32 / sx, ry as f32 / sy, rw as f32 / sx, rh as f32 / sy];
+        crate::ui::profile::note_blur_config(
+            live, rx, ry, rw, rh, c.gw, c.gh, c.mw, c.mh, tw, th,
+        );
+        if let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() {
+            c.reg = live;
+            c.rw = rw;
+            c.rh = rh;
+            c.out = c.mid;
+            // Three passes, odd like the capture path's five: the snapshot is top-down.
+            c.bottom_up = false;
+        }
+        BLUR_VALID = true;
+        true
     }
 }
 
@@ -1596,6 +1965,14 @@ fn blur_snapshot(reg: [f32; 4]) {
 /// slide. Callers with no motion (the tab bar) pass their own rect twice.
 pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32) -> bool {
     unsafe {
+        // A glass surface met while drawing the page AS a blur source draws nothing at all. It
+        // cannot draw itself — the snapshot it would sample is the target currently bound — and it
+        // must not RECORD a need or take a capture either, both of which would run inside the FBO.
+        // `false` is also the right picture: the caller falls back to its opaque ground, which is
+        // what belongs under a blur anyway. See `BLUR_IN_PASS`.
+        if BLUR_IN_PASS {
+            return false;
+        }
         // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second
         // glass element is on record even if the first one is what ends up taking the capture.
         let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
@@ -1647,7 +2024,9 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
         glUniform4f(GL_RECT, x, y, w, h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        crate::ui::profile::phase("glass.composite", || {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        });
         true
     }
 }
