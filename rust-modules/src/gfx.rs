@@ -1260,7 +1260,17 @@ const POPOVER_MAX_RISE: f32 = 20.0;
 /// comes to rest; every later frame moves it back INTO that region. Cache hits are therefore
 /// containment tests — key on equality, or grab only `BLUR_REACH`, and even a cached popover would
 /// recapture on every frame of its appear.
-const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
+pub(crate) const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
+
+/// The region area a MOVING host can carry at 60 fps, in authored px² — the design system's
+/// `--glass-region-budget`. Past it the rate STEPS (45, 36, 30), because a refresh frame buys whole
+/// 16.7 ms slots; a STILL host, which modality guarantees for a panel, is free.
+/// Measured, not chosen: `docs/glass-hardware-budget.md` derives it from the `fps = 60 x 3 / (2 + N)`
+/// region law. It exists so a surface can be held to it by a TEST rather than by a comment — see
+/// `ui::widgets`' glass-track width test — which is also why it is `cfg(test)`: nothing at runtime
+/// decides anything from it, and a number the shipping build never reads should not pretend to.
+#[cfg(test)]
+pub(crate) const GLASS_REGION_BUDGET: f32 = 300_000.0;
 
 /// The region a panel at `(x,y,w,h)` needs snapshotted, in authored coords, clamped to the screen.
 ///

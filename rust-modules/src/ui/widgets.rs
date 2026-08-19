@@ -1008,6 +1008,18 @@ const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
 /// ramp on its bottom edge. Starting it lower leaves a strip of live content above it — a poster's
 /// top edge appearing over the chrome, which is what the first version of this did on Search.
 ///
+/// **That has now been tried a second time, for a reason that sounded better, and it still loses.**
+/// The design system asks for the grid to pass BEHIND the glass track — cutting the content at the
+/// chrome line and then reporting that the material shows nothing is circular, and the argument is
+/// right. It does not survive this screen's arithmetic. The grid's rest positions are fixed modulo
+/// [`library::PITCH`], and at every one of them the track lands in the 96px band BETWEEN two rows:
+/// measured in the simulator at 1920x1080, the row above ends at y=26 and the track occupies 36 to
+/// 112, so the material has flat app grey behind it at rest no matter how far you scroll. What the
+/// change actually bought was a permanent ~26px strip of cut-off poster bottoms along the top of
+/// the frame. The emptiness behind the bar is not a choice anybody made — it is the row pitch, and
+/// moving the scrim cannot reach it. Reinstated, with the measurement, so the next reader gets the
+/// answer instead of the idea.
+///
 /// The caller draws it AFTER its content and BEFORE its chrome, which is the order that lets it be
 /// opaque; `library::draw` has always used that order and it is why its scissor is a bound rather
 /// than a treatment.
@@ -2365,15 +2377,47 @@ fn tab_glass_stops() -> ([f32; 4], [f32; 4]) {
     }
 }
 
+/// The widest a track may be and still wear glass — the design system's `--glass-track-max`.
+///
+/// A track is charged by its LENGTH: what a glass surface costs is the blurred RECTANGLE, the
+/// surface grown 88px a side, so this width prices at `(940 + 176) x (76 + 176)` = 281k px^2 —
+/// inside the ~300k a MOVING host holds 60 fps under (`docs/glass-hardware-budget.md`) — while a
+/// 1050-wide one is not. It is the one limit here a section table can trip on its own: enough
+/// libraries and the strip outgrows the budget, so the material has to come off by arithmetic
+/// rather than by anyone remembering.
+const GLASS_TRACK_MAX: f32 = 940.0;
+
 /// Is the shared tab track wearing glass this frame?
 ///
-/// `/tmp/plxnative-glassboth` lifts the popover exclusion for measurement only. That exclusion
-/// exists because this bar sits at the top and a popover's panel in the middle, and the union of
-/// the two is most of the frame — the whole-screen capture the region limit exists to avoid.
-fn tab_glass_on() -> bool {
+/// **The track ships FLAT**, behind `/tmp/plxnative-glasstabs`, and the reason is arithmetic rather
+/// than taste — see [`theme::TAB_GLASS_TOP`] for the table. The design system asks for glass here
+/// and the RULE it argues is sound; what does not survive is that a legible glass track and the
+/// flat one are the same picture, and only one of them costs the whole frame's glass budget.
+///
+/// Four refusals, each a different kind of limit:
+/// - **A panel is open** — and the reason is DISTANCE, not arithmetic. Two glass surfaces in a
+///   frame converge on one grab (`gfx::blur_region_union`), so neighbours avoid a second chain, but
+///   this bar sits at the top and a popover's panel in the middle: their union is most of the
+///   frame, which is the whole-screen capture the region limit exists to avoid. While the modal
+///   owns focus, keeping only its material is also the clearer hierarchy.
+///   `/tmp/plxnative-glassboth` lifts this one for measurement only.
+/// - **The track is wider than [`GLASS_TRACK_MAX`]** — see there.
+///
+/// Split in two because the SOURCE pass needs the first half on its own: [`draw_tab_row`] has to
+/// know whether the track will wear glass in order to decide whether to draw itself into that
+/// track's own backdrop at all. See there.
+fn tab_glass_wanted(track_w: f32) -> bool {
     crate::dev::flag("glasstabs")
+        && track_w <= GLASS_TRACK_MAX
         && (!crate::ui::popover::any_open() || crate::dev::flag("glassboth"))
-        && !crate::gfx::blur_source_pass()
+}
+
+/// …and the fourth: **this page is being drawn as a blur SOURCE**, where the track never wears the
+/// material it is producing. `Glass::prepare` also mutates the one process-wide `DynamicClock`,
+/// which is keyed on presents rather than draws, so a second call in the same present would spend
+/// that present's refresh slot on a surface nobody sees.
+fn tab_glass_on(track_w: f32) -> bool {
+    tab_glass_wanted(track_w) && !crate::gfx::blur_source_pass()
 }
 
 /// Resolve the tab track's glass cadence BEFORE the page it sits on draws.
@@ -2385,7 +2429,9 @@ fn tab_glass_on() -> bool {
 /// it from inside the page, and the capture path re-did the whole thing — both paths running in
 /// one frame. Call this beside the other owners' `prepare_present`.
 pub(crate) fn tab_glass_prepare() {
-    if !tab_glass_on() {
+    // The width rule is part of the answer, so the cadence has to measure the strip too — the same
+    // cached metrics the draw walks, one frame's worth, keyed on `browse::tabs_gen()`.
+    if !with_tab_metrics(|_, widths| tab_glass_on(tab_track_w(widths))) {
         return;
     }
     let state = unsafe { &mut *std::ptr::addr_of_mut!(TAB_GLASS_STATE) };
@@ -2463,6 +2509,11 @@ fn tab_content_w(widths: &[f32]) -> f32 {
 /// The VISIBLE pill area: the strip's own width until it outgrows [`TAB_VIEW_MAX`], then that.
 fn tab_view_w(widths: &[f32]) -> f32 {
     tab_content_w(widths).min(TAB_VIEW_MAX).max(0.0)
+}
+/// The TRACK's own width — the pill area plus its uniform inset on both sides. What the glass
+/// budget is charged against ([`GLASS_TRACK_MAX`]), and what `draw_tab_row` builds its rect from.
+fn tab_track_w(widths: &[f32]) -> f32 {
+    tab_view_w(widths) + 2.0 * TAB_TRACK_PAD
 }
 /// Content-space x of pill `i`'s left edge (0 = the strip's start).
 fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
@@ -2572,6 +2623,27 @@ pub(crate) fn draw_tab_row(p: Painter) {
             view_w + 2.0 * TAB_TRACK_PAD,
             TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
         );
+        // **A SURFACE MAY NOT APPEAR IN ITS OWN BACKDROP**, and this row is the one place in the app
+        // where it could: the direct source path renders the whole page again into a small FBO, and
+        // the page includes this bar. Left in, the glass track blurred the FLAT track — its own
+        // `scrim_black(0.72..0.82)` capsule, plus the pill labels — and then darkened that again
+        // with its own stops. Measured on Home over a UNIFORM hero (220,255,163 across the whole
+        // span, above and below the bar): the flat track reads (52,60,38) and the glass one (33,38,
+        // 26). A material whose whole argument is that it is LIGHTER than the capsule it replaces
+        // came out darker than it, muddy, and with the selection capsule swimming in a patch of its
+        // own doubled scrim. Every "the glass tab bar looks wrong" report traces here — including
+        // the density sweeps that only cleared at 0.70, which was the doubling being paid for twice.
+        //
+        // Only the DIRECT path could have this bug, which is why it arrived with that path becoming
+        // the default: the capture path grabs framebuffer 0 from inside the glass surface, i.e.
+        // after the page and BEFORE this bar, so the track was never in its own snapshot there.
+        //
+        // The exclusion is exactly "will this row wear glass" — [`tab_glass_wanted`], the same test
+        // minus its source-pass clause. When a popover is open the track is flat and belongs in the
+        // snapshot, because then it really is behind the panel that samples it.
+        if crate::gfx::blur_source_pass() && tab_glass_wanted(track.w) {
+            return;
+        }
         // dark-material weight (`theme::TAB_TRACK_TOP` holds the reasoning): light enough to keep a
         // hint of the art, dark enough that the TEXT_TERTIARY plain segments hold contrast even over
         // near-white art
@@ -2599,7 +2671,7 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // limit exists to avoid. It is also the one scene where the direct path's advantage should
         // show, since its cost is the page's draw calls rather than the region's area, so the two
         // paths need to be comparable on it.
-        let glass_on = tab_glass_on();
+        let glass_on = tab_glass_on(track.w);
         if glass_on {
             // PREPARE is deliberately not here — see `tab_glass_prepare`. Resolving cadence during
             // the page draw invalidates the backdrop after any earlier owner has already captured
@@ -2613,7 +2685,16 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 [1.0, 1.0, 1.0, 1.0],
             ) {
                 let (gt, gb) = tab_glass_stops();
-                p.rect_sheened(track, track.h * 0.5, gt, gb);
+                // NO [`theme::CARD_SHEEN`] here, and it is the one line that separates this from a
+                // dark capsule with a blur behind it. The glass material draws its OWN rim —
+                // `fs_glass.frag`'s perimeter hairline and its chamfer, one light from above, the
+                // direction every shadow in this system falls in. The tile sheen is a second,
+                // undirected white line laid over the darkening layer, and being translucent it
+                // takes the colour of whatever it is over: on the television that is what read as a
+                // warm rim around the whole track, and no amount of density touched it because
+                // density is applied UNDER it. The flat track still wears it — there it is the only
+                // edge the capsule has.
+                p.rect(track, track.h * 0.5, gt, gb, 0.0);
             } else {
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
             }
@@ -3195,6 +3276,58 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **[`GLASS_TRACK_MAX`] is the budget, solved for width** — asserted rather than asserted-in-a-
+    /// comment, because the two numbers live in different files and the one that moves is the
+    /// budget. A glass surface is charged for the blurred RECTANGLE: itself grown
+    /// [`crate::gfx::BLUR_MARGIN`] on every side. At the limit width that must still fit
+    /// [`crate::gfx::GLASS_REGION_BUDGET`], which is what a MOVING host carries at 60 fps — and this
+    /// bar's host is always moving, since the page under it is what the user is scrolling.
+    ///
+    /// The second half is the one worth having, and it is the design system's own counterexample:
+    /// `--glass-track-max`'s note says "(940 + 176) x 252 = 281k px^2 is inside the budget, and a
+    /// 1,050-wide one is not". Both halves of that sentence are checked here, so the limit cannot
+    /// drift away from the budget it was solved against. There is deliberate headroom between them
+    /// — the budget alone would allow ~1014 — because 940 is a round number a human can hold, not
+    /// the last width that fits.
+    #[test]
+    fn the_glass_track_width_limit_is_exactly_the_region_budget() {
+        let region = |w: f32| {
+            let h = TAB_PILL_H + 2.0 * TAB_TRACK_PAD;
+            (w + 2.0 * crate::gfx::BLUR_MARGIN) * (h + 2.0 * crate::gfx::BLUR_MARGIN)
+        };
+        assert!(
+            region(GLASS_TRACK_MAX) <= crate::gfx::GLASS_REGION_BUDGET,
+            "a track at the limit costs {:.0} px^2, past the {:.0} a moving host carries",
+            region(GLASS_TRACK_MAX),
+            crate::gfx::GLASS_REGION_BUDGET,
+        );
+        assert!(
+            region(1050.0) > crate::gfx::GLASS_REGION_BUDGET,
+            "a 1050-wide track costs {:.0} px^2 and must be outside the budget",
+            region(1050.0),
+        );
+    }
+
+    /// The width rule is the only refusal a SECTION TABLE can trip on its own, so it has to hold
+    /// for the strip the product actually draws and give way for one the server could produce.
+    #[test]
+    fn a_normal_strip_keeps_the_material_and_a_long_one_loses_it() {
+        // Home + three libraries + the square Search mark, at the widths `with_tab_metrics`
+        // measures: label + 2 x TAB_PILL_PAD.
+        let normal = [126.0, 146.0, 176.0, TAB_ICON_PILL_W];
+        assert!(
+            tab_track_w(&normal) <= GLASS_TRACK_MAX,
+            "the product's own strip is {} wide and must keep the material",
+            tab_track_w(&normal),
+        );
+        let many = [126.0, 146.0, 176.0, 150.0, 160.0, 140.0, 170.0, TAB_ICON_PILL_W];
+        assert!(
+            tab_track_w(&many) > GLASS_TRACK_MAX,
+            "eight pills is {} wide and must drop to flat",
+            tab_track_w(&many),
+        );
+    }
 
     /// A cadence of THREE, which is no longer the shipped default and is the point.
     ///
