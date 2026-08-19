@@ -195,9 +195,9 @@ pub fn draw() {
     // Glass::DYNAMIC routes this requested dim through the source prepass instead of drawing the
     // 1920x1080 scrim. Keeping the ordinary painter call makes that policy own the distinction.
     let p = pop().painter(0.5, -16.0);
-    phase("acct.panel", || {
-        let r = panel_rect();
-        pop().panel(p, r, 24.0);
+    let r = panel_rect();
+    pop().panel(p, r, 24.0);
+    phase("glass.foreground", || {
         table().draw(p, r);
     });
 }
