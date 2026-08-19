@@ -64,6 +64,10 @@ pkg/.build-config
 # 30k files. The .ipk carries the four built .so; releases carry the tarball for LGPL.
 vendor/ffmpeg-build/
 vendor/ffmpeg-prefix/
+# A worktree cut with an APFS clone of vendor/ lands the clone at vendor/vendor/ — build output,
+# not source, and 30,251 files of it. It was committed once by a `git add -A`; the branch was
+# rewritten to drop it and this is what stops the next one.
+vendor/vendor/
 # ...and the copies staged into pkg/ for the package. Equally derived: pkg/plxnative depends on
 # them, so a fresh clone rebuilds FFmpeg either way, and tracking them costs 2.1 MB per version
 # bump forever in a repo whose reproducibility rests on the pinned tarball.
