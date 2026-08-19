@@ -432,6 +432,12 @@ said nothing about the shader. A capture comparison on this screen has to be tak
 rotation window, with `plxnative-homeosc` absent (its 350 ms focus step moves the peek row under
 the shutter).
 
+Retaken that way — no oscillator, shot 6 s after launch — the ON-PANEL pair
+(`tools/capture-screen.sh … DISPLAY`, 1920x1080) is **max 2/255, mean 0.096/255, with exactly ONE
+pixel of 2,073,600 differing by more than one code**. A second shot of each leg ~5 s later is
+254/255 apart, which is the rotation doing precisely what it did the first time and is why the
+first pair was thrown away rather than reported.
+
 **And it is worth almost nothing.** Television, three interleaved repeats per leg, ~925 samples per
 run, first 60 discarded, within-leg spread 0.04% (control) and 0.01% (folded):
 
@@ -480,3 +486,35 @@ remove ARITHMETIC, not fragments.
    day the surface is not 1080p — at 4K the fragment and load/store work scale by four while the
    arithmetic per fragment does not, which is precisely the condition under which the pipe it
    unloads becomes the one that binds.
+
+### What a fragment costs, by draw class — the table the ledger exists to produce
+
+Same instrument, same scene: refuse ONE class and take a whole-frame `frame.ui` A/B against the
+control. Two interleaved repeats per leg, ~850 samples per run, within-leg spread 0.03–0.13%.
+Control 8,756,698 GPU_ACTIVE per frame.
+
+| class refused | px removed | Δ GPU_ACTIVE | Δ % of frame | **cycles / px** | Δ ARITH_WORDS |
+|---|---|---|---|---|---|
+| `card` — 4 peek-row tiles, `fs_img` full path (SDF + rim + penumbra) | 281,924 | −851,188 | **−9.72%** | **3.02** | −1,652,307 |
+| `image` — the full-bleed hero photograph, `fs_img` FLAT path | 2,153,440 | −2,102,996 | **−24.02%** | **0.98** | −4,288,786 |
+| `text` — 8 glyph strings | 84,216 | −60,018 | −0.69% | 0.71 | −89,628 |
+| the ramp + the wedge (via `heroground`) | 2,791,672 | −70,489 | −0.81% | **0.025** | −12,163 |
+
+**A card-composite fragment costs 120x what a gradient fragment costs, and a textured full-screen
+one costs 39x.** Every delta tracks `ARITH_WORDS / 2` to within 10% (two shader cores, one
+instruction word per cycle each) — which is the same statement as "the frame is arithmetic-bound",
+arrived at from the other side.
+
+So the ranking, on a hero frame, is: **the wayland compositor 34.4%, the hero photograph 24.0%,
+four card composites 9.7%, the glass 11.4%** (Part 4, same scene), everything else under 1% each.
+Two consequences worth carrying:
+
+* **The photograph is the app's single most expensive object**, at nearly one GPU cycle per screen
+  pixel, and it is one draw call with the simplest shader in the app. There is no overdraw to
+  remove there; it is a 1280x720 texture read magnified to the panel, and `L2_EXT_READ_BEATS` falls
+  56% when it goes.
+* **These deltas are a RANKING and a per-pixel price, not an additive budget.** They sum to 35.2%
+  against the 65.6% that `drawmask=all` removes, because `GPU_ACTIVE` is an OR across concurrently
+  active units: the app's arithmetic partly hides behind the compositor's texture stalls, so
+  removing one class frees less than removing it in isolation would. Price a real change by its own
+  A/B, exactly as this note has said since Part 4 — do not build a budget by adding these rows up.
