@@ -490,13 +490,16 @@ pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
 /// family's greys — the design system's `--glass-track-top`/`-bot`, the two stops on the existing
 /// ramp nearest the .38/.46 this was first built with.
 ///
-/// **These values do not clear this app's own contrast rule, and that is why the track ships flat.**
-/// Both the .38/.46 they were derived from and the .34/.50 recorded here were tuned against a
-/// render that darkened TWICE — the direct source pass drew the flat track into the glass track's
-/// own backdrop (`widgets::draw_tab_row` holds the account of it), so a nominal .42 was landing at
-/// an effective ~.87 and every legibility judgement made on it was made on the wrong picture. With
-/// that fixed the material is honest and the numbers are not. Against the worst artwork a hero can
-/// be — white — the ground is `1 - a`, and [`TEXT_TERTIARY`] over it:
+/// **These are the FLOOR of a range, not a fixed pair** — [`crate::ui::widgets::track_alpha_for`]
+/// solves the weight per frame from what is actually behind the bar, and this is where it starts.
+///
+/// They were a fixed pair for one afternoon and could not be: both the .38/.46 they were derived
+/// from and the .34/.50 recorded here were tuned against a render that darkened TWICE — the direct
+/// source pass drew the flat track into the glass track's own backdrop (`widgets::draw_tab_row`
+/// holds the account of it), so a nominal .42 was landing at an effective ~.87 and every legibility
+/// judgement was made on the wrong picture. With that fixed the material became honest and the
+/// numbers stopped being enough. Against the worst artwork a hero can be — white — the ground is
+/// `1 - a`, and [`TEXT_TERTIARY`] over it:
 ///
 /// | a | contrast | | a | contrast |
 /// |---|---|---|---|---|
@@ -505,16 +508,16 @@ pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
 /// | .56 | 1.73 | | **.72** | **3.23** |
 ///
 /// The bar is **3:1** — the same one `widgets`' ground test holds an ambient wash to, and the same
-/// arithmetic that put [`SCRIM_TEXT_A`] and [`TAB_TRACK_A_TOP`] at .72 in the first place. So the
-/// first legal glass density IS the flat track's, because **a blur removes DETAIL, not brightness**:
-/// a quarter-res Kawase of a white poster is still white. At .72/.82 the two materials are the same
-/// picture but for a rim the flat one could draw directly for nothing, and the glass one spends
-/// ~281k of the ~300k px² a MOVING host has (`docs/glass-hardware-budget.md`) on a bar that stands
-/// on Home, the Library and Search — i.e. the entire budget, permanently, for an edge.
+/// arithmetic that put [`SCRIM_TEXT_A`] and [`TAB_TRACK_A_TOP`] at .72 in the first place. Read as a
+/// CONSTANT that table says the first legal density is the flat track's own, because **a blur
+/// removes DETAIL, not brightness**: a quarter-res Kawase of a white poster is still white. That was
+/// the verdict for a day, and it is the right verdict for a constant.
 ///
-/// Kept at the design's values because the trigger is an INSTRUMENT: they are what the design asks
-/// for, and the next person to argue this should see them, not a number chosen to make the
-/// experiment agree with its verdict.
+/// **The premise was the mistake.** A hero is one picture at a time, not every picture at once, so
+/// the density does not have to survive the worst one — it has to survive THIS one. Solved per
+/// frame it sits here on a dark backdrop and walks up the table only as far as the ground makes it,
+/// which on a bright hero measured .562 and on most heroes is this floor. The ink never moves,
+/// which is what the row's hierarchy is made of.
 pub const TAB_GLASS_TOP: [f32; 4] = scrim_black(0.34);
 /// The glass track's bottom stop — see [`TAB_GLASS_TOP`].
 pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.50);

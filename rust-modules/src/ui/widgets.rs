@@ -2441,30 +2441,6 @@ fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
-/// What the top of the panel shows this frame, published by the page that draws it.
-///
-/// The tab track is shared by three screens and drawn from one function, so it cannot know what is
-/// behind it — and with a MATERIAL that is suddenly the only thing it needs to know. Home publishes
-/// its hero's own top edge; anything that does not publish gets the flat app grey, which is what the
-/// Library and Search really do have up there.
-static mut CHROME_GROUND: [f32; 3] =
-    [theme::SURFACE_APP[0], theme::SURFACE_APP[1], theme::SURFACE_APP[2]];
-
-/// Publish the ground under the top chrome for this frame. Call before the chrome draws.
-pub(crate) fn set_chrome_ground(c: [f32; 3]) {
-    unsafe { CHROME_GROUND = c }
-}
-
-/// Read it and reset to the flat default, so a page that stops publishing cannot leave the previous
-/// screen's hero standing behind the bar.
-fn take_chrome_ground() -> [f32; 3] {
-    unsafe {
-        let g = *std::ptr::addr_of!(CHROME_GROUND);
-        CHROME_GROUND = [theme::SURFACE_APP[0], theme::SURFACE_APP[1], theme::SURFACE_APP[2]];
-        g
-    }
-}
-
 /// The bar the track's idle labels have to clear — the same 3:1 the ambient-ground test holds a
 /// wash to, for the same ink.
 const TRACK_INK_CONTRAST: f32 = 3.0;
@@ -2513,10 +2489,11 @@ const GLASS_TRACK_MAX: f32 = 940.0;
 
 /// Is the shared tab track wearing glass this frame?
 ///
-/// **The track ships FLAT**, behind `/tmp/plxnative-glasstabs`, and the reason is arithmetic rather
-/// than taste — see [`theme::TAB_GLASS_TOP`] for the table. The design system asks for glass here
-/// and the RULE it argues is sound; what does not survive is that a legible glass track and the
-/// flat one are the same picture, and only one of them costs the whole frame's glass budget.
+/// **Glass is the material.** `/tmp/plxnative-flattabs` takes it away, which is how the two are
+/// compared on one television without a second binary — and the one thing that made the flat track
+/// the answer for a while is gone: the density is no longer a constant that had to be legible over
+/// every possible hero at once, so it is not forced up to the flat capsule's own weight. See
+/// [`track_alpha_for`].
 ///
 /// Four refusals, each a different kind of limit:
 /// - **A panel is open** — and the reason is DISTANCE, not arithmetic. Two glass surfaces in a
@@ -2531,7 +2508,7 @@ const GLASS_TRACK_MAX: f32 = 940.0;
 /// know whether the track will wear glass in order to decide whether to draw itself into that
 /// track's own backdrop at all. See there.
 fn tab_glass_wanted(track_w: f32) -> bool {
-    crate::dev::flag("glasstabs")
+    !crate::dev::flag("flattabs")
         && track_w <= GLASS_TRACK_MAX
         && (!crate::ui::popover::any_open() || crate::dev::flag("glassboth"))
 }
@@ -2772,11 +2749,12 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // hint of the art, dark enough that the TEXT_TERTIARY plain segments hold contrast even over
         // near-white art
         //
-        // `/tmp/plxnative-glasstabs` swaps that flat material for the popovers' backdrop glass — an
-        // EXPERIMENT, behind a trigger, because the two cases are not alike. A popover opens over a
-        // still page and snapshots once; this bar sits over a page that scrolls, flips its hero and
-        // cross-fades between routes, so it opts into the reusable dynamic policy: the bar itself
-        // draws every presented frame while a dirty snapshot refreshes at most every third present.
+        // That flat material is now the FALLBACK — `/tmp/plxnative-flattabs`, a popover being open,
+        // a track too wide, or a driver with no render target. The shipped one is the popovers'
+        // backdrop glass, and the two cases are not alike: a popover opens over a still page and
+        // snapshots once, while this bar sits over a page that scrolls, flips its hero and
+        // cross-fades between routes, so it opts into the reusable dynamic policy — the bar draws
+        // every presented frame while a dirty snapshot refreshes on every changed one.
         //
         // **A modal takes the glass away**, and the reason is DISTANCE, not arithmetic. Two glass
         // surfaces in a frame converge on one grab (`gfx::blur_region_union`), so NEIGHBOURS avoid
@@ -2797,10 +2775,10 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // paths need to be comparable on it.
         // consumed unconditionally: the publisher writes every frame and the reset is what stops a
         // hero standing behind the Library's bar after a route change
-        // The PIXELS, sampled at a low rate, with the page's own published guess as the fallback
-        // until the first sample lands (and on a driver that refuses the readback).
+        // The PIXELS, sampled at a low rate; the flat app grey when the readback is refused, which
+        // is also the honest answer on the two screens that really do have it up there.
         let ground = crate::gfx::sample_ground([track.x, track.y, track.w, track.h])
-            .unwrap_or_else(take_chrome_ground);
+            .unwrap_or([theme::SURFACE_APP[0], theme::SURFACE_APP[1], theme::SURFACE_APP[2]]);
         // `/tmp/plxnative-groundlog` — the density is now a FUNCTION of something invisible, so the
         // instrument that says what it read and what it chose is not optional. It is how the first
         // version of this was caught reading Plex's `UltraBlurColors`, which gave (0.30,0.23,0.18)
@@ -2810,29 +2788,13 @@ pub(crate) fn draw_tab_row(p: Painter) {
             let n = unsafe { LAST };
             if n % 60 == 0 {
                 crate::log(&format!(
-                    "chrome_ground rgb={:.3},{:.3},{:.3} alpha={:.3}",
+                    "track_ground rgb={:.3},{:.3},{:.3} alpha={:.3}",
                     ground[0], ground[1], ground[2], track_alpha_for(ground)
                 ));
             }
             unsafe { LAST = n.wrapping_add(1) };
         }
         let glass_on = tab_glass_on(track.w);
-        // The resting card shadow under the track — `/tmp/plxnative-tracksh` while it is being
-        // judged. Every CONTROL in this app carries this pair and the track carries neither, which
-        // is why a row of buttons reads as sitting ON the page while the bar reads as printed into
-        // it. The design system's own recreation gives the track two inset lines and no outer
-        // shadow, and gives a PANEL `0 30px 70px` — a standing container is not supposed to float.
-        // Whether a 76px bar over artwork can afford to look printed is a question for the panel,
-        // not for the rule, so the shadow is here to be looked at rather than argued about.
-        if crate::dev::flag("tracksh") {
-            p.shadow(
-                track,
-                track.h * 0.5,
-                theme::CARD_SHADOW_REST_BLUR,
-                theme::CARD_SHADOW_REST_DY,
-                theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A),
-            );
-        }
         if glass_on {
             // PREPARE is deliberately not here — see `tab_glass_prepare`. Resolving cadence during
             // the page draw invalidates the backdrop after any earlier owner has already captured

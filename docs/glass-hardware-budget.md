@@ -547,11 +547,11 @@ returns without drawing whenever it is a blur source AND would have worn glass. 
 hero the track now measures `(129,150,96)` — exactly `0.58 x 220`, which is what the arithmetic
 says a black scrim at .42 over that ground should be.
 
-### The second rejection is arithmetic, and it holds
+### The second rejection was arithmetic about a CONSTANT, and the constant was the mistake
 
-With an honest picture the question can be asked properly: **what density do the track's idle
-labels need?** They are `TEXT_TERTIARY` over whatever a hero happens to be. Against the worst case
-a photograph can be — white — the ground under them is `1 - a`:
+With an honest picture the question can be asked properly: **what density do the track's idle labels
+need?** They are `TEXT_TERTIARY` over whatever a hero happens to be. Against the worst case a
+photograph can be — white — the ground under them is `1 - a`:
 
 | a | tertiary contrast | | a | tertiary contrast |
 |---|---|---|---|---|
@@ -560,25 +560,77 @@ a photograph can be — white — the ground under them is `1 - a`:
 | .56 | 1.73 | | **.72** | **3.23** |
 
 The bar is **3:1** — the same one `widgets`' ambient-ground test holds a wash to, and the same
-arithmetic that put `SCRIM_TEXT_A` and `TAB_TRACK_A_TOP` at .72 in the first place. So **the first
-legal glass density is the flat track's own**, and the reason is the one fact this whole note keeps
-arriving at: **a blur removes DETAIL, not brightness.** A quarter-res Kawase of a white poster is
-still white.
+arithmetic that put `SCRIM_TEXT_A` and `TAB_TRACK_A_TOP` at .72 in the first place. So a single
+number that has to work everywhere is the flat track's own, and the reason is the fact this note
+keeps arriving at: **a blur removes DETAIL, not brightness.** A quarter-res Kawase of a white poster
+is still white. At .72 the two materials are the same picture but for a rim, and the glass one
+spends most of the frame's budget on a bar that stands on three screens. That verdict stood for a
+day and it is correct — **for a constant**.
 
-At .72/.82 the two materials are the same picture but for a rim the flat track could draw directly
-for nothing — and the glass one spends ~281k of the ~300k px² a MOVING host has, on a bar that
-stands on Home, the Library and Search. That is the entire frame's glass budget, permanently, for
-an edge, on the three screens most likely to want a panel of their own.
+**A hero is one picture at a time, not every picture at once.** The density does not have to survive
+the worst backdrop the library contains; it has to survive the one on the panel. Solved per frame
+(`widgets::track_alpha_for`) it sits at the design's floor on a dark hero, walks up only as far as
+the ground makes it, and the ink never moves — which matters, because the ink is what the row's
+hierarchy is made of. Brightening the idle label instead was the alternative and it is priced: one
+step (tertiary → secondary) buys 11 points of transparency and costs **36% of the idle:selected
+separation**, two steps buys 17 and costs half of it.
 
-Photographed proof rather than only sums: over three real heroes in the simulator, glass at the
-design's density is better than flat on the two dark ones (it takes the picture's colour and reads
-as part of it) and **fails on the warm sunset** — "Movies" and "TV Shows" wash out against a bright
-blurred ground while the flat capsule holds them. The app does not choose its artwork.
+The ground has to be the PIXELS. Five taps under the bar, every thirtieth drawn frame, from
+framebuffer 0 before the bar draws — a readback stalls a tiler, which is exactly why the rate is
+low: a hero holds for eight seconds and a scrim density has no business changing faster than the
+picture does. Measured on the panel with `homeosc` running, the frame rate is unchanged.
 
-**What ships:** the flat track, with `/tmp/plxnative-glasstabs` and `/tmp/plxnative-tabglassdim`
-kept beside it — the instruments are what make this answerable again rather than re-argued. The
-Account popover's glass ships as before: a panel, over Home's hero, at the 72% frost the panel
-family already uses, inside budget.
+**The cheap sources are the wrong colour, and this cost an iteration.** Plex's `UltraBlurColors` are
+a derived muted palette for an ambient wash: for the hero whose top edge measures (0.00, 0.68, 0.91)
+on the panel they report **(0.30, 0.23, 0.18)**, so the bar stayed at its floor and nothing changed.
+The wash's own corners lean only 26% toward the art and have the same problem.
+
+Photographed proof rather than only sums: over six real heroes in the simulator and three on the
+set, the bar is transparent on the dark ones and takes .562 on the bright cyan that used to drown
+its labels.
+
+**What ships:** the glass track, with `/tmp/plxnative-flattabs` for the comparison,
+`/tmp/plxnative-tabglassdim` to pin the weight by hand and `/tmp/plxnative-groundlog` to print what
+it read and what it chose. The Account popover's glass ships as before.
+
+### What the material costs, in counters (2026-08-19, the shipped default)
+
+An A/B on `fps:home-grid`'s own scene (`homeosc`, the busiest UI scene the suite has), both legs
+with `/tmp/plxnative-hwcnt=frame.ui` armed so the profiler's own overhead cancels. ~1,160 frames a
+leg, 20 discarded.
+
+| counter | flat track | glass track | delta |
+|---|---|---|---|
+| **GPU_ACTIVE** | 9,692,137 | 10,561,071 | **+868,934 (+9.0%)** |
+| JS0_ACTIVE (fragment) | 9,614,472 | 10,337,421 | +722,949 (+7.5%) |
+| JS1_ACTIVE (vertex) | 159,644 | 212,571 | +52,926 (+33.2%) |
+| FRAG_ACTIVE | 19,200,288 | 20,597,971 | +1,397,683 (+7.3%) |
+| **FRAG_NUM_TILES** | 4,069 | 4,859 | **+790 (+19.4%)** |
+| FRAG_QUADS_RAST | 1,877,341 | 1,909,764 | +32,423 (+1.7%) |
+| ARITH_WORDS | 17,353,808 | 18,158,805 | +804,997 (+4.6%) |
+| TEX_WORDS | 4,566,131 | 4,840,835 | +274,704 (+6.0%) |
+| SHADER_AXI_BEATS_READ | 684,440 | 818,272 | +133,832 (+19.6%) |
+
+Read it this way. **The extra 790 tiles are the chain's own passes** — the quarter-res target, not
+the bar — which is why the quad count barely moves (+1.7%) while the tile count jumps a fifth. The
+work is fragment-side and the memory traffic is the snapshot being written and read back (external
+read beats +19.6%); nothing about the visible bar got more expensive.
+
+Against the frame budget — **(646M, 693M] GPU_ACTIVE cycles/second**, i.e. 10.77M–11.55M at 60 fps:
+
+| | cycles/frame | of the 60 fps budget |
+|---|---|---|
+| flat | 9,692,137 | 84–90% |
+| glass | 10,561,071 | **91–98%** |
+
+**It fits, and the headroom is thin.** This is the worst UI scene in the suite, and the material
+leaves between 2% and 9% of the frame. That is the number to quote at anyone proposing a second
+glass surface anywhere on Home, the Library or Search — the answer is arithmetic, not taste, and it
+is no.
+
+Pacing from a separate UNARMED run: `./tests/run.py --fps` is **14 of 14** with glass as the
+default, `home-grid` at a median 57 fps and `home-idle` still stopping at a ceiling of 1 — the
+material does not defeat the present gate, because the ground sampler only runs when the bar draws.
 
 ### What this means for a screen you are designing
 
