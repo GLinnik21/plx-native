@@ -4899,6 +4899,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
             let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) = (fd_pc_pump, fd_pc_pump, fd_pc_pump);
             if present {
+                // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
+                // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
+                // region to be declared before rendering begins. See `egl.rs`.
+                crate::egl::frame_damage();
                 // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
                 // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
                 // is the entire logical->physical mapping — nothing else in the renderer knows the
@@ -5061,6 +5065,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 #[cfg(feature = "hostsim")]
                 crate::shot::maybe_capture(vx, vy, vw, vh);
                 SDL_GL_SwapWindow(win);
+                // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
+                // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
+                crate::egl::late_probe();
                 #[cfg(feature = "devtools")]
                 {
                     buffer_flip_count = (buffer_flip_count + 1) % 60;
