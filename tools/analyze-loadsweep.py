@@ -43,15 +43,24 @@ def pct(values, fraction):
 
 
 def summarize(name, groups, unit=""):
+    """Per-step distribution, plus DRIFT — the last third's mean minus the first third's.
+
+    Samples are appended in time order and the sweep cycles, so a step's list spans the whole run.
+    Drift is therefore the direct test for a session that decays under sustained load (thermal, or
+    anything else that gets worse the longer the set is on), which a median cannot show and which
+    `tests/run.py` reports for the same reason.
+    """
     print(f"\n== {name} by load step ==")
-    print(f"{'step':>5} {'n':>5} {'median':>12} {'mean':>12} {'p10':>10} {'min':>10} {'max':>10}")
+    print(f"{'step':>5} {'n':>5} {'median':>12} {'mean':>12} {'p10':>10} {'min':>10} {'max':>10} {'drift':>10}")
     for step in sorted(groups):
         v = groups[step]
         if not v:
             continue
+        third = max(len(v) // 3, 1)
+        drift = statistics.fmean(v[-third:]) - statistics.fmean(v[:third])
         print(
             f"{step:>5} {len(v):>5} {statistics.median(v):>12.1f} {statistics.fmean(v):>12.1f} "
-            f"{pct(v, 0.10):>10.1f} {min(v):>10.1f} {max(v):>10.1f}{unit}"
+            f"{pct(v, 0.10):>10.1f} {min(v):>10.1f} {max(v):>10.1f} {drift:>+10.2f}{unit}"
         )
 
 
