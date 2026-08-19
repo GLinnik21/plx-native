@@ -2967,10 +2967,28 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if crate::dev::flag("anim") {
             crate::ui::anim::set_enabled(true);
         }
-        // dev: /tmp/plxnative-profile turns on the per-phase draw profiler (ui::profile) — logs mean
-        // ms/frame per draw phase to the event log (GPU-synced, so absolute FPS drops while it's on).
-        if crate::dev::flag("profile") {
-            crate::ui::profile::set_enabled(true);
+        // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
+        // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
+        // Combining them would perturb the timer result, so fail closed when both are present.
+        // dev: /tmp/plxnative-blurdirect turns on the direct low-resolution backdrop render
+        // (empty = 1/4 per axis; a number selects the divisor, powers of two from 4). Absent, the
+        // shipped glCopyTexSubImage2D + two-reduction capture path is used, which is what makes
+        // this an A/B rather than a replacement.
+        if let Some(v) = crate::dev::read("blurdirect") {
+            let scale = if v.is_empty() { 4 } else { v.parse().unwrap_or(0) };
+            crate::gfx::set_blur_direct(scale);
+            log(&format!(
+                "blur: direct backdrop path scale=1/{scale} ({})",
+                if crate::gfx::blur_direct_scale().is_some() { "on" } else { "REFUSED" }
+            ));
+        }
+        match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
+            (Some(_), Some(_)) => {
+                log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
+            }
+            (Some(filter), None) => crate::ui::profile::set_enabled(&filter),
+            (None, Some(filter)) => crate::ui::profile::set_hwcnt_enabled(&filter),
+            (None, None) => {}
         }
         // dev: /tmp/plxnative-noidle turns the whole-frame present gate (ui::idle) OFF, so a still
         // screen goes back to repainting at panel rate. It is a DIAG trigger (see the list above)
@@ -4889,7 +4907,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // the last screen that could have left a clip armed. See `ui::guard` for what this does
                 // NOT cover (worker-thread panics, aborts, half-mutated state). Everything inside is a
                 // read of loop state, so the closure only borrows; nothing is moved out of the loop.
-                crate::ui::guard(|| {
+                // An empty selected phase provides the profiler floor for this build; it
+                // deliberately issues no GL commands between its two boundaries.
+                crate::ui::profile::phase("profile.empty", || {});
+                crate::ui::profile::phase("frame.ui", || {
+                    crate::ui::guard(|| {
                     if player {
                         crate::system::clear_opaque_region();
                         glClearColor(0.0, 0.0, 0.0, 0.0);
@@ -4960,6 +4982,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // Resolve every glass owner before Home draws. Gains compose here so a
                             // future neighbouring widget does not need to fork the page renderer.
                             let mut glass_frame = crate::ui::widgets::GlassFrame::IDENTITY;
+                            // The shared top tab track is a glass owner too. It has to resolve its
+                            // cadence here, with the others, and not from inside the page draw.
+                            crate::ui::widgets::tab_glass_prepare();
                             if matches!(route, Route::Account) {
                                 glass_frame = glass_frame.combine(
                                     crate::ui::account_menu::prepare_present(
@@ -4967,7 +4992,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     ),
                                 );
                             }
-                            crate::ui::home::home_draw(glass_frame);
+                            // EXPERIMENT (`/tmp/plxnative-blurdirect`): produce the backdrop by
+                            // drawing the page again into a small FBO, instead of copying
+                            // framebuffer 0 and reducing it twice. It has to happen HERE, before
+                            // the visible page draws — the capture path's hook is inside the glass
+                            // surface itself, which is far too late to run a second scene pass —
+                            // and the visible full-resolution draw below is untouched either way.
+                            if let Some(reg) = crate::gfx::blur_direct_region() {
+                                crate::gfx::blur_snapshot_direct(reg, &mut || {
+                                    crate::ui::home::home_draw(glass_frame);
+                                });
+                            }
+                            crate::ui::profile::phase("main.ui", || {
+                                crate::ui::home::home_draw(glass_frame);
+                            });
                         }
                         if matches!(route, Route::Account) {
                             crate::ui::account_menu::draw(); // profile popover over Home
@@ -4995,6 +5033,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                     }
                     crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
+                    });
                 });
                 fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
                 // dev capture stream: grab this finished frame before the swap (after the last draw,
