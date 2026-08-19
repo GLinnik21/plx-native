@@ -509,39 +509,92 @@ Everything above prices glass. This section is the one thing in the note that is
 measurement: it is a design decision, taken in front of the television, and it overrides any
 number here.
 
-**The tab-track glass was looked at on the panel and rejected.** It is not a cost problem — the
-track's blurred region is 728x200, comfortably inside the 60 fps budget. It is a legibility
-problem, and it depends on what is BEHIND the bar:
+**The tab-track glass was looked at and rejected, twice, and the second time settles it.** It was
+never a cost problem — the track's blurred region is 728x200, comfortably inside the 60 fps budget.
 
-| ground | result |
-|---|---|
-| the Home hero photograph | works — large smooth areas blur into an even gradient, the pills read, the rim is a thin light edge |
-| the library's poster grid | fails — mottled, one pill on a warm patch and its neighbour on a dark one, a warm rim around the whole track, and a halo around the selection capsule |
+### The first rejection was made on a broken picture
 
-**Why raising the density does not rescue it.** The flat track is `scrim_black(0.72..0.82)` and is
-sized to make the pills legible over ARBITRARY artwork; the glass track halves that to 0.38/0.46
-on the argument that a real backdrop behind it does the work the flat material had to do alone.
-Over a poster wall it does not: **blur removes DETAIL, not brightness**, so a quarter-resolution
-Kawase blur of a grid is still bright here and dark there. Sweeping the density on the set
-(`/tmp/plxnative-tabglassdim`) clears the mottling by about 0.70 — which is 0.02 short of the flat
-track it replaced. **At the density this content needs, the glass has stopped being glass.**
+Read this part before quoting anything from the version of this section that stood between
+2026-08-19 morning and evening. It described the glass track over a poster grid as *mottled, with a
+warm rim and a halo around the selection capsule*, and reported that a density sweep only cleared
+the mottling at 0.70 — "at the density this content needs, the glass has stopped being glass."
+Every one of those observations was real. All of them were artefacts of two bugs in what the
+material was being handed, not properties of the material:
 
-**And two of the three artefacts are not the scrim's at all.** The selection capsule is white at
-alpha 0.20 — a translucent plate with no colour of its own, tuned against a near-black ground; on a
-ground that is both lighter and uneven it lands differently on each side of itself, which is what
-reads as a halo. The track's sheen rim is translucent too and is drawn ABOVE the darkening layer,
-so density does not touch it: it takes the colour of whatever it is over. All three artefacts are
-one fault — **layers whose appearance is relative to a ground that was assumed constant.**
+1. **The source pass drew the wrong page.** `app.rs` reached the direct-blur hook only from the
+   Home arm of the route dispatch, and the closure it handed over called `home_draw` whatever the
+   route actually was. So on the Library and on Search the tab track blurred **Home** — a hero from
+   a screen the user had left. Measured in the simulator on the Library: page ground `(44,44,46)`,
+   "glass" track `(72,77,59)`. A band whose entire job is to DARKEN came out 1.6x brighter than its
+   own ground, and green, on a screen with nothing green on it. That is the mottling and the warm
+   rim.
+2. **The track drew itself into its own backdrop.** The direct path renders the page again into a
+   small FBO, the page includes the tab row, and the row was drawing its FLAT capsule
+   (`scrim_black(0.72..0.82)`) plus the pill labels into the very snapshot the glass row was about
+   to sample. So the material darkened twice. Measured on Home over a UNIFORM hero (220,255,163
+   across the whole span, above and below the bar): flat track `(52,60,38)`, glass track
+   `(33,38,26)`. The lighter material came out darker than the thing it replaced — and the
+   selection capsule, a translucent white plate tuned against near-black, was floating in a patch
+   of that doubled scrim, which is the halo. **The density sweep that "cleared at 0.70" was paying
+   for the doubling twice.**
 
-**What this means for a screen you are designing.** Backdrop glass is not a universal material
-here. Put it over photographic grounds — a hero, a backdrop, artwork that fills its region — and it
-behaves. Put it over a dense grid of small images and it will need values of its own for the
-capsule and the rim before it is worth looking at again.
+Only the DIRECT path could have bug 2, which is why it appeared when that path became the default:
+the capture path grabs framebuffer 0 from inside the glass surface, i.e. after the page and BEFORE
+the bar, so the track was never in its own snapshot there.
 
-**What ships today:** the Account popover's glass, which appears over Home's hero and is inside
-budget. Everything else takes the flat track. The tab-track experiment stays behind
-`/tmp/plxnative-glasstabs`, with `/tmp/plxnative-tabglassdim` beside it, because the instrument is
-what makes the question answerable next time rather than re-argued.
+Both are fixed. The route dispatch draws the route's own page in both passes, and `draw_tab_row`
+returns without drawing whenever it is a blur source AND would have worn glass. Over a uniform
+hero the track now measures `(129,150,96)` — exactly `0.58 x 220`, which is what the arithmetic
+says a black scrim at .42 over that ground should be.
+
+### The second rejection is arithmetic, and it holds
+
+With an honest picture the question can be asked properly: **what density do the track's idle
+labels need?** They are `TEXT_TERTIARY` over whatever a hero happens to be. Against the worst case
+a photograph can be — white — the ground under them is `1 - a`:
+
+| a | tertiary contrast | | a | tertiary contrast |
+|---|---|---|---|---|
+| .34 (the design's value) | 1.21 | | .62 | 2.17 |
+| .50 | 1.39 | | .67 | 2.64 |
+| .56 | 1.73 | | **.72** | **3.23** |
+
+The bar is **3:1** — the same one `widgets`' ambient-ground test holds a wash to, and the same
+arithmetic that put `SCRIM_TEXT_A` and `TAB_TRACK_A_TOP` at .72 in the first place. So **the first
+legal glass density is the flat track's own**, and the reason is the one fact this whole note keeps
+arriving at: **a blur removes DETAIL, not brightness.** A quarter-res Kawase of a white poster is
+still white.
+
+At .72/.82 the two materials are the same picture but for a rim the flat track could draw directly
+for nothing — and the glass one spends ~281k of the ~300k px² a MOVING host has, on a bar that
+stands on Home, the Library and Search. That is the entire frame's glass budget, permanently, for
+an edge, on the three screens most likely to want a panel of their own.
+
+Photographed proof rather than only sums: over three real heroes in the simulator, glass at the
+design's density is better than flat on the two dark ones (it takes the picture's colour and reads
+as part of it) and **fails on the warm sunset** — "Movies" and "TV Shows" wash out against a bright
+blurred ground while the flat capsule holds them. The app does not choose its artwork.
+
+**What ships:** the flat track, with `/tmp/plxnative-glasstabs` and `/tmp/plxnative-tabglassdim`
+kept beside it — the instruments are what make this answerable again rather than re-argued. The
+Account popover's glass ships as before: a panel, over Home's hero, at the 72% frost the panel
+family already uses, inside budget.
+
+### What this means for a screen you are designing
+
+Backdrop glass is not a universal material here, and the dividing line is not "photographic vs
+not" — it is **how much ink you need on top of it**. A panel carries a page of copy at
+`TEXT_PRIMARY` and holds it at 72% frost. A 76px band whose labels are the dimmest ink in the app
+has no room to be transparent at all. If a surface needs glass, give it ink that can survive its
+own ground, or accept a scrim so heavy that the material stops being visible — those are the two
+honest ends, and the tab track is the case that proves there is nothing useful in between.
+
+One option is NOT ruled out by any of this, and it is the one worth designing rather than arguing:
+a track whose scrim alpha is chosen **from its own snapshot's luminance**, so the composite lands
+on the legibility floor whatever is behind it — dark artwork gets a transparent bar, a white sunset
+gets an opaque one, and the ink never moves. The app already thinks this way about grounds
+(`AmbientWash::keyed` caps corners under 0.42 luminance). It is a new mechanism, not a retune, so
+it is written down here rather than built.
 
 ## 9. How this was measured
 

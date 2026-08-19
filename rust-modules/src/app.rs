@@ -114,6 +114,23 @@ extern "C" {
 /// Falls back to the canvas size if SDL cannot answer, which is the behaviour this replaced.
 #[cfg(feature = "hostsim")]
 fn desktop_window_size() -> (c_int, c_int) {
+    // `PLXNATIVE_WIN=<w>x<h>` overrides the fit entirely — `make sim-shot SIM_W=1920 SIM_H=1080`.
+    // It exists because the fit below is chosen for a HUMAN looking at a window, and a screenshot
+    // is not that: on a 1x display the divisor lands on 2 and every shot comes back 960x540, which
+    // is half the canvas the UI is authored at. A hairline, a 1px edge-sheen and a snapped glyph
+    // are exactly the things that do not survive that, so a shot taken to JUDGE the interface has
+    // to be asked for at full size. Off-screen edges are fine for a headless grab: the drawable is
+    // the window's own framebuffer, not the part of it the compositor happens to show.
+    if let Some(v) = std::env::var_os("PLXNATIVE_WIN") {
+        let v = v.to_string_lossy().to_lowercase();
+        if let Some((w, h)) = v.split_once('x') {
+            if let (Ok(w), Ok(h)) = (w.trim().parse::<c_int>(), h.trim().parse::<c_int>()) {
+                if w > 0 && h > 0 {
+                    return (w, h);
+                }
+            }
+        }
+    }
     let mut r = [0 as c_int; 4]; // SDL_Rect: x, y, w, h
     let ok = unsafe { SDL_GetDisplayUsableBounds(0, r.as_mut_ptr()) } == 0;
     let (uw, uh) = (r[2], r[3]);
@@ -5014,49 +5031,60 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // overlay route: it stays up until it is turned off.
                         crate::ui::stats::draw();
                     } else {
-                        if matches!(route, Route::Login) {
-                            crate::ui::login::draw();
-                        } else if matches!(route, Route::Profiles) {
-                            crate::ui::profiles::draw();
-                        } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
-                            // the page stays live UNDER its context menu — the popover is anchored beside
-                            // the episode still it acts on, which has to still be there to be beside
-                            crate::ui::detail::draw();
-                        } else if matches!(route, Route::Person) {
-                            crate::ui::person::draw();
-                        } else if matches!(route, Route::Library) {
-                            crate::ui::library::draw();
-                        } else if matches!(route, Route::Search) {
-                            crate::ui::search::draw();
-                        } else {
-                            // Resolve every glass owner before Home draws. Gains compose here so a
-                            // future neighbouring widget does not need to fork the page renderer.
-                            let mut glass_frame = crate::ui::widgets::GlassFrame::IDENTITY;
-                            // The shared top tab track is a glass owner too. It has to resolve its
-                            // cadence here, with the others, and not from inside the page draw.
+                        // Resolve every glass owner BEFORE anything on this route draws — that is
+                        // `Glass::prepare`'s contract, and the shared top tab track is an owner on
+                        // every route that wears it. Gains compose here so a future neighbouring
+                        // widget does not need to fork the page renderer.
+                        let mut glass_frame = crate::ui::widgets::GlassFrame::IDENTITY;
+                        if route_wears_tab_bar(route) {
                             crate::ui::widgets::tab_glass_prepare();
-                            if matches!(route, Route::Account) {
-                                glass_frame = glass_frame.combine(
-                                    crate::ui::account_menu::prepare_present(
-                                        home_underlay_moving || crate::ui::idle::present_dirty(),
-                                    ),
-                                );
-                            }
-                            // Produce the backdrop by drawing the page again into a small FBO,
-                            // instead of copying
-                            // framebuffer 0 and reducing it twice. It has to happen HERE, before
-                            // the visible page draws — the capture path's hook is inside the glass
-                            // surface itself, which is far too late to run a second scene pass —
-                            // and the visible full-resolution draw below is untouched either way.
-                            if let Some(reg) = crate::gfx::blur_direct_region() {
-                                crate::gfx::blur_snapshot_direct(reg, &mut || {
-                                    crate::ui::home::home_draw(glass_frame);
-                                });
-                            }
-                            crate::ui::profile::phase("main.ui", || {
-                                crate::ui::home::home_draw(glass_frame);
-                            });
                         }
+                        if matches!(route, Route::Account) {
+                            glass_frame = glass_frame.combine(
+                                crate::ui::account_menu::prepare_present(
+                                    home_underlay_moving || crate::ui::idle::present_dirty(),
+                                ),
+                            );
+                        }
+                        // THE PAGE, named once because it is drawn TWICE: the direct source path
+                        // produces a glass surface's backdrop by rendering the page again into a
+                        // small FBO, and that has to happen HERE, before the visible pass — the
+                        // capture path's hook is inside the glass surface itself, far too late to
+                        // run a second scene pass. The visible full-resolution draw is untouched
+                        // either way.
+                        //
+                        // **The route has to be the same on both passes**, and until 2026-08-19 it
+                        // was not: only Home was reachable from this arm, and the source pass drew
+                        // `home_draw` whatever the route actually was. The Library's and Search's
+                        // tab track therefore blurred HOME — a stale hero from a screen the user
+                        // had left, brighter than the grey it sat on and carrying that page's
+                        // colour. Measured in the simulator on the Library: page ground (44,44,46),
+                        // "glass" track (72,77,59). A track whose whole job is to DARKEN was 1.6x
+                        // brighter than its own ground and green. That is the artefact the material
+                        // was rejected for by eye, and it was this dispatch, not the material.
+                        let mut page = || {
+                            if matches!(route, Route::Login) {
+                                crate::ui::login::draw();
+                            } else if matches!(route, Route::Profiles) {
+                                crate::ui::profiles::draw();
+                            } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
+                                // the page stays live UNDER its context menu — the popover is anchored beside
+                                // the episode still it acts on, which has to still be there to be beside
+                                crate::ui::detail::draw();
+                            } else if matches!(route, Route::Person) {
+                                crate::ui::person::draw();
+                            } else if matches!(route, Route::Library) {
+                                crate::ui::library::draw();
+                            } else if matches!(route, Route::Search) {
+                                crate::ui::search::draw();
+                            } else {
+                                crate::ui::home::home_draw(glass_frame);
+                            }
+                        };
+                        if let Some(reg) = crate::gfx::blur_direct_region() {
+                            crate::gfx::blur_snapshot_direct(reg, &mut page);
+                        }
+                        crate::ui::profile::phase("main.ui", || page());
                         if matches!(route, Route::Account) {
                             crate::ui::account_menu::draw(); // profile popover over Home
                         }
