@@ -21,6 +21,7 @@ SPECS = (
     ("FRAG_PRIMITIVES", "shader", 5),
     ("FRAG_QUADS_RAST", "shader", 14),
     ("FRAG_NUM_TILES", "shader", 20),
+    ("FRAG_TRANS_ELIM", "shader", 21),
     ("TRIPIPE_ACTIVE", "shader", 26),
     ("ARITH_WORDS", "shader", 27),
     ("LS_WORDS", "shader", 31),

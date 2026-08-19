@@ -369,7 +369,7 @@ pub(crate) struct CounterSpec {
     word: usize,
 }
 
-pub(crate) const COUNTERS: [CounterSpec; 29] = [
+pub(crate) const COUNTERS: [CounterSpec; 30] = [
     CounterSpec { name: "GPU_ACTIVE", block: Block::Jm, word: 6 },
     CounterSpec { name: "JS0_ACTIVE", block: Block::Jm, word: 10 },
     CounterSpec { name: "JS1_ACTIVE", block: Block::Jm, word: 18 },
@@ -382,6 +382,15 @@ pub(crate) const COUNTERS: [CounterSpec; 29] = [
     CounterSpec { name: "FRAG_PRIMITIVES", block: Block::ShaderSum, word: 5 },
     CounterSpec { name: "FRAG_QUADS_RAST", block: Block::ShaderSum, word: 14 },
     CounterSpec { name: "FRAG_NUM_TILES", block: Block::ShaderSum, word: 20 },
+    // Midgard's TRANSACTION ELIMINATION: the tile writeback unit CRCs each finished tile against
+    // what is already in memory and SKIPS the write when they match. Arm names this counter as the
+    // way to detect an application redrawing an unchanged screen — which is precisely the question
+    // "would per-region damage tracking pay here" reduces to, and it is answerable without writing
+    // any damage code. Word 21 is cross-checked against four independent tables (Arm's r7p0
+    // `mali_kbase_gator_hwcnt_names.h`, the Khadas/Amlogic vendor tree's copy of it, gator's
+    // `hardware_counter_names` for T820, and the modern libmali `gen.h`); all four also agree on
+    // words 4/14/20/26/27, which are already in this table, and that agreement is the check.
+    CounterSpec { name: "FRAG_TRANS_ELIM", block: Block::ShaderSum, word: 21 },
     CounterSpec { name: "TRIPIPE_ACTIVE", block: Block::ShaderSum, word: 26 },
     CounterSpec { name: "ARITH_WORDS", block: Block::ShaderSum, word: 27 },
     CounterSpec { name: "LS_WORDS", block: Block::ShaderSum, word: 31 },
