@@ -560,7 +560,13 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
         glBindTexture(GL_TEXTURE_2D, tex);
         // glyphs are 1:1 texel:pixel — snap the origin (see gfx::snap for the contract)
         glUniform4f(TL_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        // The width is still returned — callers lay out from it — but a run outside a blur source
+        // pass's region contributes no fragment to the backdrop, so the quad is not submitted.
+        if !crate::gfx::culled(dx, y, w as f32, h as f32)
+            && !crate::ui::overdraw::gate(crate::ui::overdraw::Class::Text, dx, y, w as f32, h as f32)
+        {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
         w as f32
     }
 }
@@ -603,7 +609,11 @@ pub(crate) fn draw_text_fade(
         glUniform2f(TLF_FADE, fade_from / wf, fade_to / wf);
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(TLF_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if !crate::gfx::culled(dx, y, w as f32, h as f32)
+            && !crate::ui::overdraw::gate(crate::ui::overdraw::Class::Text, dx, y, w as f32, h as f32)
+        {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
         w as f32
     }
 }
