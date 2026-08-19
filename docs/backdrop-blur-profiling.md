@@ -385,6 +385,18 @@ rougher, because the Kawase tap offsets scale with the source while the bilinear
 
 ## Part 5 — the other 88.6%: what the MAIN UI submits, and why removing 37% of it bought 0.8%
 
+> **The two instruments this part describes are NOT in this branch yet.** `ui::overdraw`,
+> `/tmp/plxnative-drawmask` and `/tmp/plxnative-heroground` live on **`blur/e4-overdraw`**, whose
+> history was rewritten with `filter-branch` and therefore shares no ancestry with the baseline
+> commits here — a direct merge conflicts in nine files and was correctly refused rather than
+> forced. Rebase that branch onto this one instead; it is now possible, because the shared baseline
+> those experiments were handed uncommitted is landed here. The numbers below stand on their own —
+> every one is a whole-frame `frame.ui` A/B with three interleaved repeats — but the recipes cannot
+> be re-run until that rebase happens. `ui::overdraw` is the only instrument in this study that can
+> attribute a fragment to a draw class, since the GPU counters are global, so it is the one worth
+> landing first.
+
+
 Part 4 priced the glass at +11.4% of frame GPU cycles and recorded that the main UI is the rest,
 "at 3.65x overdraw for 1080p". That sentence is true and it is the most misleading line in this
 note, for two reasons this part settles with measurements: **most of the 3.65x is not ours**, and
