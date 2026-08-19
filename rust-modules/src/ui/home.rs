@@ -503,10 +503,6 @@ impl View for Backdrop {
         let sp = env.sp;
         let slide = hero_slide_state();
         let (a_in, a_out) = (reveal(self.tex.0, &self.art_a), reveal(self.tex_out.0, &self.art_out_a));
-        // Tell the shared top chrome what it is standing on. The tab track is drawn from one
-        // function by three screens and cannot know its own ground; with a material that is the
-        // only thing it needs to know, so the page that owns the picture publishes it.
-        crate::ui::widgets::set_chrome_ground(chrome_ground(hero_item(), a_in, sp));
         // The GROUND, standing in for the flat dark-gray base `home_draw`'s frame_clear(CLEAR_RGB)
         // already laid down (CLEAR_RGB == SURFACE_APP #2C2C2E — which is why the redundant
         // full-screen SURFACE_APP rect that used to sit here was deleted for fill-rate). It is drawn
@@ -615,29 +611,6 @@ fn wash_corners(m: Option<&PmsMovie>, sp: f32) -> [[f32; 4]; 4] {
     match m.filter(|m| m.has_blur) {
         Some(m) => AmbientWash::keyed(m.blur, HERO_WASH_W.map(|w| w * lean)),
         None => [theme::SURFACE_APP; 4],
-    }
-}
-
-/// **What the TOP of the panel shows** — the ground the shared tab track sits on, for
-/// [`crate::ui::widgets::set_chrome_ground`].
-///
-/// The artwork's own top two corners (`blur` is keyed TL, TR, BR, BL), faded in with the art's
-/// reveal and out with the grid snap, over the clear colour. Not the WASH's corners, which lean
-/// only 26% toward the art and are the fallback ground rather than what is actually up there: when
-/// the backdrop has landed, the pixels behind the bar are the picture, at full strength.
-///
-/// Deliberately the artwork's own low-res corners rather than a readback of the blur chain. The
-/// snapshot lives on the GPU and reading it costs a pipeline stall every frame, to learn something
-/// the item already carries on the CPU — and carries before the texture has even arrived, which is
-/// what lets the bar be right on the first frame of a hero rather than one flip late.
-fn chrome_ground(m: Option<&PmsMovie>, art: f32, sp: f32) -> [f32; 3] {
-    let base = [theme::SURFACE_APP[0], theme::SURFACE_APP[1], theme::SURFACE_APP[2]];
-    let w = art.clamp(0.0, 1.0) * (1.0 - sp).clamp(0.0, 1.0);
-    match m.filter(|m| m.has_blur) {
-        Some(m) => std::array::from_fn(|i| {
-            base[i] + ((m.blur[0][i] + m.blur[1][i]) * 0.5 - base[i]) * w
-        }),
-        None => base,
     }
 }
 

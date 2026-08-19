@@ -224,6 +224,17 @@ lens has to work with.
   it replaced. Glass needs something behind it to be worth its price.
 - **The frost is 72 % opaque** (`PANEL_FROST_*`). More transparent shows more backdrop and costs
   text contrast; the couch legibility floor is the binding constraint, not the material.
+- **The tab track's weight is SOLVED, not chosen** (`widgets::track_alpha_for`). A panel carries a
+  page of copy at `TEXT_PRIMARY` and can hold one number; a 76px band whose idle labels are the
+  dimmest ink in the app cannot, because the ground it sits on is a different picture every eight
+  seconds. So the ink stands still and the material moves: five pixels are read back from under the
+  bar every thirtieth drawn frame, and the scrim is set to the lightest weight at which those labels
+  still clear 3:1 — floored at the design's `--glass-track-top` and capped at the flat capsule's own
+  `.72`. Measured on the set: a dark hero leaves it at the floor, a bright cyan one takes it to .562.
+  The readback is why the rate is low — it stalls a tiler — and the frame rate is unchanged at it.
+  **Do not read the ground from `UltraBlurColors`.** That is Plex's derived palette for an ambient
+  wash, not the top of the picture: for the hero that measures (0.00, 0.68, 0.91) on the panel it
+  reports (0.30, 0.23, 0.18), and the bar sits at its floor while the labels drown.
 
 ---
 
@@ -238,7 +249,8 @@ so making the policy reusable does not silently turn every menu into a recurring
 `chrome_alpha` exists so it holds still while the pages swap under it — so a material that changes
 when you cross between those three breaks the one illusion that code was written to preserve. Either
 all three or none; "glass on Home only" is not an option, however tempting the frame budget makes it.
-(It is still behind `/tmp/plxnative-glasstabs` and compiled out of a `RELEASE` build.)
+It ships, and `/tmp/plxnative-flattabs` is the way back to the flat capsule for a comparison.
+Its density is not a constant — see §6.
 
 **No:** anything on the player route (§1), and a second far-away glass cluster whose union would
 grow the snapshot toward the whole frame (§2). Neighbouring elements may share one cluster.

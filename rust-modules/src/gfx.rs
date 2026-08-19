@@ -1783,7 +1783,7 @@ static mut BLUR_DIRECT_OFF: bool = false;
 /// correctness issue rather than a nicety:
 ///
 /// * `draw_blur_backdrop` must refuse outright. `home_draw` contains a glass owner of its own (the
-///   tab track, under `plxnative-glasstabs`), so without this the source pass re-enters
+///   tab track), so without this the source pass re-enters
 ///   `blur_snapshot`, which copies framebuffer 0 — reading the panel while an FBO is bound — and
 ///   then rebinds framebuffer 0 and the full-resolution viewport in the middle of the pass.
 /// * `ui::profile::phase` must not select. The page's own phases (`hm.grid`, `main.ui`, …) would
