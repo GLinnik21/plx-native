@@ -40,7 +40,17 @@
 //!   **presents between snapshot refreshes**: `@1` refreshes every presented frame, `@3` is the
 //!   shipped dynamic policy, `@0` captures once and caches forever,
 //! * `c<count>x<width>x<height>` (or `cf…` for the FOCUSED penumbra) — that many CARD composites,
-//!   the `draw_tex_carded` path every art tile takes.
+//!   the `draw_tex_carded` path every art tile takes,
+//! * `acct` — the REAL shipped Account popover, opened through `account_menu` on the real route, so
+//!   a synthetic surface and the thing it stands for can be interleaved in ONE launch. This step
+//!   exists because a dial panel and the shipped panel were read as the same configuration by two
+//!   different agents and disagreed by 15 fps; §"the reconciliation" in
+//!   `docs/glass-hardware-budget.md` is what it settled.
+//!
+//! Any step may carry a leading `s` — **spread**: instead of tiling adjacently in the middle, the
+//! surfaces are pushed apart along the diagonal, corner to corner. Same count, same area, and a
+//! blurred REGION that grows to most of the screen, because the one shared snapshot has to hold
+//! every glass surface in the frame and everything between them.
 //!
 //! The card form is the second axis this dial exists for. A sibling measurement priced a card
 //! fragment at **3.02 GPU cycles and 5.86 arithmetic words** — 3x a textured full-screen quad and
@@ -91,6 +101,10 @@ pub(crate) enum Kind {
     /// `draw_tex` at radius 0 — the FLAT textured quad, the cheapest full-coverage path the app
     /// has and the one the hero photograph takes. The control the other two are priced against.
     Image,
+    /// Not a synthetic surface at all: the REAL Account popover, on the real route, drawn by
+    /// `account_menu` through `Glass::DYNAMIC`. Its geometry, its cadence policy and its source dim
+    /// are the shipped ones; this module only asks for the route. Size fields are ignored.
+    Account,
 }
 
 /// One configuration of the dial.
@@ -98,6 +112,9 @@ pub(crate) enum Kind {
 pub(crate) struct Step {
     /// Which composite these surfaces are.
     pub(crate) kind: Kind,
+    /// Push the surfaces apart to opposite corners instead of tiling them adjacently, so the one
+    /// shared blur region has to span them and everything in between.
+    pub(crate) spread: bool,
     /// How many surfaces. Zero is the control leg — the page with nothing extra on it at all.
     pub(crate) n: u32,
     /// Each surface's authored size. The snapshot region is the union of these grown by
@@ -109,7 +126,7 @@ pub(crate) struct Step {
 }
 
 impl Step {
-    const OFF: Self = Self { kind: Kind::Glass, n: 0, w: 0.0, h: 0.0, cadence: 0 };
+    const OFF: Self = Self { kind: Kind::Glass, spread: false, n: 0, w: 0.0, h: 0.0, cadence: 0 };
 
     /// Total composite area this step submits, in authored px — the x axis of the scaling law.
     /// NOMINAL: a card's quad is additionally inflated by its penumbra, and a glass panel's
@@ -155,6 +172,15 @@ pub(crate) fn parse(spec: &str) -> Option<Sweep> {
             steps.push(Step::OFF);
             continue;
         }
+        if tok.eq_ignore_ascii_case("acct") {
+            steps.push(Step { kind: Kind::Account, ..Step::OFF });
+            continue;
+        }
+        // `s` = spread, before the kind prefix. Stripped first so `sc4x…` reads as spread cards.
+        let (spread, tok) = match tok.strip_prefix('s') {
+            Some(r) => (true, r),
+            None => (false, tok),
+        };
         // `cf` before `c`: the longer prefix has to win, or a focused-card step parses as an
         // ordinary one whose count begins with `f` and the whole spec is rejected.
         let (kind, tok) = if let Some(r) = tok.strip_prefix("cf") {
@@ -176,6 +202,7 @@ pub(crate) fn parse(spec: &str) -> Option<Sweep> {
         }
         steps.push(Step {
             kind,
+            spread,
             n,
             w: w.min(SCR_W),
             h: h.min(SCR_H),
@@ -190,11 +217,22 @@ pub(crate) fn parse(spec: &str) -> Option<Sweep> {
 /// Pure, so the packing is host-gradeable — a dial that silently drew four panels where the spec
 /// asked for eight would report a cost for a configuration that never ran.
 pub(crate) fn layout(step: Step) -> Vec<Rect> {
-    if step.n == 0 {
+    if step.n == 0 || matches!(step.kind, Kind::Account) {
         return Vec::new();
     }
     let w = step.w.min(SCR_W);
     let h = step.h.min(SCR_H);
+    if step.spread {
+        // Evenly along the top-left → bottom-right diagonal, so two surfaces land in opposite
+        // corners and the union of their blur regions is very nearly the whole canvas.
+        let last = (step.n - 1).max(1) as f32;
+        return (0..step.n)
+            .map(|i| {
+                let t = if step.n == 1 { 0.5 } else { i as f32 / last };
+                Rect::new((SCR_W - w) * t, (SCR_H - h) * t, w, h)
+            })
+            .collect();
+    }
     let fit = |span: f32, size: f32| ((span + PANEL_GAP) / (size + PANEL_GAP)).floor().max(1.0) as u32;
     let cols = fit(SCR_W, w).min(step.n);
     let rows_fit = fit(SCR_H, h);
@@ -247,18 +285,23 @@ pub(crate) fn configure(spec: &str) {
                     // The DRAWN count and the drawn AREA, never the requested ones: a step whose
                     // panels did not fit would otherwise report a cost for a scene that never ran.
                     let px = drawn as f64 * st.w as f64 * st.h as f64;
+                    if matches!(st.kind, Kind::Account) {
+                        return format!("{i}:acct (the real shipped popover)");
+                    }
+                    let sp = if st.spread { " spread" } else { "" };
                     match st.kind {
+                        Kind::Account => unreachable!("handled above"),
                         Kind::Glass => format!(
-                            "{i}:glass {}x{}x{}@{} drawn={drawn} px={px:.0}",
+                            "{i}:glass{sp} {}x{}x{}@{} drawn={drawn} px={px:.0}",
                             st.n, st.w, st.h, st.cadence
                         ),
                         Kind::Card { focused } => format!(
-                            "{i}:card{} {}x{}x{} drawn={drawn} px={px:.0}",
+                            "{i}:card{}{sp} {}x{}x{} drawn={drawn} px={px:.0}",
                             if focused { "-focused" } else { "" },
                             st.n, st.w, st.h
                         ),
                         Kind::Image => {
-                            format!("{i}:image {}x{}x{} drawn={drawn} px={px:.0}", st.n, st.w, st.h)
+                            format!("{i}:image{sp} {}x{}x{} drawn={drawn} px={px:.0}", st.n, st.w, st.h)
                         }
                     }
                 })
@@ -298,6 +341,17 @@ pub(crate) fn configure_navblur(spec: &str) {
     // riding form replaces the dip.
     crate::ui::nav::set_blur_dissolve(!pin);
     crate::log(&format!("NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"));
+}
+
+/// Does the live step want the REAL Account popover open? Read by `app.rs`, which owns `Route`.
+///
+/// A dev step that changes the ROUTE rather than drawing something is unusual, and it is the only
+/// way to put the shipped surface and a synthetic one in the same interleaved launch — which is
+/// exactly what was needed when two agents read the same nominal configuration 15 fps apart.
+pub(crate) fn wants_account() -> bool {
+    let Some(s) = sweep() else { return false };
+    let idx = unsafe { STEP };
+    idx >= 0 && matches!(s.steps[idx as usize].kind, Kind::Account)
 }
 
 /// The live step index, or -1. Rides the heartbeat and every profiler record.
@@ -390,6 +444,9 @@ pub(crate) fn draw() {
                 p.tex_carded(card_tex(i), r, theme::CARD_RING_RAD, [1.0, 1.0, 1.0, 1.0], f);
             }
             Kind::Image => p.tex(card_tex(i), r, 0.0, [1.0, 1.0, 1.0, 1.0]),
+            // The real popover is drawn by `account_menu` on its own route; `layout` returns no
+            // rects for it, so this arm is unreachable and says so rather than drawing a stand-in.
+            Kind::Account => unreachable!("an Account step lays out no surfaces of its own"),
         }
     }
 }
@@ -499,8 +556,9 @@ mod tests {
         assert_eq!(s.hold_ms, 6000);
         assert_eq!(s.steps.len(), 3);
         assert_eq!(s.steps[0], Step::OFF);
-        assert_eq!(s.steps[1], Step { kind: Kind::Glass, n: 1, w: 608.0, h: 396.0, cadence: 3 });
-        assert_eq!(s.steps[2], Step { kind: Kind::Glass, n: 2, w: 400.0, h: 300.0, cadence: 1 });
+        let g = |n, w, h, cadence| Step { kind: Kind::Glass, spread: false, n, w, h, cadence };
+        assert_eq!(s.steps[1], g(1, 608.0, 396.0, 3));
+        assert_eq!(s.steps[2], g(2, 400.0, 300.0, 1));
     }
 
     #[test]
@@ -530,12 +588,12 @@ mod tests {
     #[test]
     fn panels_tile_inside_the_screen_and_the_count_is_what_actually_fits() {
         // Four 608x396 panels fit two across and two down on a 1920x1080 canvas.
-        let four = layout(Step { kind: Kind::Glass, n: 4, w: 608.0, h: 396.0, cadence: 3 });
+        let four = layout(Step { kind: Kind::Glass, spread: false, n: 4, w: 608.0, h: 396.0, cadence: 3 });
         assert_eq!(four.len(), 4);
         assert!(four.iter().all(|r| r.x >= 0.0 && r.y >= 0.0));
         assert!(four.iter().all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
         // …and asking for more than fits reports the number DRAWN, never the number requested.
-        let many = layout(Step { kind: Kind::Glass, n: 99, w: 608.0, h: 396.0, cadence: 3 });
+        let many = layout(Step { kind: Kind::Glass, spread: false, n: 99, w: 608.0, h: 396.0, cadence: 3 });
         assert!(many.len() < 99 && !many.is_empty(), "packed {} of 99", many.len());
         assert!(many.iter().all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
     }
@@ -562,6 +620,34 @@ mod tests {
         let (a, b) = (layout(s.steps[1]), layout(s.steps[2]));
         assert_eq!(a.len(), b.len());
         assert!(a.iter().zip(&b).all(|(p, q)| p.x == q.x && p.y == q.y && p.w == q.w && p.h == q.h));
+    }
+
+    /// The step that puts the SHIPPED surface on the same dial as the synthetic ones. It draws
+    /// nothing itself — `app.rs` routes to the real popover — so laying out no rects is the
+    /// contract, not an oversight.
+    #[test]
+    fn the_account_step_asks_for_a_route_rather_than_drawing_a_stand_in() {
+        let s = parse("hold=6;off,acct,1x440x220@3").expect("spec");
+        assert_eq!(s.steps[1].kind, Kind::Account);
+        assert!(layout(s.steps[1]).is_empty(), "the real popover draws itself, on its own route");
+        assert_eq!(s.steps[2].kind, Kind::Glass);
+    }
+
+    /// Spread is what makes the one shared blur region span the whole canvas: two surfaces in
+    /// opposite corners cover the same pixels as two adjacent ones and cost a region that holds
+    /// everything between them as well.
+    #[test]
+    fn a_spread_step_puts_its_surfaces_in_opposite_corners() {
+        let s = parse("s2x300x300@3").expect("spec");
+        assert!(s.steps[0].spread);
+        let r = layout(s.steps[0]);
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].x, r[0].y), (0.0, 0.0));
+        assert_eq!((r[1].x, r[1].y), (SCR_W - 300.0, SCR_H - 300.0));
+        // …and the same spec without the `s` keeps them together in the middle.
+        let t = parse("2x300x300@3").expect("spec");
+        let a = layout(t.steps[0]);
+        assert!(a[0].x > 300.0 && a[1].x < SCR_W - 300.0, "adjacent, not cornered");
     }
 
     #[test]

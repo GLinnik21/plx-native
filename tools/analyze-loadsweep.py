@@ -23,7 +23,7 @@ import re
 import statistics
 from pathlib import Path
 
-FPS_RE = re.compile(r"\bloop=(\d+) route=(\w+).*?\bfps=(\d+) load=(-?\d+)")
+FPS_RE = re.compile(r"\bloop=(\d+) route=(\w+).*?\bfps=(\d+) load=(-?\d+)(?: snap=(\d+))?")
 DROP_RE = re.compile(
     r"FRAMEDROP total=([\d.]+) pump=([\d.]+) draw=([\d.]+) cap=([\d.]+) swap=([\d.]+).*?load=(-?\d+)"
 )
@@ -88,7 +88,7 @@ def main() -> None:
         print(f"note: {len(seen_cfg)} distinct blur_config lines — regions changed across the run "
               "(expected for an area sweep; NOT expected within one step)")
 
-    fps, drops, since = {}, {}, {}
+    fps, drops, since, snaps, routes = {}, {}, {}, {}, {}
     cur = None
     for line in text:
         if (m := STEP_RE.search(line)) is not None:
@@ -101,6 +101,12 @@ def main() -> None:
             if since[step] <= args.settle:
                 continue
             fps.setdefault(step, []).append(float(m.group(3)))
+            routes.setdefault(step, set()).add(m.group(2))
+            if m.group(5) is not None:
+                # Blur refreshes ACTUALLY taken that second. Rule 7 of the methodology: check the
+                # cadence rather than believing it — a leg that silently refreshed every frame once
+                # read as an 11% regression of something unrelated.
+                snaps.setdefault(step, []).append(float(m.group(5)))
         if (m := DROP_RE.search(line)) is not None:
             step = int(m.group(6))
             drops.setdefault(step, []).append(
@@ -108,6 +114,11 @@ def main() -> None:
             )
     _ = cur
     summarize("fps= (frames actually swapped)", fps)
+    if snaps:
+        summarize("snap= (blur refreshes actually taken, per second)", snaps)
+    if routes:
+        print("\nroute seen per step: " + ", ".join(
+            f"{k}={'/'.join(sorted(v))}" for k, v in sorted(routes.items())))
 
     if drops:
         print("\n== FRAMEDROP (frames over the threshold) by load step ==")
