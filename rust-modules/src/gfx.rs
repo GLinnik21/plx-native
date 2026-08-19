@@ -1695,13 +1695,21 @@ fn blur_snapshot(reg: [f32; 4]) {
     }
 }
 
-/// Scale divisor for the DIRECT backdrop path; 0 means the capture path (the shipped default).
+/// Scale divisor for the direct backdrop path — the path, since 2026-08-19.
 ///
-/// Set once at boot from `/tmp/plxnative-blurdirect`. Only powers of two from 4 up are accepted,
-/// because the taps ping-pong between `a` and `b`, which are allocated at a quarter of the canvas:
-/// a scale of 2 would need a second half-size target and 2 MB more, which is a separate question
-/// from whether the architecture is worth having at all.
-static mut BLUR_DIRECT: u32 = 0;
+/// Quarter per axis, and not adjustable: the taps ping-pong between `a` and `b`, which are
+/// allocated at a quarter of the canvas, so 1/2 would need a second half-size target and 2 MB
+/// more — and it measured WORSE, because the Kawase tap offsets scale with the source while the
+/// bilinear box does not.
+const BLUR_DIRECT_SCALE: u32 = 4;
+/// Latched off for the rest of the process after a GL error inside the source pass, which is the
+/// one condition that can make the direct path unusable at RUNTIME rather than at boot.
+///
+/// It exists because the fallback is real and must stay reachable: the capture path is still the
+/// only path for `Glass::CACHED`, so falling back costs a copy, not a picture. A latch rather than
+/// a per-frame retry, because a pass that errored once will error again and the log line would
+/// then repeat sixty times a second.
+static mut BLUR_DIRECT_OFF: bool = false;
 
 /// True only while [`blur_snapshot_direct`] is running the page draw as a blur SOURCE.
 ///
@@ -1779,16 +1787,27 @@ impl Drop for DirectPass {
     }
 }
 
-/// Is the direct path armed, and at what axis divisor? `None` selects the capture path.
+/// The axis divisor the direct source pass renders at — 1/4, and the only value.
+///
+/// This used to answer `None` unless `/tmp/plxnative-blurdirect` was armed, and `None` meant "use
+/// the capture path instead". The A/B it existed for is over: the direct pass is 4.5x cheaper gross
+/// and 5.8x cheaper net than the `glCopyTexSubImage2D` plus two reductions it replaces, -3.3% of
+/// the whole frame, and it is what takes a refresh frame from 111% of a vsync slot to 99.5% — i.e.
+/// the reason the backdrop can be refreshed on every present at all. Three sessions, interleaved,
+/// agreeing to 0.4%.
+///
+/// 1/4 is not a compromise but the MATCHED sampling rate for this kernel: the whole usable ladder
+/// from 1/2 to 1/8 spans 0.96% of a mean frame and zero frames, 1/8 loses 2.2% of large-scale
+/// contrast to save 0.38%, and 1/2 costs more AND looks rougher because the Kawase tap offsets
+/// scale with the source while the bilinear box does not. There is nothing to tune here, so there
+/// is no knob.
+///
+/// `Option` is kept rather than a bare `u32` because [`blur_snapshot_direct`] still has a real
+/// refusal — a drawable whose dimensions do not divide by the divisor — and its callers already
+/// read the fallback from this type.
 #[inline]
 pub(crate) fn blur_direct_scale() -> Option<u32> {
-    let scale = unsafe { BLUR_DIRECT };
-    (scale >= 4).then_some(scale)
-}
-
-/// Arm the direct backdrop path at 1/`scale` per axis. `scale < 4` disarms it.
-pub(crate) fn set_blur_direct(scale: u32) {
-    unsafe { BLUR_DIRECT = if scale.is_power_of_two() { scale } else { 0 } };
+    (!unsafe { BLUR_DIRECT_OFF }).then_some(BLUR_DIRECT_SCALE)
 }
 
 /// The region a direct source pass should be taken at THIS frame, or `None` to do nothing.
@@ -1954,7 +1973,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
         let e = glGetError();
         if e != GL_NO_ERROR {
             log(&format!("blur direct: GL error=0x{e:x} — falling back to the capture path"));
-            BLUR_DIRECT = 0;
+            BLUR_DIRECT_OFF = true;
             return false;
         }
 

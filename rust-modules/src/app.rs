@@ -2979,10 +2979,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
         // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
         // Combining them would perturb the timer result, so fail closed when both are present.
-        // dev: /tmp/plxnative-blurdirect turns on the direct low-resolution backdrop render
-        // (empty = 1/4 per axis; a number selects the divisor, powers of two from 4). Absent, the
-        // shipped glCopyTexSubImage2D + two-reduction capture path is used, which is what makes
-        // this an A/B rather than a replacement.
         // dev: /tmp/plxnative-glassload is the backdrop-glass LOAD DIAL — a sweep of glass-surface
         // count, size and refresh cadence that cycles its own steps inside one launch, so legs are
         // interleaved by construction. /tmp/plxnative-navblur is the blurred-route-transition
@@ -3007,14 +3003,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         } else {
             false
         };
-        if let Some(v) = crate::dev::read("blurdirect") {
-            let scale = if v.is_empty() { 4 } else { v.parse().unwrap_or(0) };
-            crate::gfx::set_blur_direct(scale);
-            log(&format!(
-                "blur: direct backdrop path scale=1/{scale} ({})",
-                if crate::gfx::blur_direct_scale().is_some() { "on" } else { "REFUSED" }
-            ));
-        }
         match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
             (Some(_), Some(_)) => {
                 log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
@@ -5054,8 +5042,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     ),
                                 );
                             }
-                            // EXPERIMENT (`/tmp/plxnative-blurdirect`): produce the backdrop by
-                            // drawing the page again into a small FBO, instead of copying
+                            // Produce the backdrop by drawing the page again into a small FBO,
+                            // instead of copying
                             // framebuffer 0 and reducing it twice. It has to happen HERE, before
                             // the visible page draws — the capture path's hook is inside the glass
                             // surface itself, which is far too late to run a second scene pass —

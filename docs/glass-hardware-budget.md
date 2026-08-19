@@ -503,6 +503,46 @@ edge for the glass rim to have something to bend.
 
 ---
 
+## 8b. Where this material may be used — decided by looking, 2026-08-19
+
+Everything above prices glass. This section is the one thing in the note that is not a
+measurement: it is a design decision, taken in front of the television, and it overrides any
+number here.
+
+**The tab-track glass was looked at on the panel and rejected.** It is not a cost problem — the
+track's blurred region is 728x200, comfortably inside the 60 fps budget. It is a legibility
+problem, and it depends on what is BEHIND the bar:
+
+| ground | result |
+|---|---|
+| the Home hero photograph | works — large smooth areas blur into an even gradient, the pills read, the rim is a thin light edge |
+| the library's poster grid | fails — mottled, one pill on a warm patch and its neighbour on a dark one, a warm rim around the whole track, and a halo around the selection capsule |
+
+**Why raising the density does not rescue it.** The flat track is `scrim_black(0.72..0.82)` and is
+sized to make the pills legible over ARBITRARY artwork; the glass track halves that to 0.38/0.46
+on the argument that a real backdrop behind it does the work the flat material had to do alone.
+Over a poster wall it does not: **blur removes DETAIL, not brightness**, so a quarter-resolution
+Kawase blur of a grid is still bright here and dark there. Sweeping the density on the set
+(`/tmp/plxnative-tabglassdim`) clears the mottling by about 0.70 — which is 0.02 short of the flat
+track it replaced. **At the density this content needs, the glass has stopped being glass.**
+
+**And two of the three artefacts are not the scrim's at all.** The selection capsule is white at
+alpha 0.20 — a translucent plate with no colour of its own, tuned against a near-black ground; on a
+ground that is both lighter and uneven it lands differently on each side of itself, which is what
+reads as a halo. The track's sheen rim is translucent too and is drawn ABOVE the darkening layer,
+so density does not touch it: it takes the colour of whatever it is over. All three artefacts are
+one fault — **layers whose appearance is relative to a ground that was assumed constant.**
+
+**What this means for a screen you are designing.** Backdrop glass is not a universal material
+here. Put it over photographic grounds — a hero, a backdrop, artwork that fills its region — and it
+behaves. Put it over a dense grid of small images and it will need values of its own for the
+capsule and the rim before it is worth looking at again.
+
+**What ships today:** the Account popover's glass, which appears over Home's hero and is inside
+budget. Everything else takes the flat track. The tab-track experiment stays behind
+`/tmp/plxnative-glasstabs`, with `/tmp/plxnative-tabglassdim` beside it, because the instrument is
+what makes the question answerable next time rather than re-argued.
+
 ## 9. How this was measured
 
 **The instrument.** A load dial (`rust-modules/src/ui/glassload.rs`, `/tmp/plxnative-glassload`)
