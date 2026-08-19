@@ -335,3 +335,148 @@ allocated at a quarter of the canvas, so 1/2 would need a second half-size targe
 Tap offsets are scaled by `4/S` so the authored blur radius is held fixed as the source resolution
 moves — without that a scale sweep changes two variables at once. 1/8 and 1/16 run; their quality has
 not been graded against 1/4 on the panel, and that grading is the remaining Part 4 work.
+
+## Part 5 — the other 88.6%: what the MAIN UI submits, and why removing 37% of it bought 0.8%
+
+Part 4 priced the glass at +11.4% of frame GPU cycles and recorded that the main UI is the rest,
+"at 3.65x overdraw for 1080p". That sentence is true and it is the most misleading line in this
+note, for two reasons this part settles with measurements: **most of the 3.65x is not ours**, and
+**the part of it that is ours is very nearly free.**
+
+### Two instruments, neither of which is a GPU counter
+
+`FRAG_QUADS_RAST` is GPU-global, so it cannot say whose quads it counted. Two things were added to
+answer that without guessing.
+
+**`/tmp/plxnative-overdraw`** — a CPU-side ledger (`ui::overdraw`) that sums, per draw class, the
+screen-VISIBLE area of every quad the app submits, clipped to the panel and to `Painter::clip`'s
+live box. It is not `glFinish`-serialised and it cannot be billed for another process's work. It
+runs in the desktop simulator too, and gives the same authored-pixel answer there, because it works
+in authored coordinates.
+
+**`/tmp/plxnative-drawmask=<classes>`** — refuse every draw of the named classes, so a whole-frame
+`frame.ui` HWCNT A/B against the unmasked control prices that class **as the frame sees it**,
+un-serialised. `all` draws nothing, and is therefore the **compositor floor**. Every leg it
+produces except the control is a broken picture by construction; it is a measurement knob.
+
+### The frame, decomposed
+
+Scene: Home, `plxnative-homeosc` + `plxnative-noidle`, no glass. Three interleaved repeats per leg,
+first 60 samples discarded, ~1,050 samples per run, within-leg spread 0.05–0.07%.
+
+| leg | GPU_ACTIVE / frame | FRAG_QUADS_RAST | as pixels | tiles |
+|---|---|---|---|---|
+| control (the app draws) | 8,740,395 | 1,875,881 | 7,503,524 | 4,096 |
+| `drawmask=all` (app draws nothing) | 3,007,196 | 519,120 | 2,076,480 | 4,080 |
+| **difference = the app's own draw** | **5,733,199 (65.6%)** | **1,356,761** | **5,427,044** | 16 |
+
+The floor leg's 519,120 quads are 2,076,480 pixels — **exactly one 1920x1080 composite** — with
+`TEX_WORDS` 2,076,480, i.e. exactly one texel per pixel. That is the wayland compositor blitting our
+surface, and it is **34.4% of the frame's GPU cycles for work this app cannot remove**. Tiles barely
+move between the legs because both still resolve two full-screen render passes (2,040 tiles each at
+this part's 32x32 tiling); drawing nothing does not save the pass, only its fragments.
+
+So the app's own overdraw is **2.62x**, not 3.65x. The missing 1.0x is the compositor.
+
+### Where the app's 5.43M pixels go — and it is not the cards
+
+The ledger, on the same scene (television and simulator agree to the pixel; the HWCNT difference
+above puts the app at 5,427,044 against the ledger's 5,386,592, **0.75% apart**, which is what
+validates the ledger):
+
+| class | px / frame | draws | share of the app |
+|---|---|---|---|
+| `image` — the full-bleed hero photograph (+ 6 icons) | 2,150,733 | 7 | 39.9% |
+| `rect` — the two atmospheric-ramp bands (+ 34 chrome rects) | 1,446,368 | 36 | 26.9% |
+| `grad` — the hero corner wedge, two quads | 1,410,048 | 2 | 26.2% |
+| `card` — the peek row's four tiles | 279,480 | 4 | 5.2% |
+| `text` | ~75,000 | 8 | 1.4% |
+| `shadow` | 25,364 | 2 | 0.5% |
+| **total** | **5,386,592** | ~58 | **2.60x the panel** |
+
+**The established scene is the HERO, not the grid.** `plxnative-homeosc` moves the grid's focus
+indices; it does not dive the snap, so Home stays on its billboard. Three stacked full-panel layers
+— the photograph, the atmospheric ramp and the corner wedge — are **90% of everything the screen
+submits**. The card composites everyone assumes are the expensive part are 5%.
+
+### The experiment: fold the hero's whole ground into one pass
+
+`/tmp/plxnative-heroground` (`ui::widgets::hero_ground` + `shaders/fs_hero.frag`) draws the
+photograph and BOTH scrim fields in **one** quad instead of the art plus four blended gradient
+quads over it. Both fields are closed forms of the authored pixel position — `home::base_scrim_a`
+and `hero_scrim_a` feathered over `[HERO_SCRIM_TOP, HERO_SCRIM_KNEE]` — and both are
+`theme::SCRIM_INK`, so two straight-alpha layers of one ink compose exactly as `a1 + a2 - a1*a2`
+and the art folds into the same single blend:
+
+```text
+want   dst' = mix(mix(dst, art, A), ink, B)
+s      = 1 - (1-A)*(1-B)
+src    = (art*A*(1-B) + ink*B) / s
+```
+
+Exact in real arithmetic; what differs is 8-bit rounding, because the shipped path quantises the
+framebuffer three times where this quantises once. The screen owns the preconditions (one art layer
+at a time, so a hero flip falls back; no photograph yet, so the scrims still have the wash).
+
+**It is the same picture.** Simulator, hero pinned with `plxnative-heroidx=0`, 960x540: **maximum
+absolute difference 1/255**, mean 0.081/255, over 101,018 of 518,400 pixels — and **not one pixel
+differs by 2**. That is the double-rounding, and nothing else. Ledger, same pair: 5,387,031 px
+(x2.60) to 2,608,407 px (x1.26), `grad` 2 quads to 0, `rect` 36 draws to 34; on the television the
+same pair reads 5,362,974 px (x2.59) to 2,584,350 px (x1.25).
+
+**The first on-panel capture pair was thrown away, and the reason is worth writing down**:
+`plxnative-heroidx` JUMPS the billboard to a pool page, it does not stop it rotating. `HERO_AUTO_S`
+is 8 s, so a capture taken 16 s after launch had already advanced two pages, and the control frame
+was caught mid-FLIP — which is also exactly the state the fold declines. The diff was 249/255 and
+said nothing about the shader. A capture comparison on this screen has to be taken inside the first
+rotation window, with `plxnative-homeosc` absent (its 350 ms focus step moves the peek row under
+the shutter).
+
+**And it is worth almost nothing.** Television, three interleaved repeats per leg, ~925 samples per
+run, first 60 discarded, within-leg spread 0.04% (control) and 0.01% (folded):
+
+| counter | control | folded | delta |
+|---|---|---|---|
+| GPU_ACTIVE / frame | 8,746,572 | 8,676,083 | **−70,489 (−0.81%)** |
+| FRAG_QUADS_RAST | 1,875,660 | 1,177,742 | −697,918 (**−37.21%**) |
+| LS_WORDS | 7,762,728 | 4,984,257 | −2,778,471 (−35.79%) |
+| ARITH_WORDS | 15,527,280 | 15,515,117 | −12,163 (**−0.08%**) |
+| TEX_WORDS | 4,597,344 | 4,597,344 | 0 |
+| FRAG_NUM_TILES | 4,096 | 4,096 | 0 |
+| heartbeat `fps=` | 60 | 60 | 0 |
+
+**Removing 37% of the frame's rasterized fragments bought 0.81% of its GPU cycles**, and the
+counters say exactly why. Each removed fragment cost **one LS word and no arithmetic**: the driver
+folds `mix(uniform, uniform, varying)` and the four-corner bilinear field into varying
+interpolation, which runs on the load/store pipe. That pipe was at **44.8%** occupancy
+(7.76M of 17.34M tripipe cycles) while the arithmetic pipe was at **89.5%** (15.53M). The frame is
+**arithmetic-bound**, and the overdraw carried none of it. 130,299 fragment core-cycles for
+2,791,672 removed pixels is **0.047 core-cycles per pixel** — the removed layers were, to a very
+good approximation, free.
+
+The 2,778,471 LS words removed against the ledger's 2,778,624 predicted pixels — **0.006% apart** —
+is also the tightest available check that the ledger and the counters are measuring one thing.
+
+**So "3.65x overdraw" is not headroom.** A third of it belongs to the compositor, and most of the
+rest is blended varying interpolation on a half-idle pipe. Culling app overdraw on this part is
+worth roughly 0.02% of the frame per percent of fragments removed. Anything that pays here has to
+remove ARITHMETIC, not fragments.
+
+### What this means for anyone optimising this app
+
+1. **Stop reading `FRAG_QUADS_RAST` as a budget.** On this part a rasterized fragment costs between
+   nothing and a great deal depending on which pipe its shader uses, and the cheapest ones are
+   exactly the big full-screen ones. Price a change by a whole-frame `frame.ui` A/B or not at all.
+2. **34.4% of the frame is the compositor** and is not addressable from inside this process. The
+   app's own share of a hero frame is 5,733,199 cycles; that is the whole size of the prize.
+3. **The bottleneck is the arithmetic pipe at 89.5% occupancy.** The lever is arith words per
+   fragment on the quads that carry them, not the number of quads.
+4. **`ui::overdraw` is worth keeping** whichever way the fold goes. It is compiled out of a release
+   build entirely, it runs in the simulator, and it is the only instrument here that can attribute a
+   fragment to a draw class — the counters cannot, because they are GPU-global.
+5. The fold itself is **worth having in the tree behind its flag and not worth switching on**: 0.81%
+   does not pay for a GLSL copy of two design curves that `theme.rs` and two screens own, and every
+   future retune of either curve would have to be made in both places. It becomes interesting the
+   day the surface is not 1080p — at 4K the fragment and load/store work scale by four while the
+   arithmetic per fragment does not, which is precisely the condition under which the pipe it
+   unloads becomes the one that binds.
