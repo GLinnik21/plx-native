@@ -1212,6 +1212,57 @@ const GLASS_SPEC: [f32; 4] = [-0.7071, -0.7071, 3.0, 0.80];
 /// to break a band, below the level at which it reads as grain. Not optional — see `fs_glass.frag`.
 const GLASS_NOISE: f32 = 1.0 / 255.0;
 
+/// How wide a surface's rim is — the ONE thing about the material that is not the same for every
+/// glass surface, and the only per-draw material parameter.
+///
+/// The design system states it as a rule rather than a number: a SHEET takes "a perimeter line, a
+/// specular hairline along the top edge, a chamfer shade along the bottom, and a 28px ramp inside
+/// each so a sheet reads as THICK rather than outlined", and then — "the track takes the line and
+/// the hairline and no ramp: at 76px tall the chamfer would eat the 20px of interior it has."
+///
+/// It is the same lamp, the same weights and the same shader either way. Only the DISTANCE the
+/// chamfer and the lens are given to work over changes, which is why this is two floats and not a
+/// second material: [`GLASS_EDGE`]'s alpha is .14 and the design's own `--glass-rim` is white .14,
+/// arrived at from opposite ends.
+#[derive(Clone, Copy)]
+pub(crate) enum GlassRim {
+    /// A sheet: the full 28px chamfer ramp and the 38px lens. Popovers.
+    Bevelled,
+    /// A 76px-tall standing container: the line and the hairline, no ramp and no bend. The chamfer
+    /// collapses onto the perimeter — the same white .14 above and the same shade below, now one
+    /// pixel of each instead of 28 — and the lens is off, because a 38px displacement squeezed into
+    /// a two-pixel band is a smear rather than a refraction. Photographed at 7x on the panel before
+    /// this existed: the track's top and bottom edges carried a wide gradient the mock draws as a
+    /// single `inset 0 1px 0`, which is what "the rim looks thinner in the mockups" was seeing.
+    Line,
+}
+
+impl GlassRim {
+    /// `(bevel, lens, spec)` — the shader's `u_bevel` / `u_lens` / `u_spec`.
+    ///
+    /// The line's bevel is 2.0 rather than 0: `fs_glass.frag` divides by `u_bevel` to build its ramp
+    /// and its interior early-out is `d < -u_bevel`, so zero would be a division by zero on every
+    /// fragment of every glass surface. Two is also the honest width — the chamfer collapses onto
+    /// the same pixel the perimeter occupies rather than beside it — and it makes the early-out
+    /// cover essentially the whole surface, which is the cheaper path.
+    ///
+    /// The line's SPECULAR is off entirely (`w = 0`), and that is not a simplification. The shader's
+    /// hairline is part of the backdrop, so the material's own darkening lands on top of it: over a
+    /// bright hero the term clips to pure white and the scrim then brings it down to whatever it
+    /// happens to bring it down to — measured pre-scrim at (255.4, 255.4, 255.4) 1.5px in from both
+    /// caps, where the design asks for white .14. A container's rim is drawn OVER its material
+    /// instead ([`theme::GLASS_RIM`]), which is where the design puts it and what makes .14 a weight
+    /// rather than a starting point. A SHEET keeps the shader's version: its frost is .72 neutral
+    /// rather than a black scrim, and the two-lobe catch on the corner arcs is the reading that
+    /// says "reflection" rather than "stroke" — it was tuned on the panel and it stays.
+    fn params(self) -> (f32, f32, [f32; 4]) {
+        match self {
+            Self::Bevelled => (GLASS_BEVEL, GLASS_LENS, GLASS_SPEC),
+            Self::Line => (2.0, 0.0, [0.0, 0.0, 1.0, 0.0]),
+        }
+    }
+}
+
 static mut GPROG: c_uint = 0;
 static mut GL_RECT: c_int = 0;
 static mut GL_SCREEN: c_int = 0;
@@ -1481,13 +1532,12 @@ fn blur_lazy_init() -> bool {
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
-        // Material constants and the orientation term: all fixed for the life of the process, and
-        // uniforms are per-program state, so none of them belongs in the draw.
-        glUniform1f(GL_BEVEL, GLASS_BEVEL);
-        glUniform1f(GL_LENS, GLASS_LENS);
+        // Material constants and the orientation term: fixed for the life of the process, and
+        // uniforms are per-program state, so none of THESE belongs in the draw. `u_bevel`/`u_lens`
+        // are the exception and are set per draw — see [`GlassRim`], which is the one thing a
+        // surface gets to say about the material.
         glUniform4fv(GL_EDGE, 1, GLASS_EDGE.as_ptr());
         glUniform3f(GL_LIGHT, GLASS_LIGHT[0], GLASS_LIGHT[1], GLASS_LIGHT[2]);
-        glUniform4fv(GL_SPEC, 1, GLASS_SPEC.as_ptr());
         glUniform1f(GL_NOISE, GLASS_NOISE);
         // `GL_UVPX` is NOT set here. It was, back when the grab was always the whole screen and one
         // authored pixel was therefore always `1/SCR_W` of the texture — but the snapshot is a
@@ -2015,7 +2065,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
 /// spring, so the two differ for the whole of that animation; keying the region on the moving rect
 /// would fail containment on nearly every frame and add policy-independent captures throughout the
 /// slide. Callers with no motion (the tab bar) pass their own rect twice.
-pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32) -> bool {
+pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32, rim: GlassRim) -> bool {
     unsafe {
         // A glass surface met while drawing the page AS a blur source draws nothing at all. It
         // cannot draw itself — the snapshot it would sample is the target currently bound — and it
@@ -2071,6 +2121,10 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
             span[0] / c.reg[2],
             if c.bottom_up { -span[1] / c.reg[3] } else { span[1] / c.reg[3] },
         );
+        let (bevel, lens, spec) = rim.params();
+        glUniform1f(GL_BEVEL, bevel);
+        glUniform1f(GL_LENS, lens);
+        glUniform4fv(GL_SPEC, 1, spec.as_ptr());
         glUniform4fv(GL_TINT, 1, tint);
         glUniform4f(GL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
         glUniform1f(GL_RADIUS, radius);

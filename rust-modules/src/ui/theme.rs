@@ -449,6 +449,19 @@ pub const DIAG_FLIP_A: [f32; 4] = GREEN_400;
 pub const DIAG_FLIP_B: [f32; 4] = RED_400;
 /// Section divider hairline.
 pub const HAIRLINE: [f32; 4] = with_a(WHITE, 0.10);
+/// A glass container's **perimeter line** — the design system's `--glass-rim`, one notch under the
+/// tiles' own [`CARD_SHEEN`] (.22) because a sheet's edge is quieter than a card's.
+///
+/// It goes ON TOP of the material, not under it, and that ordering is the whole reason it is a
+/// token here rather than a shader term. The design states the track as two inset shadows —
+/// `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)` — and an inset shadow
+/// composites over the background it is declared with. `fs_glass.frag`'s own specular hairline is
+/// part of the BACKDROP, so the darkening lands on top of it and its weight is whatever the scrim
+/// leaves; drawing the line here puts it where the design puts it and makes .14 mean .14.
+pub const GLASS_RIM: [f32; 4] = with_a(WHITE, 0.14);
+/// The same line on the TOP edge only, at double weight — `--glass-rim-light`. One light, from
+/// above, the direction every card shadow in this system already falls in.
+pub const GLASS_RIM_LIGHT: [f32; 4] = with_a(WHITE, 0.28);
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).
 pub const OVERLAY_FOCUS_PILL: [f32; 4] = with_a(WHITE, 0.14);
 /// The shared top tab bar's **TRACK** — the recessed near-black capsule the tab pills sit in, and

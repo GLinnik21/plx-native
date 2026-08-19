@@ -298,14 +298,15 @@ impl Glass {
         rest_dy: f32,
         radius: f32,
         tint: [f32; 4],
+        rim: crate::gfx::GlassRim,
     ) -> bool {
-        p.backdrop_blur(r, rest_dy, radius, tint)
+        p.backdrop_blur(r, rest_dy, radius, tint, rim)
     }
 
     /// Standard popover ground: glass + frost where available, the existing opaque sheet fallback
     /// on a driver that cannot render the chain.
     pub(crate) fn panel(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
-        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0]) {
+        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Bevelled) {
             crate::ui::profile::phase("glass.frost", || {
                 p.rect(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
             });
@@ -2362,11 +2363,15 @@ static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 ///
 /// It exists because the shipped values are the one thing in this material nobody had graded. The
 /// flat track is `scrim_black(0.72..0.82)` and is sized to make the pills legible over ARBITRARY
-/// artwork; the glass track halves that to 0.38/0.46 on the argument that a real backdrop behind it
-/// does the work the flat material had to do alone. Over a poster grid it does not: a quarter-res
-/// Kawase blur of a wall of posters still has large colour blobs, so the track comes out mottled,
-/// one pill sits on a dark patch and its neighbour on a bright one, and the sheen's rim picks up
-/// whatever colour it is over. Photographed on the television before this knob existed.
+/// artwork; the glass track roughly halves that — [`theme::TAB_GLASS_TOP`]/`BOT`, .34/.50 — on the
+/// argument that a real backdrop behind it does the work the flat material had to do alone. It does
+/// not, and [`theme::TAB_GLASS_TOP`] holds the contrast table that says why: a blur removes DETAIL,
+/// not brightness, so the first density at which the tertiary labels clear 3:1 over white artwork is
+/// the flat track's own .72.
+///
+/// (This paragraph said "0.38/0.46" until 2026-08-19, which were the values before the design
+/// system's `--glass-track-*` landed — recovered from the rendered pixels as .34/.50 while chasing
+/// something else, which is how the drift was found.)
 fn tab_glass_stops() -> ([f32; 4], [f32; 4]) {
     let spread = theme::TAB_GLASS_BOT[3] - theme::TAB_GLASS_TOP[3];
     match crate::dev::read("tabglassdim").and_then(|v| v.parse::<f32>().ok()) {
@@ -2683,18 +2688,32 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 0.0,
                 track.h * 0.5,
                 [1.0, 1.0, 1.0, 1.0],
+                // The line and the hairline, no ramp — the design system's rule for this container,
+                // and the one the panel treatment gets wrong here: 76px tall has 20px of interior
+                // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
+                // edge and becomes most of the object.
+                crate::gfx::GlassRim::Line,
             ) {
                 let (gt, gb) = tab_glass_stops();
-                // NO [`theme::CARD_SHEEN`] here, and it is the one line that separates this from a
-                // dark capsule with a blur behind it. The glass material draws its OWN rim —
-                // `fs_glass.frag`'s perimeter hairline and its chamfer, one light from above, the
-                // direction every shadow in this system falls in. The tile sheen is a second,
-                // undirected white line laid over the darkening layer, and being translucent it
-                // takes the colour of whatever it is over: on the television that is what read as a
-                // warm rim around the whole track, and no amount of density touched it because
-                // density is applied UNDER it. The flat track still wears it — there it is the only
-                // edge the capsule has.
-                p.rect(track, track.h * 0.5, gt, gb, 0.0);
+                // The darkening, then THE RIM ON TOP OF IT — `inset 0 0 0 1px var(--glass-rim),
+                // inset 0 1px 0 var(--glass-rim-light)`, which is the whole of what the design
+                // system draws on this container. Not [`theme::CARD_SHEEN`], which is the tiles'
+                // .22 and belongs to a card; and not the shader's own hairline, which sits UNDER
+                // the scrim (`GlassRim::Line` turns it off) and so cannot be a weight.
+                //
+                // Two lines, because one light: .14 the whole way round, .28 along the top. The
+                // second is a straight run between the caps' tangents rather than a stroked arc —
+                // the perimeter line carries the curve, and 1px at .28 has no room to be wrong
+                // about where it ends.
+                p.rect_rimmed(track, track.h * 0.5, gt, gb, theme::GLASS_RIM);
+                let cap_r = track.h * 0.5;
+                p.rect(
+                    Rect::new(track.x + cap_r, track.y, track.w - 2.0 * cap_r, theme::CARD_SHEEN_W),
+                    0.0,
+                    theme::GLASS_RIM_LIGHT,
+                    theme::GLASS_RIM_LIGHT,
+                    0.0,
+                );
             } else {
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
             }

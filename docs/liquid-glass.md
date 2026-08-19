@@ -163,10 +163,46 @@ only trigger.
 | limit | value | why |
 |---|---|---|
 | **Clearance from the screen edge** | **68 px** (`BLUR_REACH`) | The rim samples up to 38 px outward (the lens) plus ~25 px of kernel spread. Past the panel edge there is nothing to sample; closer than this to the frame the rim reads as a one-colour smear on that side. *Derived from `GLASS_LENS` + the tap ladder.* |
-| **Minimum short side** | **~60 px** | The bevel is 28 px from each edge, so below ~60 px an element is *all* rim and no interior — it still draws, and reads as a solid lozenge of refraction rather than a pane. It also loses the shader's interior early-out, so every fragment pays the full lens. The tab bar at 76 px has 20 px of interior and is close to the floor. *Derived from `GLASS_BEVEL`.* |
+| **Minimum short side** | **~60 px, for a SHEET** | The bevel is 28 px from each edge, so below ~60 px an element is *all* rim and no interior — it still draws, and reads as a solid lozenge of refraction rather than a pane. It also loses the shader's interior early-out, so every fragment pays the full lens. *Derived from `GLASS_BEVEL`.* **A standing container is not bound by this**, because it does not take the ramp — see §5b. |
 | **Maximum bevel** | **~40 px** | Past that the ramp covers enough of the panel to be read as *shading* rather than as an edge, and the object stops looking like glass and starts looking vignetted. *Judgement, recorded in `GLASS_BEVEL`'s doc.* |
 | **Corner radius** | anything up to a capsule | The lens reuses the `sdBox` distance the rounding already computes, so a full capsule (`h * 0.5`, what the tab bar uses) costs nothing extra. |
 | **Slide during appear** | **≤ 20 px** (`POPOVER_MAX_RISE`) | The grab swallows the full travel, so the slide itself forces no extra capture. Dynamic cadence may still refresh during the appear. A larger rise must raise the constant; a host test fails otherwise. |
+
+---
+
+## 5b. The rim is per-surface, and a 76 px bar does not get a sheet's
+
+A SHEET is a thick object: a perimeter line, a specular hairline on its top edge, a chamfer shade
+under it, and a **28 px ramp inside each** so the thickness reads. That is what `GlassRim::Bevelled`
+draws and it is tuned on the panel.
+
+Give the same treatment to the **tab track** and the arithmetic runs out. The bar is 76 px tall, so
+its half-height is 38 against a 28 px bevel: the un-ramped interior is `|dy| < 10`, a 20 px band —
+**56 of 76 px, 74 % of the object, is inside the ramp.** Measured on the corrected render (column
+x=1150, uniform hero behind): a lit chamfer y=42..47, the material untouched y=48..100, a
+multiplicative shade ramping 0.97x → 0.62x over y=101..109. The rim had become most of the bar.
+
+The lens has the same problem twice over: `GLASS_LENS` is 38 px, which on this object is **half its
+height**. It is invisible over a flat hero — a lens on a uniform field is the identity — so no
+capture of the dev set's own Home screen can show it.
+
+So the rim is a **per-draw** parameter (`gfx::GlassRim`), and the track takes `Line`: bevel collapsed
+onto the perimeter, lens off, and the shader's own specular off with them. Its rim is then drawn
+**over** the material — `theme::GLASS_RIM` .14 round the perimeter, `GLASS_RIM_LIGHT` .28 along the
+top — which is where a rim belongs and is the only way a stated weight means anything. The shader's
+hairline is part of the BACKDROP, so the darkening lands on top of it: measured pre-scrim it clips
+to `(255, 255, 255)` 1.5 px in from both caps, where the design asks for white .14.
+
+Two consequences worth carrying:
+
+- **The lit and shaded halves are not symmetric.** `GLASS_LIGHT` is `(-0.35, -0.94, 0.45)`; the lit
+  side is *additive* at `GLASS_EDGE`'s .14 and the shaded side is a *multiply* at .45 — 3.2:1 in
+  favour of dark. On a sheet that reads as thickness. On a bar it reads as a shadow cast on it.
+- **A cap gets neither, and that is geometry, not an omission.** The chamfer is
+  `dot(normal, light.xy)`: a vertical normal scores 0.94, a cap's horizontal normal 0.35, and each
+  cap *contains the zero crossing* (20.4° past the apex), so it sweeps `+0.94 → 0 → -0.94` across a
+  119 px arc instead of holding one value for 468 px. The ends are treated — just split, three times
+  weaker, and cancelling. A `Line` rim removes the question.
 
 ---
 
