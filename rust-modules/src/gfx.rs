@@ -1799,6 +1799,58 @@ pub(crate) fn blur_source_pass() -> bool {
     unsafe { BLUR_IN_PASS }
 }
 
+/// **Sample what is actually on the panel under `r`, at a low rate.**
+///
+/// One `glReadPixels` of a few pixels along the rect's centre line, at most every
+/// [`GROUND_SAMPLE_MS`]. It exists because a material whose density follows its ground needs to know
+/// the ground, and every cheaper source is the wrong colour: Plex's `UltraBlurColors` are a derived
+/// muted palette for an ambient wash — measured against the Luca hero, they give (0.30, 0.23, 0.18)
+/// where the top of the panel is actually (0.00, 0.68, 0.91) — and the wash's own corners lean only
+/// 26% toward the art. The pixels are the only honest answer.
+///
+/// A readback stalls a tiler, so the rate is the whole design: a hero holds for 8 seconds and a
+/// scrim density has no business changing faster than the picture does, so twice a second costs one
+/// flush and buys an exact answer. Returns `None` until the first sample lands and inside a source
+/// pass, where framebuffer 0 is not bound and the answer would be the FBO's own contents.
+///
+/// Counted in CALLS rather than milliseconds: this is called once per drawn bar, so the count is
+/// the frame rate and needs no clock. 30 is about twice a second at 60.
+const GROUND_SAMPLE_EVERY: u32 = 30;
+/// How many pixels are averaged across the rect. Odd, so one of them is the middle.
+const GROUND_TAPS: usize = 5;
+static mut GROUND_RGB: Option<[f32; 3]> = None;
+static mut GROUND_AT: u32 = 0;
+
+pub(crate) fn sample_ground(r: [f32; 4]) -> Option<[f32; 3]> {
+    unsafe {
+        if BLUR_IN_PASS {
+            return *std::ptr::addr_of!(GROUND_RGB);
+        }
+        let n = (*std::ptr::addr_of!(GROUND_AT)).wrapping_add(1);
+        GROUND_AT = n;
+        if (*std::ptr::addr_of!(GROUND_RGB)).is_some() && n % GROUND_SAMPLE_EVERY != 0 {
+            return *std::ptr::addr_of!(GROUND_RGB);
+        }
+        let (gx, gy, gw, gh) = crate::surface::viewport();
+        let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
+        let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int; // GL origin is bottom-left
+        let mut acc = [0.0f32; 3];
+        let mut px = [0u8; 4];
+        for i in 0..GROUND_TAPS {
+            let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
+            let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
+            glReadPixels(x.clamp(0, gx + gw - 1), cy.clamp(0, gy + gh - 1), 1, 1,
+                         GL_RGBA, GL_UNSIGNED_BYTE, px.as_mut_ptr() as *mut c_void);
+            for c in 0..3 {
+                acc[c] += px[c] as f32 / 255.0;
+            }
+        }
+        let t = GROUND_TAPS as f32;
+        GROUND_RGB = Some([acc[0] / t, acc[1] / t, acc[2] / t]);
+        *std::ptr::addr_of!(GROUND_RGB)
+    }
+}
+
 /// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
