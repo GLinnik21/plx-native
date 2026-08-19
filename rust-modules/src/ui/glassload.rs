@@ -33,9 +33,21 @@
 //! hold=6;off,1x608x396@3,2x608x396@3,1x1920x1080@3,1x1920x1080@1
 //! ```
 //!
-//! A step is `off` (no glass at all — the control leg) or `<count>x<width>x<height>@<cadence>`,
-//! where the cadence is **presents between snapshot refreshes**: `@1` refreshes every presented
-//! frame, `@3` is the shipped dynamic policy, `@0` captures once and caches forever.
+//! A step is one of three things:
+//!
+//! * `off` — no extra draws at all: the control leg,
+//! * `<count>x<width>x<height>@<cadence>` — that many GLASS surfaces, where the cadence is
+//!   **presents between snapshot refreshes**: `@1` refreshes every presented frame, `@3` is the
+//!   shipped dynamic policy, `@0` captures once and caches forever,
+//! * `c<count>x<width>x<height>` (or `cf…` for the FOCUSED penumbra) — that many CARD composites,
+//!   the `draw_tex_carded` path every art tile takes.
+//!
+//! The card form is the second axis this dial exists for. A sibling measurement priced a card
+//! fragment at **3.02 GPU cycles and 5.86 arithmetic words** — 3x a textured full-screen quad and
+//! 120x a gradient — from four peek-row tiles covering 13.6% of the panel. Card area is the one
+//! quantity design controls directly and can scale freely, so "what happens when the panel is
+//! mostly cards" needed a dial rather than an extrapolation. Cards here sample four synthetic
+//! poster-sized textures in rotation, allocated once; see [`card_tex`] for why not one.
 //!
 //! Panels are tiled adjacently in a centred grid, so `n` surfaces cost `n` composites inside ONE
 //! grown region — which is the shape a real screen has, and the shape `gfx::blur_region_union`
@@ -67,10 +79,26 @@ use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::{Painter, Rect};
 use crate::ui::theme;
 
+/// What a step's surfaces ARE. Both take the same count/size/layout; they differ only in which
+/// shader path the composite goes down, which is the whole point of having both on one dial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// `fs_glass` over the shared blurred snapshot — the backdrop panel.
+    Glass,
+    /// `draw_tex_carded` — texture + edge sheen + folded drop shadow. `true` = drawn at the FOCUSED
+    /// pop, which grows the penumbra and so the rasterized quad.
+    Card { focused: bool },
+    /// `draw_tex` at radius 0 — the FLAT textured quad, the cheapest full-coverage path the app
+    /// has and the one the hero photograph takes. The control the other two are priced against.
+    Image,
+}
+
 /// One configuration of the dial.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Step {
-    /// How many glass surfaces. Zero is the control leg — the page with no glass on it at all.
+    /// Which composite these surfaces are.
+    pub(crate) kind: Kind,
+    /// How many surfaces. Zero is the control leg — the page with nothing extra on it at all.
     pub(crate) n: u32,
     /// Each surface's authored size. The snapshot region is the union of these grown by
     /// `gfx::BLUR_MARGIN` (88) on every side and clamped to the screen.
@@ -81,7 +109,14 @@ pub(crate) struct Step {
 }
 
 impl Step {
-    const OFF: Self = Self { n: 0, w: 0.0, h: 0.0, cadence: 0 };
+    const OFF: Self = Self { kind: Kind::Glass, n: 0, w: 0.0, h: 0.0, cadence: 0 };
+
+    /// Total composite area this step submits, in authored px — the x axis of the scaling law.
+    /// NOMINAL: a card's quad is additionally inflated by its penumbra, and a glass panel's
+    /// snapshot region by `gfx::BLUR_MARGIN`, neither of which is included here.
+    pub(crate) fn px(self) -> f64 {
+        self.n as f64 * self.w as f64 * self.h as f64
+    }
 }
 
 /// A parsed sweep: how long each step is held, and the steps themselves.
@@ -120,6 +155,17 @@ pub(crate) fn parse(spec: &str) -> Option<Sweep> {
             steps.push(Step::OFF);
             continue;
         }
+        // `cf` before `c`: the longer prefix has to win, or a focused-card step parses as an
+        // ordinary one whose count begins with `f` and the whole spec is rejected.
+        let (kind, tok) = if let Some(r) = tok.strip_prefix("cf") {
+            (Kind::Card { focused: true }, r)
+        } else if let Some(r) = tok.strip_prefix('c') {
+            (Kind::Card { focused: false }, r)
+        } else if let Some(r) = tok.strip_prefix('i') {
+            (Kind::Image, r)
+        } else {
+            (Kind::Glass, tok)
+        };
         let (geom, cad) = tok.split_once('@').unwrap_or((tok, "3"));
         let mut parts = geom.split('x');
         let n: u32 = parts.next()?.trim().parse().ok()?;
@@ -128,7 +174,13 @@ pub(crate) fn parse(spec: &str) -> Option<Sweep> {
         if parts.next().is_some() || n == 0 || w < 1.0 || h < 1.0 {
             return None;
         }
-        steps.push(Step { n, w: w.min(SCR_W), h: h.min(SCR_H), cadence: cad.trim().parse().ok()? });
+        steps.push(Step {
+            kind,
+            n,
+            w: w.min(SCR_W),
+            h: h.min(SCR_H),
+            cadence: cad.trim().parse().ok()?,
+        });
     }
     (!steps.is_empty()).then_some(Sweep { hold_ms, steps })
 }
@@ -189,10 +241,25 @@ pub(crate) fn configure(spec: &str) {
                 .enumerate()
                 .map(|(i, st)| {
                     if st.n == 0 {
-                        format!("{i}:off")
-                    } else {
-                        let drawn = layout(*st).len();
-                        format!("{i}:{}x{}x{}@{} drawn={drawn}", st.n, st.w, st.h, st.cadence)
+                        return format!("{i}:off");
+                    }
+                    let drawn = layout(*st).len();
+                    // The DRAWN count and the drawn AREA, never the requested ones: a step whose
+                    // panels did not fit would otherwise report a cost for a scene that never ran.
+                    let px = drawn as f64 * st.w as f64 * st.h as f64;
+                    match st.kind {
+                        Kind::Glass => format!(
+                            "{i}:glass {}x{}x{}@{} drawn={drawn} px={px:.0}",
+                            st.n, st.w, st.h, st.cadence
+                        ),
+                        Kind::Card { focused } => format!(
+                            "{i}:card{} {}x{}x{} drawn={drawn} px={px:.0}",
+                            if focused { "-focused" } else { "" },
+                            st.n, st.w, st.h
+                        ),
+                        Kind::Image => {
+                            format!("{i}:image {}x{}x{} drawn={drawn} px={px:.0}", st.n, st.w, st.h)
+                        }
                     }
                 })
                 .collect();
@@ -306,14 +373,61 @@ pub(crate) fn draw() {
         return;
     }
     let p = Painter::root();
-    for r in layout(s.steps[idx as usize]) {
-        if p.backdrop_blur(r, 0.0, PANEL_RADIUS, [1.0, 1.0, 1.0, 1.0]) {
-            crate::ui::profile::phase("glass.frost", || {
-                p.rect(r, PANEL_RADIUS, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
-            });
-        } else {
-            p.rect(r, PANEL_RADIUS, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    let step = s.steps[idx as usize];
+    for (i, r) in layout(step).into_iter().enumerate() {
+        match step.kind {
+            Kind::Glass => {
+                if p.backdrop_blur(r, 0.0, PANEL_RADIUS, [1.0, 1.0, 1.0, 1.0]) {
+                    crate::ui::profile::phase("glass.frost", || {
+                        p.rect(r, PANEL_RADIUS, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
+                    });
+                } else {
+                    p.rect(r, PANEL_RADIUS, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+                }
+            }
+            Kind::Card { focused } => {
+                let f = if focused { 1.0 } else { 0.0 };
+                p.tex_carded(card_tex(i), r, theme::CARD_RING_RAD, [1.0, 1.0, 1.0, 1.0], f);
+            }
+            Kind::Image => p.tex(card_tex(i), r, 0.0, [1.0, 1.0, 1.0, 1.0]),
         }
+    }
+}
+
+/// The synthetic poster textures the card steps sample, allocated once and reused for the process
+/// lifetime (never per frame — see the shared brief's constraint).
+///
+/// **Four of them, in rotation, and that is the load-bearing part.** A grid of N cards all reading
+/// ONE texture is a texture cache that stays warm and a memory system that never has to work, which
+/// would price a poster wall as cheaper than it is. Four 512x768 RGBA images are 6 MB, comfortably
+/// past any on-chip cache on this part, so consecutive cards miss the way real posters do. They are
+/// value noise rather than a flat fill for the same reason: a constant texture compresses in the
+/// framebuffer/L2 path and a photograph does not.
+static mut CARD_TEX: [u32; NCARD_TEX] = [0; NCARD_TEX];
+const NCARD_TEX: usize = 4;
+
+fn card_tex(i: usize) -> u32 {
+    const W: usize = 512;
+    const H: usize = 768;
+    unsafe {
+        let slot = i % NCARD_TEX;
+        let tex = (*std::ptr::addr_of!(CARD_TEX))[slot];
+        if tex != 0 {
+            return tex;
+        }
+        let mut px = vec![0u8; W * H * 4];
+        // xorshift, so the bytes are incompressible and the image is identical on every run —
+        // a measurement whose texture content varied would not be re-runnable.
+        let mut state: u32 = 0x9E37_79B9 ^ ((slot as u32 + 1) * 0x85EB_CA6B);
+        for byte in px.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = state as u8;
+        }
+        let id = crate::gfx::upload_rgba(0, W as i32, H as i32, px.as_ptr());
+        (*std::ptr::addr_of_mut!(CARD_TEX))[slot] = id;
+        id
     }
 }
 
@@ -385,8 +499,8 @@ mod tests {
         assert_eq!(s.hold_ms, 6000);
         assert_eq!(s.steps.len(), 3);
         assert_eq!(s.steps[0], Step::OFF);
-        assert_eq!(s.steps[1], Step { n: 1, w: 608.0, h: 396.0, cadence: 3 });
-        assert_eq!(s.steps[2], Step { n: 2, w: 400.0, h: 300.0, cadence: 1 });
+        assert_eq!(s.steps[1], Step { kind: Kind::Glass, n: 1, w: 608.0, h: 396.0, cadence: 3 });
+        assert_eq!(s.steps[2], Step { kind: Kind::Glass, n: 2, w: 400.0, h: 300.0, cadence: 1 });
     }
 
     #[test]
@@ -416,12 +530,12 @@ mod tests {
     #[test]
     fn panels_tile_inside_the_screen_and_the_count_is_what_actually_fits() {
         // Four 608x396 panels fit two across and two down on a 1920x1080 canvas.
-        let four = layout(Step { n: 4, w: 608.0, h: 396.0, cadence: 3 });
+        let four = layout(Step { kind: Kind::Glass, n: 4, w: 608.0, h: 396.0, cadence: 3 });
         assert_eq!(four.len(), 4);
         assert!(four.iter().all(|r| r.x >= 0.0 && r.y >= 0.0));
         assert!(four.iter().all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
         // …and asking for more than fits reports the number DRAWN, never the number requested.
-        let many = layout(Step { n: 99, w: 608.0, h: 396.0, cadence: 3 });
+        let many = layout(Step { kind: Kind::Glass, n: 99, w: 608.0, h: 396.0, cadence: 3 });
         assert!(many.len() < 99 && !many.is_empty(), "packed {} of 99", many.len());
         assert!(many.iter().all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
     }
@@ -429,6 +543,25 @@ mod tests {
     #[test]
     fn the_control_leg_draws_nothing_at_all() {
         assert!(layout(Step::OFF).is_empty());
+    }
+
+    /// The card axis: `c`/`cf` must select the card composite, and `cf` must not be read as an
+    /// ordinary step whose count starts with `f` — the longer prefix has to be tried first, and
+    /// getting that wrong rejects the whole spec rather than one token.
+    #[test]
+    fn a_card_step_is_the_same_geometry_down_a_different_shader() {
+        let s = parse("hold=6;off,c40x220x330,cf40x220x330,1x608x396@3").expect("spec");
+        assert_eq!(s.steps[1].kind, Kind::Card { focused: false });
+        assert_eq!(parse("i1x960x540").expect("spec").steps[0].kind, Kind::Image);
+        assert_eq!(s.steps[2].kind, Kind::Card { focused: true });
+        assert_eq!(s.steps[3].kind, Kind::Glass);
+        assert_eq!(s.steps[1].n, 40);
+        assert_eq!(s.steps[1].px(), 40.0 * 220.0 * 330.0);
+        // …and the two card steps lay out identically, so a focused/resting A/B changes ONE thing.
+        // `Rect` is neither `Debug` nor `PartialEq`, so compare the fields the layout decides.
+        let (a, b) = (layout(s.steps[1]), layout(s.steps[2]));
+        assert_eq!(a.len(), b.len());
+        assert!(a.iter().zip(&b).all(|(p, q)| p.x == q.x && p.y == q.y && p.w == q.w && p.h == q.h));
     }
 
     #[test]
