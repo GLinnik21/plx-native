@@ -1148,6 +1148,8 @@ struct BlurChain {
 /// changes the frame rate being measured. A counter costs one relaxed increment on a path that
 /// already does a framebuffer copy, and it turns "the blur refreshed every third present" from a
 /// claim about the code into a number in the log.
+/// A configured cadence and the cadence that RAN are different claims: an invalidation only
+/// schedules a capture, and a containment miss can take one no clock asked for.
 pub(crate) static BLUR_SNAPSHOTS: AtomicU32 = AtomicU32::new(0);
 
 /// Take and clear the snapshot count, for the once/sec heartbeat.
@@ -1539,6 +1541,10 @@ fn blur_snapshot(reg: [f32; 4]) {
             return;
         }
         let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return };
+        // Counted here rather than at the call site because the direct path has its own entry and
+        // its own fallbacks into this one: what the audit wants is chain executions, whichever
+        // door they came through — and only past the guard, so a direct attempt that fails and
+        // falls back here is counted once rather than twice. See [`BLUR_SNAPSHOTS`].
         BLUR_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
 
         // Drain first: `glGetError` reports the OLDEST error since it was last called, so checking
