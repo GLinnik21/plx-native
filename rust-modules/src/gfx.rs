@@ -258,6 +258,7 @@ static mut LOC_FOCUS_RGB: c_int = 0;
 static mut LOC_RADR: c_int = 0;
 static mut LOC_RIMW: c_int = 0;
 static mut LOC_RIMCOL: c_int = 0;
+static mut LOC_RIMTOP: c_int = 0;
 
 static mut APROG: c_uint = 0;
 static mut AL_RECT: c_int = 0;
@@ -467,6 +468,7 @@ pub(crate) fn init_gl() {
         LOC_RADR = glGetUniformLocation(PROG, c"u_radR".as_ptr());
         LOC_RIMW = glGetUniformLocation(PROG, c"u_rimw".as_ptr());
         LOC_RIMCOL = glGetUniformLocation(PROG, c"u_rimcol".as_ptr());
+        LOC_RIMTOP = glGetUniformLocation(PROG, c"u_rimtop".as_ptr());
         glUniform2f(LOC_SCREEN, SCR_W, SCR_H);
 
         let mut vbo: c_uint = 0;
@@ -585,6 +587,7 @@ pub(crate) fn draw_rect(
         }
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
+        glUniform1f(LOC_RIMTOP, 0.0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -592,7 +595,7 @@ pub(crate) fn draw_rect(
 /// [`draw_rect`] with the focus edge-sheen (a `rimw`-px inset perimeter rim in `rimcol`) baked into
 /// the same fill pass — the no-texture (skeleton / chip disc) counterpart of [`draw_tex_stroked`].
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32) {
+pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32) {
     if culled(x, y, w, h) {
         return;
     }
@@ -609,6 +612,7 @@ pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
+        glUniform1f(LOC_RIMTOP, rimtop);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -673,12 +677,13 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
+        glUniform1f(LOC_RIMTOP, 0.0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
 
 /// [`draw_rrect`] with the focus edge-sheen baked in (flat fill + `rimw`-px inset rim in `rimcol`).
-pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32, rimw: f32, rimcol: *const f32) {
+pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32) {
     if culled(x, y, w, h) {
         return;
     }
@@ -695,6 +700,7 @@ pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
+        glUniform1f(LOC_RIMTOP, rimtop);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }

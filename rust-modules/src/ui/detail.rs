@@ -2777,7 +2777,7 @@ fn draw_tabs(p: Painter) {
     // because they are the pills' ground; each pill then paints only its own idle plate and its
     // label, and takes its ink from how covered it is.
     let tabs = view().tabs; // Copy, resolved once — like `amb` in `draw`
-    tabs.draw(pt, tab_y, TAB_ROW_H, true);
+    tabs.draw(pt, tab_y, TAB_ROW_H, true, false);
     let e = Env::inert();
     for lay in tabs_layout(d) {
         // pill sized to the (bold) label plus its trailing note — content sits at x, pill padded
