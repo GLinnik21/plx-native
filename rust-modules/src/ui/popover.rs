@@ -3,7 +3,7 @@
 //! fade + slide-into-place, with an optional full-screen scrim. Each panel used to hand-wire its
 //! own `static OPEN + APPEAR` pair, so any motion change was a four-file edit.
 use crate::ui::{theme, Painter, Rect, Spring};
-use crate::ui::widgets::{Glass, GlassFrame, GlassState};
+use crate::ui::widgets::{Glass, GlassState};
 
 /// Stiffness of the appear spring — the panels' shared open-motion constant, and the stiffness every
 /// other fade-into-place in the UI matches (the tab capsules' alpha, [`crate::ui::widgets::TabStrip`]).
@@ -95,24 +95,17 @@ impl Popover {
         self.appear.pos.clamp(0.0, 1.0)
     }
 
-    /// Prepare a source-dimmed host page BEFORE it draws. `underlay_changed` describes that page,
-    /// not this popover's own springs. Capture is still deferred to [`panel`], after the host page
-    /// is complete; this resolves only cadence invalidation and the RGB gain.
-    #[must_use]
-    pub(crate) fn prepare_present(&mut self, underlay_changed: bool) -> GlassFrame {
-        if !self.open {
-            return GlassFrame::IDENTITY;
+    /// Resolve this popover's glass cadence BEFORE its host page draws. `underlay_changed`
+    /// describes that page, not this popover's own springs. Capture is still deferred to [`panel`],
+    /// after the host page is complete; this resolves only cadence invalidation.
+    pub(crate) fn prepare_present(&mut self, underlay_changed: bool) {
+        if self.open {
+            self.glass.prepare(&mut self.glass_state, underlay_changed);
         }
-        let visibility = self.appear() * crate::ui::nav::page_alpha();
-        self.glass.prepare(
-            &mut self.glass_state,
-            visibility,
-            underlay_changed,
-        )
     }
 
-    /// The panel painter without a full-screen scrim. Pair with [`prepare_present`](Self::prepare_present)
-    /// when the glass policy moves that black dim into the opaque host page instead.
+    /// The panel painter without a full-screen scrim. Pair with [`scrim`](Self::scrim), for a
+    /// caller that draws the dim as part of its host page — see that method for why one does.
     pub(crate) fn content_painter(&self, rise: f32) -> Painter {
         let a = self.appear();
         self.rise.set(rise);
@@ -132,14 +125,35 @@ impl Popover {
     /// already goes through, and it is 1.0 whenever no route change is in flight — which is every
     /// frame of the in-player panels, since playback has no page transition.
     pub(crate) fn painter(&self, scrim_a: f32, rise: f32) -> Painter {
-        let a = self.appear();
-        let page = crate::ui::nav::page_alpha();
-        let scrim_a = self.glass.overlay_scrim_alpha(scrim_a);
+        // A REFRESHING policy's scrim belongs to the host page — see [`Glass::needs_page_scrim`].
+        // Reaching here with one means the panel's own backdrop will be sampled from an undimmed
+        // page, which on a television reads as a panel brighter than the screen around it and is
+        // very hard to attribute. On the host it is now this line.
+        debug_assert!(
+            !self.glass.needs_page_scrim() || scrim_a <= 0.0,
+            "a refreshing popover's scrim belongs to the page: use Popover::scrim + content_painter"
+        );
+        self.scrim(scrim_a);
+        self.content_painter(rise)
+    }
+
+    /// Draw the modal scrim ALONE, for a caller that needs it earlier in the frame than the panel.
+    ///
+    /// **A dynamic backdrop needs this.** The scrim sits between the page and the panel, so it is
+    /// part of what the panel's glass looks through — and the capture path gets that for free, since
+    /// it grabs framebuffer 0 after the scrim is already on it. The DIRECT path does not: it
+    /// re-renders the page closure into a small target before any popover draws, so a panel served
+    /// by it sampled an undimmed page and came out brighter than the dimmed surroundings it sat in.
+    /// Drawing the scrim as part of the page closure puts it back on both paths, in one place, at
+    /// the same point in draw order it always occupied.
+    ///
+    /// Pair with [`content_painter`](Self::content_painter), which is the same panel painter with
+    /// the scrim left out — calling [`painter`](Self::painter) as well would dim twice.
+    pub(crate) fn scrim(&self, scrim_a: f32) {
         if scrim_a > 0.0 {
-            let dim = theme::scrim_black(scrim_a * a * page);
+            let dim = theme::scrim_black(scrim_a * self.appear() * crate::ui::nav::page_alpha());
             Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
         }
-        self.content_painter(rise)
     }
 
     /// Draw the panel's GROUND at `r` with corner `rad` — frosted over a live backdrop blur where
@@ -174,14 +188,28 @@ impl Popover {
 mod tests {
     use super::*;
 
+    /// A closed popover prepares NOTHING, whichever policy it carries — no activation, no
+    /// invalidation, no snapshot scheduled. That is what lets every popover in the app call
+    /// `prepare_present` unconditionally from its route arm.
+    /// The rule `painter` asserts on, graded as a pure property of the two policies: a refreshing
+    /// backdrop is re-sourced from the page closure, so its dim has to be IN that closure.
+    #[test]
+    fn only_a_refreshing_policy_owes_its_scrim_to_the_page() {
+        assert!(!Glass::CACHED.needs_page_scrim(), "a cached grab already contains its own scrim");
+        assert!(
+            Glass::DYNAMIC_BACKDROP.needs_page_scrim(),
+            "a refreshing backdrop re-renders the page, which must therefore carry the dim"
+        );
+    }
+
     #[test]
     fn cached_is_the_default_and_dynamic_glass_requires_an_explicit_opt_in() {
         let mut cached = Popover::new();
-        let mut dynamic = Popover::with_glass(Glass::DYNAMIC);
+        let mut dynamic = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
         assert_eq!(cached.glass, Glass::CACHED);
-        assert_eq!(dynamic.glass, Glass::DYNAMIC);
-        assert_eq!(cached.prepare_present(false), GlassFrame::IDENTITY);
-        assert_eq!(dynamic.prepare_present(false), GlassFrame::IDENTITY);
+        assert_eq!(dynamic.glass, Glass::DYNAMIC_BACKDROP);
+        cached.prepare_present(false);
+        dynamic.prepare_present(false);
         assert!(!cached.glass_state.is_active() && !dynamic.glass_state.is_active());
     }
 
