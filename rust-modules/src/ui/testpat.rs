@@ -17,6 +17,7 @@
 //! | `edge` | L\* 10 on the left, L\* 90 on the right | a bar spanning both — the case a 5-tap average cannot see |
 //! | `checker:<px>` | a checkerboard | what the blur does to detail, and whether it aliases |
 //! | `lines:<px>` | vertical bars | the same at the frequency text actually has |
+//! | `hbars:<px>` | HORIZONTAL bars | the only ground a top-or-bottom-edge lens can move |
 //! | `hue[:L*]` | six saturated bands | whether the material carries colour or washes it out |
 //! | `rainbow[:L*]` | a continuous hue sweep | what a colourful poster does to the bar |
 //! | `solid:<deg>[:L*]` | ONE hue, whole screen | whether the solve is even-handed across hues |
@@ -48,6 +49,15 @@ pub(crate) enum Pattern {
     Edge,
     Checker(f32),
     Lines(f32),
+    /// Horizontal bars — `Lines` turned ninety degrees, and it exists for one reason.
+    ///
+    /// Every other ground in this set varies only ACROSS the screen, and the tab track's long
+    /// edges are its top and bottom, whose normals point straight up and down. A refraction at
+    /// those edges displaces the sample vertically, and a vertically-invariant ground is unchanged
+    /// by a vertical displacement — so on `edge`, `lines`, `ramp` and every `solid`, a lens on 88%
+    /// of the container's perimeter draws exactly nothing. `checker` has horizontal structure and
+    /// hid this by half-answering it. This is the ground that makes the long edges legible.
+    HBars(f32),
     /// Six saturated bands, optionally normalised to one lightness.
     Hue(Option<f32>),
     /// A continuous hue sweep, optionally normalised to one lightness.
@@ -139,6 +149,7 @@ pub(crate) fn set(spec: &str) -> bool {
                 "flat" if n.is_finite() => Pattern::Flat(n),
                 "checker" => Pattern::Checker(if n.is_finite() && n >= 2.0 { n } else { 32.0 }),
                 "lines" => Pattern::Lines(if n.is_finite() && n >= 1.0 { n } else { 6.0 }),
+                "hbars" => Pattern::HBars(if n.is_finite() && n >= 1.0 { n } else { 6.0 }),
                 // bare `hue` / `rainbow` keep each hue's own natural lightness; with an argument
                 // every column is normalised to it, which is the form that isolates HUE from
                 // brightness — the only way to ask whether the solve treats them evenly
@@ -181,6 +192,7 @@ fn describe(p: Pattern) -> String {
         Pattern::Edge => "edge (L* 10 | L* 90)".into(),
         Pattern::Checker(px) => format!("checker {px:.0}px"),
         Pattern::Lines(px) => format!("lines {px:.0}px"),
+        Pattern::HBars(px) => format!("hbars {px:.0}px"),
         Pattern::Hue(None) => "hue (six saturated bands, natural lightness)".into(),
         Pattern::Hue(Some(l)) => format!("hue (six bands, all at L*={l:.0})"),
         Pattern::Rainbow(None) => "rainbow (hue sweep, natural lightness)".into(),
@@ -233,6 +245,15 @@ pub(crate) fn draw(p: Painter) {
                 flat(p, Rect::new(i as f32 * px * 2.0, 0.0, px, h), gray(88.0));
             }
         }
+        // The same bars laid across the screen instead of down it. The bar's own height is 76, so
+        // a 12px pitch puts three light and three dark bands behind it — enough that a bend at the
+        // top or bottom edge shows as the bands CURVING rather than as one band moving.
+        Pattern::HBars(px) => {
+            let n = (h / (px * 2.0)).ceil() as i32;
+            for i in 0..n {
+                flat(p, Rect::new(0.0, i as f32 * px * 2.0, w, px), gray(88.0));
+            }
+        }
         Pattern::Hue(at) => {
             const N: usize = 6;
             let bw = w / N as f32;
@@ -263,7 +284,7 @@ pub(crate) fn draw(p: Painter) {
 /// The dark ground a checker/lines pattern is drawn over — one quad, laid first.
 pub(crate) fn underlay(p: Painter) {
     match unsafe { *addr_of!(CURRENT) } {
-        Some(Pattern::Checker(_)) | Some(Pattern::Lines(_)) => {
+        Some(Pattern::Checker(_)) | Some(Pattern::Lines(_)) | Some(Pattern::HBars(_)) => {
             p.rrect(Rect::new(0.0, 0.0, crate::ui::consts::SCR_W, crate::ui::consts::SCR_H), 0.0, 0.0, gray(12.0));
         }
         _ => {}
@@ -315,6 +336,11 @@ mod tests {
         assert!(set("flat:40"));
         assert!(!set("flat:banana"), "a bad argument is refused");
         assert!(!set("nonsense"), "…and so is a bad name");
+        // `hbars` is one letter away from `lines` and means the perpendicular thing; a parse that
+        // quietly fell through to the default would give a ground that answers the wrong edge.
+        assert!(set("hbars:12"));
+        assert_eq!(unsafe { *addr_of!(CURRENT) }, Some(Pattern::HBars(12.0)));
+        assert!(set("flat:40"));
         assert_eq!(unsafe { *addr_of!(CURRENT) }, Some(Pattern::Flat(40.0)), "the armed one survives");
         assert!(set("off"));
         assert_eq!(unsafe { *addr_of!(CURRENT) }, None);

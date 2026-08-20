@@ -583,6 +583,29 @@ pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
 /// which on a bright hero measured .562 and on most heroes is this floor. The ink never moves,
 /// which is what the row's hierarchy is made of.
 pub const TAB_GLASS_TOP: [f32; 4] = scrim_black(0.20);
+/// **The material's LIGHT FLOOR — the amount of itself the glass shows where the page shows
+/// nothing.** Two numbers, both measured against the real thing rather than chosen.
+///
+/// A black scrim can only ever subtract, and at the bottom of the range there is nothing left to
+/// subtract from: over a page at L\*0 the bar's face measures exactly the page — 0% Weber — and the
+/// whole container is carried by one pixel of rim. Over L\*20 it is 28% and darker. The system
+/// container this material is answering does the opposite: measured on the real macOS 26 tab bar
+/// over a near-black page, .071 → .098, **+38% Weber and LIGHTER**. Its edge, meanwhile, is one
+/// antialiased pixel with no rim at all on any ground — it does not need one, because the material
+/// separates itself.
+///
+/// So the material gets a diffuse component, and this is the one number behind it: **the darkest
+/// the glass itself may be, in absolute sRGB, however dark the page gets.** It is a floor, not a
+/// target — the scrim keeps doing all the separating it can, and this only catches the bottom. A
+/// page brighter than the floor takes no lift at all, so every ordinary hero is untouched bit for
+/// bit; `crate::ui::widgets::track_lift` is the rule and records the two shapes that were tried
+/// first and why they were worse.
+///
+/// **This is not the light polarity coming back.** That was a second MATERIAL — a white scrim with
+/// dark ink and a crossover to hunt — and it was deleted with the argument that a bar is one
+/// surface. This is one surface still: same ink, same solve, same scrim, with a floor under how
+/// dark the glass itself is allowed to get.
+pub const TAB_GLASS_LIFT_FLOOR: f32 = 0.045;
 /// The glass track's bottom stop — see [`TAB_GLASS_TOP`].
 pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.36);
 /// The track material's two weights, exposed as alphas because the focused **profile chip** wears
