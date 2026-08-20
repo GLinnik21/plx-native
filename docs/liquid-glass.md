@@ -208,13 +208,18 @@ Two consequences worth carrying:
 
 ## 6. What the material can actually show
 
-The snapshot is reduced to **quarter resolution** before the blur taps, then brought back up one
-level. That is a deliberate design choice (`BLUR_REDUCTIONS`), not a limit — but it fixes what the
-lens has to work with.
+The source is at **quarter resolution** before the blur taps and is then brought back up one level.
+Both snapshot paths land there — the direct path renders the page at 1/4, the capture path halves
+twice (`BLUR_REDUCTIONS`, pinned to the direct path's divisor by a compile-time assertion) — and the
+up pass is what stops the panel's own 2x magnification reading as enlarged pixels rather than as
+blur. A cached popover on a half-res source with that pass gated off is what "the static blur on the
+popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 
-- **Structure finer than roughly 25–30 authored px does not survive.** Text, thin rules, a dense
-  grid: all gone. What reaches the glass is **regions of colour**. *(Derived from the tap ladder:
-  1.5 and 3.5 texels at quarter res, i.e. 6 and 14 authored px, dual-filtered.)*
+- **Structure at the scale of a letterform partly survives, and finer than that does not.** *(Tap
+  ladder: 0.35 and 0.75 texels at quarter res, i.e. 1.4 and 3.0 authored px, dual-filtered — much
+  narrower than the 1.5/3.5 this section was first written against. Measured on `hbars`: a 24px
+  period keeps 9% of the page's modulation, 48px 17%, 128px 65%.)* What reaches the glass is still
+  mostly **regions of colour**.
 - **So the lens bends colour, not detail.** A refraction that "reveals the shape of what is behind"
   is not available; a refraction that slides warm and cool areas past the rim is. This is why
   `GLASS_LENS` is 38 px and not the 14 it started at — a small displacement of a colour field moves
