@@ -2100,7 +2100,7 @@ fn chip_strs() -> &'static [ChipStrs] {
 /// dim + regular. Every chip on this toolbar OPENS A MENU, which is why the trailing glyph is
 /// always a chevron: the third chip — a value-less capsule that WAS its own toggle, wearing an
 /// amber disc when on — is gone (2026-08-13), because the Filter menu it sat beside already
-/// carries "Unwatched only" as a checkable row, and one state deserves one control.
+/// carries "Unwatched only" as a SWITCH row, and one state deserves one control.
 fn toolbar_chip(p: Painter, x: f32, cs: &ChipStrs, icon: Icon, focused: bool) -> Rect {
     let sz = theme::size::LABEL;
     let r = Rect::new(x, TOOL_Y, cs.w, TOOL_H);
