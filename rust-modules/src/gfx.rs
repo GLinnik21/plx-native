@@ -712,15 +712,21 @@ pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad
 /// into `y`. No-ops if the program failed to link. Own GL program (bound lazily via [`use_prog`]),
 /// so it doesn't disturb the base shader's uniforms.
 pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, off: f32, col: *const f32) {
-    if culled(x, y, w, h) {
+    let b = blur.max(0.5);
+    // **Cull the QUAD, not the box.** A shadow paints a penumbra `b` px beyond the rect it is asked
+    // for, and `b` is tens of px on a focused card — far past `culled`'s 4 px of AA slack. Culling
+    // the un-inflated box therefore dropped shadows whose penumbra reached INTO a blur source
+    // region while their box sat outside it, so the backdrop snapshot and the visible frame
+    // disagreed along the region's edge. `draw_tex_core` has always culled its inflated quad; this
+    // is the same rule, and the two paths handle the same object.
+    let (qx, qy, qw, qh) = (x - b, y - b, w + 2.0 * b, h + 2.0 * b);
+    if culled(qx, qy, qw, qh) {
         return;
     }
     unsafe {
         if SPROG == 0 {
             return;
         }
-        let b = blur.max(0.5);
-        let (qx, qy, qw, qh) = (x - b, y - b, w + 2.0 * b, h + 2.0 * b);
         use_prog(SPROG); // SL_SCREEN is set once at init
         glUniform4f(SL_RECT, qx, qy, qw, qh);
         glUniform2f(SL_SIZE, qw, qh);
@@ -1001,9 +1007,9 @@ use crate::log;
 // Four facts shape the whole design.
 //
 // 1. **Snapshots are cached.** A popover over a still page captures on open and then costs one
-//    textured quad per drawn frame. A moving opaque UI page may opt into `widgets::Glass::DYNAMIC`,
-//    which invalidates at most every third successful present while its underlay is dirty; the
-//    widget still draws every present.
+//    textured quad per drawn frame. A surface over a MOVING page opts into
+//    `widgets::Glass::DYNAMIC_BACKDROP`, which invalidates on the shared cadence while its underlay
+//    is dirty; the widget still draws every present.
 //    Capturing every present was measured at 52.6 fps on the dev television and is not supported.
 // 2. **The capture is MID-FRAME.** `Painter`'s primitives are immediate GL calls, so the default
 //    framebuffer already holds exactly the prepared page (source-dimmed, or with an overlay scrim)
@@ -1164,6 +1170,16 @@ const BLUR_PASS_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit between 
 /// capture chain's own note records what a single 4x pass costs instead (text shimmer). Odd
 /// dimensions floor, which loses at most a pixel column off a blurred backdrop and is not worth a
 /// second code path. Pure, so the halving and the floor are host-gradeable.
+/// Does the capture chain end with an up pass? There is one only when there is a level to come
+/// back up to, i.e. when the reductions went down two levels rather than one.
+///
+/// **A const, because three things have to agree about it and one of them used to read a mutable
+/// field instead.** `build` sizes `out` from it, [`blur_snapshot`] decides whether to run the pass
+/// from it, and [`blur_passes`] counts it. `blur_snapshot` used to ask `c.out != c.a` — which is
+/// the same question only until something else writes `c.out`, and [`blur_snapshot_direct`] does,
+/// on every frame it runs. See the note on `out` for what that cost.
+const BLUR_UP_PASS: bool = BLUR_REDUCTIONS >= 2;
+
 /// How many passes the chain runs, and therefore which way up the snapshot is stored: every pass
 /// flips row order once. The reductions, the taps, and the up pass when there is a level to come
 /// back up to.
@@ -1171,38 +1187,60 @@ const BLUR_PASS_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit between 
 /// **One expression, deliberately.** It was inlined in two places and they disagreed the instant the
 /// up pass was added — one said four passes, the other five — which inverted the lens's v axis while
 /// leaving the sampling window correct. Nothing warns, and on a symmetric backdrop nothing shows.
-///
-/// **Test-only since the orientation fix.** Its one production reader was [`blur_is_bottom_up`],
-/// and that reader was wrong to use it: the stored row order turns on how many REDUCTIONS ran, not
-/// on how many passes did. What the expression still describes correctly is the chain's SHAPE, so
-/// it survives as the thing the shape test counts.
-#[cfg(test)]
 #[inline]
-fn blur_passes() -> usize {
-    BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_REDUCTIONS >= 2)
+const fn blur_passes() -> usize {
+    // `if` rather than `usize::from`: `From` is not a const trait yet, and this is a `const fn` so
+    // the whole family answers at compile time.
+    BLUR_REDUCTIONS + BLUR_TAPS.len() + if BLUR_UP_PASS { 1 } else { 0 }
+}
+
+/// The same count for [`blur_snapshot_direct`], which shares the taps and the up pass but replaces
+/// the grab and every reduction with one scene render. That render is the chain's ORIGIN, not a
+/// pass over an existing texture, and it lands bottom-up like the grab it stands in for — so this
+/// counts what happens AFTER it, and both paths' parities are read the same way.
+#[inline]
+const fn blur_direct_passes() -> usize {
+    BLUR_TAPS.len() + 1 // the taps, then always back up one level
 }
 /// Is the CAPTURE path's finished snapshot stored bottom-up?
 ///
-/// **Not the parity of [`blur_passes`], which is what this was.** "Every pass flips row order once"
-/// is the natural model and it is wrong here, because the chain's passes are not all drawn the same
-/// way: the REDUCTIONS go through `draw_tex_core`, which places its quad in AUTHORED coordinates and
-/// so carries the scene shaders' y flip, while the taps and the up pass bind `BPROG` and draw the
-/// raw unit quad with an explicit uv rect, carrying none. Only the reductions turn the image over,
-/// and the tap count — which the old expression included — cannot affect the answer.
+/// **The parity of [`blur_passes`], counting from the grab.** `glCopyTexSubImage2D` leaves the grab
+/// bottom-up (framebuffer row 0 is the screen's bottom), and every pass in the chain turns the image
+/// over exactly once, so an EVEN number of passes hands the snapshot back the way it arrived.
 ///
-/// The two models agree at `BLUR_REDUCTIONS = 2` and disagree at 1, which is exactly the trap
-/// `blur_snapshot_direct`'s orientation note warned about in writing: *"both are ODD… that is luck,
-/// not design; if a pass is ever added or removed here, this is the line that has to move with it."*
-/// A reduction was removed when the blur was lightened, and this is that line.
+/// **Every pass, including the taps — that is the part worth reading twice.** It is tempting to
+/// argue that only the reductions flip, because they go through `draw_tex_core` in AUTHORED
+/// coordinates while the taps "just blit a unit quad". They do not: `BPROG` is linked against
+/// `VS_IMG` (see [`blur_lazy_init`]) with `u_trect = (0, 0, SCR_W, SCR_H)` and a POSITIVE
+/// `u_uvrect.w`, which is geometrically the same authored full-screen quad the reductions draw, and
+/// `vs_img.vert` ends in `gl_Position.y = -ndc.y` unconditionally. The taps carry the flip too.
 ///
-/// It took two attempts to land because it is only half the fault: the other half is that
-/// `blur_snapshot` never wrote this value into the chain at all, so changing this function alone
-/// produced no visible difference and read as a disproof. Both halves are needed, and neither is
-/// sufficient. The symptom reached a television because a mirrored backdrop under a QUARTER-res
-/// blur has no top and no bottom to see — lightening the blur is what made it legible.
+/// **[`blur_snapshot_direct`] is the proof, not this comment.** That path is the shipping one and is
+/// device-verified, it runs two taps and one up pass over a scene render that lands bottom-up, and
+/// it states the result is top-down. Three flips from bottom-up is top-down only if the taps flip.
+///
+/// This function briefly read `BLUR_REDUCTIONS % 2 == 1` instead. The two models agree at
+/// `BLUR_REDUCTIONS = 2` and disagree at 1, and the knob had just been moved to 1 — so the capture
+/// path called a top-down snapshot bottom-up and [`blur_uv_rect`] mirrored every cached backdrop.
+/// It was masked in ordinary use by a second defect: `blur_snapshot_direct` left `c.out` at `mid`,
+/// which made the capture path run a FOURTH pass it was never meant to run, and four flips really
+/// are bottom-up. The two had to be fixed together, and the mask is why fixing either one alone
+/// looked like a regression. What it left unmasked was a fresh boot before any direct pass, and
+/// every frame after `BLUR_DIRECT_OFF` latches.
 #[inline]
-fn blur_is_bottom_up() -> bool {
-    BLUR_REDUCTIONS % 2 == 1
+const fn blur_is_bottom_up() -> bool {
+    blur_bottom_up(blur_passes())
+}
+
+/// The rule itself, over a pass count: a chain that starts bottom-up (both origins do — a window
+/// copy and a scene render alike) is handed back the way it arrived after an EVEN number of flips.
+///
+/// One function because the two paths were each spelling `% 2 == 0` for themselves, which is the
+/// same shape `blur_passes`' own doc was written against: two places that can disagree, silently,
+/// about an axis nobody can see on a blurred backdrop.
+#[inline]
+const fn blur_bottom_up(passes: usize) -> bool {
+    passes % 2 == 0
 }
 
 #[inline]
@@ -1444,8 +1482,8 @@ const GLASS_NOISE: f32 = 1.0 / 255.0;
 /// **That second clause was arithmetic, and the arithmetic was about 28.** A 76px bar carries a
 /// ~30px label row, which leaves 23px of clear interior above and below it — so a 28px ramp does
 /// eat the bar, and a 16px one stops seven pixels short of the labels. The container gets a
-/// chamfer and a lens now, at 16/20; what it does not get is the sheet's 28/38. See
-/// [`GlassRim::Standing`].
+/// chamfer and a lens now, at [`STANDING_BEVEL`]/[`STANDING_LENS`] — 12/24; what it does not get is
+/// the sheet's 28/38. See [`GlassRim::Standing`].
 ///
 /// It is the same lamp, the same weights and the same shader either way. Only the DISTANCE the
 /// chamfer and the lens are given to work over changes, which is why this is two floats and not a
@@ -1456,7 +1494,10 @@ pub(crate) enum GlassRim {
     /// A sheet: the full 28px chamfer ramp and the 38px lens. The loading screen's panels.
     Bevelled,
     /// A standing container — the tab track, a popover, the loading capsule: a SHALLOW chamfer and
-    /// a SHORT lens, 16px and 20px, and no shader specular.
+    /// a LONG lens, [`STANDING_BEVEL`] and [`STANDING_LENS`] — 12px and 24px — and no shader
+    /// specular. (This opened "16px and 20px" while the constants said 12/24, and the paragraphs
+    /// below already argued for 12/24 and against 20/20 — so the sentence a tuner reads first named
+    /// a rung the sweep had rejected, and named the ordering backwards with it.)
     ///
     /// **This variant was called `Line` and its claim was "no ramp and no bend".** That was the
     /// right answer to the sheet's 28/38 — a 38px displacement squeezed into a two-pixel band is a
@@ -1465,7 +1506,7 @@ pub(crate) enum GlassRim {
     /// bar can read as a slab with thickness. Held against the reference (iOS 26's tab bar and its
     /// search button, filmed over moving content), what a container does at its edge is BEND the
     /// page around the arc; a drawn line bends nothing, and no weight of line ever will. So the
-    /// geometry was swept — `plxnative-tracklens`, against synthetic grounds — and 16/20 chosen by
+    /// geometry was swept — `plxnative-tracklens`, against synthetic grounds — and 12/24 chosen by
     /// looking at the ladder.
     ///
     /// **The ramp is SHORT and the pull is LONG, and that ordering is the whole result.** Nine
@@ -1793,13 +1834,30 @@ fn blur_region_px_align(
     let slack = align - 1;
     let sx = gw as f32 / SCR_W;
     let sy = gh as f32 / SCR_H;
-    let x0 = ((reg[0] * sx).floor() as c_int).clamp(0, gw) & mask;
-    let y0 = ((reg[1] * sy).floor() as c_int).clamp(0, gh) & mask;
-    let x1 = (((reg[0] + reg[2]) * sx).ceil() as c_int + slack).clamp(0, gw);
-    let y1 = (((reg[1] + reg[3]) * sy).ceil() as c_int + slack).clamp(0, gh);
-    let rw = ((x1 - x0) & mask).clamp(align, (gw - x0).max(align));
-    let rh = ((y1 - y0) & mask).clamp(align, (gh - y0).max(align));
-    (x0, y0, rw & mask, rh & mask)
+    // **The surface's own aligned extent bounds the ORIGIN as well as the size**, and that is the
+    // half this used to miss. The size clamp read `.clamp(align, (gw - x0).max(align))`, whose
+    // `.max` was there to keep the bounds ordered — but when `gw - x0 < align` it raises the upper
+    // bound back to `align` while the lower bound is also `align`, so the result is `align` and
+    // `x0 + rw` runs off the surface. That is every origin in the last `align` px of a drawable
+    // whose size is not itself a multiple of `align`, and it reaches `glCopyTexSubImage2D` as a
+    // read outside the framebuffer (undefined texels, no GL error) and the direct path as a
+    // viewport derived from a rect that does not exist. Pulling the origin back to the last
+    // aligned position that still admits a minimum region is the ordered form.
+    let (gwa, gha) = (gw & mask, gh & mask);
+    let x0 = (((reg[0] * sx).floor() as c_int).max(0) & mask).min((gwa - align).max(0));
+    let y0 = (((reg[1] * sy).floor() as c_int).max(0) & mask).min((gha - align).max(0));
+    let x1 = (((reg[0] + reg[2]) * sx).ceil() as c_int + slack).clamp(0, gwa);
+    let y1 = (((reg[1] + reg[3]) * sy).ceil() as c_int + slack).clamp(0, gha);
+    // `.max(align).min(...)` rather than `.clamp`: on a surface too small to hold one aligned block
+    // the two bounds cross, and `clamp` PANICS on that where this yields an empty region the
+    // callers already treat as nothing to grab.
+    // Every term is already a multiple of `align` — `x1`/`y1` are clamped to the aligned extent and
+    // `x0`/`y0` are masked — so the result needs no final mask and the origins need no upper clamp:
+    // `.min(gwa - align)` is strictly tighter than `gw`. Both were load-bearing only while the
+    // bounds were the UNALIGNED `gw`/`gh`, which is the shape that let a region run off the surface.
+    let rw = ((x1 - x0) & mask).max(align).min(gwa - x0);
+    let rh = ((y1 - y0) & mask).max(align).min(gha - y0);
+    (x0, y0, rw, rh)
 }
 
 /// The UV window into the snapshot that a screen-space rect samples.
@@ -1935,7 +1993,7 @@ fn blur_lazy_init() -> bool {
             let (b, b_fbo) = fbo_target(sw, sh, "blur")?;
             // The up pass exists only when there is a level to come back up to; with one reduction
             // `mid` IS the tap target, so the chain ends where it already is.
-            let ups = BLUR_REDUCTIONS >= 2;
+            let ups = BLUR_UP_PASS;
             Some(BlurChain { grab, gw, gh, gx, gy, mid, mid_fbo, mw, mh, a, a_fbo, b, b_fbo, sw, sh,
                 out: if ups { mid } else { a },
                 bottom_up: blur_is_bottom_up(),
@@ -1953,6 +2011,51 @@ fn blur_lazy_init() -> bool {
                 false
             }
         }
+    }
+}
+
+/// **What a finished snapshot IS, published by whichever path produced it.**
+///
+/// Five fields have to move together — the live region, its size, the texture the result landed in
+/// and which way up that texture is — and the two paths were each writing their own subset. That is
+/// how both halves of the orientation bug happened: `blur_snapshot` never wrote `out` at all (so it
+/// inherited `mid` from the direct path and silently ran a fourth pass), and `blur_snapshot_direct`
+/// wrote a hard-coded `bottom_up` that stopped being true when a reduction was removed from the
+/// OTHER path. Neither is expressible now: a caller states where it left the snapshot and how many
+/// flips it took to get there, and the parity, the region and the valid flag fall out here.
+///
+/// `passes_from_grab` counts the flipping passes since the chain's bottom-up ORIGIN — the window
+/// copy or the scene render, whichever this path used. `live_w`/`live_h` are the live area of the
+/// final target, for the profiler's read-out only.
+///
+/// The region is republished because [`blur_region_px_align`] aligns and clamps: the rect the draw
+/// maps out of has to be the ALIGNED one, or a panel's sampling window is off by up to three
+/// drawable pixels and the backdrop creeps sideways as the panel moves.
+#[allow(clippy::too_many_arguments)]
+fn blur_publish(
+    rx: c_int,
+    ry: c_int,
+    rw: c_int,
+    rh: c_int,
+    out: c_uint,
+    passes_from_grab: usize,
+    live_w: c_int,
+    live_h: c_int,
+) {
+    unsafe {
+        let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() else { return };
+        let sx = c.gw as f32 / SCR_W;
+        let sy = c.gh as f32 / SCR_H;
+        let live = [rx as f32 / sx, ry as f32 / sy, rw as f32 / sx, rh as f32 / sy];
+        crate::ui::profile::note_blur_config(
+            live, rx, ry, rw, rh, c.gw, c.gh, c.mw, c.mh, live_w, live_h,
+        );
+        c.reg = live;
+        c.rw = rw;
+        c.rh = rh;
+        c.out = out;
+        c.bottom_up = blur_bottom_up(passes_from_grab);
+        BLUR_VALID = true;
     }
 }
 
@@ -2102,7 +2205,11 @@ fn blur_snapshot(reg: [f32; 4]) {
         // result reading as enlarged pixels. See `BLUR_UP_TAP`. `mid` is free by now: it was the
         // first reduction's target and nothing has read it since the second reduction.
         phase("blur.up", || {
-            if c.out != c.a {
+            // `BLUR_UP_PASS`, not `c.out != c.a`: `out` is written by whichever path ran LAST, and
+            // `blur_snapshot_direct` leaves it at `mid` — which silently added a fourth pass here,
+            // a 1:1 Kawase blit that both widened this path's blur past the direct path's and
+            // inverted the parity `bottom_up` is derived from.
+            if BLUR_UP_PASS {
                 glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
                 glViewport(0, 0, r2w, r2h);
                 glClear(GL_COLOR_BUFFER_BIT);
@@ -2118,32 +2225,9 @@ fn blur_snapshot(reg: [f32; 4]) {
         let (vx, vy, vw, vh) = crate::surface::viewport();
         glViewport(vx, vy, vw, vh);
         glEnable(GL_BLEND);
-        // Publish what was actually grabbed, not what was asked for: `blur_region_px` aligns and
-        // clamps, so the region the draw maps out of is the aligned one or the panel's sampling
-        // window is off by up to three drawable pixels — a slow sideways creep as a panel moves.
-        let sx = c.gw as f32 / SCR_W;
-        let sy = c.gh as f32 / SCR_H;
-        let live = [rx as f32 / sx, ry as f32 / sy, rw as f32 / sx, rh as f32 / sy];
-        crate::ui::profile::note_blur_config(
-            live, rx, ry, rw, rh, c.gw, c.gh, c.mw, c.mh, c.sw, c.sh,
-        );
-        if let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() {
-            c.reg = live;
-            c.rw = rw;
-            c.rh = rh;
-            // **The chain must state the order of the snapshot it is HOLDING, not the one it was
-            // built with.** This line was missing, and its absence was invisible until two paths
-            // started sharing one chain: `bottom_up` was written once in `build()` and then only
-            // ever by `blur_snapshot_direct`, which sets it to `false` on every frame it runs. So
-            // the first direct frame pinned the field, and every capture-path snapshot after it —
-            // i.e. every `Glass::CACHED` popover on a page whose own glass took the direct path —
-            // was sampled with somebody else's orientation. Measured on the television over an
-            // APERIODIC ground (`ui::testpat`'s `orient`): the tab track correlated +0.63 with the
-            // page while the item menu's backdrop correlated with the page MIRRORED, in the same
-            // frame, from the same chain.
-            c.bottom_up = blur_is_bottom_up();
-        }
-        BLUR_VALID = true;
+        // Publish what was actually grabbed, not what was asked for — see [`blur_publish`].
+        let out = if BLUR_UP_PASS { c.mid } else { c.a };
+        blur_publish(rx, ry, rw, rh, out, blur_passes(), c.sw, c.sh);
     }
 }
 
@@ -2429,10 +2513,15 @@ pub(crate) fn blur_direct_region() -> Option<[f32; 4]> {
 ///
 /// The scene shaders' flip puts authored y=0 at the target's TOP row, so the direct render is
 /// stored bottom-up — the same orientation `glCopyTexSubImage2D` produces, since a window copy is
-/// bottom-up too. The chain that follows is three passes where the capture path runs five, and
-/// both are ODD, so the finished snapshot is top-down either way and `bottom_up` stays `false`.
-/// Neither [`blur_uv_rect`] nor the `u_uvpx` V sign in `fs_glass` changes. That is luck, not
-/// design; if a pass is ever added or removed here, this is the line that has to move with it.
+/// bottom-up too. What follows it is [`blur_direct_passes`] flips, and the result is handed to
+/// [`blur_uv_rect`] and to the `u_uvpx` V sign in `fs_glass` through the same `bottom_up` field the
+/// capture path writes.
+///
+/// **That parity is DERIVED here, not asserted.** It used to be a hard-coded `false` under a note
+/// saying the two paths' counts were "both ODD… that is luck, not design; if a pass is ever added
+/// or removed here, this is the line that has to move with it." A pass was then removed from the
+/// OTHER path — `BLUR_REDUCTIONS` went 2 to 1 — and the line that had to move was the capture
+/// path's, which is not the one the warning was written next to. Both now count their own passes.
 ///
 /// Returns `false` if it could not run, in which case the caller must fall back to the capture
 /// path — the snapshot is left untouched and no GL state has changed.
@@ -2546,21 +2635,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             return false;
         }
 
-        let sx = c.gw as f32 / SCR_W;
-        let sy = c.gh as f32 / SCR_H;
-        let live = [rx as f32 / sx, ry as f32 / sy, rw as f32 / sx, rh as f32 / sy];
-        crate::ui::profile::note_blur_config(
-            live, rx, ry, rw, rh, c.gw, c.gh, c.mw, c.mh, tw, th,
-        );
-        if let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() {
-            c.reg = live;
-            c.rw = rw;
-            c.rh = rh;
-            c.out = c.mid;
-            // Three passes, odd like the capture path's five: the snapshot is top-down.
-            c.bottom_up = false;
-        }
-        BLUR_VALID = true;
+        blur_publish(rx, ry, rw, rh, c.mid, blur_direct_passes(), tw, th);
         true
     }
 }
@@ -2718,10 +2793,19 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         // `deep` is authored px; the snapshot's own UV-per-authored-pixel is already in hand, and
         // its v may be negative, so the radius is taken on the ABSOLUTE step or the cross collapses
         // to a line on one axis.
-        // The sweep moves only surfaces that already ASK for depth: a bar that opted out at 0 must
-        // not be softened by a knob aimed at the menus.
-        let dr = if deep > 0.0 { deep_sweep().unwrap_or(deep) } else { 0.0 } * (span[0] / c.reg[2]).abs();
-        glUniform2f(GL_DEEP, dr, if dr > 0.0 { 1.0 } else { 0.0 });
+        //
+        // **BOTH axes, and it was one for a while.** The cross was offset by `vec2(d, d)` from the
+        // U step alone, but an authored pixel is `1/SCR_W` of the texture across and `1/SCR_H` of it
+        // down — so the four extra taps landed the full radius sideways and 56% of it vertically,
+        // and the "softer material" was squashed. `GL_UVPX` two lines up already computes the pair;
+        // this is the same expression, rectified. The shader reads the ON/OFF state off `.x` now,
+        // which is why there is no flag component left to carry.
+        let dpx = if deep > 0.0 { deep_sweep().unwrap_or(deep) } else { 0.0 };
+        glUniform2f(
+            GL_DEEP,
+            dpx * (span[0] / c.reg[2]).abs(),
+            dpx * (span[1] / c.reg[3]).abs(),
+        );
         if sharpw <= 0.0 {
             // Unit 1 is never sampled at zero weight, but a stale binding on it is still a texture
             // the driver may keep alive; bind the snapshot rather than leaving whatever was last.
@@ -3132,9 +3216,12 @@ mod tests {
     /// backdrop creeping sideways as a panel moves rather than as anything obviously broken.
     #[test]
     fn h_the_region_lands_on_a_4_aligned_rect_inside_the_drawable() {
-        for (gw, gh) in [(1920, 1080), (960, 540)] {
+        // Drawables whose size is not a multiple of 4 are included deliberately: they are the only
+        // shape whose last aligned column is short of the far edge.
+        for (gw, gh) in [(1920, 1080), (960, 540), (1366, 766), (1922, 1082)] {
             for panel in [(640.0f32, 240.0f32, 480.0f32, 600.0f32), (0.0, 0.0, 1.0, 1.0),
-                          (SCR_W - 2.0, SCR_H - 2.0, 2.0, 2.0), (0.0, 0.0, SCR_W, SCR_H)] {
+                          (SCR_W - 2.0, SCR_H - 2.0, 2.0, 2.0), (0.0, 0.0, SCR_W, SCR_H),
+                          (SCR_W - 1.0, SCR_H - 1.0, 1.0, 1.0)] {
                 let reg = blur_region(panel.0, panel.1, panel.2, panel.3);
                 let (rx, ry, rw, rh) = blur_region_px(reg, gw, gh);
                 assert_eq!((rw % 4, rh % 4), (0, 0), "4-aligned size ({gw}x{gh}, {panel:?})");
@@ -3142,6 +3229,38 @@ mod tests {
                 assert!(rw > 0 && rh > 0, "never empty ({gw}x{gh}, {panel:?})");
                 assert!(rx >= 0 && ry >= 0 && rx + rw <= gw && ry + rh <= gh,
                     "inside the canvas ({gw}x{gh}, {panel:?}) -> {rx},{ry} {rw}x{rh}");
+            }
+        }
+    }
+
+    /// The same containment, asserted at the helper's OWN boundary rather than through
+    /// [`blur_region`].
+    ///
+    /// **[`blur_region`] cannot currently reach this, and that is the point.** It expands every
+    /// region outward by [`BLUR_REACH`] (68 authored px) before clamping to the screen, so a
+    /// production region never starts within `align` drawable px of the far edge and the test above
+    /// passes against a clamp that runs off the surface. The helper is a general utility with a
+    /// stated contract — aligned, and INSIDE the drawable — and it is the contract that is graded
+    /// here: a region pinned hard against the right and bottom edges, on a drawable whose size is
+    /// not a multiple of the alignment, which is the shape the old `.clamp(align, (gw - x0)
+    /// .max(align))` answered by returning a rect ending past `gw`.
+    #[test]
+    fn h2_the_aligned_region_stays_inside_even_pinned_to_the_far_edge() {
+        for (gw, gh) in [(1366, 766), (1922, 1082), (1920, 1080), (6, 6)] {
+            for align in [4, 2] {
+                for reg in [
+                    [SCR_W, SCR_H, 0.0, 0.0],             // degenerate, hard against the corner
+                    [SCR_W - 1.0, SCR_H - 1.0, 1.0, 1.0], // the last authored pixel
+                    [SCR_W - 3.0, SCR_H - 3.0, 8.0, 8.0], // straddling the edge
+                    [0.0, 0.0, SCR_W, SCR_H],             // the whole canvas
+                ] {
+                    let (rx, ry, rw, rh) = blur_region_px_align(reg, gw, gh, align);
+                    let what = format!("{gw}x{gh} align={align} reg={reg:?} -> {rx},{ry} {rw}x{rh}");
+                    assert_eq!((rx % align, ry % align), (0, 0), "aligned origin ({what})");
+                    assert_eq!((rw % align, rh % align), (0, 0), "aligned size ({what})");
+                    assert!(rx >= 0 && ry >= 0 && rw >= 0 && rh >= 0, "non-negative ({what})");
+                    assert!(rx + rw <= gw && ry + rh <= gh, "inside the drawable ({what})");
+                }
             }
         }
     }
@@ -3186,10 +3305,9 @@ mod tests {
         // the expression out for themselves, and the disagreement inverted the lens's v axis while
         // leaving the sampling window right — a defect with no symptom on a symmetric backdrop.
         //
-        assert_eq!(blur_passes(), BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_REDUCTIONS >= 2));
-        // NOT `blur_passes() % 2` — see `blur_is_bottom_up`. Only the reductions carry the scene
-        // shaders' flip; the taps and the up pass draw a raw quad and carry none.
-        assert_eq!(blur_is_bottom_up(), BLUR_REDUCTIONS % 2 == 1);
+        assert_eq!(blur_passes(), BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_UP_PASS));
+        // The up pass is a CONST question, not a question about `c.out` — see `BLUR_UP_PASS`.
+        assert_eq!(BLUR_UP_PASS, BLUR_REDUCTIONS >= 2);
     }
 
     /// The parity the whole chain hangs on, pinned at the CURRENT shape and tied to its reader.
@@ -3208,7 +3326,15 @@ mod tests {
         // half. Both counts are ODD, so the stored order — the thing this test exists to pin — did
         // not move when the knob did. That is luck, not a property: re-derive it, do not assume it.)
         assert_eq!(blur_passes(), 3, "one reduction, two taps, no up pass");
-        assert!(blur_is_bottom_up(), "one reduction leaves the grab's own bottom-up order standing");
+        assert!(!blur_is_bottom_up(), "three flips from a bottom-up grab leaves the snapshot top-down");
+        // **The two paths must agree**, because ONE `bottom_up` field serves both and a popover on
+        // a page whose own glass took the direct path samples a capture-path snapshot. They agreed
+        // by luck once and then stopped, silently, when a reduction was removed from one of them.
+        assert_eq!(
+            blur_is_bottom_up(),
+            blur_bottom_up(blur_direct_passes()),
+            "the capture and direct paths must store the snapshot the same way up"
+        );
         // The two readers of that parity must not be able to disagree: the sampling window and the
         // lens displacement both take it from `blur_is_bottom_up`, and a v axis that runs backwards
         // in one and forwards in the other bends the backdrop the wrong way at the rim.
