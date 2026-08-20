@@ -4049,10 +4049,13 @@ fn draw_about(p: Painter) {
     let syn_hh = syn.draw(p, Rect::new(ix, sy, syn_w, 0.0));
     // "MORE" — quiet grey, pinned to the card's right padding edge ON the last synopsis line's cap
     // band (it used to sit bright in the bottom padding, visually detached from the text block).
+    // The cap-top comes from `syn` itself: written out here it was `sy + syn_hh - 30.0`, a SECOND
+    // copy of the leading three lines above, which is exactly how a mark drifts half a line off its
+    // prose when someone retunes the block. Same call the person page's bio makes.
     if syn.truncates(syn_w) {
         let (mt, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
-        p.text(c"MORE".as_ptr(), tx + cw - pad, sy + syn_hh - 30.0 - mt, theme::size::CAPTION,
-            theme::TEXT_TERTIARY, 2, 1);
+        p.text(c"MORE".as_ptr(), tx + cw - pad, syn.last_line_cap_y(sy, syn_hh) - mt,
+            theme::size::CAPTION, theme::TEXT_TERTIARY, 2, 1);
     }
 
     // ---- Information ----

@@ -1,5 +1,6 @@
-// The FADE variant is a SEPARATE program bound only by draw_text_fade (one caller - the About
-// card's MORE): u_tfade = (from, to) in string-texture uv.x fades the glyph alpha 1->0 across
+// The FADE variant is a SEPARATE program bound only by draw_text_fade (whose one caller is
+// TextView::fade_last - the About card's MORE and the person page's bio, the app's two truncation
+// marks): u_tfade = (from, to) in string-texture uv.x fades the glyph alpha 1->0 across
 // that band. Kept off the shared fs_text.frag so every ordinary glyph doesn't pay the
 // per-fragment smoothstep on this fill-rate-bound panel. highp v_tuv: see fs_text.frag.
 precision mediump float;
