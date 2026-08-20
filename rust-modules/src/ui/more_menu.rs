@@ -15,12 +15,17 @@
 //! chord — is undiscoverable by exactly the people who would report the bug, and the alternative to
 //! THAT is a fourth disc for a control most users touch once. Overflow is what a `…` means.
 //!
-//! # Checked, not chevroned
+//! # A switch, not a chevron — and not a picker's checkmark either
 //!
-//! The row carries [`Row::checked`] — the same leading checkmark column the track menu marks the
-//! active audio track with — because this is a STATE, not a destination. It closes on commit like
-//! every other menu here; the feedback is the panel itself appearing behind it, which is louder
-//! than a checkmark the dismissal would hide anyway.
+//! The row carries [`Row::toggle`], so it states itself as the WORD `On`/`Off` at the row's
+//! trailing edge. It is a STATE, not a destination: a chevron would promise a page behind the row
+//! and there is none. It is equally not [`Row::checked`]'s leading checkmark, which means "the
+//! active one of several" and would be answering a question a lone switch never asked — the design
+//! system's rule is that a mark says where you are and a word says what is set, and no row says
+//! both. (It drew as a PAIR OF MARKS for one day, a ring ticked when on; those assets were deleted
+//! the same evening — see [`crate::ui::icons`].) The menu closes on commit either way, so the
+//! read-out is never what confirms the press: the overlay appearing behind the dismissed panel is,
+//! which is louder than a word the dismissal would take off screen anyway.
 #![allow(non_upper_case_globals)]
 use crate::ui::consts::*;
 use crate::ui::popover::Popover;
@@ -75,9 +80,9 @@ fn label(a: Action) -> &'static str {
     }
 }
 
-/// Whether the state a row names is currently on — it draws as a SWITCH (the ring/ticked-ring pair),
-/// not as a picker's checkmark: this menu's rows are things you turn on and off, and nothing here is
-/// "the active one of several".
+/// Whether the state a row names is currently on. It reaches the row as [`Row::toggle`] and so
+/// draws as the WORD `On`/`Off` at the trailing edge — never as a picker's leading checkmark: this
+/// menu's rows are things you turn on and off, and nothing here is "the active one of several".
 fn checked(a: Action) -> bool {
     match a {
         Action::ToggleStats => crate::ui::stats::enabled(),
