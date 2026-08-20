@@ -57,15 +57,25 @@ This table is the map of the directory — **every** `.rs` file under `ui/` has 
 entry means the table is stale, not that the module is unimportant. Keep it that way when you add
 one: an undocumented module is one the next person re-implements.
 
-`widgets.rs` also owns the reusable `Glass` policy. `Glass::CACHED` is the default; a moving opaque
-UI underlay opts into the television-approved `Glass::DYNAMIC` preset (source RGB dim at 0.5,
-dirty snapshot at most every third successful present while the widget itself draws every present).
-`Glass::DYNAMIC_BACKDROP` supplies the same cadence without transforming a non-modal host page.
-`Popover::with_glass` carries that policy through the shared modal choreography; Account is the
-first production opt-in. All owners prepare before their shared host draws; recurring cadence is
+`widgets.rs` also owns the reusable `Glass` policy, and it now has exactly ONE axis: how often the
+backdrop snapshot is refreshed. `Glass::CACHED` is the default — capture once, on open. A surface
+over a MOVING page opts into `Glass::DYNAMIC_BACKDROP`, which invalidates on the shared cadence
+(`DEFAULT_DYNAMIC_PERIOD`, 1 — every CHANGED present) while the widget itself draws every present.
+`Popover::with_glass` carries that policy through the shared modal choreography; the Account menu is
+the first production opt-in. All owners prepare before their shared host draws; recurring cadence is
 global so adjacent widgets cannot multiply snapshot frequency. Report host motion, not the glass
-widget's foreground springs. Apply source RGB before the host page draws and never use it over the
-hardware video plane. The measured envelope and pacing caveat live in `docs/liquid-glass.md`.
+widget's foreground springs. Never use any of it over the hardware video plane — GL cannot read the
+punch-through alpha. The measured envelope and pacing caveat live in `docs/liquid-glass.md`.
+
+**A modal's dim is drawn, never applied to the source.** There was a second axis (`GlassUnderlay`)
+whose other variant multiplied the host page's RGB going into the backdrop instead of compositing a
+scrim over it, and it was measured and removed: dimming the source destroys the modulation the frost
+is then layered over, so the panel arrives flat however dense the material is. Do not re-add it from
+this note. One consequence is load-bearing and easy to get wrong — **the scrim is part of the PAGE**,
+because the direct source path re-renders the page closure before any popover draws. A scrim drawn
+with the panel reaches the visible frame but not the snapshot, and the panel's frosted ground then
+comes out brighter than the dimmed screen around it. `Popover::scrim` + `content_painter` is the
+pairing that puts it in the right place; `account_menu` is the worked example.
 
 | File | Owns |
 |---|---|

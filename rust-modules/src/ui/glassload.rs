@@ -102,8 +102,8 @@ pub(crate) enum Kind {
     /// has and the one the hero photograph takes. The control the other two are priced against.
     Image,
     /// Not a synthetic surface at all: the REAL Account popover, on the real route, drawn by
-    /// `account_menu` through `Glass::DYNAMIC`. Its geometry, its cadence policy and its source dim
-    /// are the shipped ones; this module only asks for the route. Size fields are ignored.
+    /// `account_menu` through `Glass::DYNAMIC_BACKDROP`. Its geometry and its cadence policy are
+    /// the shipped ones; this module only asks for the route. Size fields are ignored.
     Account,
 }
 

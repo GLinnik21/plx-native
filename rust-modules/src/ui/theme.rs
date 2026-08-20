@@ -41,10 +41,6 @@ const COOL_150: [f32; 4] = rgb8(0xdb, 0xe0, 0xeb);
 const COOL_200: [f32; 4] = rgb8(0xcd, 0xd3, 0xdd);
 const COOL_300: [f32; 4] = rgb8(0xb8, 0xbf, 0xcc);
 const COOL_400: [f32; 4] = rgb8(0x94, 0x99, 0xa3);
-// The dark half of the same cool ramp. `COOL_600` is the rung `COOL_400` is on the other side of
-// mid: the LIGHT track's idle label, muted against its own material by exactly as much as
-// `TEXT_TERTIARY` is against the dark one.
-const COOL_600: [f32; 4] = rgb8(0x5a, 0x60, 0x6c);
 const COOL_850: [f32; 4] = rgb8(0x1f, 0x21, 0x29);
 const COOL_900: [f32; 4] = rgb8(0x14, 0x17, 0x1c);
 
@@ -450,7 +446,9 @@ pub const SCRIM_TEXT_A: f32 = 0.72;
 /// Near-black scrim at alpha `a` — hero/scroll dimming.
 pub const fn scrim(a: f32) -> [f32; 4] {
     [SCRIM_INK[0], SCRIM_INK[1], SCRIM_INK[2], a]
-}/// Pure-black scrim at alpha `a` — HUD/modal dimming.
+}
+
+/// Pure-black scrim at alpha `a` — HUD/modal dimming.
 pub const fn scrim_black(a: f32) -> [f32; 4] {
     [SCRIM_BLACK_INK[0], SCRIM_BLACK_INK[1], SCRIM_BLACK_INK[2], a]
 }
@@ -671,11 +669,12 @@ pub const GLASS_RIM_MAX: f32 = 0.4;
 // ask for much. `docs/glass-hardware-budget.md` prices the surface; the deleted polarity is in the
 // history if it is ever wanted back.
 
-/// …and the focus pill's own RIM there: a specular hairline along the top edge — the same lamp the
-/// track's hairline comes from — over a perimeter kept two steps below anything that could read as
-/// an outline.
-pub const PILL_RIM_ON_LIGHT: [f32; 4] = with_a(BLACK, 0.08);
-pub const PILL_RIM_LIT_ON_LIGHT: [f32; 4] = with_a(WHITE, 1.0);
+// The light polarity's own tokens stood here — `PILL_RIM_ON_LIGHT`, `PILL_RIM_LIT_ON_LIGHT` and
+// the `COOL_600` ink above — and they went with it. They were live `pub` colour codes that nothing
+// read, which in a file whose whole claim is "the only place a colour code is written down" reads
+// as a role still in the system rather than as one that was measured and removed. The account of
+// WHY it was removed is the block above, and it is the part worth keeping.
+
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).
 pub const OVERLAY_FOCUS_PILL: [f32; 4] = with_a(WHITE, 0.14);
 /// The shared top tab bar's **TRACK** — the recessed near-black capsule the tab pills sit in, and
