@@ -575,7 +575,7 @@ mod hud_visibility_tests {
             );
             assert_eq!(hud.nav.focus, 1, "on the control row, so the auto-hide re-park leaves it");
             assert!(
-                crate::ui::up_next::countdown_may_run(hud.nav.focus == 1, hud.nav.btn),
+                crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
                 "…and RESTING on the primary, which is what the next frame's cancel rule asks"
             );
             set_hud(saved);
@@ -598,7 +598,7 @@ mod hud_visibility_tests {
             assert!(hud_visible(now, hud_until(), false, hud.dismissed), "the offer is still shown");
             assert_eq!((hud.nav.focus, hud.nav.tab), (2, 1), "their spot is theirs");
             assert!(
-                !crate::ui::up_next::countdown_may_run(hud.nav.focus == 1, hud.nav.btn),
+                !crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
                 "engaging the transport is not consent to be pulled into the next episode"
             );
             set_hud(saved);
@@ -4469,25 +4469,37 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     hud.nav = HudNav::HOME;
                 }
                 hud.was_standin = !ctrl.is_discs();
-                // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to
-                // the next episode out of nowhere. `hud.dismissed` has to clear with it, not just
-                // the timer: a user who UP-hid the HUD and then touched nothing until the credits
-                // still carries the dismissal, which BEATS `extend_hud` inside `hud_visible`, so
-                // the countdown would run behind a tile `draw_hud` never draws and the next
-                // episode would start out of nowhere. Whether they may re-dismiss it is the
-                // cancel's business, one line below — a dismissed HUD is focus off the row.
-                //
-                // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here
-                // rather than at each key arm because every way of taking hold of the row (arrows,
-                // a click, walking away to the tabs) ends up as a cursor position by the time this
-                // frame draws. Reading it as a steady state is what makes that true.
-                if crate::ui::up_next::armed() {
-                    if crate::ui::up_next::countdown_may_run(hud.nav.focus == 1, hud.nav.btn) {
-                        hud.dismissed = false;
-                        extend_hud(now, HUD_LINGER_MS);
-                    } else {
-                        crate::ui::up_next::cancel();
-                    }
+            }
+            // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to the
+            // next episode out of nowhere. `hud.dismissed` has to clear with it, not just the
+            // timer: a user who UP-hid the HUD and then touched nothing until the credits still
+            // carries the dismissal, which BEATS `extend_hud` inside `hud_visible`, so the
+            // countdown would run behind a tile `draw_hud` never draws. Whether they may
+            // re-dismiss it is the cancel's business, one line below — a dismissed HUD is focus
+            // off the row.
+            //
+            // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here rather
+            // than at each key arm because every way of taking hold of the row (arrows, a click,
+            // walking away to the tabs, opening a panel) ends up as a cursor position and a route
+            // by the time this frame draws. Reading it as a steady state is what makes that true.
+            //
+            // Outside the `Overlay::None` gate above, deliberately: an overlay is the one way of
+            // taking hold of the transport that never moves the ring, and `draw_hud` draws the
+            // control row only for the BARE transport — so gated with the edges above, this block
+            // simply did not run for a tile that was already counting down when the Info card
+            // opened, and it cut to the next episode from behind a panel. The route is the rule's
+            // third input rather than a condition here, so there is still exactly one place that
+            // decides.
+            if matches!(route, Route::Player { .. }) && crate::ui::up_next::armed() {
+                if crate::ui::up_next::countdown_may_run(
+                    matches!(route, Route::Player { overlay: Overlay::None }),
+                    hud.nav.focus == 1,
+                    hud.nav.btn,
+                ) {
+                    hud.dismissed = false;
+                    extend_hud(now, HUD_LINGER_MS);
+                } else {
+                    crate::ui::up_next::cancel();
                 }
             }
             // when the HUD auto-hides, park focus back on the scrubber so the next reveal is clean

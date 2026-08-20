@@ -85,7 +85,7 @@ pub(crate) fn tick(slot: crate::ui::player_hud::ControlSlot, now: u32) {
     }
 }
 
-/// PURE — may the countdown keep running with the row focused this way?
+/// PURE — may the countdown keep running, the transport standing this way?
 ///
 /// ONE rule for every way a user can take hold of the transport, and it is a STEADY STATE rather
 /// than an edge on purpose: focus off the control row means they are driving something else, and
@@ -93,8 +93,18 @@ pub(crate) fn tick(slot: crate::ui::player_hud::ControlSlot, now: u32) {
 /// transport is not consent to be pulled into the next episode. Arrowing back to *Next Episode*
 /// does not re-arm — [`cancel`] latches — so a countdown, once refused, stays refused for the
 /// segment.
-pub(crate) fn countdown_may_run(row_focused: bool, btn: c_int) -> bool {
-    row_focused && btn == BTN_NEXT
+///
+/// `bare_transport` is the third way and the one that reads as an omission until it bites: an
+/// OVERLAY — a track menu, the Info card, the Chapters strip — is the only way of taking hold
+/// of the transport that never moves the focus ring. Worse,
+/// [`crate::ui::player_hud::draw_hud`] draws the control row only for the BARE transport, so with
+/// the Info card open the tile is not on screen at all. Without this term a countdown that was
+/// already running when the card opened kept its clock behind a panel nobody could see it through
+/// and cut to the next episode out of nowhere — the same failure `HudState::raise_for_offer`
+/// exists to forbid, reached by the other door. A panel one presses OPEN is exactly as much
+/// "engaging the transport" as an arrow key.
+pub(crate) fn countdown_may_run(bare_transport: bool, row_focused: bool, btn: c_int) -> bool {
+    bare_transport && row_focused && btn == BTN_NEXT
 }
 
 /// Stop the auto-advance without hiding the tile — the user took hold of the row, or is leaving.
@@ -283,16 +293,35 @@ mod tests {
     /// while the ring is resting on the primary, which is where the appear edge parks it.
     #[test]
     fn the_countdown_runs_only_while_the_ring_rests_on_the_primary() {
-        assert!(countdown_may_run(true, BTN_NEXT), "the resting state the appear edge creates");
         assert!(
-            !countdown_may_run(true, BTN_CREDITS),
+            countdown_may_run(true, true, BTN_NEXT),
+            "the resting state the appear edge creates"
+        );
+        assert!(
+            !countdown_may_run(true, true, BTN_CREDITS),
             "reaching for Watch Credits is reaching for the alternative"
         );
         for b in [BTN_CREDITS, BTN_NEXT] {
             assert!(
-                !countdown_may_run(false, b),
+                !countdown_may_run(true, false, b),
                 "focus off the row is the user driving the transport, whatever btn still says"
             );
+        }
+    }
+
+    /// The overlay term, which no focus state can stand in for: an open panel never moves the ring,
+    /// and the Info card and Chapters strip do not draw the control row at all — so the ONE state
+    /// that looks most like consent (ring at rest on the primary) is exactly the one that would run
+    /// a countdown nobody can see. Every combination is refused while a panel is up.
+    #[test]
+    fn an_open_panel_refuses_the_countdown_however_the_ring_rests_under_it() {
+        for b in [BTN_CREDITS, BTN_NEXT] {
+            for focused in [false, true] {
+                assert!(
+                    !countdown_may_run(false, focused, b),
+                    "a tile behind a panel counts down where it cannot be seen or refused"
+                );
+            }
         }
     }
 
@@ -303,7 +332,7 @@ mod tests {
     #[test]
     fn the_primary_is_the_right_hand_item_and_the_countdown_survives_it() {
         assert_eq!(PRIMARY_BTN, BTN_NEXT);
-        assert!(countdown_may_run(true, PRIMARY_BTN));
+        assert!(countdown_may_run(true, true, PRIMARY_BTN));
     }
 
     /// Geometry, from the design's own column: the two pills share a baseline and the control row's
