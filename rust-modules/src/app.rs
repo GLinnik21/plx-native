@@ -3008,10 +3008,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         }
         // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
         // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
-        // present (60 Hz while the UI presents at 60), 3 is what ships (~20 Hz), 4 is 15 Hz.
+        // present (60 Hz while the UI presents at 60) and is what ships, 3 is ~20 Hz, 4 is 15 Hz.
         // ABSENT, nothing here runs and the cadence is exactly the shipped one. It is a profiling
-        // knob, so it also turns on the heartbeat's `glass=` field (refreshes per second), which
-        // is the only way to check the cadence that RAN against the one that was asked for.
+        // knob, so it also turns on the heartbeat's `snap=` field (refreshes per second), which
+        // is the only way to check the cadence that RAN against the one that was asked for — and
+        // is why `fps:home-acct-glass` arms it at the shipped 1 rather than leaving it absent.
         let glass_hz_armed = if let Some(v) = crate::dev::read("glasshz") {
             let asked: u32 = v.parse().unwrap_or(0);
             let got = crate::ui::widgets::set_dynamic_period(asked);
@@ -5043,17 +5044,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else {
                         // Resolve every glass owner BEFORE anything on this route draws — that is
                         // `Glass::prepare`'s contract, and the shared top tab track is an owner on
-                        // every route that wears it. Gains compose here so a future neighbouring
-                        // widget does not need to fork the page renderer.
-                        let mut glass_frame = crate::ui::widgets::GlassFrame::IDENTITY;
+                        // every route that wears it.
                         if route_wears_tab_bar(route) {
                             crate::ui::widgets::tab_glass_prepare();
                         }
                         if matches!(route, Route::Account) {
-                            glass_frame = glass_frame.combine(
-                                crate::ui::account_menu::prepare_present(
-                                    home_underlay_moving || crate::ui::idle::present_dirty(),
-                                ),
+                            crate::ui::account_menu::prepare_present(
+                                home_underlay_moving || crate::ui::idle::present_dirty(),
                             );
                         }
                         // THE PAGE, named once because it is drawn TWICE: the direct source path
@@ -5088,8 +5085,30 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             } else if matches!(route, Route::Search) {
                                 crate::ui::search::draw();
                             } else {
-                                crate::ui::home::home_draw(glass_frame);
+                                crate::ui::home::home_draw();
                             }
+                            // **A popover drawn AFTER this closure owes its scrim TO it.** That is
+                            // the rule, and these are the two popovers in that class — every other
+                            // one draws inside its own page (`alt_sources`, the Library's sort
+                            // menu) or is player-route, where there is no page closure and the dim
+                            // is meant to cover the HUD as well.
+                            //
+                            // The scrim sits between the page and the popover's glass, so it is
+                            // part of what that glass looks through, and this closure is what the
+                            // direct source path re-renders. Drawn with the panel instead it
+                            // reaches the visible frame but never the snapshot, and the frosted
+                            // ground comes out at full page brightness inside a dimmed screen —
+                            // which is exactly what the profile menu did.
+                            //
+                            // **Both, not just the dynamic one.** `item_menu` is served by the
+                            // capture path today and so picks its scrim up for free — but only
+                            // because no dynamic owner is live while a popover is open, so nothing
+                            // invalidates and the direct path never runs. Three modules holding up
+                            // one invariant, already false under `/tmp/plxnative-glassboth`. Each
+                            // call self-gates on its own `is_open`, so there is no route test here:
+                            // the closure states a rule rather than naming a screen.
+                            crate::ui::account_menu::draw_scrim();
+                            crate::ui::item_menu::draw_scrim();
                         };
                         if let Some(reg) = crate::gfx::blur_direct_region() {
                             crate::gfx::blur_snapshot_direct(reg, &mut page);
