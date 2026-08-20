@@ -434,8 +434,8 @@ fn flush() {
 // The grid's data swap is deferred to the fade floor, but a CONTROL must acknowledge a press on
 // the frame it happens. So the pills/chips resolve through the queued [`Pending`] when there is
 // one and through the committed store otherwise. There is exactly ONE pending value, so the chip,
-// the pill and the menu checkmark can never disagree with each other — and none of them touches
-// `browse`'s query state, so the store stays coherent for the whole fade.
+// the pill and the menu's own `On`/`Off` read-out can never disagree with each other — and none of
+// them touches `browse`'s query state, so the store stays coherent for the whole fade.
 //
 // Do NOT "fix" the 70 ms by committing the query state early and deferring only the store wipe:
 // `browse::maybe_spawn` scans the OLD listing for holes and `pump` splices the reply in at
@@ -449,7 +449,10 @@ fn view_section() -> usize {
         _ => crate::browse::cur(),
     }
 }
-/// The unwatched-filter state the Filter menu's checkmark and the Filter chip's value should show.
+/// The unwatched-filter state the Filter menu's trailing `On`/`Off` read-out and the Filter chip's
+/// value should show — the QUEUED one while a switch is in flight. The switch row is rebuilt from
+/// this the frame OK lands, so the word flips under the finger while `browse` is still tearing the
+/// listing down and re-querying it; there is no mark in the leading column to flip instead.
 fn view_unwatched() -> bool {
     match pending() {
         Pending::Unwatched(v) => v,
@@ -1868,7 +1871,7 @@ fn menu_commit(sel: i32) {
             let (unwatched_row, genre_row) = filter_rows();
             if sel == unwatched_row {
                 request(Pending::Unwatched(!view_unwatched()));
-                open_filter_menu(true); // rebuilt from `view_unwatched()` — the check flips at once
+                open_filter_menu(true); // rebuilt from `view_unwatched()` — its `On`/`Off` flips at once
                 table().sel = unwatched_row;
             } else if sel == genre_row {
                 build_genre_menu(false);

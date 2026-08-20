@@ -184,6 +184,19 @@ pub const PILL_INSET: f32 = 3.0;
 const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade masks + badge knockout
 /// Air between two chips of one right-aligned badge run (a subtitle row's `FORCED` + `SDH`).
 const BADGE_GAP: f32 = 10.0;
+/// The trailing read-out's WEIGHT: `size::LABEL` **bold**, which is what the `PlxNative Design
+/// System`'s `TableView` authors it as (`var(--font-weight-bold) var(--size-label)`) and what its
+/// prose says in words. The product drew it regular until 2026-08-21 — a rung below the row's
+/// HEADLINE label in size, a step behind it in ink, AND a weight lighter, which is three
+/// de-emphases stacked on the one run that answers the row's question. The read-out is not a
+/// caption of the label; it is the value, and it has to hold its own beside the badge run next to
+/// it. The step back is the INK's alone.
+///
+/// ONE constant, because the three calls at the draw site have to agree: the cap band the run is
+/// centred on, the advance width the badge run and the label's right edge are measured back from,
+/// and the paint. Bold glyphs are WIDER than their regular twins, so measuring on one flag and
+/// drawing on the other walks the run left into whatever sits beside it.
+const VALUE_BOLD: std::os::raw::c_int = 1;
 
 pub struct TableView {
     pub sections: Vec<Section>,
@@ -536,7 +549,9 @@ impl TableView {
             // Trailing VALUE — the read-out that says what this row is set to ("On"/"Off" for a
             // switch, or any word). One step behind the label in ink, so the label is what you read
             // and the value is what you check; over the focused row's near-white pill that step is
-            // an alpha of the pill's own ink rather than a grey, which would go muddy on it.
+            // an alpha of the pill's own ink rather than a grey, which would go muddy on it. That
+            // step is the ink's ALONE — the run itself is bold (see [`VALUE_BOLD`], which all three
+            // calls below take so the measure and the paint can never be two different faces).
             if let Some(v) = row.readout() {
                 let ink = match (focused, row.value_dim) {
                     (true, false) => theme::ROW_VALUE_INK_ON,
@@ -546,9 +561,9 @@ impl TableView {
                 };
                 if let Ok(vc) = std::ffi::CString::new(v) {
                     let vsz = theme::size::LABEL;
-                    let vy = crate::text::text_vcenter_y(vsz, 0, cyc);
-                    let vw = crate::text::text_width(vc.as_ptr(), vsz, 0);
-                    p.text(vc.as_ptr(), text_right - trailing, vy, vsz, ink, 2, 0);
+                    let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
+                    let vw = crate::text::text_width(vc.as_ptr(), vsz, VALUE_BOLD);
+                    p.text(vc.as_ptr(), text_right - trailing, vy, vsz, ink, 2, VALUE_BOLD);
                     trailing += vw + 14.0;
                 }
             }
@@ -638,3 +653,28 @@ impl TableView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ONE trailing read-out per row, resolved in ONE place. The rule the design system states and
+    /// this widget enforces is that **a mark says where you are and a word says what is set, and no
+    /// row is allowed to say both** — so a switch's state is the WORD `On`/`Off` at the trailing
+    /// edge (there is no ring/ticked-ring pair any more, assets and all), a leading tick is not a
+    /// read-out at all, and a row carrying both a `value` and a `toggle` draws exactly one of them.
+    ///
+    /// Worth pinning even though it is four lines of `match`: `library.rs`'s Sources test spells the
+    /// `On`/`Off` mapping out a second time to grade the row MODEL, and this is the assertion that
+    /// the copy it grades is the copy the widget actually draws.
+    #[test]
+    fn a_row_states_exactly_one_trailing_read_out() {
+        assert_eq!(Row::new("Unwatched only").toggle(true).readout(), Some("On"));
+        assert_eq!(Row::new("Unwatched only").toggle(false).readout(), Some("Off"));
+        assert_eq!(Row::new("Genre").value("All").readout(), Some("All"));
+        // both set: the explicit word wins and the switch's is NOT drawn beside it
+        assert_eq!(Row::new("Genre").value("Comedy").toggle(true).readout(), Some("Comedy"));
+        // a leading mark is a different column with a different job — it states no value
+        assert_eq!(Row::new("English").checked(true).readout(), None);
+        assert_eq!(Row::new("Chapters").readout(), None);
+    }
+}
