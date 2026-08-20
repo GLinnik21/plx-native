@@ -1520,6 +1520,11 @@ pub(crate) fn home_draw(glass: GlassFrame) {
         // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands
         // in for the hero and grid above it), so the top chrome below still paints over it.
         draw_status(&env, pc);
+        // …and, when armed, the SYNTHETIC ground replaces all of it: drawn here so it is what the
+        // bar samples and what the backdrop blur sources, and on the page's own alpha so a route
+        // change still dips it. `testpat` is a no-op unless a spec is set.
+        crate::ui::testpat::underlay(pc);
+        crate::ui::testpat::draw(pc);
         // the centered library tab pills (shared with the Library screen): Home is the selected
         // tab here and a pill holds focus when the hero top band is on it, both of which the row's
         // own travelling capsules already carry — `home_update` hands them down every frame.

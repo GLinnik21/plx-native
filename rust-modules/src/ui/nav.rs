@@ -151,6 +151,7 @@ pub(crate) fn tick(dt: f32) -> bool {
     commit
 }
 
+
 /// The cascade alpha for PAGE CONTENT — everything a screen draws that does not survive the swap.
 ///
 /// **Except under the `/tmp/plxnative-navblur` prototype**, where it is a flat 1: that experiment

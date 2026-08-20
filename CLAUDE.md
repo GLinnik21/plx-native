@@ -624,7 +624,16 @@ the perf gates), and `make test` = `deploy` + `run`.
   swaps the frame at once; pair `audio` with `/tmp/plxnative-nopass` for the PLEX PASS capsule
   line. It feeds the real `player::error_shape`, and forces the STATE only at
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
-  and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
+  `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
+  (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hue[:L*]`, `rainbow[:L*]`,
+  `solid:<deg>[:L*]`), drawn as page content so it is exactly what the tab track samples and what
+  the backdrop blur sources. The remote token **`pat:<spec>`** changes it live, which is what makes a
+  graded ladder one scripted run instead of a dozen launches that each land on a different hero;
+  `tools/glass-patterns.py` drives that ladder and assembles the contact sheets. It exists because
+  judging a glass material against whatever poster the hero happened to be showing is not
+  repeatable — the hero advances on its own clock and two simulators launched together drift apart
+  within seconds — and two comparisons were silently mis-paired that way before it did.
+  And the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
   `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and the
   Search pair: `/tmp/plxnative-search[=<query>]` (boot straight into Search with the field already

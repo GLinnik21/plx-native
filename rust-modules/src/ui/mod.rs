@@ -40,6 +40,7 @@ pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs
 pub mod profile;
 pub mod table;
 pub mod text_view;
+pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod theme;
 pub mod track_menu;
 pub mod trail; // the BACK trail: which pages are behind the one on screen (app.rs pops it)
@@ -421,13 +422,16 @@ impl Painter {
     /// around the rest rect rather than around this frame's, so the slide itself does not invalidate
     /// it. Cached glass stays at one snapshot; a dynamic policy may refresh independently;
     /// `gfx::draw_blur_backdrop` has the full argument.
-    /// `rim` is the one thing a surface says about the material — a sheet's 28px chamfer, or the
-    /// standing track's single line. See [`crate::gfx::GlassRim`].
+    /// `rim` is the one thing a surface says about the material's GEOMETRY — a sheet's 28px chamfer,
+    /// or the standing track's single line. See [`crate::gfx::GlassRim`].
+    /// `face` is what it wears over the backdrop — its scrim and its edge, composited inside the one
+    /// surface rather than drawn as a second rect on top of it ([`crate::gfx::GlassFace`], and its
+    /// doc for the artefact that construction produced). `GlassFace::NONE` for a sheet.
     #[must_use]
-    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4], rim: crate::gfx::GlassRim) -> bool {
+    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4], rim: crate::gfx::GlassRim, face: crate::gfx::GlassFace) -> bool {
         let t = self.c(tint);
         let (x, y) = (r.x + self.dx, r.y + self.dy);
-        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr(), rim)
+        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr(), rim, face)
     }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.

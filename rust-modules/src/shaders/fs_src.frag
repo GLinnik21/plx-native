@@ -79,7 +79,16 @@ void main(){
   float d = sdBox(p, hsz, rad);
   vec4 fill = mix(u_colTop, u_colBot, vy);
   float aFill = 1.0 - smoothstep(-1.0, 1.0, d);
-  vec3 rgb = fill.rgb * aFill;
+  // COVERAGE GOES IN THE ALPHA AND NOWHERE ELSE. This blends with straight alpha
+  // (GL_SRC_ALPHA), so `rgb` is a colour and `a` is how much of it lands — multiplying the colour
+  // by the coverage too spends it twice, and the fragment arrives at `fill.rgb * aFill^2 * fill.a`.
+  // On a DARK fill that is invisible, because black times anything is black, which is why it
+  // survived every scrim, card and capsule this app has ever drawn. The moment a fill is LIGHT it
+  // is a one-pixel BLACK RING around every rounded corner: measured on the light tab track over
+  // bright artwork, the boundary pixel read 158 between a ground of 220 and a face of 229 — darker
+  // than either side of it, which is not an edge any lamp in this design could cast. Reported as
+  // "black outlines on the bar's roundings"; it was never the antialiasing.
+  vec3 rgb = fill.rgb;
   float a = aFill * fill.a;
   // THE RIM, and the division is the whole of it. This fragment is blended with straight alpha
   // (GL_SRC_ALPHA), so what reaches the screen is `rgb * a` — and adding the rim to `rgb` therefore

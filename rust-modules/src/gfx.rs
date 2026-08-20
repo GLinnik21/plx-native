@@ -1262,11 +1262,46 @@ impl GlassRim {
     /// rather than a black scrim, and the two-lobe catch on the corner arcs is the reading that
     /// says "reflection" rather than "stroke" — it was tuned on the panel and it stays.
     fn params(self) -> (f32, f32, [f32; 4]) {
-        match self {
+        let base = match self {
             Self::Bevelled => (GLASS_BEVEL, GLASS_LENS, GLASS_SPEC),
             Self::Line => (2.0, 0.0, [0.0, 0.0, 1.0, 0.0]),
+        };
+        match self {
+            Self::Line => line_sweep().unwrap_or(base),
+            Self::Bevelled => base,
         }
     }
+}
+
+/// **`/tmp/plxnative-tracklens=<bevel>,<lens>,<spec>` — the standing container's geometry, swept.**
+///
+/// [`GlassRim::Line`] is the one material parameter in this app that was decided by an argument
+/// rather than by looking at a ladder: a 38px lens in a 2px band is a smear, so the lens was set to
+/// zero and the chamfer collapsed onto the perimeter. That is right about 38 and says nothing about
+/// 8, and the thing the container has to do — read as a slab with thickness rather than as a
+/// rectangle of darker picture — is exactly what a lens does and what a drawn line cannot.
+///
+/// So this exists for the same reason [`crate::ui::widgets::tab_glass_stops`]'s density override
+/// does: the values are a judgement about a picture, and a judgement about a picture is made by
+/// putting the ladder side by side. Absent, the returned params are byte-identical to the variant's
+/// own. Read once per process, so a simulator instance is one capture of one rung.
+#[cfg(feature = "devtriggers")]
+fn line_sweep() -> Option<(f32, f32, [f32; 4])> {
+    static SEEN: std::sync::OnceLock<Option<(f32, f32, [f32; 4])>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("tracklens")?;
+        let mut it = v.split(',').map(|t| t.trim().parse::<f32>().ok());
+        let (b, l, w) = (it.next()??, it.next()??, it.next()??);
+        // The bevel divides in the shader and bounds its early-out, so zero is a division by zero on
+        // every glass fragment in the frame — the same floor the variant itself keeps.
+        let out = (b.max(1.0), l.max(0.0), [GLASS_SPEC[0], GLASS_SPEC[1], GLASS_SPEC[2], w.max(0.0)]);
+        crate::log(&format!("glass: track lens swept to bevel={} lens={} spec={}", out.0, out.1, w));
+        Some(out)
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn line_sweep() -> Option<(f32, f32, [f32; 4])> {
+    None
 }
 
 static mut GPROG: c_uint = 0;
@@ -1284,6 +1319,11 @@ static mut GL_EDGE: c_int = 0;
 static mut GL_LIGHT: c_int = 0;
 static mut GL_SPEC: c_int = 0;
 static mut GL_NOISE: c_int = 0;
+static mut GL_SCRIM_TOP: c_int = 0;
+static mut GL_SCRIM_BOT: c_int = 0;
+static mut GL_RIMCOL_G: c_int = 0;
+static mut GL_RIMLIT_G: c_int = 0;
+static mut GL_RIMW_G: c_int = 0;
 
 /// Drop the cached snapshot: the next [`draw_blur_backdrop`] re-captures.
 ///
@@ -1535,6 +1575,11 @@ fn blur_lazy_init() -> bool {
         GL_LIGHT = glGetUniformLocation(GPROG, c"u_light".as_ptr());
         GL_SPEC = glGetUniformLocation(GPROG, c"u_spec".as_ptr());
         GL_NOISE = glGetUniformLocation(GPROG, c"u_noise".as_ptr());
+        GL_SCRIM_TOP = glGetUniformLocation(GPROG, c"u_scrim_top".as_ptr());
+        GL_SCRIM_BOT = glGetUniformLocation(GPROG, c"u_scrim_bot".as_ptr());
+        GL_RIMCOL_G = glGetUniformLocation(GPROG, c"u_rimcol".as_ptr());
+        GL_RIMLIT_G = glGetUniformLocation(GPROG, c"u_rimlit".as_ptr());
+        GL_RIMW_G = glGetUniformLocation(GPROG, c"u_rimw".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
@@ -1801,7 +1846,7 @@ pub(crate) fn blur_source_pass() -> bool {
 
 /// **Sample what is actually on the panel under `r`, at a low rate.**
 ///
-/// One `glReadPixels` of a few pixels along the rect's centre line, at most every
+/// Five small `glReadPixels` boxes along the rect's centre line, at most every
 /// [`GROUND_SAMPLE_MS`]. It exists because a material whose density follows its ground needs to know
 /// the ground, and every cheaper source is the wrong colour: Plex's `UltraBlurColors` are a derived
 /// muted palette for an ambient wash — measured against the Luca hero, they give (0.30, 0.23, 0.18)
@@ -1816,13 +1861,45 @@ pub(crate) fn blur_source_pass() -> bool {
 /// Counted in CALLS rather than milliseconds: this is called once per drawn bar, so the count is
 /// the frame rate and needs no clock. 30 is about twice a second at 60.
 const GROUND_SAMPLE_EVERY: u32 = 30;
-/// How many pixels are averaged across the rect. Odd, so one of them is the middle.
+/// How many places across the rect are sampled. Odd, so one of them is the middle.
 const GROUND_TAPS: usize = 5;
+/// **Each tap is a BOX at roughly the blur's own scale, and that size is the whole correctness of
+/// taking the worst one.**
+///
+/// The labels do not sit on the framebuffer; they sit on the BLURRED backdrop, which is a local
+/// average. So a tap has to be a local average too, or "the worst tap" means "the worst pixel",
+/// which is a different and wrong question: measured on the `checker:24` test ground, a single-pixel
+/// worst tap read a white square at L* 88 and asked for .568 of black, while what the labels
+/// actually sit on is the checker's mid-grey. A box at the blur's support answers for the region the
+/// blur will produce — the same answer on a smooth ground, and the honest one on a busy one.
+///
+/// 25px, odd so a tap has a middle. One `glReadPixels` per tap either way, 3125 pixels in total,
+/// which is nothing beside the flush the readback already costs.
+const GROUND_TAP_PX: c_int = 25;
 static mut GROUND_RGB: Option<[f32; 3]> = None;
+/// **The SPREAD across the taps, in CIE L\*, beside the mean.**
+///
+/// The mean is one scalar for a 940px bar, and a bar can straddle an edge: the synthetic `edge`
+/// ground puts L\* 10 under one half and L\* 90 under the other, and every material in the tree
+/// answers it with a single density that serves one half and abandons the other. Whether that is a
+/// curiosity or the common case is a question about real artwork, and it cannot be asked at all
+/// without publishing the span — so the sampler now reports how far apart its own taps were.
+static mut GROUND_SPAN: f32 = 0.0;
+pub(crate) fn ground_span() -> f32 {
+    unsafe { *std::ptr::addr_of!(GROUND_SPAN) }
+}
 static mut GROUND_AT: u32 = 0;
 
-pub(crate) fn sample_ground(r: [f32; 4]) -> Option<[f32; 3]> {
+pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
+        // A caller can refuse a FRESH reading while still wanting the last one — the route
+        // cross-fade's case. `ui::nav` dips the whole page toward `SURFACE_APP` while the chrome
+        // holds still, so for the length of a transition the pixels under this bar are not the
+        // page's colour at all, and a readback landing there latches a ground the screen is not on
+        // for the next thirty drawn frames.
+        if !may_read {
+            return *std::ptr::addr_of!(GROUND_RGB);
+        }
         if BLUR_IN_PASS {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
@@ -1834,19 +1911,52 @@ pub(crate) fn sample_ground(r: [f32; 4]) -> Option<[f32; 3]> {
         let (gx, gy, gw, gh) = crate::surface::viewport();
         let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
         let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int; // GL origin is bottom-left
-        let mut acc = [0.0f32; 3];
-        let mut px = [0u8; 4];
+        let n = GROUND_TAP_PX as usize;
+        let mut buf = vec![0u8; n * n * 4];
+        let mut taps = [[0.0f32; 3]; GROUND_TAPS];
+        let mut taps_l = [0.0f32; GROUND_TAPS];
+        let lin = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
         for i in 0..GROUND_TAPS {
             let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
             let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
-            glReadPixels(x.clamp(0, gx + gw - 1), cy.clamp(0, gy + gh - 1), 1, 1,
-                         GL_RGBA, GL_UNSIGNED_BYTE, px.as_mut_ptr() as *mut c_void);
-            for c in 0..3 {
-                acc[c] += px[c] as f32 / 255.0;
+            glReadPixels(
+                (x - GROUND_TAP_PX / 2).clamp(0, gx + gw - GROUND_TAP_PX),
+                (cy - GROUND_TAP_PX / 2).clamp(0, gy + gh - GROUND_TAP_PX),
+                GROUND_TAP_PX, GROUND_TAP_PX,
+                GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void,
+            );
+            let mut acc = [0.0f32; 3];
+            for p in buf.chunks_exact(4) {
+                for c in 0..3 {
+                    acc[c] += p[c] as f32 / 255.0;
+                }
             }
+            let k = (n * n) as f32;
+            taps[i] = [acc[0] / k, acc[1] / k, acc[2] / k];
+            let y = 0.2126 * lin(taps[i][0]) + 0.7152 * lin(taps[i][1]) + 0.0722 * lin(taps[i][2]);
+            taps_l[i] = if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y };
         }
-        let t = GROUND_TAPS as f32;
-        GROUND_RGB = Some([acc[0] / t, acc[1] / t, acc[2] / t]);
+        // **THE WORST TAP, NOT THE MEAN — and this is a contract the mean was quietly breaking.**
+        //
+        // The consumer sizes a BLACK scrim so a light ink clears a contrast floor, so the tap that
+        // needs the most material is the brightest one. A mean describes a bar that straddles an
+        // edge no better than it describes either half: a census of a real library's hero rotation
+        // measured a MEDIAN span of 26.8 L* across these five taps, with half the heroes over 25 and
+        // a third over 40 — and on those, the density the mean asked for left the labels over the
+        // bright end at 2.18:1, 2.75:1, 3.16:1 where the solver believed it had delivered 4:1. Not a
+        // corner case; the common one, and silent, because a mean cannot report that it describes
+        // nothing.
+        //
+        // The cost is a heavier bar on mixed grounds, which is the trade the contrast floor already
+        // made everywhere else. The span is published beside it so the consequence stays visible.
+        let worst = taps_l
+            .iter()
+            .enumerate()
+            .fold((0usize, f32::MIN), |a, (i, &l)| if l > a.1 { (i, l) } else { a })
+            .0;
+        GROUND_RGB = Some(taps[worst]);
+        GROUND_SPAN = taps_l.iter().fold(f32::MIN, |a, &b| a.max(b))
+            - taps_l.iter().fold(f32::MAX, |a, &b| a.min(b));
         *std::ptr::addr_of!(GROUND_RGB)
     }
 }
@@ -2123,7 +2233,34 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
 /// spring, so the two differ for the whole of that animation; keying the region on the moving rect
 /// would fail containment on nearly every frame and add policy-independent captures throughout the
 /// slide. Callers with no motion (the tab bar) pass their own rect twice.
-pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32, rim: GlassRim) -> bool {
+/// **What a glass surface wears over its backdrop** — its scrim's two stops and its edge.
+///
+/// Both used to be a SECOND draw of the same rounded rect on top of the blur, which is two
+/// antialiased edges for one object; `fs_glass.frag`'s note has the measurement that ended that.
+/// `NONE` is the popover's case: a sheet's frost is already `u_tint` and its edge is the shader's
+/// own specular, so it wears nothing here and the block costs it one compare.
+#[derive(Clone, Copy)]
+pub(crate) struct GlassFace {
+    pub(crate) scrim_top: [f32; 4],
+    pub(crate) scrim_bot: [f32; 4],
+    pub(crate) rim: [f32; 4],
+    /// The edge facing the light, as its OWN colour and weight, drawn over the perimeter. White in
+    /// both polarities — the lamp does not move because the material did.
+    pub(crate) rim_lit: [f32; 4],
+    /// Rim width in px. 1.0 is the design system's `inset 0 0 0 1px`.
+    pub(crate) rim_w: f32,
+}
+impl GlassFace {
+    pub(crate) const NONE: Self = Self {
+        scrim_top: [0.0; 4],
+        scrim_bot: [0.0; 4],
+        rim: [0.0; 4],
+        rim_lit: [0.0; 4],
+        rim_w: 1.0,
+    };
+}
+
+pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32, rim: GlassRim, face: GlassFace) -> bool {
     unsafe {
         // A glass surface met while drawing the page AS a blur source draws nothing at all. It
         // cannot draw itself — the snapshot it would sample is the target currently bound — and it
@@ -2184,6 +2321,11 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         glUniform1f(GL_LENS, lens);
         glUniform4fv(GL_SPEC, 1, spec.as_ptr());
         glUniform4fv(GL_TINT, 1, tint);
+        glUniform4fv(GL_SCRIM_TOP, 1, face.scrim_top.as_ptr());
+        glUniform4fv(GL_SCRIM_BOT, 1, face.scrim_bot.as_ptr());
+        glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
+        glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
+        glUniform1f(GL_RIMW_G, face.rim_w);
         glUniform4f(GL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
