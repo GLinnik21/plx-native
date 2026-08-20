@@ -547,6 +547,56 @@ pub fn hero_alpha(progress: f32, fade_end: f32) -> f32 {
     (1.0 - progress / fade_end).clamp(0.0, 1.0)
 }
 
+/// The hero synopsis' line pitch. See [`hero_synopsis`].
+pub const HERO_SYN_LEAD: f32 = 36.0;
+/// Lines of blurb before it elides — the mock's own band, and both heroes'. Past it the flow would
+/// walk the action row down the screen (detail) or the pinned row into the peeking shelf (home).
+pub const HERO_SYN_MAXLINES: usize = 3;
+
+/// The height an `n`-line hero synopsis BLOCK occupies — `TextView::measure_h`'s answer, written
+/// down so a layout contract can quote it without a font.
+///
+/// Three places need it and none of them can measure: home's own "the clearLogo must not reach the
+/// tab bar" test, `widgets`' hero-scrim legibility table, and any reader of either. All three used
+/// to carry the literal `87.0` with `// three size::MICRO lines at the hero's 29px leading` beside
+/// it, which is a comment that goes stale silently the moment the rung or the leading moves — as
+/// both just did.
+#[inline]
+pub fn hero_syn_h(lines: usize) -> f32 {
+    lines as f32 * HERO_SYN_LEAD
+}
+
+/// **The ONE hero synopsis** — the rung, the leading, the ink and the line cap, in one place,
+/// because BOTH full-bleed heroes draw this same role and for one release they did not agree about
+/// any of it: home was `size::MICRO` 22 / leading 29 / [`theme::TEXT_SECONDARY`] while detail was
+/// `size::LABEL` 26 / 36 / [`theme::TEXT_READING`]. They were identical until `aa598bf2` ("ui: the
+/// detail screen, redrawn from the design project's mockup") moved detail alone.
+///
+/// **Detail's values won, and they are these.** The detail screen is the mock-derived side — the
+/// design canvas for it specifies `--size-label` 26px, `--leading-synopsis` 36px and `--text-reading`
+/// explicitly — while the home canvas has no hero at all and so cannot contradict it. Its own note
+/// (*"lifted to LABEL 26/36, it read too small on-device at MICRO 22"*) is a device reading, which is
+/// the kind of evidence that settles this. The recorded owner directive against MICRO — *"bigger,
+/// but smaller than the meta line"* — still holds at LABEL 26, because the meta line above is
+/// `size::BODY` 28.
+///
+/// `lead` is an optional bold run before the first word (detail's `"S2, E3 · Laura:"` episode
+/// prefix); empty means none, which is home's case and a movie's.
+///
+/// Shared by each hero's flow MEASURE and its PAINT, so within a screen the two cannot diverge
+/// either — that was already this function's job on the detail page, and it is now the same
+/// function.
+pub fn hero_synopsis<'a>(summary: &'a str, lead: &'a str) -> text_view::TextView<'a> {
+    let v = text_view::TextView::new(summary, theme::size::LABEL, theme::TEXT_READING)
+        .leading(HERO_SYN_LEAD)
+        .max_lines(HERO_SYN_MAXLINES);
+    if lead.is_empty() {
+        v
+    } else {
+        v.lead(lead, theme::TEXT_PRIMARY)
+    }
+}
+
 /// A vertical scroll-into-content container: owns the scroll `Spring` + the cumulative child flow
 /// ([`child_top`](ScrollColumn::child_top), the single below-hero Y source) + the off-screen band
 /// cull. It holds NO child views (that would force per-frame boxing/dynamic dispatch — banned on the

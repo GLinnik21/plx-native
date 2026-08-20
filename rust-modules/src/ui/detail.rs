@@ -241,12 +241,14 @@ const RATINGS_DY: f32 = 50.0; // meta line → the review-score row
 const SYN_DY: f32 = 54.0; // last line above → synopsis
 const FACTS_DY: f32 = theme::space::MD; // synopsis bottom → date/counts line
 const BTN_DY: f32 = 50.0; // last fine-print line → the action row
-/// Synopsis line pitch, and the floor its measured height is clamped up to so a one-line blurb (or a
-/// missing one) still leaves the facts line where a two-line blurb puts it.
-const SYN_LEAD: f32 = 36.0;
+/// Synopsis line pitch — the SHARED one ([`crate::ui::HERO_SYN_LEAD`]), aliased so this page's own
+/// chain arithmetic below still reads in its own vocabulary. The value moved out when the two heroes
+/// were made to agree about the blurb; the LINE CAP moved with it.
+const SYN_LEAD: f32 = crate::ui::HERO_SYN_LEAD;
+/// The floor the measured synopsis height is clamped up to, so a one-line blurb (or a missing one)
+/// still leaves the facts line where a two-line blurb puts it. This page's own, not the shared
+/// block's: it is a fact about THIS chain, which has two conditional bands under the blurb.
 const SYN_MIN_H: f32 = 34.0;
-/// Lines of blurb before it elides — the mock's own band. Past this the flow walks the Play pill down.
-const SYN_MAXLINES: usize = 3;
 // ---- the PEOPLE column: the crew credit over the cast, right-aligned beside the action row.
 /// Its column. Narrow on purpose — it must not reach the hero text column on its left, and wrapping to
 /// two lines inside 560px is what keeps three long names off the Play pill.
@@ -1419,23 +1421,15 @@ fn ep_hscroll_target() -> f32 {
     card_row::scroll_into_view(v.ep_hscroll.pos, v.col.max(0) as usize, n, EP_W, EP_GAP, SCR_W - 2.0 * MARGIN_X)
 }
 
-/// The ONE hero-synopsis TextView (rung / leading / line cap live here once) — shared by the
-/// flow measure (hero_layout) and the paint (draw_hero) so they cannot diverge.
+/// The hero-synopsis TextView — now [`crate::ui::hero_synopsis`], the block BOTH heroes build, so
+/// the home billboard and this page can never again disagree about the rung, the leading or the ink.
+/// Kept as a one-line alias because this module reads it in four places and the name is the local
+/// vocabulary; the argument for the values it carries is on the shared function.
 ///
-/// `LABEL`/36, not `MICRO`/29: the blurb is the longest run of prose on the page and it sits over the
-/// backdrop scrim, where the fine-print rung read as a caption someone had shrunk by mistake
-/// (`Details Screen.dc.html`, and its `github.md` note — *"lifted to LABEL 26/36, it read too small
-/// on-device at MICRO 22"*). [`theme::TEXT_READING`] goes with the size for the same reason. The
-/// 3-line cap is the mock's own band; past that the flow would walk the Play pill down the screen.
+/// It is still shared by this page's flow measure (`hero_layout`) and its paint (`draw_hero`), which
+/// was the original reason it existed and is unchanged.
 fn hero_synopsis<'a>(summary: &'a str, lead: &'a str) -> TextView<'a> {
-    let v = TextView::new(summary, theme::size::LABEL, theme::TEXT_READING)
-        .leading(SYN_LEAD)
-        .max_lines(SYN_MAXLINES);
-    if lead.is_empty() {
-        v
-    } else {
-        v.lead(lead, theme::TEXT_PRIMARY)
-    }
+    crate::ui::hero_synopsis(summary, lead)
 }
 
 /// The hero's blurb, as `(lead, body)`.

@@ -144,6 +144,14 @@ fn xf() -> &'static mut Xfade {
 /// the shelves for the field and coming back lands where you were.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Zone {
+    /// The shared top bar's PROFILE CHIP, at the margin left of the pills. Not this screen's
+    /// control — `widgets` owns its rect, its hit test and its unfurl — but this screen owns
+    /// whether its own focus is standing on it, which is the half that used to be missing: the chip
+    /// was drawn here and focusable only on Home.
+    ///
+    /// Reached the way it is on every screen that wears the bar: **◀ off the first pill**, with ▶
+    /// walking back onto it and ▼ dropping to the field, the same place ▼ off the strip lands.
+    Chip,
     /// The shared top strip. Reached with ▲ from the field; the screen does not own the pills.
     Strip,
     Field,
@@ -809,7 +817,10 @@ fn clamp_focus() {
             Zone::Strip => {
                 *addr_of_mut!(STRIP) = addr_of!(STRIP).read().min(strip_last());
             }
-            Zone::Field => {}
+            // The chip is always drawn and has no cursor of its own, so there is nothing to clamp;
+            // the field is the same. Spelled out rather than caught by a `_`, so a zone added later
+            // is a compile error here instead of a band that silently never re-seats.
+            Zone::Chip | Zone::Field => {}
         }
     }
 }
@@ -849,11 +860,11 @@ pub(crate) fn draw() {
     crate::ui::widgets::nav_scrim(p, CHROME_BOTTOM, CONTENT_TOP, v.shift);
     field::draw(p, &v);
 
-    // `CHIP_D`, not a literal 54: Home draws this same chip at 60, and Home<->Search is a
-    // chrome-CONTINUOUS cross-fade, so a six-pixel disagreement was visible as the avatar shrinking
-    // mid-transition — on this screen alone.
-    let d = crate::ui::widgets::CHIP_D;
-    crate::ui::widgets::profile_chip(pk, Rect::new(crate::ui::consts::MARGIN_X, crate::ui::widgets::TOP_BAR_Y, d, d), 0.0);
+    // The chip's frame is `widgets`' own now, which retires this screen's last way of disagreeing
+    // with the others about it: it was a literal 54 here while Home drew the same chip at 60, and
+    // Home↔Search is a chrome-CONTINUOUS cross-fade, so the avatar visibly shrank mid-transition on
+    // this screen alone. It also unfurls here now, because the chip is a focus stop on this screen.
+    crate::ui::widgets::profile_chip(pk);
     crate::ui::widgets::draw_tab_row(pk);
 }
 
@@ -906,9 +917,25 @@ fn focused_item() -> Option<(crate::search::Kind, &'static crate::search::Item)>
 pub(crate) fn move_focus(sym: c_uint) {
     unsafe {
         match addr_of!(ZONE).read() {
+            Zone::Chip => {
+                // The bar's leftmost stop: ▶ is the only way back into the pills, and ▼ leaves the
+                // band for the field — the same destination ▼ off the strip has, because the field
+                // is what sits under the whole bar.
+                if sym == SDLK_RIGHT {
+                    *addr_of_mut!(ZONE) = Zone::Strip;
+                    *addr_of_mut!(STRIP) = 0;
+                } else if sym == SDLK_DOWN {
+                    *addr_of_mut!(ZONE) = Zone::Field;
+                }
+            }
             Zone::Strip => {
                 if sym == SDLK_LEFT {
-                    *addr_of_mut!(STRIP) = addr_of!(STRIP).read().saturating_sub(1);
+                    // …and off the FIRST pill, ◀ reaches the profile chip beside it: the chip is a
+                    // stop on this screen too now, not only on Home.
+                    match addr_of!(STRIP).read().checked_sub(1) {
+                        Some(i) => *addr_of_mut!(STRIP) = i,
+                        None => *addr_of_mut!(ZONE) = Zone::Chip,
+                    }
                 } else if sym == SDLK_RIGHT {
                     *addr_of_mut!(STRIP) = (addr_of!(STRIP).read() + 1).min(strip_last());
                 } else if sym == SDLK_DOWN {
@@ -1042,7 +1069,12 @@ pub(crate) fn key(sym: c_uint) -> bool {
 
 pub(crate) fn on_ok() -> Action {
     match zone() {
-        // The pills are not this screen's; `app.rs` reads `focused_pill()` and performs the press.
+        // The chip's press is the SAME press on all three screens that wear the bar, so `app.rs`
+        // answers it once, ahead of the per-route ladder (`key_ok`'s `TopFocus::Chip` arm) — the
+        // destination is the account menu wherever you are standing, unlike a pill, whose
+        // destination depends on the screen. Unreachable in practice; here for totality.
+        Zone::Chip => Action::None,
+        // The pills are not this screen's; `app.rs` reads `top_focus()` and performs the press.
         Zone::Strip => Action::None,
         Zone::Field => {
             if editing() {
@@ -1136,13 +1168,19 @@ pub(crate) fn selected_pill() -> c_int {
     crate::ui::widgets::search_pill() as c_int
 }
 
-/// The pill holding remote FOCUS, or -1 when focus is not in the strip. Clamped on read as well as
-/// in [`clamp_focus`]: `app.rs` hands this to `widgets::tab_row_update` BEFORE it calls
-/// [`update`], so on the frame a server appears or drops the cursor is one update behind the row.
-pub(crate) fn focused_pill() -> c_int {
+/// **Where this screen's focus is on the SHARED top bar** — the one question `widgets` asks of
+/// every screen that wears it, so the strip's capsules and the profile chip's unfurl are animated
+/// in one place rather than three.
+///
+/// The pill is clamped on read as well as in [`clamp_focus`]: `app.rs` hands this to
+/// `widgets::tab_row_update` BEFORE it calls [`update`], so on the frame a server appears or drops,
+/// the cursor is one update behind the row.
+pub(crate) fn top_focus() -> crate::ui::widgets::TopFocus {
+    use crate::ui::widgets::TopFocus;
     match zone() {
-        Zone::Strip => unsafe { addr_of!(STRIP).read() }.min(strip_last()) as c_int,
-        _ => -1,
+        Zone::Chip => TopFocus::Chip,
+        Zone::Strip => TopFocus::Pill(unsafe { addr_of!(STRIP).read() }.min(strip_last())),
+        _ => TopFocus::Away,
     }
 }
 
@@ -1355,6 +1393,15 @@ mod tests {
         crate::search::reset();
     }
 
+    /// The pill under the ring, or -1 — the read-out these strip tests were written against,
+    /// rebuilt on [`top_focus`] so they still grade the value `app.rs` and `widgets` consume.
+    fn pill() -> c_int {
+        match top_focus() {
+            crate::ui::widgets::TopFocus::Pill(i) => i as c_int,
+            _ => -1,
+        }
+    }
+
     /// ▲ from the field reaches the strip and re-seats the cursor on OUR pill, ▼ comes back.
     #[test]
     fn the_strip_is_a_zone_with_its_own_cursor() {
@@ -1363,20 +1410,56 @@ mod tests {
         reset();
         move_focus(SDLK_UP);
         assert_eq!(zone(), Zone::Strip);
-        assert_eq!(focused_pill(), crate::ui::widgets::search_pill().min(strip_last()) as c_int, "▲ lands under the pill the screen is drawn as selected on");
+        assert_eq!(pill(), crate::ui::widgets::search_pill().min(strip_last()) as c_int, "▲ lands under the pill the screen is drawn as selected on");
         move_focus(SDLK_LEFT);
-        assert!(focused_pill() <= crate::ui::widgets::search_pill() as c_int, "◀ walks the pills, never past the first");
-        for _ in 0..8 {
-            move_focus(SDLK_LEFT);
-        }
-        assert_eq!(focused_pill(), 0, "◀ clamps at the first pill rather than wrapping or underflowing");
+        assert!(pill() <= crate::ui::widgets::search_pill() as c_int, "◀ walks the pills, never past the first");
         for _ in 0..32 {
             move_focus(SDLK_RIGHT);
         }
-        assert_eq!(focused_pill(), strip_last() as c_int, "▶ clamps at the last pill `widgets::tab_count` reports");
+        assert_eq!(pill(), strip_last() as c_int, "▶ clamps at the last pill `widgets::tab_count` reports");
         move_focus(SDLK_DOWN);
         assert_eq!(zone(), Zone::Field, "▼ off the strip is the field, whatever pill the cursor was on");
-        assert_eq!(focused_pill(), -1, "focus is not in the strip any more, and the pill read-out must say so");
+        assert_eq!(pill(), -1, "focus is not in the strip any more, and the pill read-out must say so");
+        crate::search::reset();
+    }
+
+    /// **The profile chip is a real focus stop here, and it is reached the way it is on Home.**
+    ///
+    /// The chip is drawn on all three screens that wear the shared bar and used to be activatable
+    /// on Home alone — `widgets` owns its rect and its hit test now, and the walk is the geometry's
+    /// own: it sits at the margin LEFT of the centred pills, so ◀ off the first pill is the only
+    /// approach and ▶ is the way back. ▼ leaves the band for the field, the same destination ▼ off
+    /// the strip has, because the field is what sits under the whole bar.
+    ///
+    /// Graded through [`top_focus`], which is the value `widgets::tab_row_update` animates the bar
+    /// from and `app.rs` routes OK on — so "the chip is focused" cannot come to mean one thing to
+    /// the unfurl and another to the press.
+    #[test]
+    fn the_profile_chip_is_the_bars_leftmost_stop() {
+        use crate::ui::widgets::TopFocus;
+        let _s = crate::testlock::serial();
+        let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        move_focus(SDLK_UP); // the field hands ▲ to the strip, on our own pill
+        for _ in 0..32 {
+            move_focus(SDLK_LEFT);
+        }
+        assert_eq!(zone(), Zone::Chip, "◀ off the first pill reaches the chip");
+        assert_eq!(top_focus(), TopFocus::Chip, "…and the shared bar is told so");
+        for _ in 0..4 {
+            move_focus(SDLK_LEFT); // there is nothing further left; it must not wrap or underflow
+        }
+        assert_eq!(zone(), Zone::Chip, "the chip is the end of the row, not a step before one");
+
+        move_focus(SDLK_RIGHT);
+        assert_eq!(top_focus(), TopFocus::Pill(0), "▶ walks back onto the FIRST pill, the one it left");
+
+        // …and ▼ from the chip is the field, exactly as it is from the pills
+        move_focus(SDLK_LEFT);
+        assert_eq!(zone(), Zone::Chip);
+        move_focus(SDLK_DOWN);
+        assert_eq!(zone(), Zone::Field, "▼ off the chip lands where ▼ off the strip lands");
+        assert_eq!(top_focus(), TopFocus::Away, "off the bar entirely — neither chip nor pill");
         crate::search::reset();
     }
 

@@ -994,6 +994,59 @@ const CHIP_NAME_TAIL: f32 = 24.0;
 /// Name budget — a long profile name elides rather than growing the capsule into the CENTERED tab
 /// track sitting a few hundred px to its right.
 const CHIP_NAME_MAX: f32 = 320.0;
+/// **The chip's frame — one rect, owned here, for all three screens that wear the bar.**
+///
+/// A CONSTANT rather than a rect recorded at draw the way [`tab_pill_at`]'s are, and the asymmetry
+/// is the geometry rather than an oversight: the pills SCROLL inside their track, so where one was
+/// drawn is a fact only that draw knows, while the chip sits at the margin on the top-bar line and
+/// never moves. `Rect::new(MARGIN_X, TOP_BAR_Y, CHIP_D, CHIP_D)` used to be written out in
+/// `home.rs`, `library.rs` and `search/mod.rs` — and only the first of the three also recorded it
+/// for a hit test, which is exactly how a control drawn on three screens came to be clickable on
+/// one.
+pub(crate) const CHIP_FRAME: Rect = Rect::new(crate::ui::consts::MARGIN_X, TOP_BAR_Y, CHIP_D, CHIP_D);
+/// The chip unfurl's stiffness — brisk, a touch stiffer than the hero slide.
+const K_CHIP: f32 = 300.0;
+/// How far the chip is into its focused face, 0..1. A static beside [`TAB_SCROLL`] and
+/// [`TOP_STRIP`] for the same reason those are: ONE bar is drawn by three screens, and the unfurl
+/// has to carry ACROSS a Home↔Library↔Search route flip rather than restart on the far side. It
+/// lived in `home.rs` while Home was the only screen the chip could be focused on.
+static mut CHIP_EXPAND: crate::ui::Spring = crate::ui::Spring::at(0.0);
+
+/// **What in the shared top bar holds the remote.** The bar is ONE control across Home, the Library
+/// and Search, and it has exactly two kinds of stop — the chip at the margin and a pill of the
+/// centred strip — so a screen answers with one value instead of with two booleans that could both
+/// say yes. [`tab_row_update`] takes it, which is what makes every screen animate both stops by
+/// construction (the same argument that put the strip's scroll and its capsules in that function).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TopFocus {
+    /// focus is somewhere else on the page — or on no page at all
+    Away,
+    /// the profile chip
+    Chip,
+    /// a pill of the strip, by index (0 = Home)
+    Pill(usize),
+}
+impl TopFocus {
+    /// The pill index the strip's own machinery wants, or -1. The strip predates [`TopFocus`] and
+    /// speaks `c_int`; converting here keeps that one encoding in one place.
+    fn pill(self) -> c_int {
+        match self {
+            TopFocus::Pill(i) => i as c_int,
+            _ => -1,
+        }
+    }
+}
+
+/// Is the pointer on the profile chip? The chip's half of [`tab_pill_at`] — the shared bar's two
+/// kinds of stop, hit-tested in the one module that draws them.
+///
+/// The target is the AVATAR, never the unfurled name capsule beside it: the capsule is a focus
+/// read-out that only exists while the remote is already on the chip, so a pointer that could
+/// activate it would be clicking a shape that is not there for the user who reached the chip with
+/// a mouse. That was Home's rule when Home owned this test, and it is unchanged.
+pub(crate) fn profile_chip_at(mx: f32, my: f32) -> bool {
+    CHIP_FRAME.contains(mx, my)
+}
 
 // ---- the navigation bar's scrim ---------------------------------------------------------------
 
@@ -1065,20 +1118,29 @@ pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll
     ps.rect(Rect::new(0.0, knee, w, content_top - knee), 0.0, knee_col, theme::with_a(base, 0.0), 0.0);
 }
 
-/// The top-left profile chip's VISUAL (avatar texture, or an initial / person-glyph fallback,
-/// with the shared tile shadow + sheen). Shared by Home and the Library screen — each screen owns
-/// its rect + focus rule and calls this. The session lookup (mutex + UserRef clone) is
-/// snapshotted per profile GENERATION, not per frame.
+/// **The top-left profile chip** — the whole control, not just its picture: the avatar texture (or
+/// an initial / person-glyph fallback) with the shared tile shadow + sheen, at [`CHIP_FRAME`], with
+/// [`CHIP_EXPAND`]'s focus unfurl. Drawn verbatim by Home, the Library and Search, which is what a
+/// piece of SHARED chrome should mean. The session lookup (mutex + UserRef clone) is snapshotted
+/// per profile GENERATION, not per frame.
 ///
-/// `expand` (0..1) is the focus amount, deliberately a scalar and not a bool: at 1 the chip grows
-/// the **tab bar's own track capsule** around itself and unfurls the profile name to its right. A
-/// lifted shadow alone was far too quiet to read as focus against bright hero art — and the name
-/// is what the stop is actually *for*. The caller owns the spring (Home steps it; the Library
-/// screen has no chip focus stop and passes 0).
-pub(crate) fn profile_chip(p: Painter, r: Rect, expand: f32) {
+/// It used to take the rect and the focus amount from its caller, which is how the three screens
+/// came to disagree about it: each wrote out the same rect, Home alone recorded one for a hit test,
+/// and the other two hard-coded `0.0` for the expand because the chip could not be focused there.
+/// A control drawn on three screens and activatable on one is a bug, not a design — the frame, the
+/// hit test ([`profile_chip_at`]) and the spring all live here now, and a screen's only remaining
+/// say is where its own focus is, through [`TopFocus`].
+///
+/// The unfurl is deliberately a scalar and not a bool: at 1 the chip grows the **tab bar's own
+/// track capsule** around itself and unfurls the profile name to its right. A lifted shadow alone
+/// was far too quiet to read as focus against bright hero art — and the name is what the stop is
+/// actually *for*.
+pub(crate) fn profile_chip(p: Painter) {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
     static mut CHIP: Option<(u32, String, CString, CString, f32)> = None; // gen, thumb, initial, name, name w
+    let r = CHIP_FRAME;
+    let expand = unsafe { std::ptr::addr_of!(CHIP_EXPAND).read() }.pos;
     let d = r.w;
     let gen = crate::plex::session::current_gen();
     let chip = unsafe { &mut *addr_of_mut!(CHIP) };
@@ -1195,9 +1257,13 @@ impl View for CircleButton {
         // The resting card shadow, which every control in this family carries and this one did not:
         // a disc over artwork nobody chose has the tile's problem, and `Button` had already been
         // given the same constant for the same reason.
-        p.shadow(r, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
-        control_rim(p, r, rad, face);
+        //
+        // …unless there is no FACE to cast it — an idle `ControlStyle::Bare` is the mark alone.
+        if self.style.plated(self.focused) {
+            p.shadow(r, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                     theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+            control_rim(p, r, rad, face);
+        }
         if let Some(icon) = self.icon {
             // vector glyph centred on the disc at the shared DISC_ICON_RATIO box, so every round
             // control carries its icon at one ratio.
@@ -3024,11 +3090,19 @@ fn tab_scroll_target(widths: &[f32], idx: usize, cur: f32) -> f32 {
 /// is minimal-scroll, so this is a no-op whenever the selected pill is already on screen, which is
 /// the whole of the Library screen's life after [`tab_row_reveal`] placed it.
 ///
-/// It also steps the row's travelling capsules ([`TOP_STRIP`]), off the very same `selected`/
-/// `focused` the scroll reads — so every caller of the shared row gets the motion by construction
-/// rather than by remembering to call a second thing.
-pub(crate) fn tab_row_update(selected: c_int, focused: c_int, dt: f32) {
+/// It also steps the row's travelling capsules ([`TOP_STRIP`]) and the profile chip's unfurl
+/// ([`CHIP_EXPAND`]), off the very same `focus` the scroll reads — so every caller of the shared
+/// row gets the motion by construction rather than by remembering to call a second thing.
+pub(crate) fn tab_row_update(selected: c_int, focus: TopFocus, dt: f32) {
     use std::ptr::{addr_of, addr_of_mut};
+    let focused = focus.pill();
+    // The chip is the bar's other stop, so its unfurl is stepped here rather than by whichever
+    // screen happens to own the focus this frame — the same reason the capsules and the track's
+    // weight are. It is also why [`TopFocus`] is one value: with a separate `chip: bool` beside
+    // `focused`, a screen could hand down a lit chip AND a lit pill.
+    unsafe {
+        (*addr_of_mut!(CHIP_EXPAND)).step(if matches!(focus, TopFocus::Chip) { 1.0 } else { 0.0 }, K_CHIP, dt)
+    };
     // The bar is CONTINUOUS chrome across the Home↔Library route change and the capsule has to start
     // travelling on the PRESS frame, before the route flips — so the selection is the NAV's pending
     // one whenever there is one, exactly as `library::view_section` is the pending one for that
@@ -3348,6 +3422,21 @@ pub enum ControlStyle {
     /// idle plate reads as a hole in the picture. Focused it takes the standard Accent treatment,
     /// so focus reads identically across every control in the family.
     Keyline,
+    /// The **bare mark** — idle, no plate at all: the glyph alone in [`theme::TEXT_SECONDARY`],
+    /// with no fill, no rim and no shadow, so it reads as a mark set beside the buttons rather
+    /// than as a third button. Focused it takes the standard [`Accent`](ControlStyle::Accent)
+    /// treatment.
+    ///
+    /// This is not a new invention: it is the Library's A–Z rail as a STYLE, so the app has one
+    /// bare-mark idiom instead of a widget and a hand-drawn rail that happen to agree. The rail
+    /// paints idle letters as bare glyphs and puts an `ACCENT` disc under the focused one; a
+    /// control wearing this does exactly that, and additionally keeps the family's resting shadow
+    /// and rim on the FOCUSED face, so its focus reads identically to the pill and disc beside it.
+    ///
+    /// The GEOMETRY is unchanged between the two states — same frame, same icon box — so a bare
+    /// control's pointer target does not grow when it takes focus and a caller may go on using its
+    /// frame as the hit rect.
+    Bare,
 }
 /// A control's EDGE — the 1px perimeter the design system has always asked every control to wear
 /// and which none of them wore.
@@ -3382,7 +3471,22 @@ impl ControlStyle {
             ControlStyle::Custom { fill, ink } => (fill, ink),
             ControlStyle::Keyline if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
             ControlStyle::Keyline => (theme::PILL_KEYLINE_BG, theme::TEXT_HEADING),
+            ControlStyle::Bare if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
+            // the fill is never reached — [`ControlStyle::plated`] is false here and the draw
+            // paints no face at all — so it is spelled as the nothing it is rather than as a
+            // colour a later reader could start believing in
+            ControlStyle::Bare => (theme::with_a(crate::ui::ACCENT, 0.0), theme::TEXT_SECONDARY),
         }
+    }
+
+    /// Does this control paint a FACE at all — the plate, its rim, and the resting shadow under
+    /// it? True for everything except an idle [`Bare`](ControlStyle::Bare).
+    ///
+    /// A predicate rather than a transparent fill doing the job on its own, because the face is
+    /// three draws and only one of them is the fill: `control_rim` would still ring the shape and
+    /// `p.shadow` would still cast under it, and a shadow with no object over it is a smudge.
+    pub(crate) fn plated(self, focused: bool) -> bool {
+        !matches!(self, ControlStyle::Bare) || focused
     }
 }
 
@@ -3516,9 +3620,13 @@ impl View for Button {
         // ACCENT capsule over a white frame measures ~1.2:1 against its surround — the shape
         // vanishes and only the dark label survives, floating. The discs and the shelves already
         // solved this; the pills were the one control that hadn't.
-        p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
-        self.plate(p, bg);
+        // …and, as on `CircleButton`, only when there IS a face: an idle `ControlStyle::Bare`
+        // pill is its label alone.
+        if self.style.plated(self.focused) {
+            p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                     theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+            self.plate(p, bg);
+        }
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
         let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
@@ -4468,18 +4576,26 @@ mod tests {
     /// opens no SDL_ttf (the same boundary that keeps `detail::hero_chain` pure).
     const HERO_CAP_H: f32 = 52.0;
 
+    /// The height of home's synopsis block at its cap — the SHARED hero blurb
+    /// ([`crate::ui::hero_synopsis`]), so this table follows the rung and the leading instead of
+    /// quoting them. It was the literal `87.0` with `// three size::MICRO lines at the hero's 29px
+    /// leading` beside it, which is exactly the comment that goes stale in silence: the block is
+    /// `LABEL`/36 now, and 87 would have gone on grading the title 21px lower than it is drawn.
+    fn home_syn_h() -> f32 {
+        crate::ui::hero_syn_h(crate::ui::HERO_SYN_MAXLINES)
+    }
+
     /// The TOP of home's title band, from the bottom-anchored stack the hero draws (`hero_content`):
-    /// the reserved logo band + `space::MD` + a one-line BODY kicker + `space::SM` + three MICRO
-    /// synopsis lines, stacked UP from `HERO_TEXT_BOTTOM` through the screen's own `hero_stack_top`,
-    /// so the contract reads the arithmetic the draw uses. The two TEXT heights are quoted like
-    /// [`HERO_CAP_H`]; if the hero's rungs or leading change, these move with them.
+    /// the reserved logo band + `space::MD` + a one-line BODY kicker + `space::SM` + the synopsis
+    /// block, stacked UP from `HERO_TEXT_BOTTOM` through the screen's own `hero_stack_top`, so the
+    /// contract reads the arithmetic the draw uses. Only the KICKER's height is still quoted like
+    /// [`HERO_CAP_H`], because it is one line of a rung and the host opens no SDL_ttf.
     fn home_title_band_top() -> f32 {
         const META_H: f32 = 34.0; // one line of `size::BODY`
-        const SYN_H: f32 = 87.0; // three `size::MICRO` lines at the hero's 29px leading
         crate::ui::home::hero_stack_top(
             crate::ui::hero_logo::band_h(crate::ui::hero_logo::LogoRung::Hero),
             META_H,
-            theme::space::SM + SYN_H,
+            theme::space::SM + home_syn_h(),
         )
     }
 
@@ -4546,7 +4662,9 @@ mod tests {
             ("home title (right end)", home_col_r, home_title_cap_top(), theme::TEXT_PRIMARY, false, 3.0, 2.5),
             ("home title (at the margin)", MARGIN_X, home_title_cap_top(), theme::TEXT_PRIMARY, false, 7.0, 6.0),
             ("home kicker", 500.0, home_title_band_top() + band + theme::space::MD, theme::TEXT_SECONDARY, false, 3.0, 2.5),
-            ("home synopsis", home_col_r, crate::ui::home::HERO_TEXT_BOTTOM - 87.0, theme::TEXT_SECONDARY, false, 3.0, 2.5),
+            // the blurb's FIRST line, at the top of its block — the weakest ground the run sees.
+            // Both its ink and its block height are read from the shared hero synopsis.
+            ("home synopsis", home_col_r, crate::ui::home::HERO_TEXT_BOTTOM - home_syn_h(), theme::TEXT_READING, false, 3.0, 2.5),
             ("detail title", det_col_r, detail_title_cap_top(), theme::TEXT_PRIMARY, true, 3.0, 2.5),
             ("detail meta", 700.0, hc.meta_y, theme::TEXT_SECONDARY, true, 3.0, 2.5),
             ("detail synopsis", det_col_r, hc.syn_y, theme::TEXT_READING, true, 3.0, 2.5),
@@ -4589,6 +4707,64 @@ mod tests {
                 assert!(after > before, "{label} over art {art}: the wedge made it WORSE ({before:.2} → {after:.2})");
             }
         }
+    }
+
+    /// **The chip's frame and its hit test are one rect, and it really does sit LEFT of the pills.**
+    ///
+    /// Both halves matter and neither is visible in a diff. The hit test is what makes the chip
+    /// clickable on all three screens that draw it (it was Home's alone, recorded at Home's draw),
+    /// so it must address exactly the rect the draw uses. And the D-pad rule every one of those
+    /// screens now adopts — ◀ off the FIRST pill reaches the chip, ▶ walks back — is only sane
+    /// while the chip is genuinely the bar's leftmost thing: [`TAB_SIDE_CLEAR`] is the margin that
+    /// keeps the CENTRED strip off it, and a strip that grew far enough left to overlap would make
+    /// the walk cross two controls occupying one place.
+    #[test]
+    fn the_profile_chip_is_hit_where_it_is_drawn_and_sits_left_of_the_pills() {
+        let r = CHIP_FRAME;
+        assert!(profile_chip_at(r.cx(), r.cy()), "the middle of the avatar is the chip");
+        assert!(!profile_chip_at(r.x - 1.0, r.cy()), "…and a pixel outside it is not");
+        assert!(!profile_chip_at(r.cx(), r.y + r.h + 1.0), "…on either axis");
+        // it shares the bar's line with the pills: one control height, one top edge
+        assert_eq!(r.y, TOP_BAR_Y);
+        assert_eq!(r.h, TAB_PILL_H, "one control height with the pills (see CHIP_D)");
+        // …and the focused chip's capsule is the tab track's own band, which is what makes the two
+        // read as one strip of chrome rather than two objects at different heights
+        assert_eq!(r.h + 2.0 * TAB_TRACK_PAD, TAB_PILL_H + 2.0 * TAB_TRACK_PAD);
+
+        // the widest strip the row will ever lay out, centred: its left edge must clear the chip
+        for n in 1..=16usize {
+            let w = widths_for(n);
+            let track_l = (crate::ui::consts::SCR_W - tab_view_w(&w)) * 0.5 - TAB_TRACK_PAD;
+            assert!(
+                track_l > r.x + r.w,
+                "n={n}: the tab track reaches x={track_l}, over a chip ending at {}",
+                r.x + r.w
+            );
+        }
+    }
+
+    /// **A bare control paints no face, and takes the family's face back the moment it is focused.**
+    ///
+    /// [`ControlStyle::Bare`]'s whole point is the idle state — the home hero's pager is a chevron
+    /// set beside the buttons, not a third button — and the failure mode is invisible from either
+    /// side alone: a plated idle is the disc the design removed, and an unplated FOCUS is a control
+    /// that stops saying where the remote is. The draw asks [`ControlStyle::plated`] for the shadow,
+    /// the rim and the fill together, so this one predicate is the whole rule.
+    #[test]
+    fn a_bare_control_is_a_mark_when_idle_and_a_disc_when_focused() {
+        assert!(!ControlStyle::Bare.plated(false), "idle: no disc, no rim, no shadow");
+        assert!(ControlStyle::Bare.plated(true), "focused: the family's own face, so focus reads alike");
+        for st in [ControlStyle::Accent, ControlStyle::Keyline] {
+            for f in [false, true] {
+                assert!(st.plated(f), "every other style is plated in both states");
+            }
+        }
+        // focused, it IS the Accent face — the A–Z rail's accent disc, not a third treatment
+        assert_eq!(ControlStyle::Bare.colors(true).0, ControlStyle::Accent.colors(true).0);
+        assert_eq!(ControlStyle::Bare.colors(true).1, ControlStyle::Accent.colors(true).1);
+        // and idle its ink is the rail's idle ink, over a fill nothing will ever paint
+        assert_eq!(ControlStyle::Bare.colors(false).1, theme::TEXT_SECONDARY);
+        assert_eq!(ControlStyle::Bare.colors(false).0[3], 0.0, "the unpainted fill is spelled as nothing");
     }
 
     /// A spread of pill widths. Deliberately wider than the device's (a real "TV" pill measures
