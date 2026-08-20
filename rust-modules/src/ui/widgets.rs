@@ -331,13 +331,59 @@ impl Glass {
         // A PANEL's frost is `theme::PANEL_FROST_*`, drawn as its own quad below — it is a sheet,
         // not a container, and its edge is the shader's own specular. `GlassFace::NONE`.
         if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Standing, crate::gfx::GlassFace::NONE) {
+            let (ft, fb) = panel_frost();
             crate::ui::profile::phase("glass.frost", || {
-                p.rect_rimmed(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, theme::GLASS_RIM, boost);
+                p.rect_rimmed(r, radius, ft, fb, theme::GLASS_RIM, boost);
             });
         } else {
             p.rect_rimmed(r, radius, theme::PANEL_TOP, theme::PANEL_BOT, theme::GLASS_RIM, boost);
         }
     }
+}
+
+/// A SHEET's frost, and `/tmp/plxnative-panelfrost=<a>` to sweep it.
+///
+/// **A panel is HEAVIER than the bar on purpose. Do not unify them.** This looks like the one place
+/// the material was left inconsistent: the standing track solves its density every frame and lands
+/// between .25 and .60 on real pages, while a panel is pinned at [`theme::PANEL_FROST_TOP`]'s .72 —
+/// heavier than the track ever gets, on any ground. Over an `orient` ground the track passes the
+/// page's bars through legibly and the item menu passes almost nothing, and the obvious conclusion
+/// is that the popover should be brought down to the bar.
+///
+/// The reference says the opposite, unmistakably. In iOS 26's own TV app a card's context menu and
+/// the tab bar sit in ONE screenshot: through the tab bar the posters behind it are readable, and
+/// through the menu directly above it almost nothing is — a sliver of one poster at its very edge.
+/// A menu is a surface you read and act on, so it earns opacity; a bar is chrome you look past.
+/// Same material, two densities, and the difference is the point rather than a defect.
+///
+/// Laddered here anyway rather than argued, over the same ground (.72/.55/.42/.30): at .42 and
+/// below the menu's own rows lose their contrast — "Go to Show" and "Mark as Watched" go soft
+/// against the page showing through — and the panel stops reading as a surface at all. .72 is where
+/// it stays.
+///
+/// The knob survives because the judgement is about a picture and pictures change. What it must NOT
+/// become is a lower constant chosen on a dark ground: a panel's ink carries the same 4:1 promise
+/// the track's does, and the track's answer to that promise is a per-frame SOLVE, not a smaller
+/// fixed weight.
+fn panel_frost() -> ([f32; 4], [f32; 4]) {
+    let (t, b) = (theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT);
+    match frost_sweep() {
+        Some(a) => (theme::with_a(t, a), theme::with_a(b, a)),
+        None => (t, b),
+    }
+}
+#[cfg(feature = "devtriggers")]
+fn frost_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("panelfrost")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: panel frost swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn frost_sweep() -> Option<f32> {
+    None
 }
 
 /// Build `srv`'s transcode key for `path` on the stack. The ONE key builder the resolvers below
