@@ -536,7 +536,7 @@ pub(crate) fn draw_nav_blur() -> bool {
         crate::gfx::blur_invalidate();
     }
     let cap = nav_capsule();
-    if p.backdrop_blur(cap, 0.0, cap.h * 0.5, [1.0, 1.0, 1.0, amount], crate::gfx::GlassRim::Line, crate::gfx::GlassFace::NONE) {
+    if p.backdrop_blur(cap, 0.0, cap.h * 0.5, [1.0, 1.0, 1.0, amount], crate::gfx::GlassRim::Standing, crate::gfx::GlassFace::NONE) {
         p.alpha(amount).rect_sheened(cap, cap.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
     }
     drew

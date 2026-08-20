@@ -625,7 +625,7 @@ the perf gates), and `make test` = `deploy` + `run`.
   line. It feeds the real `player::error_shape`, and forces the STATE only at
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
   `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
-  (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hue[:L*]`, `rainbow[:L*]`,
+  (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hbars:<px>`, `hue[:L*]`, `rainbow[:L*]`,
   `solid:<deg>[:L*]`), drawn as page content so it is exactly what the tab track samples and what
   the backdrop blur sources. The remote token **`pat:<spec>`** changes it live, which is what makes a
   graded ladder one scripted run instead of a dozen launches that each land on a different hero;

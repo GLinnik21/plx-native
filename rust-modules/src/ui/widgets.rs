@@ -316,11 +316,13 @@ impl Glass {
     /// dark ground shows nothing BUT that bevel, which is the case where the argument for it is
     /// weakest and its cost highest.
     ///
-    /// So a container is a container: [`crate::gfx::GlassRim::Line`], and the rim drawn OVER the
+    /// So a container is a container: [`crate::gfx::GlassRim::Standing`], and the rim drawn OVER the
     /// material at [`theme::GLASS_RIM`] with the boost to [`theme::GLASS_RIM_LIGHT`] on the side
-    /// facing the light — the same two weights, the same lamp, the same one pixel. Thickness now
-    /// comes from the frost and the shadow the panel already had, not from a ramp that covers a
-    /// quarter of it.
+    /// facing the light — the same two weights, the same lamp, the same one pixel. What that
+    /// variant IS has since changed under this note, and the note holds: it was a line with no ramp
+    /// and no bend, it is now a 12px chamfer and a 24px lens, and the sentence that matters is that
+    /// the bar and the panel take the SAME one. Thickness comes from the material — the frost, the
+    /// shadow, and now the bend — not from a ramp that covers a quarter of the panel.
     ///
     /// The OPAQUE fallback takes the rim too. A glass panel and a solid one are one object in two
     /// materials, and an edge is not part of what makes them different.
@@ -328,7 +330,7 @@ impl Glass {
         let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
         // A PANEL's frost is `theme::PANEL_FROST_*`, drawn as its own quad below — it is a sheet,
         // not a container, and its edge is the shader's own specular. `GlassFace::NONE`.
-        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Line, crate::gfx::GlassFace::NONE) {
+        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Standing, crate::gfx::GlassFace::NONE) {
             crate::ui::profile::phase("glass.frost", || {
                 p.rect_rimmed(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, theme::GLASS_RIM, boost);
             });
@@ -2525,6 +2527,80 @@ fn track_density_step(dt: f32) {
 /// (This paragraph said "0.38/0.46" until 2026-08-19, which were the values before the design
 /// system's `--glass-track-*` landed — recovered from the rendered pixels as .34/.50 while chasing
 /// something else, which is how the drift was found.)
+/// **How much of ITSELF the glass shows — the diffuse component, as a neutral level 0..1.**
+///
+/// Returns 0 — a pure black scrim, everything this material did before — for every ground brighter
+/// than the floor itself. See [`theme::TAB_GLASS_LIFT_FLOOR`] for what was measured.
+///
+/// The rule is one line, and it is a floor rather than a target: **the glass never goes darker than
+/// `floor`, whatever the page does.** A black scrim gives `lum·(1-a)`, which approaches nothing as
+/// the page does; the lift is the shortfall, so
+///
+/// ```text
+/// face = max(lum·(1 - a), floor)     g = max(0, (floor - lum·(1 - a)) / a)
+/// ```
+///
+/// That form was chosen over the two obvious alternatives, both of which were tried:
+///
+/// * A **proportional** target ("the face should sit N% off the page") degenerates at zero, which
+///   is the one ground that actually fails.
+/// * **Blending** between a light target and the dark one crosses the page's own level on the way
+///   — measured, it passed within 0.4 of a code at a ground of .14, i.e. it moved the invisible bar
+///   from an almost-black page to a dark grey one and called it a fix.
+///
+/// A floor still meets the page exactly once, at `lum = floor`, but that is a page at L\*3 and the
+/// band around it is a couple of codes wide. Everywhere above it the scrim is doing the separating,
+/// which is what it was sized for.
+///
+/// The answer is finally walked back until the idle label still clears [`TRACK_INK_CONTRAST`]: the
+/// density solve sized the scrim against a BLACK tint, and a lighter face spends contrast it bought.
+/// On the near-black grounds this touches there is a great deal of room and the clamp does not bind
+/// — it is here so the rule can be stated as a rule.
+fn track_lift(ground: [f32; 3], a: f32) -> f32 {
+    let floor = lift_floor();
+    // The ground as one level. `sample_ground` has already taken the WORST tap across the bar, so
+    // this is the bright end of what the bar sits on — the right end to size a floor against.
+    let lum = (ground[0] + ground[1] + ground[2]) / 3.0;
+    let want = ((floor - lum * (1.0 - a)) / a.max(1e-4)).clamp(0.0, 1.0);
+    if want <= 0.0 {
+        return 0.0;
+    }
+    let steps = 8;
+    for i in 0..=steps {
+        let g = want * (1.0 - i as f32 / steps as f32);
+        let face = [
+            ground[0] * (1.0 - a) + g * a,
+            ground[1] * (1.0 - a) + g * a,
+            ground[2] * (1.0 - a) + g * a,
+            1.0,
+        ];
+        if contrast(theme::TEXT_READING, face) >= TRACK_INK_CONTRAST {
+            return g;
+        }
+    }
+    0.0
+}
+
+/// The lift's floor, swept by `/tmp/plxnative-tracklift=<floor>`.
+///
+/// `0` is the material as it was before the floor existed, which is what makes an A/B one launch
+/// rather than one build. Read once per process, like every other material sweep here.
+#[cfg(feature = "devtriggers")]
+fn lift_floor() -> f32 {
+    static SEEN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let Some(v) = crate::dev::read("tracklift").and_then(|v| v.trim().parse::<f32>().ok()) else {
+            return theme::TAB_GLASS_LIFT_FLOOR;
+        };
+        crate::log(&format!("glass: track lift swept to floor={v}"));
+        v.clamp(0.0, 1.0)
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn lift_floor() -> f32 {
+    theme::TAB_GLASS_LIFT_FLOOR
+}
+
 fn tab_glass_stops(ground: [f32; 3]) -> ([f32; 4], [f32; 4]) {
     let lo = theme::TAB_GLASS_TOP[3];
     let hi = theme::TAB_TRACK_A_TOP;
@@ -2545,7 +2621,13 @@ fn tab_glass_stops(ground: [f32; 3]) -> ([f32; 4], [f32; 4]) {
     // makes a heavy bar read as paint rather than as glass.
     let k = ((a - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0);
     let heavy = (a + spread * (1.0 - k)).min(hi);
-    (theme::scrim_black(a), theme::scrim_black(heavy))
+    // The diffuse component contributes the SAME AMOUNT OF LIGHT at both stops — `g·a` — so the
+    // bottom stop's extra alpha still only removes more ground and the gradient keeps its
+    // direction. Tint both stops with `g` and the heavier one would come out LIGHTER than the top,
+    // which is a lamp under the floor again.
+    let g = track_lift(ground, a);
+    let g_bot = if heavy > 1e-4 { g * a / heavy } else { g };
+    (theme::with_a([g, g, g, 1.0], a), theme::with_a([g_bot, g_bot, g_bot, 1.0], heavy))
 }
 
 /// sRGB -> linear, the WCAG transfer function.
@@ -3007,7 +3089,7 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 // and the one the panel treatment gets wrong here: 76px tall has 20px of interior
                 // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
                 // edge and becomes most of the object.
-                crate::gfx::GlassRim::Line,
+                crate::gfx::GlassRim::Standing,
                 {
                     let (gt, gb) = tab_glass_stops(ground);
                     let (rim, rim_lit) = track_rim(gt[3]);
@@ -4734,6 +4816,74 @@ mod tests {
             assert!(
                 (one - two).abs() < 1.0 / 255.0,
                 "at cascade α={a} the two-layer plate is {two} against the old {one} — over a display code apart"
+            );
+        }
+    }
+
+    /// **The container has to be visible on a page that is not.** A black scrim can only subtract,
+    /// so before the lift existed the bar's face over an L\*0 page measured the page exactly and
+    /// the whole object was one pixel of rim. This is the invariant that says it never happens
+    /// again — stated as a face lighter than its ground, which is what a person sees, rather than
+    /// as the constant that currently produces it.
+    #[test]
+    fn the_glass_never_goes_darker_than_its_floor() {
+        let floor = theme::TAB_GLASS_LIFT_FLOOR;
+        for i in 0..=100 {
+            let lum = i as f32 / 100.0;
+            let ground = [lum, lum, lum];
+            let a = track_alpha_for(ground);
+            let g = track_lift(ground, a);
+            let face = lum * (1.0 - a) + g * a;
+            assert!(
+                face >= floor.min(lum * (1.0 - a)).min(floor) - 1e-4,
+                "over a page at {lum} the face is {face}, under the floor {floor}"
+            );
+        }
+        // the case the floor exists for: a page that shows nothing at all
+        let a = track_alpha_for([0.0, 0.0, 0.0]);
+        let face = track_lift([0.0, 0.0, 0.0], a) * a;
+        assert!(
+            face >= floor - 1e-4,
+            "over a page at zero the face is {face}, short of the floor {floor}"
+        );
+    }
+
+    /// …and it costs a bright bar NOTHING. The lift is spent out of the density solve's slack, so
+    /// the moment the solve leaves its floor there is none: a heavy bar is the same black scrim it
+    /// was, to the bit. Without this the fix for the dark end quietly lightens the light end, which
+    /// is where the labels are hardest to hold.
+    #[test]
+    fn a_bright_ground_gets_no_lift_at_all() {
+        for &lum in &[0.45f32, 0.6, 0.8, 1.0] {
+            let ground = [lum, lum, lum];
+            let a = track_alpha_for(ground);
+            assert!(
+                track_lift(ground, a) == 0.0,
+                "ground {lum} solved to α={a} and still took a lift"
+            );
+        }
+    }
+
+    /// The clamp is the whole licence for the rule: the solve above sized the scrim against a BLACK
+    /// tint, and a lighter face spends the contrast it bought. Whatever the lift does, the idle
+    /// label still clears its floor.
+    #[test]
+    fn the_lift_never_spends_the_labels_contrast() {
+        for i in 0..=40 {
+            let lum = i as f32 / 40.0;
+            let ground = [lum, lum, lum];
+            let a = track_alpha_for(ground);
+            let g = track_lift(ground, a);
+            let face = [
+                ground[0] * (1.0 - a) + g * a,
+                ground[1] * (1.0 - a) + g * a,
+                ground[2] * (1.0 - a) + g * a,
+                1.0,
+            ];
+            let c = contrast(theme::TEXT_READING, face);
+            assert!(
+                c >= TRACK_INK_CONTRAST - 0.01,
+                "ground {lum}: α={a} lift={g} leaves the idle label at {c:.2}:1"
             );
         }
     }

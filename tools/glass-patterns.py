@@ -12,6 +12,12 @@ a shot at each rung, and a contact sheet out the other end:
     tools/glass-patterns.py                       # the default ladder
     tools/glass-patterns.py --pats flat:20,flat:60,edge,checker:24
     tools/glass-patterns.py --out /tmp/before   # …then again after a change, and diff the sheets
+    tools/glass-patterns.py --lens "off:2,0,0 a:10,10,0 b:14,18,0"   # …one instance per rung
+
+`--lens` is the second axis: each entry is `<name>:<bevel>,<lens>,<spec>`, written to that
+instance's `plxnative-tracklens`, so a run photographs every geometry against every ground and the
+per-ground sheets stack the rungs for comparison. It is read once per process, which is why a rung
+costs a whole simulator — and why they are launched together and driven in lockstep.
 
 Sheets land in the output directory (default a scratch dir it prints), plus a table of what the bar
 actually DREW at each rung — the plate's measured colour and the idle label's contrast over it —
@@ -49,8 +55,14 @@ def cfg(name):
     return m.group(1) if m else None
 
 
-def launch(root: Path, pkg: str, pms: str, port: str):
+def launch(root: Path, pkg: str, pms: str, port: str, lens: str = "", lift: str = ""):
     root.mkdir(parents=True, exist_ok=True)
+    # the container's lens geometry, one rung per instance — `gfx::standing_sweep` reads it once
+    if lens:
+        (root / "plxnative-tracklens").write_text(lens)
+    # …and its diffuse floor, the same way; "0" is the material before the floor existed
+    if lift:
+        (root / "plxnative-tracklift").write_text(lift)
     tok = re.search(r'^#define\s+PMS_TOKEN\s+"([^"]*)"', (REPO / "src/config.local.h").read_text(), re.M)
     if tok:
         (root / "plxnative-token").write_text(tok.group(1))
@@ -102,6 +114,8 @@ def drawn(root: Path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--packages", default=",".join(PACKAGES))
+    ap.add_argument("--lens", default="", help='space-separated <name>:<bevel>,<lens>,<spec> rungs')
+    ap.add_argument("--lift", default="", help='space-separated <name>:<floor> rungs (0 = no floor)')
     ap.add_argument("--pats", default=",".join(LADDER))
     ap.add_argument("--settle", type=float, default=2.5, help="seconds to let a rung settle")
     ap.add_argument("--out", default="")
@@ -120,12 +134,14 @@ def main():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     pats = [p for p in a.pats.split(",") if p]
-    pkgs = [p for p in a.packages.split(",") if p]
+    lens = dict(t.split(":", 1) for t in a.lens.split() if t)
+    lift = dict(t.split(":", 1) for t in a.lift.split() if t)
+    pkgs = list(lens) or list(lift) or [p for p in a.packages.split(",") if p]
 
     procs, roots = {}, {}
     for pkg in pkgs:
         roots[pkg] = out / pkg
-        procs[pkg] = launch(roots[pkg], pkg, pms, port)
+        procs[pkg] = launch(roots[pkg], pkg, pms, port, lens.get(pkg, ""), lift.get(pkg, ""))
     print(f"launched {len(pkgs)} simulators; ladder of {len(pats)} grounds, {a.settle}s each "
           f"(~{len(pats) * (a.settle + 0.6) + 8:.0f}s)")
     time.sleep(8)

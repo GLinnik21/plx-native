@@ -1189,6 +1189,11 @@ const GLASS_BEVEL: f32 = 28.0;
 /// which reads as the panel getting thinner rather than as refraction — `fs_glass.frag` records
 /// why that was removed and this raised instead.
 const GLASS_LENS: f32 = 38.0;
+/// The standing container's chamfer, in authored px — see [`GlassRim::Standing`].
+const STANDING_BEVEL: f32 = 12.0;
+/// The standing container's peak displacement at the rim, in authored px. TWICE the ramp, which is
+/// what puts the compression ON the rim instead of spreading it over the chamfer.
+const STANDING_LENS: f32 = 24.0;
 /// The lit chamfer's colour. A weight on the overlay ramp rather than a hue, per the theme rule —
 /// it is white light, and its ALPHA is the only thing tuned.
 const GLASS_EDGE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
@@ -1196,10 +1201,41 @@ const GLASS_EDGE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
 /// shading applied to the chamfer facing away from it.
 ///
 /// Up and a little to the left — the direction every drop shadow in this app is already cast from,
-/// so the panel is lit by the same imaginary lamp as the cards under it. The counter-shade is what
-/// keeps it from reading as an outline: a ring that is bright all the way round is a stroke, and a
-/// bevel that is bright on one side and dark on the other is an object.
-const GLASS_LIGHT: [f32; 3] = [-0.35, -0.94, 0.45];
+/// so the panel is lit by the same imaginary lamp as the cards under it.
+///
+/// **The counter-shade is 0, and it was 0.45 until it was measured.** The argument for it was that
+/// "a ring bright all the way round is a stroke, and a bevel bright on one side and dark on the
+/// other is an object" — which is true of a bevel and false of this one, because the two halves are
+/// not the same kind of term. The lit side ADDS on the lamp side; the shaded side MULTIPLIES, and
+/// what it multiplies is the refracted ground the lens just bent into that band. Swept over
+/// synthetic grounds and measured rather than looked at:
+///
+/// * it is CONTENT-DEPENDENT where the rest of the material is not — along one continuous bottom
+///   edge over two-dimensional ground it swings between 1.8 and 16.3 codes (sd 5–7), while the lit
+///   side holds to within 0.1 of a code on every ground;
+/// * it destroys 14–16% of the lens's own horizontal signal in exactly the band the lens works in,
+///   where the lit side costs 0.00%;
+/// * it weakens the container's own bottom rim against the ground from 138% to 88% Weber — visible
+///   as the rim closing the capsule with the shade off and dissolving along the lower right with it
+///   on, which is the opposite of what an edge treatment is for;
+/// * and it is anti-adaptive: 15.5 retinal codes on a bright ground where the boundary already
+///   steps 46, and 6.2 on the dark page where the container has nothing else.
+///
+/// **Do not re-derive this from the macOS reference.** A real system container has no chamfer at
+/// all — one transitional pixel, then dead flat — and it can afford that because its material ADDS
+/// light: measured on the floating tab bar over a near-black page, .071 → .098, i.e. +38% Weber and
+/// *lighter* than the page. A black scrim cannot do that. Ours over the same kind of ground is
+/// −28% (page .188, face .135), which is the same order — but on a page at L\*0 it is **0%**, face
+/// and page both black, and the bar exists by its rim alone. So the flatness does not transfer
+/// as-is: copy it without asking what carries the silhouette and the bar disappears at the bottom
+/// of the range. That is why the LIT side stays at [`GLASS_EDGE`]'s .14; it costs the lens nothing
+/// and it is what the container has left where the scrim has nothing.
+///
+/// (An earlier version of this note said 4% and *lighter*, from a judging panel's measurement. Held
+/// against the landed build on a glyph-free strip it is 28% and darker, on every neutral rung. The
+/// case against the counter-shade above does not rest on that number and is unchanged; the case for
+/// keeping the lit side is weaker than the panel put it, and it is still the status quo.)
+const GLASS_LIGHT: [f32; 3] = [-0.35, -0.94, 0.0];
 /// The rim's SPECULAR: `(axis.x, axis.y, tightness, strength)`.
 ///
 /// The axis is the panel's diagonal, and the shader takes `abs` of the normal's projection onto it,
@@ -1226,33 +1262,69 @@ const GLASS_NOISE: f32 = 1.0 / 255.0;
 /// each so a sheet reads as THICK rather than outlined", and then — "the track takes the line and
 /// the hairline and no ramp: at 76px tall the chamfer would eat the 20px of interior it has."
 ///
+/// **That second clause was arithmetic, and the arithmetic was about 28.** A 76px bar carries a
+/// ~30px label row, which leaves 23px of clear interior above and below it — so a 28px ramp does
+/// eat the bar, and a 16px one stops seven pixels short of the labels. The container gets a
+/// chamfer and a lens now, at 16/20; what it does not get is the sheet's 28/38. See
+/// [`GlassRim::Standing`].
+///
 /// It is the same lamp, the same weights and the same shader either way. Only the DISTANCE the
 /// chamfer and the lens are given to work over changes, which is why this is two floats and not a
 /// second material: [`GLASS_EDGE`]'s alpha is .14 and the design's own `--glass-rim` is white .14,
 /// arrived at from opposite ends.
 #[derive(Clone, Copy)]
 pub(crate) enum GlassRim {
-    /// A sheet: the full 28px chamfer ramp and the 38px lens. Popovers.
+    /// A sheet: the full 28px chamfer ramp and the 38px lens. The loading screen's panels.
     Bevelled,
-    /// A 76px-tall standing container: the line and the hairline, no ramp and no bend. The chamfer
-    /// collapses onto the perimeter — the same white .14 above and the same shade below, now one
-    /// pixel of each instead of 28 — and the lens is off, because a 38px displacement squeezed into
-    /// a two-pixel band is a smear rather than a refraction. Photographed at 7x on the panel before
-    /// this existed: the track's top and bottom edges carried a wide gradient the mock draws as a
-    /// single `inset 0 1px 0`, which is what "the rim looks thinner in the mockups" was seeing.
-    Line,
+    /// A standing container — the tab track, a popover, the loading capsule: a SHALLOW chamfer and
+    /// a SHORT lens, 16px and 20px, and no shader specular.
+    ///
+    /// **This variant was called `Line` and its claim was "no ramp and no bend".** That was the
+    /// right answer to the sheet's 28/38 — a 38px displacement squeezed into a two-pixel band is a
+    /// smear, and the track's edges did carry a wide gradient where the mock draws a single
+    /// `inset 0 1px 0` — and it is the wrong answer to the question underneath, which is whether a
+    /// bar can read as a slab with thickness. Held against the reference (iOS 26's tab bar and its
+    /// search button, filmed over moving content), what a container does at its edge is BEND the
+    /// page around the arc; a drawn line bends nothing, and no weight of line ever will. So the
+    /// geometry was swept — `plxnative-tracklens`, against synthetic grounds — and 16/20 chosen by
+    /// looking at the ladder.
+    ///
+    /// **The ramp is SHORT and the pull is LONG, and that ordering is the whole result.** Nine
+    /// rungs were photographed against the same grounds; the ones where the two are equal (20/20,
+    /// 24/24) turn the cap into a soft gradient that reads as a vignette on the bar rather than as
+    /// an edge of it, while the ones where the displacement is roughly twice the ramp (12/24,
+    /// 10/28) put a narrow band of compressed page right at the rim and leave the interior alone.
+    /// The reference shows the same shape: measured on its search button, the disturbed annulus is
+    /// about 28% of the radius with the content inside it squeezed to something like half its true
+    /// width.
+    ///
+    /// **16 would be the ceiling in any case.** The chamfer ramps over `bevel` px in from each long
+    /// edge, and the bar is 76 tall with a ~30px label row centred in it, i.e. clear interior from
+    /// y=23 to y=53. At 24 the shading lands ON the labels; 12 stops eleven pixels short.
+    ///
+    /// **And why 24px of displacement is larger than the reference's own ratio.** The lens can only
+    /// bend what survives the blur, and ours survives far less than iOS's: measured on `hbars`
+    /// through the quarter-res chain, a 24px period keeps 9% of the page's modulation under the
+    /// bar, a 48px period 17%, a 128px period 65%. Fine detail is simply not there to bend — the
+    /// reference is legible enough through its glass to read blurred TEXT — so the bend has to be
+    /// carried by the coarse structure that does survive, which is what a poster is made of.
+    ///
+    /// **The shader's specular stays off** (`spec.w = 0`), and it was re-swept here rather than
+    /// assumed: the 16,20,0.5 rung draws a bright line along the top arc that reads as moulded
+    /// plastic, which is the same failure the note below records measuring — the hairline is part
+    /// of the backdrop, so over a bright ground it clips to white before the scrim gets to it.
+    Standing,
 }
 
 impl GlassRim {
     /// `(bevel, lens, spec)` — the shader's `u_bevel` / `u_lens` / `u_spec`.
     ///
-    /// The line's bevel is 2.0 rather than 0: `fs_glass.frag` divides by `u_bevel` to build its ramp
-    /// and its interior early-out is `d < -u_bevel`, so zero would be a division by zero on every
-    /// fragment of every glass surface. Two is also the honest width — the chamfer collapses onto
-    /// the same pixel the perimeter occupies rather than beside it — and it makes the early-out
-    /// cover essentially the whole surface, which is the cheaper path.
+    /// A bevel is never 0: `fs_glass.frag` divides by `u_bevel` to build its ramp and its interior
+    /// early-out is `d < -u_bevel`, so zero would be a division by zero on every fragment of every
+    /// glass surface.
     ///
-    /// The line's SPECULAR is off entirely (`w = 0`), and that is not a simplification. The shader's
+    /// The standing container's SPECULAR is off entirely (`w = 0`), and that is not a
+    /// simplification. The shader's
     /// hairline is part of the backdrop, so the material's own darkening lands on top of it: over a
     /// bright hero the term clips to pure white and the scrim then brings it down to whatever it
     /// happens to bring it down to — measured pre-scrim at (255.4, 255.4, 255.4) 1.5px in from both
@@ -1264,44 +1336,86 @@ impl GlassRim {
     fn params(self) -> (f32, f32, [f32; 4]) {
         let base = match self {
             Self::Bevelled => (GLASS_BEVEL, GLASS_LENS, GLASS_SPEC),
-            Self::Line => (2.0, 0.0, [0.0, 0.0, 1.0, 0.0]),
+            Self::Standing => (STANDING_BEVEL, STANDING_LENS, [0.0, 0.0, 1.0, 0.0]),
         };
         match self {
-            Self::Line => line_sweep().unwrap_or(base),
+            Self::Standing => standing_sweep().unwrap_or(base),
             Self::Bevelled => base,
         }
     }
 }
 
-/// **`/tmp/plxnative-tracklens=<bevel>,<lens>,<spec>` — the standing container's geometry, swept.**
+/// **`/tmp/plxnative-tracklens=<bevel>,<lens>,<spec>[,<edge_a>,<shade>]` — the container, swept.**
 ///
-/// [`GlassRim::Line`] is the one material parameter in this app that was decided by an argument
-/// rather than by looking at a ladder: a 38px lens in a 2px band is a smear, so the lens was set to
-/// zero and the chamfer collapsed onto the perimeter. That is right about 38 and says nothing about
-/// 8, and the thing the container has to do — read as a slab with thickness rather than as a
-/// rectangle of darker picture — is exactly what a lens does and what a drawn line cannot.
+/// [`GlassRim::Standing`] was for a while the one material parameter in this app decided by an
+/// argument rather than by looking at a ladder: a 38px lens in a 2px band is a smear, so the lens
+/// was set to zero and the chamfer collapsed onto the perimeter. That is right about 38 and says
+/// nothing about 8, and the thing the container has to do — read as a slab with thickness rather
+/// than as a rectangle of darker picture — is exactly what a lens does and what a drawn line
+/// cannot.
 ///
 /// So this exists for the same reason [`crate::ui::widgets::tab_glass_stops`]'s density override
 /// does: the values are a judgement about a picture, and a judgement about a picture is made by
 /// putting the ladder side by side. Absent, the returned params are byte-identical to the variant's
-/// own. Read once per process, so a simulator instance is one capture of one rung.
+/// own. Read once per process, so a simulator instance is one capture of one rung —
+/// `tools/glass-patterns.py --lens "off:2,0,0 b:12,12,0 c:12,24,0"` launches one per rung and
+/// drives them in lockstep over the same grounds, which is how 12/24 was picked — over
+/// `checker:96`, `hbars:64` and `edge`, the three grounds coarse enough to survive the blur.
 #[cfg(feature = "devtriggers")]
-fn line_sweep() -> Option<(f32, f32, [f32; 4])> {
-    static SEEN: std::sync::OnceLock<Option<(f32, f32, [f32; 4])>> = std::sync::OnceLock::new();
+fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
+    static SEEN: std::sync::OnceLock<Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)>> =
+        std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("tracklens")?;
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>().ok());
         let (b, l, w) = (it.next()??, it.next()??, it.next()??);
+        // The chamfer's two weights are OPTIONAL: three fields is the geometry alone, five adds the
+        // lighting, and a rung that omits them must be byte-identical to one written before they
+        // existed — the earlier sheets are still the comparison.
+        let (edge_a, shade) = (it.next().flatten(), it.next().flatten());
         // The bevel divides in the shader and bounds its early-out, so zero is a division by zero on
         // every glass fragment in the frame — the same floor the variant itself keeps.
-        let out = (b.max(1.0), l.max(0.0), [GLASS_SPEC[0], GLASS_SPEC[1], GLASS_SPEC[2], w.max(0.0)]);
-        crate::log(&format!("glass: track lens swept to bevel={} lens={} spec={}", out.0, out.1, w));
+        let out = (b.max(1.0), l.max(0.0), [GLASS_SPEC[0], GLASS_SPEC[1], GLASS_SPEC[2], w.max(0.0)],
+                   edge_a.map(|v| v.clamp(0.0, 1.0)), shade.map(|v| v.clamp(0.0, 1.0)));
+        crate::log(&format!(
+            "glass: track swept to bevel={} lens={} spec={} edge={:?} shade={:?}",
+            out.0, out.1, w, out.3, out.4
+        ));
         Some(out)
     })
 }
 #[cfg(not(feature = "devtriggers"))]
-fn line_sweep() -> Option<(f32, f32, [f32; 4])> {
+fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
     None
+}
+
+fn standing_sweep() -> Option<(f32, f32, [f32; 4])> {
+    swept().map(|(b, l, s, _, _)| (b, l, s))
+}
+
+/// The chamfer's LIGHTING, as the shader is given it: `(u_edge, u_light)`.
+///
+/// These are process-lifetime uniforms — set once at program link, because they describe the lamp
+/// and not the surface — so the sweep applies here rather than per draw, and it reaches the sheet
+/// variant too. That is fine for a ladder and would not be fine for a shipped difference; if these
+/// ever need to differ per surface they go into [`GlassRim::params`] with the rest.
+///
+/// Why they are swept at all: measured against the reference with GlassLab, a real system container
+/// has NO chamfer. Its cross-edge profile over a flat ground is `.489 → .190/.199 (a 2px rim) →
+/// .174 held dead flat → .190 → .494`. Ours ramps: the scrim's own top-to-bottom gradient, and then
+/// the bottom chamfer multiplying down to .247 from .345 over 12px. The lens is the part that
+/// earns its keep; this is the part that might just be weight.
+fn chamfer() -> ([f32; 4], [f32; 3]) {
+    let (mut edge, mut light) = (GLASS_EDGE, GLASS_LIGHT);
+    if let Some((_, _, _, a, shade)) = swept() {
+        if let Some(a) = a {
+            edge[3] = a;
+        }
+        if let Some(s) = shade {
+            light[2] = s;
+        }
+    }
+    (edge, light)
 }
 
 static mut GPROG: c_uint = 0;
@@ -1587,8 +1701,9 @@ fn blur_lazy_init() -> bool {
         // uniforms are per-program state, so none of THESE belongs in the draw. `u_bevel`/`u_lens`
         // are the exception and are set per draw — see [`GlassRim`], which is the one thing a
         // surface gets to say about the material.
-        glUniform4fv(GL_EDGE, 1, GLASS_EDGE.as_ptr());
-        glUniform3f(GL_LIGHT, GLASS_LIGHT[0], GLASS_LIGHT[1], GLASS_LIGHT[2]);
+        let (edge, light) = chamfer();
+        glUniform4fv(GL_EDGE, 1, edge.as_ptr());
+        glUniform3f(GL_LIGHT, light[0], light[1], light[2]);
         glUniform1f(GL_NOISE, GLASS_NOISE);
         // `GL_UVPX` is NOT set here. It was, back when the grab was always the whole screen and one
         // authored pixel was therefore always `1/SCR_W` of the texture — but the snapshot is a
