@@ -38,7 +38,7 @@ const HEADER_FALLBACK: &str = "Account";
 
 /// The first production user of dynamic widget glass: Home stays at presentation rate while its
 /// dirty blurred backdrop is refreshed at most every third successful present through the policy.
-static mut POP: Popover = Popover::with_glass(Glass::DYNAMIC);
+static mut POP: Popover = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
 /// mapping cannot drift from what was actually drawn.
