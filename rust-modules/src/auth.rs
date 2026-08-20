@@ -38,21 +38,35 @@ pub enum Phase {
 /// **Which who's-watching picker is on screen** — the one fact [`cancel`] cannot work out for
 /// itself, and the difference between an escape hatch and a privilege escalation.
 ///
-/// The two pickers are the same screen reached from two places, and BACK means something different
-/// on each. From Home somebody has already identified themselves and Home is behind the picker, so
-/// backing out hands them what they were already holding. At BOOT nobody has identified themselves
-/// yet — there is nothing behind the picker but the persisted session, and reinstating that is
-/// exactly the thing a PIN is there to stop. Nothing in the state below could tell the two apart
-/// (both call [`start_switch`], both arrive at [`Phase::Profiles`] with the same roster), which is
-/// why the caller now says.
+/// It is ONE screen raised from THREE places, and BACK means something different on each. From
+/// Home somebody has already identified themselves and Home is behind the picker, so backing out
+/// hands them what they were already holding. Straight after a QR sign-in they have just proved
+/// they hold the ACCOUNT, the credential a profile PIN hangs off. At BOOT neither is true — nobody
+/// has identified themselves this run, there is nothing behind the picker but the persisted
+/// session, and reinstating that is exactly the thing a PIN is there to stop.
+///
+/// Nothing in the state below could tell them apart (all three arrive at [`Phase::Profiles`] with
+/// the same roster), so every raise site names its own kind. Two go through [`start_switch`]; the
+/// third is `login_thread`, which sets that phase itself rather than calling it — which is also why
+/// "they all call [`start_switch`]" is the wrong place to infer this from.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Picker {
-    /// Home's *Change profile*. The default because it is the permissive case and every path that
-    /// raises a picker names its own kind: the field is only ever read while one is up.
-    #[default]
-    ChangeProfile,
     /// The boot gate's who's-watching, before any profile has been chosen this run.
+    ///
+    /// **The default, and deliberately the STRICT one.** Every picker names its own kind, so the
+    /// default is only ever read where no picker is up at all: `ui::login`'s BACK, over whatever
+    /// `Ctl` some other flow last reset. "We cannot say who is asking" must not resolve to "hand
+    /// over the credentials" — a permissive default is the shape of the bug this enum exists to
+    /// fix, and it is what left the dev-only `/tmp/plxnative-login` boot on the wrong side of it.
+    #[default]
     Boot,
+    /// Home's *Change profile*: already signed in as a profile, with Home behind the picker.
+    ChangeProfile,
+    /// The picker the QR sign-in raises when the account turns out to have a Plex Home roster —
+    /// `login_thread`, not [`start_switch`]. Permissive for a stronger reason than *Change
+    /// profile*: whoever is standing there completed a plex.tv sign-in seconds ago. That it is
+    /// permissive AT ALL is the one open judgement here — see [`may_resume`].
+    SignedIn,
 }
 
 /// One "who's watching" tile.
@@ -204,11 +218,20 @@ pub fn retry() {
 /// PIN, or take the picker's own *Sign out* pill, which is focusable with ▼ whatever the roster
 /// holds. The rule is [`may_resume`]; who is asking is [`Picker`].
 ///
-/// The gate is a PICKER's, and the other caller — `ui::login`'s BACK — is deliberately left alone,
-/// because in a shipped build it cannot be this escalation: the boot gate only routes to the
-/// sign-in screen when `can_go_local()` is false, which is the refusal above, and every other way
-/// onto that screen is somebody already at Home. It is also the one screen with no *Sign out* pill
-/// to leave by, so a refusal there would be a dead end rather than a gate.
+/// **"Protected" also covers a session that names NO profile**, which is not a corner case but the
+/// second half of the same hole: a sign-in abandoned at the who's-watching picker persists the
+/// account token, the server and the roster with no profile chosen (deliberately — see
+/// `login_thread`), and such a session's [`Session::pms_token`] falls back to the OWNER's server
+/// token. The next boot raises a picker over exactly that, so BACK there handed out the owner's
+/// credentials by a second road. [`Session::active_profile_is_protected`] is where that is decided.
+///
+/// The gate is a PICKER's, and `ui::login`'s BACK is left as it was, because in a shipped build it
+/// cannot be this escalation: the boot gate only routes to the sign-in screen when `can_go_local()`
+/// is false, which is the refusal above, and every other way onto that screen is somebody already
+/// at Home. It is also the one screen with no *Sign out* pill to leave by. What it does now get is
+/// the strict [`Picker`] default — no picker of its own means no `from` of its own, and the value
+/// it inherits should not be the permissive one; the practical effect is confined to the dev-only
+/// `/tmp/plxnative-login` boot, which is the one way to reach that screen over a live session.
 pub fn cancel() -> bool {
     resume_stored(session::load())
 }
@@ -222,6 +245,14 @@ fn may_resume(from: Picker, stored_is_protected: bool) -> bool {
         // Home is behind this picker and its user is already signed in as that profile: BACK hands
         // back exactly what they were holding when they opened it, PIN or no PIN.
         Picker::ChangeProfile => true,
+        // The sign-in ceremony's own picker: the ACCOUNT credential was presented seconds ago and
+        // the profile PIN hangs off it, so BACK still resumes. This arm is a JUDGEMENT rather than
+        // a deduction, and it is the one thing here left exactly as it was found — at that moment
+        // the stored session names no profile at all, so what BACK resumes on is the OWNER's server
+        // token, and "the person who signed in is still the person holding the remote" is an
+        // assumption about a room. Flipping it to `!stored_is_protected` would cost that flow one
+        // profile pick and nothing else (the picker is fully usable, *Sign out* included).
+        Picker::SignedIn => true,
         // Nobody has identified themselves yet, so resuming a protected profile IS the bypass.
         Picker::Boot => !stored_is_protected,
     }
@@ -235,8 +266,14 @@ fn resume_stored(sess: Session) -> bool {
     let from = with_ctl(|c| c.from);
     if !may_resume(from, sess.active_profile_is_protected()) {
         // No profile name: this file is the one users send us, and the line is about the flow, not
-        // about who is behind the PIN.
-        log("auth: BACK refused at the boot picker — the stored profile is PIN-protected");
+        // about who is behind the PIN. Two lines because the refusal has two distinct causes that
+        // read as different bug reports — and neither names a SCREEN, because the strict default
+        // means the sign-in screen's BACK can land here too.
+        log(if sess.user.uuid.is_empty() {
+            "auth: BACK refused — no profile has been chosen on this device yet"
+        } else {
+            "auth: BACK refused — the stored profile is PIN-protected"
+        });
         return false;
     }
     log("auth: flow cancelled — resuming the stored session");
@@ -460,6 +497,9 @@ fn login_thread() {
         with_ctl(|c| {
             c.users = users;
             c.phase = Phase::Profiles;
+            // The THIRD picker, and the one that does NOT go through `start_switch` — so it says
+            // which it is here, rather than inheriting whatever `start_login`'s reset left behind.
+            c.from = Picker::SignedIn;
         });
     } else {
         // no Plex Home (or a single user): use the owner's server token as-is.
@@ -1666,9 +1706,14 @@ mod tests {
     /// escape hatch, which reasons about "carry on as the profile I'm already signed in as" and is
     /// only true of the picker Home opens.
     ///
-    /// So all three rows of the rule are graded here, and two of them are the ones that must NOT
-    /// change: a boot picker over an unprotected profile still resumes (nothing is being bypassed),
-    /// and *Change profile* still resumes whatever it is over (you are already that profile).
+    /// So every row of the rule is graded here, and most of them are the ones that must NOT change:
+    /// a boot picker over an unprotected profile still resumes (nothing is being bypassed), and
+    /// *Change profile* and the sign-in picker still resume whatever they are over (you are already
+    /// that profile / you just proved you hold the account).
+    ///
+    /// The last section is the SECOND road to the same escalation, and it survived the first fix: a
+    /// sign-in abandoned at the picker persists a session that names no profile, whose token is the
+    /// owner's, and the next boot raises a picker over exactly that.
     #[test]
     fn back_out_of_the_boot_picker_refuses_a_pin_protected_profile_and_nothing_else() {
         // `CTL` is a process global; hold the crate lock for the whole body and put it back after.
@@ -1679,6 +1724,11 @@ mod tests {
         assert!(may_resume(Picker::Boot, false));
         assert!(may_resume(Picker::ChangeProfile, true));
         assert!(may_resume(Picker::ChangeProfile, false));
+        assert!(may_resume(Picker::SignedIn, true), "the account credential was just presented");
+        assert!(may_resume(Picker::SignedIn, false));
+        // and the DEFAULT is the strict one: it is read only where no picker named itself, and
+        // "we cannot say who is asking" must not answer with the credentials.
+        assert_eq!(Picker::default(), Picker::Boot);
 
         // …and that `cancel` is actually gated on it. A picker is up in each case, so the failure
         // being graded is a whole flow resolving to `Ready` with credentials armed for `take_ready`
@@ -1706,6 +1756,27 @@ mod tests {
         picker(Picker::ChangeProfile);
         assert!(!resume_stored(Session::default()));
         assert_eq!(phase(), Phase::Profiles);
+
+        // **The second road, and the one that survived the first fix.** A sign-in ABANDONED at the
+        // who's-watching picker persists the account token, the server and the roster with no
+        // profile chosen (`login_thread` saves the moment they exist, so walking away does not cost
+        // the sign-in). `pms_token()` on that file is the OWNER's server token and the roster is >1,
+        // so the next boot raises a picker over it — where BACK was handing the owner's credentials
+        // to whoever pressed it. The sign-in picker itself keeps resuming, because the account
+        // credential was presented seconds ago.
+        let mut unchosen = signed_in_as("u-adult");
+        unchosen.user = UserRef::default();
+        assert!(!unchosen.pms_token().is_empty(), "…and what it would have resumed on is the owner's");
+
+        picker(Picker::Boot);
+        assert!(!resume_stored(unchosen.clone()), "no profile chosen is not 'nothing to bypass'");
+        assert_eq!(phase(), Phase::Profiles);
+        assert!(with_ctl(|c| !c.apply_pending));
+
+        picker(Picker::SignedIn);
+        assert!(resume_stored(unchosen), "the sign-in's own picker is unchanged");
+        assert_eq!(phase(), Phase::Ready);
+        assert!(with_ctl(|c| c.apply_pending));
 
         with_ctl(|c| *c = Ctl::default());
     }
