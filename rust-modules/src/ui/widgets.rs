@@ -2603,7 +2603,7 @@ fn lift_floor() -> f32 {
 
 fn tab_glass_stops(ground: [f32; 3]) -> ([f32; 4], [f32; 4]) {
     let lo = theme::TAB_GLASS_TOP[3];
-    let hi = theme::TAB_TRACK_A_TOP;
+    let hi = density_max_sweep().unwrap_or(theme::TAB_TRACK_A_TOP);
     let spread = theme::TAB_GLASS_BOT[3] - lo;
     let a = match crate::dev::read("tabglassdim").and_then(|v| v.parse::<f32>().ok()) {
         Some(a) if (0.0..=1.0).contains(&a) => a,
@@ -2667,7 +2667,7 @@ const TRACK_INK_CONTRAST: f32 = 4.0;
 /// a saturated blue and a neutral grey the same ground.
 fn track_alpha_for(ground: [f32; 3]) -> f32 {
     let lo = theme::TAB_GLASS_TOP[3];
-    let hi = theme::TAB_TRACK_A_TOP;
+    let hi = density_max_sweep().unwrap_or(theme::TAB_TRACK_A_TOP).max(lo);
     let steps = 24;
     for i in 0..=steps {
         let a = lo + (hi - lo) * (i as f32 / steps as f32);
@@ -2678,6 +2678,41 @@ fn track_alpha_for(ground: [f32; 3]) -> f32 {
         }
     }
     hi
+}
+
+/// `/tmp/plxnative-trackmax=<a>` — the density CEILING, swept.
+///
+/// The ceiling is what decides how dark this bar is allowed to get over bright artwork, and it is
+/// the one remaining number between our material and the reference. Measured on a stripe ground:
+/// the macOS 26 tab bar's face sits at 89 against a page of 127 (−27% Weber) and, over four
+/// different grounds, its face barely moves at all — 92, 94, 92, 96 — while ours swings 47…84 and
+/// reaches −60%. Their material has ONE density and converges every backdrop toward a fixed grey;
+/// ours re-solves per frame against [`TRACK_INK_CONTRAST`] and, over a bright hero, spends the
+/// whole span to get there.
+///
+/// **This is the continuous lever, and it is here instead of the obvious one.** The obvious one is
+/// a second, LIGHT polarity with flipped ink — Apple's own answer — and this repo had it and
+/// deleted it: `theme.rs`'s note above [`theme::PILL_RIM_ON_LIGHT`] records four bugs in one week
+/// from a discrete state that has to be re-decided every time the ground moves, and a judging panel
+/// that measured the light material landing 34.9 L\* off the local ground on the median MIXED hero
+/// where the dark one lands 3.4. Do not re-add it from this note. Lowering a ceiling adds no state,
+/// no hysteresis and no decision — it only changes how far one existing solve may travel.
+///
+/// What it COSTS is stated plainly, because it is the whole trade: below the ceiling the solve
+/// needs, the idle labels stop clearing [`TRACK_INK_CONTRAST`] over the brightest grounds. That is
+/// also exactly the trade the reference makes, and the criticism it takes for it.
+#[cfg(feature = "devtriggers")]
+fn density_max_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("trackmax")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: density ceiling swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn density_max_sweep() -> Option<f32> {
+    None
 }
 
 /// **The lit edge's weight for a bar already drawn at `density`.**
@@ -2698,13 +2733,38 @@ fn track_alpha_for(ground: [f32; 3]) -> f32 {
 /// Returns `(perimeter, lit)` — the ring and, over it, the edge facing the light.
 fn track_rim(density: f32) -> ([f32; 4], [f32; 4]) {
     let lo = theme::TAB_GLASS_TOP[3];
-    let hi = theme::TAB_TRACK_A_TOP;
+    let hi = density_max_sweep().unwrap_or(theme::TAB_TRACK_A_TOP);
     let k = ((density - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0);
+    let ceil = rim_max_sweep().unwrap_or(theme::GLASS_RIM_MAX);
     // The ring travels: a white line runs out of room as the ground brightens, so it climbs the ramp
     // toward `GLASS_RIM_MAX`, and the highlight keeps exactly twice the perimeter's weight the whole
     // way — the one lamp does not move because the room got brighter.
-    let top = theme::GLASS_RIM_LIGHT[3] + (theme::GLASS_RIM_MAX - theme::GLASS_RIM_LIGHT[3]) * k;
+    let top = theme::GLASS_RIM_LIGHT[3] + (ceil - theme::GLASS_RIM_LIGHT[3]).max(0.0) * k;
     (theme::with_a(theme::GLASS_RIM, top * 0.5), theme::with_a(theme::GLASS_RIM, top))
+}
+
+/// `/tmp/plxnative-rimmax=<a>` — the ceiling that ramp climbs toward, swept.
+///
+/// It exists because the ramp's ceiling is the one number that decides whether the edge reads as a
+/// LIT EDGE or as a drawn white outline, and it had never been held against the reference. Measured
+/// on a stripe ground: how much of the ground's swing the top rim carries is 0.23 for us and 0.25
+/// for the macOS tab bar — i.e. ours is not flat and never was, which was the standing suspicion.
+/// What differs is the LEVEL. Their rim sits at 124 against a page of 127 and a face of 89; ours at
+/// 212 against a page of 124 and a face of 53. Relative to its own brightness their edge varies by
+/// 24% and ours by 10%, which is the whole of why theirs reads as the material catching a lamp and
+/// ours as a stroke drawn round a shape.
+#[cfg(feature = "devtriggers")]
+fn rim_max_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("rimmax")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: rim ceiling swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn rim_max_sweep() -> Option<f32> {
+    None
 }
 
 /// **Which way the standing track answers the contrast question, and how far along it is.**

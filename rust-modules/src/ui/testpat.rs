@@ -18,6 +18,7 @@
 //! | `checker:<px>` | a checkerboard | what the blur does to detail, and whether it aliases |
 //! | `lines:<px>` | vertical bars | the same at the frequency text actually has |
 //! | `hbars:<px>` | HORIZONTAL bars | the only ground a top-or-bottom-edge lens can move |
+//! | `orient` | a wedge of bars, tightening upward, light on the left | which way up and round it is |
 //! | `hue[:L*]` | six saturated bands | whether the material carries colour or washes it out |
 //! | `rainbow[:L*]` | a continuous hue sweep | what a colourful poster does to the bar |
 //! | `solid:<deg>[:L*]` | ONE hue, whole screen | whether the solve is even-handed across hues |
@@ -58,6 +59,17 @@ pub(crate) enum Pattern {
     /// of the container's perimeter draws exactly nothing. `checker` has horizontal structure and
     /// hid this by half-answering it. This is the ground that makes the long edges legible.
     HBars(f32),
+    /// **Which way up, and which way round.** Every other ground here is symmetric under at least
+    /// one mirror, so a backdrop sampled upside down — or left for right — looks exactly like a
+    /// backdrop sampled correctly. That failure has now happened twice in this material: once in
+    /// the blur chain's stored row order, and once when a texture copy left the wrong texture bound
+    /// and the panel filled with the page from the other side of itself. Both were caught by a
+    /// person looking at a photograph, which is precisely what a test ground is for.
+    ///
+    /// So: horizontal bars whose pitch TIGHTENS toward the top, over a left-to-right lightness
+    /// ramp. A vertical mirror turns the wedge the wrong way up, a horizontal one moves the light
+    /// end, and neither can be mistaken for correct at any zoom or on any crop.
+    Orient,
     /// Six saturated bands, optionally normalised to one lightness.
     Hue(Option<f32>),
     /// A continuous hue sweep, optionally normalised to one lightness.
@@ -141,6 +153,7 @@ pub(crate) fn set(spec: &str) -> bool {
         }
         "ramp" => Pattern::Ramp,
         "edge" => Pattern::Edge,
+        "orient" => Pattern::Orient,
         _ => {
             let (name, arg) = spec.split_once(':').unwrap_or((spec, ""));
             let n: f32 = arg.parse().unwrap_or(f32::NAN);
@@ -193,6 +206,7 @@ fn describe(p: Pattern) -> String {
         Pattern::Checker(px) => format!("checker {px:.0}px"),
         Pattern::Lines(px) => format!("lines {px:.0}px"),
         Pattern::HBars(px) => format!("hbars {px:.0}px"),
+        Pattern::Orient => "orient (wedge tightening upward, light to the left)".into(),
         Pattern::Hue(None) => "hue (six saturated bands, natural lightness)".into(),
         Pattern::Hue(Some(l)) => format!("hue (six bands, all at L*={l:.0})"),
         Pattern::Rainbow(None) => "rainbow (hue sweep, natural lightness)".into(),
@@ -252,6 +266,23 @@ pub(crate) fn draw(p: Painter) {
             let n = (h / (px * 2.0)).ceil() as i32;
             for i in 0..n {
                 flat(p, Rect::new(0.0, i as f32 * px * 2.0, w, px), gray(88.0));
+            }
+        }
+        // The wedge: each bar sits a little further from the last going DOWN, so they crowd at the
+        // top and open out at the bottom. Over a left-to-right ramp, so a horizontal mirror is as
+        // visible as a vertical one.
+        Pattern::Orient => {
+            const N: usize = 48;
+            let cw = w / N as f32;
+            for i in 0..N {
+                let l = 20.0 + 55.0 * (i as f32 + 0.5) / N as f32;
+                flat(p, Rect::new(i as f32 * cw, 0.0, cw + 1.0, h), gray(100.0 - l));
+            }
+            let (mut y, mut pitch) = (0.0f32, 6.0f32);
+            while y < h {
+                flat(p, Rect::new(0.0, y, w, (pitch * 0.5).max(1.0)), gray(92.0));
+                y += pitch;
+                pitch *= 1.18;
             }
         }
         Pattern::Hue(at) => {

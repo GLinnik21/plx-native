@@ -62,6 +62,7 @@ const GL_SRC_ALPHA: c_uint = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TEXTURE0: c_uint = 0x84C0;
+const GL_TEXTURE1: c_uint = 0x84C1;
 
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
@@ -1050,14 +1051,73 @@ use crate::log;
 /// keeps coarse shapes recognisable, which is what gives the edge something to visibly distort, at
 /// the cost of a less anonymous background and ~1M more fragments through the tap passes.
 ///
-/// This is the tension Apple resolves by blurring LESS than the obvious amount. Both are defensible
-/// and the choice belongs to whoever is looking at the television.
-const BLUR_REDUCTIONS: usize = 2;
+/// **It is 1, and the reference settled it rather than an argument.** This note used to end "both
+/// are defensible and the choice belongs to whoever is looking at the television", which was an
+/// honest way of saying nobody had looked at the right thing. The right thing is iOS's own tab bar
+/// photographed over a page of TEXT: the phone number behind the bar is *readable through it* —
+/// blurred, but glyph by glyph. That is not "coarse shapes survive", it is a low-pass gentle enough
+/// to leave letterforms, and it is the single fact that separates a pane of glass from a hole with
+/// mush in it. At 2 the chain's widest tap is a 3.5-texel offset on a QUARTER-res target, i.e. 14
+/// authored px, and nothing at the scale of a glyph comes through it — which is precisely the
+/// "obvious blur pill on top" the material read as on the television.
+///
+/// Priced in the two currencies that matter here. STRUCTURE: measured on `hbars` through the
+/// quarter-res chain, a 24px period kept 9% of the page's modulation, 48px kept 17%, 128px kept
+/// 65%; halving the reduction roughly doubles each. COST: the taps run over 4x the fragments — but
+/// the snapshot is CACHED and refreshed only when the page behind it changes, so this is not a
+/// per-frame charge, and the device HWCNT run that went looking for the blur in the frame budget
+/// found the grid scroll instead.
+const BLUR_REDUCTIONS: usize = 1;
 /// Kawase tap offsets, in TEXELS of the final target, one per pass. Widening between passes is
-/// what buys a wide penumbra from four taps; both are half-texel-aligned so GL_LINEAR resolves each
-/// tap as a 2x2 box. In texels rather than pixels on purpose — the target scales with the drawable,
-/// so the blur covers the same FRACTION of the screen on a half-size surface instead of shrinking.
-const BLUR_TAPS: [f32; 2] = [1.5, 3.5];
+/// what buys a wide penumbra from four taps. In texels rather than pixels on purpose — the target
+/// scales with the drawable, so the blur covers the same FRACTION of the screen on a half-size
+/// surface instead of shrinking.
+///
+/// **They were 1.5/3.5 and were laddered on the television rather than inherited.** Three rungs
+/// over the same static hero — a shelf of captioned boxes, which is a page of small high-contrast
+/// TEXT and therefore the hardest thing a backdrop can be asked to pass. What the ladder showed is
+/// the finding this whole material turned on: **the bar's own labels are equally legible at every
+/// rung**. Legibility is bought by the SCRIM, not by the blur — so the wide taps were paying for
+/// nothing and spending the material, and heavy blur *plus* heavy scrim is precisely how a glass
+/// bar collapses into a featureless grey slab sitting on top of the page.
+///
+/// At 0.7/1.5 the shelf's verticals read through the interior and the cap visibly squeezes a box
+/// caption into its arc; at 1.5/3.5 both are gone. Note the offsets are no longer half-texel
+/// aligned, which the previous version of this note called for so GL_LINEAR would resolve each tap
+/// as an exact 2x2 box — a real property, and a smaller one than what it costs: the alignment buys
+/// a marginally cleaner kernel, and structure at the scale of a letterform is the entire effect.
+const BLUR_TAPS: [f32; 2] = [0.7, 1.5];
+/// `/tmp/plxnative-blurtaps=<a>,<b>` — those offsets, swept.
+///
+/// The taps are the SECOND half of "how much structure survives", and until this existed only the
+/// first ([`BLUR_REDUCTIONS`]) could be moved without a rebuild — so a ladder of blur weights cost
+/// one cross-compile and one deploy per rung, which is why the knob was never laddered and the
+/// value was inherited rather than chosen. Read once at boot, like every other sweep here.
+///
+/// Widening is asserted by the chain's own shape test, so a rung that narrows the second tap past
+/// the first is refused rather than silently reordered.
+#[cfg(feature = "devtriggers")]
+fn blur_taps() -> [f32; 2] {
+    static SEEN: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let Some(v) = crate::dev::read("blurtaps") else { return BLUR_TAPS };
+        let mut it = v.split(',').map(|t| t.trim().parse::<f32>());
+        match (it.next(), it.next()) {
+            (Some(Ok(a)), Some(Ok(b))) if a > 0.0 && b > a => {
+                crate::log(&format!("glass: blur taps swept to {a},{b}"));
+                [a, b]
+            }
+            _ => {
+                crate::log("glass: blurtaps ignored (want <a>,<b> with 0 < a < b)");
+                BLUR_TAPS
+            }
+        }
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn blur_taps() -> [f32; 2] {
+    BLUR_TAPS
+}
 /// The UP pass's tap offset, in texels of the target it writes.
 ///
 /// **This pass is what stops the result looking like enlarged pixels rather than like blur**, and
@@ -1194,6 +1254,61 @@ const STANDING_BEVEL: f32 = 12.0;
 /// The standing container's peak displacement at the rim, in authored px. TWICE the ramp, which is
 /// what puts the compression ON the rim instead of spreading it over the chamfer.
 const STANDING_LENS: f32 = 24.0;
+/// How much the standing container's rim shows the page UNBLURRED, 0..1 — the weight of the second
+/// source in `fs_glass.frag`. See [`GlassRim::sharp`].
+///
+/// **It is 0, and the whole second source is therefore dormant** — the copy that feeds it is
+/// skipped, the texture unit is left alone, and the shader takes its single-source path. It is kept
+/// rather than deleted because it costs exactly nothing while off and because the judgement it
+/// encodes belongs to whoever is looking at the television: `/tmp/plxnative-tracksharp` brings it
+/// back at any weight without a rebuild.
+///
+/// The source existed for one stated reason — "a quarter-res blur has nothing left to compress, so
+/// the lens must borrow structure from somewhere" — and lowering [`BLUR_REDUCTIONS`] to 1 and
+/// narrowing [`BLUR_TAPS`] retired that reason: there is now structure in the blurred source
+/// itself. Laddered on the television at 0.85 / 0.4 / 0 over one static hero, what 0.85 adds at the
+/// cap is a hard bright SLIVER of unblurred page at the very edge, which reads as a seam and as the
+/// slab being thinner there — the same failure `fs_glass.frag`'s note records for the first version
+/// of this idea, arrived at from the opposite direction. At 0 the same cap still visibly bends the
+/// page around its arc, because the lens finally has something to bend.
+const STANDING_SHARP: f32 = 0.0;
+/// How much of the container's SCRIM the chamfer sheds at the very rim, 0..1 — `u_rimclear` in
+/// `fs_glass.frag`, where the physical argument for it is written out.
+///
+/// It exists because the reference's rim is COLOURED BY ITS SURROUNDINGS and ours could not be: the
+/// density solve raises the scrim as high as [`crate::ui::theme::TAB_TRACK_A_TOP`] (.72) over a
+/// bright hero, and a uniform .72 paints out the very band the lens and the sharp source exist to
+/// fill. Shedding it at the edge costs the interior nothing — the ramp is zero where the bevel
+/// meets the flat middle, so the density the labels were solved against is untouched.
+const STANDING_RIMCLEAR: f32 = 0.6;
+/// `/tmp/plxnative-rimclear=<w>` — that shed, swept. `0` is the uniform scrim.
+#[cfg(feature = "devtriggers")]
+fn rimclear_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("rimclear")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: rim scrim shed swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn rimclear_sweep() -> Option<f32> {
+    None
+}
+/// `/tmp/plxnative-tracksharp=<w>` — that weight, swept. `0` is the single-source material.
+#[cfg(feature = "devtriggers")]
+fn sharp_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("tracksharp")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: rim sharp source swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn sharp_sweep() -> Option<f32> {
+    None
+}
 /// The lit chamfer's colour. A weight on the overlay ramp rather than a hue, per the theme rule —
 /// it is white light, and its ALPHA is the only thing tuned.
 const GLASS_EDGE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
@@ -1333,6 +1448,27 @@ impl GlassRim {
     /// rather than a starting point. A SHEET keeps the shader's version: its frost is .72 neutral
     /// rather than a black scrim, and the two-lobe catch on the corner arcs is the reading that
     /// says "reflection" rather than "stroke" — it was tuned on the panel and it stays.
+    /// How much of the rim mixes toward the SHARP page — see `fs_glass.frag`'s note on the second
+    /// source. Only the standing container takes it: a sheet's 28px band is wide enough that a
+    /// clarity ramp across it reads as the panel getting thinner, which is the failure that note
+    /// records; 12px does not have room to read as anything but an edge.
+    fn sharp(self) -> f32 {
+        match self {
+            Self::Bevelled => 0.0,
+            Self::Standing => sharp_sweep().unwrap_or(STANDING_SHARP),
+        }
+    }
+
+    /// How much of the scrim this surface's chamfer sheds — see [`STANDING_RIMCLEAR`]. A SHEET
+    /// takes none: its frost is a separate quad drawn over the backdrop rather than this shader's
+    /// scrim block, so there is nothing here for it to shed.
+    fn rimclear(self) -> f32 {
+        match self {
+            Self::Bevelled => 0.0,
+            Self::Standing => rimclear_sweep().unwrap_or(STANDING_RIMCLEAR),
+        }
+    }
+
     fn params(self) -> (f32, f32, [f32; 4]) {
         let base = match self {
             Self::Bevelled => (GLASS_BEVEL, GLASS_LENS, GLASS_SPEC),
@@ -1438,6 +1574,11 @@ static mut GL_SCRIM_BOT: c_int = 0;
 static mut GL_RIMCOL_G: c_int = 0;
 static mut GL_RIMLIT_G: c_int = 0;
 static mut GL_RIMW_G: c_int = 0;
+static mut GL_SHARP: c_int = 0;
+static mut GL_SHARP_RECT: c_int = 0;
+static mut GL_SHARP_PX: c_int = 0;
+static mut GL_SHARPW: c_int = 0;
+static mut GL_RIMCLEAR: c_int = 0;
 
 /// Drop the cached snapshot: the next [`draw_blur_backdrop`] re-captures.
 ///
@@ -1694,9 +1835,17 @@ fn blur_lazy_init() -> bool {
         GL_RIMCOL_G = glGetUniformLocation(GPROG, c"u_rimcol".as_ptr());
         GL_RIMLIT_G = glGetUniformLocation(GPROG, c"u_rimlit".as_ptr());
         GL_RIMW_G = glGetUniformLocation(GPROG, c"u_rimw".as_ptr());
+        GL_SHARP = glGetUniformLocation(GPROG, c"u_sharp".as_ptr());
+        GL_SHARP_RECT = glGetUniformLocation(GPROG, c"u_sharp_rect".as_ptr());
+        GL_SHARP_PX = glGetUniformLocation(GPROG, c"u_sharp_px".as_ptr());
+        GL_SHARPW = glGetUniformLocation(GPROG, c"u_sharpw".as_ptr());
+        GL_RIMCLEAR = glGetUniformLocation(GPROG, c"u_rimclear".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
+        // The rim's second source lives on unit 1 for the life of the program; only the texture
+        // bound there changes, and only when a chain is rebuilt.
+        glUniform1i(GL_SHARP, 1);
         // Material constants and the orientation term: fixed for the life of the process, and
         // uniforms are per-program state, so none of THESE belongs in the draw. `u_bevel`/`u_lens`
         // are the exception and are set per draw — see [`GlassRim`], which is the one thing a
@@ -1864,7 +2013,7 @@ fn blur_snapshot(reg: [f32; 4]) {
         // The taps run at whichever level the reductions ended on: quarter with two, half with one.
         let (tw, th) = if BLUR_REDUCTIONS >= 2 { (r4w, r4h) } else { (r2w, r2h) };
         let tap_uv = win(tw, th, c.sw, c.sh);
-        for (i, taps) in BLUR_TAPS.iter().enumerate() {
+        for (i, taps) in blur_taps().iter().enumerate() {
             let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
             phase(name, || {
                 glViewport(0, 0, tw, th);
@@ -2277,7 +2426,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
         // look at quarter resolution have to shrink in proportion at any finer divisor. Without
         // this a scale sweep changes two variables at once and measures neither.
         let tap_k = 4.0 / scale as f32;
-        for (i, taps) in BLUR_TAPS.iter().enumerate() {
+        for (i, taps) in blur_taps().iter().enumerate() {
             let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
             phase(name, || {
                 glViewport(0, 0, tw, th);
@@ -2431,6 +2580,71 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
             span[0] / c.reg[2],
             if c.bottom_up { -span[1] / c.reg[3] } else { span[1] / c.reg[3] },
         );
+        // THE RIM'S SHARP SOURCE. The grab holds the same authored region as the snapshot, at full
+        // resolution, in the bottom-left of a `gw x gh` texture and bottom-up as
+        // `glCopyTexSubImage2D` left it — so its window is the same expression with the grab's own
+        // span and a fixed `true` for the row order, rather than the chain's parity.
+        // THE RIM'S SHARP SOURCE, taken HERE rather than with the snapshot, and the difference is
+        // not an optimisation. The snapshot is cached across frames and the direct path never fills
+        // `grab` at all; worse, a copy taken inside `blur_snapshot` reads a framebuffer that may
+        // still hold THIS SURFACE from the previous frame — photographed while getting this wrong,
+        // the rim showed the bar's own plate and its selected pill, which is a mirror, not a lens.
+        // At this point the page is complete and this surface has not drawn, which is exactly the
+        // moment a refraction wants. It is the REGION, not the screen: the lens reaches `lens` px
+        // outside the container and no further, so 728x200 on the dev set against a 1920x1080 grab.
+        let sharpw = rim.sharp();
+        let (mut sreg, mut sspan) = (c.reg, [1.0f32, 1.0]);
+        if sharpw > 0.0 {
+            // **The BAND, not the region.** The sample never travels further than `lens` outside
+            // the container, so the sharp source only has to hold the panel plus that margin —
+            // 595x124 against the blur region's 728x200 on the dev set, which is where half of
+            // this feature's cost went. Measured whole-frame on the T820 with `plxnative-hwcnt`:
+            // the region copy put GPU_ACTIVE up 5.1%, the band 2.7%.
+            let m = rim.params().1.ceil() + 2.0;
+            let sc = c.gw as f32 / SCR_W;
+            let (sx0, sy0) = ((x - m).max(0.0), (y - m).max(0.0));
+            let (sx1, sy1) = ((x + w + m).min(SCR_W), (y + h + m).min(SCR_H));
+            // Integer pixels FIRST, then the authored rect derived from them. The other order
+            // rounds twice — the copy lands on one rect and the UV describes another, and the rim
+            // shows the page shifted by a fraction of a pixel that grows with the drawable scale.
+            let px = ((sx0 * sc).floor() as c_int).clamp(0, c.gw - 1);
+            let py = ((sy0 * sc).floor() as c_int).clamp(0, c.gh - 1);
+            let dw = (((sx1 * sc).ceil() as c_int) - px).clamp(1, c.gw - px);
+            let dh = (((sy1 * sc).ceil() as c_int) - py).clamp(1, c.gh - py);
+            sreg = [px as f32 / sc, py as f32 / sc, dw as f32 / sc, dh as f32 / sc];
+            sspan = [dw as f32 / c.gw as f32, dh as f32 / c.gh as f32];
+            // The page is COMPLETE here and this surface has not drawn yet, which is exactly the
+            // moment a refraction wants — and it is why the copy is not taken with the snapshot.
+            // The snapshot is cached across frames, the direct path never fills `grab` at all, and
+            // a copy taken inside `blur_snapshot` reads a framebuffer that may still hold THIS
+            // surface from the previous frame: photographed while getting that wrong, the rim
+            // showed the bar's own plate and its selected pill, which is a mirror, not a lens.
+            // ON UNIT 1, and that is not tidiness. `glCopyTexSubImage2D` works on whatever is bound
+            // to the ACTIVE unit, and unit 0 already holds the blurred snapshot this draw is about
+            // to sample. Copying through unit 0 leaves the grab bound there, so the composite reads
+            // the sharp grab through the SNAPSHOT's uv rect — a different span and a different row
+            // order — and the panel fills with the wrong part of the page. Photographed on the
+            // television: the bar showed the hair of a character standing BELOW it, which reads
+            // exactly like the backdrop being flipped and is not that at all.
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, c.grab);
+            crate::ui::profile::phase("glass.sharp", || {
+                glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, c.gx + px, c.gy + c.gh - (py + dh), dw, dh);
+            });
+            glActiveTexture(GL_TEXTURE0);
+        }
+        let suv = blur_uv_rect(x, y, w, h, sreg, sspan, true);
+        glUniform4f(GL_SHARP_RECT, suv[0], suv[1], suv[2], suv[3]);
+        glUniform2f(GL_SHARP_PX, sspan[0] / sreg[2], -sspan[1] / sreg[3]);
+        glUniform1f(GL_SHARPW, sharpw);
+        glUniform1f(GL_RIMCLEAR, rim.rimclear());
+        if sharpw <= 0.0 {
+            // Unit 1 is never sampled at zero weight, but a stale binding on it is still a texture
+            // the driver may keep alive; bind the snapshot rather than leaving whatever was last.
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, c.out);
+            glActiveTexture(GL_TEXTURE0);
+        }
         let (bevel, lens, spec) = rim.params();
         glUniform1f(GL_BEVEL, bevel);
         glUniform1f(GL_LENS, lens);
@@ -2903,8 +3117,11 @@ mod tests {
     /// which did silently invert this on the way through).
     #[test]
     fn e_the_snapshots_stored_order_matches_what_reads_it() {
-        // grab (bottom-up, as `glCopyTexSubImage2D` leaves it) -> reduce -> reduce -> tap -> tap -> up
-        assert_eq!(blur_passes(), 5, "two reductions, two taps, one up pass");
+        // grab (bottom-up, as `glCopyTexSubImage2D` leaves it) -> reduce -> tap -> tap
+        // (at BLUR_REDUCTIONS = 2 this was 5: two reductions, two taps, and the up pass back to
+        // half. Both counts are ODD, so the stored order — the thing this test exists to pin — did
+        // not move when the knob did. That is luck, not a property: re-derive it, do not assume it.)
+        assert_eq!(blur_passes(), 3, "one reduction, two taps, no up pass");
         assert!(!blur_is_bottom_up(), "an odd pass count leaves the grab's order inverted");
         // The two readers of that parity must not be able to disagree: the sampling window and the
         // lens displacement both take it from `blur_is_bottom_up`, and a v axis that runs backwards
