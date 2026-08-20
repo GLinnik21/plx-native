@@ -193,9 +193,12 @@ const BADGE_GAP: f32 = 10.0;
 /// it. The step back is the INK's alone.
 ///
 /// ONE constant, because the three calls at the draw site have to agree: the cap band the run is
-/// centred on, the advance width the badge run and the label's right edge are measured back from,
-/// and the paint. Bold glyphs are WIDER than their regular twins, so measuring on one flag and
-/// drawing on the other walks the run left into whatever sits beside it.
+/// centred on, the advance width it adds to `trailing`, and the paint. Bold glyphs are WIDER than
+/// their regular twins, so measuring on one flag and painting on the other under-counts `trailing`
+/// — and `trailing` is the LABEL's elision budget (`text_w` below), so the label would be elided
+/// as though the read-out were narrower than it is and run right into it. The BADGE run is not at
+/// risk and cannot be: it is placed before this block adds `vw`, which is exactly why the read-out
+/// sits INSIDE it rather than the other way round.
 const VALUE_BOLD: std::os::raw::c_int = 1;
 
 pub struct TableView {

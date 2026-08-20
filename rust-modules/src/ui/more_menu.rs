@@ -8,7 +8,7 @@
 //! home a stranger can find, because it is how this app gets bug reports off televisions nobody
 //! here owns — every other diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the
 //! remote FIFO, the capture stream) is compiled out of RELEASE builds by the `devtriggers` feature,
-//! which is what a user installs. "Press `…`, tick Stats for nerds, photograph the screen" is a
+//! which is what a user installs. "Press `…`, turn Stats for nerds on, photograph the screen" is a
 //! sentence that fits in a GitHub reply and needs no ssh, no root and no rebuild.
 //!
 //! A menu with one row is not a mistake. The alternative — hanging the toggle off a hidden key
@@ -83,7 +83,9 @@ fn label(a: Action) -> &'static str {
 /// Whether the state a row names is currently on. It reaches the row as [`Row::toggle`] and so
 /// draws as the WORD `On`/`Off` at the trailing edge — never as a picker's leading checkmark: this
 /// menu's rows are things you turn on and off, and nothing here is "the active one of several".
-fn checked(a: Action) -> bool {
+/// (Named `checked` until 2026-08-21, from the row builder it no longer calls — a name that read
+/// as a promise of the leading mark this menu deliberately does not draw.)
+fn is_on(a: Action) -> bool {
     match a {
         Action::ToggleStats => crate::ui::stats::enabled(),
         Action::None => false,
@@ -95,7 +97,7 @@ pub fn open() {
     unsafe { addr_of_mut!(ROWS).write(rows) };
     let mut sec = Section::new("Options");
     for a in rows {
-        sec = sec.row(Row::new(label(*a)).toggle(checked(*a)));
+        sec = sec.row(Row::new(label(*a)).toggle(is_on(*a)));
     }
     table().compact = true; // a short action list — BODY labels, like the profile menu
     table().set_sections(vec![sec], 0, false);
