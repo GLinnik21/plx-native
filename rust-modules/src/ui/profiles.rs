@@ -498,9 +498,14 @@ pub fn key(sym: c_uint, wcode: c_uint) {
     if is_back(sym, wcode) {
         // BACK leaves the picker exactly the way choosing the ALREADY-ACTIVE profile does:
         // `auth::cancel` re-arms the resolved-credentials handoff with the persisted session, the
-        // main loop installs it and routes Home. It reports false — and we swallow the key — when
+        // main loop installs it and routes Home. It reports false — and we swallow the key — in the
+        // two cases where that would not be backing out to anything the user is entitled to: when
         // there is no usable session behind the picker (the roster shown straight after a sign-out,
-        // where the picker really is a dead end you must choose your way out of).
+        // where the picker really is a dead end you must choose your way out of), and at the BOOT
+        // picker when the stored profile is PIN-protected (where resuming it silently is the PIN
+        // bypass `auth::cancel`'s doc describes). Both leave the user with a fully working picker
+        // and the Sign out pill under it, which is why swallowing is enough and no read-out is
+        // owed: nothing has been attempted and failed, the key simply does not act here.
         auth::cancel();
         return;
     }
