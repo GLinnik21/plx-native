@@ -1047,33 +1047,41 @@ use crate::log;
 // read: blurring it would smear transparency, not video. `docs/` and the player HUD's own notes
 // say why that plane is unreachable; nothing here changes it.
 
-/// How many exact halvings the snapshot goes through before the blur taps — **the one knob that
-/// decides how much STRUCTURE survives behind the glass, which is a design question, not a perf
-/// one.**
+/// How many exact halvings the CAPTURE path takes before the blur taps — and it is not a knob. It
+/// is [`BLUR_DIRECT_SCALE`] written as a count of halvings, asserted below.
 ///
-/// 2 (quarter res) is a properly frosted panel: everything behind it is a colour field. But the
-/// lens in `fs_glass.frag` can only bend what is there, and a field of colour looks the same bent —
-/// so at 2 the refraction reads as a lit slab rather than as anything being displaced. 1 (half res)
-/// keeps coarse shapes recognisable, which is what gives the edge something to visibly distort, at
-/// the cost of a less anonymous background and ~1M more fragments through the tap passes.
+/// **One material, two paths.** The direct path renders the page at 1/4; the capture path has to
+/// arrive at the same place. They publish into one snapshot and one shader samples it, and which
+/// path served a given panel is not a property of that panel: a cached popover is served by the
+/// capture path on an ordinary frame and by the DIRECT path the moment a dynamic owner is live on
+/// the page under it (`/tmp/plxnative-glassboth` is the same thing on demand). So the source scale
+/// belongs to the material, not to a path — a surface whose blur depends on who took the snapshot
+/// is not a material at all.
 ///
-/// **It is 1, and the reference settled it rather than an argument.** This note used to end "both
-/// are defensible and the choice belongs to whoever is looking at the television", which was an
-/// honest way of saying nobody had looked at the right thing. The right thing is iOS's own tab bar
-/// photographed over a page of TEXT: the phone number behind the bar is *readable through it* —
-/// blurred, but glyph by glyph. That is not "coarse shapes survive", it is a low-pass gentle enough
-/// to leave letterforms, and it is the single fact that separates a pane of glass from a hole with
-/// mush in it. At 2 the chain's widest tap is a 3.5-texel offset on a QUARTER-res target, i.e. 14
-/// authored px, and nothing at the scale of a glyph comes through it — which is precisely the
-/// "obvious blur pill on top" the material read as on the television.
+/// **They drifted, and closing that is what this constant is for.** It went 2 -> 1 the day after the
+/// direct path became the shipping one, in a commit whose subject and every measurement was the tab
+/// BAR — which by then rendered its own source at 1/4 and did not read this at all. What it actually
+/// changed was every CACHED popover: a half-resolution source, tap offsets that are in TEXELS and so
+/// halved with it, and no up-filter at all, because the up pass was gated on `BLUR_REDUCTIONS >= 2`.
+/// That is not a lighter blur. It is a 2x bilinear magnification of a half-res image with the
+/// reconstruction pass switched off, and it reads as exactly what it is — measured on the
+/// `checker:24` ground with the item menu over it, the pattern came through the panel as a lattice
+/// of dots, and through the direct path's chain, same frame and same shader, it is gone.
 ///
-/// Priced in the two currencies that matter here. STRUCTURE: measured on `hbars` through the
-/// quarter-res chain, a 24px period kept 9% of the page's modulation, 48px kept 17%, 128px kept
-/// 65%; halving the reduction roughly doubles each. COST: the taps run over 4x the fragments — but
-/// the snapshot is CACHED and refreshed only when the page behind it changes, so this is not a
-/// per-frame charge, and the device HWCNT run that went looking for the blur in the frame budget
-/// found the grid scroll instead.
-const BLUR_REDUCTIONS: usize = 1;
+/// Why 1/4 is the matched sampling rate for this kernel is on [`BLUR_DIRECT_SCALE`]. STRUCTURE —
+/// how much of the page survives, which is the design question this constant used to carry — is
+/// owned by [`BLUR_TAPS`], which both paths read at the same source scale and which sweeps without
+/// a rebuild. Measured on `hbars` through this chain: a 24px period keeps 9% of the page's
+/// modulation, 48px 17%, 128px 65%.
+const BLUR_REDUCTIONS: usize = 2;
+/// The capture path's halvings must land on the direct path's source scale — see
+/// [`BLUR_REDUCTIONS`]. A compile-time equality rather than a comment, because the failure it
+/// guards has no symptom that points at it: two surfaces wearing one material, blurred differently,
+/// according to which path happened to take the snapshot.
+const _: () = assert!(
+    1usize << BLUR_REDUCTIONS == BLUR_DIRECT_SCALE as usize,
+    "the capture path must halve down to the direct path's source scale",
+);
 /// Kawase tap offsets, in TEXELS of the final target, one per pass. Widening between passes is
 /// what buys a wide penumbra from four taps. In texels rather than pixels on purpose — the target
 /// scales with the drawable, so the blur covers the same FRACTION of the screen on a half-size
@@ -1119,10 +1127,11 @@ const BLUR_REDUCTIONS: usize = 1;
 const BLUR_TAPS: [f32; 2] = [0.35, 0.75];
 /// `/tmp/plxnative-blurtaps=<a>,<b>` — those offsets, swept.
 ///
-/// The taps are the SECOND half of "how much structure survives", and until this existed only the
-/// first ([`BLUR_REDUCTIONS`]) could be moved without a rebuild — so a ladder of blur weights cost
-/// one cross-compile and one deploy per rung, which is why the knob was never laddered and the
-/// value was inherited rather than chosen. Read once at boot, like every other sweep here.
+/// The taps are now the WHOLE of "how much structure survives" that anyone gets to tune — the
+/// source scale is pinned to the direct path's, see [`BLUR_REDUCTIONS`] — and until this existed
+/// neither half could be moved without a rebuild, so a ladder of blur weights cost one
+/// cross-compile and one deploy per rung. That is why these were inherited rather than chosen for
+/// as long as they were. Read once at boot, like every other sweep here.
 ///
 /// Widening is asserted by the chain's own shape test, so a rung that narrows the second tap past
 /// the first is refused rather than silently reordered.
@@ -1164,34 +1173,15 @@ fn blur_taps() -> [f32; 2] {
 const BLUR_UP_TAP: f32 = 1.25;
 const BLUR_PASS_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit between targets
 
-/// The chain's four target sizes, from the drawable's canvas rect: two exact halvings.
-///
-/// Exact, not fitted — bilinear minification is a clean 2x2 box only at exactly 2x, and the
-/// capture chain's own note records what a single 4x pass costs instead (text shimmer). Odd
-/// dimensions floor, which loses at most a pixel column off a blurred backdrop and is not worth a
-/// second code path. Pure, so the halving and the floor are host-gradeable.
-/// Does the capture chain end with an up pass? There is one only when there is a level to come
-/// back up to, i.e. when the reductions went down two levels rather than one.
-///
-/// **A const, because three things have to agree about it and one of them used to read a mutable
-/// field instead.** `build` sizes `out` from it, [`blur_snapshot`] decides whether to run the pass
-/// from it, and [`blur_passes`] counts it. `blur_snapshot` used to ask `c.out != c.a` — which is
-/// the same question only until something else writes `c.out`, and [`blur_snapshot_direct`] does,
-/// on every frame it runs. See the note on `out` for what that cost.
-const BLUR_UP_PASS: bool = BLUR_REDUCTIONS >= 2;
-
-/// How many passes the chain runs, and therefore which way up the snapshot is stored: every pass
-/// flips row order once. The reductions, the taps, and the up pass when there is a level to come
-/// back up to.
+/// How many passes the capture chain runs, and therefore which way up the snapshot is stored: every
+/// pass flips row order once. The two reductions, the taps, and the up pass back to half res.
 ///
 /// **One expression, deliberately.** It was inlined in two places and they disagreed the instant the
 /// up pass was added — one said four passes, the other five — which inverted the lens's v axis while
 /// leaving the sampling window correct. Nothing warns, and on a symmetric backdrop nothing shows.
 #[inline]
 const fn blur_passes() -> usize {
-    // `if` rather than `usize::from`: `From` is not a const trait yet, and this is a `const fn` so
-    // the whole family answers at compile time.
-    BLUR_REDUCTIONS + BLUR_TAPS.len() + if BLUR_UP_PASS { 1 } else { 0 }
+    BLUR_REDUCTIONS + BLUR_TAPS.len() + 1 // the reductions, the taps, then back up one level
 }
 
 /// The same count for [`blur_snapshot_direct`], which shares the taps and the up pass but replaces
@@ -1243,12 +1233,16 @@ const fn blur_bottom_up(passes: usize) -> bool {
     passes % 2 == 0
 }
 
+/// The chain's two target sizes, from the drawable's canvas rect: the half-res level the up pass
+/// comes back to, and the quarter-res level the taps run at.
+///
+/// Exact halvings, not fitted — bilinear minification is a clean 2x2 box only at exactly 2x, and
+/// [`blur_snapshot`]'s own note records what a single 4x pass costs instead. Odd dimensions floor,
+/// which loses at most a pixel column off a blurred backdrop and is not worth a second code path.
+/// Pure, so the halving and the floor are host-gradeable.
 #[inline]
 fn blur_dims(vw: c_int, vh: c_int) -> ((c_int, c_int), (c_int, c_int)) {
     let mid = ((vw / 2).max(1), (vh / 2).max(1));
-    if BLUR_REDUCTIONS < 2 {
-        return (mid, mid); // the taps run at half res; `mid` is then only the first pass's target
-    }
     (mid, ((mid.0 / 2).max(1), (mid.1 / 2).max(1)))
 }
 
@@ -1275,9 +1269,10 @@ struct BlurChain {
     /// Is the finished snapshot stored bottom-up (like the `glCopyTexSubImage2D` it started as)?
     ///
     /// Every pass flips row order once, so this is the parity of the pass count — and it is stored
-    /// rather than asserted because [`BLUR_REDUCTIONS`] is a knob: the chain ran an even number of
-    /// passes at one setting and an odd number at the other, and the first version of this hard-
-    /// coded "even" in a test. A wrong answer here draws the page upside down under the panel.
+    /// rather than asserted because the two paths do not run the same NUMBER of passes: five for
+    /// the capture chain, three for the direct one, which both happen to be odd today and have not
+    /// always been. The first version of this hard-coded "even" in a test, which was a fact about
+    /// the shape of that day. A wrong answer here draws the page upside down under the panel.
     bottom_up: bool,
     /// The AUTHORED region the live snapshot holds — what [`blur_region_covers`] tests a panel
     /// against, and the space [`blur_uv_rect`] maps screen coordinates out of.
@@ -1350,9 +1345,11 @@ const STANDING_LENS: f32 = 24.0;
 /// back at any weight without a rebuild.
 ///
 /// The source existed for one stated reason — "a quarter-res blur has nothing left to compress, so
-/// the lens must borrow structure from somewhere" — and lowering [`BLUR_REDUCTIONS`] to 1 and
-/// narrowing [`BLUR_TAPS`] retired that reason: there is now structure in the blurred source
-/// itself. Laddered on the television at 0.85 / 0.4 / 0 over one static hero, what 0.85 adds at the
+/// the lens must borrow structure from somewhere" — and narrowing [`BLUR_TAPS`] to 0.35/0.75
+/// retired that reason: there is structure in the blurred source itself now. (This also credited
+/// lowering [`BLUR_REDUCTIONS`] to 1, which never reached the track at all — the track's source has
+/// come off the direct path at 1/4 since the day before that change — and has since been reverted.)
+/// Laddered on the television at 0.85 / 0.4 / 0 over one static hero, what 0.85 adds at the
 /// cap is a hard bright SLIVER of unblurred page at the very edge, which reads as a seam and as the
 /// slab being thinner there — the same failure `fs_glass.frag`'s note records for the first version
 /// of this idea, arrived at from the opposite direction. At 0 the same cap still visibly bends the
@@ -1699,9 +1696,12 @@ pub(crate) fn blur_invalidate() {
 ///
 /// Two things reach out past the edge and both are drawn FROM outside it. The lens displaces its
 /// sample by up to [`GLASS_LENS`] (38) along the outward normal, so the rim shows what is beside the
-/// panel, not under it. And the chain's own kernel spreads: the taps are 1.5 and 3.5 texels at
-/// quarter res (4 authored px each) = 20, the up pass 1.25 at half res = 2.5, the reduction's box
-/// ~2 — about 24.5 together. 38 + 24.5 is 62.5; this rounds up.
+/// panel, not under it. And the chain's own kernel spreads: the taps are 0.35 and 0.75 texels at
+/// quarter res (4 authored px each) = 4.4, the up pass 1.25 at half res = 2.5, the reductions' box
+/// ~3 — about 10 together, where the wider taps of the day this was chosen cost 24.5. 38 + 10 is
+/// 48, so the margin carries ~20px of slack today. It stays: too SHORT shows as the glass smearing
+/// one colour outward at the rim, the region's area is what it costs, and [`BLUR_TAPS`] is
+/// sweepable — a rung that widens them must not also have to move this.
 ///
 /// Short of this the rim samples clamped edge texels, which reads as the glass smearing one colour
 /// outward — subtle, and exactly the kind of thing that looks like a shader bug rather than a
@@ -1865,7 +1865,7 @@ fn blur_region_px_align(
 /// **The v axis may run backwards, and which way is not a constant.** Every target in the chain is
 /// rendered through `vs_img.vert`, which flips row order once per pass, so the snapshot's storage
 /// order is the parity of the pass count — bottom-up (like the `glCopyTexSubImage2D` it started as)
-/// after an even number, top-down after an odd one, and [`BLUR_REDUCTIONS`] changes which. The
+/// after an even number, top-down after an odd one, and the two paths run different counts. The
 /// caller passes what the chain actually did. Pure, and tested: an inverted backdrop is the failure
 /// this shape hides, and it looks deliberate enough to survive a glance.
 ///
@@ -1991,11 +1991,10 @@ fn blur_lazy_init() -> bool {
             let (mid, mid_fbo) = fbo_target(mw, mh, "blur")?;
             let (a, a_fbo) = fbo_target(sw, sh, "blur")?;
             let (b, b_fbo) = fbo_target(sw, sh, "blur")?;
-            // The up pass exists only when there is a level to come back up to; with one reduction
-            // `mid` IS the tap target, so the chain ends where it already is.
-            let ups = BLUR_UP_PASS;
+            // Both paths end with the up pass back to half res, so the finished snapshot always
+            // lands in `mid` — each still PUBLISHES where it left it, see [`blur_publish`].
             Some(BlurChain { grab, gw, gh, gx, gy, mid, mid_fbo, mw, mh, a, a_fbo, b, b_fbo, sw, sh,
-                out: if ups { mid } else { a },
+                out: mid,
                 bottom_up: blur_is_bottom_up(),
                 // No live snapshot yet; `BLUR_VALID` is what gates reading these, and the first
                 // `blur_snapshot` sets both to a real region before anything samples them.
@@ -2155,14 +2154,10 @@ fn blur_snapshot(reg: [f32; 4]) {
         // the pass and blur the region together with whatever the last panel left behind it.
         let (r2w, r2h) = ((rw / 2).max(1), (rh / 2).max(1));
         let (r4w, r4h) = ((rw / 4).max(1), (rh / 4).max(1));
-        let reductions: &[(c_uint, c_uint, c_int, c_int, (f32, f32))] = if BLUR_REDUCTIONS >= 2 {
-            &[
-                (c.mid_fbo, c.grab, r2w, r2h, win(rw, rh, c.gw, c.gh)),
-                (c.a_fbo, c.mid, r4w, r4h, win(r2w, r2h, c.mw, c.mh)),
-            ]
-        } else {
-            &[(c.a_fbo, c.grab, r2w, r2h, win(rw, rh, c.gw, c.gh))]
-        };
+        let reductions: &[(c_uint, c_uint, c_int, c_int, (f32, f32))] = &[
+            (c.mid_fbo, c.grab, r2w, r2h, win(rw, rh, c.gw, c.gh)),
+            (c.a_fbo, c.mid, r4w, r4h, win(r2w, r2h, c.mw, c.mh)),
+        ];
         // ONE PHASE PER PASS, deliberately: this split is what MEASURED the cost model above, and
         // it is left in place because it is the only way to re-measure it. `phase` takes a
         // `&'static str`, so the names are written out rather than indexed.
@@ -2179,8 +2174,9 @@ fn blur_snapshot(reg: [f32; 4]) {
                     BLUR_PASS_TINT.as_ptr(), 0.0, NO_RIM.as_ptr(), 0.0, 0.0, 0.0, NO_RIM.as_ptr());
             });
         }
-        // The taps run at whichever level the reductions ended on: quarter with two, half with one.
-        let (tw, th) = if BLUR_REDUCTIONS >= 2 { (r4w, r4h) } else { (r2w, r2h) };
+        // The taps run where the reductions ended — quarter res, which is the scale the direct path
+        // renders its source at. See [`BLUR_REDUCTIONS`] for why that equality is not optional.
+        let (tw, th) = (r4w, r4h);
         let tap_uv = win(tw, th, c.sw, c.sh);
         for (i, taps) in blur_taps().iter().enumerate() {
             let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
@@ -2205,20 +2201,19 @@ fn blur_snapshot(reg: [f32; 4]) {
         // result reading as enlarged pixels. See `BLUR_UP_TAP`. `mid` is free by now: it was the
         // first reduction's target and nothing has read it since the second reduction.
         phase("blur.up", || {
-            // `BLUR_UP_PASS`, not `c.out != c.a`: `out` is written by whichever path ran LAST, and
-            // `blur_snapshot_direct` leaves it at `mid` — which silently added a fourth pass here,
-            // a 1:1 Kawase blit that both widened this path's blur past the direct path's and
-            // inverted the parity `bottom_up` is derived from.
-            if BLUR_UP_PASS {
-                glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
-                glViewport(0, 0, r2w, r2h);
-                glClear(GL_COLOR_BUFFER_BIT);
-                use_prog(BPROG);
-                glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
-                glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
-                glBindTexture(GL_TEXTURE_2D, c.a);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            }
+            // UNCONDITIONAL, and it must never ask `c.out != c.a` to decide: `out` is written by
+            // whichever path ran LAST, and `blur_snapshot_direct` leaves it at `mid`, so that
+            // question silently added a FOURTH pass here on every frame after a direct one — a 1:1
+            // Kawase blit that both widened this path's blur past the direct path's and inverted
+            // the parity `bottom_up` is derived from.
+            glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
+            glViewport(0, 0, r2w, r2h);
+            glClear(GL_COLOR_BUFFER_BIT);
+            use_prog(BPROG);
+            glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+            glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
+            glBindTexture(GL_TEXTURE_2D, c.a);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -2226,8 +2221,7 @@ fn blur_snapshot(reg: [f32; 4]) {
         glViewport(vx, vy, vw, vh);
         glEnable(GL_BLEND);
         // Publish what was actually grabbed, not what was asked for — see [`blur_publish`].
-        let out = if BLUR_UP_PASS { c.mid } else { c.a };
-        blur_publish(rx, ry, rw, rh, out, blur_passes(), c.sw, c.sh);
+        blur_publish(rx, ry, rw, rh, c.mid, blur_passes(), c.sw, c.sh);
     }
 }
 
@@ -2710,14 +2704,10 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
             return false;
         }
         let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false };
-        // How much of `out` the region occupies. `out` is `mid` after the up pass (half res) or `a`
-        // without one (whatever the reductions ended at), so the live size follows the same rule.
-        let span = if c.out == c.mid {
-            [(c.rw / 2) as f32 / c.mw as f32, (c.rh / 2) as f32 / c.mh as f32]
-        } else {
-            let d = 1 << BLUR_REDUCTIONS;
-            [(c.rw / d) as f32 / c.sw as f32, (c.rh / d) as f32 / c.sh as f32]
-        };
+        // How much of `out` the region occupies. Both paths end with the up pass back to half res,
+        // so `out` is `mid` whoever took the snapshot and the live area is the region halved.
+        debug_assert_eq!(c.out, c.mid, "a finished snapshot lands in `mid`, on either path");
+        let span = [(c.rw / 2) as f32 / c.mw as f32, (c.rh / 2) as f32 / c.mh as f32];
         let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
         use_prog(GPROG);
         glBindTexture(GL_TEXTURE_2D, c.out);
@@ -3271,7 +3261,8 @@ mod tests {
     ///
     /// Graded as a PROPERTY of the reduction count rather than against literals. The first version
     /// asserted `(1920,1080) -> ((960,540),(480,270))`, which failed the moment [`BLUR_REDUCTIONS`]
-    /// was turned down — correctly, and usefully, but a knob's setting is not a fact to pin.
+    /// was turned down — correctly, and usefully, and still the wrong thing to pin here: what makes
+    /// the count 2 is the direct path's source scale, and that equality is asserted where it lives.
     #[test]
     fn c_blur_dims_halve_exactly_from_whatever_the_drawable_is() {
         for (vw, vh) in [(1920, 1080), (960, 540)] {
@@ -3290,24 +3281,30 @@ mod tests {
         assert_eq!(blur_dims(1, 1), ((1, 1), (1, 1)));
     }
 
-    /// The chain's shape, at whatever [`BLUR_REDUCTIONS`] is currently set to.
+    /// The chain's shape, and the invariant that the two snapshot paths are ONE MATERIAL.
     ///
-    /// This test used to assert the pass count was EVEN, which was true and is not a property —
-    /// it was an accident of one setting of a knob that exists to be changed. What must hold is
-    /// that the tap loop still lands in `a`, that the taps widen, and that the reduction count is
-    /// one of the two the snapshot code actually implements.
+    /// This test used to assert the pass count was EVEN, which was true and is not a property — it
+    /// was an accident of one setting of a knob that existed to be changed. Then the knob WAS
+    /// changed, for the tab bar, which by then did not read it: what moved was every cached
+    /// popover's ground, down to a half-res source with no up-filter, which is a magnified image
+    /// rather than a blur. So the shape is graded against the other path now, not against a range.
     #[test]
-    fn d_the_blur_chain_keeps_its_shape_at_either_reduction_setting() {
-        assert!((1..=2).contains(&BLUR_REDUCTIONS), "blur_snapshot only builds 1 or 2 reductions");
+    fn d_both_snapshot_paths_blur_at_one_source_scale() {
+        // The same equality the const assertion beside [`BLUR_REDUCTIONS`] makes at compile time,
+        // said once more where a person reading the suite will meet it.
+        assert_eq!(
+            1usize << BLUR_REDUCTIONS,
+            BLUR_DIRECT_SCALE as usize,
+            "the capture path halves down to the scale the direct path renders at",
+        );
         assert_eq!(BLUR_TAPS.len() % 2, 0, "an odd tap count leaves the snapshot in `b`, which nothing samples");
         assert!(BLUR_TAPS.windows(2).all(|w| w[1] > w[0]), "taps must WIDEN between passes");
-        // The pass count must include the up pass. It did not, in two places that had each written
-        // the expression out for themselves, and the disagreement inverted the lens's v axis while
-        // leaving the sampling window right — a defect with no symptom on a symmetric backdrop.
-        //
-        assert_eq!(blur_passes(), BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_UP_PASS));
-        // The up pass is a CONST question, not a question about `c.out` — see `BLUR_UP_PASS`.
-        assert_eq!(BLUR_UP_PASS, BLUR_REDUCTIONS >= 2);
+        // Both paths end with the SAME up pass back to half res — the half of a dual filter that
+        // stops the panel's own 2x magnification reading as enlarged pixels. Counted, because that
+        // is the only handle a host test has on it: the direct path's count is its taps plus one,
+        // and the capture path's is its reductions plus its taps plus the same one.
+        assert_eq!(blur_direct_passes(), BLUR_TAPS.len() + 1);
+        assert_eq!(blur_passes(), BLUR_REDUCTIONS + BLUR_TAPS.len() + 1);
     }
 
     /// The parity the whole chain hangs on, pinned at the CURRENT shape and tied to its reader.
@@ -3321,12 +3318,12 @@ mod tests {
     /// which did silently invert this on the way through).
     #[test]
     fn e_the_snapshots_stored_order_matches_what_reads_it() {
-        // grab (bottom-up, as `glCopyTexSubImage2D` leaves it) -> reduce -> tap -> tap
-        // (at BLUR_REDUCTIONS = 2 this was 5: two reductions, two taps, and the up pass back to
-        // half. Both counts are ODD, so the stored order — the thing this test exists to pin — did
-        // not move when the knob did. That is luck, not a property: re-derive it, do not assume it.)
-        assert_eq!(blur_passes(), 3, "one reduction, two taps, no up pass");
-        assert!(!blur_is_bottom_up(), "three flips from a bottom-up grab leaves the snapshot top-down");
+        // grab (bottom-up, as `glCopyTexSubImage2D` leaves it) -> reduce -> reduce -> tap -> tap -> up
+        // (while the reduction count was 1 this was 3: one reduction, two taps, no up pass. Both
+        // counts are ODD, so the stored order — the thing this test exists to pin — did not move
+        // when the knob did. That is luck, not a property: re-derive it, do not assume it.)
+        assert_eq!(blur_passes(), 5, "two reductions, two taps, the up pass back to half");
+        assert!(!blur_is_bottom_up(), "five flips from a bottom-up grab leaves the snapshot top-down");
         // **The two paths must agree**, because ONE `bottom_up` field serves both and a popover on
         // a page whose own glass took the direct path samples a capture-path snapshot. They agreed
         // by luck once and then stopped, silently, when a reduction was removed from one of them.
