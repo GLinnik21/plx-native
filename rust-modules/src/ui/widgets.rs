@@ -300,8 +300,9 @@ impl Glass {
         tint: [f32; 4],
         rim: crate::gfx::GlassRim,
         face: crate::gfx::GlassFace,
+        mat: theme::Material,
     ) -> bool {
-        p.backdrop_blur(r, rest_dy, radius, tint, rim, face)
+        p.backdrop_blur(r, rest_dy, radius, tint, rim, face, mat.deep())
     }
 
     /// Standard popover ground: glass + frost where available, the existing opaque sheet fallback
@@ -330,7 +331,7 @@ impl Glass {
         let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
         // A PANEL's frost is `theme::PANEL_FROST_*`, drawn as its own quad below — it is a sheet,
         // not a container, and its edge is the shader's own specular. `GlassFace::NONE`.
-        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Standing, crate::gfx::GlassFace::NONE) {
+        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Standing, crate::gfx::GlassFace::NONE, panel_material()) {
             let (ft, fb) = panel_frost();
             crate::ui::profile::phase("glass.frost", || {
                 p.rect_rimmed(r, radius, ft, fb, theme::GLASS_RIM, boost);
@@ -341,37 +342,44 @@ impl Glass {
     }
 }
 
-/// A SHEET's frost, and `/tmp/plxnative-panelfrost=<a>` to sweep it.
+/// **What a popover is made of — both halves, from one name.** See [`theme::Material`].
 ///
-/// **A panel is HEAVIER than the bar on purpose. Do not unify them.** This looks like the one place
-/// the material was left inconsistent: the standing track solves its density every frame and lands
-/// between .25 and .60 on real pages, while a panel is pinned at [`theme::PANEL_FROST_TOP`]'s .72 —
-/// heavier than the track ever gets, on any ground. Over an `orient` ground the track passes the
-/// page's bars through legibly and the item menu passes almost nothing, and the obvious conclusion
-/// is that the popover should be brought down to the bar.
+/// A panel is HEAVIER and SOFTER than the bar on purpose, and both halves come from the same place
+/// so they cannot drift apart. The reference is unambiguous: in one screenshot of iOS 26's TV app
+/// the posters behind the tab BAR are readable and behind the context MENU above it almost nothing
+/// is. A menu is a surface you read and act on; a bar is chrome you look past.
 ///
-/// The reference says the opposite, unmistakably. In iOS 26's own TV app a card's context menu and
-/// the tab bar sit in ONE screenshot: through the tab bar the posters behind it are readable, and
-/// through the menu directly above it almost nothing is — a sliver of one poster at its very edge.
-/// A menu is a surface you read and act on, so it earns opacity; a bar is chrome you look past.
-/// Same material, two densities, and the difference is the point rather than a defect.
+/// Laddered on the television over one ground (.72/.55/.42/.30 frost): at .42 the menu's own rows go
+/// soft against the page coming through, and by .30 the panel has stopped reading as a surface. So
+/// the density does not come DOWN toward the bar, which is the obvious "unification" and the wrong
+/// move; what changed instead is that the panel now also gets the extra sample the bar declines,
+/// because lightening the shared snapshot for the bar had lightened the menus with it.
 ///
-/// Laddered here anyway rather than argued, over the same ground (.72/.55/.42/.30): at .42 and
-/// below the menu's own rows lose their contrast — "Go to Show" and "Mark as Watched" go soft
-/// against the page showing through — and the panel stops reading as a surface at all. .72 is where
-/// it stays.
-///
-/// The knob survives because the judgement is about a picture and pictures change. What it must NOT
-/// become is a lower constant chosen on a dark ground: a panel's ink carries the same 4:1 promise
-/// the track's does, and the track's answer to that promise is a per-frame SOLVE, not a smaller
-/// fixed weight.
-fn panel_frost() -> ([f32; 4], [f32; 4]) {
-    let (t, b) = (theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT);
-    match frost_sweep() {
-        Some(a) => (theme::with_a(t, a), theme::with_a(b, a)),
-        None => (t, b),
-    }
+/// `/tmp/plxnative-material=<ultrathin|thin|regular|thick|ultrathick>` swaps the whole material,
+/// and `/tmp/plxnative-panelfrost=<a>` still overrides the density alone for a finer sweep.
+fn panel_material() -> theme::Material {
+    material_sweep().unwrap_or(theme::PANEL_MATERIAL)
 }
+
+fn panel_frost() -> ([f32; 4], [f32; 4]) {
+    let a = frost_sweep().unwrap_or(panel_material().frost());
+    (theme::with_a(theme::PANEL_FROST_TOP, a), theme::with_a(theme::PANEL_FROST_BOT, a))
+}
+
+#[cfg(feature = "devtriggers")]
+fn material_sweep() -> Option<theme::Material> {
+    static SEEN: std::sync::OnceLock<Option<theme::Material>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let m = theme::Material::parse(&crate::dev::read("material")?)?;
+        crate::log(&format!("glass: panel material swept to {m:?}"));
+        Some(m)
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn material_sweep() -> Option<theme::Material> {
+    None
+}
+
 #[cfg(feature = "devtriggers")]
 fn frost_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
@@ -3201,6 +3209,10 @@ pub(crate) fn draw_tab_row(p: Painter) {
                     let (rim, rim_lit) = track_rim(gt[3]);
                     crate::gfx::GlassFace { scrim_top: gt, scrim_bot: gb, rim, rim_lit, rim_w: 1.0 }
                 },
+                // The bar is UltraThin by construction: it takes no extra sample, so the page comes
+                // through as sharp as the chain left it. Its FROST is not read from the scale at all
+                // — `tab_glass_stops` above solves it against the ground every frame.
+                theme::Material::UltraThin,
             ) {
                 // NOTHING IS DRAWN HERE ANY MORE, and that is the fix. The darkening and the edge —
                 // `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)`, the whole

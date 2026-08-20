@@ -281,6 +281,130 @@ pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
 /// The value is the legibility floor, not a taste knob: at .72 a `TEXT_TERTIARY` sub-line still
 /// clears 4.5:1 over the brightest ground a blurred poster shelf produces (the blur removes detail,
 /// it does not cap luminance), and every rung below that was measured against a white poster.
+/// **The material scale, named rather than numbered — SwiftUI's `Material` is the vocabulary.**
+///
+/// Every glass surface in this app used to be described by two unrelated numbers written at its own
+/// call site: a frost alpha in `theme` and, once the bar's blur was lightened, a sample radius in
+/// `gfx`. Two numbers for one idea drift, and the drift is invisible — a panel can end up dense and
+/// crisp, or thin and soft, neither of which is a material anybody chose.
+///
+/// So it is one named thing with two halves, and the halves move together. The names mean what they
+/// mean in SwiftUI: how much of the material there is between the eye and the page.
+///
+/// **Why a menu is not a bar.** The blur chain produces ONE snapshot per frame, shared by every
+/// surface, so lightening it so the tab bar can pass a television's picture through lightened the
+/// menus with it — the wrong direction for a menu. The reference settles which way each goes: in one
+/// screenshot of iOS 26's TV app, the posters behind the tab BAR are readable and behind the context
+/// MENU directly above it almost nothing is. A menu is a surface you read and act on and earns its
+/// opacity; a bar is chrome you look past.
+///
+/// The second half is a wider RE-SAMPLE of the shared snapshot — four extra bilinear fetches on a
+/// plus-cross, confined to the surface's own fragments — rather than a second chain, which would
+/// mean another pair of targets and another set of passes for a surface that is on screen a few
+/// seconds at a time. `UltraThin`'s zero restores the single fetch exactly, which is what the tab
+/// track takes.
+///
+/// **The track's frost is NOT read from here** and cannot be: it is solved every frame against the
+/// ground so its labels clear their contrast (`widgets::track_alpha_for`). The track takes this
+/// scale only for its sample radius. Everything else — panels, sheets, the loading capsule — takes
+/// both halves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Material {
+    /// The bar's own: no extra sample at all, so the page comes through as sharp as the chain left it.
+    UltraThin,
+    Thin,
+    /// A sheet: readable through, but no longer a window.
+    Regular,
+    /// A menu — what a popover takes. Dense enough to read against, soft enough not to compete.
+    Thick,
+    UltraThick,
+}
+
+impl Material {
+    /// The frost alpha a surface that draws its own material over the backdrop uses.
+    pub const fn frost(self) -> f32 {
+        match self {
+            Self::UltraThin => 0.28,
+            Self::Thin => 0.45,
+            Self::Regular => 0.60,
+            Self::Thick => 0.72,
+            Self::UltraThick => 0.85,
+        }
+    }
+
+    /// The extra sample radius in authored px — see the note above.
+    pub const fn deep(self) -> f32 {
+        match self {
+            Self::UltraThin => 0.0,
+            Self::Thin => 1.5,
+            Self::Regular => 3.0,
+            Self::Thick => 5.0,
+            Self::UltraThick => 8.0,
+        }
+    }
+
+    /// `/tmp/plxnative-material=<ultrathin|thin|regular|thick|ultrathick>` — the panel's material,
+    /// swept. Absent, [`PANEL_MATERIAL`] stands.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "ultrathin" => Self::UltraThin,
+            "thin" => Self::Thin,
+            "regular" => Self::Regular,
+            "thick" => Self::Thick,
+            "ultrathick" => Self::UltraThick,
+            _ => return None,
+        })
+    }
+}
+
+/// What a popover is made of. The bar is [`Material::UltraThin`] by construction — it takes no extra
+/// sample — and solves its own frost; everything else states its material here.
+///
+/// **`UltraThick`, chosen on a real poster rather than a synthetic ground**, because the thing a
+/// menu has to survive is exactly a busy one: laddered over a shelf of artwork, the row ink runs
+/// 7.2 : 8.7 : 10.3 : 11.8 : 13.5 to one across the five, and what the eye reads is where the
+/// artwork stops competing with the words. At `Thick` a poster's title lettering still comes
+/// through under "Remove from Deck"; at `UltraThick` the rows are clean while the artwork's shapes
+/// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
+/// context menu passes almost nothing of the page behind it.
+pub const PANEL_MATERIAL: Material = Material::UltraThick;
+
+#[cfg(test)]
+mod material_tests {
+    use super::Material::*;
+    use super::*;
+
+    /// **The scale has to be a scale.** Both halves are hand-picked numbers in a `match`, and a
+    /// `Thin` denser than `Regular` — or softer than `UltraThin` — is a silent design error: nothing
+    /// fails, the name simply stops meaning what it says, and every call site that reads as a
+    /// deliberate choice becomes a lie. The ORDER is the contract; the values are taste.
+    #[test]
+    fn the_material_scale_only_ever_thickens() {
+        let ladder = [UltraThin, Thin, Regular, Thick, UltraThick];
+        for w in ladder.windows(2) {
+            assert!(w[1].frost() > w[0].frost(),
+                "{:?} must be denser than {:?} ({} vs {})", w[1], w[0], w[1].frost(), w[0].frost());
+            assert!(w[1].deep() > w[0].deep(),
+                "{:?} must be softer than {:?} ({} vs {})", w[1], w[0], w[1].deep(), w[0].deep());
+        }
+        // The bar's end of the scale takes NO extra sample: `fs_glass.frag` skips the four extra
+        // fetches entirely at zero, which is what makes "the tab track costs nothing for this"
+        // true rather than approximately true.
+        assert_eq!(UltraThin.deep(), 0.0, "the thinnest material must be the single-fetch one");
+    }
+
+    /// Every name the sweep accepts round-trips, so `plxnative-material` cannot silently fall back
+    /// to the default on a typo it half-recognises.
+    #[test]
+    fn every_material_parses_from_its_own_name() {
+        for m in [UltraThin, Thin, Regular, Thick, UltraThick] {
+            let name = format!("{m:?}").to_ascii_lowercase();
+            assert_eq!(Material::parse(&name), Some(m), "{name}");
+        }
+        assert_eq!(Material::parse("  ThIcK  "), Some(Thick), "trimmed and case-folded");
+        assert_eq!(Material::parse("thickish"), None, "a near miss is a refusal, not the default");
+    }
+}
 pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
 /// The frosted sheet's bottom stop — see [`PANEL_FROST_TOP`].
 pub const PANEL_FROST_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.72);
