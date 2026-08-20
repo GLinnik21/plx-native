@@ -2001,7 +2001,7 @@ fn key_account(sym: c_uint, wcode: c_uint, route: &mut Route) {
     if is_ok(sym) {
         match crate::ui::account_menu::on_ok() {
             crate::ui::account_menu::Action::ChangeProfile => {
-                crate::auth::start_switch();
+                crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
                 crate::ui::profiles::enter();
                 *route = Route::Profiles;
             }
@@ -2940,7 +2940,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // take_ready once a profile is picked — done now they'd be thrown out on a switch.
                 crate::plex::install(&session.server.address, session.server.port as i32, session.pms_token());
                 crate::plex::session::set_current(Some(session.user.clone()));
-                crate::auth::start_switch(); // seeds the persisted roster + refreshes it online
+                // seeds the persisted roster + refreshes it online. `Picker::Boot` is what makes
+                // BACK out of this picker refuse to reinstate a PIN-protected profile — nobody has
+                // identified themselves yet, so there is no "carry on as me" to fall back on.
+                crate::auth::start_switch(crate::auth::Picker::Boot);
                 log("boot: stored session — who's watching");
                 BootTo::Profiles
             } else {
@@ -3777,7 +3780,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // a click on a row commits it; anywhere else dismisses the popover
                         match crate::ui::account_menu::click(cx, cy) {
                             crate::ui::account_menu::Action::ChangeProfile => {
-                                crate::auth::start_switch();
+                                crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
                                 crate::ui::profiles::enter();
                                 route = Route::Profiles;
                             }
