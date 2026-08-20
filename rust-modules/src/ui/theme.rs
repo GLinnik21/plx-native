@@ -144,11 +144,19 @@ pub mod size {
     /// labels. Nothing that must be *read* renders smaller.
     pub const CAPTION: c_int = 24;
     /// Fine print — deliberately below the couch floor (explicit design direction, 2026-07-12,
-    /// re-tuned on-device 16 → 20 → 22: "bigger, but smaller than the meta line"): the small
-    /// info/synopsis text under the home/detail hero's title block, and the episode row's air
-    /// date. De-emphasis is the point — atmosphere copy beside an outsized title, not content
-    /// someone must read; labels the eye needs to catch (the SxEy kicker, meta lines) stay on
-    /// the regular rungs.
+    /// re-tuned on-device 16 → 20 → 22: "bigger, but smaller than the meta line"). De-emphasis is
+    /// the point — atmosphere copy beside an outsized title, not content someone must read; labels
+    /// the eye needs to catch (the SxEy kicker, meta lines) stay on the regular rungs.
+    ///
+    /// **NEITHER HERO'S SYNOPSIS IS ON THIS RUNG ANY MORE**, and this doc went on saying "the small
+    /// info/synopsis text under the home/detail hero's title block" for both of the releases in
+    /// which that was false of one of them and then of neither. Detail's blurb moved to `LABEL`/36
+    /// in `aa598bf2`, home's followed when the two were made one block
+    /// ([`crate::ui::hero_synopsis`], which holds the argument): a hero blurb is the longest run of
+    /// prose on its page, so it is READING copy and the recorded "smaller than the meta line"
+    /// directive is satisfied at `LABEL` 26 under a `BODY` 28 meta line. What is left here is the
+    /// episode row's air date, the rating-row provider captions, the Library's note line, the
+    /// player HUD's key capsule and the Source chip's handle — one-line labels, every one of them.
     pub const MICRO: c_int = 22;
 }
 

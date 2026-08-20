@@ -1595,7 +1595,9 @@ unsafe fn play_item_now(
 }
 
 /// The ONE home activation (OK key AND pointer click): `hf` is the hero action-row focus
-/// (-1 chip / 0 pill / 1 info / 2 chevron) in hero view, `i32::MIN` for a grid card.
+/// (0 pill / 1 info / 2 chevron, or a tab pill's packed negative) in hero view, `i32::MIN` for a
+/// grid card. **The chip (-1) never arrives here** — it is the shared bar's control and both input
+/// paths answer it above, in `chip_activate`.
 /// Pill / Continue-Watching tiles / episodes launch playback immediately (a show or season
 /// opens its page under the hood and fires its Play, which resolves the right episode +
 /// resume); the info circle and ordinary grid cards open the detail page.
@@ -1623,11 +1625,6 @@ unsafe fn home_activate(
         return;
     }
     let hero_view = hf != c_int::MIN;
-    if hf == -1 {
-        crate::ui::account_menu::open();
-        *route = Route::Account;
-        return;
-    }
     // a tab pill in the top band. (The grid-card sentinel is rejected by hero_pill_index
     // itself — see its doc comment.)
     if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
@@ -2323,6 +2320,49 @@ fn key_move_focus(key: Key, sym: c_uint, route: Route, now: u32, held: &mut Held
     held.arm(sym, now);
 }
 
+/// **Where the SHARED top bar's focus is, for the route that is up.** The bar is one control across
+/// Home, the Library and Search, so the question is asked once here rather than three times — and
+/// every other route has no bar at all, which is what `TopFocus::Away` says.
+///
+/// It exists because of the CHIP. A pill's press leads somewhere that depends on the screen you are
+/// standing on (Home's own pill is a no-op, the Library's is a tab switch), so each screen still
+/// performs its own; the chip's press is the account menu wherever you are, so it is answered once,
+/// in [`chip_activate`], off this one answer.
+fn top_focus(route: Route) -> crate::ui::widgets::TopFocus {
+    use crate::ui::widgets::TopFocus;
+    match route {
+        Route::Home => crate::ui::home::top_focus(),
+        Route::Library => crate::ui::library::top_focus(),
+        Route::Search => crate::ui::search::top_focus(),
+        _ => TopFocus::Away,
+    }
+}
+
+/// The profile chip's activation, shared by the OK key and the pointer click — the top bar is one
+/// control on three screens and this is the one thing it does.
+///
+/// It deliberately does NOT go through `home_activate`'s `trail.reset()` the way Home's chip press
+/// used to: the account menu is a POPOVER over whatever page is showing, not a navigation, and on
+/// the Library or Search a reset would throw away history the user is still standing on. (At Home
+/// the reset was a no-op anyway — arriving at Home is itself the trail's reset, so the stack there
+/// is already just the root.)
+fn chip_activate(route: &mut Route) {
+    crate::ui::account_menu::open();
+    *route = Route::Account;
+}
+
+/// Did this click land on the profile chip of a screen that is WEARING the shared bar? The pointer
+/// twin of [`chip_activate`]'s key path, and the route test is the whole of what makes it safe:
+/// `widgets::CHIP_FRAME` is a constant (the chip never moves), so nothing else bounds it to the
+/// screens that actually draw one.
+fn chip_clicked(route: Route, ev: &[u8]) -> bool {
+    if !matches!(route, Route::Home | Route::Library | Route::Search) {
+        return false;
+    }
+    let (mx, my) = ptr_xy(ev);
+    crate::ui::widgets::profile_chip_at(mx, my)
+}
+
 /// OK, on every screen that has not already `continue`d above.
 unsafe fn key_ok(
     mt: &crate::task::MainThread,
@@ -2338,6 +2378,13 @@ unsafe fn key_ok(
     refresh_hubs_at: &mut u32,
     ok_armed: &mut bool,
 ) {
+    // The shared top bar's PROFILE CHIP, ahead of the per-route ladder below: it is one control on
+    // three screens and its destination never depends on which of them you are standing on, which
+    // is exactly why each screen used to draw it and only Home could press it.
+    if matches!(top_focus(*route), crate::ui::widgets::TopFocus::Chip) {
+        chip_activate(route);
+        return;
+    }
     if matches!(*route, Route::Player { .. }) {
         let vis = hud_visible(now, hud_until(), paused(), hud.dismissed);
         // A stand-in owns row 1 — activate it. Same value the draw used.
@@ -2378,9 +2425,10 @@ unsafe fn key_ok(
         // A result tile takes the tvOS press (dip now, commit on the spring-back
         // — `ok_armed` runs `on_ok` then); the field and the recents rows commit
         // immediately inside the screen.
-        let spill = crate::ui::search::focused_pill();
-        if spill >= 0 {
-            match crate::ui::widgets::pill_at(spill as usize) {
+        // the pill under the ring, off the same one answer `tab_row_update` animates the bar from
+        // (the CHIP half of it was already spent above, in `key_ok`'s own opening arm)
+        if let crate::ui::widgets::TopFocus::Pill(spill) = top_focus(*route) {
+            match crate::ui::widgets::pill_at(spill) {
                 // the screen we are already on — a deliberate no-op, as Home's
                 // own pill is on Home
                 Pill::Search => {}
@@ -3669,12 +3717,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         }
                         extend_hud(last_input, HUD_LINGER_MS);
+                    } else if chip_clicked(route, &ev) {
+                        // the shared bar's profile chip, on whichever of the three screens is up —
+                        // the pointer twin of `key_ok`'s own `TopFocus::Chip` arm. It sits ahead of
+                        // all three so none of them has to carry a copy of the rule (Home did, and
+                        // that is why the other two had a chip nothing could press).
+                        chip_activate(&mut route);
                     } else if matches!(route, Route::Home) {
                         let (cx, cy) = ptr_xy(&ev);
-                        if crate::ui::home::profile_chip_click(cx, cy) {
-                            crate::ui::account_menu::open(); // top-left avatar → profile menu
-                            route = Route::Account;
-                        } else if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
+                        if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
                             // the centered tab pills work from BOTH hero and grid views
                             match crate::ui::widgets::pill_at(i) {
                                 Pill::Search => nav_to(route, Nav::Search, &mut nav_pending),
@@ -4818,7 +4869,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
                 crate::ui::widgets::tab_row_update(
                     crate::ui::search::selected_pill(),
-                    crate::ui::search::focused_pill(),
+                    crate::ui::search::top_focus(),
                     dt,
                 );
                 crate::ui::search::update(dt);
