@@ -47,7 +47,7 @@ use crate::person::Person;
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
-use crate::ui::label::{Label, VAlign};
+use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{AmbientWash, Art, Spinner, StatusKind, StatusOverlay};
@@ -385,18 +385,6 @@ fn bio_view(bio: &str, a: f32) -> TextView<'_> {
 /// column edge, so its own draw needs no width at all.
 fn more_w() -> f32 {
     crate::text::text_width(MORE.as_ptr(), theme::size::BODY, 1)
-}
-
-/// The CAP TOP of the bio's last line, given the block's own top and the height its draw reported
-/// — which is where [`MORE`] sits, because that is the line that dissolved to make room for it.
-///
-/// Split out because it is the half of the mark's placement that can silently drift, and the half
-/// that is pure: `TextView` stacks line `i`'s cap top at `top + i × leading` and returns
-/// `lines × leading`, so one leading back off the block's bottom is the last line's cap top. (The
-/// other half — cap band to texture top — is the conversion every `Painter::text` call in the UI
-/// does, and taking `text_cap_band` in here would drag SDL2_ttf into the host test binary's link.)
-fn bio_last_line_cap_y(bio_top: f32, bio_h: f32) -> f32 {
-    bio_top + bio_h - BIO_LEAD
 }
 
 /// Rebuild the header's cached text runs from the store — from [`update`], on the frame a store
@@ -899,13 +887,18 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
         let bh = bio.draw(p, Rect::new(col_x, by, BIO_W, 0.0));
         // MORE — quiet grey (the About card's ink; this is a mark, not a control, and the loudest
         // thing in the band must stay the name), pinned to the bio COLUMN's right edge and sitting
-        // on the last line's own cap band, which is where the line just dissolved to meet it. The
-        // gate shares `bio`'s memoised wrap, so `truncates` costs nothing beside the draw above.
-        // `ea` because the mark belongs to the expanded band and must condense out with it.
+        // on the last line's own cap band, which is where the line just dissolved to meet it. Both
+        // halves of that placement are ASKED OF THE VIEW THAT DREW THE TEXT (`last_line_cap_y`, and
+        // `Label`'s own cap-band conversion) rather than restated here — the leading and the cap
+        // band are `bio`'s, not this block's. The gate shares `bio`'s memoised wrap, so `truncates`
+        // costs nothing beside the draw above. `ea` because the mark belongs to the expanded band
+        // and must condense out with it.
         if bio.truncates(BIO_W) {
-            let (cap_top, _) = crate::text::text_cap_band(theme::size::BODY, 1);
-            p.text(MORE.as_ptr(), col_x + BIO_W, bio_last_line_cap_y(by, bh) - cap_top,
-                theme::size::BODY, theme::with_a(theme::TEXT_TERTIARY, ea), 2, 1);
+            Label::new(MORE.as_ptr(), theme::size::BODY, theme::with_a(theme::TEXT_TERTIARY, ea))
+                .bold()
+                .h(HAlign::Right)
+                .v(VAlign::CapTop)
+                .draw(p, Rect::new(col_x, bio.last_line_cap_y(by, bh), BIO_W, 0.0));
         }
     }
 }
@@ -1229,28 +1222,6 @@ mod tests {
         assert!(want > 0.0, "the second shelf must scroll into view");
         assert!(top + h - want <= SCR_H, "its block bottom is still off screen");
         assert!(top - want >= TOP_MARGIN, "it scrolled past the minimum — the shelf overshot upward");
-    }
-
-    /// **The `MORE` mark rides the line that faded under it**, at every bio length the cap allows.
-    /// The two halves of this affordance are drawn by different code — `TextView` dissolves the
-    /// last line into a zone it reserved, [`draw_header`] pins the word to the column edge — so the
-    /// only thing keeping them on one line is this arithmetic agreeing with `TextView`'s stacking
-    /// rule (cap top of line `i` at `top + i × leading`, `lines × leading` returned). A mark half a
-    /// leading out reads as a rendering fault, and no assertion elsewhere on this page can see it.
-    ///
-    /// It takes no lock and touches no text metric on purpose — see [`bio_last_line_cap_y`].
-    #[test]
-    fn the_bio_s_more_mark_sits_on_the_line_that_faded() {
-        for lines in 1..=BIO_LINES {
-            let top = 137.0; // an arbitrary band offset — the flow's bio_y is never a round number
-            let drawn = lines as f32 * BIO_LEAD; // what `TextView::draw` returns for `lines` lines
-            let want = top + (lines as f32 - 1.0) * BIO_LEAD; // …and where it put that line's cap top
-            assert_eq!(
-                bio_last_line_cap_y(top, drawn),
-                want,
-                "with {lines} bio line(s) the mark left the last line's cap band"
-            );
-        }
     }
 
     /// Focusing the header — flow child 0, at [`HEADER_TOP`] — rests the page at 0 for ANY band

@@ -262,6 +262,20 @@ impl<'a> TextView<'a> {
         self.wrap(width).truncated
     }
 
+    /// The **cap-top y of the block's LAST line** — where an out-of-flow affordance pinned beside
+    /// the fade ([`fade_last`](Self::fade_last)'s right-pinned MORE) has to sit — given the `top`
+    /// the block was drawn at and the height [`draw`](Self::draw) returned for it.
+    ///
+    /// It lives here rather than at the two call sites because the only thing it can be derived
+    /// from is `draw`'s own stacking rule (line `i`'s cap band at `top + i × line_h`, `n × line_h`
+    /// returned), and that rule is this type's. Written out by a caller it becomes `top + h −
+    /// <the leading I think I passed>` — a second copy of the pitch, one edit away from the mark
+    /// floating half a line off the prose it belongs to. Both screens that pin a MORE now ask the
+    /// view that drew the text.
+    pub fn last_line_cap_y(&self, top: f32, drawn_h: f32) -> f32 {
+        top + drawn_h - self.line_h()
+    }
+
     /// Draw into `frame`: `frame.w` is the wrap width, `frame.x/y` the top-left. Line 0's cap band
     /// sits at `frame.y`, each subsequent line one `leading` below. Returns the consumed height.
     pub fn draw(&self, p: Painter, frame: Rect) -> f32 {
@@ -366,6 +380,38 @@ mod tests {
             .trailing("MORE", theme::TEXT_PRIMARY);
         assert!(inline.trailing.is_some());
         assert_eq!(inline.fade_last, 0.0, "the fade reservation survived and would eat the inline run");
+    }
+
+    /// **A pinned MORE rides the line that faded under it**, whichever way the block set its pitch.
+    /// The affordance is drawn by two pieces of code that never meet — this type dissolves the last
+    /// line into a zone it reserved, the SCREEN pins the word beside that zone — so the only thing
+    /// keeping them on one line is `last_line_cap_y` answering off the same `line_h` the stacking
+    /// used. The explicit-`leading` case is the person page's bio and the About card; the DERIVED
+    /// case (`sz × 1.32`) is the one a caller gets by forgetting to set a pitch at all, and it is
+    /// what a hand-written `top + h − <a literal>` at a call site would silently get wrong.
+    #[test]
+    fn a_pinned_mark_sits_on_the_cap_band_of_the_line_that_faded() {
+        let top = 137.0; // an arbitrary block offset — a measured flow's y is never round
+        // Sub-px, not exact: the derived pitch is irrational in f32 (`28 × 1.32`), so `n·lh − lh`
+        // and `(n−1)·lh` differ in the last mantissa bit. A tenth of a pixel is far tighter than
+        // the half-leading drift this exists to catch, and the draw snaps to whole pixels anyway.
+        let close = |a: f32, b: f32| (a - b).abs() < 0.1;
+        for lines in 1..=5 {
+            let n = lines as f32;
+            let led = TextView::new("x", theme::size::BODY, theme::TEXT_PRIMARY).leading(40.0);
+            let (got, want) = (led.last_line_cap_y(top, n * 40.0), top + (n - 1.0) * 40.0);
+            assert!(
+                close(got, want),
+                "explicit leading: {lines} line(s) put the mark at {got}, not {want}"
+            );
+            let derived = TextView::new("x", theme::size::BODY, theme::TEXT_PRIMARY);
+            let lh = theme::size::BODY as f32 * 1.32;
+            let (got, want) = (derived.last_line_cap_y(top, n * lh), top + (n - 1.0) * lh);
+            assert!(
+                close(got, want),
+                "derived leading: {lines} line(s) put the mark at {got}, not {want}"
+            );
+        }
     }
 
     /// The dissolve is measured in EM, so it spans the same run of LETTERS at every rung — and the
