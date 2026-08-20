@@ -756,6 +756,17 @@ fn has_restart() -> bool {
 /// **`InProgress` outranks the watched flag**, exactly as the poster's does: PMS reports both on a
 /// finished-then-restarted item, and being part-way through the re-watch is what the viewer is
 /// doing. Pure, so the control set it produces is host-gradeable.
+///
+/// **KNOWN, on CONTAINERS only: the optimistic flip does not reach the evidence this reads**, so a
+/// show's tail settles a round trip late instead of on the press frame. `metadata::set_watched_local`
+/// edits the matched item's own `watched`/`resume_ms` — which is the whole answer for a leaf — but a
+/// show's progress lives in `on_deck` and the seasons' `viewed_leaf_count`, and those keep the
+/// server's pre-press values until `refresh_view_state`'s re-read lands. Marking a show watched
+/// therefore changes nothing on screen for that window, and un-watching a finished one shows the
+/// part-watched PAIR for it before settling to the single disc. Self-correcting, and no verb is
+/// wrong while it lasts. Fixing it means teaching that function to carry a container's evidence too
+/// (clear `on_deck`, drive `viewed_leaf_count` to the end the write names) — which is a data-layer
+/// change three other surfaces on this page read, so it is deliberately not made from here.
 fn hero_watch_state(d: &metadata::Detail, resume: i64) -> PosterMark {
     // A container has no resume point of its own — a show mid-run is one whose leaves have been
     // started and not finished, which is `show_started` minus the `watched` end of the range.
@@ -3278,10 +3289,11 @@ pub(crate) fn on_ok() -> bool {
                 //
                 // The scrobble, the page re-read and the hub refetch all used to run right here, on
                 // the SDL thread — three blocking round-trip chains off one keypress. `viewstate`
-                // owns all three now: it flips this page and the shelves optimistically (so the
-                // row's discs change on this frame), writes on a worker, and calls
-                // `refresh_view_state` when the write lands. `Some("")` is "refresh the detail page,
-                // with no filmstrip position to protect" — the press was on the hero.
+                // owns all three now: it flips this page and the shelves optimistically, writes on a
+                // worker, and calls `refresh_view_state` when the write lands. `Some("")` is
+                // "refresh the detail page, with no filmstrip position to protect" — the press was
+                // on the hero. NB the optimistic half reaches a LEAF's discs on this frame and a
+                // CONTAINER's only when the re-read lands — `hero_watch_state`'s doc says why.
                 if let Some((sid, rk)) = metadata::current().map(|d| (d.sid, d.rk.clone())) {
                     crate::viewstate::request(sid, &rk, w, Some(String::new()));
                 }
@@ -3572,10 +3584,10 @@ pub(crate) fn focused_episode_rect() -> Option<Rect> {
 /// Re-read the mounted item from the server after something changed its view state, KEEPING the
 /// season the user was browsing.
 ///
-/// Shared by the hero's watched toggle and by the filmstrip's context menu, which mark different
+/// Shared by the hero's watch-state discs and by the filmstrip's context menu, which mark different
 /// things watched — the whole show versus one of its episodes — but both need this page to be
 /// showing the truth afterwards (the tab ticks, the episode checks, the resume bars and the hero's
-/// own toggle all read the refetched item).
+/// own discs all read the refetched item).
 /// `keep_ep` is the episode this refresh is ABOUT, if any (the filmstrip menu passes the one it
 /// just toggled; the hero passes nothing) — see [`KEEP_EP`] for why the row would otherwise scroll
 /// itself away from the tile the user just acted on.
@@ -4936,6 +4948,48 @@ mod tests {
         mount(None, 0);
     }
 
+    /// **The optimistic flip settles a LEAF's tail on the press frame and a CONTAINER's a round
+    /// trip late** — pinned because it is the one window in which this row is behind the press,
+    /// and because the reason lives in `metadata::set_watched_local` rather than in the resolver.
+    ///
+    /// That function edits the matched item's own `watched` and `resume_ms`, which is the whole of
+    /// a leaf's evidence: a part-watched movie marked watched loses its resume point and its ✓
+    /// disc in the same instant. A SHOW's progress is not on the show — it is `on_deck` and the
+    /// seasons' `viewed_leaf_count`, which keep the server's pre-press values — so the tail keeps
+    /// reading `InProgress` until `refresh_view_state`'s re-read replaces the item. No verb is wrong
+    /// meanwhile (both ends stay reachable); the row simply does not move yet. Teach the data layer
+    /// to carry a container's evidence and THIS test is what should fail.
+    #[test]
+    fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
+        let _serial = crate::testlock::serial();
+        use crate::plex::ServerId;
+
+        // LEAF: the press frame IS the settled frame
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert!(metadata::set_watched_local(ServerId::UNSET, "m1", true), "the flip found the item");
+        assert_eq!(hero_btns(), 2, "the resume point and the ✓ disc go together, at once");
+        assert_eq!(hero_action(1), HeroAction::MarkUnwatched);
+
+        // CONTAINER: the same call, and the row does not move
+        mount(Some(show(600_000, 2_700_000)), 0);
+        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert!(metadata::set_watched_local(ServerId::UNSET, "s1", true), "the flip found the show");
+        assert_eq!(hero_btns(), 4, "the evidence the tail reads is the server's, and it has not moved");
+
+        // …and the re-read is what settles it: no on-deck episode, no viewed leaves, watched
+        metadata::set_current_for_test(Some(Detail {
+            watched: true,
+            seasons: Vec::new(),
+            on_deck: None,
+            ..show(0, 2_700_000)
+        }));
+        assert_eq!(hero_btns(), 2, "Play + −");
+        assert_eq!(hero_action(1), HeroAction::MarkUnwatched);
+
+        mount(None, 0);
+    }
+
     /// **The watch-state resolver's truth table** — the pure function the whole tail hangs off, and
     /// the one place the leaf rule and the container rule are stated side by side. A leaf reads its
     /// own resume position under Plex's rule; a container has none of its own, so it reads whether
@@ -5308,13 +5362,13 @@ mod tests {
         let _serial = crate::testlock::serial();
         alt_clear();
 
-        // parked on the watched toggle of a two-control row
+        // parked on the ✓ disc of a two-control row
         mount(Some(movie(0, 7_200_000)), 1);
         assert_eq!(hero_action(focus()), HeroAction::MarkWatched);
 
         // the copy list lands: the alt pill is inserted at index 1, under the focus
         alt_arm("m1");
-        assert_eq!(focus(), 2, "the focus followed the toggle rather than staying on index 1");
+        assert_eq!(focus(), 2, "the focus followed the disc rather than staying on index 1");
         assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "so OK still means what it did a frame ago");
 
         // …and it survives the list going away again
@@ -5325,7 +5379,7 @@ mod tests {
         // a focus sitting ON the vanished control has no new index to travel to — the clamp puts it
         // on the row's last control rather than past the end, where every OK would be inert.
         // (`focus()` first, so the set change is already spent and parking on index 1 is a
-        // deliberate landing on the alt pill rather than the shift carrying the toggle there.)
+        // deliberate landing on the alt pill rather than the shift carrying the disc there.)
         alt_arm("m1");
         focus();
         view().col = 1;
@@ -6253,8 +6307,9 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int, EpRow)> {
     // fade), which is exactly when a stray click is least intended.
     if hero_alpha(scroll, HERO_FADE) > HERO_HIT_MIN_A {
         let y = hero_layout(selected()).btn_y - scroll;
-        // the LIVE control set, not a constant: `hero_btns()` is 3 only while the restart disc is
-        // up, and `hero_btn_rect` slides the watched toggle to match
+        // the LIVE control set, not a constant: the row runs from TWO controls to five, and
+        // `hero_btn_rect` walks the same accumulation the painter did, so the watch-state discs at
+        // the end are clicked wherever this set happens to put them
         for b in 0..hero_btns() {
             if hero_btn_rect(b, y).contains(mx, my) {
                 return Some((0, b, EpRow::Still));
