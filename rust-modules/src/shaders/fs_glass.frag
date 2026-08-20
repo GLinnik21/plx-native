@@ -106,6 +106,21 @@ uniform vec4 u_scrim_bot;
 // interior early-out's full-strength scrim continuously — the two exits of this shader must agree
 // at `t = 0` or the bevel's inner boundary draws itself as a step.
 uniform float u_rimclear;
+// A SECOND, WIDER SAMPLE OF THE SAME SNAPSHOT — the only way two surfaces in one frame can wear
+// two different blurs.
+//
+// The chain produces ONE snapshot, shared by every glass surface, so lightening it for the tab
+// track lightened it for the menus too — and a menu wants the opposite. In the reference they are
+// plainly two densities of one material: through iOS's tab bar the posters behind it are readable,
+// and through the context menu directly above it almost nothing is. A menu is a surface you read
+// and act on; a bar is chrome you look past.
+//
+// Rather than a second chain (another pair of targets and another set of passes, for a surface that
+// is on screen a few seconds at a time), this widens the sample where it is drawn: four extra
+// bilinear fetches on a plus-cross at `u_deep.x` UV, averaged with the centre. Confined to the
+// panel's own fragments, and branch-coherent across all of them, which is what makes it affordable.
+// `u_deep.y = 0` is the single-fetch material, bit for bit.
+uniform vec2 u_deep;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -114,6 +129,22 @@ uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // rather than as light. Carried as one weight on one colour, the light material's top edge came out
 // the darkest thing on the bar, which is a lamp underneath the floor.
 uniform vec4 u_rimlit;       // colour + weight of the edge facing the light (alpha 0 = none)
+
+// The snapshot fetch every path here goes through, so the two exits of this shader cannot disagree
+// about how soft the backdrop is — which is the defect its interior early-out already produced once
+// over coverage.
+vec3 srcRGB(highp vec2 uv){
+  vec3 c = texture2D(u_tex, uv).rgb;
+  if (u_deep.y > 0.0) {
+    highp float d = u_deep.x;
+    c += texture2D(u_tex, uv + vec2( d,  d)).rgb;
+    c += texture2D(u_tex, uv + vec2(-d,  d)).rgb;
+    c += texture2D(u_tex, uv + vec2( d, -d)).rgb;
+    c += texture2D(u_tex, uv + vec2(-d, -d)).rgb;
+    c *= 0.2;
+  }
+  return c;
+}
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
   highp vec2 q = abs(p) - b + vec2(r);
@@ -137,7 +168,7 @@ void main(){
   // there is no lens, no edge light and full coverage, so a panel's large flat middle pays one
   // fetch and nothing else. The branch is coherent across a tile, which is what makes it pay here.
   if (d < -u_bevel) {
-    vec3 flat_rgb = texture2D(u_tex, v_cuv).rgb * u_tint.rgb;
+    vec3 flat_rgb = srcRGB(v_cuv) * u_tint.rgb;
     // The scrim reaches here too — this is most of the surface. The rim does not: it is a band at
     // the edge and `rimShape` below is zero this far in, which is what makes skipping it exact.
     vec4 fsc = mix(u_scrim_top, u_scrim_bot, clamp(v_p.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));
@@ -150,7 +181,7 @@ void main(){
   highp float lens = t * t;
   highp vec2 nrm = sdBoxNormal(v_p, u_ch, u_iradius);
   highp vec2 push = nrm * (lens * u_lens);
-  vec3 rgb = texture2D(u_tex, v_cuv + push * u_uvpx).rgb;
+  vec3 rgb = srcRGB(v_cuv + push * u_uvpx);
   if (u_sharpw > 0.0) {
     // The quad's own 0..1 coordinate, recovered from the panel-local pixels the SDF already uses:
     // `vs_img.vert` builds both from the same `a_pos`, so this needs no second varying and cannot

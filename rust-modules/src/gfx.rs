@@ -1357,6 +1357,22 @@ fn sharp_sweep() -> Option<f32> {
 fn sharp_sweep() -> Option<f32> {
     None
 }
+/// `/tmp/plxnative-paneldeep=<px>` — the panel's extra sample radius, swept. `0` is the bar's own
+/// single-fetch material.
+#[cfg(feature = "devtriggers")]
+fn deep_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("paneldeep")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: panel deep-sample radius swept to {v}"));
+        Some(v.max(0.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn deep_sweep() -> Option<f32> {
+    None
+}
+
 /// The lit chamfer's colour. A weight on the overlay ramp rather than a hue, per the theme rule —
 /// it is white light, and its ALPHA is the only thing tuned.
 const GLASS_EDGE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
@@ -1627,6 +1643,7 @@ static mut GL_SHARP_RECT: c_int = 0;
 static mut GL_SHARP_PX: c_int = 0;
 static mut GL_SHARPW: c_int = 0;
 static mut GL_RIMCLEAR: c_int = 0;
+static mut GL_DEEP: c_int = 0;
 
 /// Drop the cached snapshot: the next [`draw_blur_backdrop`] re-captures.
 ///
@@ -1888,6 +1905,7 @@ fn blur_lazy_init() -> bool {
         GL_SHARP_PX = glGetUniformLocation(GPROG, c"u_sharp_px".as_ptr());
         GL_SHARPW = glGetUniformLocation(GPROG, c"u_sharpw".as_ptr());
         GL_RIMCLEAR = glGetUniformLocation(GPROG, c"u_rimclear".as_ptr());
+        GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
@@ -2583,7 +2601,7 @@ impl GlassFace {
     };
 }
 
-pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32, rim: GlassRim, face: GlassFace) -> bool {
+pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32, rim: GlassRim, face: GlassFace, deep: f32) -> bool {
     unsafe {
         // A glass surface met while drawing the page AS a blur source draws nothing at all. It
         // cannot draw itself — the snapshot it would sample is the target currently bound — and it
@@ -2697,6 +2715,13 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         glUniform2f(GL_SHARP_PX, sspan[0] / sreg[2], -sspan[1] / sreg[3]);
         glUniform1f(GL_SHARPW, sharpw);
         glUniform1f(GL_RIMCLEAR, rim.rimclear());
+        // `deep` is authored px; the snapshot's own UV-per-authored-pixel is already in hand, and
+        // its v may be negative, so the radius is taken on the ABSOLUTE step or the cross collapses
+        // to a line on one axis.
+        // The sweep moves only surfaces that already ASK for depth: a bar that opted out at 0 must
+        // not be softened by a knob aimed at the menus.
+        let dr = if deep > 0.0 { deep_sweep().unwrap_or(deep) } else { 0.0 } * (span[0] / c.reg[2]).abs();
+        glUniform2f(GL_DEEP, dr, if dr > 0.0 { 1.0 } else { 0.0 });
         if sharpw <= 0.0 {
             // Unit 1 is never sampled at zero weight, but a stale binding on it is still a texture
             // the driver may keep alive; bind the snapshot rather than leaving whatever was last.

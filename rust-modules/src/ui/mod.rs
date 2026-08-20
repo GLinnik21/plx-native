@@ -428,10 +428,10 @@ impl Painter {
     /// surface rather than drawn as a second rect on top of it ([`crate::gfx::GlassFace`], and its
     /// doc for the artefact that construction produced). `GlassFace::NONE` for a sheet.
     #[must_use]
-    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4], rim: crate::gfx::GlassRim, face: crate::gfx::GlassFace) -> bool {
+    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4], rim: crate::gfx::GlassRim, face: crate::gfx::GlassFace, deep: f32) -> bool {
         let t = self.c(tint);
         let (x, y) = (r.x + self.dx, r.y + self.dy);
-        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr(), rim, face)
+        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr(), rim, face, deep)
     }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.
