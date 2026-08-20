@@ -41,6 +41,10 @@ const COOL_150: [f32; 4] = rgb8(0xdb, 0xe0, 0xeb);
 const COOL_200: [f32; 4] = rgb8(0xcd, 0xd3, 0xdd);
 const COOL_300: [f32; 4] = rgb8(0xb8, 0xbf, 0xcc);
 const COOL_400: [f32; 4] = rgb8(0x94, 0x99, 0xa3);
+// The dark half of the same cool ramp. `COOL_600` is the rung `COOL_400` is on the other side of
+// mid: the LIGHT track's idle label, muted against its own material by exactly as much as
+// `TEXT_TERTIARY` is against the dark one.
+const COOL_600: [f32; 4] = rgb8(0x5a, 0x60, 0x6c);
 const COOL_850: [f32; 4] = rgb8(0x1f, 0x21, 0x29);
 const COOL_900: [f32; 4] = rgb8(0x14, 0x17, 0x1c);
 
@@ -322,8 +326,7 @@ pub const SCRIM_TEXT_A: f32 = 0.72;
 /// Near-black scrim at alpha `a` — hero/scroll dimming.
 pub const fn scrim(a: f32) -> [f32; 4] {
     [SCRIM_INK[0], SCRIM_INK[1], SCRIM_INK[2], a]
-}
-/// Pure-black scrim at alpha `a` — HUD/modal dimming.
+}/// Pure-black scrim at alpha `a` — HUD/modal dimming.
 pub const fn scrim_black(a: f32) -> [f32; 4] {
     [SCRIM_BLACK_INK[0], SCRIM_BLACK_INK[1], SCRIM_BLACK_INK[2], a]
 }
@@ -462,6 +465,67 @@ pub const GLASS_RIM: [f32; 4] = with_a(WHITE, 0.14);
 /// The same line on the TOP edge only, at double weight — `--glass-rim-light`. One light, from
 /// above, the direction every card shadow in this system already falls in.
 pub const GLASS_RIM_LIGHT: [f32; 4] = with_a(WHITE, 0.28);
+
+/// The lit edge's weight where the surface has the BRIGHTEST ground it will ever sit on.
+///
+/// [`GLASS_RIM`] and [`GLASS_RIM_LIGHT`] are the design system's constants and they are right for
+/// the ground the design was drawn over — a dark one. They are constants, though, and the edge they
+/// draw is not a colour but a RELATIONSHIP: a lit edge has to be brighter than the light it is
+/// catching. Measured on the panel against bright artwork, the .28 top line lands **34.9 L\* below
+/// its own ground**, which stops it being a local maximum across the edge at all — the profile runs
+/// 220 → 196 → 150 → 73 straight down, and an edge that is only a step on a monotone ramp reads as
+/// blur, not as a bevel. Reported as "the rim is harder to see than the buttons'", which is exactly
+/// right and is a comparison worth keeping: a control sits in the darkest quarter of the frame by
+/// construction, so its rim is the brightest thing at its boundary and never had this problem.
+///
+/// So the two constants become the FLOOR of a ramp that ends here, travelled with the ground — the
+/// same ground, and the same eased signal, the scrim density already follows. A dark ground still
+/// gets exactly `.14`/`.28` and nothing about that case moves.
+///
+/// **One, and one is safe rather than reckless, because the rim is a LERP.** `fs_glass.frag` mixes
+/// the surface TOWARD this colour, so the ceiling means "at the brightest ground this bar will ever
+/// sit on, the line is the line's own colour" — a 1px white hairline, which is what a lit edge over a
+/// bright sky looks like. It could not have been 1.0 while the rim was an ADDITION: there the value
+/// was an amount of light poured onto whatever was underneath, and 1.0 was a blown-out smear.
+pub const GLASS_RIM_MAX: f32 = 1.0;
+
+// ---- The standing track has ONE material -----------------------------------------------------
+//
+// It had two for a while: a black pair for dark artwork and a white pair for bright, with a
+// crossover between them. That is Apple's answer and it is a good one — over bright content their
+// chrome goes light and flips its ink — but it is a DISCRETE second state, and a discrete state has
+// to be decided every time the ground moves. Deciding it produced four reported bugs in one week: a
+// bar flipping back and forth on one unchanging hero, the same hero settling dark in one run and
+// light in the next, 1.6 s between the press and the material changing on a route change, and a
+// visible wrong-direction excursion while the decision was pending. Guarding it took a hysteresis
+// band, a commit window, a two-independent-readings rule, an override that woke the whole screen so
+// those readings could happen at all, a page-swap fast path and a frozen draw weight.
+//
+// A judging panel priced that against what the second polarity actually bought, on synthetic grounds
+// (`ui::testpat`) rather than on whatever poster happened to be up, and three of four lenses said
+// delete it. The measurements that decided it:
+//
+//   * with a brighter idle ink (`TEXT_READING` rather than `TEXT_TERTIARY`) the dark material sits
+//     at or near its floor for every ground up to L* 73, so the light one is not rescuing the common
+//     case — the two are BIT-IDENTICAL on 8 of 14 graded grounds;
+//   * on the real heroes it differs on, the light material wins only where the hero is uniformly
+//     bright, and wins there BY DISSOLVING: L* 97.4 against a L* 95.7 ground is 1.7 L* of
+//     separation, i.e. four words and a rim with no container under them;
+//   * on a hero whose ground is MIXED — half a dark building, half bright sky, which a census of a
+//     real library's rotation found is the median case, span 26.8 L* — the light material lands
+//     34.9 L* off the local ground on the dark half where the dark material lands 3.4 off. The
+//     Apple property it was imitating (sit close to your backdrop) is honoured by the material that
+//     replaced it.
+//
+// What remains is one black pair, solved per frame, and an ink bright enough that it rarely has to
+// ask for much. `docs/glass-hardware-budget.md` prices the surface; the deleted polarity is in the
+// history if it is ever wanted back.
+
+/// …and the focus pill's own RIM there: a specular hairline along the top edge — the same lamp the
+/// track's hairline comes from — over a perimeter kept two steps below anything that could read as
+/// an outline.
+pub const PILL_RIM_ON_LIGHT: [f32; 4] = with_a(BLACK, 0.08);
+pub const PILL_RIM_LIT_ON_LIGHT: [f32; 4] = with_a(WHITE, 1.0);
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).
 pub const OVERLAY_FOCUS_PILL: [f32; 4] = with_a(WHITE, 0.14);
 /// The shared top tab bar's **TRACK** — the recessed near-black capsule the tab pills sit in, and
@@ -518,9 +582,9 @@ pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
 /// frame it sits here on a dark backdrop and walks up the table only as far as the ground makes it,
 /// which on a bright hero measured .562 and on most heroes is this floor. The ink never moves,
 /// which is what the row's hierarchy is made of.
-pub const TAB_GLASS_TOP: [f32; 4] = scrim_black(0.34);
+pub const TAB_GLASS_TOP: [f32; 4] = scrim_black(0.20);
 /// The glass track's bottom stop — see [`TAB_GLASS_TOP`].
-pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.50);
+pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.36);
 /// The track material's two weights, exposed as alphas because the focused **profile chip** wears
 /// the same material and FADES it in with its unfurl (`scrim_black(A * e)`) — one material and one
 /// pair of weights whether it is painted at full strength or on the way in, which is what keeps the

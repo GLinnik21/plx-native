@@ -3033,6 +3033,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // precisely so an A/B costs one file and does not also change which screen you boot to —
         // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
         // `rm` rather than a redeploy.
+        crate::ui::testpat::boot();
         if crate::dev::flag("noidle") {
             crate::ui::idle::set_enabled(false);
             log("idle: present gate DISABLED by /tmp/plxnative-noidle");
@@ -3214,6 +3215,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // press::LONG_MS, `okup` — the only way to exercise a press-and-hold (and so
                         // the item menu) over the FIFO, since every other token is a tap.
                         remote_synth_key_edge(SDLK_RETURN, 0, tok == "okdown");
+                    } else if let Some(spec) = tok.strip_prefix("pat:") {
+                        // `pat:flat:40` — swap the SYNTHETIC GROUND live. A boot trigger could set
+                        // one, but a graded ladder needs a dozen of them in one session and a
+                        // trigger is read once; this is what makes a snapshot sweep a single
+                        // scripted line instead of a dozen launches that each land on a different
+                        // hero. See `ui::testpat`.
+                        if !crate::ui::testpat::set(spec) {
+                            crate::log(&format!("remote: unrecognised pattern {spec:?}"));
+                        }
                     } else if let Some(text) = tok.strip_prefix("txt:") {
                         // `txt:star+wars` — commit text as the system keyboard's IME would. The
                         // only way to get text into the app without a human: no trigger can raise

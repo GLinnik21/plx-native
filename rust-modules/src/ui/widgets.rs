@@ -299,8 +299,9 @@ impl Glass {
         radius: f32,
         tint: [f32; 4],
         rim: crate::gfx::GlassRim,
+        face: crate::gfx::GlassFace,
     ) -> bool {
-        p.backdrop_blur(r, rest_dy, radius, tint, rim)
+        p.backdrop_blur(r, rest_dy, radius, tint, rim, face)
     }
 
     /// Standard popover ground: glass + frost where available, the existing opaque sheet fallback
@@ -325,7 +326,9 @@ impl Glass {
     /// materials, and an edge is not part of what makes them different.
     pub(crate) fn panel(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
         let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
-        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Line) {
+        // A PANEL's frost is `theme::PANEL_FROST_*`, drawn as its own quad below — it is a sheet,
+        // not a container, and its edge is the shader's own specular. `GlassFace::NONE`.
+        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Line, crate::gfx::GlassFace::NONE) {
             crate::ui::profile::phase("glass.frost", || {
                 p.rect_rimmed(r, radius, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, theme::GLASS_RIM, boost);
             });
@@ -1924,8 +1927,15 @@ impl TabPill {
     /// says the labels "dim when I move", shaping this one call (`focus.powi(2)`, a smoothstep) is the
     /// whole fix — but do it HERE, not with a second spring, or the ink starts leading the fill.
     pub(crate) fn mixed_ink(focus: f32, selected: f32) -> [f32; 4] {
+        // **The idle ink is `TEXT_READING`, one rung brighter than the `TEXT_TERTIARY` this row wore
+        // for most of its life, and it is what pays for the whole material.** The scrim is solved so
+        // this ink clears [`TRACK_INK_CONTRAST`]: a muted grey needs .61 of black over the Office
+        // hero and .56 over a cyan sky, which is a band laid across the picture, while this one needs
+        // the floor for both. The row is louder for it — idle and selected are now two rungs apart
+        // rather than the full span — and the plate carries the difference, which is what the
+        // reference does too.
         theme::mix(
-            theme::mix(theme::TEXT_TERTIARY, theme::TEXT_PRIMARY, selected.clamp(0.0, 1.0)),
+            theme::mix(theme::TEXT_READING, theme::TEXT_PRIMARY, selected.clamp(0.0, 1.0)),
             crate::ui::ACCENT_INK,
             focus.clamp(0.0, 1.0),
         )
@@ -1978,6 +1988,10 @@ impl View for TabPill {
                 TabStyle::Segment { selected: true } if self.plated => (Some(theme::TAB_PLATE_SELECTED), theme::TEXT_PRIMARY, 1.0),
                 TabStyle::Segment { .. } if self.plated => (Some(theme::TAB_PLATE_IDLE), theme::TEXT_TERTIARY, 0.0),
                 TabStyle::Segment { selected: true } => (Some(theme::OVERLAY_FOCUS_PILL), theme::TEXT_PRIMARY, 1.0),
+                // `TEXT_TERTIARY` and not the standing track's brighter `TEXT_READING`, on purpose:
+                // this arm draws on a CONTROLLED ground (the detail page's season row) where nothing
+                // is solved, so the muted idle ink costs nothing and is the design-system default.
+                // See `a_settled_mixed_pill_is_the_boolean_look_it_replaced`.
                 TabStyle::Segment { .. } => (None, theme::TEXT_TERTIARY, 0.0),
             },
         };
@@ -2214,9 +2228,11 @@ impl TabStrip {
         };
         let sel_col = if plated { theme::TAB_PLATE_SELECTED_OVER } else { theme::OVERLAY_FOCUS_PILL };
         cap(&self.sel, sel_col, (glass && !plated).then_some(theme::GLASS_RIM));
-        // The FOCUS capsule keeps its flat near-white fill whatever the track is made of: it is the
-        // one thing on this row that must not read as a material, because the material is what
-        // everything else here is and focus has to be the exception.
+        // The FOCUS capsule keeps its near-white fill: it is the one thing on this row that must not
+        // read as a material, because the material is what everything else here is and focus has to
+        // be the exception. It wore two stops of shadow for a while — near-white on a near-white
+        // LIGHT track has no separation and had to be lifted instead — and that went with the light
+        // track it was drawn for.
         cap(&self.foc, crate::ui::ACCENT, None);
     }
     /// The `(focus, selected)` mixes pill `pill` (content-space `(x, w)`) should ink itself with —
@@ -2401,11 +2417,102 @@ static mut TOP_STRIP: TabStrip = TabStrip::new();
 /// machinery as a dynamic popover, without the modal's source-dim transform.
 static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 
+/// **How fast the drawn weight follows the solve, and why the two rates are not the same number.**
+///
+/// [`track_alpha_for`] is exact and it is also a STEP. The ground can only be read twice a second
+/// (a readback stalls a tiler — [`crate::gfx::sample_ground`] holds that reasoning) and the answer
+/// is one of 25 rungs, so applied straight to the draw the bar's weight changes in visible jumps as
+/// artwork moves under it. Reported from the panel as the bar "glitching", which is the right word
+/// for it: a material that steps does not read as responding to the picture, it reads as broken.
+/// So the solve stays a step and the DRAWN weight is a spring — the same answer, and for the same
+/// reason, that [`AmbientWash::K`] gives the page wash this bar shares its ground with.
+///
+/// The asymmetry is the contrast contract rather than taste. [`TRACK_INK_CONTRAST`] is a FLOOR the
+/// labels may not dip below, so the direction that protects them — getting darker — arrives at the
+/// pace of the page's own scrolling, while letting the scrim back off is purely cosmetic and can
+/// take almost twice as long. A ground that flickers therefore ratchets toward legible and releases
+/// lazily, which is the safe way round; a symmetric rate would spend half of every flicker under the
+/// floor the whole feature exists to hold.
+const K_TRACK_DENSITY_ATTACK: f32 = 220.0; // toward opaque — ~0.44 s, near the page's scroll rate
+const K_TRACK_DENSITY_RELEASE: f32 = 55.0; // back toward clear — ~0.89 s, slower than the wash
+
+/// Which of the two rates applies. Pure, so the asymmetry is host-testable without a framebuffer to
+/// read a ground out of.
+fn density_k(drawn: f32, want: f32) -> f32 {
+    if want > drawn { K_TRACK_DENSITY_ATTACK } else { K_TRACK_DENSITY_RELEASE }
+}
+
+/// The weight being drawn, and the one the ground last asked for.
+///
+/// `want` is published by the DRAW because the ground is framebuffer 0 and only the draw can read
+/// it; [`tab_row_update`] consumes it on the next frame. That one frame of lag is nothing against a
+/// value that eases over hundreds of milliseconds, and it is the only ordering that does not put a
+/// readback in the update phase.
+///
+/// `seeded` is what stops the bar dissolving in from nothing the first time it is drawn: a screen
+/// entry has no previous weight to travel from, so the first solve is taken whole. Every solve after
+/// it is travelled to.
+struct TrackDensity {
+    drawn: crate::ui::Spring,
+    want: f32,
+    seeded: bool,
+}
+static mut TRACK_DENSITY: TrackDensity = TrackDensity {
+    drawn: crate::ui::Spring::at(0.0),
+    want: 0.0,
+    seeded: false,
+};
+
+/// The weight to draw for `ground` this frame, publishing the weight it asked for.
+fn track_density(ground: [f32; 3]) -> f32 {
+    let want = track_alpha_for(ground);
+    unsafe {
+        let d = &mut *std::ptr::addr_of_mut!(TRACK_DENSITY);
+        d.want = want;
+        if !d.seeded {
+            d.seeded = true;
+            // `Spring::at`, not `jump`: there is no motion to report on a value that has never been
+            // drawn, and `jump`'s invalidate would repaint a screen that has nothing new on it.
+            d.drawn = crate::ui::Spring::at(want);
+        }
+        d.drawn.pos
+    }
+}
+
+/// Step the drawn weight toward the last solve.
+///
+/// Called from [`tab_row_update`] — the one function all three screens wearing this bar go through,
+/// and the same reason the strip's scroll and its capsules are stepped there rather than in each
+/// screen. On a still screen the readback returns the same bytes, so the solve is bit-identical, the
+/// spring is already on it, and `ui::idle` hears nothing: the present gate is not defeated by a bar
+/// that adapts.
+fn track_density_step(dt: f32) {
+    unsafe {
+        let d = &mut *std::ptr::addr_of_mut!(TRACK_DENSITY);
+        if d.seeded {
+            let k = density_k(d.drawn.pos, d.want);
+            d.drawn.step(d.want, k, dt);
+            // The whole point of this spring is that the weight is CONTINUOUS where the solve is
+            // not, and that is a per-frame claim — a twice-a-second `groundlog` line cannot show it.
+            crate::ui::anim::probe("tabtrack.density", d.drawn.pos, d.drawn.vel, d.want, dt);
+        }
+    }
+}
+
 /// The glass track's two scrim stops, with a dev override on the DENSITY.
 ///
+/// The weight is [`track_density`]'s — [`track_alpha_for`]'s solve after the attack/release spring,
+/// never the raw solve. The override bypasses both, which is what makes it a fixed-weight leg.
+///
 /// `/tmp/plxnative-tabglassdim=<0..1>` replaces [`theme::TAB_GLASS_TOP`]'s alpha and keeps the
-/// authored 0.08 spread to the bottom stop, so a sweep moves ONE variable. Absent, the theme's own
+/// authored spread to the bottom stop, so a sweep moves ONE variable. Absent, the theme's own
 /// values are returned and the draw is byte-identical.
+///
+/// **That spread is 0.16, not the 0.08 this paragraph claimed until a judging panel checked it** —
+/// the tokens are .34 and .50, which the paragraph below quotes correctly, so it contradicted itself
+/// in eight lines. It matters because the bottom stop is `a + spread` and nothing bounds it at
+/// [`theme::TAB_TRACK_A_TOP`]: a solve of .633 draws .793, past the point where there is anything
+/// left to see through, which is what makes a heavy bar read as paint rather than as glass.
 ///
 /// It exists because the shipped values are the one thing in this material nobody had graded. The
 /// flat track is `scrim_black(0.72..0.82)` and is sized to make the pills legible over ARBITRARY
@@ -2419,12 +2526,26 @@ static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 /// system's `--glass-track-*` landed — recovered from the rendered pixels as .34/.50 while chasing
 /// something else, which is how the drift was found.)
 fn tab_glass_stops(ground: [f32; 3]) -> ([f32; 4], [f32; 4]) {
-    let spread = theme::TAB_GLASS_BOT[3] - theme::TAB_GLASS_TOP[3];
+    let lo = theme::TAB_GLASS_TOP[3];
+    let hi = theme::TAB_TRACK_A_TOP;
+    let spread = theme::TAB_GLASS_BOT[3] - lo;
     let a = match crate::dev::read("tabglassdim").and_then(|v| v.parse::<f32>().ok()) {
         Some(a) if (0.0..=1.0).contains(&a) => a,
-        _ => track_alpha_for(ground),
+        _ => track_density(ground),
     };
-    (theme::scrim_black(a), theme::scrim_black((a + spread).min(1.0)))
+    // **THE SPREAD TAPERS AS THE SOLVE RISES, and it did not until a judging panel checked the
+    // arithmetic.** The bottom stop is `a + spread` and nothing bounded it: the solve is sized so the
+    // labels clear their contrast against the TOP stop, which is the lightest, and the bottom was
+    // free to run wherever it liked. On a near-white hero a solve of .633 drew a bottom stop of .793
+    // — past [`theme::TAB_TRACK_A_TOP`], the weight at which there is nothing left to see through,
+    // i.e. the flat capsule this material exists to replace, at the bottom of every heavy bar.
+    //
+    // Tapering costs nothing and takes nothing away from legibility, because the solve stays on the
+    // top stop either way. What goes is the opaque lower third, which is the thing that actually
+    // makes a heavy bar read as paint rather than as glass.
+    let k = ((a - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0);
+    let heavy = (a + spread * (1.0 - k)).min(hi);
+    (theme::scrim_black(a), theme::scrim_black(heavy))
 }
 
 /// sRGB -> linear, the WCAG transfer function.
@@ -2443,7 +2564,7 @@ fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
 
 /// The bar the track's idle labels have to clear — the same 3:1 the ambient-ground test holds a
 /// wash to, for the same ink.
-const TRACK_INK_CONTRAST: f32 = 3.0;
+const TRACK_INK_CONTRAST: f32 = 4.0;
 
 /// **The scrim weight this ground needs, solved per frame.** This is the answer to the one thing
 /// that kept defeating the material: a blur removes DETAIL, not brightness, so a fixed density is
@@ -2470,11 +2591,66 @@ fn track_alpha_for(ground: [f32; 3]) -> f32 {
         let a = lo + (hi - lo) * (i as f32 / steps as f32);
         let k = 1.0 - a;
         let face = [ground[0] * k, ground[1] * k, ground[2] * k, 1.0];
-        if contrast(theme::TEXT_TERTIARY, face) >= TRACK_INK_CONTRAST {
+        if contrast(theme::TEXT_READING, face) >= TRACK_INK_CONTRAST {
             return a;
         }
     }
     hi
+}
+
+/// **The lit edge's weight for a bar already drawn at `density`.**
+///
+/// The rim rides the density rather than sampling the ground a second time, and that is the whole
+/// design: [`track_alpha_for`] is already a monotone function of how bright the ground is, so the
+/// drawn density IS the ground's brightness, in the one form this bar has already eased. Deriving
+/// the edge from it means the two halves of the material cannot disagree again — which is the bug
+/// this fixes. Half of it followed the ground and half of it was a constant, so over bright artwork
+/// the bar darkened correctly and then wore an edge drawn for a ground it was no longer on.
+///
+/// `t` is where the density sits between its floor and its ceiling, so a dark ground (density
+/// pinned at the floor) returns [`theme::GLASS_RIM`] and [`theme::GLASS_RIM_LIGHT`] unchanged, to
+/// the bit. Every ground brighter than that travels toward [`theme::GLASS_RIM_MAX`], and the top
+/// keeps exactly twice the perimeter's weight the whole way — the one lamp does not move because
+/// the room got brighter.
+///
+/// Returns `(perimeter, lit)` — the ring and, over it, the edge facing the light.
+fn track_rim(density: f32) -> ([f32; 4], [f32; 4]) {
+    let lo = theme::TAB_GLASS_TOP[3];
+    let hi = theme::TAB_TRACK_A_TOP;
+    let k = ((density - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0);
+    // The ring travels: a white line runs out of room as the ground brightens, so it climbs the ramp
+    // toward `GLASS_RIM_MAX`, and the highlight keeps exactly twice the perimeter's weight the whole
+    // way — the one lamp does not move because the room got brighter.
+    let top = theme::GLASS_RIM_LIGHT[3] + (theme::GLASS_RIM_MAX - theme::GLASS_RIM_LIGHT[3]) * k;
+    (theme::with_a(theme::GLASS_RIM, top * 0.5), theme::with_a(theme::GLASS_RIM, top))
+}
+
+/// **Which way the standing track answers the contrast question, and how far along it is.**
+///
+/// [`track_alpha_for`] puts black between the labels and the picture, and over bright artwork that
+/// answer runs out at .69 — the flat capsule this material was built to replace. The other answer is
+/// to go LIGHT and flip the ink, which clears the same 3:1 while leaving a bright scene looking
+/// bright. Both are the same rule; only the sign differs, and the row carries a 0..1 blend between
+/// them rather than an enum, because the way from one to the other has to be a fade.
+///
+/// The polarity follows the ENVIRONMENT — the room decides, and then the alpha inside that polarity
+/// is solved exactly as before. The alternative rule, "pick whichever needs less material", turns
+/// out to AGREE with it everywhere, and that agreement is worth recording rather than relying on: it
+/// holds only because the two inks are muted by the same amount ([`theme::TAB_LIGHT_INK`] is
+/// `COOL_600` against [`theme::TEXT_TERTIARY`]'s `COOL_400`, one ramp, opposite sides of mid).
+/// Measured over a dark grid the light polarity wants **.652** where the dark one wants its **.340**
+/// floor, and over bright artwork the two swap to .300 against .688. Swap either ink for a
+/// near-black one and the cost rule starts putting a light bar over a dark grid; the lightness rule
+/// does not depend on the ink at all, which is why it is the one written down.
+/// CIE L\* of an opaque colour — how LIGHT it looks, on the axis a person judges it on.
+///
+/// Not [`contrast`]'s WCAG ratio, and the difference decided the rim: that ratio carries a +0.05
+/// flare term built for text legibility, which compresses hard at the dark end and says a rim over
+/// a dark ground has LESS contrast than the same rim over a bright one — the opposite of what the
+/// panel shows. For "how visible is this edge" and "is this room bright", L\* is the instrument.
+fn lstar(c: [f32; 4]) -> f32 {
+    let y = rel_luma(c);
+    if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
 }
 
 /// The widest a track may be and still wear glass — the design system's `--glass-track-max`.
@@ -2676,6 +2852,9 @@ pub(crate) fn tab_row_update(selected: c_int, focused: c_int, dt: f32) {
     unsafe { (*addr_of_mut!(TAB_SCROLL)).step(t, K_TAB_SCROLL, dt) };
     let s = unsafe { addr_of!(TAB_SCROLL).read() };
     crate::ui::anim::probe("tabrow.scroll", s.pos, s.vel, t, dt);
+    // The track's own weight follows its ground here for the same reason the capsules move here:
+    // three screens draw this bar and none of them should have to remember to animate it.
+    track_density_step(dt);
 }
 
 /// Put pill `idx` on screen at once (no glide). For screen ENTRY — the Library screen opened
@@ -2777,7 +2956,13 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // hero standing behind the Library's bar after a route change
         // The PIXELS, sampled at a low rate; the flat app grey when the readback is refused, which
         // is also the honest answer on the two screens that really do have it up there.
-        let ground = crate::gfx::sample_ground([track.x, track.y, track.w, track.h])
+        // …and never DURING a route transition: `nav` dips the page under this bar while the bar
+        // itself holds still, so those pixels are the app ground fading, not the screen's colour.
+        let settled = crate::ui::nav::page_alpha() >= 0.999;
+        // …and FASTER while a polarity is being decided: the decision is gated on two independent
+        // readings, so the sampler's rate is the decision's rate, and every frame of it is spent
+        // showing the material the bar is about to stop being.
+        let ground = crate::gfx::sample_ground([track.x, track.y, track.w, track.h], settled)
             .unwrap_or([theme::SURFACE_APP[0], theme::SURFACE_APP[1], theme::SURFACE_APP[2]]);
         // `/tmp/plxnative-groundlog` — the density is now a FUNCTION of something invisible, so the
         // instrument that says what it read and what it chose is not optional. It is how the first
@@ -2786,10 +2971,22 @@ pub(crate) fn draw_tab_row(p: Painter) {
         if crate::dev::flag("groundlog") {
             static mut LAST: u32 = 0;
             let n = unsafe { LAST };
-            if n % 60 == 0 {
+            if n % 20 == 0 {
+                // BOTH weights: the solve is a step twice a second and the drawn one eases to
+                // it, so a single number could not tell "the ground moved" from "the bar is still
+                // travelling" — which is the whole question this instrument now has to answer.
+                // through `track_density` rather than off the static: it is idempotent within a
+                // frame, and reading the static raw printed the seed value 0.000 on the one frame
+                // the bar had never been drawn — an instrument's first line reading as a bug in the
+                // thing it was armed to watch.
+                let drawn = track_density(ground);
                 crate::log(&format!(
-                    "track_ground rgb={:.3},{:.3},{:.3} alpha={:.3}",
-                    ground[0], ground[1], ground[2], track_alpha_for(ground)
+                    "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}",
+                    ground[0], ground[1], ground[2],
+                    lstar([ground[0], ground[1], ground[2], 1.0]),
+                    crate::gfx::ground_span(),
+                    track_alpha_for(ground), drawn,
+                    track.x, track.y, track.w, track.h,
                 ));
             }
             unsafe { LAST = n.wrapping_add(1) };
@@ -2811,39 +3008,34 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
                 // edge and becomes most of the object.
                 crate::gfx::GlassRim::Line,
+                {
+                    let (gt, gb) = tab_glass_stops(ground);
+                    let (rim, rim_lit) = track_rim(gt[3]);
+                    crate::gfx::GlassFace { scrim_top: gt, scrim_bot: gb, rim, rim_lit, rim_w: 1.0 }
+                },
             ) {
-                let (gt, gb) = tab_glass_stops(ground);
-                // The darkening, then THE RIM ON TOP OF IT — `inset 0 0 0 1px var(--glass-rim),
-                // inset 0 1px 0 var(--glass-rim-light)`, which is the whole of what the design
-                // system draws on this container. Not [`theme::CARD_SHEEN`], which is the tiles'
-                // .22 and belongs to a card; and not the shader's own hairline, which sits UNDER
-                // the scrim (`GlassRim::Line` turns it off) and so cannot be a weight.
+                // NOTHING IS DRAWN HERE ANY MORE, and that is the fix. The darkening and the edge —
+                // `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)`, the whole
+                // of what the design system puts on this container — used to be a SECOND rounded rect
+                // over the backdrop, and two surfaces of one shape means two antialiased edges, each
+                // blending its own colour against the page. They ride inside the surface now, as its
+                // `GlassFace`; `fs_glass.frag` composites scrim then rim then coverage, in that order.
                 //
-                // Two lines, because one light: .14 the whole way round, .28 along the top.
+                // The two weights are still one ring: `theme::GLASS_RIM` .14 the whole way round plus
+                // the difference up to `theme::GLASS_RIM_LIGHT` .28 on the edge facing the light,
+                // boosted by the surface NORMAL so it dies out along each cap's arc. It was a second
+                // ring scissored to the top half for one build, and the scissor lands exactly on the
+                // widest point of a cap — a hard step from .28 to .14 in the middle of a curve, which
+                // reads as the outline snapping off. Reported from a screenshot before it was measured.
                 //
-                // The second is the SAME ring, scissored to the upper half — not a straight run
-                // between the caps' tangents, which is what it was for one build and which reads
-                // as a bright line floating over the bar with two cut ends. `inset 0 1px 0` on a
-                // rounded box follows the arc; a segment that stops where the curve begins leaves
-                // the .14 perimeter to carry on alone at half the weight, and over a dark hero the
-                // eye reads the step as the line ending rather than as the edge turning.
-                // Photographed over three heroes before it was believed.
-                // ONE ring, two weights: [`theme::GLASS_RIM`] .14 the whole way round, plus the
-                // difference up to [`theme::GLASS_RIM_LIGHT`] .28 on the edge that faces the light.
-                // The boost is a function of the surface normal, so it dies out along each cap's
-                // arc. It was a second ring scissored to the top half for one build, and the
-                // scissor lands exactly on the widest point of a cap — a hard step from .28 to .14
-                // in the middle of a curve, which reads as the outline snapping off. Reported from
-                // a screenshot before it was measured.
-                p.rect_rimmed(
-                    track,
-                    track.h * 0.5,
-                    gt,
-                    gb,
-                    theme::GLASS_RIM,
-                    theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3],
-                );
+                // And the weight TRAVELS with the ground (`track_rim`), because a lit edge is a
+                // relationship and not a colour — `theme::GLASS_RIM_MAX` carries that measurement.
+                // The ring is white in both weights: it was a PAIR while the track had two
+                // polarities, an ink line for the light one and a light line for the dark, and the
+                // ink half went with the polarity.
             } else {
+                // …and the same here: the chain refused, so the flat dark material is what draws —
+                // said to the spring, not to the value the spring publishes. See the note below.
                 p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
             }
         } else {
@@ -2856,6 +3048,11 @@ pub(crate) fn draw_tab_row(p: Painter) {
             if !crate::gfx::blur_source_pass() {
                 unsafe { (*std::ptr::addr_of_mut!(TAB_GLASS_STATE)).deactivate() };
             }
+            // The flat capsule, which is the same material at its ceiling — there is nothing for
+            // this path to say about ink any more. It once wrote the row's POLARITY here, and that
+            // was a reported bug twice over: the write clobbered a value the spring owned, so the
+            // next frame cut it back, and the hysteresis read the same clobbered value and walked
+            // the committed polarity across with it. Both are gone with the polarity itself.
             p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
         }
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
@@ -4273,6 +4470,31 @@ mod tests {
         assert!(z.is_finite(), "…and does not divide by zero into a NaN that would poison every ink");
     }
 
+    /// A fixture in the shape the two tests below need: seeded, in one material, with the OTHER
+    
+    /// The contrast floor is a floor, so the two rates are not one rate: the bar darkens at the
+    /// page's own pace and clears at roughly half it. Symmetric rates would spend half of every
+    /// flicker under `TRACK_INK_CONTRAST`, which is the one thing the adaptive weight exists to hold.
+    #[test]
+    fn the_track_darkens_faster_than_it_clears() {
+        let _g = serial_for_motion();
+        assert!(
+            density_k(0.40, 0.60) > density_k(0.60, 0.40),
+            "getting darker protects the labels; getting lighter is cosmetic"
+        );
+        let dt = 1.0 / 60.0;
+        let mut attack = crate::ui::Spring::at(0.40);
+        attack.step(0.60, density_k(0.40, 0.60), dt);
+        let mut release = crate::ui::Spring::at(0.60);
+        release.step(0.40, density_k(0.60, 0.40), dt);
+        assert!(
+            (attack.pos - 0.40).abs() > (release.pos - 0.60).abs(),
+            "over the same distance and one frame, attack covered {:.4} and release {:.4}",
+            (attack.pos - 0.40).abs(),
+            (release.pos - 0.60).abs(),
+        );
+    }
+
     /// The capsule/strip tests drive `Capsule::step`, whose landing frame `Spring::jump`s — and
     /// `Spring::jump` reports to `ui::idle`'s process-global dirty flag. So they are serial by
     /// obligation, not precaution (`xfade.rs`'s rule): under parallel libtest they intermittently
@@ -4392,8 +4614,16 @@ mod tests {
     }
 
     /// Every RESTING state a strip-driven pill can be in must be the look it replaced, to the bit —
-    /// this is the whole reason the mix lerps between the same three ink roles the boolean arms pick
-    /// from rather than inventing a ramp of its own.
+    /// this is the whole reason the mix lerps between the same ink roles the boolean arms pick from
+    /// rather than inventing a ramp of its own.
+    ///
+    /// **The IDLE role is the one deliberate exception, and it is a fact about grounds rather than
+    /// about pills.** The strip-driven row is the standing tab track: it sits on glass over
+    /// uncontrolled artwork, and its scrim is solved so this ink clears [`TRACK_INK_CONTRAST`] — a
+    /// muted `TEXT_TERTIARY` there costs .61 of black over a bright hero, which is a band laid across
+    /// the picture rather than a material. The boolean arms are the detail page's season tabs, drawn
+    /// bare on a controlled dark ground where nothing is solved and the muted ink is right. Two
+    /// grounds, two answers; the roles they SHARE still have to agree to the bit.
     #[test]
     fn a_settled_mixed_pill_is_the_boolean_look_it_replaced() {
         // "to the bit" means to the PANEL's bit: a lerp that lands on its endpoint still carries a
@@ -4408,13 +4638,64 @@ mod tests {
                 );
             }
         };
-        is(TabPill::mixed_ink(0.0, 0.0), theme::TEXT_TERTIARY, "plain segment");
+        is(TabPill::mixed_ink(0.0, 0.0), theme::TEXT_READING, "plain segment on glass");
+        assert_ne!(
+            theme::TEXT_READING, theme::TEXT_TERTIARY,
+            "the fixture is meaningless if the two idle inks have converged"
+        );
         is(TabPill::mixed_ink(0.0, 1.0), theme::TEXT_PRIMARY, "selected, focus elsewhere");
         is(TabPill::mixed_ink(1.0, 0.0), crate::ui::ACCENT_INK, "focused");
         is(TabPill::mixed_ink(1.0, 1.0), crate::ui::ACCENT_INK, "focus outranks selection");
         // out-of-range mixes clamp rather than extrapolating past the tokens
         is(TabPill::mixed_ink(-1.0, 4.0), theme::TEXT_PRIMARY, "an over-range selection clamps");
         is(TabPill::mixed_ink(9.0, -9.0), crate::ui::ACCENT_INK, "an over-range focus clamps");
+    }
+
+    /// **The bottom stop may not run past the ceiling.** The solve sizes the scrim so the labels
+    /// clear their floor against the TOP stop, which is the lightest of the pair, and the bottom was
+    /// free to be `a + spread` however heavy `a` got. Past [`theme::TAB_TRACK_A_TOP`] there is
+    /// nothing left to see through, so a bar drawn there has stopped being glass at its lower edge —
+    /// which is the flat capsule this material replaced, reintroduced under every heavy bar. Found by
+    /// a judging panel doing the arithmetic, not by looking.
+    #[test]
+    fn the_pair_never_draws_past_the_weight_where_glass_stops_being_glass() {
+        let _g = serial_for_motion();
+        let restore = unsafe { std::ptr::addr_of!(TRACK_DENSITY).read() };
+        let mut prev = 0.0f32;
+        for i in 0..=40 {
+            // a neutral ground swept the whole way up, so the solve sweeps its whole range
+            let v = i as f32 / 40.0;
+            unsafe {
+                *std::ptr::addr_of_mut!(TRACK_DENSITY) =
+                    TrackDensity { drawn: crate::ui::Spring::at(0.0), want: 0.0, seeded: false }
+            };
+            let (top, bot) = tab_glass_stops([v, v, v]);
+            assert!(
+                bot[3] <= theme::TAB_TRACK_A_TOP + 1e-6,
+                "ground {v:.2}: bottom stop {:.3} is past the ceiling {:.3}",
+                bot[3], theme::TAB_TRACK_A_TOP
+            );
+            assert!(bot[3] >= top[3] - 1e-6, "ground {v:.2}: the pair inverted");
+            assert!(top[3] >= prev - 1e-6, "ground {v:.2}: the top stop went backwards");
+            prev = top[3];
+        }
+        unsafe { *std::ptr::addr_of_mut!(TRACK_DENSITY) = restore };
+    }
+
+    /// A dark ground keeps the authored pair to the bit — that is the case the tokens were drawn
+    /// for, and the taper must not disturb it.
+    #[test]
+    fn a_dark_ground_draws_the_authored_pair_exactly() {
+        let _g = serial_for_motion();
+        let restore = unsafe { std::ptr::addr_of!(TRACK_DENSITY).read() };
+        unsafe {
+            *std::ptr::addr_of_mut!(TRACK_DENSITY) =
+                TrackDensity { drawn: crate::ui::Spring::at(0.0), want: 0.0, seeded: false }
+        };
+        let (top, bot) = tab_glass_stops([0.0, 0.0, 0.0]);
+        unsafe { *std::ptr::addr_of_mut!(TRACK_DENSITY) = restore };
+        assert!((top[3] - theme::TAB_GLASS_TOP[3]).abs() < 1e-6, "top {:.4}", top[3]);
+        assert!((bot[3] - theme::TAB_GLASS_BOT[3]).abs() < 1e-6, "bot {:.4}", bot[3]);
     }
 
     /// **The plated composite**, which is arithmetic and therefore has no business being graded by

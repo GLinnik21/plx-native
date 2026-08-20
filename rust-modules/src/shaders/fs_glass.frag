@@ -57,6 +57,25 @@ uniform vec4 u_edge;         // edge-light colour; alpha 0 disables
 uniform vec3 u_light;        // xy = direction TO the light, panel-local; z = counter-side shading
 uniform vec4 u_spec;         // xy = the specular AXIS; z = tightness; w = strength (0 disables)
 uniform float u_noise;       // dither amplitude
+uniform float u_rimw;        // rim width in px, for the band above
+// THE CONTAINER'S OWN SCRIM AND EDGE, composited HERE rather than as a second draw on top.
+// A translucent panel used to be two surfaces of one shape — the backdrop, then a rimmed rect over
+// it — and two surfaces means two antialiased edges, each blending its own colour against the page.
+// The glass's edge paints the BLURRED interior, which along the bottom of a bar is content from
+// UNDER it: measured on the light material, a half-covered boundary pixel came out at 214 against a
+// 220 page and a 236 face, darker than either side, and on a curve that reads as a dotted line
+// following the arc. One surface has one coverage and cannot do that. (Double antialiasing was NOT
+// the culprit and was measured first: it costs two codes, not fourteen.)
+uniform vec4 u_scrim_top;    // the scrim's stops, top and bottom; alpha 0 disables the whole block
+uniform vec4 u_scrim_bot;
+uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
+// THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
+// two polarities being one material and being two. The lamp is above; the grain facing it catches
+// light whether the surface is dark or light, so the HIGHLIGHT is white in both. What the polarity
+// changes is the PERIMETER: white on a dark material, ink on a light one, where it reads as contact
+// rather than as light. Carried as one weight on one colour, the light material's top edge came out
+// the darkest thing on the bar, which is a lamp underneath the floor.
+uniform vec4 u_rimlit;       // colour + weight of the edge facing the light (alpha 0 = none)
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
   highp vec2 q = abs(p) - b + vec2(r);
@@ -81,6 +100,10 @@ void main(){
   // fetch and nothing else. The branch is coherent across a tile, which is what makes it pay here.
   if (d < -u_bevel) {
     vec3 flat_rgb = texture2D(u_tex, v_cuv).rgb * u_tint.rgb;
+    // The scrim reaches here too — this is most of the surface. The rim does not: it is a band at
+    // the edge and `rimShape` below is zero this far in, which is what makes skipping it exact.
+    vec4 fsc = mix(u_scrim_top, u_scrim_bot, clamp(v_p.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));
+    flat_rgb = mix(flat_rgb, fsc.rgb, fsc.a);
     flat_rgb += (hash(gl_FragCoord.xy) - 0.5) * u_noise;
     gl_FragColor = vec4(flat_rgb, u_tint.a);
     return;
@@ -115,7 +138,35 @@ void main(){
   // stops being a perimeter and becomes two marks.
   float lobe = pow(abs(dot(nrm, u_spec.xy)), u_spec.z);
   rgb += u_edge.rgb * (hair * u_spec.w * (0.45 + 0.55 * lobe));
+  // The container's own SCRIM, then ITS RIM on top of that, both before coverage — the order they
+  // are read in, and the reason this surface is now the only one of its shape.
+  vec4 sc = mix(u_scrim_top, u_scrim_bot, clamp(v_p.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));
+  rgb = mix(rgb, sc.rgb, sc.a);
+  // A LERP, not an addition, and that is the whole of why a DARK edge can exist at all. The rim was
+  // `rgb += rimcol * weight`, which can only ever ADD light: a near-black rim added near-nothing, so
+  // the light material simply had no edge once the black ring that had been standing in for one was
+  // fixed. Mixing TOWARD the colour lets one expression draw a white line on a dark material and an
+  // ink line on a light one, at the same stated weight.
+  float rimShape = smoothstep(-u_rimw - 0.75, -u_rimw + 0.75, d) * (1.0 - smoothstep(-0.5, 0.5, d));
+  float rimw = clamp(rimShape * u_rimcol.a, 0.0, 1.0);
+  rgb = mix(rgb, u_rimcol.rgb, rimw);
+  // …then the highlight, OVER the perimeter, on the side facing the light. +y is DOWN, so the top
+  // edge's normal is (0,-1): full weight there, nothing at either cap's widest point, nothing along
+  // the bottom. It dies out ALONG the arc rather than being scissored on it — a hard cut lands at
+  // the widest point of a cap and reads as the outline snapping off in mid-air.
+  float litw = clamp(rimShape * u_rimlit.a * max(-nrm.y, 0.0), 0.0, 1.0);
+  rgb = mix(rgb, u_rimlit.rgb, litw);
+  rimw = max(rimw, litw);
   rgb += (hash(gl_FragCoord.xy) - 0.5) * u_noise;
+  // Coverage in the alpha only — see the note in fs_src.frag. The interior early-out above already
+  // emits `flat_rgb` unpremultiplied, so this is also what makes the two exits of this shader agree:
+  // they disagreed by a factor of `cov` for every fragment in the bevel band.
+  // THE RIM MAY EXCEED THE SURFACE'S OWN COVERAGE, and it has to. `rimShape` peaks half a pixel
+  // outside the boundary, exactly where `cov` is already falling, so a rim bounded by coverage is a
+  // rim that fades out with the edge it is supposed to be drawing — measured, the dark material's
+  // white top line dropped from 249 to 210 against a 220 ground, i.e. from a hairline to nothing.
+  // Raising the alpha is what the old second surface did with `a = max(a, rim)`; this is the same
+  // rule, now inside the one surface.
   float cov = 1.0 - smoothstep(-1.0, 1.0, d);
-  gl_FragColor = vec4(rgb * cov, u_tint.a * cov);
+  gl_FragColor = vec4(rgb, max(u_tint.a * cov, clamp(rimw, 0.0, 1.0)));
 }
