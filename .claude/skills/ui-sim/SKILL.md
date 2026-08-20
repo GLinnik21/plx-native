@@ -32,6 +32,18 @@ make sim-shot                  # headless: boot, settle, write ONE png, exit
 make sim-run                   # interactive: opens a window, Ctrl-C to quit
 ```
 
+**Ask for `SIM_W=1920 SIM_H=1080` on any shot you intend to JUDGE.** The window is otherwise sized
+to fit the display (`app.rs::desktop_window_size`), and on a 1x screen that divisor lands on 2, so
+every screenshot comes back 960x540 — half the canvas the UI is authored at. A 1px edge-sheen, a
+hairline, a snapped glyph and a specular rim are exactly the things that do not survive that
+halving, which makes a shot at the default size evidence about layout and nothing else. The window
+may then be larger than the display; for a headless grab that is fine, because the drawable is the
+window's own framebuffer, not the part of it a compositor happens to show.
+
+```sh
+make sim-shot SIM_DIR=$D SIM_W=1920 SIM_H=1080 SIM_SHOT=$D/home.png
+```
+
 `SIM_DIR` is the **instance root** — the whole point of the design. Give every concurrent
 simulator its own:
 

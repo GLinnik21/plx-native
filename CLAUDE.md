@@ -582,7 +582,13 @@ the perf gates), and `make test` = `deploy` + `run`.
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
   18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"
-  line in `tests/README.md` is an unmeasured hypothesis**, not a finding. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
+  story is MEASURED AND REFUTED** (2026-08-19): a control leg holds 60/60/60 across six runs on a
+  set up 2 h 15 m under continuous load, and what actually produces a 50 fps reading is **arming a
+  profiler** — `frame.ui` brackets every frame with two `glFinish`es and drops a 60 fps leg to 45.
+  **Never quote `fps=` from a run with `/tmp/plxnative-profile` or `/tmp/plxnative-hwcnt` armed**;
+  take pacing in a separate unarmed run. What this hardware WILL give you, priced in frames and
+  milliseconds for design rather than in cycles, is **`docs/glass-hardware-budget.md`**; the
+  instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
   heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly.
@@ -618,7 +624,16 @@ the perf gates), and `make test` = `deploy` + `run`.
   swaps the frame at once; pair `audio` with `/tmp/plxnative-nopass` for the PLEX PASS capsule
   line. It feeds the real `player::error_shape`, and forces the STATE only at
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
-  and the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
+  `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
+  (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hbars:<px>`, `hue[:L*]`, `rainbow[:L*]`,
+  `solid:<deg>[:L*]`), drawn as page content so it is exactly what the tab track samples and what
+  the backdrop blur sources. The remote token **`pat:<spec>`** changes it live, which is what makes a
+  graded ladder one scripted run instead of a dozen launches that each land on a different hero;
+  `tools/glass-patterns.py` drives that ladder and assembles the contact sheets. It exists because
+  judging a glass material against whatever poster the hero happened to be showing is not
+  repeatable — the hero advances on its own clock and two simulators launched together drift apart
+  within seconds — and two comparisons were silently mis-paired that way before it did.
+  And the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
   `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and the
   Search pair: `/tmp/plxnative-search[=<query>]` (boot straight into Search with the field already

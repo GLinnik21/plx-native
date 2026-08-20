@@ -12,7 +12,9 @@ use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
 use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0};
+use crate::ui::widgets::{
+    AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0,
+};
 // `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
 // doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
 use crate::ui::{guard, hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
@@ -1513,6 +1515,11 @@ pub(crate) fn home_draw() {
         // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands
         // in for the hero and grid above it), so the top chrome below still paints over it.
         draw_status(&env, pc);
+        // …and, when armed, the SYNTHETIC ground replaces all of it: drawn here so it is what the
+        // bar samples and what the backdrop blur sources, and on the page's own alpha so a route
+        // change still dips it. `testpat` is a no-op unless a spec is set.
+        crate::ui::testpat::underlay(pc);
+        crate::ui::testpat::draw(pc);
         // the centered library tab pills (shared with the Library screen): Home is the selected
         // tab here and a pill holds focus when the hero top band is on it, both of which the row's
         // own travelling capsules already carry — `home_update` hands them down every frame.

@@ -72,8 +72,13 @@ ALL_TRIGGERS = [
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
-    # UI/FPS scenes (plxnative-profile MUST be cleared — a stale one glFinish-tanks FPS and false-fails)
+    # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)
     "plxnative-detailosc", "plxnative-info", "plxnative-chapters", "plxnative-profile",
+    "plxnative-hwcnt", "plxnative-glassboth", "plxnative-glasshz",
+    # the track's material and the instruments that override or narrate it. `flattabs` is the one
+    # that MUST be cleared: it swaps the shipped material for the flat capsule, so a leftover turns
+    # every glass assertion into a measurement of something else.
+    "plxnative-tabglassdim", "plxnative-flattabs", "plxnative-groundlog",
     # boot-flow triggers (heroidx pins the hero + bypasses the who's-watching picker; pickuser forces it)
     "plxnative-heroidx", "plxnative-pickuser",
     # itemmenu snaps into the grid and opens the press-and-hold card context menu (route=itemmenu)

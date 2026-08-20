@@ -265,6 +265,145 @@ pub const SURFACE_PANEL: [f32; 4] = NEUTRAL_650;
 pub const PANEL_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.985);
 /// Near-opaque sheet gradient — bottom stop (kept distinct; the gradient is deliberate).
 pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
+/// The FROSTED sheet's gradient — top stop: the same two greys as [`PANEL_TOP`]/[`PANEL_BOT`] at
+/// the alpha a real backdrop blur allows, and the same material as far as the palette is concerned.
+///
+/// It is a separate pair rather than a lower alpha passed at the call site because the two are not
+/// interchangeable: `.985` over an unknown background is the panel *being* its own ground, and this
+/// one is only legal ON TOP of [`Painter::backdrop_blur`](crate::ui::Painter::backdrop_blur) — a
+/// panel that draws it without one is a translucent hole onto whatever the page had there.
+/// [`Popover::panel`](crate::ui::popover::Popover::panel) is what keeps the two paired.
+///
+/// The value is the legibility floor, not a taste knob: at .72 a `TEXT_TERTIARY` sub-line still
+/// clears 4.5:1 over the brightest ground a blurred poster shelf produces (the blur removes detail,
+/// it does not cap luminance), and every rung below that was measured against a white poster.
+/// **The material scale, named rather than numbered — SwiftUI's `Material` is the vocabulary.**
+///
+/// Every glass surface in this app used to be described by two unrelated numbers written at its own
+/// call site: a frost alpha in `theme` and, once the bar's blur was lightened, a sample radius in
+/// `gfx`. Two numbers for one idea drift, and the drift is invisible — a panel can end up dense and
+/// crisp, or thin and soft, neither of which is a material anybody chose.
+///
+/// So it is one named thing with two halves, and the halves move together. The names mean what they
+/// mean in SwiftUI: how much of the material there is between the eye and the page.
+///
+/// **Why a menu is not a bar.** The blur chain produces ONE snapshot per frame, shared by every
+/// surface, so lightening it so the tab bar can pass a television's picture through lightened the
+/// menus with it — the wrong direction for a menu. The reference settles which way each goes: in one
+/// screenshot of iOS 26's TV app, the posters behind the tab BAR are readable and behind the context
+/// MENU directly above it almost nothing is. A menu is a surface you read and act on and earns its
+/// opacity; a bar is chrome you look past.
+///
+/// The second half is a wider RE-SAMPLE of the shared snapshot — four extra bilinear fetches on a
+/// plus-cross, confined to the surface's own fragments — rather than a second chain, which would
+/// mean another pair of targets and another set of passes for a surface that is on screen a few
+/// seconds at a time. `UltraThin`'s zero restores the single fetch exactly, which is what the tab
+/// track takes.
+///
+/// **The track's frost is NOT read from here** and cannot be: it is solved every frame against the
+/// ground so its labels clear their contrast (`widgets::track_alpha_for`). The track takes this
+/// scale only for its sample radius. Everything else — panels, sheets, the loading capsule — takes
+/// both halves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Material {
+    /// The bar's own: no extra sample at all, so the page comes through as sharp as the chain left it.
+    UltraThin,
+    Thin,
+    /// A sheet: readable through, but no longer a window.
+    Regular,
+    /// A menu — what a popover takes. Dense enough to read against, soft enough not to compete.
+    Thick,
+    UltraThick,
+}
+
+impl Material {
+    /// The frost alpha a surface that draws its own material over the backdrop uses.
+    pub const fn frost(self) -> f32 {
+        match self {
+            Self::UltraThin => 0.28,
+            Self::Thin => 0.45,
+            Self::Regular => 0.60,
+            Self::Thick => 0.72,
+            Self::UltraThick => 0.85,
+        }
+    }
+
+    /// The extra sample radius in authored px — see the note above.
+    pub const fn deep(self) -> f32 {
+        match self {
+            Self::UltraThin => 0.0,
+            Self::Thin => 1.5,
+            Self::Regular => 3.0,
+            Self::Thick => 5.0,
+            Self::UltraThick => 8.0,
+        }
+    }
+
+    /// `/tmp/plxnative-material=<ultrathin|thin|regular|thick|ultrathick>` — the panel's material,
+    /// swept. Absent, [`PANEL_MATERIAL`] stands.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "ultrathin" => Self::UltraThin,
+            "thin" => Self::Thin,
+            "regular" => Self::Regular,
+            "thick" => Self::Thick,
+            "ultrathick" => Self::UltraThick,
+            _ => return None,
+        })
+    }
+}
+
+/// What a popover is made of. The bar is [`Material::UltraThin`] by construction — it takes no extra
+/// sample — and solves its own frost; everything else states its material here.
+///
+/// **`UltraThick`, chosen on a real poster rather than a synthetic ground**, because the thing a
+/// menu has to survive is exactly a busy one: laddered over a shelf of artwork, the row ink runs
+/// 7.2 : 8.7 : 10.3 : 11.8 : 13.5 to one across the five, and what the eye reads is where the
+/// artwork stops competing with the words. At `Thick` a poster's title lettering still comes
+/// through under "Remove from Deck"; at `UltraThick` the rows are clean while the artwork's shapes
+/// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
+/// context menu passes almost nothing of the page behind it.
+pub const PANEL_MATERIAL: Material = Material::UltraThick;
+
+#[cfg(test)]
+mod material_tests {
+    use super::Material::*;
+    use super::*;
+
+    /// **The scale has to be a scale.** Both halves are hand-picked numbers in a `match`, and a
+    /// `Thin` denser than `Regular` — or softer than `UltraThin` — is a silent design error: nothing
+    /// fails, the name simply stops meaning what it says, and every call site that reads as a
+    /// deliberate choice becomes a lie. The ORDER is the contract; the values are taste.
+    #[test]
+    fn the_material_scale_only_ever_thickens() {
+        let ladder = [UltraThin, Thin, Regular, Thick, UltraThick];
+        for w in ladder.windows(2) {
+            assert!(w[1].frost() > w[0].frost(),
+                "{:?} must be denser than {:?} ({} vs {})", w[1], w[0], w[1].frost(), w[0].frost());
+            assert!(w[1].deep() > w[0].deep(),
+                "{:?} must be softer than {:?} ({} vs {})", w[1], w[0], w[1].deep(), w[0].deep());
+        }
+        // The bar's end of the scale takes NO extra sample: `fs_glass.frag` skips the four extra
+        // fetches entirely at zero, which is what makes "the tab track costs nothing for this"
+        // true rather than approximately true.
+        assert_eq!(UltraThin.deep(), 0.0, "the thinnest material must be the single-fetch one");
+    }
+
+    /// Every name the sweep accepts round-trips, so `plxnative-material` cannot silently fall back
+    /// to the default on a typo it half-recognises.
+    #[test]
+    fn every_material_parses_from_its_own_name() {
+        for m in [UltraThin, Thin, Regular, Thick, UltraThick] {
+            let name = format!("{m:?}").to_ascii_lowercase();
+            assert_eq!(Material::parse(&name), Some(m), "{name}");
+        }
+        assert_eq!(Material::parse("  ThIcK  "), Some(Thick), "trimmed and case-folded");
+        assert_eq!(Material::parse("thickish"), None, "a near miss is a refusal, not the default");
+    }
+}
+pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
+/// The frosted sheet's bottom stop — see [`PANEL_FROST_TOP`].
+pub const PANEL_FROST_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.72);
 /// The sign-in **QR card's** quiet-zone plate (`login.rs`) — a bright cool-white whose job is SCAN
 /// CONTRAST for a phone camera, not focus. It is a SURFACE, not a control fill, which is the whole
 /// reason it outlived the second control white it used to be (`FILL_PRIMARY`): a plate under a
@@ -308,6 +447,7 @@ pub const SCRIM_TEXT_A: f32 = 0.72;
 pub const fn scrim(a: f32) -> [f32; 4] {
     [SCRIM_INK[0], SCRIM_INK[1], SCRIM_INK[2], a]
 }
+
 /// Pure-black scrim at alpha `a` — HUD/modal dimming.
 pub const fn scrim_black(a: f32) -> [f32; 4] {
     [SCRIM_BLACK_INK[0], SCRIM_BLACK_INK[1], SCRIM_BLACK_INK[2], a]
@@ -428,8 +568,113 @@ pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = RED_400;
+/// Dev counter's two human-visible buffer phases. The renderer holds each for 30 returned swaps,
+/// so motion is visible instead of red/green frames blending into yellow at panel refresh rate.
+pub const DIAG_FLIP_A: [f32; 4] = GREEN_400;
+pub const DIAG_FLIP_B: [f32; 4] = RED_400;
 /// Section divider hairline.
 pub const HAIRLINE: [f32; 4] = with_a(WHITE, 0.10);
+/// A glass container's **perimeter line** — the design system's `--glass-rim`, one notch under the
+/// tiles' own [`CARD_SHEEN`] (.22) because a sheet's edge is quieter than a card's.
+///
+/// It goes ON TOP of the material, not under it, and that ordering is the whole reason it is a
+/// token here rather than a shader term. The design states the track as two inset shadows —
+/// `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)` — and an inset shadow
+/// composites over the background it is declared with. `fs_glass.frag`'s own specular hairline is
+/// part of the BACKDROP, so the darkening lands on top of it and its weight is whatever the scrim
+/// leaves; drawing the line here puts it where the design puts it and makes .14 mean .14.
+pub const GLASS_RIM: [f32; 4] = with_a(WHITE, 0.14);
+/// The same line on the TOP edge only, at double weight — `--glass-rim-light`. One light, from
+/// above, the direction every card shadow in this system already falls in.
+pub const GLASS_RIM_LIGHT: [f32; 4] = with_a(WHITE, 0.28);
+
+/// The lit edge's weight where the surface has the BRIGHTEST ground it will ever sit on.
+///
+/// [`GLASS_RIM`] and [`GLASS_RIM_LIGHT`] are the design system's constants and they are right for
+/// the ground the design was drawn over — a dark one. They are constants, though, and the edge they
+/// draw is not a colour but a RELATIONSHIP: a lit edge has to be brighter than the light it is
+/// catching. Measured on the panel against bright artwork, the .28 top line lands **34.9 L\* below
+/// its own ground**, which stops it being a local maximum across the edge at all — the profile runs
+/// 220 → 196 → 150 → 73 straight down, and an edge that is only a step on a monotone ramp reads as
+/// blur, not as a bevel. Reported as "the rim is harder to see than the buttons'", which is exactly
+/// right and is a comparison worth keeping: a control sits in the darkest quarter of the frame by
+/// construction, so its rim is the brightest thing at its boundary and never had this problem.
+///
+/// So the two constants become the FLOOR of a ramp that ends here, travelled with the ground — the
+/// same ground, and the same eased signal, the scrim density already follows. A dark ground still
+/// gets exactly `.14`/`.28` and nothing about that case moves.
+///
+/// **It was 1.0, on the argument that the rim is a LERP** — `fs_glass.frag` mixes the surface TOWARD
+/// this colour, so a ceiling of one means "at the brightest ground this bar will ever sit on, the
+/// line is the line's own colour", a 1px white hairline. That is sound about the arithmetic and
+/// wrong about the material, and the reference says so in one number.
+///
+/// A lit edge is lit BY something, so it must move with what is behind it. Measured against the
+/// macOS 26 system tab bar over a hard stripe ground — the top rim's brightness regressed on the
+/// page directly above it, column by column:
+///
+/// | | line | line/face | its own swing | slope vs ground |
+/// |---|---|---|---|---|
+/// | macOS `.regular` | 124 | 1.39 | **23.9%** | 0.25 |
+/// | ours at 1.0 | 213 | 4.23 | 10.5% | 0.23 |
+/// | ours at 0.6 | 184 | 3.67 | 17.4% | 0.33 |
+/// | **ours at 0.4** | 167 | 3.33 | **22.9%** | 0.39 |
+/// | ours at 0.28 (no ramp) | 156 | 3.10 | 27.1% | 0.43 |
+///
+/// The standing suspicion was that our edge did not depend on the ground at all. It always did —
+/// the SLOPE was 0.23 against their 0.25 before anything changed. What was wrong is the LEVEL: at
+/// 1.0 the line sits so near white that the ground's swing is 10% of its own brightness, and a line
+/// that bright and that even is read as a stroke drawn round a shape rather than as an edge
+/// catching a lamp. Lowering the ceiling does not add the dependence, it stops DROWNING it.
+///
+/// 0.4 is where the relative swing meets the reference (22.9% against 23.9%). 0.28 — the floor,
+/// where the ramp flattens into [`GLASS_RIM_LIGHT`] and there is no travel at all — matches the
+/// look slightly better and the number slightly worse; the extra tenth is kept because this is a
+/// television seen from three metres, and it is the case where the ground is BRIGHT that the ramp
+/// was built for. `/tmp/plxnative-rimmax` sweeps it without a rebuild.
+///
+/// (`line/face` stays far from the reference at every rung, and that is NOT this constant's to fix:
+/// our face is 50 where theirs is 89, which is the density policy, not the edge.)
+pub const GLASS_RIM_MAX: f32 = 0.4;
+
+// ---- The standing track has ONE material -----------------------------------------------------
+//
+// It had two for a while: a black pair for dark artwork and a white pair for bright, with a
+// crossover between them. That is Apple's answer and it is a good one — over bright content their
+// chrome goes light and flips its ink — but it is a DISCRETE second state, and a discrete state has
+// to be decided every time the ground moves. Deciding it produced four reported bugs in one week: a
+// bar flipping back and forth on one unchanging hero, the same hero settling dark in one run and
+// light in the next, 1.6 s between the press and the material changing on a route change, and a
+// visible wrong-direction excursion while the decision was pending. Guarding it took a hysteresis
+// band, a commit window, a two-independent-readings rule, an override that woke the whole screen so
+// those readings could happen at all, a page-swap fast path and a frozen draw weight.
+//
+// A judging panel priced that against what the second polarity actually bought, on synthetic grounds
+// (`ui::testpat`) rather than on whatever poster happened to be up, and three of four lenses said
+// delete it. The measurements that decided it:
+//
+//   * with a brighter idle ink (`TEXT_READING` rather than `TEXT_TERTIARY`) the dark material sits
+//     at or near its floor for every ground up to L* 73, so the light one is not rescuing the common
+//     case — the two are BIT-IDENTICAL on 8 of 14 graded grounds;
+//   * on the real heroes it differs on, the light material wins only where the hero is uniformly
+//     bright, and wins there BY DISSOLVING: L* 97.4 against a L* 95.7 ground is 1.7 L* of
+//     separation, i.e. four words and a rim with no container under them;
+//   * on a hero whose ground is MIXED — half a dark building, half bright sky, which a census of a
+//     real library's rotation found is the median case, span 26.8 L* — the light material lands
+//     34.9 L* off the local ground on the dark half where the dark material lands 3.4 off. The
+//     Apple property it was imitating (sit close to your backdrop) is honoured by the material that
+//     replaced it.
+//
+// What remains is one black pair, solved per frame, and an ink bright enough that it rarely has to
+// ask for much. `docs/glass-hardware-budget.md` prices the surface; the deleted polarity is in the
+// history if it is ever wanted back.
+
+// The light polarity's own tokens stood here — `PILL_RIM_ON_LIGHT`, `PILL_RIM_LIT_ON_LIGHT` and
+// the `COOL_600` ink above — and they went with it. They were live `pub` colour codes that nothing
+// read, which in a file whose whole claim is "the only place a colour code is written down" reads
+// as a role still in the system rather than as one that was measured and removed. The account of
+// WHY it was removed is the block above, and it is the part worth keeping.
+
 /// Faint focus pill (pre-`TabPill`-adoption tab highlight).
 pub const OVERLAY_FOCUS_PILL: [f32; 4] = with_a(WHITE, 0.14);
 /// The shared top tab bar's **TRACK** — the recessed near-black capsule the tab pills sit in, and
@@ -446,10 +691,97 @@ pub const OVERLAY_FOCUS_PILL: [f32; 4] = with_a(WHITE, 0.14);
 pub const TAB_TRACK_TOP: [f32; 4] = scrim_black(TAB_TRACK_A_TOP);
 /// The track's bottom stop — see [`TAB_TRACK_TOP`].
 pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
+/// The tab track's stops when it is drawn as GLASS — the same near-black ink at roughly half the
+/// weight, since a real backdrop behind it is doing the work the flat material had to do alone.
+/// Paired with `Painter::backdrop_blur` exactly as [`PANEL_FROST_TOP`] is: without one they are a
+/// translucent hole onto the page.
+///
+/// **The track DARKENS where a panel frosts, and that is the difference between a container you
+/// read THROUGH and one you read ON.** A sheet is a neutral frost because it holds a page's worth
+/// of copy; this band is 76px tall over moving artwork and its idle labels are [`TEXT_TERTIARY`],
+/// which a neutral frost leaves swimming. So it takes a black scrim pair rather than the panel
+/// family's greys — the design system's `--glass-track-top`/`-bot`, the two stops on the existing
+/// ramp nearest the .38/.46 this was first built with.
+///
+/// **These are the FLOOR of a range, not a fixed pair** — [`crate::ui::widgets::track_alpha_for`]
+/// solves the weight per frame from what is actually behind the bar, and this is where it starts.
+///
+/// They were a fixed pair for one afternoon and could not be: both the .38/.46 they were derived
+/// from and the .34/.50 recorded here were tuned against a render that darkened TWICE — the direct
+/// source pass drew the flat track into the glass track's own backdrop (`widgets::draw_tab_row`
+/// holds the account of it), so a nominal .42 was landing at an effective ~.87 and every legibility
+/// judgement was made on the wrong picture. With that fixed the material became honest and the
+/// numbers stopped being enough. Against the worst artwork a hero can be — white — the ground is
+/// `1 - a`, and [`TEXT_TERTIARY`] over it:
+///
+/// | a | contrast | | a | contrast |
+/// |---|---|---|---|---|
+/// | .34 | 1.21 | | .62 | 2.17 |
+/// | .50 | 1.39 | | .67 | 2.64 |
+/// | .56 | 1.73 | | **.72** | **3.23** |
+///
+/// The bar is **3:1** — the same one `widgets`' ground test holds an ambient wash to, and the same
+/// arithmetic that put [`SCRIM_TEXT_A`] and [`TAB_TRACK_A_TOP`] at .72 in the first place. Read as a
+/// CONSTANT that table says the first legal density is the flat track's own, because **a blur
+/// removes DETAIL, not brightness**: a quarter-res Kawase of a white poster is still white. That was
+/// the verdict for a day, and it is the right verdict for a constant.
+///
+/// **The premise was the mistake.** A hero is one picture at a time, not every picture at once, so
+/// the density does not have to survive the worst one — it has to survive THIS one. Solved per
+/// frame it sits here on a dark backdrop and walks up the table only as far as the ground makes it,
+/// which on a bright hero measured .562 and on most heroes is this floor. The ink never moves,
+/// which is what the row's hierarchy is made of.
+pub const TAB_GLASS_TOP: [f32; 4] = scrim_black(0.20);
+/// **The material's LIGHT FLOOR — the amount of itself the glass shows where the page shows
+/// nothing.** Two numbers, both measured against the real thing rather than chosen.
+///
+/// A black scrim can only ever subtract, and at the bottom of the range there is nothing left to
+/// subtract from: over a page at L\*0 the bar's face measures exactly the page — 0% Weber — and the
+/// whole container is carried by one pixel of rim. Over L\*20 it is 28% and darker. The system
+/// container this material is answering does the opposite: measured on the real macOS 26 tab bar
+/// over a near-black page, .071 → .098, **+38% Weber and LIGHTER**. Its edge, meanwhile, is one
+/// antialiased pixel with no rim at all on any ground — it does not need one, because the material
+/// separates itself.
+///
+/// So the material gets a diffuse component, and this is the one number behind it: **the darkest
+/// the glass itself may be, in absolute sRGB, however dark the page gets.** It is a floor, not a
+/// target — the scrim keeps doing all the separating it can, and this only catches the bottom. A
+/// page brighter than the floor takes no lift at all, so every ordinary hero is untouched bit for
+/// bit; `crate::ui::widgets::track_lift` is the rule and records the two shapes that were tried
+/// first and why they were worse.
+///
+/// **This is not the light polarity coming back.** That was a second MATERIAL — a white scrim with
+/// dark ink and a crossover to hunt — and it was deleted with the argument that a bar is one
+/// surface. This is one surface still: same ink, same solve, same scrim, with a floor under how
+/// dark the glass itself is allowed to get.
+pub const TAB_GLASS_LIFT_FLOOR: f32 = 0.045;
+/// The glass track's bottom stop — see [`TAB_GLASS_TOP`].
+pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.36);
 /// The track material's two weights, exposed as alphas because the focused **profile chip** wears
 /// the same material and FADES it in with its unfurl (`scrim_black(A * e)`) — one material and one
 /// pair of weights whether it is painted at full strength or on the way in, which is what keeps the
 /// chip's capsule and the tab track reading as one band on the top chrome line.
+/// **The ceiling is a LIMIT, not a policy, and the ladder that went looking for a policy here found
+/// nothing to change.** Swept on the television over five grounds (.72/.55/.42/.32) and then read
+/// back out of the app's own `track_ground` line rather than off the pixels, which is what settled
+/// it: fully eased, the solve asks for **.252** over a flat L\*55 ground, **.550** over L\*85 and
+/// **.603** over the brightest real hero in the rotation (L\*95.7, span 69.8). It does not reach .72
+/// on anything, so lowering the ceiling toward it changes nothing at all until the ceiling drops
+/// BELOW what the solve wants — at which point what is being cut is the labels' contrast, not the
+/// material's weight.
+///
+/// **Two measurements of this bar were wrong before this one and are worth naming**, because both
+/// are easy to repeat. Reading the page from BELOW the bar samples a brighter part of the hero and
+/// reported −52% Weber; capturing 3 s after a `pat:` change catches the density mid-travel and
+/// reported swings of 30 codes between rungs that are in truth identical. Settled and referenced to
+/// the page directly above it, this bar sits at **−15% Weber** on that hero, against the macOS 26
+/// tab bar's −27% on its own page — i.e. ours is CLOSER to its backdrop than the reference is to
+/// its own, which is the opposite of the story these numbers were first told to support.
+///
+/// So the constant stays where it was. `/tmp/plxnative-trackmax` sweeps it, and the honest way to
+/// make this bar lighter is [`super::widgets::TRACK_INK_CONTRAST`] — the 4:1 promise is what puts
+/// the density where it is, and `the_lift_never_spends_the_labels_contrast` marks the boundary: the
+/// guarantee survives a ceiling of .62 and dies at .60.
 pub const TAB_TRACK_A_TOP: f32 = 0.72;
 /// See [`TAB_TRACK_A_TOP`].
 pub const TAB_TRACK_A_BOT: f32 = 0.82;

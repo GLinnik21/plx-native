@@ -7,6 +7,40 @@
 > text below is left as written, with the line numbers of its day, because it is a dated record of
 > an investigation rather than live guidance — see `CLAUDE.md` for the current names.
 
+> **RESOLVED 2026-08-19 on the device. Read this box before the verdict below.** §6 named the
+> experiment that could overturn this note, and it was run, along with §5's surviving lever. Four
+> results, all measured:
+>
+> 1. **§6's flip condition is NOT met: animating frames are not fill-bound.** Removing 37.2% of a
+>    frame's rasterized quads moved `GPU_ACTIVE` by −0.81%, with `ARITH_WORDS` −0.08% and
+>    `TEX_WORDS` exactly 0. The arithmetic pipe sits at 89.5% occupancy against load/store at 44.8%.
+>    **Anything that pays on this part removes ALU or texture work, not fragments.**
+> 2. **§5's "cheap lever that survives" is dead.** Declaring the surface opaque was armed and
+>    proven armed: `GPU_ACTIVE` +0.03%, `surface-manager` inside its own 6.3% on-leg spread, and
+>    `TEX_WORDS` **identical to the byte** — LSM's full-screen blit does not go away. Captures
+>    differ in 0 of 6,220,800 bytes. By this note's own go/no-go rule that closes the compositor
+>    branch permanently: its ~28–34% of every frame is not addressable from inside this process.
+> 3. **§4's second blocker is confirmed and stronger than stated.** `EGL_SWAP_BEHAVIOR` is
+>    `BUFFER_DESTROYED`, the config carries no `SWAP_BEHAVIOR_PRESERVED_BIT`, and
+>    `eglSurfaceAttrib(EGL_BUFFER_PRESERVED)` returns **EGL_BAD_MATCH**. Every buffer-preservation
+>    scheme is dead on this device, exactly as §4 argued.
+> 4. **But the direction §4 priced is NOT dead, because it priced the wrong mechanism.** §4 costs a
+>    persistent full-screen FBO at ~19 MB/frame against ~8, which is right — and irrelevant, because
+>    `EGL_KHR_partial_update` needs no FBO and no blit: the driver keeps the untouched tiles.
+>    **This driver does not ADVERTISE the extension and implements it anyway.** A 480x270 damage
+>    rect declared while still drawing everything takes `GPU_ACTIVE` 7,531,684 → 542,012 and
+>    `FRAG_NUM_TILES` 4096 → 151. That is the mechanism's ceiling under a 6.25% rect, not a saving:
+>    the real damage distribution extrapolates to roughly half an animating frame and near zero on
+>    a cross-fade, and an unadvertised extension is not a portability contract. Full account:
+>    `egl-partial-update-and-damage.md`.
+>
+> One factual correction to the table in §3: it reports the sysroot's `libEGL.so.1.4` as exporting
+> zero `egl*` symbols. That is true of `sysroot/`, which holds libraries pulled off the TELEVISION.
+> The NDK's link stub of the same name exports 44 — and linking it would still be fatal, for a
+> different reason: its SONAME is `libEGL.so.1`, while webOS 2.2.3–5.3.1 ship `libEGLfk.so.2` and
+> their own `libEGL.so.1.5` exports nothing, so a `DT_NEEDED` on it kills the process at `exec()`.
+> The probe resolves through `RTLD_DEFAULT` instead; the `fwcompat` matrix is byte-identical.
+
 **No — and not because immediate mode forbids it.** Every number we have is CPU (`/proc` jiffy deltas, `idle.rs:13-19`), and per-region damage removes GPU fragments, which appear in none of them; on the axis we measured, its ceiling is bounded by the 0.37 ms swap, and an honest hour-integration puts the whole prize under **0.25% of one core** — smaller than the 2 s keepalive we deliberately spend on insurance (`idle.rs:75`). The premise ("we're changing this anyway") is false in a specific, checkable way: the motion capability's coverage claim is *"there is nowhere else to get a time-varying value from — not anything keeping a list"* (`retui-invalidation-design.md:290`), and a damage rect is exactly a list, attached at a site (a scalar `Spring`) that structurally does not know its own geometry. What survives is one compositor-side piece of work that is not damage tracking at all: **we have declared our surface fully non-opaque for the app's entire lifetime, on six screens with nothing behind them** (`system.rs:77`).
 
 ---
@@ -132,17 +166,17 @@ Three independent blockers, each sourced:
 
 ```
 wake-tv; ssh root@TV 'rm -f /tmp/plxnative-*'          # a stale trigger changes which screen you boot to
-touch /tmp/plxnative-profile                            # glFinish-bracketed phases, profile.rs:34-41
+printf 'hm.grid' > /tmp/plxnative-profile               # one asynchronous timer-query phase per run
 touch /tmp/plxnative-homeosc                            # perpetual grid focus sweep: never settles, gate never fires
 echo "$TOKEN" > /tmp/plxnative-token
 make run RUN_SECS=40      # then read the once-per-60-frames aggregate lines out of the event log
 ```
 
-There are **11** brackets already in the tree: `hm.backdrop`/`hm.hero`/`hm.grid` (`home.rs:1127`/`:1129`/`:1131`) and eight `dt.*` (`detail.rs:1402-1493`). Repeat with `echo <ratingKey> > /tmp/plxnative-navosc` (`home-detail-nav` — by the manifest's own reasoning at `:138` the heaviest thing in the app) and with `/tmp/plxnative-libswitch`.
+There are **11** brackets already in the tree: `hm.backdrop`/`hm.hero`/`hm.grid` (`home.rs:1127`/`:1129`/`:1131`) and eight `dt.*` (`detail.rs:1402-1493`). Select and run them one at a time. Repeat with `echo <ratingKey> > /tmp/plxnative-navosc` (`home-detail-nav` — by the manifest's own reasoning at `:138` the heaviest thing in the app) and with `/tmp/plxnative-libswitch`.
 
-Then, separately and without `glFinish` perturbing the pipeline: `echo 14 > /tmp/plxnative-framedrop` on the same three scenes. `app.rs:521` states the read verbatim — **"high `swap` with low pump/draw ⇒ GPU fill."**
+Then, separately and without either profiler armed: `echo 14 > /tmp/plxnative-framedrop` on the same three scenes. `app.rs:521` states the read verbatim — **"high `swap` with low pump/draw ⇒ GPU fill."**
 
-**Flip condition.** If the summed phase GPU-ms on a *sweeping* grid or a nav dip is a large fraction of 16.7 ms, or the framedrop lines show `swap` dominating with low `draw`, then animating frames are fill-bound and the question reopens — **as a fill project, not necessarily as damage.** The cheaper fill levers are still unspent: `player_hud.rs:92-100` draws every subtitle line **five times** across the full panel at size 36 (`ui-framework-improvements.md` B7, *"biggest un-named fill item in the tree"*), and detail requests a 1920×1080 backdrop into a 64-slot LRU with no byte budget and no `glGetError` check (B10, `posters.rs:24`). Spend those before scissoring anything. If `draw` dominates `swap` and the phases come back small, the 45-tier is CPU, and this closes.
+**Flip condition.** If individual phase GPU time on a *sweeping* grid or a nav dip is a large fraction of 16.7 ms, or the framedrop lines show `swap` dominating with low `draw`, then animating frames are fill-bound and the question reopens — **as a fill project, not necessarily as damage.** Do not sum separately queried phases as normal frame time; use the whole-frame query for that. The cheaper fill levers are still unspent: `player_hud.rs:92-100` draws every subtitle line **five times** across the full panel at size 36 (`ui-framework-improvements.md` B7, *"biggest un-named fill item in the tree"*), and detail requests a 1920×1080 backdrop into a 64-slot LRU with no byte budget and no `glGetError` check (B10, `posters.rs:24`). Spend those before scissoring anything. If `draw` dominates `swap` and the phases come back small, the 45-tier is CPU, and this closes.
 
 **Second, cheap, and settles the compositor argument permanently:** log `eglQueryString(EGL_EXTENSIONS)` once at boot beside `app.rs:336`, resolved by `dlopen("libEGL.so.1")` + `dlsym` (precedent: `capture.rs:337-353`). This cannot be answered off-device — the sysroot's `libEGL.so.1.4` exports no `egl*` symbol at all. Both "present with empty damage during playback" and every buffer-preservation scheme die without it.
 

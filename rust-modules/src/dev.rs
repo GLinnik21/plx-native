@@ -18,14 +18,15 @@
 //! Two rules for anything added later:
 //!
 //! 1. **Never open a `/tmp` path directly.** The grep that audits this (`/tmp/plxnative-` outside
-//!    this module and the four log sinks) is the only thing keeping the property true.
+//!    this module and the four unconditional log sinks) is the only thing keeping the property
+//!    true. The two profiler logs are dev-only and listed in [`DIAG`] below.
 //! 2. **A gate is not always a path.** `any_trigger_present` scans the whole directory and names
 //!    no file at all — it was the one surface a literal-replacement sweep would have missed, and
 //!    it silently changes which screen the app boots to. Structural surfaces that take no name
 //!    (the capture listener's `INADDR_ANY` socket, the remote FIFO's `mkfifo`) are gated at their
 //!    call sites in `app.rs` for the same reason.
 //!
-//! The four LOG sinks are deliberately NOT here and stay in every build: they are creates, not
+//! The four unconditional LOG sinks are deliberately NOT here and stay in every build: they are creates, not
 //! reads, they are how on-device crash triage works at all, and writing them is not a way for
 //! another process to steer this one.
 
@@ -39,12 +40,15 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 10] = [
+const DIAG: [&str; 13] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
     "plxnative-anim.log",
     "plxnative-profile",
+    "plxnative-gputime.jsonl",
+    "plxnative-hwcnt",
+    "plxnative-hwcnt.jsonl",
     "plxnative-anim",
     "plxnative-remote",
     "plxnative-capture",
@@ -65,6 +69,40 @@ pub(crate) fn flag(name: &str) -> bool {
 pub(crate) fn flag(_name: &str) -> bool {
     false
 }
+
+/// [`flag`], answered ONCE for the whole process.
+///
+/// **A `dev::flag` is a `stat`, so a trigger read every frame is a syscall on the 60 fps path.**
+/// Latching also fixes a correctness wrinkle that has nothing to do with cost: `tests/run.py`
+/// clears `/tmp/plxnative-*` between cases, so a later read can legitimately find the file gone
+/// mid-run and a per-frame probe would change its answer half way through a case.
+///
+/// A macro rather than a function because the latch has to be a `static` per trigger, and a
+/// function would need a map behind a lock — which is the thing being avoided. It lives HERE
+/// because this module is the one door onto the `/tmp` surface; it was briefly a file-local macro
+/// in `ui/widgets.rs`, which walled it off from the other per-frame `flag` callers
+/// ([`crate::focusprobe::armed`] had already hand-rolled exactly this body, doc comment and all).
+///
+/// No `#[cfg]` arms, deliberately: [`flag`] is already `false` at COMPILE time without the
+/// `devtriggers` feature, so a second gate here would only re-derive what the door behind it
+/// guarantees.
+///
+/// ```ignore
+/// crate::dev::latched_flag!(
+///     /// `/tmp/plxnative-flattabs` — the material off, for an A/B against the flat capsule.
+///     fn flat_tabs_armed = "flattabs";
+/// );
+/// ```
+macro_rules! latched_flag {
+    ($(#[$m:meta])* $vis:vis fn $name:ident = $trigger:literal;) => {
+        $(#[$m])*
+        $vis fn $name() -> bool {
+            static SEEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *SEEN.get_or_init(|| $crate::dev::flag($trigger))
+        }
+    };
+}
+pub(crate) use latched_flag;
 
 /// The trigger's CONTENT, trimmed. `Some("")` for a trigger armed as an empty file — several
 /// distinguish empty (take the default) from a value (`autoseek`, `library`, `marker`), so an
@@ -268,10 +306,17 @@ fn path(name: &str) -> std::path::PathBuf {
 mod tests {
     /// The DIAG list must name every log the app writes, or that log permanently suppresses the
     /// boot picker. This asserts the property against the paths the code actually opens rather
-    /// than against a copy of the list, so adding a fifth log sink without listing it fails here.
+    /// than against a copy of the list, so adding another log sink without listing it fails here.
     #[test]
     fn diag_names_every_log_this_app_writes() {
-        for log in ["plxnative-events.log", "plxnative-stderr.log", "plxnative-crash.log", "plxnative-anim.log"] {
+        for log in [
+            "plxnative-events.log",
+            "plxnative-stderr.log",
+            "plxnative-crash.log",
+            "plxnative-anim.log",
+            "plxnative-gputime.jsonl",
+            "plxnative-hwcnt.jsonl",
+        ] {
             assert!(super::DIAG.contains(&log), "{log} is written by this app but absent from DIAG — it would suppress the boot picker forever");
         }
     }

@@ -67,7 +67,7 @@
 
 use std::ffi::c_int;
 use std::fmt::Write as _;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use crate::ui::player_hud::ControlSlot;
 
@@ -116,16 +116,18 @@ pub(crate) struct Hud {
     pub(crate) visible: bool,
 }
 
-/// Is the probe armed for this boot? Resolved once, from `/tmp/plxnative-focus`.
-///
-/// Resolved once rather than per frame for two reasons: `tests/run.py` clears `/tmp/plxnative-*`
-/// between cases, so a later read could legitimately find the file gone mid-run; and a per-frame
-/// `exists()` is a syscall this is not worth paying. Call sites may check this before building
-/// arguments — [`sample`] checks it again, so the module is correct on its own.
-pub(crate) fn armed() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| crate::dev::flag("focus"))
-}
+crate::dev::latched_flag!(
+    /// Is the probe armed for this boot? Resolved once, from `/tmp/plxnative-focus`.
+    ///
+    /// Resolved once rather than per frame for two reasons: `tests/run.py` clears `/tmp/plxnative-*`
+    /// between cases, so a later read could legitimately find the file gone mid-run; and a per-frame
+    /// `exists()` is a syscall this is not worth paying. Call sites may check this before building
+    /// arguments — [`sample`] checks it again, so the module is correct on its own.
+    ///
+    /// This body was hand-rolled here first; [`crate::dev::latched_flag`] is that body, moved to the
+    /// module that owns the trigger surface so every per-frame `flag` caller can have it.
+    pub(crate) fn armed = "focus";
+);
 
 /// Sample the current focus state and log it if it has moved since the last sample.
 ///

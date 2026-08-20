@@ -39,7 +39,9 @@ That is the fill-rate pass you already did, working against you. It made the pri
 
 ### The whole-screen arithmetic
 
-Using the project's own measured phase numbers (profiler-ON, ~2.3× `glFinish` inflation, documented in `ui-fillrate-perf` memory and at `ui/profile.rs:6-8`):
+The following arithmetic used the old serialized `glFinish` profiler and is retained only as the
+historical argument that led to this design. Its `÷2.3` conversion is not a valid measured GPU
+baseline; rerun the comparison with asynchronous timer queries before using these values:
 
 - One **opaque full-screen rect** on this GPU: the redundant `SURFACE_APP` pass deleted from `Backdrop::draw` took `hm.backdrop` **4.5 → 0.13 ms** profiled ⇒ that single pass ≈ **4.4 ms profiled ≈ 1.9 ms real**.
 - A whole **Home grid** frame's content: `hm.backdrop 0.13` + `hm.grid 8.0` ≈ **8.1 ms profiled ≈ 3.5 ms real** for 14 card composites plus the wash.
@@ -96,6 +98,18 @@ The nearest thing to a payoff today is a *whole-screen* snapshot for `ui::nav`'s
 ---
 
 ## Q2 — is it thermal?
+
+> **ANSWERED 2026-08-19, and the answer is no: it was the INSTRUMENT.** A control leg reads
+> **60 fps, min 60, max 60** across six independent runs on a set that had been up 1 h 42 m at the
+> first measurement and 2 h 15 m at the last, under continuous load, with per-run drift 0.00–0.50
+> fps on every configuration. Arming the HWCNT profiler drops that same control leg from 60 to 45
+> and compresses the legs toward each other; `frame.ui` brackets every frame with two `glFinish`es.
+> **Every archived 50 fps reading in this project's performance notes came from a profiled run.**
+> The unmeasured-hypothesis verdict below was right to withhold judgement; what it could not know
+> is that the number it was reasoning about belonged to the measuring apparatus. Caveat kept: a
+> genuinely COLD leg was never obtained — the set was warm and busy throughout, and it exposes no
+> temperature sensor and no GPU clock anywhere in sysfs. What can be said is that a set this warm
+> shows no decay and holds a clean 60. See `glass-hardware-budget.md` §7.
 
 ### You may be right. The evidence does not currently say either way, for three separate reasons.
 
