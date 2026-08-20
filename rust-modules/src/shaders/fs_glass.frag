@@ -117,9 +117,16 @@ uniform float u_rimclear;
 //
 // Rather than a second chain (another pair of targets and another set of passes, for a surface that
 // is on screen a few seconds at a time), this widens the sample where it is drawn: four extra
-// bilinear fetches on a plus-cross at `u_deep.x` UV, averaged with the centre. Confined to the
+// bilinear fetches on a diagonal cross at `u_deep` UV, averaged with the centre. Confined to the
 // panel's own fragments, and branch-coherent across all of them, which is what makes it affordable.
-// `u_deep.y = 0` is the single-fetch material, bit for bit.
+// `u_deep.x = 0` is the single-fetch material, bit for bit.
+//
+// **Both components are a radius — one per axis — and neither is a flag.** `u_deep.y` used to be
+// an on/off term while `.x` carried the radius for BOTH axes, which offset the cross by the same
+// UV horizontally and vertically. A UV is not isotropic here: one authored pixel is `1/SCR_W` of
+// the texture across and `1/SCR_H` down, so on a 16:9 canvas that squashed the sample cross to
+// 56% of its radius vertically. The "on" test is `.x > 0` because a zero radius is exactly the
+// case the flag existed to name.
 uniform vec2 u_deep;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
@@ -135,12 +142,12 @@ uniform vec4 u_rimlit;       // colour + weight of the edge facing the light (al
 // over coverage.
 vec3 srcRGB(highp vec2 uv){
   vec3 c = texture2D(u_tex, uv).rgb;
-  if (u_deep.y > 0.0) {
-    highp float d = u_deep.x;
-    c += texture2D(u_tex, uv + vec2( d,  d)).rgb;
-    c += texture2D(u_tex, uv + vec2(-d,  d)).rgb;
-    c += texture2D(u_tex, uv + vec2( d, -d)).rgb;
-    c += texture2D(u_tex, uv + vec2(-d, -d)).rgb;
+  if (u_deep.x > 0.0) {
+    highp vec2 d = u_deep;
+    c += texture2D(u_tex, uv + vec2( d.x,  d.y)).rgb;
+    c += texture2D(u_tex, uv + vec2(-d.x,  d.y)).rgb;
+    c += texture2D(u_tex, uv + vec2( d.x, -d.y)).rgb;
+    c += texture2D(u_tex, uv + vec2(-d.x, -d.y)).rgb;
     c *= 0.2;
   }
   return c;
