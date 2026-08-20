@@ -9,6 +9,337 @@ use crate::ui::label::{HAlign, Label};
 use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+// ---- backdrop glass -------------------------------------------------------------------------
+
+/// How a glass surface keeps its shared backdrop snapshot fresh.
+///
+/// The cadence is named in PRESENTS rather than hertz on purpose: it is at most 20 Hz when the UI
+/// is presenting at 60 Hz, and a clean settled page creates no private sampling clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GlassRefresh {
+    /// One snapshot when the surface appears; the owner invalidates again if its underlay changes.
+    Cached,
+    /// Snapshot on every present on which the underlay actually CHANGED.
+    ///
+    /// It was every THIRD such present until 2026-08-19, and the three was a cost guess made
+    /// before anything was measured. Measured, on the direct source path: raising the cadence from
+    /// one-in-three to one-in-one costs **+0.07% of the frame and zero frames** — the scene holds
+    /// 60.0 fps flat across two interleaved rounds. On the capture path the same change costs
+    /// +9.2% and about five frames, because a capture refresh frame does not fit inside a vsync
+    /// slot; that is the whole reason the direct path had to land first.
+    ///
+    /// The "changed" half is NOT a cadence and does not go away: a settled page still takes no
+    /// snapshots at all, which is what keeps a still screen free of a private sampling clock.
+    /// [`DEFAULT_DYNAMIC_PERIOD`] is now 1, and `/tmp/plxnative-glasshz` still moves it, because
+    /// the cost curve it produced is a property of ONE scene and the next screen to wear glass
+    /// will have to be measured too.
+    EveryChangedPresent,
+}
+
+/// Reusable backdrop-glass policy. It owns no geometry and no animation: a `Popover` can hold it,
+/// and a standalone widget can use the same `activate` → `prepare` → `backdrop` sequence.
+///
+/// **It used to carry a second axis — `GlassUnderlay`, i.e. WHERE a modal's dim is applied — and
+/// that axis is gone.** Its non-trivial variant dimmed the host page's RGB going into the backdrop
+/// instead of compositing a scrim over it, and it was measured against the item menu over one
+/// checker ground and rejected: dimming the source destroys the very modulation the frost is then
+/// layered over, so the panel arrives flat however dense the material says it is. The two
+/// constructions do not converge, so this is not a taste setting that was left unset — it is a
+/// mechanism that was tried and does not work. The account is in `e75b5e49`; the code is in the
+/// history if it is ever wanted back. Every surface composites.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Glass {
+    refresh: GlassRefresh,
+}
+
+/// Per-visible-lifetime state for a [`Glass`] policy. Visibility/source state stays with its widget;
+/// recurring cadence is global because every owner shares the renderer's one snapshot chain.
+pub(crate) struct GlassState {
+    last_seen: u32,
+    active: bool,
+}
+
+impl GlassState {
+    pub(crate) const fn new() -> Self {
+        Self { last_seen: 0, active: false }
+    }
+
+    pub(crate) fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    #[inline]
+    fn needs_activation(&self, present: u32) -> bool {
+        !self.active || present.wrapping_sub(self.last_seen) > 1
+    }
+}
+
+/// Successful swaps, not update iterations. Both route-gap detection and the shared three-present
+/// cadence derive from this serial, so skipped idle loops cannot advance either one.
+static GLASS_PRESENT_SERIAL: AtomicU32 = AtomicU32::new(0);
+
+/// Decision returned by the one global dynamic-snapshot clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DynamicStep {
+    None,
+    Wait,
+    Refresh,
+}
+
+/// Presents per dynamic backdrop refresh. **[`DEFAULT_DYNAMIC_PERIOD`] — 1 — is the shipped
+/// cadence**, i.e. every changed present, and this static exists so the cadence cost curve can be
+/// measured on the television without a second binary. `/tmp/plxnative-glasshz` is the only writer
+/// ([`set_dynamic_period`]); absent, this reads the default.
+///
+/// (This said "**3 is the shipped cadence** — about 20 Hz" for as long as the default was 3, and
+/// went on saying it after the direct path made 1 cost +0.07% of a frame. One number, quoted in
+/// four places; the const is the only one that was ever true.)
+static DYNAMIC_PERIOD: AtomicU32 = AtomicU32::new(DEFAULT_DYNAMIC_PERIOD);
+
+/// The shipped presents-per-refresh cadence for [`GlassRefresh::EveryChangedPresent`].
+///
+/// One, measured: at 1/4 source scale on the direct path this is +0.07% of the frame against the
+/// old three, and 60.0 fps either way. See the variant's doc for the capture-path figure, which is
+/// two orders of magnitude worse and is why this could not have been the default before.
+const DEFAULT_DYNAMIC_PERIOD: u32 = 1;
+
+/// Override the shared dynamic cadence, in PRESENTS per refresh. Returns the value actually
+/// installed: 0 is meaningless (a refresh every zero frames) and anything past 8 is a cadence no
+/// glass surface would survive looking at, so both clamp instead of being refused — a profiling
+/// knob that silently does nothing is worse than one that says what it did.
+pub(crate) fn set_dynamic_period(presents: u32) -> u32 {
+    let n = presents.clamp(1, 8);
+    DYNAMIC_PERIOD.store(n, Relaxed);
+    n
+}
+
+/// The live presents-per-refresh cadence.
+pub(crate) fn dynamic_period() -> u32 {
+    DYNAMIC_PERIOD.load(Relaxed)
+}
+
+/// Recurring cadence belongs to the shared snapshot chain, not to any one widget. If two widgets
+/// opened on different presents kept separate phases, their combined schedules could refresh 2/3
+/// or even every frame. `covered_present` also lets the first prepared owner mark a due capture as
+/// covering every other owner prepared before the underlay draw on that same present.
+#[derive(Clone, Copy)]
+struct DynamicClock {
+    last_refresh: u32,
+    covered_present: u32,
+    pending: bool,
+}
+
+impl DynamicClock {
+    const fn new() -> Self {
+        Self { last_refresh: 0, covered_present: 0, pending: false }
+    }
+
+    fn cover_now(&mut self, present: u32) {
+        self.last_refresh = present;
+        self.covered_present = present;
+        self.pending = false;
+    }
+
+    /// `period` is presents per refresh and is passed in rather than read here, so the tests below
+    /// state the cadence they are asserting instead of depending on a process-wide static.
+    fn step(&mut self, present: u32, changed: bool, period: u32) -> DynamicStep {
+        if changed && self.covered_present != present {
+            self.pending = true;
+        }
+        if !self.pending {
+            return DynamicStep::None;
+        }
+        if present.wrapping_sub(self.last_refresh) >= period.max(1) {
+            self.cover_now(present);
+            DynamicStep::Refresh
+        } else {
+            DynamicStep::Wait
+        }
+    }
+}
+
+/// Main-render-thread state, like the renderer's snapshot cache it schedules.
+static mut DYNAMIC_CLOCK: DynamicClock = DynamicClock::new();
+
+/// Called exactly beside `idle::note_present`, after `SDL_GL_SwapWindow` returns.
+pub(crate) fn glass_presented() {
+    GLASS_PRESENT_SERIAL.fetch_add(1, Relaxed);
+}
+
+impl Glass {
+    /// Existing popover behaviour: source-over scrim and a cached snapshot.
+    pub(crate) const CACHED: Self = Self { refresh: GlassRefresh::Cached };
+
+    /// A moving surface: dirty-aware backdrop on the shared [`DYNAMIC_PERIOD`] cadence (1 — every
+    /// changed present). The widget itself still draws on every presented frame.
+    pub(crate) const DYNAMIC_BACKDROP: Self = Self { refresh: GlassRefresh::EveryChangedPresent };
+
+    /// **Does a popover on this policy owe its scrim to the host PAGE rather than to its own
+    /// painter?** True for a refreshing policy, and the reason is draw order, not taste.
+    ///
+    /// A `Cached` popover captures once, through the capture path, which grabs framebuffer 0 after
+    /// its own scrim is already on it. A refreshing one comes back round to the DIRECT path, which
+    /// re-renders the page closure before any popover draws — so a scrim drawn with the panel is in
+    /// the visible frame and not in the snapshot, and the frosted ground reads brighter than the
+    /// dimmed screen around it. [`crate::ui::popover::Popover::scrim`] is the fix and
+    /// `Popover::painter` `debug_assert`s on this, so the mistake fails on the host instead of
+    /// being noticed on a television.
+    pub(crate) fn needs_page_scrim(self) -> bool {
+        matches!(self.refresh, GlassRefresh::EveryChangedPresent)
+    }
+
+    /// Start a new visible lifetime and make its first snapshot immediately eligible.
+    pub(crate) fn activate(self, state: &mut GlassState) {
+        let present = GLASS_PRESENT_SERIAL.load(Relaxed);
+        state.last_seen = present;
+        state.active = true;
+        if matches!(self.refresh, GlassRefresh::EveryChangedPresent) {
+            unsafe { (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).cover_now(present) };
+        }
+        crate::gfx::blur_invalidate();
+        crate::ui::idle::wake();
+    }
+
+    /// Resolve this frame before the host page is drawn. `underlay_changed` must describe that
+    /// host, not foreground widget motion. Every dynamic owner sharing a host must prepare before
+    /// any of them captures. Invalidation happens here, while capture remains deferred until
+    /// [`backdrop`](Self::backdrop), after the underlay has painted.
+    pub(crate) fn prepare(self, state: &mut GlassState, underlay_changed: bool) {
+        let present = GLASS_PRESENT_SERIAL.load(Relaxed);
+        // A widget not drawn for one or more successful presents crossed a route/surface lifetime.
+        // Its old snapshot may describe that other route, so returning is a fresh activation.
+        if state.needs_activation(present) {
+            self.activate(state);
+        }
+        state.last_seen = present;
+
+        if matches!(self.refresh, GlassRefresh::EveryChangedPresent) {
+            let step = unsafe {
+                (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).step(present, underlay_changed, dynamic_period())
+            };
+            match step {
+                DynamicStep::Refresh => crate::gfx::blur_invalidate(),
+                DynamicStep::Wait => {
+                    // A discrete landing may have bought only this one frame. Keep the gate alive
+                    // just until the next global sampling slot so it cannot stay stale for 2 s.
+                    crate::ui::idle::wake();
+                }
+                DynamicStep::None => {}
+            }
+        }
+    }
+
+    /// Draw the captured backdrop only. The caller owns the material layered over it, which is
+    /// what lets the same policy serve a frosted panel and the sheened tab-track capsule.
+    #[must_use]
+    pub(crate) fn backdrop(
+        self,
+        p: Painter,
+        r: Rect,
+        rest_dy: f32,
+        radius: f32,
+        tint: [f32; 4],
+        rim: crate::gfx::GlassRim,
+        face: crate::gfx::GlassFace,
+        mat: theme::Material,
+    ) -> bool {
+        p.backdrop_blur(r, rest_dy, radius, tint, rim, face, mat.deep())
+    }
+
+    /// Standard popover ground: glass + frost where available, the existing opaque sheet fallback
+    /// on a driver that cannot render the chain.
+    ///
+    /// **The same edge as the standing track, and that is a decision taken by looking.** The design
+    /// system gives a SHEET a 28px chamfer ramp on top of the line — "so a sheet reads as THICK
+    /// rather than outlined" — and the track no ramp at all. Drawn side by side in one frame the
+    /// two do not read as one material: the panel is a lit slab with a soft band down its top edge
+    /// and a shade along its bottom, the bar is a crisp outline, and the panel wins the eye for
+    /// reasons that have nothing to do with which one you are meant to be reading. A panel over a
+    /// dark ground shows nothing BUT that bevel, which is the case where the argument for it is
+    /// weakest and its cost highest.
+    ///
+    /// So a container is a container: [`crate::gfx::GlassRim::Standing`], and the rim drawn OVER the
+    /// material at [`theme::GLASS_RIM`] with the boost to [`theme::GLASS_RIM_LIGHT`] on the side
+    /// facing the light — the same two weights, the same lamp, the same one pixel. What that
+    /// variant IS has since changed under this note, and the note holds: it was a line with no ramp
+    /// and no bend, it is now a 12px chamfer and a 24px lens, and the sentence that matters is that
+    /// the bar and the panel take the SAME one. Thickness comes from the material — the frost, the
+    /// shadow, and now the bend — not from a ramp that covers a quarter of the panel.
+    ///
+    /// The OPAQUE fallback takes the rim too. A glass panel and a solid one are one object in two
+    /// materials, and an edge is not part of what makes them different.
+    pub(crate) fn panel(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
+        let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
+        // A PANEL's frost is `theme::PANEL_FROST_*`, drawn as its own quad below — it is a sheet,
+        // not a container, and its edge is the shader's own specular. `GlassFace::NONE`.
+        if self.backdrop(p, r, rest_dy, radius, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Standing, crate::gfx::GlassFace::NONE, panel_material()) {
+            let (ft, fb) = panel_frost();
+            crate::ui::profile::phase("glass.frost", || {
+                p.rect_rimmed(r, radius, ft, fb, theme::GLASS_RIM, boost);
+            });
+        } else {
+            p.rect_rimmed(r, radius, theme::PANEL_TOP, theme::PANEL_BOT, theme::GLASS_RIM, boost);
+        }
+    }
+}
+
+/// **What a popover is made of — both halves, from one name.** See [`theme::Material`].
+///
+/// A panel is HEAVIER and SOFTER than the bar on purpose, and both halves come from the same place
+/// so they cannot drift apart. The reference is unambiguous: in one screenshot of iOS 26's TV app
+/// the posters behind the tab BAR are readable and behind the context MENU above it almost nothing
+/// is. A menu is a surface you read and act on; a bar is chrome you look past.
+///
+/// Laddered on the television over one ground (.72/.55/.42/.30 frost): at .42 the menu's own rows go
+/// soft against the page coming through, and by .30 the panel has stopped reading as a surface. So
+/// the density does not come DOWN toward the bar, which is the obvious "unification" and the wrong
+/// move; what changed instead is that the panel now also gets the extra sample the bar declines,
+/// because lightening the shared snapshot for the bar had lightened the menus with it.
+///
+/// `/tmp/plxnative-material=<ultrathin|thin|regular|thick|ultrathick>` swaps the whole material,
+/// and `/tmp/plxnative-panelfrost=<a>` still overrides the density alone for a finer sweep.
+fn panel_material() -> theme::Material {
+    material_sweep().unwrap_or(theme::PANEL_MATERIAL)
+}
+
+fn panel_frost() -> ([f32; 4], [f32; 4]) {
+    let a = frost_sweep().unwrap_or(panel_material().frost());
+    (theme::with_a(theme::PANEL_FROST_TOP, a), theme::with_a(theme::PANEL_FROST_BOT, a))
+}
+
+#[cfg(feature = "devtriggers")]
+fn material_sweep() -> Option<theme::Material> {
+    static SEEN: std::sync::OnceLock<Option<theme::Material>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let m = theme::Material::parse(&crate::dev::read("material")?)?;
+        crate::log(&format!("glass: panel material swept to {m:?}"));
+        Some(m)
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn material_sweep() -> Option<theme::Material> {
+    None
+}
+
+#[cfg(feature = "devtriggers")]
+fn frost_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("panelfrost")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: panel frost swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn frost_sweep() -> Option<f32> {
+    None
+}
 
 /// Build `srv`'s transcode key for `path` on the stack. The ONE key builder the resolvers below
 /// share, so a warm and the draw that follows it can never name two different slots — `(server,
@@ -703,6 +1034,18 @@ const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
 /// ramp on its bottom edge. Starting it lower leaves a strip of live content above it — a poster's
 /// top edge appearing over the chrome, which is what the first version of this did on Search.
 ///
+/// **That has now been tried a second time, for a reason that sounded better, and it still loses.**
+/// The design system asks for the grid to pass BEHIND the glass track — cutting the content at the
+/// chrome line and then reporting that the material shows nothing is circular, and the argument is
+/// right. It does not survive this screen's arithmetic. The grid's rest positions are fixed modulo
+/// [`library::PITCH`], and at every one of them the track lands in the 96px band BETWEEN two rows:
+/// measured in the simulator at 1920x1080, the row above ends at y=26 and the track occupies 36 to
+/// 112, so the material has flat app grey behind it at rest no matter how far you scroll. What the
+/// change actually bought was a permanent ~26px strip of cut-off poster bottoms along the top of
+/// the frame. The emptiness behind the bar is not a choice anybody made — it is the row pitch, and
+/// moving the scrim cannot reach it. Reinstated, with the measurement, so the next reader gets the
+/// answer instead of the idea.
+///
 /// The caller draws it AFTER its content and BEFORE its chrome, which is the order that lets it be
 /// opaque; `library::draw` has always used that order and it is why its scissor is a bound rather
 /// than a treatment.
@@ -848,7 +1191,13 @@ impl View for CircleButton {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
         let (face, ink) = self.style.colors(self.focused);
-        p.rect(r, r.w * 0.5, face, face, 0.0);
+        let rad = r.w * 0.5;
+        // The resting card shadow, which every control in this family carries and this one did not:
+        // a disc over artwork nobody chose has the tile's problem, and `Button` had already been
+        // given the same constant for the same reason.
+        p.shadow(r, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        control_rim(p, r, rad, face);
         if let Some(icon) = self.icon {
             // vector glyph centred on the disc at the shared DISC_ICON_RATIO box, so every round
             // control carries its icon at one ratio.
@@ -1325,7 +1674,14 @@ impl View for TransportButton {
             // same over any scene instead of a washed translucent circle
             (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK)
         };
-        p.rect(r, r.w * 0.5, bg, bg, 0.0); // circular
+        // **The same edge every other control wears** — [`control_rim`], not a bare `rect`. This was
+        // the one control family the rim missed: `Button` and `CircleButton` both took it and these
+        // discs kept a plain fill, so the transport read as a different material from the disc pair
+        // on the hero it is modelled on. Nothing about the player route argues against it — the rim
+        // is SDF geometry and samples no framebuffer, so it is as safe over the punch-through alpha
+        // of the video plane as the fill it rides on. The solid fill above is unchanged and is still
+        // the reason the glyph reads over any scene.
+        control_rim(p, r, r.w * 0.5, bg);
         let id = match self.which {
             1 => Icon::Audio,
             2 => Icon::More,
@@ -1581,8 +1937,15 @@ impl TabPill {
     /// says the labels "dim when I move", shaping this one call (`focus.powi(2)`, a smoothstep) is the
     /// whole fix — but do it HERE, not with a second spring, or the ink starts leading the fill.
     pub(crate) fn mixed_ink(focus: f32, selected: f32) -> [f32; 4] {
+        // **The idle ink is `TEXT_READING`, one rung brighter than the `TEXT_TERTIARY` this row wore
+        // for most of its life, and it is what pays for the whole material.** The scrim is solved so
+        // this ink clears [`TRACK_INK_CONTRAST`]: a muted grey needs .61 of black over the Office
+        // hero and .56 over a cyan sky, which is a band laid across the picture, while this one needs
+        // the floor for both. The row is louder for it — idle and selected are now two rungs apart
+        // rather than the full span — and the plate carries the difference, which is what the
+        // reference does too.
         theme::mix(
-            theme::mix(theme::TEXT_TERTIARY, theme::TEXT_PRIMARY, selected.clamp(0.0, 1.0)),
+            theme::mix(theme::TEXT_READING, theme::TEXT_PRIMARY, selected.clamp(0.0, 1.0)),
             crate::ui::ACCENT_INK,
             focus.clamp(0.0, 1.0),
         )
@@ -1635,6 +1998,10 @@ impl View for TabPill {
                 TabStyle::Segment { selected: true } if self.plated => (Some(theme::TAB_PLATE_SELECTED), theme::TEXT_PRIMARY, 1.0),
                 TabStyle::Segment { .. } if self.plated => (Some(theme::TAB_PLATE_IDLE), theme::TEXT_TERTIARY, 0.0),
                 TabStyle::Segment { selected: true } => (Some(theme::OVERLAY_FOCUS_PILL), theme::TEXT_PRIMARY, 1.0),
+                // `TEXT_TERTIARY` and not the standing track's brighter `TEXT_READING`, on purpose:
+                // this arm draws on a CONTROLLED ground (the detail page's season row) where nothing
+                // is solved, so the muted idle ink costs nothing and is the design-system default.
+                // See `a_settled_mixed_pill_is_the_boolean_look_it_replaced`.
                 TabStyle::Segment { .. } => (None, theme::TEXT_TERTIARY, 0.0),
             },
         };
@@ -1843,17 +2210,40 @@ impl TabStrip {
     ///
     /// Call this BEFORE the pill loop: the capsules are the pills' ground, and a label drawn under an
     /// opaque focus capsule is a label nobody can read.
-    pub(crate) fn draw(&self, p: Painter, top: f32, h: f32, plated: bool) {
-        let cap = |c: &Capsule, col: [f32; 4]| {
+    pub(crate) fn draw(&self, p: Painter, top: f32, h: f32, plated: bool, glass: bool) {
+        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>| {
             let (x, w) = c.span();
             let a = c.alpha();
             // sub-code alpha or a sub-pixel width is nothing on screen but still a full rrect pass
             if a > 0.004 && w > 0.5 {
-                p.alpha(a).rrect(Rect::new(x, top, w, h), h * 0.5, h * 0.5, col);
+                let r = Rect::new(x, top, w, h);
+                match rim {
+                    // On a GLASS track the selection plate is a piece of the same material, not a
+                    // white wash: its own perimeter line and its own brighter top edge, exactly as
+                    // the track wears them. Without an edge a translucent plate over a translucent
+                    // band has nothing to be bounded BY — it lands differently on each side of
+                    // itself and reads as a smudge, which is what the first device photograph of
+                    // this bar showed and what no amount of fill alpha fixes.
+                    Some(rc) => p.alpha(a).rect_rimmed(
+                        r,
+                        h * 0.5,
+                        col,
+                        col,
+                        rc,
+                        theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3],
+                    ),
+                    None => p.alpha(a).rrect(r, h * 0.5, h * 0.5, col),
+                }
             }
         };
-        cap(&self.sel, if plated { theme::TAB_PLATE_SELECTED_OVER } else { theme::OVERLAY_FOCUS_PILL });
-        cap(&self.foc, crate::ui::ACCENT);
+        let sel_col = if plated { theme::TAB_PLATE_SELECTED_OVER } else { theme::OVERLAY_FOCUS_PILL };
+        cap(&self.sel, sel_col, (glass && !plated).then_some(theme::GLASS_RIM));
+        // The FOCUS capsule keeps its near-white fill: it is the one thing on this row that must not
+        // read as a material, because the material is what everything else here is and focus has to
+        // be the exception. It wore two stops of shadow for a while — near-white on a near-white
+        // LIGHT track has no separation and had to be lifted instead — and that went with the light
+        // track it was drawn for.
+        cap(&self.foc, crate::ui::ACCENT, None);
     }
     /// The `(focus, selected)` mixes pill `pill` (content-space `(x, w)`) should ink itself with —
     /// hand straight to [`TabPill::mix`].
@@ -1993,7 +2383,7 @@ pub(crate) const TOP_BAR_Y: f32 = 44.0;
 /// SAME element, SAME geometry as the detail season tabs (user directive): one control height
 /// (the 60px circle-button CD family) and the season tabs' ±18 label padding — the two rows
 /// must be indistinguishable as a control.
-const TAB_PILL_H: f32 = 60.0;
+pub(crate) const TAB_PILL_H: f32 = 60.0;
 const TAB_PILL_PAD: f32 = 18.0;
 /// UNIFORM inset from the tab-bar track to the pills inside it, on every side: the pill (r=30) and
 /// the track (r=38) stay CONCENTRIC (outer radius = inner radius + gap), so an end pill's corner
@@ -2033,6 +2423,500 @@ static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
 /// PRESS frame: Library hands its *pending* section down here (`library::view_section`), which is
 /// what puts the capsule on the new pill while the grid is still dissolving under it.
 static mut TOP_STRIP: TabStrip = TabStrip::new();
+/// Live-trigger lifetime for the tab track's glass experiment. It uses the same reusable cadence
+/// machinery as a dynamic popover, without the modal's source-dim transform.
+static mut TAB_GLASS_STATE: GlassState = GlassState::new();
+
+/// **How fast the drawn weight follows the solve, and why the two rates are not the same number.**
+///
+/// [`track_alpha_for`] is exact and it is also a STEP. The ground can only be read twice a second
+/// (a readback stalls a tiler — [`crate::gfx::sample_ground`] holds that reasoning) and the answer
+/// is one of 25 rungs, so applied straight to the draw the bar's weight changes in visible jumps as
+/// artwork moves under it. Reported from the panel as the bar "glitching", which is the right word
+/// for it: a material that steps does not read as responding to the picture, it reads as broken.
+/// So the solve stays a step and the DRAWN weight is a spring — the same answer, and for the same
+/// reason, that [`AmbientWash::K`] gives the page wash this bar shares its ground with.
+///
+/// The asymmetry is the contrast contract rather than taste. [`TRACK_INK_CONTRAST`] is a FLOOR the
+/// labels may not dip below, so the direction that protects them — getting darker — arrives at the
+/// pace of the page's own scrolling, while letting the scrim back off is purely cosmetic and can
+/// take almost twice as long. A ground that flickers therefore ratchets toward legible and releases
+/// lazily, which is the safe way round; a symmetric rate would spend half of every flicker under the
+/// floor the whole feature exists to hold.
+const K_TRACK_DENSITY_ATTACK: f32 = 220.0; // toward opaque — ~0.44 s, near the page's scroll rate
+const K_TRACK_DENSITY_RELEASE: f32 = 55.0; // back toward clear — ~0.89 s, slower than the wash
+
+/// Which of the two rates applies. Pure, so the asymmetry is host-testable without a framebuffer to
+/// read a ground out of.
+fn density_k(drawn: f32, want: f32) -> f32 {
+    if want > drawn { K_TRACK_DENSITY_ATTACK } else { K_TRACK_DENSITY_RELEASE }
+}
+
+/// The weight being drawn, and the one the ground last asked for.
+///
+/// `want` is published by the DRAW because the ground is framebuffer 0 and only the draw can read
+/// it; [`tab_row_update`] consumes it on the next frame. That one frame of lag is nothing against a
+/// value that eases over hundreds of milliseconds, and it is the only ordering that does not put a
+/// readback in the update phase.
+///
+/// `seeded` is what stops the bar dissolving in from nothing the first time it is drawn: a screen
+/// entry has no previous weight to travel from, so the first solve is taken whole. Every solve after
+/// it is travelled to.
+struct TrackDensity {
+    drawn: crate::ui::Spring,
+    want: f32,
+    seeded: bool,
+}
+static mut TRACK_DENSITY: TrackDensity = TrackDensity {
+    drawn: crate::ui::Spring::at(0.0),
+    want: 0.0,
+    seeded: false,
+};
+
+/// The weight to draw for `ground` this frame, publishing the weight it asked for.
+fn track_density(ground: [f32; 3]) -> f32 {
+    let want = track_alpha_for(ground);
+    unsafe {
+        let d = &mut *std::ptr::addr_of_mut!(TRACK_DENSITY);
+        d.want = want;
+        if !d.seeded {
+            d.seeded = true;
+            // `Spring::at`, not `jump`: there is no motion to report on a value that has never been
+            // drawn, and `jump`'s invalidate would repaint a screen that has nothing new on it.
+            d.drawn = crate::ui::Spring::at(want);
+        }
+        d.drawn.pos
+    }
+}
+
+/// Step the drawn weight toward the last solve.
+///
+/// Called from [`tab_row_update`] — the one function all three screens wearing this bar go through,
+/// and the same reason the strip's scroll and its capsules are stepped there rather than in each
+/// screen. On a still screen the readback returns the same bytes, so the solve is bit-identical, the
+/// spring is already on it, and `ui::idle` hears nothing: the present gate is not defeated by a bar
+/// that adapts.
+fn track_density_step(dt: f32) {
+    unsafe {
+        let d = &mut *std::ptr::addr_of_mut!(TRACK_DENSITY);
+        if d.seeded {
+            let k = density_k(d.drawn.pos, d.want);
+            d.drawn.step(d.want, k, dt);
+            // The whole point of this spring is that the weight is CONTINUOUS where the solve is
+            // not, and that is a per-frame claim — a twice-a-second `groundlog` line cannot show it.
+            crate::ui::anim::probe("tabtrack.density", d.drawn.pos, d.drawn.vel, d.want, dt);
+        }
+    }
+}
+
+/// The glass track's two scrim stops, with a dev override on the DENSITY.
+///
+/// The weight is [`track_density`]'s — [`track_alpha_for`]'s solve after the attack/release spring,
+/// never the raw solve. The override bypasses both, which is what makes it a fixed-weight leg.
+///
+/// `/tmp/plxnative-tabglassdim=<0..1>` replaces [`theme::TAB_GLASS_TOP`]'s alpha and keeps the
+/// authored spread to the bottom stop, so a sweep moves ONE variable. Absent, the theme's own
+/// values are returned and the draw is byte-identical.
+///
+/// **That spread is 0.16, not the 0.08 this paragraph claimed until a judging panel checked it** —
+/// the tokens are [`theme::TAB_GLASS_TOP`]'s .20 and [`theme::TAB_GLASS_BOT`]'s .36. (They were .34
+/// and .50 when this was written, and both this paragraph and the one below went on quoting the old
+/// pair after the tokens moved. The SPREAD is what the arithmetic here needs, and it survived the
+/// move at 0.16 — which is exactly why nothing broke and nobody noticed.) It matters because the
+/// bottom stop is `a + spread` and nothing bounds it at
+/// [`theme::TAB_TRACK_A_TOP`]: a solve of .633 draws .793, past the point where there is anything
+/// left to see through, which is what makes a heavy bar read as paint rather than as glass.
+///
+/// It exists because the shipped values are the one thing in this material nobody had graded. The
+/// flat track is `scrim_black(0.72..0.82)` and is sized to make the pills legible over ARBITRARY
+/// artwork; the glass track roughly halves that — [`theme::TAB_GLASS_TOP`]/`BOT`, .20/.36 — on the
+/// argument that a real backdrop behind it does the work the flat material had to do alone. It does
+/// not, and [`theme::TAB_GLASS_TOP`] holds the contrast table that says why: a blur removes DETAIL,
+/// not brightness, so the first density at which the tertiary labels clear 3:1 over white artwork is
+/// the flat track's own .72.
+///
+/// (This paragraph said "0.38/0.46" until 2026-08-19, then ".34/.50" until the tokens moved again.
+/// Three stale pairs in one comment is the argument for naming the TOKENS and not their values;
+/// the spread, which is what the arithmetic above actually consumes, is derived from them.)
+/// **How much of ITSELF the glass shows — the diffuse component, as a neutral level 0..1.**
+///
+/// Returns 0 — a pure black scrim, everything this material did before — for every ground brighter
+/// than the floor itself. See [`theme::TAB_GLASS_LIFT_FLOOR`] for what was measured.
+///
+/// The rule is one line, and it is a floor rather than a target: **the glass never goes darker than
+/// `floor`, whatever the page does.** A black scrim gives `lum·(1-a)`, which approaches nothing as
+/// the page does; the lift is the shortfall, so
+///
+/// ```text
+/// face = max(lum·(1 - a), floor)     g = max(0, (floor - lum·(1 - a)) / a)
+/// ```
+///
+/// That form was chosen over the two obvious alternatives, both of which were tried:
+///
+/// * A **proportional** target ("the face should sit N% off the page") degenerates at zero, which
+///   is the one ground that actually fails.
+/// * **Blending** between a light target and the dark one crosses the page's own level on the way
+///   — measured, it passed within 0.4 of a code at a ground of .14, i.e. it moved the invisible bar
+///   from an almost-black page to a dark grey one and called it a fix.
+///
+/// A floor still meets the page exactly once, at `lum = floor`, but that is a page at L\*3 and the
+/// band around it is a couple of codes wide. Everywhere above it the scrim is doing the separating,
+/// which is what it was sized for.
+///
+/// The answer is finally walked back until the idle label still clears [`TRACK_INK_CONTRAST`]: the
+/// density solve sized the scrim against a BLACK tint, and a lighter face spends contrast it bought.
+/// On the near-black grounds this touches there is a great deal of room and the clamp does not bind
+/// — it is here so the rule can be stated as a rule.
+fn track_lift(ground: [f32; 3], a: f32) -> f32 {
+    let floor = lift_floor();
+    // The ground as one level. `sample_ground` has already taken the WORST tap across the bar, so
+    // this is the bright end of what the bar sits on — the right end to size a floor against.
+    let lum = (ground[0] + ground[1] + ground[2]) / 3.0;
+    let want = ((floor - lum * (1.0 - a)) / a.max(1e-4)).clamp(0.0, 1.0);
+    if want <= 0.0 {
+        return 0.0;
+    }
+    let steps = 8;
+    for i in 0..=steps {
+        let g = want * (1.0 - i as f32 / steps as f32);
+        let face = [
+            ground[0] * (1.0 - a) + g * a,
+            ground[1] * (1.0 - a) + g * a,
+            ground[2] * (1.0 - a) + g * a,
+            1.0,
+        ];
+        if contrast(theme::TEXT_READING, face) >= TRACK_INK_CONTRAST {
+            return g;
+        }
+    }
+    0.0
+}
+
+/// The lift's floor, swept by `/tmp/plxnative-tracklift=<floor>`.
+///
+/// `0` is the material as it was before the floor existed, which is what makes an A/B one launch
+/// rather than one build. Read once per process, like every other material sweep here.
+#[cfg(feature = "devtriggers")]
+fn lift_floor() -> f32 {
+    static SEEN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let Some(v) = crate::dev::read("tracklift").and_then(|v| v.trim().parse::<f32>().ok()) else {
+            return theme::TAB_GLASS_LIFT_FLOOR;
+        };
+        crate::log(&format!("glass: track lift swept to floor={v}"));
+        v.clamp(0.0, 1.0)
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn lift_floor() -> f32 {
+    theme::TAB_GLASS_LIFT_FLOOR
+}
+
+fn tab_glass_stops(ground: [f32; 3]) -> ([f32; 4], [f32; 4]) {
+    let lo = theme::TAB_GLASS_TOP[3];
+    let hi = density_max_sweep().unwrap_or(theme::TAB_TRACK_A_TOP);
+    let spread = theme::TAB_GLASS_BOT[3] - lo;
+    let a = match tab_glass_dim_sweep() {
+        Some(a) => a,
+        None => track_density(ground),
+    };
+    // **THE SPREAD TAPERS AS THE SOLVE RISES, and it did not until a judging panel checked the
+    // arithmetic.** The bottom stop is `a + spread` and nothing bounded it: the solve is sized so the
+    // labels clear their contrast against the TOP stop, which is the lightest, and the bottom was
+    // free to run wherever it liked. On a near-white hero a solve of .633 drew a bottom stop of .793
+    // — past [`theme::TAB_TRACK_A_TOP`], the weight at which there is nothing left to see through,
+    // i.e. the flat capsule this material exists to replace, at the bottom of every heavy bar.
+    //
+    // Tapering costs nothing and takes nothing away from legibility, because the solve stays on the
+    // top stop either way. What goes is the opaque lower third, which is the thing that actually
+    // makes a heavy bar read as paint rather than as glass.
+    let k = ((a - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0);
+    let heavy = (a + spread * (1.0 - k)).min(hi);
+    // The diffuse component contributes the SAME AMOUNT OF LIGHT at both stops — `g·a` — so the
+    // bottom stop's extra alpha still only removes more ground and the gradient keeps its
+    // direction. Tint both stops with `g` and the heavier one would come out LIGHTER than the top,
+    // which is a lamp under the floor again.
+    let g = track_lift(ground, a);
+    let g_bot = if heavy > 1e-4 { g * a / heavy } else { g };
+    (theme::with_a([g, g, g, 1.0], a), theme::with_a([g_bot, g_bot, g_bot, 1.0], heavy))
+}
+
+/// sRGB -> linear, the WCAG transfer function.
+fn linearize(c: f32) -> f32 {
+    if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+/// WCAG relative luminance of an rgba token (alpha ignored — a ground is opaque).
+fn rel_luma(c: [f32; 4]) -> f32 {
+    0.2126 * linearize(c[0]) + 0.7152 * linearize(c[1]) + 0.0722 * linearize(c[2])
+}
+/// WCAG contrast ratio between two opaque colours, brighter over darker.
+fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let (x, y) = (rel_luma(a), rel_luma(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The bar the track's idle labels have to clear — the same 3:1 the ambient-ground test holds a
+/// wash to, for the same ink.
+const TRACK_INK_CONTRAST: f32 = 4.0;
+
+/// **The scrim weight this ground needs, solved per frame.** This is the answer to the one thing
+/// that kept defeating the material: a blur removes DETAIL, not brightness, so a fixed density is
+/// either too light over a bright hero — where [`theme::TEXT_TERTIARY`] labels wash out, reported
+/// from the panel over a cyan sky — or too heavy over a dark one, where it throws away the whole
+/// effect. Neither is a tuning problem. The density is a FUNCTION of the ground and always was.
+///
+/// So the ink stops moving and the material moves instead: a dark backdrop gets a nearly
+/// transparent bar, a white one gets an opaque bar, and the labels sit at the same contrast on
+/// both. The floor is the design system's own `--glass-track-top` and the ceiling is the flat
+/// track's [`theme::TAB_TRACK_A_TOP`] — past that there would be nothing left to see through, which
+/// is the flat capsule this replaces.
+///
+/// A search rather than a closed form because the transfer function is not invertible in anything
+/// worth reading: 24 steps of 1/50 across the legal span, each one two multiplies and a compare,
+/// once per frame. It is also why the ground is an rgb and not a luminance — the ink is cool grey
+/// and the contrast is computed against the actual colour, not against a brightness that would call
+/// a saturated blue and a neutral grey the same ground.
+fn track_alpha_for(ground: [f32; 3]) -> f32 {
+    let lo = theme::TAB_GLASS_TOP[3];
+    let hi = density_max_sweep().unwrap_or(theme::TAB_TRACK_A_TOP).max(lo);
+    let steps = 24;
+    for i in 0..=steps {
+        let a = lo + (hi - lo) * (i as f32 / steps as f32);
+        let k = 1.0 - a;
+        let face = [ground[0] * k, ground[1] * k, ground[2] * k, 1.0];
+        if contrast(theme::TEXT_READING, face) >= TRACK_INK_CONTRAST {
+            return a;
+        }
+    }
+    hi
+}
+
+/// `/tmp/plxnative-trackmax=<a>` — the density CEILING, swept.
+///
+/// The ceiling is what decides how dark this bar is allowed to get over bright artwork, and it is
+/// the one remaining number between our material and the reference. Measured on a stripe ground:
+/// the macOS 26 tab bar's face sits at 89 against a page of 127 (−27% Weber) and, over four
+/// different grounds, its face barely moves at all — 92, 94, 92, 96 — while ours swings 47…84 and
+/// reaches −60%. Their material has ONE density and converges every backdrop toward a fixed grey;
+/// ours re-solves per frame against [`TRACK_INK_CONTRAST`] and, over a bright hero, spends the
+/// whole span to get there.
+///
+/// **This is the continuous lever, and it is here instead of the obvious one.** The obvious one is
+/// a second, LIGHT polarity with flipped ink — Apple's own answer — and this repo had it and
+/// deleted it: `theme.rs`'s note where that polarity's tokens used to stand records four bugs in one week
+/// from a discrete state that has to be re-decided every time the ground moves, and a judging panel
+/// that measured the light material landing 34.9 L\* off the local ground on the median MIXED hero
+/// where the dark one lands 3.4. Do not re-add it from this note. Lowering a ceiling adds no state,
+/// no hysteresis and no decision — it only changes how far one existing solve may travel.
+///
+/// What it COSTS is stated plainly, because it is the whole trade: below the ceiling the solve
+/// needs, the idle labels stop clearing [`TRACK_INK_CONTRAST`] over the brightest grounds. That is
+/// also exactly the trade the reference makes, and the criticism it takes for it.
+/// The fixed-weight leg's density, read ONCE at boot like every other sweep here.
+///
+/// It was `crate::dev::read("tabglassdim")` inline in [`tab_glass_stops`], i.e. a `read_to_string`
+/// of a `/tmp` path on **every drawn frame** of every screen that wears the bar — a syscall on the
+/// 60 fps path, in every dev and harness build, which is what the fps scenes measure.
+///
+/// **No `#[cfg]` pair**, unlike the sweeps around it: `dev::read` is already `None` at COMPILE time
+/// without the `devtriggers` feature, so a second gate here only re-derives what the one door
+/// guarantees — and a hand-written pair is how this file broke the `RELEASE=1` build once already,
+/// by swallowing a neighbour's attribute when a new function was spliced between them.
+fn tab_glass_dim_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("tabglassdim")?.trim().parse::<f32>().ok()?;
+        if !(0.0..=1.0).contains(&v) {
+            crate::log("glass: tabglassdim ignored (want 0..1)");
+            return None;
+        }
+        crate::log(&format!("glass: track density pinned to {v}"));
+        Some(v)
+    })
+}
+
+#[cfg(feature = "devtriggers")]
+fn density_max_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("trackmax")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: density ceiling swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn density_max_sweep() -> Option<f32> {
+    None
+}
+
+/// **The lit edge's weight for a bar already drawn at `density`.**
+///
+/// The rim rides the density rather than sampling the ground a second time, and that is the whole
+/// design: [`track_alpha_for`] is already a monotone function of how bright the ground is, so the
+/// drawn density IS the ground's brightness, in the one form this bar has already eased. Deriving
+/// the edge from it means the two halves of the material cannot disagree again — which is the bug
+/// this fixes. Half of it followed the ground and half of it was a constant, so over bright artwork
+/// the bar darkened correctly and then wore an edge drawn for a ground it was no longer on.
+///
+/// `t` is where the density sits between its floor and its ceiling, so a dark ground (density
+/// pinned at the floor) returns [`theme::GLASS_RIM`] and [`theme::GLASS_RIM_LIGHT`] unchanged, to
+/// the bit. Every ground brighter than that travels toward [`theme::GLASS_RIM_MAX`], and the top
+/// keeps exactly twice the perimeter's weight the whole way — the one lamp does not move because
+/// the room got brighter.
+///
+/// Returns `(perimeter, lit)` — the ring and, over it, the edge facing the light.
+fn track_rim(density: f32) -> ([f32; 4], [f32; 4]) {
+    let lo = theme::TAB_GLASS_TOP[3];
+    let hi = density_max_sweep().unwrap_or(theme::TAB_TRACK_A_TOP);
+    let k = ((density - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0);
+    let ceil = rim_max_sweep().unwrap_or(theme::GLASS_RIM_MAX);
+    // The ring travels: a white line runs out of room as the ground brightens, so it climbs the ramp
+    // toward `GLASS_RIM_MAX`, and the highlight keeps exactly twice the perimeter's weight the whole
+    // way — the one lamp does not move because the room got brighter.
+    let top = theme::GLASS_RIM_LIGHT[3] + (ceil - theme::GLASS_RIM_LIGHT[3]).max(0.0) * k;
+    (theme::with_a(theme::GLASS_RIM, top * 0.5), theme::with_a(theme::GLASS_RIM, top))
+}
+
+/// `/tmp/plxnative-rimmax=<a>` — the ceiling that ramp climbs toward, swept.
+///
+/// It exists because the ramp's ceiling is the one number that decides whether the edge reads as a
+/// LIT EDGE or as a drawn white outline, and it had never been held against the reference. Measured
+/// on a stripe ground: how much of the ground's swing the top rim carries is 0.23 for us and 0.25
+/// for the macOS tab bar — i.e. ours is not flat and never was, which was the standing suspicion.
+/// What differs is the LEVEL. Their rim sits at 124 against a page of 127 and a face of 89; ours at
+/// 212 against a page of 124 and a face of 53. Relative to its own brightness their edge varies by
+/// 24% and ours by 10%, which is the whole of why theirs reads as the material catching a lamp and
+/// ours as a stroke drawn round a shape.
+#[cfg(feature = "devtriggers")]
+fn rim_max_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("rimmax")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("glass: rim ceiling swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn rim_max_sweep() -> Option<f32> {
+    None
+}
+
+/// **Which way the standing track answers the contrast question, and how far along it is.**
+///
+/// [`track_alpha_for`] puts black between the labels and the picture, and over bright artwork that
+/// answer runs out at .69 — the flat capsule this material was built to replace. The other answer is
+/// to go LIGHT and flip the ink, which clears the same 3:1 while leaving a bright scene looking
+/// bright. Both are the same rule; only the sign differs, and the row carries a 0..1 blend between
+/// them rather than an enum, because the way from one to the other has to be a fade.
+///
+/// The polarity follows the ENVIRONMENT — the room decides, and then the alpha inside that polarity
+/// is solved exactly as before. The alternative rule, "pick whichever needs less material", turns
+/// out to AGREE with it everywhere, and that agreement is worth recording rather than relying on: it
+/// holds only because the two inks were muted by the same amount (the light track's idle ink was
+/// `COOL_600` against [`theme::TEXT_TERTIARY`]'s `COOL_400` — one ramp, opposite sides of mid; both
+/// that ink and the token naming it went with the polarity, so this is history, not a live pair).
+/// Measured over a dark grid the light polarity wants **.652** where the dark one wants its **.340**
+/// floor, and over bright artwork the two swap to .300 against .688. Swap either ink for a
+/// near-black one and the cost rule starts putting a light bar over a dark grid; the lightness rule
+/// does not depend on the ink at all, which is why it is the one written down.
+/// CIE L\* of an opaque colour — how LIGHT it looks, on the axis a person judges it on.
+///
+/// Not [`contrast`]'s WCAG ratio, and the difference decided the rim: that ratio carries a +0.05
+/// flare term built for text legibility, which compresses hard at the dark end and says a rim over
+/// a dark ground has LESS contrast than the same rim over a bright one — the opposite of what the
+/// panel shows. For "how visible is this edge" and "is this room bright", L\* is the instrument.
+fn lstar(c: [f32; 4]) -> f32 {
+    let y = rel_luma(c);
+    if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
+}
+
+/// The widest a track may be and still wear glass — the design system's `--glass-track-max`.
+///
+/// A track is charged by its LENGTH: what a glass surface costs is the blurred RECTANGLE, the
+/// surface grown 88px a side, so this width prices at `(940 + 176) x (76 + 176)` = 281k px^2 —
+/// inside the ~300k a MOVING host holds 60 fps under (`docs/glass-hardware-budget.md`) — while a
+/// 1050-wide one is not. It is the one limit here a section table can trip on its own: enough
+/// libraries and the strip outgrows the budget, so the material has to come off by arithmetic
+/// rather than by anyone remembering.
+const GLASS_TRACK_MAX: f32 = 940.0;
+
+/// Is the shared tab track wearing glass this frame?
+///
+/// **Glass is the material.** `/tmp/plxnative-flattabs` takes it away, which is how the two are
+/// compared on one television without a second binary — and the one thing that made the flat track
+/// the answer for a while is gone: the density is no longer a constant that had to be legible over
+/// every possible hero at once, so it is not forced up to the flat capsule's own weight. See
+/// [`track_alpha_for`].
+///
+/// Four refusals, each a different kind of limit:
+/// - **A panel is open** — and the reason is DISTANCE, not arithmetic. Two glass surfaces in a
+///   frame converge on one grab (`gfx::blur_region_union`), so neighbours avoid a second chain, but
+///   this bar sits at the top and a popover's panel in the middle: their union is most of the
+///   frame, which is the whole-screen capture the region limit exists to avoid. While the modal
+///   owns focus, keeping only its material is also the clearer hierarchy.
+///   `/tmp/plxnative-glassboth` lifts this one for measurement only.
+/// - **The track is wider than [`GLASS_TRACK_MAX`]** — see there.
+///
+/// Split in two because the SOURCE pass needs the first half on its own: [`draw_tab_row`] has to
+/// know whether the track will wear glass in order to decide whether to draw itself into that
+/// track's own backdrop at all. See there.
+fn tab_glass_wanted(track_w: f32) -> bool {
+    !flat_tabs_armed()
+        && track_w <= GLASS_TRACK_MAX
+        && (!crate::ui::popover::any_open() || glass_both_armed())
+}
+
+/// The three trigger probes this material reads, each latched at first use by
+/// [`crate::dev::latched_flag`].
+///
+/// **`dev::flag` is `Path::exists()`, i.e. a `stat`.** These sat raw on the draw path, and
+/// [`tab_glass_wanted`] alone is called three times per frame — from `tab_glass_prepare`, from the
+/// source-pass guard, and from [`tab_glass_on`] — so a bar-wearing screen paid up to five `stat`
+/// calls a frame at 60 fps, in every dev and harness build. The fps scenes measure exactly that.
+use crate::dev::latched_flag;
+
+latched_flag!(
+    /// `/tmp/plxnative-flattabs` — the material off, for an A/B against the flat capsule.
+    fn flat_tabs_armed = "flattabs";
+);
+latched_flag!(
+    /// `/tmp/plxnative-glassboth` — keep the track's glass up while a popover is open, so the two
+    /// materials can be judged side by side in one frame.
+    fn glass_both_armed = "glassboth";
+);
+latched_flag!(
+    /// `/tmp/plxnative-groundlog` — what the sampler read and what density it chose.
+    fn ground_log_armed = "groundlog";
+);
+
+/// …and the fourth: **this page is being drawn as a blur SOURCE**, where the track never wears the
+/// material it is producing. `Glass::prepare` also mutates the one process-wide `DynamicClock`,
+/// which is keyed on presents rather than draws, so a second call in the same present would spend
+/// that present's refresh slot on a surface nobody sees.
+fn tab_glass_on(track_w: f32) -> bool {
+    tab_glass_wanted(track_w) && !crate::gfx::blur_source_pass()
+}
+
+/// Resolve the tab track's glass cadence BEFORE the page it sits on draws.
+///
+/// Every dynamic glass owner has to prepare before any of them captures — `Glass::prepare`'s own
+/// contract — and this one used to break it by preparing inside `draw_tab_row`, i.e. in the middle
+/// of the page draw. On the capture path that merely meant an extra chain now and then. On the
+/// direct path it was measurable: the pre-page snapshot was taken, the tab track then invalidated
+/// it from inside the page, and the capture path re-did the whole thing — both paths running in
+/// one frame. Call this beside the other owners' `prepare_present`.
+pub(crate) fn tab_glass_prepare() {
+    // The width rule is part of the answer, so the cadence has to measure the strip too — the same
+    // cached metrics the draw walks, one frame's worth, keyed on `browse::tabs_gen()`.
+    if !with_tab_metrics(|_, widths| tab_glass_on(tab_track_w(widths))) {
+        return;
+    }
+    let state = unsafe { &mut *std::ptr::addr_of_mut!(TAB_GLASS_STATE) };
+    Glass::DYNAMIC_BACKDROP.prepare(
+        state,
+        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+    );
+}
 // label + width cache keyed on browse::tabs_gen(): rebuilding the CStrings and
 // re-measuring every frame — on Home's hot path too — was a review-confirmed waste
 static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
@@ -2102,6 +2986,11 @@ fn tab_content_w(widths: &[f32]) -> f32 {
 fn tab_view_w(widths: &[f32]) -> f32 {
     tab_content_w(widths).min(TAB_VIEW_MAX).max(0.0)
 }
+/// The TRACK's own width — the pill area plus its uniform inset on both sides. What the glass
+/// budget is charged against ([`GLASS_TRACK_MAX`]), and what `draw_tab_row` builds its rect from.
+fn tab_track_w(widths: &[f32]) -> f32 {
+    tab_view_w(widths) + 2.0 * TAB_TRACK_PAD
+}
 /// Content-space x of pill `i`'s left edge (0 = the strip's start).
 fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
     let i = i.min(widths.len());
@@ -2162,6 +3051,9 @@ pub(crate) fn tab_row_update(selected: c_int, focused: c_int, dt: f32) {
     unsafe { (*addr_of_mut!(TAB_SCROLL)).step(t, K_TAB_SCROLL, dt) };
     let s = unsafe { addr_of!(TAB_SCROLL).read() };
     crate::ui::anim::probe("tabrow.scroll", s.pos, s.vel, t, dt);
+    // The track's own weight follows its ground here for the same reason the capsules move here:
+    // three screens draw this bar and none of them should have to remember to animate it.
+    track_density_step(dt);
 }
 
 /// Put pill `idx` on screen at once (no glide). For screen ENTRY — the Library screen opened
@@ -2210,10 +3102,174 @@ pub(crate) fn draw_tab_row(p: Painter) {
             view_w + 2.0 * TAB_TRACK_PAD,
             TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
         );
+        // **A SURFACE MAY NOT APPEAR IN ITS OWN BACKDROP**, and this row is the one place in the app
+        // where it could: the direct source path renders the whole page again into a small FBO, and
+        // the page includes this bar. Left in, the glass track blurred the FLAT track — its own
+        // `scrim_black(0.72..0.82)` capsule, plus the pill labels — and then darkened that again
+        // with its own stops. Measured on Home over a UNIFORM hero (220,255,163 across the whole
+        // span, above and below the bar): the flat track reads (52,60,38) and the glass one (33,38,
+        // 26). A material whose whole argument is that it is LIGHTER than the capsule it replaces
+        // came out darker than it, muddy, and with the selection capsule swimming in a patch of its
+        // own doubled scrim. Every "the glass tab bar looks wrong" report traces here — including
+        // the density sweeps that only cleared at 0.70, which was the doubling being paid for twice.
+        //
+        // Only the DIRECT path could have this bug, which is why it arrived with that path becoming
+        // the default: the capture path grabs framebuffer 0 from inside the glass surface, i.e.
+        // after the page and BEFORE this bar, so the track was never in its own snapshot there.
+        //
+        // The exclusion is exactly "will this row wear glass" — [`tab_glass_wanted`], the same test
+        // minus its source-pass clause. When a popover is open the track is flat and belongs in the
+        // snapshot, because then it really is behind the panel that samples it.
+        if crate::gfx::blur_source_pass() && tab_glass_wanted(track.w) {
+            return;
+        }
         // dark-material weight (`theme::TAB_TRACK_TOP` holds the reasoning): light enough to keep a
         // hint of the art, dark enough that the TEXT_TERTIARY plain segments hold contrast even over
         // near-white art
-        p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+        //
+        // That flat material is now the FALLBACK — `/tmp/plxnative-flattabs`, a popover being open,
+        // a track too wide, or a driver with no render target. The shipped one is the popovers'
+        // backdrop glass, and the two cases are not alike: a popover opens over a still page and
+        // snapshots once, while this bar sits over a page that scrolls, flips its hero and
+        // cross-fades between routes, so it opts into the reusable dynamic policy — the bar draws
+        // every presented frame while a dirty snapshot refreshes on every changed one.
+        //
+        // **A modal takes the glass away**, and the reason is DISTANCE, not arithmetic. Two glass
+        // surfaces in a frame converge on one grab (`gfx::blur_region_union`), so NEIGHBOURS avoid
+        // a second steady-state chain — but this bar sits at the top and a popover's panel in the
+        // middle of it, and the union of the two is most of the frame, which is the whole-screen
+        // capture the region limit exists to avoid. While the modal owns focus, keeping only its
+        // material is also the clearer hierarchy; the disabled bar falls back to its flat track.
+        // Never while this page is being drawn as a blur SOURCE: `Glass::prepare` mutates the one
+        // process-wide `DynamicClock`, which is keyed on presents rather than on draws, so a
+        // second call in the same present would consume that present's refresh slot on behalf of a
+        // surface nobody sees. The flat track is also the right source pixel — glass over glass is
+        // not what is behind the panel.
+        // `/tmp/plxnative-glassboth` lifts the popover exclusion for measurement ONLY. The
+        // exclusion exists because this bar sits at the top and a popover's panel in the middle,
+        // and the union of the two is most of the frame — the whole-screen capture the region
+        // limit exists to avoid. It is also the one scene where the direct path's advantage should
+        // show, since its cost is the page's draw calls rather than the region's area, so the two
+        // paths need to be comparable on it.
+        // consumed unconditionally: the publisher writes every frame and the reset is what stops a
+        // hero standing behind the Library's bar after a route change
+        // The PIXELS, sampled at a low rate; the flat app grey when the readback is refused, which
+        // is also the honest answer on the two screens that really do have it up there.
+        // …and never DURING a route transition: `nav` dips the page under this bar while the bar
+        // itself holds still, so those pixels are the app ground fading, not the screen's colour.
+        let settled = crate::ui::nav::page_alpha() >= 0.999;
+        // **Decided BEFORE the ground is sampled, because it decides whether to sample at all.**
+        // `sample_ground` is five `glReadPixels` boxes, and a readback stalls a tiler — so a track
+        // that is about to draw FLAT (a popover is up, `flattabs` is armed, or the strip is wider
+        // than `GLASS_TRACK_MAX`) must not pay for a number only the glass path consumes. It did,
+        // on every screen wearing the bar, for as long as the app was open.
+        let glass_on = tab_glass_on(track.w);
+        let groundlog = ground_log_armed();
+        // …and FASTER while a polarity is being decided: the decision is gated on two independent
+        // readings, so the sampler's rate is the decision's rate, and every frame of it is spent
+        // showing the material the bar is about to stop being.
+        let (cr, cg, cb) = theme::CLEAR_RGB; // the app ground, as the token that names it
+        let flat_ground = [cr, cg, cb];
+        let ground = if glass_on || groundlog {
+            crate::gfx::sample_ground([track.x, track.y, track.w, track.h], settled)
+                .unwrap_or(flat_ground)
+        } else {
+            flat_ground
+        };
+        // `/tmp/plxnative-groundlog` — the density is now a FUNCTION of something invisible, so the
+        // instrument that says what it read and what it chose is not optional. It is how the first
+        // version of this was caught reading Plex's `UltraBlurColors`, which gave (0.30,0.23,0.18)
+        // for a hero whose top edge is (0.00,0.68,0.91) and left the bar at its floor.
+        if groundlog {
+            static mut LAST: u32 = 0;
+            let n = unsafe { LAST };
+            if n % 20 == 0 {
+                // BOTH weights: the solve is a step twice a second and the drawn one eases to
+                // it, so a single number could not tell "the ground moved" from "the bar is still
+                // travelling" — which is the whole question this instrument now has to answer.
+                // through `track_density` rather than off the static: it is idempotent within a
+                // frame, and reading the static raw printed the seed value 0.000 on the one frame
+                // the bar had never been drawn — an instrument's first line reading as a bug in the
+                // thing it was armed to watch.
+                let drawn = track_density(ground);
+                crate::log(&format!(
+                    "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}",
+                    ground[0], ground[1], ground[2],
+                    lstar([ground[0], ground[1], ground[2], 1.0]),
+                    crate::gfx::ground_span(),
+                    track_alpha_for(ground), drawn,
+                    track.x, track.y, track.w, track.h,
+                ));
+            }
+            unsafe { LAST = n.wrapping_add(1) };
+        }
+        if glass_on {
+            // PREPARE is deliberately not here — see `tab_glass_prepare`. Resolving cadence during
+            // the page draw invalidates the backdrop after any earlier owner has already captured
+            // one, which on the direct path means the snapshot is taken and then thrown away.
+            // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
+            if Glass::DYNAMIC_BACKDROP.backdrop(
+                p,
+                track,
+                0.0,
+                track.h * 0.5,
+                [1.0, 1.0, 1.0, 1.0],
+                // The line and the hairline, no ramp — the design system's rule for this container,
+                // and the one the panel treatment gets wrong here: 76px tall has 20px of interior
+                // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
+                // edge and becomes most of the object.
+                crate::gfx::GlassRim::Standing,
+                {
+                    let (gt, gb) = tab_glass_stops(ground);
+                    let (rim, rim_lit) = track_rim(gt[3]);
+                    crate::gfx::GlassFace { scrim_top: gt, scrim_bot: gb, rim, rim_lit, rim_w: 1.0 }
+                },
+                // The bar is UltraThin by construction: it takes no extra sample, so the page comes
+                // through as sharp as the chain left it. Its FROST is not read from the scale at all
+                // — `tab_glass_stops` above solves it against the ground every frame.
+                theme::Material::UltraThin,
+            ) {
+                // NOTHING IS DRAWN HERE ANY MORE, and that is the fix. The darkening and the edge —
+                // `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)`, the whole
+                // of what the design system puts on this container — used to be a SECOND rounded rect
+                // over the backdrop, and two surfaces of one shape means two antialiased edges, each
+                // blending its own colour against the page. They ride inside the surface now, as its
+                // `GlassFace`; `fs_glass.frag` composites scrim then rim then coverage, in that order.
+                //
+                // The two weights are still one ring: `theme::GLASS_RIM` .14 the whole way round plus
+                // the difference up to `theme::GLASS_RIM_LIGHT` .28 on the edge facing the light,
+                // boosted by the surface NORMAL so it dies out along each cap's arc. It was a second
+                // ring scissored to the top half for one build, and the scissor lands exactly on the
+                // widest point of a cap — a hard step from .28 to .14 in the middle of a curve, which
+                // reads as the outline snapping off. Reported from a screenshot before it was measured.
+                //
+                // And the weight TRAVELS with the ground (`track_rim`), because a lit edge is a
+                // relationship and not a colour — `theme::GLASS_RIM_MAX` carries that measurement.
+                // The ring is white in both weights: it was a PAIR while the track had two
+                // polarities, an ink line for the light one and a light line for the dark, and the
+                // ink half went with the polarity.
+            } else {
+                // …and the same here: the chain refused, so the flat dark material is what draws —
+                // said to the spring, not to the value the spring publishes. See the note below.
+                p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+            }
+        } else {
+            // NOT during a blur source pass. `tab_glass_on` is false there by design — the flat
+            // track is the right source pixel — but deactivating on that basis makes the NEXT
+            // frame's `prepare` see an inactive state, call `activate`, and invalidate the
+            // backdrop. The cadence then runs at the present rate instead of every third one:
+            // measured 50 refreshes/s against the intended 20, and an 11% whole-frame regression
+            // that looked exactly like the direct path being slow.
+            if !crate::gfx::blur_source_pass() {
+                unsafe { (*std::ptr::addr_of_mut!(TAB_GLASS_STATE)).deactivate() };
+            }
+            // The flat capsule, which is the same material at its ceiling — there is nothing for
+            // this path to say about ink any more. It once wrote the row's POLARITY here, and that
+            // was a reported bug twice over: the write clobbered a value the spring owned, so the
+            // next frame cut it back, and the hysteresis read the same clobbered value and walked
+            // the committed polarity across with it. Both are gone with the polarity itself.
+            p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+        }
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
         // scissor case (see the ui/CLAUDE.md clipping rule): a pill leaving the row is cut at the
         // pill area's edge — which is also the "there is more over there" affordance. Paired below.
@@ -2233,7 +3289,7 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // pills' ground. This strip is NOT plated — it sits inside the tab-bar track above, which
         // already is the ground, so the pills paint no fill of their own at all here.
         let cp = p.translate(x0 - sx, 0.0);
-        unsafe { &*addr_of!(TOP_STRIP) }.draw(cp, TOP_BAR_Y, TAB_PILL_H, false);
+        unsafe { &*addr_of!(TOP_STRIP) }.draw(cp, TOP_BAR_Y, TAB_PILL_H, false, glass_on);
         rects.reserve(n);
         for i in 0..n {
             // ONE prefix sum per pill: `tab_pill_x` is O(i), and it was walked twice here — once for
@@ -2293,6 +3349,30 @@ pub enum ControlStyle {
     /// so focus reads identically across every control in the family.
     Keyline,
 }
+/// A control's EDGE — the 1px perimeter the design system has always asked every control to wear
+/// and which none of them wore.
+///
+/// **It is a rim and nothing else: no blur, no region, no budget.** A glass FACE was built and
+/// looked at on the panel first, and it is not worth its price here — the app's controls sit in the
+/// darkest quarter of the frame by construction (the hero wedge is what buys their labels their
+/// contrast), so there is nothing behind them to bend. Measured on the dev set's own Home: the
+/// blurred face moves a control's pixels by at most 7/255 while this rim moves them by up to 74.
+/// Dropping the backdrop also drops the thing that made controls unaffordable — a glass surface is
+/// charged for its rectangle unioned with every other, and Home's action row unioned with a glass
+/// tab track priced at 3.8x the frame budget. A rim costs one extra fragment op on the perimeter.
+///
+/// The weights are the container's, not the tile's: [`theme::GLASS_RIM`] .14 round the whole
+/// perimeter and the boost to [`theme::GLASS_RIM_LIGHT`] .28 on the side facing the light, weighted
+/// by the surface normal — so a disc's highlight sits on its crown and fades to nothing at its
+/// equator. One lamp, the one every card shadow in this app is already cast from.
+///
+/// Unconditional on focus, which is the point: the design's rule is that the card constants are not
+/// states and the FILL is what focus owns. On the focused near-white `ACCENT` face a white rim is
+/// invisible by construction, which is the sign it is an edge and not a fill.
+fn control_rim(p: Painter, r: Rect, rad: f32, face: [f32; 4]) {
+    p.rect_rimmed(r, rad, face, face, theme::GLASS_RIM, theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3]);
+}
+
 impl ControlStyle {
     /// (fill, ink) for this style at the given focus state.
     pub(crate) fn colors(self, focused: bool) -> ([f32; 4], [f32; 4]) {
@@ -2414,7 +3494,7 @@ impl Button {
             let s = BTN_KEYLINE_W;
             p.rrect(Rect::new(r.x + s, r.y + s, r.w - 2.0 * s, r.h - 2.0 * s), rad - s, rad - s, bg);
         } else {
-            p.rrect(r, rad, rad, bg);
+            control_rim(p, r, rad, bg);
         }
         let Some(frac) = self.progress else { return };
         let w = r.w * frac.clamp(0.0, 1.0);
@@ -2781,6 +3861,192 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 mod tests {
     use super::*;
 
+    /// **[`GLASS_TRACK_MAX`] is the budget, solved for width** — asserted rather than asserted-in-a-
+    /// comment, because the two numbers live in different files and the one that moves is the
+    /// budget. A glass surface is charged for the blurred RECTANGLE: itself grown
+    /// [`crate::gfx::BLUR_MARGIN`] on every side. At the limit width that must still fit
+    /// [`crate::gfx::GLASS_REGION_BUDGET`], which is what a MOVING host carries at 60 fps — and this
+    /// bar's host is always moving, since the page under it is what the user is scrolling.
+    ///
+    /// The second half is the one worth having, and it is the design system's own counterexample:
+    /// `--glass-track-max`'s note says "(940 + 176) x 252 = 281k px^2 is inside the budget, and a
+    /// 1,050-wide one is not". Both halves of that sentence are checked here, so the limit cannot
+    /// drift away from the budget it was solved against. There is deliberate headroom between them
+    /// — the budget alone would allow ~1014 — because 940 is a round number a human can hold, not
+    /// the last width that fits.
+    #[test]
+    fn the_glass_track_width_limit_is_exactly_the_region_budget() {
+        let region = |w: f32| {
+            let h = TAB_PILL_H + 2.0 * TAB_TRACK_PAD;
+            (w + 2.0 * crate::gfx::BLUR_MARGIN) * (h + 2.0 * crate::gfx::BLUR_MARGIN)
+        };
+        assert!(
+            region(GLASS_TRACK_MAX) <= crate::gfx::GLASS_REGION_BUDGET,
+            "a track at the limit costs {:.0} px^2, past the {:.0} a moving host carries",
+            region(GLASS_TRACK_MAX),
+            crate::gfx::GLASS_REGION_BUDGET,
+        );
+        assert!(
+            region(1050.0) > crate::gfx::GLASS_REGION_BUDGET,
+            "a 1050-wide track costs {:.0} px^2 and must be outside the budget",
+            region(1050.0),
+        );
+    }
+
+    /// The width rule is the only refusal a SECTION TABLE can trip on its own, so it has to hold
+    /// for the strip the product actually draws and give way for one the server could produce.
+    #[test]
+    fn a_normal_strip_keeps_the_material_and_a_long_one_loses_it() {
+        // Home + three libraries + the square Search mark, at the widths `with_tab_metrics`
+        // measures: label + 2 x TAB_PILL_PAD.
+        let normal = [126.0, 146.0, 176.0, TAB_ICON_PILL_W];
+        assert!(
+            tab_track_w(&normal) <= GLASS_TRACK_MAX,
+            "the product's own strip is {} wide and must keep the material",
+            tab_track_w(&normal),
+        );
+        let many = [126.0, 146.0, 176.0, 150.0, 160.0, 140.0, 170.0, TAB_ICON_PILL_W];
+        assert!(
+            tab_track_w(&many) > GLASS_TRACK_MAX,
+            "eight pills is {} wide and must drop to flat",
+            tab_track_w(&many),
+        );
+    }
+
+    /// A cadence of THREE, which is no longer the shipped default and is the point.
+    ///
+    /// These tests were written against `DEFAULT_DYNAMIC_PERIOD` and broke the day it moved from
+    /// three to one — which is the wrong thing for them to be sensitive to. What they exist to
+    /// prove is the MECHANISM: every Nth qualifying present, damage pending across the gap, one
+    /// capture shared by every owner in a present, and a counter that wraps. None of that is a
+    /// property of N, so N is pinned here and the shipped value is asserted separately by
+    /// [`the_shipped_cadence_is_every_changed_present`]. A period of one would also make three of
+    /// the four assertions below unreachable, since nothing would ever `Wait`.
+    const P: u32 = 3;
+
+    /// The shipped default, asserted in ONE place so moving it is a one-line decision with a
+    /// measurement behind it rather than a cascade through the cadence tests.
+    #[test]
+    fn the_shipped_cadence_is_every_changed_present() {
+        assert_eq!(
+            DEFAULT_DYNAMIC_PERIOD, 1,
+            "measured on the direct source path: one-in-one costs +0.07% of the frame against \
+             one-in-three, and 60.0 fps either way"
+        );
+    }
+
+    #[test]
+    fn dynamic_glass_refreshes_on_every_third_successful_present() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(41);
+        assert_eq!(clock.step(42, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(43, false, P), DynamicStep::Wait, "pending damage survives");
+        assert_eq!(clock.step(44, false, P), DynamicStep::Refresh);
+        assert_eq!(clock.step(44, true, P), DynamicStep::None, "same-present owners are covered");
+        assert_eq!(clock.step(45, false, P), DynamicStep::None, "a clean keepalive does nothing");
+    }
+
+    #[test]
+    fn dynamic_glass_cadence_survives_the_present_counter_wrapping() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(u32::MAX - 1);
+        assert_eq!(clock.step(u32::MAX, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(0, false, P), DynamicStep::Wait);
+        assert_eq!(clock.step(1, false, P), DynamicStep::Refresh);
+    }
+
+    #[test]
+    fn staggered_dynamic_owners_share_one_global_cadence() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(10); // owner A opens
+        assert_eq!(clock.step(11, true, P), DynamicStep::Wait);
+        clock.cover_now(12); // owner B opens: its immediate shared capture covers A too
+        assert_eq!(clock.step(12, true, P), DynamicStep::None);
+        assert_eq!(clock.step(13, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(14, true, P), DynamicStep::Wait);
+        assert_eq!(clock.step(15, true, P), DynamicStep::Refresh);
+        assert_eq!(clock.step(15, true, P), DynamicStep::None, "B cannot schedule a second capture");
+    }
+
+    /// A period of one refreshes on EVERY present with a dirty underlay — the 60 Hz end of the
+    /// cadence sweep. It must still refuse a second capture on a present already covered, or two
+    /// glass owners would run the chain twice in one frame and the cost curve would measure that.
+    #[test]
+    fn a_period_of_one_refreshes_every_dirty_present_but_only_once_each() {
+        let mut clock = DynamicClock::new();
+        clock.cover_now(70);
+        assert_eq!(clock.step(71, true, 1), DynamicStep::Refresh);
+        assert_eq!(clock.step(71, true, 1), DynamicStep::None, "already covered this present");
+        assert_eq!(clock.step(72, true, 1), DynamicStep::Refresh);
+        assert_eq!(clock.step(73, false, 1), DynamicStep::None, "a clean present still refreshes nothing");
+    }
+
+    /// A longer period waits longer and no more than that: the wait count is `period - 1`.
+    #[test]
+    fn a_longer_period_waits_exactly_that_many_presents() {
+        for period in 2..=8u32 {
+            let mut clock = DynamicClock::new();
+            clock.cover_now(0);
+            for present in 1..period {
+                assert_eq!(
+                    clock.step(present, true, period),
+                    DynamicStep::Wait,
+                    "period {period} refreshed early at present {present}"
+                );
+            }
+            assert_eq!(clock.step(period, true, period), DynamicStep::Refresh, "period {period}");
+        }
+    }
+
+    /// `/tmp/plxnative-glasshz` writes this static and nothing else does. Zero would be a refresh
+    /// every zero frames, so it clamps rather than dividing the cadence by nothing.
+    #[test]
+    fn the_cadence_override_clamps_and_reports_what_it_installed() {
+        // A crate-wide static, so this takes the shared globals lock rather than a local one.
+        let _g = crate::testlock::serial();
+        let restore = dynamic_period();
+        assert_eq!(set_dynamic_period(0), 1, "zero presents per refresh is not a cadence");
+        assert_eq!(dynamic_period(), 1);
+        assert_eq!(set_dynamic_period(4), 4);
+        assert_eq!(set_dynamic_period(99), 8, "past 8 is clamped, not refused");
+        set_dynamic_period(restore);
+        assert_eq!(dynamic_period(), DEFAULT_DYNAMIC_PERIOD, "the default is what ships");
+    }
+
+    #[test]
+    fn glass_state_reactivates_after_deactivation_or_a_route_gap() {
+        let mut state = GlassState::new();
+        assert!(state.needs_activation(20));
+        state.active = true;
+        state.last_seen = 20;
+        assert!(!state.needs_activation(21), "idle time has no successful presents");
+        assert!(state.needs_activation(22), "another route presented in between");
+        state.deactivate();
+        assert!(state.needs_activation(21));
+    }
+
+    /// **Every glass policy COMPOSITES**, and the axis that let one not to is gone.
+    ///
+    /// This test used to assert the source-dim arithmetic — `Glass::DYNAMIC.source_rgb(0.5) == 0.75`
+    /// and so on — for a preset nothing outside this module ever constructed. The mechanism was
+    /// measured against the item menu over one checker ground and rejected (`e75b5e49`): dimming the
+    /// page going INTO the backdrop destroys the modulation the frost is layered over, so the panel
+    /// arrives flat. What is worth pinning now is that no policy can reintroduce it by accident —
+    /// the two presets differ in REFRESH and in nothing else.
+    #[test]
+    fn every_glass_policy_composites_and_differs_only_in_refresh() {
+        assert_ne!(Glass::CACHED, Glass::DYNAMIC_BACKDROP, "the two presets are not the same policy");
+        // **The policy carries NOTHING beside its refresh**, which is the property the deleted axis
+        // violated — and the only form of it that can actually fail. Comparing a preset against a
+        // literal of its own one field cannot: that is `Self{refresh} == Self{refresh}`, true by
+        // construction, which is what the first version of this test asserted twice.
+        assert_eq!(
+            std::mem::size_of::<Glass>(),
+            std::mem::size_of::<GlassRefresh>(),
+            "a second axis on Glass would show up here first"
+        );
+    }
+
     // ── The strip's vocabulary: an index MEANS something ──────────────────────────────────────
     //
     // Driven through the pure halves (`pill_in`/`pill_index`/`last_section_in`), so no `browse`
@@ -2911,18 +4177,6 @@ mod tests {
     /// One sRGB channel, linearized (WCAG 2.x). Local to the tests on purpose: the app never needs
     /// this — it is the yardstick the design decision was made with, kept here so the decision stays
     /// checkable rather than remembered.
-    fn linearize(c: f32) -> f32 {
-        if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-    }
-    /// WCAG relative luminance of an rgba token (alpha ignored — a ground is opaque).
-    fn rel_luma(c: [f32; 4]) -> f32 {
-        0.2126 * linearize(c[0]) + 0.7152 * linearize(c[1]) + 0.0722 * linearize(c[2])
-    }
-    /// WCAG contrast ratio between two opaque colours, brighter over darker.
-    fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
-        let (x, y) = (rel_luma(a), rel_luma(b));
-        (x.max(y) + 0.05) / (x.min(y) + 0.05)
-    }
     /// The corner sources a ground has to survive: the blown-out extreme, each primary and secondary
     /// at full saturation, a mid grey, and the brightest thing in the palette.
     fn hostile_sources() -> Vec<[f32; 3]> {
@@ -3438,6 +4692,31 @@ mod tests {
         assert!(z.is_finite(), "…and does not divide by zero into a NaN that would poison every ink");
     }
 
+    /// A fixture in the shape the two tests below need: seeded, in one material, with the OTHER
+    
+    /// The contrast floor is a floor, so the two rates are not one rate: the bar darkens at the
+    /// page's own pace and clears at roughly half it. Symmetric rates would spend half of every
+    /// flicker under `TRACK_INK_CONTRAST`, which is the one thing the adaptive weight exists to hold.
+    #[test]
+    fn the_track_darkens_faster_than_it_clears() {
+        let _g = serial_for_motion();
+        assert!(
+            density_k(0.40, 0.60) > density_k(0.60, 0.40),
+            "getting darker protects the labels; getting lighter is cosmetic"
+        );
+        let dt = 1.0 / 60.0;
+        let mut attack = crate::ui::Spring::at(0.40);
+        attack.step(0.60, density_k(0.40, 0.60), dt);
+        let mut release = crate::ui::Spring::at(0.60);
+        release.step(0.40, density_k(0.60, 0.40), dt);
+        assert!(
+            (attack.pos - 0.40).abs() > (release.pos - 0.60).abs(),
+            "over the same distance and one frame, attack covered {:.4} and release {:.4}",
+            (attack.pos - 0.40).abs(),
+            (release.pos - 0.60).abs(),
+        );
+    }
+
     /// The capsule/strip tests drive `Capsule::step`, whose landing frame `Spring::jump`s — and
     /// `Spring::jump` reports to `ui::idle`'s process-global dirty flag. So they are serial by
     /// obligation, not precaution (`xfade.rs`'s rule): under parallel libtest they intermittently
@@ -3557,8 +4836,16 @@ mod tests {
     }
 
     /// Every RESTING state a strip-driven pill can be in must be the look it replaced, to the bit —
-    /// this is the whole reason the mix lerps between the same three ink roles the boolean arms pick
-    /// from rather than inventing a ramp of its own.
+    /// this is the whole reason the mix lerps between the same ink roles the boolean arms pick from
+    /// rather than inventing a ramp of its own.
+    ///
+    /// **The IDLE role is the one deliberate exception, and it is a fact about grounds rather than
+    /// about pills.** The strip-driven row is the standing tab track: it sits on glass over
+    /// uncontrolled artwork, and its scrim is solved so this ink clears [`TRACK_INK_CONTRAST`] — a
+    /// muted `TEXT_TERTIARY` there costs .61 of black over a bright hero, which is a band laid across
+    /// the picture rather than a material. The boolean arms are the detail page's season tabs, drawn
+    /// bare on a controlled dark ground where nothing is solved and the muted ink is right. Two
+    /// grounds, two answers; the roles they SHARE still have to agree to the bit.
     #[test]
     fn a_settled_mixed_pill_is_the_boolean_look_it_replaced() {
         // "to the bit" means to the PANEL's bit: a lerp that lands on its endpoint still carries a
@@ -3573,13 +4860,64 @@ mod tests {
                 );
             }
         };
-        is(TabPill::mixed_ink(0.0, 0.0), theme::TEXT_TERTIARY, "plain segment");
+        is(TabPill::mixed_ink(0.0, 0.0), theme::TEXT_READING, "plain segment on glass");
+        assert_ne!(
+            theme::TEXT_READING, theme::TEXT_TERTIARY,
+            "the fixture is meaningless if the two idle inks have converged"
+        );
         is(TabPill::mixed_ink(0.0, 1.0), theme::TEXT_PRIMARY, "selected, focus elsewhere");
         is(TabPill::mixed_ink(1.0, 0.0), crate::ui::ACCENT_INK, "focused");
         is(TabPill::mixed_ink(1.0, 1.0), crate::ui::ACCENT_INK, "focus outranks selection");
         // out-of-range mixes clamp rather than extrapolating past the tokens
         is(TabPill::mixed_ink(-1.0, 4.0), theme::TEXT_PRIMARY, "an over-range selection clamps");
         is(TabPill::mixed_ink(9.0, -9.0), crate::ui::ACCENT_INK, "an over-range focus clamps");
+    }
+
+    /// **The bottom stop may not run past the ceiling.** The solve sizes the scrim so the labels
+    /// clear their floor against the TOP stop, which is the lightest of the pair, and the bottom was
+    /// free to be `a + spread` however heavy `a` got. Past [`theme::TAB_TRACK_A_TOP`] there is
+    /// nothing left to see through, so a bar drawn there has stopped being glass at its lower edge —
+    /// which is the flat capsule this material replaced, reintroduced under every heavy bar. Found by
+    /// a judging panel doing the arithmetic, not by looking.
+    #[test]
+    fn the_pair_never_draws_past_the_weight_where_glass_stops_being_glass() {
+        let _g = serial_for_motion();
+        let restore = unsafe { std::ptr::addr_of!(TRACK_DENSITY).read() };
+        let mut prev = 0.0f32;
+        for i in 0..=40 {
+            // a neutral ground swept the whole way up, so the solve sweeps its whole range
+            let v = i as f32 / 40.0;
+            unsafe {
+                *std::ptr::addr_of_mut!(TRACK_DENSITY) =
+                    TrackDensity { drawn: crate::ui::Spring::at(0.0), want: 0.0, seeded: false }
+            };
+            let (top, bot) = tab_glass_stops([v, v, v]);
+            assert!(
+                bot[3] <= theme::TAB_TRACK_A_TOP + 1e-6,
+                "ground {v:.2}: bottom stop {:.3} is past the ceiling {:.3}",
+                bot[3], theme::TAB_TRACK_A_TOP
+            );
+            assert!(bot[3] >= top[3] - 1e-6, "ground {v:.2}: the pair inverted");
+            assert!(top[3] >= prev - 1e-6, "ground {v:.2}: the top stop went backwards");
+            prev = top[3];
+        }
+        unsafe { *std::ptr::addr_of_mut!(TRACK_DENSITY) = restore };
+    }
+
+    /// A dark ground keeps the authored pair to the bit — that is the case the tokens were drawn
+    /// for, and the taper must not disturb it.
+    #[test]
+    fn a_dark_ground_draws_the_authored_pair_exactly() {
+        let _g = serial_for_motion();
+        let restore = unsafe { std::ptr::addr_of!(TRACK_DENSITY).read() };
+        unsafe {
+            *std::ptr::addr_of_mut!(TRACK_DENSITY) =
+                TrackDensity { drawn: crate::ui::Spring::at(0.0), want: 0.0, seeded: false }
+        };
+        let (top, bot) = tab_glass_stops([0.0, 0.0, 0.0]);
+        unsafe { *std::ptr::addr_of_mut!(TRACK_DENSITY) = restore };
+        assert!((top[3] - theme::TAB_GLASS_TOP[3]).abs() < 1e-6, "top {:.4}", top[3]);
+        assert!((bot[3] - theme::TAB_GLASS_BOT[3]).abs() < 1e-6, "bot {:.4}", bot[3]);
     }
 
     /// **The plated composite**, which is arithmetic and therefore has no business being graded by
@@ -3618,6 +4956,74 @@ mod tests {
             assert!(
                 (one - two).abs() < 1.0 / 255.0,
                 "at cascade α={a} the two-layer plate is {two} against the old {one} — over a display code apart"
+            );
+        }
+    }
+
+    /// **The container has to be visible on a page that is not.** A black scrim can only subtract,
+    /// so before the lift existed the bar's face over an L\*0 page measured the page exactly and
+    /// the whole object was one pixel of rim. This is the invariant that says it never happens
+    /// again — stated as a face lighter than its ground, which is what a person sees, rather than
+    /// as the constant that currently produces it.
+    #[test]
+    fn the_glass_never_goes_darker_than_its_floor() {
+        let floor = theme::TAB_GLASS_LIFT_FLOOR;
+        for i in 0..=100 {
+            let lum = i as f32 / 100.0;
+            let ground = [lum, lum, lum];
+            let a = track_alpha_for(ground);
+            let g = track_lift(ground, a);
+            let face = lum * (1.0 - a) + g * a;
+            assert!(
+                face >= floor.min(lum * (1.0 - a)).min(floor) - 1e-4,
+                "over a page at {lum} the face is {face}, under the floor {floor}"
+            );
+        }
+        // the case the floor exists for: a page that shows nothing at all
+        let a = track_alpha_for([0.0, 0.0, 0.0]);
+        let face = track_lift([0.0, 0.0, 0.0], a) * a;
+        assert!(
+            face >= floor - 1e-4,
+            "over a page at zero the face is {face}, short of the floor {floor}"
+        );
+    }
+
+    /// …and it costs a bright bar NOTHING. The lift is spent out of the density solve's slack, so
+    /// the moment the solve leaves its floor there is none: a heavy bar is the same black scrim it
+    /// was, to the bit. Without this the fix for the dark end quietly lightens the light end, which
+    /// is where the labels are hardest to hold.
+    #[test]
+    fn a_bright_ground_gets_no_lift_at_all() {
+        for &lum in &[0.45f32, 0.6, 0.8, 1.0] {
+            let ground = [lum, lum, lum];
+            let a = track_alpha_for(ground);
+            assert!(
+                track_lift(ground, a) == 0.0,
+                "ground {lum} solved to α={a} and still took a lift"
+            );
+        }
+    }
+
+    /// The clamp is the whole licence for the rule: the solve above sized the scrim against a BLACK
+    /// tint, and a lighter face spends the contrast it bought. Whatever the lift does, the idle
+    /// label still clears its floor.
+    #[test]
+    fn the_lift_never_spends_the_labels_contrast() {
+        for i in 0..=40 {
+            let lum = i as f32 / 40.0;
+            let ground = [lum, lum, lum];
+            let a = track_alpha_for(ground);
+            let g = track_lift(ground, a);
+            let face = [
+                ground[0] * (1.0 - a) + g * a,
+                ground[1] * (1.0 - a) + g * a,
+                ground[2] * (1.0 - a) + g * a,
+                1.0,
+            ];
+            let c = contrast(theme::TEXT_READING, face);
+            assert!(
+                c >= TRACK_INK_CONTRAST - 0.01,
+                "ground {lum}: α={a} lift={g} leaves the idle label at {c:.2}:1"
             );
         }
     }

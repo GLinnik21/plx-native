@@ -18,7 +18,8 @@ use crate::plex::session::Account;
 use crate::ui::consts::*;
 use crate::ui::popover::Popover;
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::{theme, Rect};
+use crate::ui::widgets::Glass;
+use crate::ui::Rect;
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -35,7 +36,10 @@ pub enum Action {
 /// case, where naming an account we do not have would be the same lie in reverse).
 const HEADER_FALLBACK: &str = "Account";
 
-static mut POP: Popover = Popover::new(); // shared open/appear choreography
+/// The first production user of dynamic widget glass: Home stays at presentation rate while its
+/// dirty blurred backdrop is refreshed on the shared [`Glass`] cadence — every CHANGED present, so
+/// a settled menu still takes no snapshots at all.
+static mut POP: Popover = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
 /// mapping cannot drift from what was actually drawn.
@@ -174,15 +178,47 @@ pub fn update(dt: f32) {
     table().update(dt, ph - 40.0);
 }
 
+/// Resolve the backdrop cadence before Home draws. The snapshot itself is deliberately deferred
+/// until [`draw`], where the panel sits after every underlay pixel in draw order.
+pub fn prepare_present(underlay_changed: bool) {
+    if is_open() {
+        pop().prepare_present(underlay_changed);
+    }
+}
+
+/// How dark the page goes behind this menu — [`draw_scrim`]'s weight, and the module's own, in the
+/// same per-module shape `item_menu` and `alt_sources` use.
+///
+/// It has ONE reader: [`draw`] used to pass it to `Popover::painter`, and now takes
+/// `content_painter`, which draws no scrim at all. Named rather than inlined because the scrim and
+/// the panel are two calls in two functions that have to describe one composite.
+const SCRIM_A: f32 = 0.5;
+
+/// The modal dim, drawn as part of the HOST PAGE rather than with the panel.
+///
+/// This is what the panel's glass looks through, so it has to be on the surface the backdrop is
+/// sourced from. The direct source path re-renders the page closure before any popover draws — so
+/// a scrim drawn later, with the panel, is in the visible frame but not in the snapshot, and the
+/// frosted ground then reads BRIGHTER than the dimmed page around it. `app.rs` calls this at the
+/// end of the page closure, which puts it on the direct path and the capture path alike.
+pub fn draw_scrim() {
+    if is_open() {
+        pop().scrim(SCRIM_A);
+    }
+}
+
 pub fn draw() {
     if !is_open() {
         return;
     }
-    // scrim + fade, sliding DOWN into place from above the chip (negative rise)
-    let p = pop().painter(0.5, -16.0);
+    use crate::ui::profile::phase;
+    // `content_painter`, NOT `painter`: the scrim is already on the page — see [`draw_scrim`].
+    let p = pop().content_painter(-16.0);
     let r = panel_rect();
-    p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-    table().draw(p, r);
+    pop().panel(p, r, 24.0);
+    phase("glass.foreground", || {
+        table().draw(p, r);
+    });
 }
 
 /// The (account state → header + rows) table, which is the whole of this bug: the words the menu

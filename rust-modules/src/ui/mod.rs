@@ -18,6 +18,7 @@ pub mod consts;
 pub mod detail;
 pub mod fmt; // shared duration/clock display formatters
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
+pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
 pub mod home;
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
@@ -39,6 +40,7 @@ pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs
 pub mod profile;
 pub mod table;
 pub mod text_view;
+pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod theme;
 pub mod track_menu;
 pub mod trail; // the BACK trail: which pages are behind the one on screen (app.rs pops it)
@@ -258,6 +260,7 @@ pub struct Painter {
     dx: f32,
     dy: f32,
     a: f32,
+    rgb: f32,
 }
 /// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
 /// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
@@ -275,13 +278,19 @@ fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
 
 impl Painter {
     pub const fn root() -> Self {
-        Self { dx: 0.0, dy: 0.0, a: 1.0 }
+        Self { dx: 0.0, dy: 0.0, a: 1.0, rgb: 1.0 }
     }
     pub fn alpha(self, m: f32) -> Self {
         Self { a: self.a * m, ..self }
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self { dx: self.dx + dx, dy: self.dy + dy, ..self }
+    }
+    /// Multiply the RGB written by every descendant primitive. With the frame clear multiplied by
+    /// the same value, this is algebraically the same result as a final full-screen black scrim,
+    /// without paying another 1920x1080 blended pass on the television.
+    pub fn rgb(self, m: f32) -> Self {
+        Self { rgb: self.rgb * m.clamp(0.0, 1.0), ..self }
     }
     /// This painter's accumulated horizontal offset — what to ADD to a coordinate drawn through it
     /// to get the screen x it lands on.
@@ -299,11 +308,22 @@ impl Painter {
     }
     #[inline]
     fn c(self, c: [f32; 4]) -> [f32; 4] {
-        [c[0], c[1], c[2], c[3] * self.a]
+        [c[0] * self.rgb, c[1] * self.rgb, c[2] * self.rgb, c[3] * self.a]
     }
     pub fn rect(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], focus: f32) {
         let (t, b) = (self.c(top), self.c(bot));
-        crate::gfx::draw_rect(r.x + self.dx, r.y + self.dy, r.w, r.h, 0.0, rad, t.as_ptr(), b.as_ptr(), focus);
+        crate::gfx::draw_rect(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            0.0,
+            rad,
+            t.as_ptr(),
+            b.as_ptr(),
+            focus,
+            self.rgb,
+        );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         let c = self.c(col);
@@ -336,7 +356,7 @@ impl Painter {
     pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
         let c = self.c(col);
         const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
-        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, HOLLOW.as_ptr(), w, c.as_ptr());
+        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, HOLLOW.as_ptr(), w, c.as_ptr(), 0.0);
     }
     /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
     /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
@@ -356,24 +376,62 @@ impl Painter {
     /// caller's alpha cascade — shared by the sheened fill primitives below.
     #[inline]
     fn sheen_rim(self) -> [f32; 4] {
-        theme::with_a(theme::CARD_SHEEN, theme::CARD_SHEEN[3] * self.a)
+        self.c(theme::with_a(theme::CARD_SHEEN, theme::CARD_SHEEN[3]))
     }
     /// A rounded-rect FILL that also carries the 1px perimeter edge-sheen in the SAME pass (the
     /// no-texture counterpart of [`tex_stroked`](Self::tex_stroked)) — for skeleton / chip-disc tiles.
     pub fn rect_sheened(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4]) {
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.sheen_rim();
-        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
+        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), 0.0);
+    }
+    /// [`rect_sheened`](Self::rect_sheened) with the rim colour named rather than assumed — for a
+    /// surface whose edge is not the tiles' [`theme::CARD_SHEEN`]. Same single pass.
+    /// `rim_top` is extra weight on the edge facing UP, fading to nothing where the surface turns
+    /// away — a container's brighter top line, continuous round its caps. 0 for a plain perimeter.
+    pub fn rect_rimmed(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32) {
+        let (t, b) = (self.c(top), self.c(bot));
+        let rim = self.c(rim);
+        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), rim_top * self.a);
     }
     /// Flat rounded-rect fill + the 1px perimeter edge-sheen in one pass (the flat-colour placeholder tile).
     pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {
         let c = self.c(col);
         let rim = self.sheen_rim();
-        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, c.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr());
+        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, c.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), 0.0);
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
         let t = self.c(tint);
         crate::gfx::draw_tex(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
+    }
+    /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.
+    ///
+    /// Returns whether it drew. `false` is not an error — the blur latches itself off on a driver
+    /// that cannot give it a render target (`gfx`'s backdrop-blur note), and a caller that gets it
+    /// must draw an opaque ground instead of a translucent one. Reach for
+    /// [`Popover::panel`](crate::ui::popover::Popover::panel) rather than this: it owns that pair,
+    /// so no screen has to carry the fallback itself.
+    ///
+    /// **Order is the argument**: this samples the DEFAULT FRAMEBUFFER as it stands, so it must be
+    /// called after everything meant to show through and before anything meant to sit on top.
+    /// Painter primitives are immediate, so "behind" means "already drawn this frame" — nothing
+    /// else. Never call it on the player route: the video plane is not in our framebuffer, so what
+    /// is behind a panel there is punch-through alpha, not a picture.
+    /// `rest_dy` is how far this frame's painter has been slid from the panel's RESTING position —
+    /// a popover's appear translate, and 0 for anything that does not move. The snapshot is grabbed
+    /// around the rest rect rather than around this frame's, so the slide itself does not invalidate
+    /// it. Cached glass stays at one snapshot; a dynamic policy may refresh independently;
+    /// `gfx::draw_blur_backdrop` has the full argument.
+    /// `rim` is the one thing a surface says about the material's GEOMETRY — a sheet's 28px chamfer,
+    /// or the standing track's single line. See [`crate::gfx::GlassRim`].
+    /// `face` is what it wears over the backdrop — its scrim and its edge, composited inside the one
+    /// surface rather than drawn as a second rect on top of it ([`crate::gfx::GlassFace`], and its
+    /// doc for the artefact that construction produced). `GlassFace::NONE` for a sheet.
+    #[must_use]
+    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4], rim: crate::gfx::GlassRim, face: crate::gfx::GlassFace, deep: f32) -> bool {
+        let t = self.c(tint);
+        let (x, y) = (r.x + self.dx, r.y + self.dy);
+        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr(), rim, face, deep)
     }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.
@@ -388,7 +446,7 @@ impl Painter {
     pub fn tex_carded(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4], f: f32) {
         let t = self.c(tint);
         let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
-        let shcol = theme::with_a(theme::CARD_SHADOW, sa * self.a);
+        let shcol = self.c(theme::with_a(theme::CARD_SHADOW, sa));
         let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
         crate::gfx::draw_tex_carded(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(),
             theme::CARD_SHEEN_W, self.sheen_rim().as_ptr(), pad, blur, shcol.as_ptr());
@@ -414,6 +472,7 @@ impl Painter {
         } else {
             k.map(|c| std::array::from_fn(|i| g[i] + (c[i] - g[i]) * a))
         };
+        let k = k.map(|c| c.map(|v| v * self.rgb));
         crate::gfx::draw_ambient(r.x + self.dx, r.y + self.dy, r.w, r.h, dim,
             k[0].as_ptr(), k[1].as_ptr(), k[2].as_ptr(), k[3].as_ptr());
     }
@@ -559,6 +618,15 @@ mod tests {
     //! The retui core's pure geometry. Ordinary parallel tests — `Rect` carries no state and
     //! reaches no crate global, so nothing here needs `testlock` or a module mutex.
     use super::*;
+
+    #[test]
+    fn painter_rgb_and_alpha_are_independent_multiplicative_cascades() {
+        let p = Painter::root().rgb(0.5).rgb(0.8).alpha(0.25).alpha(0.5);
+        let c = p.c([0.75, 0.5, 0.25, 0.8]);
+        assert_eq!(c, [0.3, 0.2, 0.1, 0.1]);
+        assert_eq!(p.rgb, 0.4);
+        assert_eq!(p.a, 0.125);
+    }
 
     /// Every field of `a` within `eps` of `b`'s.
     fn near(a: Rect, b: Rect, eps: f32) -> bool {

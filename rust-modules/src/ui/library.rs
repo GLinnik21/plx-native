@@ -2331,7 +2331,7 @@ pub(crate) fn draw() {
         let mp = phase("menu.scrim", || pop().painter(0.45, 20.0));
         phase("menu.panel", || {
             let r = panel_rect();
-            mp.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+            pop().panel(mp, r, 24.0);
             if source_menu_open() {
                 draw_level_pills(mp, r);
             }
@@ -2369,7 +2369,7 @@ fn draw_level_pills(p: Painter, panel: Rect) {
     //
     // `span` reads the SAME `rects` the pills are drawn from, which is the strip's own requirement:
     // a capsule can then never land off a pill.
-    unsafe { (*addr_of!(SRC_STRIP)).draw(p, rects[0].y, SRC_PILL_H, false) };
+    unsafe { (*addr_of!(SRC_STRIP)).draw(p, rects[0].y, SRC_PILL_H, false, false) };
     for (i, (label, lv)) in [(c"Browse", Level::Browse), (c"On Home", Level::OnHome)].into_iter().enumerate() {
         let selected = if level == lv { 1.0 } else { 0.0 };
         TabPill::new(label.as_ptr(), theme::size::BODY, rects[i])

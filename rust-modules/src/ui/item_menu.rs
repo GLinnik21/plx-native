@@ -349,15 +349,31 @@ pub(crate) fn update(dt: f32) {
     table().update(dt, ph - crate::ui::table::PAD_V);
 }
 
+/// The modal dim, drawn as part of the HOST PAGE rather than with the panel — see
+/// [`crate::ui::popover::Popover::scrim`] for why, and `app.rs`'s page closure for where.
+///
+/// **This menu is drawn AFTER the page closure, which is the whole test.** It is served by the
+/// capture path today, which grabs framebuffer 0 and so picks the scrim up for free — but only
+/// because no dynamic glass owner is live while a popover is open (`tab_glass_wanted` excludes
+/// them), so nothing invalidates and the direct path never runs. That is three modules' behaviour
+/// holding one invariant up; arm `/tmp/plxnative-glassboth` and it is already false. Owning the
+/// scrim here costs one call and does not depend on any of it.
+pub(crate) fn draw_scrim() {
+    if is_open() {
+        pop().scrim(SCRIM_A);
+    }
+}
+
 pub(crate) fn draw() {
     if !is_open() {
         return;
     }
-    // light scrim (the shelf must stay readable behind it) + the shared appear fade, rising a
-    // short beat into place off the card it belongs to
-    let p = pop().painter(SCRIM_A, 14.0);
+    // the shared appear fade, rising a short beat into place off the card it belongs to. The scrim
+    // (light — the shelf must stay readable behind it) is the PAGE's now: `content_painter`, not
+    // `painter`, or the dim is drawn twice.
+    let p = pop().content_painter(14.0);
     let r = panel_rect();
-    p.rect(r, PANEL_RAD, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    pop().panel(p, r, PANEL_RAD);
     table().draw(p, r);
 }
 

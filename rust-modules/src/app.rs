@@ -45,6 +45,8 @@ const A_GREEN: c_int = 1;
 const A_BLUE: c_int = 2;
 const A_ALPHA: c_int = 3;
 const A_BUFFER_SIZE: c_int = 4;
+const A_DEPTH: c_int = 6;
+const A_STENCIL: c_int = 7;
 const A_CTX_MAJOR: c_int = 17;
 const A_CTX_MINOR: c_int = 18;
 const A_CTX_PROFILE_MASK: c_int = 21;
@@ -112,6 +114,23 @@ extern "C" {
 /// Falls back to the canvas size if SDL cannot answer, which is the behaviour this replaced.
 #[cfg(feature = "hostsim")]
 fn desktop_window_size() -> (c_int, c_int) {
+    // `PLXNATIVE_WIN=<w>x<h>` overrides the fit entirely — `make sim-shot SIM_W=1920 SIM_H=1080`.
+    // It exists because the fit below is chosen for a HUMAN looking at a window, and a screenshot
+    // is not that: on a 1x display the divisor lands on 2 and every shot comes back 960x540, which
+    // is half the canvas the UI is authored at. A hairline, a 1px edge-sheen and a snapped glyph
+    // are exactly the things that do not survive that, so a shot taken to JUDGE the interface has
+    // to be asked for at full size. Off-screen edges are fine for a headless grab: the drawable is
+    // the window's own framebuffer, not the part of it the compositor happens to show.
+    if let Some(v) = std::env::var_os("PLXNATIVE_WIN") {
+        let v = v.to_string_lossy().to_lowercase();
+        if let Some((w, h)) = v.split_once('x') {
+            if let (Ok(w), Ok(h)) = (w.trim().parse::<c_int>(), h.trim().parse::<c_int>()) {
+                if w > 0 && h > 0 {
+                    return (w, h);
+                }
+            }
+        }
+    }
     let mut r = [0 as c_int; 4]; // SDL_Rect: x, y, w, h
     let ok = unsafe { SDL_GetDisplayUsableBounds(0, r.as_mut_ptr()) } == 0;
     let (uw, uh) = (r[2], r[3]);
@@ -2694,6 +2713,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         SDL_GL_SetAttribute(A_BLUE, 8);
         SDL_GL_SetAttribute(A_ALPHA, 8);
         SDL_GL_SetAttribute(A_BUFFER_SIZE, 32);
+        // ...and NO depth or stencil, which SDL would otherwise give us anyway: its defaults are
+        // 16 bits of depth and 0 of stencil, and asking for neither had simply never been written
+        // down. **This renderer has no use for either.** There is no `GL_DEPTH_TEST`, no
+        // `glDepthFunc`, no `glDepthMask` and no `glClear(GL_DEPTH_BUFFER_BIT)` anywhere in the
+        // crate — every screen is painter's-algorithm 2-D, drawn back to front — and the one
+        // scissor user (`gfx::clip_set`) is a scissor, not a stencil.
+        //
+        // On a TILER this is not merely 4 MB of address space. Midgard allocates the depth buffer
+        // per tile alongside colour and, unless the driver proves it dead, RESOLVES it to memory at
+        // end-of-frame: 1920x1080x2 bytes written per presented frame for a buffer nothing ever
+        // reads. `system.rs` logs what the config actually came back with — a request is not a
+        // grant, and the only honest confirmation is `FB bits: … depth=0`.
+        SDL_GL_SetAttribute(A_DEPTH, 0);
+        SDL_GL_SetAttribute(A_STENCIL, 0);
         // The television is placed at 0,0 at exactly canvas size and takes the panel. A desktop
         // window is centred (`SDL_WINDOWPOS_CENTERED`) at whatever fits — see `desktop_window_size`.
         #[cfg(feature = "hostsim")]
@@ -2746,6 +2779,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // A `focus=0` HERE is not yet a verdict: the flag arrives with the wayland keyboard
         // `enter`, which needs the event loop below. `textinput::start` logs it again at the
         // moment the field asks for the panel, which is the reading that decides anything.
+        // What EGL this set has — extension string, swap behaviour, buffer age. One boot-time
+        // read, logged and used for nothing: `docs/egl-partial-update-and-damage.md` is what it
+        // was for. Deliberately NOT a new link dependency; see `egl.rs`'s module doc for why
+        // `-lEGL` would kill the process at exec() on the very firmwares this app runs on.
+        crate::egl::probe();
         crate::textinput::bind(win);
         let wflags = SDL_GetWindowFlags(win);
         log(&format!("keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -2753,9 +2791,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)));
 
         crate::system::sys_grab_wayland(win);
+        // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
+        // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
+        // that has nothing behind it. See `system.rs`'s section on it.
+        crate::system::opaque_region_init();
         crate::gfx::init_gl();
         crate::text::init_text();
         crate::gfx::init_image();
+        crate::gfx::init_blur();
         // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
         // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
         // still runs, and `net::global_init` has already said so in the event log.
@@ -2950,16 +2993,48 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if crate::dev::flag("anim") {
             crate::ui::anim::set_enabled(true);
         }
-        // dev: /tmp/plxnative-profile turns on the per-phase draw profiler (ui::profile) — logs mean
-        // ms/frame per draw phase to the event log (GPU-synced, so absolute FPS drops while it's on).
-        if crate::dev::flag("profile") {
-            crate::ui::profile::set_enabled(true);
+        // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
+        // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
+        // Combining them would perturb the timer result, so fail closed when both are present.
+        // dev: /tmp/plxnative-glassload is the backdrop-glass LOAD DIAL — a sweep of glass-surface
+        // count, size and refresh cadence that cycles its own steps inside one launch, so legs are
+        // interleaved by construction. /tmp/plxnative-navblur is the blurred-route-transition
+        // prototype. Both live in `ui::glassload`; both are absent from a release build.
+        if let Some(v) = crate::dev::read("glassload") {
+            crate::ui::glassload::configure(&v);
+        }
+        if let Some(v) = crate::dev::read("navblur") {
+            crate::ui::glassload::configure_navblur(&v);
+        }
+        // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
+        // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
+        // present (60 Hz while the UI presents at 60) and is what ships, 3 is ~20 Hz, 4 is 15 Hz.
+        // ABSENT, nothing here runs and the cadence is exactly the shipped one. It is a profiling
+        // knob, so it also turns on the heartbeat's `snap=` field (refreshes per second), which
+        // is the only way to check the cadence that RAN against the one that was asked for — and
+        // is why `fps:home-acct-glass` arms it at the shipped 1 rather than leaving it absent.
+        let glass_hz_armed = if let Some(v) = crate::dev::read("glasshz") {
+            let asked: u32 = v.parse().unwrap_or(0);
+            let got = crate::ui::widgets::set_dynamic_period(asked);
+            log(&format!("blur: dynamic cadence asked={asked} presents-per-refresh={got}"));
+            true
+        } else {
+            false
+        };
+        match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
+            (Some(_), Some(_)) => {
+                log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
+            }
+            (Some(filter), None) => crate::ui::profile::set_enabled(&filter),
+            (None, Some(filter)) => crate::ui::profile::set_hwcnt_enabled(&filter),
+            (None, None) => {}
         }
         // dev: /tmp/plxnative-noidle turns the whole-frame present gate (ui::idle) OFF, so a still
         // screen goes back to repainting at panel rate. It is a DIAG trigger (see the list above)
         // precisely so an A/B costs one file and does not also change which screen you boot to —
         // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
         // `rm` rather than a redeploy.
+        crate::ui::testpat::boot();
         if crate::dev::flag("noidle") {
             crate::ui::idle::set_enabled(false);
             log("idle: present gate DISABLED by /tmp/plxnative-noidle");
@@ -3024,6 +3099,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut iters_ct = 0i32;
         let mut loop_shown = 0i32;
         let mut running = true;
+        // Dev-only panel proof: advance a red/green counter phase only after SDL_GL_SwapWindow
+        // returns. Hold each colour for 30 swaps: per-buffer alternation blends yellow at 60 Hz,
+        // while this ~2 Hz change is human-visible and still freezes immediately with presentation.
+        #[cfg(feature = "devtools")]
+        let mut buffer_flip_count = 0u8;
 
         let mut held_key = HeldKey::IDLE;
         let mut scrubber = Scrub::IDLE;
@@ -3136,6 +3216,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // press::LONG_MS, `okup` — the only way to exercise a press-and-hold (and so
                         // the item menu) over the FIFO, since every other token is a tap.
                         remote_synth_key_edge(SDLK_RETURN, 0, tok == "okdown");
+                    } else if let Some(spec) = tok.strip_prefix("pat:") {
+                        // `pat:flat:40` — swap the SYNTHETIC GROUND live. A boot trigger could set
+                        // one, but a graded ladder needs a dozen of them in one session and a
+                        // trigger is read once; this is what makes a snapshot sweep a single
+                        // scripted line instead of a dozen launches that each land on a different
+                        // hero. See `ui::testpat`.
+                        if !crate::ui::testpat::set(spec) {
+                            crate::log(&format!("remote: unrecognised pattern {spec:?}"));
+                        }
                     } else if let Some(text) = tok.strip_prefix("txt:") {
                         // `txt:star+wars` — commit text as the system keyboard's IME would. The
                         // only way to get text into the app without a human: no trigger can raise
@@ -4347,12 +4436,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
             // a bare units-per-second. The decision itself is taken just above `glViewport`.
             crate::ui::idle::frame_begin(dt);
-
             // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
             // commits (the spring-back bounce has played), run it for whichever CARD view armed the
             // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
             // on Home it opens the item menu below, and anywhere else it just springs back.
-            crate::ui::press::tick(now, dt);
+            let (_, press_moving) = crate::ui::idle::scoped_motion(|| {
+                crate::ui::press::tick(now, dt);
+            });
+            let mut home_underlay_moving = press_moving;
             if ok_armed {
                 // PRESS-AND-HOLD → the item context menu, on the latch `press::tick` has always set
                 // and nothing ever read (`LONG_MS`, `is_long`). It fires while the key is still DOWN,
@@ -4529,6 +4620,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 }
             }
+            // dev: an `acct` step on the LOAD DIAL asks for the REAL Account popover, so the
+            // shipped surface and a synthetic one can be interleaved inside ONE launch. Assigning
+            // the route directly (rather than through `nav_to`) is deliberate: the question is what
+            // the PANEL costs, and a page transition on the step boundary would put a cross-fade in
+            // the middle of the leg being measured.
+            if crate::ui::glassload::armed() {
+                let want = crate::ui::glassload::wants_account();
+                if want && route == Route::Home {
+                    crate::ui::account_menu::open();
+                    route = Route::Account;
+                } else if !want && route == Route::Account {
+                    crate::ui::account_menu::close();
+                    route = Route::Home;
+                }
+            }
             // dev: navosc bounces the route Home↔Library through the real request path (the
             // `home-library-nav` FPS scene). Route-unconditional, because it is the ROUTE it drives;
             // it goes through `nav_to` rather than assigning `route` so the scene measures exactly
@@ -4681,7 +4787,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // only when home is actually drawn — stepping its 16×24 cell springs during
                 // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
                 // route-agnostically right after `dt` above)
-                crate::ui::home::home_update(dt);
+                let (_, moving) = crate::ui::idle::scoped_motion(|| {
+                    crate::ui::home::home_update(dt);
+                });
+                home_underlay_moving |= moving;
             } else if matches!(route, Route::Library) {
                 // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene)
                 if lib_osc && now.wrapping_sub(lib_osc_last) > 350 {
@@ -4816,6 +4925,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let fd_pc_pump = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
 
             let player = matches!(route, Route::Player { .. });
+            // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
+            // is absent. Route-scoped and edge-triggered — see `system.rs`.
+            crate::system::opaque_route(player);
             // ---- whole-frame present gate (`ui::idle`) --------------------------------------
             // A screen with nothing moving on it does not need to be re-sent to the panel. This
             // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
@@ -4842,6 +4954,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
             let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) = (fd_pc_pump, fd_pc_pump, fd_pc_pump);
             if present {
+                // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
+                // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
+                // region to be declared before rendering begins. See `egl.rs`.
+                crate::egl::frame_damage();
+                // dev: the backdrop-glass LOAD DIAL and the blurred-transition prototype
+                // (`/tmp/plxnative-glassload`, `/tmp/plxnative-navblur`). Both are no-ops when
+                // their trigger is absent. HERE and not below the gate, because the dial's cadence
+                // is counted in PRESENTS — a loop iteration the gate skipped drew no glass — and
+                // because a step rollover invalidates the snapshot, which must precede every glass
+                // surface in the frame exactly as `Glass::prepare` does.
+                crate::ui::glassload::prepare(now);
                 // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
                 // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
                 // is the entire logical->physical mapping — nothing else in the renderer knows the
@@ -4862,7 +4985,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // the last screen that could have left a clip armed. See `ui::guard` for what this does
                 // NOT cover (worker-thread panics, aborts, half-mutated state). Everything inside is a
                 // read of loop state, so the closure only borrows; nothing is moved out of the loop.
-                crate::ui::guard(|| {
+                // An empty selected phase provides the profiler floor for this build; it
+                // deliberately issues no GL commands between its two boundaries.
+                crate::ui::profile::phase("profile.empty", || {});
+                crate::ui::profile::phase("frame.ui", || {
+                    crate::ui::guard(|| {
                     if player {
                         crate::system::clear_opaque_region();
                         glClearColor(0.0, 0.0, 0.0, 0.0);
@@ -4915,29 +5042,91 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // overlay route: it stays up until it is turned off.
                         crate::ui::stats::draw();
                     } else {
-                        if matches!(route, Route::Login) {
-                            crate::ui::login::draw();
-                        } else if matches!(route, Route::Profiles) {
-                            crate::ui::profiles::draw();
-                        } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
-                            // the page stays live UNDER its context menu — the popover is anchored beside
-                            // the episode still it acts on, which has to still be there to be beside
-                            crate::ui::detail::draw();
-                        } else if matches!(route, Route::Person) {
-                            crate::ui::person::draw();
-                        } else if matches!(route, Route::Library) {
-                            crate::ui::library::draw();
-                        } else if matches!(route, Route::Search) {
-                            crate::ui::search::draw();
-                        } else {
-                            crate::ui::home::home_draw();
+                        // Resolve every glass owner BEFORE anything on this route draws — that is
+                        // `Glass::prepare`'s contract, and the shared top tab track is an owner on
+                        // every route that wears it.
+                        if route_wears_tab_bar(route) {
+                            crate::ui::widgets::tab_glass_prepare();
                         }
+                        if matches!(route, Route::Account) {
+                            crate::ui::account_menu::prepare_present(
+                                home_underlay_moving || crate::ui::idle::present_dirty(),
+                            );
+                        }
+                        // THE PAGE, named once because it is drawn TWICE: the direct source path
+                        // produces a glass surface's backdrop by rendering the page again into a
+                        // small FBO, and that has to happen HERE, before the visible pass — the
+                        // capture path's hook is inside the glass surface itself, far too late to
+                        // run a second scene pass. The visible full-resolution draw is untouched
+                        // either way.
+                        //
+                        // **The route has to be the same on both passes**, and until 2026-08-19 it
+                        // was not: only Home was reachable from this arm, and the source pass drew
+                        // `home_draw` whatever the route actually was. The Library's and Search's
+                        // tab track therefore blurred HOME — a stale hero from a screen the user
+                        // had left, brighter than the grey it sat on and carrying that page's
+                        // colour. Measured in the simulator on the Library: page ground (44,44,46),
+                        // "glass" track (72,77,59). A track whose whole job is to DARKEN was 1.6x
+                        // brighter than its own ground and green. That is the artefact the material
+                        // was rejected for by eye, and it was this dispatch, not the material.
+                        let mut page = || {
+                            if matches!(route, Route::Login) {
+                                crate::ui::login::draw();
+                            } else if matches!(route, Route::Profiles) {
+                                crate::ui::profiles::draw();
+                            } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
+                                // the page stays live UNDER its context menu — the popover is anchored beside
+                                // the episode still it acts on, which has to still be there to be beside
+                                crate::ui::detail::draw();
+                            } else if matches!(route, Route::Person) {
+                                crate::ui::person::draw();
+                            } else if matches!(route, Route::Library) {
+                                crate::ui::library::draw();
+                            } else if matches!(route, Route::Search) {
+                                crate::ui::search::draw();
+                            } else {
+                                crate::ui::home::home_draw();
+                            }
+                            // **A popover drawn AFTER this closure owes its scrim TO it.** That is
+                            // the rule, and these are the two popovers in that class — every other
+                            // one draws inside its own page (`alt_sources`, the Library's sort
+                            // menu) or is player-route, where there is no page closure and the dim
+                            // is meant to cover the HUD as well.
+                            //
+                            // The scrim sits between the page and the popover's glass, so it is
+                            // part of what that glass looks through, and this closure is what the
+                            // direct source path re-renders. Drawn with the panel instead it
+                            // reaches the visible frame but never the snapshot, and the frosted
+                            // ground comes out at full page brightness inside a dimmed screen —
+                            // which is exactly what the profile menu did.
+                            //
+                            // **Both, not just the dynamic one.** `item_menu` is served by the
+                            // capture path today and so picks its scrim up for free — but only
+                            // because no dynamic owner is live while a popover is open, so nothing
+                            // invalidates and the direct path never runs. Three modules holding up
+                            // one invariant, already false under `/tmp/plxnative-glassboth`. Each
+                            // call self-gates on its own `is_open`, so there is no route test here:
+                            // the closure states a rule rather than naming a screen.
+                            crate::ui::account_menu::draw_scrim();
+                            crate::ui::item_menu::draw_scrim();
+                        };
+                        if let Some(reg) = crate::gfx::blur_direct_region() {
+                            crate::gfx::blur_snapshot_direct(reg, &mut page);
+                        }
+                        crate::ui::profile::phase("main.ui", || page());
                         if matches!(route, Route::Account) {
                             crate::ui::account_menu::draw(); // profile popover over Home
                         }
                         if matches!(route, Route::ItemMenu { .. }) {
                             crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
                         }
+                        // dev: the blurred route transition, then the load dial's glass surfaces.
+                        // LAST on the non-player path, so the snapshot either takes is of the
+                        // COMPLETE page — which is the honest source for a surface that sits on
+                        // top of everything, and the one thing the tab track (drawn inside the
+                        // page) cannot have.
+                        crate::ui::glassload::draw_nav_blur();
+                        crate::ui::glassload::draw();
                         // The on-screen counter, off the player route (chrome over video). It draws
                         // `loop_shown` — LOOP ITERATIONS, the same number the heartbeat logs as
                         // `loop=`, NOT the frame rate. It also necessarily FREEZES on a settled
@@ -4949,11 +5138,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // are unaffected by whether the digits are painted.
                         #[cfg(feature = "devtools")]
                         {
-                            let loop_col = [0.4f32, 1.0, 0.55, 1.0];
+                            let loop_col = if buffer_flip_count < 30 {
+                                crate::ui::theme::DIAG_FLIP_A
+                            } else {
+                                crate::ui::theme::DIAG_FLIP_B
+                            };
                             crate::gfx::draw_number(loop_shown, SCR_W as f32 - 70.0, 64.0, 46.0, loop_col.as_ptr());
                         }
                     }
                     crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
+                    });
                 });
                 fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
                 // dev capture stream: grab this finished frame before the swap (after the last draw,
@@ -4969,11 +5163,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 #[cfg(feature = "hostsim")]
                 crate::shot::maybe_capture(vx, vy, vw, vh);
                 SDL_GL_SwapWindow(win);
+                // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
+                // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
+                crate::egl::late_probe();
+                #[cfg(feature = "devtools")]
+                {
+                    buffer_flip_count = (buffer_flip_count + 1) % 60;
+                }
+                crate::ui::widgets::glass_presented();
                 fd_pc_swap = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
                 // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
                 // idle gate skipped would pace the profiler's once-per-N-frames log off frames
                 // that ran no phases at all.
                 crate::ui::profile::frame_end();
+                // Same reason, same gate: the blur's region accounting is per DRAWN frame. It rolls
+                // "what every glass surface asked for this frame" into the region the next frame's
+                // first snapshot is taken at. Once that union is known, several surfaces share one
+                // capture; a first discovery frame may still need a second non-contained grab.
+                crate::gfx::blur_frame_end();
                 crate::ui::idle::note_present(now);
             } else {
                 // The swap is this loop's ONLY blocking call — there is no SDL_Delay, nanosleep
@@ -5066,7 +5273,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
                 if total > framedrop_thresh {
                     log(&format!(
-                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} cap={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} snap={:.2}",
+                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} cap={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snap={:.2}",
+                        crate::ui::glassload::step_index(),
                         crate::ui::home::snap_pos()
                     ));
                 }
@@ -5107,11 +5315,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // a settled screen doing its job, `loop=0` is an app in trouble, and `fps=0` on its
                 // own is not a fault at all. Note the on-screen counter still draws `loop=`.
                 let pres = crate::ui::idle::take_presents();
+                // dev: which LOAD-DIAL step these frames belong to, the blur refreshes
+                // actually TAKEN in that second, and the cadence in force. Absent unless the
+                // dial or the cadence knob is armed, and placed after `fps=` / before
+                // `worstframe=` so both harness regexes are untouched. `snap=` is the one
+                // thing a cadence claim cannot be trusted without: it is the rate that RAN,
+                // not the rate that was requested.
+                let ld = if crate::ui::glassload::armed() || glass_hz_armed {
+                    format!(
+                        " load={} snap={} period={}",
+                        crate::ui::glassload::step_index(),
+                        crate::gfx::take_blur_snapshots(),
+                        crate::ui::widgets::dynamic_period()
+                    )
+                } else {
+                    String::new()
+                };
                 if framedrop_on {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres} worstframe={fd_worst:.1}ms{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld} worstframe={fd_worst:.1}ms{SIM_TAG}"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld}{SIM_TAG}"));
                 }
             }
         }
