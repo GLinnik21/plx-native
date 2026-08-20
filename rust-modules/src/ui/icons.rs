@@ -56,7 +56,8 @@ pub enum Icon {
     MinusCircleFill,
     /// A bare horizontal stroke — the "remove" half of the bare [`Icon::Check`], for a control that
     /// is ALREADY a circle (a hero or detail disc button), where a filled disc inside a disc would
-    /// be two circles saying one thing.
+    /// be two circles saying one thing. Its user is the detail hero's *mark unwatched* disc, beside
+    /// a `Check` on the same ground: the pair `detail::hero_ctls` draws for a part-watched item.
     Minus,
     Play,
     Pause,

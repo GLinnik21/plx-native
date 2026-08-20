@@ -517,8 +517,16 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
 /// That is also the precedence: a re-watch in flight outranks the watched flag, because PMS reports
 /// both on a finished-then-restarted item and being part-way through the re-watch is what the viewer
 /// is doing. Same answer as the still's resolver, on the same item.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// The three states are the app's ONE watch-state vocabulary, not the poster's alone: the detail
+/// hero's watch controls resolve into this same enum ([`crate::ui::detail`]'s `hero_watch_state`),
+/// so "what state is this item in" has one answer and one set of names wherever it is asked. The
+/// two resolvers are not the same function and differ in two places, both because a MARK describes
+/// while a CONTROL promises what its press delivers — see that function, which lists them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum PosterMark {
+    /// never started — and the `Default`, because most of a server is here
+    #[default]
     None,
     InProgress,
     Watched,
@@ -696,6 +704,30 @@ pub(crate) fn progress_bar(p: Painter, card: Rect, rad: f32, h: f32, frac: f32) 
         p.rrect(card, rad, rad, theme::RESUME_TRACK);
     }
     p.clip_clear();
+}
+
+/// The corner radius of [`text_block_highlight`] — the detail page's About columns and its episode
+/// filmstrip both drew an 18 here, independently, and it is one object doing one job.
+pub(crate) const TEXT_BLOCK_HL_RAD: f32 = 18.0;
+
+/// **THE "this block of text is the thing you are on" panel** — the focus mark for a run of prose
+/// that is not a card: the detail page's four About columns and its episode filmstrip's metadata
+/// row. One function, because `ui/CLAUDE.md` names those two call sites as one idiom and they had
+/// already drifted once (the About footer wrote a bare `18.0` while the filmstrip named a const).
+///
+/// It is a very quiet wash ([`theme::OVERLAY_FOCUS_SOFT`], 7% white) and that is the whole reason
+/// it needs the **shadow** rather than a heavier fill: over the detail page's ambient ground a 7%
+/// panel has almost no edge of its own, so it reads as a smudge rather than as a raised surface,
+/// and lifting the wash instead would put a bright rectangle over the prose it exists to point at.
+/// The shadow is the card family's RESTING one — the same three constants `Button` and
+/// `CircleButton` carry — so a lit text block sits at the same altitude as the controls beside it.
+///
+/// No shader work: [`Painter::shadow`] discards the occluder interior, which is exactly what a
+/// translucent panel wants — the ink stays outside the wash instead of darkening the text through it.
+pub(crate) fn text_block_highlight(p: Painter, r: Rect) {
+    p.shadow(r, TEXT_BLOCK_HL_RAD, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+             theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+    p.rrect(r, TEXT_BLOCK_HL_RAD, TEXT_BLOCK_HL_RAD, theme::OVERLAY_FOCUS_SOFT);
 }
 
 // ---- Keyline chip: the FINE-PRINT outlined chip — a hairline box round a very short label, sized to
