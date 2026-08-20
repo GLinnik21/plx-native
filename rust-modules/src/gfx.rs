@@ -1148,13 +1148,37 @@ const BLUR_PASS_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit between 
 /// up pass was added — one said four passes, the other five — which inverted the lens's v axis while
 /// leaving the sampling window correct. Nothing warns, and on a symmetric backdrop nothing shows.
 ///
+/// **Test-only since the orientation fix.** Its one production reader was [`blur_is_bottom_up`],
+/// and that reader was wrong to use it: the stored row order turns on how many REDUCTIONS ran, not
+/// on how many passes did. What the expression still describes correctly is the chain's SHAPE, so
+/// it survives as the thing the shape test counts.
+#[cfg(test)]
 #[inline]
 fn blur_passes() -> usize {
     BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_REDUCTIONS >= 2)
 }
+/// Is the CAPTURE path's finished snapshot stored bottom-up?
+///
+/// **Not the parity of [`blur_passes`], which is what this was.** "Every pass flips row order once"
+/// is the natural model and it is wrong here, because the chain's passes are not all drawn the same
+/// way: the REDUCTIONS go through `draw_tex_core`, which places its quad in AUTHORED coordinates and
+/// so carries the scene shaders' y flip, while the taps and the up pass bind `BPROG` and draw the
+/// raw unit quad with an explicit uv rect, carrying none. Only the reductions turn the image over,
+/// and the tap count — which the old expression included — cannot affect the answer.
+///
+/// The two models agree at `BLUR_REDUCTIONS = 2` and disagree at 1, which is exactly the trap
+/// `blur_snapshot_direct`'s orientation note warned about in writing: *"both are ODD… that is luck,
+/// not design; if a pass is ever added or removed here, this is the line that has to move with it."*
+/// A reduction was removed when the blur was lightened, and this is that line.
+///
+/// It took two attempts to land because it is only half the fault: the other half is that
+/// `blur_snapshot` never wrote this value into the chain at all, so changing this function alone
+/// produced no visible difference and read as a disproof. Both halves are needed, and neither is
+/// sufficient. The symptom reached a television because a mirrored backdrop under a QUARTER-res
+/// blur has no top and no bottom to see — lightening the blur is what made it legible.
 #[inline]
 fn blur_is_bottom_up() -> bool {
-    blur_passes() % 2 == 0
+    BLUR_REDUCTIONS % 2 == 1
 }
 
 #[inline]
@@ -2065,6 +2089,17 @@ fn blur_snapshot(reg: [f32; 4]) {
             c.reg = live;
             c.rw = rw;
             c.rh = rh;
+            // **The chain must state the order of the snapshot it is HOLDING, not the one it was
+            // built with.** This line was missing, and its absence was invisible until two paths
+            // started sharing one chain: `bottom_up` was written once in `build()` and then only
+            // ever by `blur_snapshot_direct`, which sets it to `false` on every frame it runs. So
+            // the first direct frame pinned the field, and every capture-path snapshot after it —
+            // i.e. every `Glass::CACHED` popover on a page whose own glass took the direct path —
+            // was sampled with somebody else's orientation. Measured on the television over an
+            // APERIODIC ground (`ui::testpat`'s `orient`): the tab track correlated +0.63 with the
+            // page while the item menu's backdrop correlated with the page MIRRORED, in the same
+            // frame, from the same chain.
+            c.bottom_up = blur_is_bottom_up();
         }
         BLUR_VALID = true;
     }
@@ -3103,7 +3138,9 @@ mod tests {
         // leaving the sampling window right — a defect with no symptom on a symmetric backdrop.
         //
         assert_eq!(blur_passes(), BLUR_REDUCTIONS + BLUR_TAPS.len() + usize::from(BLUR_REDUCTIONS >= 2));
-        assert_eq!(blur_is_bottom_up(), blur_passes() % 2 == 0);
+        // NOT `blur_passes() % 2` — see `blur_is_bottom_up`. Only the reductions carry the scene
+        // shaders' flip; the taps and the up pass draw a raw quad and carry none.
+        assert_eq!(blur_is_bottom_up(), BLUR_REDUCTIONS % 2 == 1);
     }
 
     /// The parity the whole chain hangs on, pinned at the CURRENT shape and tied to its reader.
@@ -3122,12 +3159,12 @@ mod tests {
         // half. Both counts are ODD, so the stored order — the thing this test exists to pin — did
         // not move when the knob did. That is luck, not a property: re-derive it, do not assume it.)
         assert_eq!(blur_passes(), 3, "one reduction, two taps, no up pass");
-        assert!(!blur_is_bottom_up(), "an odd pass count leaves the grab's order inverted");
+        assert!(blur_is_bottom_up(), "one reduction leaves the grab's own bottom-up order standing");
         // The two readers of that parity must not be able to disagree: the sampling window and the
         // lens displacement both take it from `blur_is_bottom_up`, and a v axis that runs backwards
         // in one and forwards in the other bends the backdrop the wrong way at the rim.
         let uv = blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, [0.0, 0.0, SCR_W, SCR_H], [1.0, 1.0],
             blur_is_bottom_up());
-        assert!(uv[3] > 0.0, "top-down storage means the window's v span runs forwards");
+        assert_eq!(uv[3] < 0.0, blur_is_bottom_up(), "the v span runs backwards iff stored bottom-up");
     }
 }
