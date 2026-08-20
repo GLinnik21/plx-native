@@ -1127,33 +1127,46 @@ impl View for Grid {
         }
         // PASS 2 — the single focused card + ring + metadata (title / "S1 • E8" / year), drawn
         // LAST for cross-row z-order (grid mode).
-        if env.sp > 0.5 {
-            let (r, c) = (env.fr as usize, env.fc as usize);
-            if r >= nh {
-                return;
-            }
-            // The focused card is the only one that can be pressed; fold the ui::press dip/bounce
-            // factor into its scale (1.0 when idle, so a no-op unless a click is in flight).
-            let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1)) * crate::ui::press::scale();
-            let x = card_x(c, self.eff_scroll(r, env.sp));
-            let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
-            let m = movie_at(r as c_int, c as c_int);
-            let cw = crate::pms::hub_is_continue(r); // Continue Watching: amber ▶ + "show · X min left"
-            // keep the CStrings alive through the draw
-            let label = m
-                .map(|mm| {
-                    let mut l = if cw {
-                        card_row::TileLabel::played(&mm.title)
-                    } else {
-                        card_row::TileLabel::title(&mm.title)
-                    };
-                    l.caption = if cw { cw_caption(mm) } else { focused_caption(mm) };
-                    l
-                })
-                .unwrap_or_default();
-            let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
+        self.draw_focused_cell(env, p);
+    }
+}
+
+impl Grid {
+    /// The focused cell alone — the grid's PASS 2, as its own call.
+    ///
+    /// A method rather than the tail of [`View::draw`] because it is drawn TWICE while a context
+    /// menu is up: once in its own z-order, and once more over the modal scrim
+    /// ([`redraw_focused_card`]), so the card the popover is about does not recede with the page
+    /// behind it. One body, so the lifted copy is the drawn card and not a second expression of it.
+    fn draw_focused_cell(&self, env: &Env, p: Painter) {
+        if env.sp <= 0.5 {
+            return;
         }
+        let (r, c) = (env.fr as usize, env.fc as usize);
+        if r >= n_hubs() {
+            return;
+        }
+        // The focused card is the only one that can be pressed; fold the ui::press dip/bounce
+        // factor into its scale (1.0 when idle, so a no-op unless a click is in flight).
+        let s = self.shelves[r].scale(c.min(MAX_ITEMS - 1)) * crate::ui::press::scale();
+        let x = card_x(c, self.eff_scroll(r, env.sp));
+        let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
+        let m = movie_at(r as c_int, c as c_int);
+        let cw = crate::pms::hub_is_continue(r); // Continue Watching: amber ▶ + "show · X min left"
+        // keep the CStrings alive through the draw
+        let label = m
+            .map(|mm| {
+                let mut l = if cw {
+                    card_row::TileLabel::played(&mm.title)
+                } else {
+                    card_row::TileLabel::title(&mm.title)
+                };
+                l.caption = if cw { cw_caption(mm) } else { focused_caption(mm) };
+                l
+            })
+            .unwrap_or_default();
+        let resume = m.and_then(PmsMovie::resume_frac);
+        card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
     }
 }
 
@@ -1725,6 +1738,44 @@ pub(crate) fn focused_card_rect() -> Option<Rect> {
     let sp = h.snap.pos;
     let base = Rect::new(card_x(c, h.grid.eff_scroll(r, sp)), h.grid.shelves[r].base_y + CARD_DY, CARD_W, CARD_H);
     Some(base.scaled(h.grid.shelves[r].scale(c.min(MAX_ITEMS - 1))))
+}
+
+/// Re-draw the focused grid card ON TOP of a modal scrim — this screen's half of
+/// [`crate::ui::popover::Opener`], handed to the item context menu when it opens over Home.
+///
+/// It runs the SAME `Grid::draw_focused_cell` the page just ran, on a fresh root painter carrying
+/// the same page alpha, so the lifted copy is the drawn card rather than a second expression of it.
+/// No layout: `home_draw` already stepped `base_y` for this frame, and re-running it here would want
+/// a `&mut` the draw phase must not take.
+pub(crate) fn redraw_focused_card() {
+    guard(|| {
+        let h = scene();
+        let env = h.env(0.0);
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+        // **Cut at the chrome.** In the page's own order the grid is drawn BEFORE the top band, so a
+        // card scrolling up through it slides UNDER the tab row; a lift drawn after everything would
+        // invert that for the one card the menu is about. The focused row is kept well below this
+        // line by the reveal rule, so today the scissor cuts nothing — it is what keeps the z-order
+        // rule true rather than merely unbroken. Set and cleared in one breath, as `Painter::clip`'s
+        // global GL state requires.
+        let cut = crate::ui::widgets::TOP_BAR_Y + crate::ui::widgets::TAB_PILL_H;
+        p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
+        h.grid.draw_focused_cell(&env, p);
+        p.clip_clear();
+    });
+}
+
+/// The profile chip, re-drawn over the account menu's scrim — the same [`Opener`] contract, for the
+/// one popover on this screen that hangs off a piece of CHROME rather than off a card.
+///
+/// On `nav::chrome_alpha` and not `page_alpha`, because that is the alpha the chip is drawn on: the
+/// top band is the same control the Library and Search wear and it holds still while pages swap
+/// under it. A lift on the wrong alpha would make the chip flicker through a route change that
+/// nothing else on the bar reacts to.
+///
+/// [`Opener`]: crate::ui::popover::Opener
+pub(crate) fn redraw_profile_chip() {
+    guard(|| draw_chip(Painter::root().alpha(crate::ui::nav::chrome_alpha())));
 }
 
 // ---------------------------------------------------------------------------------------

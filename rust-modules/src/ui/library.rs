@@ -26,7 +26,7 @@ use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::icons::Icon;
-use crate::ui::popover::Popover;
+use crate::ui::popover::{Opener, Popover};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
 use crate::ui::widgets::{Art, Pill, Spinner, StatusKind};
@@ -2235,24 +2235,7 @@ pub(crate) fn draw() {
     // beneath the Sort/Filter chips instead of popping over them (Home's convention; this used to
     // draw after the chrome and inverted it).
     if focused_pass && t > 0 && read == Readout::Grid {
-        let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
-        let y = GRID_TOP + r as f32 * PITCH - sc;
-        let x = MARGIN_X + c as f32 * (CARD_W + LGAP);
-        // mid-transit of a page/letter jump the focused row can be off-screen for a few
-        // frames — skip its resolve+draw until the scroll spring brings it on
-        if on_axis(y, CARD_H, SCR_H, GLOW_PAD) {
-            let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
-            let rect = Rect::new(x, y, CARD_W, CARD_H).scaled(s);
-            let m = crate::browse::item(focused_i);
-            let label = m
-                .map(|mm| match mm.year {
-                    y if y > 0 => card_row::TileLabel::titled(&mm.title, &y.to_string()),
-                    _ => card_row::TileLabel::title(&mm.title),
-                })
-                .unwrap_or_default();
-            let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_focused(pg, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
-        }
+        draw_focused_card(pg);
     }
 
     // ---- top chrome: scrim under it once the grid has scrolled, then chip + pills + toolbar --
@@ -2328,7 +2311,13 @@ pub(crate) fn draw() {
         // already-drawn grid) and the panel's own list, and they are separable only by measuring
         // them apart. Zero-overhead with the trigger off.
         use crate::ui::profile::phase;
-        let mp = phase("menu.scrim", || pop().painter(0.45, 20.0));
+        // `scrim_lifting` + `content_painter`, which is exactly what `painter` does with the chip
+        // LIFTED back out of the dim between the two halves — the chips are drawn above, so
+        // without it a chip recedes under its own menu.
+        let mp = phase("menu.scrim", || {
+            pop().scrim_lifting(0.45, &Opener::drawn(redraw_menu_chip));
+            pop().content_painter(20.0)
+        });
         phase("menu.panel", || {
             let r = panel_rect();
             pop().panel(mp, r, 24.0);
@@ -2342,6 +2331,120 @@ pub(crate) fn draw() {
             table().draw(mp, table_rect());
         });
     }
+}
+
+/// The focused grid cell's UNMAGNIFIED frame, or None while it is off-screen mid-jump (a page or
+/// letter jump leaves the focused row off the panel for a few frames, and nothing there may resolve
+/// a texture). The one place this cell's geometry is written — both the drawn card and the rect the
+/// context menu anchors beside scale it.
+fn focused_card_base() -> Option<Rect> {
+    let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
+    let sc = unsafe { addr_of!(SCROLL).read() }.pos;
+    let y = GRID_TOP + r as f32 * PITCH - sc;
+    if !on_axis(y, CARD_H, SCR_H, GLOW_PAD) {
+        return None;
+    }
+    Some(Rect::new(MARGIN_X + c as f32 * (CARD_W + LGAP), y, CARD_W, CARD_H))
+}
+
+/// The focused grid card's rect at its **focus magnification** — what the item context menu is
+/// anchored beside.
+///
+/// `press::scale()` is deliberately left out, for `home::focused_card_rect`'s reason: the hold that
+/// opens the menu cancels the press in the same breath, so anchoring off the transient dip would
+/// leave the panel beside a card that springs back out from under it.
+pub(crate) fn focused_card_rect() -> Option<Rect> {
+    Some(focused_card_base()?.scaled(unsafe { addr_of!(FOCUS_S).read() }.pos))
+}
+
+/// The grid's PASS 2 — the focused card and its under-label, over its neighbours.
+///
+/// A function rather than the tail of the grid loop because it is drawn TWICE while the item
+/// context menu is up: once in its own z-order, and once more over the modal scrim
+/// ([`redraw_focused_card`]). One body, so the lifted copy is the drawn card.
+fn draw_focused_card(pg: Painter) {
+    let Some(base) = focused_card_base() else { return };
+    let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
+    let rect = base.scaled(s);
+    let m = crate::browse::item(focus_idx());
+    let label = m
+        .map(|mm| match mm.year {
+            y if y > 0 => card_row::TileLabel::titled(&mm.title, &y.to_string()),
+            _ => card_row::TileLabel::title(&mm.title),
+        })
+        .unwrap_or_default();
+    let resume = m.and_then(PmsMovie::resume_frac);
+    card_row::draw_focused(pg, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
+}
+
+/// Re-draw the focused grid card ON TOP of a modal scrim — this screen's half of
+/// [`crate::ui::popover::Opener`], for the item context menu opened over the browse grid.
+///
+/// The alpha is the page's own CONTENT fade (`page_alpha × Xfade`), the same `pg` the grid draws
+/// on: a card lifted on the bare page alpha would stay bright through a re-query that is dissolving
+/// the grid it belongs to.
+pub(crate) fn redraw_focused_card() {
+    crate::ui::guard(|| {
+        if menu_open() || readout() != Readout::Grid {
+            return;
+        }
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha() * xf().alpha());
+        // **Cut at the chrome**, which on this screen is not defensive: the grid's pass 2 is drawn
+        // BEFORE the toolbar precisely so a focused card scrolling through the top band slides
+        // beneath the Sort/Filter chips instead of popping over them, and a lift drawn after
+        // everything would invert exactly that. `TOOL_Y + TOOL_H` is the lowest thing the top bar
+        // draws — the same line `nav_scrim` fades from. Set and cleared in one breath, as
+        // `Painter::clip`'s global GL state requires.
+        let cut = TOOL_Y + TOOL_H;
+        p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
+        draw_focused_card(p);
+        p.clip_clear();
+    });
+}
+
+/// The toolbar chip an open chip menu hangs off — its index in [`chips`], or None when no menu is
+/// open. The [`Opener`](crate::ui::popover::Opener) side of [`redraw_menu_chip`].
+///
+/// Matched on the [`Chip`] and never on a position, for the reason the enum exists at all: the row
+/// is two chips long with one source and three with two, so an index is not an identity.
+fn menu_chip() -> Option<usize> {
+    menu_chip_of(menu(), chips())
+}
+
+/// [`menu_chip`]'s rule, pure — the open menu and the drawn chip row in, an index into that row out.
+/// Split from its two live reads so the mapping is host-gradeable: the row's LENGTH moves without
+/// input (a second source is granted, or a failed listing collapses `CHIPS_MANY` to
+/// `CHIPS_SOURCE_ONLY`), which is exactly the condition an index-based answer gets wrong.
+fn menu_chip_of(m: &Menu, chips: &[Chip]) -> Option<usize> {
+    let want = match m {
+        Menu::None => return None,
+        Menu::Source { .. } => Chip::Source,
+        Menu::Sort { .. } => Chip::Sort,
+        // Genre is drilled into FROM Filter and keeps that chip's panel — one popover, one opener
+        Menu::Filter | Menu::Genre { .. } => Chip::Filter,
+    };
+    chips.iter().position(|c| *c == want)
+}
+
+/// Re-draw the chip an open menu belongs to, above that menu's scrim.
+///
+/// The chips are drawn BEFORE the scrim (they are top chrome and the panel hangs under them), so
+/// without this a chip dims under its own menu — the same bug the focused card had, on the one
+/// control on screen the panel is about.
+///
+/// Drawn `focused: false`, which is not a simplification but exactly what the first pass drew:
+/// `tool_focus` already answers false while a menu is open, because focus is IN the panel.
+fn redraw_menu_chip() {
+    crate::ui::guard(|| {
+        let Some(i) = menu_chip() else { return };
+        let rects = unsafe { addr_of!(TOOL_RECTS).read() };
+        let (Some(cs), Some(r)) = (chip_strs().get(i), rects.get(i)) else { return };
+        if r.w <= 0.5 {
+            return; // never drawn this frame (the read-out collapsed the row) — nothing to lift
+        }
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+        toolbar_chip(p, r.x, cs, Icon::ChevronDown, false);
+    });
 }
 
 /// The Sources panel's level switch: two segmented pills at the panel top, the shared
@@ -3187,5 +3290,34 @@ mod tests {
         for drive in 0..9 {
             assert_eq!(rail_scroll_target(0.0, drive, 9), 0.0);
         }
+    }
+
+    /// **The chip an open menu is lifted out of its own scrim by, resolved by IDENTITY.**
+    ///
+    /// The chip row is two long with one source and three with two, so the same menu is a different
+    /// index on the two — and the whole point of [`Chip`] is that an index is not an identity (a
+    /// `_` catch-all here is the bug that once made inserting Source at 0 open the Sort menu).
+    /// Getting this wrong is silent in a particular way: the LIFT would land on the wrong chip, so
+    /// the menu's own chip stays dimmed under it while a neighbour brightens for no reason.
+    #[test]
+    fn the_lifted_chip_is_the_one_its_menu_belongs_to_whatever_the_row_length() {
+        // Genre keeps the FILTER chip's panel: it is drilled into from Filter, not a fourth chip
+        let cases = [
+            (Menu::Source { gen: 0, acts: Vec::new() }, Chip::Source),
+            (Menu::Sort { built: 3 }, Chip::Sort),
+            (Menu::Filter, Chip::Filter),
+            (Menu::Genre { built: 7 }, Chip::Filter),
+        ];
+        for (m, want) in &cases {
+            for row in [&CHIPS_MANY[..], &CHIPS_ONE[..]] {
+                let expect = row.iter().position(|c| c == want);
+                assert_eq!(menu_chip_of(m, row), expect, "{m:?} on a {}-chip row", row.len());
+            }
+        }
+        // …and the two rows that draw no chip for the open menu answer NOTHING rather than an index
+        // into a row that is not on screen — a failed listing collapses the row to Source alone.
+        assert_eq!(menu_chip_of(&Menu::Sort { built: 0 }, &CHIPS_SOURCE_ONLY), None);
+        assert_eq!(menu_chip_of(&Menu::Filter, &CHIPS_NONE), None);
+        assert_eq!(menu_chip_of(&Menu::None, &CHIPS_MANY), None, "no menu, nothing to lift");
     }
 }

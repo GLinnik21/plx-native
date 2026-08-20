@@ -28,6 +28,47 @@ pub(crate) fn any_open() -> bool {
     unsafe { *std::ptr::addr_of!(OPEN_COUNT) > 0 }
 }
 
+/// The element a popover was opened FROM — where it is, and how to put it back on screen.
+///
+/// A modal scrim is ONE full-screen quad, so it dims the whole page INCLUDING the card or chip the
+/// menu is about: the one thing on screen the panel is talking about recedes with everything else.
+/// Fixing that needs no new machinery — the renderer is immediate-mode and z-order IS call order,
+/// so "above the scrim" literally means "drawn after the scrim call".
+///
+/// **Both halves come from the HOST, which is why they travel together.** Only the screen that drew
+/// the element knows where it landed (a shelf's scroll spring and the cell's own focus pop are
+/// invisible from here) and only that screen can draw it again. A bare `fn()` rather than a closure,
+/// because this is stored beside the open panel in a `static mut` — the same shape `ui::nav` carries
+/// an outgoing page's teardown as.
+#[derive(Clone, Copy)]
+pub(crate) struct Opener {
+    /// The element's drawn rect in screen coords — what the panel is anchored beside. `None` when
+    /// the host has no element to point at (the hero view has no card; a headless trigger opens the
+    /// menu with nothing focused), which is a placement fallback and never an error.
+    pub(crate) rect: Option<Rect>,
+    /// Re-draw that element exactly as its page drew it, ABOVE the scrim. It builds its own root
+    /// painter, because which alpha it belongs on is the host's business: a page element rides
+    /// `nav::page_alpha`, a piece of the shared top bar rides `nav::chrome_alpha`.
+    pub(crate) redraw: fn(),
+}
+
+/// The [`Opener::redraw`] of a popover with nothing to lift — a named fn rather than a closure, so
+/// [`Opener::NONE`] can be a `const`.
+fn draw_nothing() {}
+
+impl Opener {
+    /// No element at all: the panel falls back to its own placement and the scrim covers everything,
+    /// which is exactly what every popover did before this existed.
+    pub(crate) const NONE: Opener = Opener { rect: None, redraw: draw_nothing };
+
+    /// An opener that is only a DRAW — for a panel whose placement is its own. The Library's chip
+    /// menus are anchored on the toolbar rather than on the chip's measured rect, so they have a
+    /// thing to lift and no rect to hand over.
+    pub(crate) const fn drawn(redraw: fn()) -> Opener {
+        Opener { rect: None, redraw }
+    }
+}
+
 pub(crate) struct Popover {
     open: bool,
     appear: Spring,
@@ -153,6 +194,28 @@ impl Popover {
         if scrim_a > 0.0 {
             let dim = theme::scrim_black(scrim_a * self.appear() * crate::ui::nav::page_alpha());
             Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
+        }
+    }
+
+    /// Draw the modal scrim, then LIFT `opener` back out of it: the element the popover was opened
+    /// FROM, re-drawn on top of the dim, so the one thing the panel is about stays at full strength
+    /// while the page around it recedes.
+    ///
+    /// **Both calls belong to the HOST PAGE**, for the reason [`scrim`](Self::scrim) already gives
+    /// and one more. The direct blur source path re-renders the page closure into a small target
+    /// before any popover draws, so a lift drawn WITH the panel would reach the visible frame and
+    /// never the snapshot — and a glass panel frosting a *dimmed* copy of the very card it is about
+    /// is exactly the class of artefact the scrim's own placement rule exists to prevent.
+    ///
+    /// While the scrim is still transparent the lift is a no-op to look at (it re-draws the same
+    /// pixels over themselves), so the appear ramp costs nothing visible. What it does add for the
+    /// life of the panel is the element's own soft shadow a second time — once dimmed under the
+    /// scrim and once over it — which reads as the element being RAISED above the dim, and is what
+    /// a lifted object would really cast.
+    pub(crate) fn scrim_lifting(&self, scrim_a: f32, opener: &Opener) {
+        self.scrim(scrim_a);
+        if scrim_a > 0.0 {
+            (opener.redraw)();
         }
     }
 

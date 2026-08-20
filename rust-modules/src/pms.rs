@@ -127,10 +127,14 @@ pub(crate) fn movie(i: usize) -> Option<&'static PmsMovie> {
 /// **Server-scoped, and that is the whole point.** This used to scan `m.rk == rk` over one flat
 /// catalog, which is unambiguous only while every row comes from one machine. On a Continue
 /// Watching shelf merged across servers it is not: a friend's episode and one of ours can carry the
-/// same ratingKey, so a bare-key scan returns whichever row is EARLIER — and the callers are the
-/// item menu's Play-from-Start (which then plays a different film with the friend's title still in
-/// the HUD) and `detail::mount_rk` (which mounts the wrong backdrop, blur envelope and selection).
-/// -1 stays "not in the hub catalog", which every caller already handles as "off-catalog".
+/// same ratingKey, so a bare-key scan returns whichever row is EARLIER — and the caller that
+/// exposed it was `detail::mount_rk` (which then mounts the wrong backdrop, blur envelope and
+/// selection). -1 stays "not in the hub catalog", which every caller already handles as
+/// "off-catalog".
+///
+/// The item menu's Play-from-Start was the other caller and is not one any more: it carries the row
+/// it was opened on (`ui::item_menu::ITEM`), because a Library, Search or person-page tile is in no
+/// hub at all and this answered -1 for every one of them.
 pub(crate) fn index_of_rk(sid: ServerId, rk: &str) -> c_int {
     catalog()
         .iter()
@@ -478,7 +482,11 @@ fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> 
 /// progress bar it had before and show no tick at all — the press would read as having done
 /// nothing. An unscrobble genuinely clears `viewOffset` server-side, and a scrobbled item leaves
 /// the deck; where the server disagrees, its own refetch is a moment behind this and wins.
-fn set_watched(m: &mut PmsMovie, on: bool) {
+///
+/// `pub(crate)` because the hub catalog stopped being the only store an optimistic edit reaches:
+/// `browse`, `search` and `person` each hold their own rows and each flips them the same way, and
+/// three copies of "which three fields" is three chances for one of them to leave the resume bar on.
+pub(crate) fn set_watched(m: &mut PmsMovie, on: bool) {
     m.watched = on;
     m.unwatched = !on;
     m.resume_ms = 0;
