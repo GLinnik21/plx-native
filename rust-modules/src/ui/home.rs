@@ -13,7 +13,7 @@ use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    AmbientWash, Art, Button, CircleButton, GlassFrame, PageDots, HERO_BASE_SCRIM_Y0,
+    AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0,
 };
 // `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
 // doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
@@ -1498,14 +1498,9 @@ pub(crate) fn home_update(dt: f32) {
     });
 }
 
-pub(crate) fn home_draw(glass: GlassFrame) {
+pub(crate) fn home_draw() {
     guard(|| {
-        let rgb = glass.source_rgb();
-        crate::gfx::frame_clear(
-            theme::CLEAR_RGB.0 * rgb,
-            theme::CLEAR_RGB.1 * rgb,
-            theme::CLEAR_RGB.2 * rgb,
-        );
+        crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let h = scene();
         let env = h.env(0.0);
         h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
@@ -1515,7 +1510,7 @@ pub(crate) fn home_draw(glass: GlassFrame) {
         // and folded into every primitive by `Painter::c`, `Painter::ambient` included since it
         // learned to mix toward `SURFACE_APP`, which is the same colour `frame_clear` just laid
         // down. The shared top band below is deliberately NOT on it.
-        let pc = Painter::root().rgb(rgb).alpha(crate::ui::nav::page_alpha());
+        let pc = Painter::root().alpha(crate::ui::nav::page_alpha());
         h.draw(&env, pc);
         // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands
         // in for the hero and grid above it), so the top chrome below still paints over it.
@@ -1533,7 +1528,7 @@ pub(crate) fn home_draw(glass: GlassFrame) {
         // while the pages swap under it (`nav::chrome_alpha`). Fading it with the page would make a
         // tab press read as the whole screen blinking — and the capsule travelling across a bar
         // that stays put IS the transition the tab bar is supposed to show.
-        let pk = Painter::root().rgb(rgb).alpha(crate::ui::nav::chrome_alpha());
+        let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
         crate::ui::widgets::draw_tab_row(pk);
         // the chip goes on TOP of the tab track, not under it. Its focused capsule unfurls the
         // profile name to its right, and with enough libraries the (centered) track now reaches
