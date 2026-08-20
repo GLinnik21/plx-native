@@ -350,13 +350,19 @@ impl Session {
     /// cost of being wrong is one profile pick — the picker is still fully usable, and its
     /// *Sign out* pill is reachable with the roster empty.
     ///
-    /// An EMPTY uuid is the exception and is false: no Plex Home selection was ever made, so there
-    /// is no managed profile and no PIN to be behind (`auth`'s single-user path enters Home on the
-    /// owner's own server token without writing one). That state cannot reach a boot picker
-    /// anyway — `app.rs`'s boot gate raises one only for a roster of more than one user.
+    /// **An EMPTY uuid answers TRUE**, and it is the case worth spelling out, because it reads as
+    /// the harmless one ("no profile chosen, so no PIN to be behind") and is the opposite. A
+    /// sign-in ABANDONED at the who's-watching picker persists exactly that shape: `auth`'s
+    /// `login_thread` saves the account token, the server and the roster the moment they exist —
+    /// deliberately, so that walking away does not cost the whole sign-in — and no profile has been
+    /// picked. Such a session's [`Session::pms_token`] falls back to the OWNER's server token, and
+    /// the next boot raises a picker over it (the gate needs a roster of more than one user, which
+    /// that file has). So "no profile chosen" is not "no PIN": it is *nobody has said who they
+    /// are*, and the picker is that question — which is why it belongs on the same side as an
+    /// unknown uuid rather than opposite it.
     pub fn active_profile_is_protected(&self) -> bool {
         if self.user.uuid.is_empty() {
-            return false;
+            return true; // see above — nobody has said who they are
         }
         self.home_users.iter().find(|u| u.uuid == self.user.uuid).map(|u| u.protected).unwrap_or(true)
     }
@@ -968,12 +974,19 @@ mod tests {
         assert!(home("u-owner").active_profile_is_protected(), "the adult tile carries the PIN");
         assert!(!home("u-kid").active_profile_is_protected(), "a managed profile with no PIN");
 
-        // An account with no Plex Home never writes a profile at all, so there is no PIN to be
-        // behind — and that state cannot raise a boot picker either (it needs a roster of >1).
+        // **A session that names NO profile answers protected too**, which is the half that reads
+        // as harmless and is not: it is what a sign-in abandoned at the picker leaves on disk (the
+        // account token, the server and the roster are persisted the moment they exist; the pick
+        // never happened), and `pms_token()` on it is the OWNER's server token. The very next boot
+        // raises a picker over that file — a roster of >1 is exactly what it has — so answering
+        // "not protected" here put the owner's credentials behind BACK by a second road.
+        let mut abandoned = home("u-owner");
+        abandoned.user = UserRef::default();
+        assert!(abandoned.active_profile_is_protected(), "no profile chosen is not 'no PIN to be behind'");
         let solo = Session { client_id: "cid".into(), account_token: "acct".into(), ..Default::default() };
-        assert!(!solo.active_profile_is_protected());
+        assert!(solo.active_profile_is_protected());
 
-        // …but a uuid the roster does not name is treated as protected.
+        // …and a uuid the roster does not name is treated as protected.
         let mut unknown = home("u-owner");
         unknown.home_users.clear();
         assert!(unknown.active_profile_is_protected());
