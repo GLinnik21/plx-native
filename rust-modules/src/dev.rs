@@ -70,6 +70,40 @@ pub(crate) fn flag(_name: &str) -> bool {
     false
 }
 
+/// [`flag`], answered ONCE for the whole process.
+///
+/// **A `dev::flag` is a `stat`, so a trigger read every frame is a syscall on the 60 fps path.**
+/// Latching also fixes a correctness wrinkle that has nothing to do with cost: `tests/run.py`
+/// clears `/tmp/plxnative-*` between cases, so a later read can legitimately find the file gone
+/// mid-run and a per-frame probe would change its answer half way through a case.
+///
+/// A macro rather than a function because the latch has to be a `static` per trigger, and a
+/// function would need a map behind a lock — which is the thing being avoided. It lives HERE
+/// because this module is the one door onto the `/tmp` surface; it was briefly a file-local macro
+/// in `ui/widgets.rs`, which walled it off from the other per-frame `flag` callers
+/// ([`crate::focusprobe::armed`] had already hand-rolled exactly this body, doc comment and all).
+///
+/// No `#[cfg]` arms, deliberately: [`flag`] is already `false` at COMPILE time without the
+/// `devtriggers` feature, so a second gate here would only re-derive what the door behind it
+/// guarantees.
+///
+/// ```ignore
+/// crate::dev::latched_flag!(
+///     /// `/tmp/plxnative-flattabs` — the material off, for an A/B against the flat capsule.
+///     fn flat_tabs_armed = "flattabs";
+/// );
+/// ```
+macro_rules! latched_flag {
+    ($(#[$m:meta])* $vis:vis fn $name:ident = $trigger:literal;) => {
+        $(#[$m])*
+        $vis fn $name() -> bool {
+            static SEEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *SEEN.get_or_init(|| $crate::dev::flag($trigger))
+        }
+    };
+}
+pub(crate) use latched_flag;
+
 /// The trigger's CONTENT, trimmed. `Some("")` for a trigger armed as an empty file — several
 /// distinguish empty (take the default) from a value (`autoseek`, `library`, `marker`), so an
 /// empty file must not read the same as an absent one.
