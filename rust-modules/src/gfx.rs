@@ -1082,11 +1082,35 @@ const BLUR_REDUCTIONS: usize = 1;
 /// bar collapses into a featureless grey slab sitting on top of the page.
 ///
 /// At 0.7/1.5 the shelf's verticals read through the interior and the cap visibly squeezes a box
-/// caption into its arc; at 1.5/3.5 both are gone. Note the offsets are no longer half-texel
+/// caption into its arc; at 1.5/3.5 both are gone.
+///
+/// **Then 0.7/1.5 was narrowed again to 0.35/0.75, and the reason is that the first comparison was
+/// against the wrong reference.** The scale-matched measurement that blessed 0.7/1.5 was taken
+/// against the macOS 26 tab bar through GlassLab, and matched it almost exactly (0.264 of a stripe
+/// period against its 0.281). But this app's idiom is the TELEVISION, and the references that
+/// matter are iOS and tvOS, where the material is plainly lighter: a phone number is readable
+/// through the Phone app's tab bar, and a tvOS pill leaves the window mullion behind it clearly
+/// visible. Those are two different materials wearing one name, and matching the desktop one is
+/// matching the wrong half.
+///
+/// Priced at the scale that decides it — a letter stem at 1080p is a period of roughly 12–16px, so
+/// that is where "can you read the page through the glass" is actually settled. Laddered over one
+/// hero, held identical across all four boots (asserted, not assumed — the Home hero rotates on its
+/// own clock and had already invalidated one comparison this day):
+///
+/// | taps | 12px | 16px | 24px |
+/// |---|---|---|---|
+/// | 0.7/1.5 | 0.5% | 15.0% | 26.1% |
+/// | **0.35/0.75** | 9.2% | **30.5%** | 40.8% |
+/// | 0.22/0.5 | 15.3% | 39.2% | 43.2% |
+///
+/// 0.22/0.5 is the floor rather than the target: there the hero's individual hairs and the star
+/// field behind it come through, and the bar stops reading as a frosted material and becomes
+/// tinted glass. `/tmp/plxnative-blurtaps` walks the ladder without a rebuild. Note the offsets are no longer half-texel
 /// aligned, which the previous version of this note called for so GL_LINEAR would resolve each tap
 /// as an exact 2x2 box — a real property, and a smaller one than what it costs: the alignment buys
 /// a marginally cleaner kernel, and structure at the scale of a letterform is the entire effect.
-const BLUR_TAPS: [f32; 2] = [0.7, 1.5];
+const BLUR_TAPS: [f32; 2] = [0.35, 0.75];
 /// `/tmp/plxnative-blurtaps=<a>,<b>` — those offsets, swept.
 ///
 /// The taps are the SECOND half of "how much structure survives", and until this existed only the
