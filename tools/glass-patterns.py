@@ -55,7 +55,7 @@ def cfg(name):
     return m.group(1) if m else None
 
 
-def launch(root: Path, pkg: str, pms: str, port: str, lens: str = "", lift: str = ""):
+def launch(root: Path, pkg: str, pms: str, port: str, lens: str = "", lift: str = "", sharp: str = ""):
     root.mkdir(parents=True, exist_ok=True)
     # the container's lens geometry, one rung per instance — `gfx::standing_sweep` reads it once
     if lens:
@@ -63,6 +63,9 @@ def launch(root: Path, pkg: str, pms: str, port: str, lens: str = "", lift: str 
     # …and its diffuse floor, the same way; "0" is the material before the floor existed
     if lift:
         (root / "plxnative-tracklift").write_text(lift)
+    # …and how much of the rim shows the page unblurred
+    if sharp:
+        (root / "plxnative-tracksharp").write_text(sharp)
     tok = re.search(r'^#define\s+PMS_TOKEN\s+"([^"]*)"', (REPO / "src/config.local.h").read_text(), re.M)
     if tok:
         (root / "plxnative-token").write_text(tok.group(1))
@@ -116,6 +119,7 @@ def main():
     ap.add_argument("--packages", default=",".join(PACKAGES))
     ap.add_argument("--lens", default="", help='space-separated <name>:<bevel>,<lens>,<spec> rungs')
     ap.add_argument("--lift", default="", help='space-separated <name>:<floor> rungs (0 = no floor)')
+    ap.add_argument("--sharp", default="", help='space-separated <name>:<weight> rungs (0 = one source)')
     ap.add_argument("--pats", default=",".join(LADDER))
     ap.add_argument("--settle", type=float, default=2.5, help="seconds to let a rung settle")
     ap.add_argument("--out", default="")
@@ -136,12 +140,13 @@ def main():
     pats = [p for p in a.pats.split(",") if p]
     lens = dict(t.split(":", 1) for t in a.lens.split() if t)
     lift = dict(t.split(":", 1) for t in a.lift.split() if t)
-    pkgs = list(lens) or list(lift) or [p for p in a.packages.split(",") if p]
+    sharp = dict(t.split(":", 1) for t in a.sharp.split() if t)
+    pkgs = list(lens) or list(lift) or list(sharp) or [p for p in a.packages.split(",") if p]
 
     procs, roots = {}, {}
     for pkg in pkgs:
         roots[pkg] = out / pkg
-        procs[pkg] = launch(roots[pkg], pkg, pms, port, lens.get(pkg, ""), lift.get(pkg, ""))
+        procs[pkg] = launch(roots[pkg], pkg, pms, port, lens.get(pkg, ""), lift.get(pkg, ""), sharp.get(pkg, ""))
     print(f"launched {len(pkgs)} simulators; ladder of {len(pats)} grounds, {a.settle}s each "
           f"(~{len(pats) * (a.settle + 0.6) + 8:.0f}s)")
     time.sleep(8)

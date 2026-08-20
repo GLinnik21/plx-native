@@ -482,12 +482,38 @@ pub const GLASS_RIM_LIGHT: [f32; 4] = with_a(WHITE, 0.28);
 /// same ground, and the same eased signal, the scrim density already follows. A dark ground still
 /// gets exactly `.14`/`.28` and nothing about that case moves.
 ///
-/// **One, and one is safe rather than reckless, because the rim is a LERP.** `fs_glass.frag` mixes
-/// the surface TOWARD this colour, so the ceiling means "at the brightest ground this bar will ever
-/// sit on, the line is the line's own colour" — a 1px white hairline, which is what a lit edge over a
-/// bright sky looks like. It could not have been 1.0 while the rim was an ADDITION: there the value
-/// was an amount of light poured onto whatever was underneath, and 1.0 was a blown-out smear.
-pub const GLASS_RIM_MAX: f32 = 1.0;
+/// **It was 1.0, on the argument that the rim is a LERP** — `fs_glass.frag` mixes the surface TOWARD
+/// this colour, so a ceiling of one means "at the brightest ground this bar will ever sit on, the
+/// line is the line's own colour", a 1px white hairline. That is sound about the arithmetic and
+/// wrong about the material, and the reference says so in one number.
+///
+/// A lit edge is lit BY something, so it must move with what is behind it. Measured against the
+/// macOS 26 system tab bar over a hard stripe ground — the top rim's brightness regressed on the
+/// page directly above it, column by column:
+///
+/// | | line | line/face | its own swing | slope vs ground |
+/// |---|---|---|---|---|
+/// | macOS `.regular` | 124 | 1.39 | **23.9%** | 0.25 |
+/// | ours at 1.0 | 213 | 4.23 | 10.5% | 0.23 |
+/// | ours at 0.6 | 184 | 3.67 | 17.4% | 0.33 |
+/// | **ours at 0.4** | 167 | 3.33 | **22.9%** | 0.39 |
+/// | ours at 0.28 (no ramp) | 156 | 3.10 | 27.1% | 0.43 |
+///
+/// The standing suspicion was that our edge did not depend on the ground at all. It always did —
+/// the SLOPE was 0.23 against their 0.25 before anything changed. What was wrong is the LEVEL: at
+/// 1.0 the line sits so near white that the ground's swing is 10% of its own brightness, and a line
+/// that bright and that even is read as a stroke drawn round a shape rather than as an edge
+/// catching a lamp. Lowering the ceiling does not add the dependence, it stops DROWNING it.
+///
+/// 0.4 is where the relative swing meets the reference (22.9% against 23.9%). 0.28 — the floor,
+/// where the ramp flattens into [`GLASS_RIM_LIGHT`] and there is no travel at all — matches the
+/// look slightly better and the number slightly worse; the extra tenth is kept because this is a
+/// television seen from three metres, and it is the case where the ground is BRIGHT that the ramp
+/// was built for. `/tmp/plxnative-rimmax` sweeps it without a rebuild.
+///
+/// (`line/face` stays far from the reference at every rung, and that is NOT this constant's to fix:
+/// our face is 50 where theirs is 89, which is the density policy, not the edge.)
+pub const GLASS_RIM_MAX: f32 = 0.4;
 
 // ---- The standing track has ONE material -----------------------------------------------------
 //
@@ -612,6 +638,27 @@ pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.36);
 /// the same material and FADES it in with its unfurl (`scrim_black(A * e)`) — one material and one
 /// pair of weights whether it is painted at full strength or on the way in, which is what keeps the
 /// chip's capsule and the tab track reading as one band on the top chrome line.
+/// **The ceiling is a LIMIT, not a policy, and the ladder that went looking for a policy here found
+/// nothing to change.** Swept on the television over five grounds (.72/.55/.42/.32) and then read
+/// back out of the app's own `track_ground` line rather than off the pixels, which is what settled
+/// it: fully eased, the solve asks for **.252** over a flat L\*55 ground, **.550** over L\*85 and
+/// **.603** over the brightest real hero in the rotation (L\*95.7, span 69.8). It does not reach .72
+/// on anything, so lowering the ceiling toward it changes nothing at all until the ceiling drops
+/// BELOW what the solve wants — at which point what is being cut is the labels' contrast, not the
+/// material's weight.
+///
+/// **Two measurements of this bar were wrong before this one and are worth naming**, because both
+/// are easy to repeat. Reading the page from BELOW the bar samples a brighter part of the hero and
+/// reported −52% Weber; capturing 3 s after a `pat:` change catches the density mid-travel and
+/// reported swings of 30 codes between rungs that are in truth identical. Settled and referenced to
+/// the page directly above it, this bar sits at **−15% Weber** on that hero, against the macOS 26
+/// tab bar's −27% on its own page — i.e. ours is CLOSER to its backdrop than the reference is to
+/// its own, which is the opposite of the story these numbers were first told to support.
+///
+/// So the constant stays where it was. `/tmp/plxnative-trackmax` sweeps it, and the honest way to
+/// make this bar lighter is [`super::widgets::TRACK_INK_CONTRAST`] — the 4:1 promise is what puts
+/// the density where it is, and `the_lift_never_spends_the_labels_contrast` marks the boundary: the
+/// guarantee survives a ceiling of .62 and dies at .60.
 pub const TAB_TRACK_A_TOP: f32 = 0.72;
 /// See [`TAB_TRACK_A_TOP`].
 pub const TAB_TRACK_A_BOT: f32 = 0.82;

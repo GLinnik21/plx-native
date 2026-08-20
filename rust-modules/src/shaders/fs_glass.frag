@@ -57,6 +57,27 @@ uniform vec4 u_edge;         // edge-light colour; alpha 0 disables
 uniform vec3 u_light;        // xy = direction TO the light, panel-local; z = counter-side shading
 uniform vec4 u_spec;         // xy = the specular AXIS; z = tightness; w = strength (0 disables)
 uniform float u_noise;       // dither amplitude
+// THE RIM'S SECOND SOURCE — the page, unblurred, sampled through the SAME displacement.
+//
+// The lens compresses `[edge, edge + lens]` into `[edge, edge + bevel]`, which is a real
+// compression and reads as nothing at all when both sides of the boundary are already mush: a
+// squeezed average of a blur is a blur. Measured on the television — raising the displacement from
+// 24 to 200 does not bend anything, it just thickens a dark ring, because there is no structure
+// left in the source to move. The reference bends RECOGNISABLE content: what is immediately
+// outside the container, squeezed into a narrow band at its edge, still sharp enough to be read as
+// the same thing.
+//
+// So the band mixes toward the full-resolution grab the chain already holds (`BlurChain::grab`),
+// with the same offset, weighted by `t` so the mix is zero where the band meets the interior and
+// there is no seam to see. `u_sharpw = 0` restores the single-source material exactly.
+//
+// NB this is NOT the rejected experiment recorded below. That one varied CLARITY across the panel
+// with the lens doing no work, and read as the panel being thinner at its edge; here the clarity
+// is what makes the DISPLACEMENT legible, over 12px rather than 28.
+uniform sampler2D u_sharp;
+uniform vec4 u_sharp_rect;   // (origin.xy, size.zw) of this panel's window into the grab
+uniform vec2 u_sharp_px;     // UV per authored pixel in the grab, v sign included
+uniform float u_sharpw;      // 0 disables the whole second source
 uniform float u_rimw;        // rim width in px, for the band above
 // THE CONTAINER'S OWN SCRIM AND EDGE, composited HERE rather than as a second draw on top.
 // A translucent panel used to be two surfaces of one shape — the backdrop, then a rimmed rect over
@@ -68,6 +89,23 @@ uniform float u_rimw;        // rim width in px, for the band above
 // the culprit and was measured first: it costs two codes, not fourteen.)
 uniform vec4 u_scrim_top;    // the scrim's stops, top and bottom; alpha 0 disables the whole block
 uniform vec4 u_scrim_bot;
+// HOW MUCH OF THAT SCRIM THE CHAMFER SHEDS, 0..1 at the very rim, ramping linearly with `t`.
+//
+// The body of a slab tints what you see through it by its full thickness. Its CHAMFER does not:
+// there the path through the material is short and steeply angled, so what reaches the eye is
+// mostly the surroundings, bent — which is why a real glass edge picks up the COLOUR of whatever
+// is beside it while the middle of the same object stays neutral.
+//
+// Ours did not, and over a bright hero it could not: the density solve puts the scrim as high as
+// .72, and a uniform .72 means the beautifully refracted band at the rim is 72% flat black by the
+// time anything sees it. The reference makes the point unmissable — a red caption directly above
+// iOS's tab bar leaves a red cast IN the bar's bright top edge, several pixels of it, while the
+// bar's middle over the same page stays grey.
+//
+// Zero restores the uniform scrim exactly. It ramps with `t`, not `t*t`, so it reaches the
+// interior early-out's full-strength scrim continuously — the two exits of this shader must agree
+// at `t = 0` or the bevel's inner boundary draws itself as a step.
+uniform float u_rimclear;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -111,7 +149,18 @@ void main(){
   highp float t = clamp(1.0 + d / u_bevel, 0.0, 1.0); // 0 at the bevel's inner edge, 1 at the rim
   highp float lens = t * t;
   highp vec2 nrm = sdBoxNormal(v_p, u_ch, u_iradius);
-  vec3 rgb = texture2D(u_tex, v_cuv + nrm * (lens * u_lens) * u_uvpx).rgb * u_tint.rgb;
+  highp vec2 push = nrm * (lens * u_lens);
+  vec3 rgb = texture2D(u_tex, v_cuv + push * u_uvpx).rgb;
+  if (u_sharpw > 0.0) {
+    // The quad's own 0..1 coordinate, recovered from the panel-local pixels the SDF already uses:
+    // `vs_img.vert` builds both from the same `a_pos`, so this needs no second varying and cannot
+    // drift from `v_cuv`.
+    highp vec2 f = v_p / (2.0 * u_ch) + 0.5;
+    highp vec2 suv = u_sharp_rect.xy + f * u_sharp_rect.zw;
+    vec3 sharp = texture2D(u_sharp, suv + push * u_sharp_px).rgb;
+    rgb = mix(rgb, sharp, smoothstep(0.0, 1.0, t) * u_sharpw);
+  }
+  rgb *= u_tint.rgb;
   // The chamfer's light. `band` peaks just INSIDE the rim rather than on it — on it the coverage
   // mask below eats most of it and the line reads as aliasing instead of as a highlight. `ndl` is
   // what makes the panel look tilted rather than outlined: the facing chamfer takes the light, the
@@ -141,7 +190,7 @@ void main(){
   // The container's own SCRIM, then ITS RIM on top of that, both before coverage — the order they
   // are read in, and the reason this surface is now the only one of its shape.
   vec4 sc = mix(u_scrim_top, u_scrim_bot, clamp(v_p.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));
-  rgb = mix(rgb, sc.rgb, sc.a);
+  rgb = mix(rgb, sc.rgb, sc.a * (1.0 - t * u_rimclear));
   // A LERP, not an addition, and that is the whole of why a DARK edge can exist at all. The rim was
   // `rgb += rimcol * weight`, which can only ever ADD light: a near-black rim added near-nothing, so
   // the light material simply had no edge once the black ring that had been standing in for one was

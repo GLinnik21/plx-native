@@ -35,7 +35,7 @@ mod imp {
     /// and must be kept beside them. Its only job is to refuse a trigger that names nothing: an
     /// unknown filter arms the profiler, logs `on`, and then silently never matches — which reads
     /// exactly like "this phase costs nothing".
-    pub(crate) const PHASES: [&str; 26] = [
+    pub(crate) const PHASES: [&str; 27] = [
         "profile.empty",
         "frame.ui",
         "main.ui",
@@ -48,6 +48,7 @@ mod imp {
         "blur.tap2",
         "blur.up",
         "glass.composite",
+        "glass.sharp",
         "glass.frost",
         "glass.foreground",
         "dt.about",
