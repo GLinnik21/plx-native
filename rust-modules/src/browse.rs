@@ -959,6 +959,36 @@ pub(crate) fn total() -> i64 {
 pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
     cur_state().and_then(|s| s.items.get(i)).and_then(|o| o.as_ref())
 }
+/// Flip `(sid, rk)`'s watched state in every section's item store — the optimistic half of a
+/// view-state write, for the browse grid.
+///
+/// `pms::edit_item`'s twin, and it exists because that one only ever touched the HOME hubs: its own
+/// doc says "the item is on no shelf (a Library-grid or Related item): nothing to redraw", which
+/// was exactly right and exactly the gap. Mark a film watched from the grid's context menu and the
+/// tick did not appear until a refetch — the press read as having done nothing.
+///
+/// **Every section, not the current one.** A section the user browsed a minute ago keeps its items
+/// and its scroll position (that is the whole point of the per-section store), so leaving it stale
+/// would put the tick back the wrong way round the moment they tab back to it.
+///
+/// The row is edited, never REMOVED: an "unwatched only" listing genuinely no longer contains an
+/// item just marked watched, but a card vanishing from under the cursor on a press that was about
+/// state and not about membership is worse than one that is briefly in a list it no longer matches.
+/// The refetch the write's landing kicks is what reconciles that, as it does everywhere else here.
+///
+/// Returns whether anything matched, matching `pms::edit_item`'s shape. **MAIN THREAD.**
+pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
+    let states = unsafe { &mut *addr_of_mut!(STATES) };
+    let mut hit = false;
+    for m in states.iter_mut().flat_map(|s| s.items.iter_mut()).flatten() {
+        if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+            crate::pms::set_watched(m, on);
+            hit = true;
+        }
+    }
+    hit
+}
+
 /// The grid's desired index window (visible + lookahead) — drives which page fetches next.
 pub(crate) fn want(lo: usize, hi: usize) {
     unsafe { WANT = (lo, hi) };
@@ -2334,6 +2364,52 @@ mod tests {
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         pump();
         assert_eq!(fetch_state(), SecFetch::Loading, "the current query has not answered yet — it has not failed");
+        reset();
+    }
+
+    /// The optimistic edit behind the browse grid's context menu — three properties in one, because
+    /// they are one press: the mark flips on the frame it is pressed, it flips in EVERY section's
+    /// store rather than only the one on screen, and a row on another SERVER with the same key is
+    /// untouched.
+    ///
+    /// Without this the write went out correctly and nothing on screen changed until a refetch, so
+    /// the row read as having done nothing — the exact gap `pms::edit_item`'s doc records ("the item
+    /// is on no shelf (a Library-grid or Related item): nothing to redraw").
+    #[test]
+    fn a_watched_edit_reaches_every_section_and_only_the_right_server() {
+        let _g = crate::testlock::serial();
+        seed_one_section();
+        let sid = crate::plex::ServerId::UNSET;
+        let other = crate::plex::ServerId::from_raw(1);
+        let row = |sid, rk: &str, resume: i64| {
+            let mut m = PmsMovie::default();
+            m.sid = sid;
+            m.rk = rk.to_string();
+            m.unwatched = true;
+            m.resume_ms = resume;
+            Some(m)
+        };
+        unsafe {
+            let st = &mut *addr_of_mut!(STATES);
+            *st = vec![SecState::default(), SecState::default()];
+            // the section on screen, the one browsed a minute ago (which keeps its items), and a
+            // FRIEND's row carrying the same key — both servers number their items from 1
+            st[0].items = vec![row(sid, "7", 90_000), row(other, "7", 0)];
+            st[1].items = vec![row(sid, "7", 0), row(sid, "9", 0)];
+        }
+
+        assert!(set_watched_local(sid, "7", true), "the item is in the store, so the edit lands");
+        let watched = |sec: usize, i: usize| {
+            let st = unsafe { &*addr_of!(STATES) };
+            let m = st[sec].items[i].as_ref().unwrap();
+            (m.watched, m.unwatched, m.resume_ms)
+        };
+        assert_eq!(watched(0, 0), (true, false, 0), "…tick on, and the resume bar retires with it");
+        assert_eq!(watched(1, 0), (true, false, 0), "…in a section that is not the one being browsed");
+        assert_eq!(watched(0, 1), (false, true, 0), "…and never on the friend's item with the same key");
+        assert_eq!(watched(1, 1), (false, true, 0), "…nor on an item that was not asked about");
+
+        assert!(!set_watched_local(sid, "404", true), "an item in no section reports a miss");
         reset();
     }
 }

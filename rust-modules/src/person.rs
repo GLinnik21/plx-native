@@ -592,6 +592,31 @@ fn resettle(p: &mut Person) {
     p.landed = p.srcs.iter().any(Src::has_content) || p.srcs.iter().all(Src::settled);
 }
 
+/// Flip `(sid, rk)`'s watched state on this person's shelves — the optimistic half of a view-state
+/// write. `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the
+/// HOME hubs alone, so a film marked watched from a filmography tile's context menu kept its old
+/// mark until a refetch.
+///
+/// **Through the SOURCES, then [`resettle`]** — the module's own rule that a source owns its rows
+/// and [`Person::shelves`] is a projection of them. Editing the merged shelves directly would be
+/// undone by the next landing.
+///
+/// Returns whether anything matched. **MAIN THREAD.**
+pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return false };
+    let mut hit = false;
+    for m in p.srcs.iter_mut().flat_map(|s| s.shelves.iter_mut()).flat_map(|sh| sh.items.iter_mut()) {
+        if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+            crate::pms::set_watched(m, on);
+            hit = true;
+        }
+    }
+    if hit {
+        resettle(p);
+    }
+    hit
+}
+
 // ---- public surface --------------------------------------------------------------------------
 
 /// Open the page for the person the ORIGIN server `sid` knows as `key`, with the header the caller
