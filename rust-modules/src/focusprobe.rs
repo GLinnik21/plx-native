@@ -208,7 +208,6 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
 fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
-    let s = &mut *s;
     match screen {
         Screen::Login => {
             // `login.rs` holds no focus state of its own — the screen is a projection of the auth

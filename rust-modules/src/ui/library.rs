@@ -2147,9 +2147,6 @@ pub(crate) fn draw() {
     let pg = p.alpha(xf().alpha());
     let sc = unsafe { addr_of!(SCROLL).read() }.pos;
     let focused_i = focus_idx();
-    // the focused card draws LAST (pass 2) while the grid OR the rail owns focus — a rail
-    // jump keeps the landed card visibly anchored
-    let focused_pass = matches!(area(), Area::Grid | Area::Rail) && !menu_open();
 
     // ---- the content region: a grid, or the ONE read-out that stands in for it ----------------
     // The spinner and the failure draw on `p`, not `pg`: a status must stay legible while the
@@ -2157,6 +2154,9 @@ pub(crate) fn draw() {
     // The empty line rides `pg` because it IS a function of the listing, and dissolves with it.
     let t = total();
     let read = readout();
+    // …and whether PASS 2 runs at all — one predicate, read here, by the neighbour loop that skips
+    // the cell pass 2 owns, and by the lift over a context menu's scrim ([`focused_card_drawn`]).
+    let focused_pass = focused_card_drawn(read, t);
     let mut status_btn = Rect::new(-1.0, -1.0, 0.0, 0.0);
     match read {
         Readout::Loading => {
@@ -2234,7 +2234,7 @@ pub(crate) fn draw() {
     // chrome: the toolbar/pills win, so a focused card scrolling through the top band slides
     // beneath the Sort/Filter chips instead of popping over them (Home's convention; this used to
     // draw after the chrome and inverted it).
-    if focused_pass && t > 0 && read == Readout::Grid {
+    if focused_pass {
         draw_focused_card(pg);
     }
 
@@ -2333,6 +2333,22 @@ pub(crate) fn draw() {
     }
 }
 
+/// **Is the grid's PASS 2 — the focused card — drawn at all this frame?**
+///
+/// ONE predicate, asked by the page's own draw (which also uses it to SKIP that cell in the
+/// neighbour loop, so the two halves of the two-pass draw cannot disagree about which cell is
+/// pass 2's) and by [`redraw_focused_card`]'s lift over a context menu's scrim. Spelled once
+/// because those must agree exactly: a lift is a SECOND draw of a card the page already drew, so a
+/// condition that is looser here paints a magnified card the page itself left out — over the dim,
+/// where it would be the only thing on screen at full strength.
+///
+/// `read`/`total` are passed in because the draw already holds both; the lift re-reads them.
+fn focused_card_drawn(read: Readout, total: usize) -> bool {
+    // the focused card draws LAST (pass 2) while the grid OR the rail owns focus — a rail
+    // jump keeps the landed card visibly anchored
+    matches!(area(), Area::Grid | Area::Rail) && !menu_open() && total > 0 && read == Readout::Grid
+}
+
 /// The focused grid cell's UNMAGNIFIED frame, or None while it is off-screen mid-jump (a page or
 /// letter jump leaves the focused row off the panel for a few frames, and nothing there may resolve
 /// a texture). The one place this cell's geometry is written — both the drawn card and the rect the
@@ -2385,7 +2401,9 @@ fn draw_focused_card(pg: Painter) {
 /// the grid it belongs to.
 pub(crate) fn redraw_focused_card() {
     crate::ui::guard(|| {
-        if menu_open() || readout() != Readout::Grid {
+        // The page's OWN pass-2 predicate, asked again rather than approximated: a lift is only
+        // ever the card the page drew, so the two must be one rule.
+        if !focused_card_drawn(readout(), total()) {
             return;
         }
         let p = Painter::root().alpha(crate::ui::nav::page_alpha() * xf().alpha());
