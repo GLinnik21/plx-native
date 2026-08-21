@@ -16,6 +16,7 @@ pub mod card_row;
 pub mod chapters_panel;
 pub mod consts;
 pub mod detail;
+pub mod exit_alert; // the app's ONE decision alert: BACK at Home's root asks before it quits
 pub mod fmt; // shared duration/clock display formatters
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype

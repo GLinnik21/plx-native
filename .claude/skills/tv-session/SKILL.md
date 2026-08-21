@@ -201,7 +201,12 @@ the TV is signed in as whatever the automation chose.
 - **Do not run the harness and a live session at once.** `tests/run.py` glob-clears
   triggers and kills the app per case; a concurrent session produces bogus failures that
   look like real regressions. Run `tv-session.sh down` (or just stop the streamer) first.
-- **`BACK` at the Home root exits the app** — an easy way to end a session by accident.
+- **`BACK` at the Home root raises the EXIT ALERT** (`ui::exit_alert`) — it no longer ends the
+  session by itself, which it did until 2026-08-21. Two consequences for a driver: a stray `back`
+  now leaves a modal question on screen, so the next `shot` captures the alert rather than the page
+  you meant, and the way out is `back` again (or `ok`, which lands on *Cancel* — the default focus).
+  `right` then `ok` is what actually quits. `/tmp/plxnative-noexitconfirm` restores the one-press
+  exit for a script that wants it; `tv-session.sh down` still closes through SAM and is unaffected.
 - **Clicks need the jitter**, which the app's injection path already applies: a pointer
   click after D-pad use is swallowed unless enough motion accumulates first. Hover is
   deliberately *not* forwarded (it used to park focus on a tab pill so the next ENTER

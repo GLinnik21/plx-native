@@ -132,6 +132,12 @@ past `press::LONG_MS`), and `shot` (simulator only).
 A desktop keyboard also works directly in `make sim-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
 
+**`back` at Home's root raises the EXIT ALERT** (`ui::exit_alert`), it does not end the process —
+so a `back` too many leaves a modal question on screen and the next `shot` captures *that*, not the
+page you were driving toward. `back` again dismisses it (so does `ok`, which lands on the default
+*Cancel*); `right` then `ok` is what actually quits. Arm `$SIM_DIR/plxnative-noexitconfirm` if a
+script wants the old one-press exit.
+
 ### Three traps, each of which has already cost an hour
 
 1. **Open the FIFO read-write.** `printf x > $D/plxnative-remote` blocks forever in `open(2)` if
