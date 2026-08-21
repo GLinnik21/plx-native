@@ -1216,6 +1216,68 @@ pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll
     ps.rect(Rect::new(0.0, knee, w, content_top - knee), 0.0, knee_col, theme::with_a(base, 0.0), 0.0);
 }
 
+/// The band's face, weighted by how far the chip has unfurled — every alpha, not just the tint's.
+///
+/// Pure, because the shader is where it would be caught late: `fs_glass.frag` writes
+/// `max(u_tint.a * cov, rimw)`, so the rim is deliberately allowed to exceed its surface's own
+/// coverage and a tint faded to nothing leaves a full-strength hairline behind. At `e == 1` this is
+/// the track's face to the bit — the band is ONE material at rest, which is the whole claim.
+fn chip_face(face: crate::gfx::GlassFace, e: f32) -> crate::gfx::GlassFace {
+    let fade = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * e];
+    crate::gfx::GlassFace {
+        scrim_top: fade(face.scrim_top),
+        scrim_bot: fade(face.scrim_bot),
+        rim: fade(face.rim),
+        rim_lit: fade(face.rim_lit),
+        rim_w: face.rim_w,
+    }
+}
+
+/// **The focused chip's capsule, in the BAR's material** — the band's second glass surface.
+///
+/// Returns whether it drew. `false` is the flat capsule's cue, and it is the answer in every case
+/// the track is also flat: [`BAR_MATERIAL`] says so, or the chain refuses (no render target, or a
+/// blur SOURCE pass, where `draw_blur_backdrop` declines before it records anything). The two
+/// halves of the band therefore change material together, always, because only one of them decides.
+///
+/// **The unfurl fades the whole FACE, not the tint alone**, and that is the one thing this could
+/// not borrow from the flat capsule. `fs_glass.frag` emits
+/// `max(u_tint.a * cov, rimw)` — the rim deliberately EXCEEDS the surface's coverage, so that a 1px
+/// line survives its own antialiased edge — which means a tint faded toward zero leaves the rim at
+/// full strength: a bright empty hairline capsule snapping on around the avatar at the first
+/// millisecond of the unfurl. Scaling the scrim's two stops and both rim weights by `e` as well
+/// fades the material as one object, and at `e = 1` it is the track's face to the bit.
+///
+/// The tint's alpha carries the same `e`, which cross-fades the blurred backdrop against the sharp
+/// page under it — the material arriving rather than the shape appearing.
+///
+/// **No second `Glass::prepare`.** The cadence belongs to the band ([`TAB_GLASS_STATE`]), was
+/// resolved by [`tab_glass_prepare`] before the page drew, and preparing again here would consume
+/// this present's refresh slot a second time.
+///
+/// **And no second snapshot, by geometry.** The chip is drawn after the track, so a re-grab taken
+/// here would hold the track's own face — but [`GLASS_TRACK_MAX`] keeps [`BAND_AIR`] between them
+/// while both wear the material, and `gfx::blur_region_union` has the track's first call already
+/// grabbing the region both need on every frame after the first of an unfurl.
+fn chip_capsule(p: Painter, cap: Rect, e: f32) -> bool {
+    let face = match unsafe { *std::ptr::addr_of!(BAR_MATERIAL) } {
+        BarMaterial::Flat => return false,
+        BarMaterial::Glass(f) => chip_face(f, e),
+    };
+    Glass::DYNAMIC_BACKDROP.backdrop(
+        p,
+        cap,
+        0.0,
+        cap.h * 0.5,
+        [1.0, 1.0, 1.0, e],
+        // A container, exactly as the track is one — same lamp, same 12px chamfer, same 24px lens.
+        // The two capsules are the same object seen twice, so nothing about the edge may differ.
+        crate::gfx::GlassRim::Standing,
+        face,
+        theme::Material::UltraThin,
+    )
+}
+
 /// **The top-left profile chip** — the whole control, not just its picture: the avatar texture (or
 /// an initial / person-glyph fallback) with the shared tile shadow + sheen, at [`CHIP_FRAME`], with
 /// [`CHIP_EXPAND`]'s focus unfurl. Drawn verbatim by Home, the Library and Search, which is what a
@@ -1234,16 +1296,50 @@ pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll
 /// was far too quiet to read as focus against bright hero art — and the name is what the stop is
 /// actually *for*.
 ///
-/// **Draw it AFTER [`draw_tab_row`], never before.** The unfurled name reaches right, toward the
-/// CENTRED strip, and with enough libraries (or a long enough profile name) the two meet — drawn
-/// first, the name is painted over by the track's own scrim, and since both are the same dark
-/// material the overlap reads as one band with the name simply gone. Home has always drawn the two
-/// in this order; the Library and Search drew them the other way round and got away with it only
-/// while the chip could not be focused there, which is the class of bug that made this a shared
-/// control in the first place.
+/// **That capsule is the bar's MATERIAL, not a copy of its weights** ([`chip_capsule`]). The track
+/// became solved glass on 2026-08-19 and the chip went on wearing the flat stops it used to share
+/// with it, which is one band drawn in two materials — so it takes the face [`draw_tab_row`]
+/// published this frame ([`BarMaterial`]) and is glass exactly when the track is. Neither surface
+/// solves its own ground: `gfx::sample_ground` has one latch and one rate counter, and two solves
+/// over a non-uniform hero land on two densities with a seam between them.
+///
+/// **Draw it AFTER [`draw_tab_row`], never before**, and there are two reasons now. The unfurled
+/// name reaches right, toward the CENTRED strip; drawn first it is painted over by the track's own
+/// scrim. And the material has to be published before it can be read — drawn first, the chip would
+/// wear the PREVIOUS frame's face, which on the frame a popover opens or a route settles is the
+/// face of a bar that is no longer there. Home has always drawn the two in this order; the Library
+/// and Search drew them the other way round and got away with it only while the chip could not be
+/// focused there, which is the class of bug that made this a shared control in the first place.
+///
+/// The two can no longer MEET, which is the third thing that changed: [`GLASS_TRACK_MAX`] is solved
+/// so the widest capsule clears the widest glass track by [`BAND_AIR`]. Overlap had to become
+/// impossible rather than tolerable — there is one blur cache, so a second glass surface over the
+/// first draws a second scrim and a second rim over material that already carries both.
 pub(crate) fn profile_chip(p: Painter) {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
+    // **A SURFACE MAY NOT APPEAR IN ITS OWN BACKDROP**, and this control is the second one in the
+    // app that could — [`draw_tab_row`]'s note is the first, and it says the whole argument. The
+    // direct source path renders the page again into a small FBO and the page includes this chip,
+    // so left in, the capsule blurred its own near-opaque FLAT fallback (`scrim_black(.72..82)`,
+    // which is what `chip_capsule` returns to inside a source pass) and then darkened that again
+    // with its own stops. Measured in the simulator over `flat:92`, at the point the capsule is
+    // clear of both the avatar and the name: the face came out at **61** where the track beside it,
+    // on the same solve and the same ground, reads **142**. On a dark ground it is invisible; over
+    // bright artwork it is a black slug beside a translucent bar, which is the exact shape of the
+    // bug the track's note measures from the other side.
+    //
+    // The WHOLE control goes, not just the capsule: the avatar disc and the name sit inside the
+    // glass rect, so blurring them would put a smeared copy of the chip behind the chip — a mirror,
+    // not a lens. It costs the backdrop nothing, because nothing else samples this corner.
+    //
+    // The test is `bar_glass_wanted` — "will the bar wear the material", the same question minus its
+    // source-pass clause, which is exactly the form `draw_tab_row` uses. When the bar is FLAT the
+    // chip belongs in the snapshot as it always did: it is then genuinely behind whatever samples
+    // it.
+    if crate::gfx::blur_source_pass() && bar_glass_wanted() {
+        return;
+    }
     static mut CHIP: Option<(u32, String, CString, CString, f32)> = None; // gen, thumb, initial, name, name w
     let r = CHIP_FRAME;
     let expand = unsafe { std::ptr::addr_of!(CHIP_EXPAND).read() }.pos;
@@ -1276,13 +1372,17 @@ pub(crate) fn profile_chip(p: Painter) {
             closed + (open - closed) * e,
             d + 2.0 * TAB_TRACK_PAD,
         );
-        // the tab track's own material, faded in with the unfurl — one pair of weights for both
-        p.rect_sheened(
-            cap,
-            cap.h * 0.5,
-            theme::scrim_black(theme::TAB_TRACK_A_TOP * e),
-            theme::scrim_black(theme::TAB_TRACK_A_BOT * e),
-        );
+        // the tab track's own material, faded in with the unfurl — one pair of weights for both,
+        // and now literally the same material: glass when the track resolved glass this frame,
+        // the flat capsule when it did not.
+        if !chip_capsule(p, cap, e) {
+            p.rect_sheened(
+                cap,
+                cap.h * 0.5,
+                theme::scrim_black(theme::TAB_TRACK_A_TOP * e),
+                theme::scrim_black(theme::TAB_TRACK_A_BOT * e),
+            );
+        }
         // the name rides in on the TAIL of the widening, so the glyphs land in a capsule that has
         // already made room for them instead of smearing across the grow
         let na = ((e - 0.55) / 0.45).clamp(0.0, 1.0);
@@ -2611,7 +2711,48 @@ static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
 static mut TOP_STRIP: TabStrip = TabStrip::new();
 /// Live-trigger lifetime for the tab track's glass experiment. It uses the same reusable cadence
 /// machinery as a dynamic popover, without the modal's source-dim transform.
+///
+/// ONE state for the whole band, not one per surface. [`profile_chip`]'s capsule is a second
+/// surface of this material and shares this lifetime, this cadence and this snapshot — `prepare`
+/// mutates the process-wide `DynamicClock`, so a second owner preparing for the same band would
+/// spend a present's refresh slot twice.
 static mut TAB_GLASS_STATE: GlassState = GlassState::new();
+
+/// **What the shared top bar is made of, THIS frame** — published by [`draw_tab_row`] and consumed
+/// by [`profile_chip`], the band's other surface.
+///
+/// This is option (a) of the four the overlap admits, and the other three are worth recording
+/// because each is the obvious answer from one angle:
+///
+/// * **Each surface solves its own ground.** The chip sits ~800px left of the track over different
+///   hero artwork, and `track_alpha_for` is a function of what is under a surface — so over any
+///   non-uniform hero the two land on different alphas and different rim weights. One band, drawn
+///   in two densities, with the step at the point the eye is least able to excuse it. It also puts
+///   a second caller on `gfx::sample_ground`, which has one latch and one rate counter: the two
+///   would halve each other's sampling rate and clobber each other's answer.
+/// * **The chip suppresses the track's glass while it is expanded.** Focusing the chip would then
+///   strip the material off a control the focus never touched — the "material that steps reads as
+///   broken" failure `K_TRACK_DENSITY_ATTACK` exists to keep out, at the largest scale available.
+/// * **Merge the two into one surface whose rect is their union.** The union spans the ~300px of
+///   bare hero BETWEEN them; drawing it as one capsule paints material over a gap the design shows
+///   the picture through. It is the right answer only in the case the geometry now forbids.
+///
+/// So: one solve, one publisher, one consumer. The track samples the ground because it is drawn
+/// first and it is the surface the ground question was posed about; the chip takes the answer. The
+/// band cannot be two densities because there is only one.
+///
+/// Reset to `Flat` at the top of every [`draw_tab_row`], so a frame that returns early — the blur
+/// SOURCE pass, where the flat capsule is the right source pixel — leaves the chip on the flat
+/// material rather than on the previous frame's stops.
+#[derive(Clone, Copy)]
+enum BarMaterial {
+    /// the flat dark capsule: `flattabs`, a popover open, a strip past [`GLASS_TRACK_MAX`], a
+    /// driver with no render target, or a source pass
+    Flat,
+    /// glass, wearing exactly the face the track resolved this frame
+    Glass(crate::gfx::GlassFace),
+}
+static mut BAR_MATERIAL: BarMaterial = BarMaterial::Flat;
 
 /// **How fast the drawn weight follows the solve, and why the two rates are not the same number.**
 ///
@@ -3016,15 +3157,61 @@ fn lstar(c: [f32; 4]) -> f32 {
     if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
 }
 
+/// The air between the unfurled chip's capsule and the track, at the point they come closest.
+///
+/// Sixteen is the bar's own rung — [`TAB_GAP`], the air between two pills inside the track. It is
+/// not decoration: the two capsules are one band in one material, and a band whose halves TOUCH
+/// draws its two 1px rims side by side, which reads as a bright seam exactly where the design has
+/// a continuous edge. See [`GLASS_TRACK_MAX`].
+const BAND_AIR: f32 = theme::space::SM;
+
+/// **Where the unfurled [`profile_chip`] capsule's right edge can reach, at its widest.**
+///
+/// The capsule is the avatar wrapped in [`TAB_TRACK_PAD`] on every side, plus [`CHIP_NAME_GAP`],
+/// the name, and [`CHIP_NAME_TAIL`]; the name is elided to [`CHIP_NAME_MAX`], so this is arithmetic
+/// on constants and needs no font to evaluate — which is what makes the clearance below a host
+/// test rather than a device capture.
+const CHIP_CAP_MAX_R: f32 = crate::ui::consts::MARGIN_X - TAB_TRACK_PAD
+    + CHIP_D
+    + 2.0 * TAB_TRACK_PAD
+    + CHIP_NAME_GAP
+    + CHIP_NAME_MAX
+    + CHIP_NAME_TAIL;
+
 /// The widest a track may be and still wear glass — the design system's `--glass-track-max`.
 ///
 /// A track is charged by its LENGTH: what a glass surface costs is the blurred RECTANGLE, the
-/// surface grown 88px a side, so this width prices at `(940 + 176) x (76 + 176)` = 281k px^2 —
+/// surface grown 88px a side, so a 940-wide one priced at `(940 + 176) x (76 + 176)` = 281k px^2 —
 /// inside the ~300k a MOVING host holds 60 fps under (`docs/glass-hardware-budget.md`) — while a
-/// 1050-wide one is not. It is the one limit here a section table can trip on its own: enough
+/// 1050-wide one was not. It is the one limit here a section table can trip on its own: enough
 /// libraries and the strip outgrows the budget, so the material has to come off by arithmetic
 /// rather than by anyone remembering.
-const GLASS_TRACK_MAX: f32 = 940.0;
+///
+/// **It is no longer the track's own arithmetic, because the track is no longer the only surface in
+/// the band.** [`profile_chip`] wears the same material now, and the two are priced and placed
+/// together:
+///
+/// * **The BUDGET is the UNION.** Two glass surfaces in a frame converge on one grab
+///   (`gfx::blur_region_union`), so the bar costs one snapshot — but that snapshot spans both. The
+///   chip's capsule starts at x=82 and the margin is 88, so the union's left edge clamps to 0 and
+///   its right is the track's; the band is 200px tall after the same clamp. That prices the pair at
+///   `(1048 + w/2) x 200`, which reaches [`crate::gfx::GLASS_REGION_BUDGET`] at **w = 904** — not at
+///   the 940 the track alone could afford.
+/// * **And the two must not TOUCH**, which binds tighter. The track is centred, so its left edge is
+///   `(SCR_W - w) / 2`; the capsule's right edge stops at [`CHIP_CAP_MAX_R`]. Solving for
+///   [`BAND_AIR`] between them is this expression — **856** — and it is written as the expression so
+///   that raising [`CHIP_NAME_MAX`] tightens the cap instead of silently letting the two meet.
+///
+/// Overlap is what had to be made impossible, rather than handled. There is ONE blur cache: a
+/// second surface over the first gets no second blur, only a second frost and a second rim
+/// composited over material that already carries both — the double-darkening `draw_tab_row`'s
+/// source-pass note measures from the other direction. Nothing in the shader can undo that, so the
+/// geometry has to keep them apart, and the test below is what keeps them apart.
+///
+/// What it costs is stated plainly: the pair fits ~84px less strip than the track alone did, which
+/// is under one pill's width and so changes the answer for at most one section table in the band
+/// where it lands. What it buys is that the band is never two materials and never a doubled one.
+const GLASS_TRACK_MAX: f32 = crate::ui::consts::SCR_W - 2.0 * (CHIP_CAP_MAX_R + BAND_AIR);
 
 /// Is the shared tab track wearing glass this frame?
 ///
@@ -3081,6 +3268,17 @@ latched_flag!(
 /// that present's refresh slot on a surface nobody sees.
 fn tab_glass_on(track_w: f32) -> bool {
     tab_glass_wanted(track_w) && !crate::gfx::blur_source_pass()
+}
+
+/// **Will the shared bar wear glass this frame?** — [`tab_glass_wanted`], asked from OUTSIDE
+/// [`draw_tab_row`], which is where the track's own rect is not in hand.
+///
+/// It measures the strip through the same cached metrics the draw walks, so the row and its second
+/// surface cannot answer the width rule differently. Deliberately the SOURCE-PASS-blind half:
+/// [`profile_chip`] asks it in order to decide whether it is about to be drawn into a backdrop, and
+/// `tab_glass_on`'s extra clause is false during exactly that pass.
+fn bar_glass_wanted() -> bool {
+    with_tab_metrics(|_, widths| tab_glass_wanted(tab_track_w(widths)))
 }
 
 /// Resolve the tab track's glass cadence BEFORE the page it sits on draws.
@@ -3276,6 +3474,10 @@ pub(crate) fn draw_tab_row(p: Painter) {
     use std::ptr::{addr_of, addr_of_mut};
     let rects = unsafe { &mut *addr_of_mut!(PILL_RECTS) };
     rects.clear(); // nothing drawn = nothing hittable, including on the early return below
+    // …and the band's material with them, for the same reason and in the same place: every early
+    // return below must leave [`profile_chip`] on the flat capsule rather than on the stops some
+    // previous frame solved. See [`BarMaterial`].
+    unsafe { BAR_MATERIAL = BarMaterial::Flat };
     with_tab_metrics(|labels, widths| {
         let n = labels.len();
         if n == 0 {
@@ -3402,6 +3604,14 @@ pub(crate) fn draw_tab_row(p: Painter) {
             // the page draw invalidates the backdrop after any earlier owner has already captured
             // one, which on the direct path means the snapshot is taken and then thrown away.
             // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
+            // Hoisted out of the call, because it is now the BAND's face and not just this
+            // surface's: [`profile_chip`] draws the other half of it from [`BAR_MATERIAL`], at the
+            // same stops and the same rim weight, off this one solve. See [`BarMaterial`].
+            let face = {
+                let (gt, gb) = tab_glass_stops(ground);
+                let (rim, rim_lit) = track_rim(gt[3]);
+                crate::gfx::GlassFace { scrim_top: gt, scrim_bot: gb, rim, rim_lit, rim_w: 1.0 }
+            };
             if Glass::DYNAMIC_BACKDROP.backdrop(
                 p,
                 track,
@@ -3413,16 +3623,17 @@ pub(crate) fn draw_tab_row(p: Painter) {
                 // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
                 // edge and becomes most of the object.
                 crate::gfx::GlassRim::Standing,
-                {
-                    let (gt, gb) = tab_glass_stops(ground);
-                    let (rim, rim_lit) = track_rim(gt[3]);
-                    crate::gfx::GlassFace { scrim_top: gt, scrim_bot: gb, rim, rim_lit, rim_w: 1.0 }
-                },
+                face,
                 // The bar is UltraThin by construction: it takes no extra sample, so the page comes
                 // through as sharp as the chain left it. Its FROST is not read from the scale at all
                 // — `tab_glass_stops` above solves it against the ground every frame.
                 theme::Material::UltraThin,
             ) {
+                // Published only once the chain has actually DRAWN. A refusal is the flat fallback
+                // below, and the chip has to fall back with it — a glass chip beside a flat track
+                // is the seam this whole arrangement exists to prevent, arrived at from the one
+                // direction the geometry cannot.
+                unsafe { BAR_MATERIAL = BarMaterial::Glass(face) };
                 // NOTHING IS DRAWN HERE ANY MORE, and that is the fix. The darkening and the edge —
                 // `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)`, the whole
                 // of what the design system puts on this container — used to be a SECOND rounded rect
@@ -4055,6 +4266,24 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 mod tests {
     use super::*;
 
+    /// The band's blurred region, in authored px^2, for a track `w` wide with the chip unfurled
+    /// beside it — `gfx::blur_region`'s arithmetic, restated where a test can read it.
+    ///
+    /// Both surfaces are grown [`crate::gfx::BLUR_MARGIN`] a side and then CLAMPED to the screen,
+    /// and the clamp is not a detail here: the capsule starts at x=82 and the top band at y=36, so
+    /// the union's left edge and its top both land on 0 and the band is 200 tall rather than 252.
+    /// Priced without the clamp the pair looks a third dearer than it is, which is the arithmetic
+    /// that would have moved the cap for no reason.
+    fn band_region(w: f32) -> f32 {
+        let m = crate::gfx::BLUR_MARGIN;
+        let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
+        let x0 = (crate::ui::consts::MARGIN_X - TAB_TRACK_PAD - m).max(0.0);
+        let x1 = ((crate::ui::consts::SCR_W - w) * 0.5 + w + m).min(crate::ui::consts::SCR_W);
+        let y0 = (y - m).max(0.0);
+        let y1 = (y + h + m).min(crate::ui::consts::SCR_H);
+        (x1 - x0) * (y1 - y0)
+    }
+
     /// **[`GLASS_TRACK_MAX`] is the budget, solved for width** — asserted rather than asserted-in-a-
     /// comment, because the two numbers live in different files and the one that moves is the
     /// budget. A glass surface is charged for the blurred RECTANGLE: itself grown
@@ -4062,29 +4291,91 @@ mod tests {
     /// [`crate::gfx::GLASS_REGION_BUDGET`], which is what a MOVING host carries at 60 fps — and this
     /// bar's host is always moving, since the page under it is what the user is scrolling.
     ///
-    /// The second half is the one worth having, and it is the design system's own counterexample:
-    /// `--glass-track-max`'s note says "(940 + 176) x 252 = 281k px^2 is inside the budget, and a
-    /// 1,050-wide one is not". Both halves of that sentence are checked here, so the limit cannot
-    /// drift away from the budget it was solved against. There is deliberate headroom between them
-    /// — the budget alone would allow ~1014 — because 940 is a round number a human can hold, not
-    /// the last width that fits.
+    /// **It is priced as the PAIR now**, and that is the change worth reading twice. This asserted
+    /// the track alone against the budget, which was the whole story while the track was the only
+    /// glass in the band; [`profile_chip`]'s capsule is a second surface of the same material, and
+    /// two glass surfaces in one frame converge on ONE grab (`gfx::blur_region_union`) that has to
+    /// span both. A track that passes on its own and fails as a pair is exactly the regression this
+    /// exists to catch, so the counterexample moved with it: the old one was a 1050-wide track,
+    /// which is far outside either limit, where 940 — the width the TRACK alone could afford — is
+    /// inside its own budget and outside the band's. That is the boundary the second surface moved.
     #[test]
-    fn the_glass_track_width_limit_is_exactly_the_region_budget() {
-        let region = |w: f32| {
-            let h = TAB_PILL_H + 2.0 * TAB_TRACK_PAD;
-            (w + 2.0 * crate::gfx::BLUR_MARGIN) * (h + 2.0 * crate::gfx::BLUR_MARGIN)
-        };
+    fn the_whole_bands_glass_fits_one_region_budget() {
         assert!(
-            region(GLASS_TRACK_MAX) <= crate::gfx::GLASS_REGION_BUDGET,
-            "a track at the limit costs {:.0} px^2, past the {:.0} a moving host carries",
-            region(GLASS_TRACK_MAX),
+            band_region(GLASS_TRACK_MAX) <= crate::gfx::GLASS_REGION_BUDGET,
+            "the band at the limit costs {:.0} px^2, past the {:.0} a moving host carries",
+            band_region(GLASS_TRACK_MAX),
             crate::gfx::GLASS_REGION_BUDGET,
         );
         assert!(
-            region(1050.0) > crate::gfx::GLASS_REGION_BUDGET,
-            "a 1050-wide track costs {:.0} px^2 and must be outside the budget",
-            region(1050.0),
+            band_region(940.0) > crate::gfx::GLASS_REGION_BUDGET,
+            "940 was the TRACK's own limit and must be outside the BAND's: {:.0} px^2",
+            band_region(940.0),
         );
+    }
+
+    /// **The unfurled chip and the glass track can never touch** — the one thing about this band
+    /// that no shader can fix, so it is arithmetic and it is asserted.
+    ///
+    /// There is ONE blur cache. A second glass surface drawn over the first samples that same
+    /// snapshot, so an overlap gets no second blur — only a second scrim and a second rim
+    /// composited over material that already carries both, which is the doubling `draw_tab_row`'s
+    /// source-pass note measures from the other side (a face reading (52,60,38) came out at
+    /// (33,38,26) once it contained itself). The capsule is bounded by [`CHIP_NAME_MAX`] and the
+    /// track is centred, so the clearance is two constants and needs no font.
+    ///
+    /// The second half is what stops [`GLASS_TRACK_MAX`] being quietly relaxed back: past the limit
+    /// the two capsules are in contact, which is the state the limit exists to forbid.
+    #[test]
+    fn the_unfurled_chip_never_reaches_the_glass_track() {
+        let track_x = |w: f32| (crate::ui::consts::SCR_W - w) * 0.5;
+        assert!(
+            CHIP_CAP_MAX_R + BAND_AIR <= track_x(GLASS_TRACK_MAX) + 0.01,
+            "the widest capsule ends at {} and the widest glass track starts at {} — they must \
+             clear each other by {}",
+            CHIP_CAP_MAX_R,
+            track_x(GLASS_TRACK_MAX),
+            BAND_AIR,
+        );
+        assert!(
+            CHIP_CAP_MAX_R > track_x(GLASS_TRACK_MAX + 2.0 * BAND_AIR + 2.0),
+            "a track wider than the limit WOULD be overlapped — which is what the limit is for",
+        );
+    }
+
+    /// The unfurl fades the whole FACE, and the two rim weights are the half that matters.
+    ///
+    /// `fs_glass.frag` writes `max(u_tint.a * cov, rimw)`: the rim is deliberately allowed to exceed
+    /// its own surface's coverage, so that a 1px line survives its antialiased edge. Fade only the
+    /// tint and the consequence is a bright empty hairline capsule snapping on around the avatar in
+    /// the first milliseconds of focus — visible, and not something the tint can walk back.
+    ///
+    /// And at rest it is the track's face to the bit, which is the claim the whole arrangement
+    /// rests on: one solve, one material, two surfaces.
+    #[test]
+    fn the_chips_capsule_fades_its_rim_with_its_scrim_and_rests_on_the_tracks_own_face() {
+        let face = crate::gfx::GlassFace {
+            scrim_top: [0.0, 0.0, 0.0, 0.40],
+            scrim_bot: [0.0, 0.0, 0.0, 0.52],
+            rim: [1.0, 1.0, 1.0, 0.14],
+            rim_lit: [1.0, 1.0, 1.0, 0.28],
+            rim_w: 1.0,
+        };
+        let rest = chip_face(face, 1.0);
+        for (a, b) in [
+            (rest.scrim_top, face.scrim_top),
+            (rest.scrim_bot, face.scrim_bot),
+            (rest.rim, face.rim),
+            (rest.rim_lit, face.rim_lit),
+        ] {
+            assert_eq!(a, b, "at rest the chip wears the track's face unchanged");
+        }
+        let half = chip_face(face, 0.5);
+        assert_eq!(half.scrim_top[3], 0.20, "the scrim fades with the unfurl");
+        assert_eq!(half.rim[3], 0.07, "…and so does the perimeter");
+        assert_eq!(half.rim_lit[3], 0.14, "…and the lit edge, which the tint alone cannot reach");
+        assert_eq!(half.rim[..3], face.rim[..3], "the lamp's COLOUR does not move; its weight does");
+        assert_eq!(half.rim_w, face.rim_w, "one design-system pixel, at every point of the unfurl");
     }
 
     /// The width rule is the only refusal a SECTION TABLE can trip on its own, so it has to hold
