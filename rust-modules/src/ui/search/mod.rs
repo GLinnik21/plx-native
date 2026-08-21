@@ -912,6 +912,31 @@ pub(crate) fn focus_is_card() -> bool {
     zone() == Zone::Results && matches!(open_focused(), Action::Open(_))
 }
 
+/// The focused result as a CARD ROW, for the press-and-hold context menu — `None` unless focus is
+/// actually in the shelves and on a media tile.
+///
+/// The `Item::Tag` shelves (Cast & Crew, Collections) are deliberately excluded rather than
+/// declined later: a tag carries no `ratingKey` and no watch state at all, which is the pair every
+/// row of that menu is built from, so a hold there keeps doing nothing.
+pub(crate) fn focused_media() -> Option<&'static crate::pms::PmsMovie> {
+    if zone() != Zone::Results {
+        return None;
+    }
+    match focused_item()? {
+        (_, crate::search::Item::Media(m)) => Some(m),
+        (_, crate::search::Item::Tag(_)) => None,
+    }
+}
+
+/// The focused tile's drawn rect + its lift over a modal scrim — the two halves of this screen's
+/// [`crate::ui::popover::Opener`], forwarded from the region that draws them.
+pub(crate) fn focused_tile_rect() -> Option<crate::ui::Rect> {
+    results::focused_tile_rect()
+}
+pub(crate) fn redraw_focused_tile() {
+    crate::ui::guard(results::redraw_focused_tile);
+}
+
 fn focused_item() -> Option<(crate::search::Kind, &'static crate::search::Item)> {
     let (r, c) = unsafe { (addr_of!(ROW).read(), addr_of!(COL).read()) };
     let shelf = crate::search::shelves().get(r)?;

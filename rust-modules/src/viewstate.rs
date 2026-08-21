@@ -161,8 +161,21 @@ pub(crate) fn request(sid: ServerId, rk: &str, w: Write, detail: Option<String>)
     match w {
         Write::Watched | Write::Unwatched => {
             let on = w == Write::Watched;
+            // **Every store that can be DRAWING the item, not just the hub catalog.** The first two
+            // lines were the whole edit while the context menu opened on Home and the detail page
+            // alone; it opens on the Library grid, a Search result and a person's filmography now,
+            // and each of those keeps its own rows (`pms::edit_item`'s own doc names the gap — "the
+            // item is on no shelf (a Library-grid or Related item): nothing to redraw"). Left at
+            // two, the press wrote correctly to the server and changed nothing on the screen the
+            // user was looking at until a refetch, which reads as the row having done nothing.
+            //
+            // All five are no-ops where the item does not appear — a walk of an empty or unrelated
+            // store — so a press from any one screen still costs about what it did.
             crate::pms::edit_item(sid, rk, crate::pms::LocalEdit::Watched(on));
             crate::metadata::set_watched_local(sid, rk, on);
+            crate::browse::set_watched_local(sid, rk, on);
+            crate::search::set_watched_local(sid, rk, on);
+            crate::person::set_watched_local(sid, rk, on);
         }
         // The one edit that can be stated with certainty: the server hides the item from the deck
         // and keeps everything else about it (`plex::Client::remove_from_continue_watching`).

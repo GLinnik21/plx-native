@@ -211,11 +211,26 @@ const SCRIM_A: f32 = 0.5;
 /// a scrim drawn later, with the panel, is in the visible frame but not in the snapshot, and the
 /// frosted ground then reads BRIGHTER than the dimmed page around it. `app.rs` calls this at the
 /// end of the page closure, which puts it on the direct path and the capture path alike.
+///
+/// It also LIFTS this menu's opener — the profile chip — back out of the dim. The chip is what the
+/// panel unfurls from and the only thing on screen the panel is about, so dimming it under its own
+/// menu is the same bug the focused card had. Only the DRAW half of the [`Opener`] is used: this
+/// panel's placement is its own (it hangs under the top bar), not a function of the chip's rect.
+///
+/// [`Opener`]: crate::ui::popover::Opener
 pub fn draw_scrim() {
     if is_open() {
-        pop().scrim(SCRIM_A);
+        pop().scrim_lifting(SCRIM_A, &OPENER);
     }
 }
+
+/// This menu's opener: the top-left profile chip, which `ui::widgets` draws (it owns the chip's
+/// rect and its unfurl spring). A `const` even though the menu now has THREE hosts — `Route::
+/// Account { over }` is any of the bar-wearing pages with this popover over it — because the chip
+/// is the same shared control on all three, at the same rect, so the lift does not vary with the
+/// page underneath.
+const OPENER: crate::ui::popover::Opener =
+    crate::ui::popover::Opener::drawn(crate::ui::widgets::redraw_profile_chip);
 
 pub fn draw() {
     if !is_open() {
