@@ -42,6 +42,7 @@ pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker dr
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
+pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod profile;
 pub mod table;
 pub mod text_view;
@@ -473,6 +474,30 @@ impl Painter {
         let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
         crate::gfx::draw_tex_carded(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(),
             theme::CARD_SHEEN_W, self.sheen_rim().as_ptr(), pad, blur, shcol.as_ptr());
+    }
+    /// THE HERO GROUND IN ONE PASS: the backdrop art with both scrim fields evaluated on it,
+    /// instead of the art and then four blended gradient quads over the same 2.78M fragments.
+    /// [`crate::ui::widgets::hero_ground`] is the component — reach for that, not for this — and
+    /// `fs_hero.frag` carries the algebra that makes it the same picture rather than a cheaper one.
+    ///
+    /// `ramp` is `(y0, knee, alpha_at_knee, alpha_at_foot)` and `wedge` is
+    /// `(peak, width, feather_top, feather_knee)`, both in authored pixels. The two fields' alphas
+    /// take the cascade here, exactly as the layers they replace took it through [`Self::c`] — the
+    /// composite is not linear in them, so folding it anywhere else would quietly change the mix.
+    pub fn hero_ground(self, tex: u32, r: Rect, art_a: f32, ramp: [f32; 4], wedge: [f32; 4]) {
+        let tint = self.c(theme::with_a(theme::TINT_WHITE, art_a));
+        let ink = self.c(theme::scrim(1.0));
+        crate::gfx::draw_hero_ground(
+            tex,
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            tint.as_ptr(),
+            ink.as_ptr(),
+            [ramp[0], ramp[1], ramp[2] * self.a, ramp[3] * self.a],
+            [wedge[0] * self.a, wedge[1], wedge[2], wedge[3]],
+        );
     }
     /// Bilinear 4-corner gradient. The written pixels stay OPAQUE — this primitive REPLACES what is
     /// under it (see [`AmbientWash`](crate::ui::widgets::AmbientWash)) — but it is no longer blind

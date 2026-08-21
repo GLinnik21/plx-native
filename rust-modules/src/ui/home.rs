@@ -578,10 +578,36 @@ impl View for Backdrop {
         {
             self.wash.draw(p, Rect::FULL);
         }
+        // EXPERIMENT (`/tmp/plxnative-heroground`): draw the art and BOTH scrim fields in one
+        // pass. The four quads below are 2.78M fragments a frame — 52% of everything this screen
+        // submits — landing on pixels the photograph has already written, to apply two fields that
+        // are three ALU operations each. `widgets::hero_ground` is the same picture by
+        // construction, not a cheaper one; `fs_hero.frag` carries the algebra.
+        //
+        // Every precondition here is a fact about THIS frame's state, which is why the decision is
+        // the screen's and not the component's: one quad can carry a scrim over ONE art layer, so a
+        // hero FLIP (two layers sliding past each other) falls back, as does a hero whose
+        // photograph has not arrived — there the scrims still have the wash to darken.
+        let folded = env.hero_a > 0.01
+            && sp < HERO_ART_CULL
+            && slide.is_none()
+            && self.tex.0 != 0
+            && a_in > 0.01
+            && crate::ui::widgets::hero_ground_armed();
+        if folded {
+            crate::ui::widgets::hero_ground(
+                p,
+                self.tex.0,
+                art_rect(self.tex, sp, 0.0),
+                a_in * (1.0 - sp),
+                base_scrim_ramp(env.hero_a),
+                env.hero_a,
+            );
+        }
         // hero backdrop ART over it — confined to the hero view, fading out as the grid rises so the
         // shelf area stays flat gray. During a flip the outgoing and incoming items' art slide
         // side-by-side (same phase as the text), each at its own reveal.
-        if sp < HERO_ART_CULL {
+        if !folded && sp < HERO_ART_CULL {
             if let Some((_, dx_out, dx_in)) = slide {
                 backdrop_art(p, self.tex_out, sp, dx_out, a_out);
                 backdrop_art(p, self.tex, sp, dx_in, a_in);
@@ -589,7 +615,7 @@ impl View for Backdrop {
                 backdrop_art(p, self.tex, sp, 0.0, a_in);
             }
         }
-        if env.hero_a > 0.01 {
+        if !folded && env.hero_a > 0.01 {
             // The hero TEXT SCRIM CONTRACT, in two parts, because one axis cannot do both jobs.
             //
             // PART ONE, here: the frame-wide atmospheric ramp ([`base_scrim_a`], two stacked
@@ -643,6 +669,15 @@ pub(crate) fn base_scrim_bottom_a(hero_a: f32) -> f32 {
 /// function so the paint and the legibility contract cannot read different numbers. It is the base
 /// the hero wedge composites over; `widgets`' anchor table grades
 /// `1 − (1 − base_scrim_a) · (1 − hero_scrim_a)` against the real text ys.
+/// This screen's atmospheric ramp as the FOUR numbers the one-pass ground takes —
+/// `(y0, knee, alpha at the knee, alpha at the foot)`. The ONE place they are derived, so
+/// [`base_scrim_a`]'s curve, the two quads `Backdrop::draw` paints and the field `fs_hero.frag`
+/// evaluates are three readings of one thing rather than three curves that happen to agree.
+pub(crate) fn base_scrim_ramp(hero_a: f32) -> [f32; 4] {
+    let sa = base_scrim_bottom_a(hero_a);
+    [HERO_BASE_SCRIM_Y0, BASE_SCRIM_Y1, sa * BASE_SCRIM_MID_K, sa]
+}
+
 pub(crate) fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
     let sa = base_scrim_bottom_a(hero_a);
     let mid = sa * BASE_SCRIM_MID_K;
@@ -710,12 +745,20 @@ fn reveal(tex: u32, s: &Spring) -> f32 {
 /// inside the requested 1280×720 box, so an art asset that is not 16:9 would otherwise be SQUASHED
 /// across the full panel (`Painter::tex` maps UV 0..1 across the rect).
 fn backdrop_art(p: Painter, tex: (u32, f32, f32), sp: f32, dx: f32, a: f32) {
-    let (t, tw, th) = tex;
+    let (t, _, _) = tex;
     if t == 0 || a <= 0.01 || !on_axis(dx, SCR_W, SCR_W, 0.0) {
         return;
     }
-    p.tex(t, Rect::new(dx, -sp * (SCR_H - 120.0), SCR_W, SCR_H).cover(tw, th), 0.0,
-        theme::with_a(theme::TINT_WHITE, a * (1.0 - sp)));
+    p.tex(t, art_rect(tex, sp, dx), 0.0, theme::with_a(theme::TINT_WHITE, a * (1.0 - sp)));
+}
+
+/// The frame the hero's backdrop photograph is drawn into: the panel, lifted with the snap dive,
+/// COVERED by the source's own aspect (`Rect::cover`, or a 16:9 still is squashed into whatever the
+/// panel happens to be). Split out because the one-pass ground has to draw the art at EXACTLY the
+/// rect this path would, or the fold is a different picture rather than the same one in fewer
+/// fragments — and `cover` is not a formula anyone should write twice.
+fn art_rect(tex: (u32, f32, f32), sp: f32, dx: f32) -> Rect {
+    Rect::new(dx, -sp * (SCR_H - 120.0), SCR_W, SCR_H).cover(tex.1, tex.2)
 }
 
 /// The ratingKey whose clearLogo headlines a hero page: for an EPISODE the SHOW's (the hero

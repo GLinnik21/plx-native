@@ -40,7 +40,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 15] = [
+const DIAG: [&str; 18] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -58,6 +58,15 @@ const DIAG: [&str; 15] = [
     // harness has to be able to observe the who's-watching picker, which a non-DIAG trigger would
     // suppress — the observer would remove the screen it was armed to watch.
     "plxnative-focus",
+    // The two OVERDRAW surfaces and the hero-ground fold ([`crate::ui::overdraw`],
+    // `docs/backdrop-blur-profiling.md` Part 5). All three are measurement knobs whose whole
+    // method is an A/B against an unmasked control leg — and a non-DIAG trigger suppresses the
+    // who's-watching picker, so the control leg and the masked leg would boot to DIFFERENT
+    // SCREENS and the difference between them would be the screen, not the class being priced.
+    // That is the exact failure this list exists to stop, and it is invisible in the numbers.
+    "plxnative-overdraw",
+    "plxnative-drawmask",
+    "plxnative-heroground",
     // LG's own GStreamer logging ([`arm_gst_logging`]) and the file it writes. Both are DIAG for
     // the same reason `plxnative-profile` is: the whole point is to observe a playback that would
     // otherwise be unobservable, and a non-DIAG trigger would silently move the boot screen out
