@@ -64,9 +64,12 @@ The whole shared-source feature rests on keeping these apart:
 
 - **granted** — plex.tv's answer. `/api/v2/resources` says this account may use this server and
   hands over the `accessToken` that proves it. Not a setting of ours; it is the owner's decision.
-- **pinned** — the only thing the USER controls, and it governs **Home only**. Tabs, the browse
-  grid, sort, the A–Z rail and every other browsing surface come from the grant; pinning decides
-  whether a source's shelves merge into Home.
+- **pinned** — the only thing the USER controls, it governs **Home only**, and it is **per Plex
+  Home PROFILE**. Tabs, the browse grid, sort, the A–Z rail and every other browsing surface come
+  from the grant; pinning decides whether a source's shelves merge into Home. The rules are
+  `pins.rs` (pure); the store is `Session::home_pins`, keyed by the profile's `uuid`; the first-run
+  route that asks the question once is `ui::onboard`. Owner's ruling, 2026-08-21 — "it is separate
+  for each profile" — and it hung off the whole `Session` (one per install) before that.
 - **reachable** — a fact about NOW: something answered at one of its addresses, *as the right
   machine*. It changes while nobody touches anything, and it is never a reason to forget the grant
   or the pin.

@@ -82,6 +82,8 @@ use crate::ui::player_hud::ControlSlot;
 pub(crate) enum Screen {
     Login,
     Profiles,
+    /// the first-run "what goes on your Home?" route (`ui::onboard`)
+    Onboard,
     /// the home hero + grid
     Home,
     /// the top-left profile popover, over whichever of the bar-wearing screens its chip was
@@ -231,6 +233,14 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // unreadable from outside `profiles.rs` — so a fingerprint cannot tell one avatar from
             // another, and cannot see a keypad move at all.
             let _ = write!(s, " avatar={}", b(crate::ui::profiles::focus_is_avatar()));
+        }
+        Screen::Onboard => {
+            // Two focus stops and a row cursor — the whole of what a press can move here. The list
+            // flag and the selection are read together because `TableView::list_focused` gates the
+            // pill AND the ink: a fingerprint carrying only `sel` could not tell a focused row
+            // from the same row with focus parked on the action beside it.
+            let (in_list, sel) = crate::ui::onboard::probe_fields();
+            let _ = write!(s, " list={} row={sel}", b(in_list));
         }
         Screen::Home => push_home(s),
         Screen::Account { over } => {
@@ -521,6 +531,7 @@ mod tests {
         vec![
             ("login", Screen::Login),
             ("profiles", Screen::Profiles),
+            ("onboard", Screen::Onboard),
             ("home", Screen::Home),
             // one per bar-wearing HOST, for the `itemmenu` rows' reason below
             ("account", Screen::Account { over: Host::Home }),
