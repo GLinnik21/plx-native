@@ -1135,6 +1135,14 @@ pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll
 /// track capsule** around itself and unfurls the profile name to its right. A lifted shadow alone
 /// was far too quiet to read as focus against bright hero art — and the name is what the stop is
 /// actually *for*.
+///
+/// **Draw it AFTER [`draw_tab_row`], never before.** The unfurled name reaches right, toward the
+/// CENTRED strip, and with enough libraries (or a long enough profile name) the two meet — drawn
+/// first, the name is painted over by the track's own scrim, and since both are the same dark
+/// material the overlap reads as one band with the name simply gone. Home has always drawn the two
+/// in this order; the Library and Search drew them the other way round and got away with it only
+/// while the chip could not be focused there, which is the class of bug that made this a shared
+/// control in the first place.
 pub(crate) fn profile_chip(p: Painter) {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
@@ -4726,10 +4734,10 @@ mod tests {
         assert!(!profile_chip_at(r.cx(), r.y + r.h + 1.0), "…on either axis");
         // it shares the bar's line with the pills: one control height, one top edge
         assert_eq!(r.y, TOP_BAR_Y);
-        assert_eq!(r.h, TAB_PILL_H, "one control height with the pills (see CHIP_D)");
-        // …and the focused chip's capsule is the tab track's own band, which is what makes the two
-        // read as one strip of chrome rather than two objects at different heights
-        assert_eq!(r.h + 2.0 * TAB_TRACK_PAD, TAB_PILL_H + 2.0 * TAB_TRACK_PAD);
+        // one control height with the pills, which is also what makes the focused chip's capsule
+        // the tab track's own band — the two read as one strip of chrome rather than as two
+        // objects at different heights (see `CHIP_D`)
+        assert_eq!(r.h, TAB_PILL_H);
 
         // the widest strip the row will ever lay out, centred: its left edge must clear the chip
         for n in 1..=16usize {
