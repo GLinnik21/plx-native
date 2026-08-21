@@ -502,7 +502,8 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         // two cases where that would not be backing out to anything the user is entitled to: when
         // there is no usable session behind the picker (the roster shown straight after a sign-out,
         // where the picker really is a dead end you must choose your way out of), and at the BOOT
-        // picker when the stored profile is PIN-protected (where resuming it silently is the PIN
+        // picker when the stored session is behind a PIN — either a protected profile or one that
+        // names no profile at all, whose token is then the owner's (where resuming silently is the
         // bypass `auth::cancel`'s doc describes). Both leave the user with a fully working picker
         // and the Sign out pill under it, which is why swallowing is enough and no read-out is
         // owed: nothing has been attempted and failed, the key simply does not act here.
