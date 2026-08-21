@@ -278,6 +278,10 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
 /// is why the miss is logged rather than assumed away.
 fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation) -> String {
     let Some(n) = dv.declared() else { return p.to_string() };
+    if crate::metadata::dv_node_suppressed() {
+        log(&format!("dv: DolbyHdrInfo P{} SUPPRESSED by /tmp/plxnative-dvnonode (direct play kept)", n.profile_id));
+        return p.to_string();
+    }
     if video != "H265" {
         // Unreachable by construction — `route` records the DV layering on the direct-play branch
         // only, and that branch's payload codec is the file's own hevc — so this is the guard that

@@ -269,6 +269,25 @@ pub(crate) struct Shared {
     /// photograph as twelve seconds.
     pub dg_load_at: AtomicU32,
     pub dg_frame_at: AtomicU32,
+    /// **The video plane's own cadence** — the three counters behind the heartbeat's `vf=`/`vgap=`.
+    ///
+    /// They exist because every other frame number in this app is about the GRAPHICS plane. `fps=`
+    /// counts our GL swaps and `worstframe=` times our own draw, and both stay a flat 60/0.5 ms
+    /// through playback that visibly stutters: the decoded picture is composited by the TV on a
+    /// plane we never touch. The one place the pipeline tells us it put a frame on that plane is
+    /// the `ty == 0` callback, so that is where these are stamped.
+    ///
+    /// Written on the LIBRARY thread (`sf_on_event`), drained on the main thread
+    /// ([`crate::player::vplane_take`]) — hence a drained COUNT rather than a delta of
+    /// [`frames`](Self::frames), which a seek resets underneath a reader.
+    ///
+    /// `dg_vpres_at` is the previous presentation's stamp and MUST be zeroed wherever `frames` is
+    /// (session reset, and the post-seek re-count in the pump): the pipeline legitimately shows
+    /// nothing across a seek, and a gap measured over that pause is the harness reporting the seek
+    /// as a stutter.
+    pub dg_vpres_ct: AtomicU32,
+    pub dg_vpres_at: AtomicU32,
+    pub dg_vpres_gap: AtomicU32,
     /// Bytes queued in each AU lane at the last tick, against `engine::aq_caps`.
     pub dg_aq_video: AtomicI64,
     pub dg_aq_audio: AtomicI64,
@@ -306,6 +325,9 @@ impl Shared {
             dg_net_rx: AtomicI64::new(0),
             dg_load_at: AtomicU32::new(0),
             dg_frame_at: AtomicU32::new(0),
+            dg_vpres_ct: AtomicU32::new(0),
+            dg_vpres_at: AtomicU32::new(0),
+            dg_vpres_gap: AtomicU32::new(0),
             dg_aq_video: AtomicI64::new(0),
             dg_aq_audio: AtomicI64::new(0),
             dg_fed_v_pts: AtomicI64::new(0),
@@ -362,6 +384,9 @@ impl Shared {
         self.dg_net_rx.store(0, Ordering::Relaxed);
         self.dg_load_at.store(0, Ordering::Relaxed);
         self.dg_frame_at.store(0, Ordering::Relaxed);
+        self.dg_vpres_ct.store(0, Ordering::Relaxed);
+        self.dg_vpres_at.store(0, Ordering::Relaxed);
+        self.dg_vpres_gap.store(0, Ordering::Relaxed);
         self.dg_aq_video.store(0, Ordering::Relaxed);
         self.dg_aq_audio.store(0, Ordering::Relaxed);
         self.dg_fed_v_pts.store(0, Ordering::Relaxed);

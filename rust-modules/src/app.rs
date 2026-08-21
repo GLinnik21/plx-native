@@ -5981,6 +5981,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else {
                     String::new()
                 };
+                // `vtick=<n> vgap=<n>ms` — the media pipeline's own `FRAMEREADY` cadence, the only
+                // field on this line that comes from the VIDEO plane's side of the house. Every
+                // other number here describes the graphics plane: `fps=` counts our GL swaps and
+                // `worstframe=` times our own draw, and both sit at a healthy 60 / sub-millisecond
+                // through playback that visibly stutters, because the decoded picture is
+                // composited by the television on a surface we never touch.
+                //
+                // **It is not a frame rate** — `player::vplane_take` says why, and the healthy
+                // reading is 5 / 201 on every stream. Read it as liveness: `vtick=0` is a pipeline
+                // that has stopped, and a steady 5 / 201 under a stutter report is the pipeline
+                // saying the fault is not in anything this process can reach. Drained here, so it
+                // must be taken every heartbeat while playing or the worst gap accumulates.
+                let vp = if crate::player::is_playing() {
+                    let (vtick, vgap) = crate::player::vplane_take();
+                    format!(" vtick={vtick} vgap={vgap}ms")
+                } else {
+                    String::new()
+                };
                 // `fps=<n>` — frames actually SWAPPED this second, which is what `ui::idle` moves,
                 // and the only field here that is a frame rate. `loop=` counts LOOP iterations: it
                 // is the app's liveness signal and `pos=` is anchored to it, so it must not read 0
@@ -6005,10 +6023,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     String::new()
                 };
                 if framedrop_on {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld} worstframe={fd_worst:.1}ms{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos}{vp} fps={pres}{ld} worstframe={fd_worst:.1}ms{SIM_TAG}"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld}{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos}{vp} fps={pres}{ld}{SIM_TAG}"));
                 }
             }
         }
