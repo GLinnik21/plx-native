@@ -130,6 +130,18 @@ struct Session {
     /// `Dovi::NONE` on every transcode and remux: what arrives then is the server's output, and
     /// the only DV file that reaches those paths is one we refused to declare in the first place.
     stream_dovi: crate::metadata::Dovi,
+    /// **Does the audio elementary stream we are feeding carry Dolby Atmos?** The Load payload's
+    /// `contents.immersive` node turns on it ([`crate::player::engine`]).
+    ///
+    /// Rides the session for exactly the reason `stream_dovi` does, and the failure it prevents is
+    /// the audible twin of that one: an audio-track switch tears the engine down and rebuilds the
+    /// payload from here, so a value that lived only in the plan would silently stop declaring
+    /// Atmos the moment the user opened the track menu — on the very track they had just chosen
+    /// *because* it is the Atmos one.
+    ///
+    /// `false` on every transcode and remux; see where it is set for why that is deliberate rather
+    /// than an omission.
+    stream_immersive: bool,
     /// HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
     /// draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
     ///
@@ -179,6 +191,7 @@ impl Session {
         stream_acodec: String::new(),
         stream_fps: 0.0,
         stream_dovi: crate::metadata::Dovi::NONE,
+        stream_immersive: false,
         title: [0; 128],
         ctxline: [0; 96],
         up_next: None,
@@ -355,6 +368,11 @@ pub(crate) fn stream_fps() -> f64 {
 /// to declare — in every one of those cases the payload must say nothing.
 pub(crate) fn stream_dovi() -> crate::metadata::Dovi {
     session().stream_dovi
+}
+/// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
+/// See [`Session::stream_immersive`].
+pub(crate) fn stream_immersive() -> bool {
+    session().stream_immersive
 }
 /// Override the audio codec used to build the Load payload — set by a native audio-track
 /// switch to the chosen track's codec before the direct-play reload.
@@ -912,6 +930,10 @@ pub(crate) struct Plan {
     /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
     /// transcode branch's payload describes the server's OUTPUT, which is not this file.
     pub dovi: crate::metadata::Dovi,
+    /// Does the direct-played audio track carry Dolby Atmos, for the Load payload's
+    /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
+    /// is: it describes the FILE's own elementary stream.
+    pub immersive: bool,
     pub audio_sid: i64,
     pub remux: bool,
     /// This plan's transcode may not be satisfied by a video stream COPY — the flag rides all the
@@ -1123,6 +1145,33 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         // Only here: this is the branch that feeds the FILE's own elementary stream, so it is the
         // only one whose Load payload may describe the file's Dolby Vision.
         plan.dovi = dovi;
+        // **Dolby Atmos, and it is the same sentence one codec over.** `contents.immersive` tells
+        // the pipeline that the E-AC3 it is about to decode carries JOC, which is what raises the
+        // television's own Atmos read-out and what puts the sound engine in the right mode.
+        //
+        // Read off the track we ACTUALLY PICKED, not off the part: a film routinely ships an Atmos
+        // 7.1 beside a plain 5.1 and a commentary, and declaring the part's best track while
+        // feeding the user's chosen one is a lie the pipeline has no way to detect. `aidx` is the
+        // list position `audio_sel` chose; with no explicit pick, the server's `selected` flag is
+        // the same track `acodec` came from.
+        //
+        // **Set on this branch only, and the omission on the others is deliberate.** A transcode's
+        // audio is re-encoded and its Atmos is gone, so declaring it would be false. A REMUX copies
+        // the audio and would in fact still carry JOC — but `plan.dovi` already draws the line at
+        // this branch on the same reasoning (a copy's payload describes what the server sends, and
+        // the declaration rides the direct play), and one rule that is occasionally conservative
+        // beats two rules that can disagree. Nothing is lost visibly: an undeclared Atmos plays as
+        // ordinary E-AC3, which is what it does today.
+        plan.immersive = plan
+            .playing
+            .as_ref()
+            .and_then(|p| {
+                if aidx >= 0 { p.audio.get(aidx as usize) } else { p.audio.iter().find(|a| a.selected) }
+            })
+            .is_some_and(|a| a.has_atmos());
+        if plan.immersive {
+            crate::player::log("audio: dolby atmos — declaring contents.immersive=ATMOS");
+        }
         // record the picked track's stream id so the timeline reports what actually plays
         // (0 = default/unknown → the param is omitted, the server shows the part default)
         plan.audio_sid = asid;
@@ -1749,6 +1798,7 @@ fn apply_plan(plan: Plan, rk: &str) {
             stream_acodec,
             stream_fps: plan.fps,
             stream_dovi: plan.dovi,
+            stream_immersive: plan.immersive,
             title,
             ctxline,
             up_next: plan.up_next,

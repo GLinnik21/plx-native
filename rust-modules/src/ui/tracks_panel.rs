@@ -277,17 +277,15 @@ pub(crate) fn fmt_layout(layout: &str, channels: i64) -> String {
     }
 }
 
-/// Does this audio track carry Dolby Atmos?
+/// Does this audio track carry Dolby Atmos? — [`Stream::has_atmos`], which is where the rule and
+/// its evidence live now.
 ///
-/// **The answer is in `profile`, and only there** — probed live against the dev server
-/// 2026-08-21. The Atmos track on `/library/metadata/5` sends
-/// `profile: "dolby digital plus + dolby atmos"` while its `audioChannelLayout` is the ordinary
-/// `"5.1(side)"` and its `title` is `null`. A client that looked at the layout, the title or the
-/// channel count would badge nothing, forever and silently. (PMS *also* composes it into
-/// `displayTitle`, but that is a pre-formatted user string in the server's own words; the profile
-/// is the structured field.)
+/// It moved to the data layer when the Load payload gained a second consumer for the same answer
+/// (`contents.immersive`): a predicate that decides what we tell the television's pipeline is not
+/// a property of the panel that happened to need it first. This stays as the free-function spelling
+/// the draw code around it reads in.
 pub(crate) fn has_atmos(s: &Stream) -> bool {
-    s.profile.to_ascii_lowercase().contains("atmos")
+    s.has_atmos()
 }
 
 /// One audio track's right-hand detail: `"EAC3 5.1 + Atmos · 768 kbps · playing"`.

@@ -434,6 +434,33 @@ pub(crate) struct Stream {
     pub(crate) selected: bool,
 }
 
+impl Stream {
+    /// Does this audio track carry **Dolby Atmos**?
+    ///
+    /// **The answer is in `profile`, and only there** — probed live against the dev server
+    /// 2026-08-21. The Atmos track on the P5 test item sends
+    /// `profile: "dolby digital plus + dolby atmos"` while its `audioChannelLayout` is the
+    /// ordinary `"5.1(side)"` and its `title` is `null`. A client that looked at the layout, the
+    /// title or the channel count would badge nothing, forever and silently. (PMS *also* composes
+    /// it into `displayTitle`, but that is a pre-formatted user string in the server's own words;
+    /// the profile is the structured field.) Dolby's own AC-4 spec §3.1.1.1 says the same thing
+    /// from the other end — *"It is not possible to derive whether content is branded as Dolby
+    /// Atmos by inspecting the channel configuration."*
+    ///
+    /// Two consumers, and they are why this lives here rather than in the panel that first needed
+    /// it: the track menu's `EAC3 5.1 + Atmos` detail line, and the Load payload's
+    /// `contents.immersive` node ([`crate::route::stream_immersive`]) — one is a caption and the
+    /// other is a statement to the television's pipeline, so the predicate has to be the data
+    /// layer's, not a screen's.
+    ///
+    /// Deliberately a substring test rather than an equality: the field is a human-readable
+    /// composition and the codec half of it varies (`"dolby digital plus + dolby atmos"` here,
+    /// but TrueHD and AC-4 compose the same way). "atmos" is the part that means Atmos.
+    pub(crate) fn has_atmos(&self) -> bool {
+        self.profile.to_ascii_lowercase().contains("atmos")
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Episode {
     pub(crate) rk: String,
