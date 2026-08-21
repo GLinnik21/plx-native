@@ -120,7 +120,7 @@ fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
 /// player uses for the video lane, and this is the only place the app names a video codec to a
 /// user. An unknown codec is upper-cased rather than dropped: "Converting · AV1" is still the
 /// truth, and inventing a friendly name for a codec we have never seen would not be.
-fn video_codec_name(codec: &str) -> String {
+pub(crate) fn video_codec_name(codec: &str) -> String {
     match codec.to_ascii_lowercase().as_str() {
         "h264" | "avc" | "avc1" => "H.264".to_string(),
         "hevc" | "h265" | "hvc1" | "hev1" => "HEVC".to_string(),

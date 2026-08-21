@@ -1928,21 +1928,18 @@ mod tests {
     // a pure function, and these pin the order the comments claim.
 
     fn trk(id: i64, codec: &str, lang: &str, default: bool) -> crate::metadata::Stream {
+        // `..Default::default()` for the rest, which is what that derive is FOR (see the comment
+        // above `metadata::Stream`): this ladder is about id / codec / language / default, and a
+        // fixture that spells out the technical fields it does not read would have to be revisited
+        // every time the Track-information panel learns another one.
         crate::metadata::Stream {
             id,
             index: id,
-            lang: String::new(),
             lang_code: lang.into(),
             codec: codec.into(),
             channels: 2,
-            layout: String::new(),
-            title: String::new(),
-            sdh: false,
-            ad: false,
-            forced: false,
             default,
-            external: false,
-            selected: false,
+            ..Default::default()
         }
     }
 
@@ -2157,13 +2154,13 @@ mod tests {
     /// 8 movies and 20 episodes — the numbers are not invented, and `p7`'s `bl_compat: 6` in
     /// particular is why an `== 0` test is not enough).
     fn p5() -> Dovi {
-        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false }
+        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false, ..Dovi::NONE }
     }
     fn p7() -> Dovi {
-        Dovi { present: true, profile: 7, bl_compat: 6, el_present: true }
+        Dovi { present: true, profile: 7, bl_compat: 6, el_present: true, ..Dovi::NONE }
     }
     fn p8() -> Dovi {
-        Dovi { present: true, profile: 8, bl_compat: 1, el_present: false }
+        Dovi { present: true, profile: 8, bl_compat: 1, el_present: false, ..Dovi::NONE }
     }
 
     /// **The bug this gate exists for.** Profile 5 is single-layer IPT-PQ with no HDR10 fallback,
@@ -2274,14 +2271,14 @@ mod tests {
         // the shape every ordinary SDR file has: no DV at all, so bl_compat 0 means nothing
         assert!(!Dovi::default().base_layer_unusable());
         // `DOVIPresent` and nothing else — an older or quieter server. Not enough to convict.
-        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false };
+        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false, ..Dovi::NONE };
         assert!(!bare.base_layer_unusable(), "a compat id of 0 read out of a silent field is not a 0");
         // but an explicit enhancement layer is disqualifying even with no profile reported,
         // because that field says what it says regardless of what sits beside it
-        let el_only = Dovi { present: true, profile: 0, bl_compat: 0, el_present: true };
+        let el_only = Dovi { present: true, profile: 0, bl_compat: 0, el_present: true, ..Dovi::NONE };
         assert!(el_only.base_layer_unusable());
         // and `present: false` overrides everything — no DV means no DV, whatever noise follows
-        let contradictory = Dovi { present: false, profile: 5, bl_compat: 0, el_present: true };
+        let contradictory = Dovi { present: false, profile: 5, bl_compat: 0, el_present: true, ..Dovi::NONE };
         assert!(!contradictory.base_layer_unusable());
         // The rule survives the declaration, in both settings: a bare `present` names no profile,
         // `getInt` has nothing to be given, and a node we cannot fill is not a reason to convict a
@@ -2308,7 +2305,7 @@ mod tests {
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
-        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false };
+        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false, ..Dovi::NONE };
         for d in [no_dv(), p5(), p7(), p8(), bare] {
             for signal in [SILENT, DECLARED] {
                 let dv = d.presentation(signal);
@@ -2347,7 +2344,7 @@ mod tests {
         assert!(!p8().base_layer_unusable());
         assert_eq!(p5().presentation(SILENT).refusal(), Some("no cross-compatible base layer"));
         for compat in [1, 2, 4] {
-            let d = Dovi { present: true, profile: 8, bl_compat: compat, el_present: false };
+            let d = Dovi { present: true, profile: 8, bl_compat: compat, el_present: false, ..Dovi::NONE };
             assert!(!d.base_layer_unusable(), "P8 with a cross-compatible base layer (id {compat})");
         }
     }

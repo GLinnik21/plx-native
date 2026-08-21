@@ -330,6 +330,21 @@ pub struct Media {
     /// `"4k"`, `"1080"`, `"720"`, `"576"`, `"sd"`. The version-picker key per docs/pms-api.md §4.
     #[serde(rename = "videoResolution", default, deserialize_with = "de_str")]
     pub video_resolution: String,
+    /// The container this version is muxed in — `"mp4"`, `"mkv"`, …. PMS sends it on the Media
+    /// *and* on the Part; they agree on every item swept on the dev server, and the part's is the
+    /// authoritative one for a multi-part version, so [`MediaPart::container`] is what the
+    /// Track-information panel prefers and this is its fallback.
+    #[serde(default)]
+    pub container: String,
+    /// Display aspect ratio as a NUMBER — `2.35` on the Dolby Vision title probed live 2026-08-21.
+    /// Lenient because PMS string-encodes numerics on some endpoints. Descriptive only.
+    #[serde(rename = "aspectRatio", default, deserialize_with = "de_f64")]
+    pub aspect_ratio: f64,
+    /// The video codec's PROFILE, lower-case — `"main 10"` for 10-bit HEVC (probed live). Rendered
+    /// as `HEVC (Main 10)` by the Track-information panel. Descriptive only: no playback decision
+    /// reads it, and the profile that matters to the decoder rides the Load payload's own fields.
+    #[serde(rename = "videoProfile", default)]
+    pub video_profile: String,
     #[serde(rename = "Part", default)]
     pub part: Vec<MediaPart>,
 }
@@ -344,6 +359,20 @@ pub struct MediaPart {
     /// (Media/container carry no decision; the part is the authoritative one).
     #[serde(default)]
     pub decision: String,
+    /// The part's absolute path ON THE SERVER's filesystem — the header line of the
+    /// Track-information panel. **Not a URL and not reachable from here**: it is the server
+    /// operator's own path (`/Volumes/DAS/Movies/…`, probed live), shown because "which file is
+    /// this" is the question the panel exists to answer. It is also the one field on this struct
+    /// that can carry non-ASCII, so anything that elides it must do so by CHARACTER.
+    #[serde(default)]
+    pub file: String,
+    /// The part's size in BYTES (not kB) — `34659545780` on the DV title probed live. Lenient:
+    /// PMS string-encodes this one on several endpoints.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub size: i64,
+    /// The container this part is muxed in — see [`Media::container`], which is the fallback.
+    #[serde(default)]
+    pub container: String,
     #[serde(rename = "Stream", default)]
     pub stream: Vec<Stream>,
 }
@@ -417,6 +446,45 @@ pub struct Stream {
     /// its own, and it is the ONLY field that identifies P7 (whose compat id is 6, not 0).
     #[serde(rename = "DOVIELPresent", default, deserialize_with = "de_i64")]
     pub dovi_el_present: i64,
+    // ---- the remaining four DOVI keys, DESCRIPTIVE ONLY. The three above decide whether the base
+    // layer is a picture we can show; these four are read by the Track-information panel and by
+    // nothing else, and adding a playback decision to them would need the same live sweep the
+    // comment above records. All four were confirmed on the wire 2026-08-21 against
+    // `/library/metadata/5` on the dev server (`DOVILevel: 6`, `DOVIVersion: "1.0"`,
+    // `DOVIBLPresent: true`, `DOVIRPUPresent: true`).
+    /// `DOVILevel` — the Dolby Vision LEVEL (a bitrate/resolution tier), `6` on the probed title.
+    #[serde(rename = "DOVILevel", default, deserialize_with = "de_i64")]
+    pub dovi_level: i64,
+    /// `DOVIVersion` — a DOTTED version, sent as the JSON **string** `"1.0"`. [`de_str`] rather
+    /// than [`de_i64`] because it is not an integer, and because a server that sent the bare
+    /// number `1.0` would otherwise fail the whole `MediaContainer` parse.
+    #[serde(rename = "DOVIVersion", default, deserialize_with = "de_str")]
+    pub dovi_version: String,
+    /// `DOVIBLPresent` — the base layer is in the file. A real JSON boolean on the dev server,
+    /// hence [`de_i64`] like every other Plex flag.
+    #[serde(rename = "DOVIBLPresent", default, deserialize_with = "de_i64")]
+    pub dovi_bl_present: i64,
+    /// `DOVIRPUPresent` — the reference processing unit (the dynamic metadata) is in the file.
+    #[serde(rename = "DOVIRPUPresent", default, deserialize_with = "de_i64")]
+    pub dovi_rpu_present: i64,
+    /// Per-STREAM bitrate in **kbps** — `24723` for the video track and `448`…`768` for the audio
+    /// ones on the probed title. Distinct from [`Media::bitrate`], which is the whole file: it is
+    /// exactly what tells seven same-language AC3 tracks apart in the Track-information panel.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub bitrate: i64,
+    /// The codec profile, lower-case. **On an AUDIO stream this is where Atmos lives** —
+    /// `"dolby digital plus + dolby atmos"`, confirmed on the wire 2026-08-21. Neither
+    /// `audioChannelLayout` (`"5.1(side)"`) nor `title` (null) carries it, so a client that
+    /// checked those would silently never badge an Atmos track. On a VIDEO stream it is
+    /// `"main 10"` and matches [`Media::video_profile`].
+    #[serde(default)]
+    pub profile: String,
+    /// Video stream only: bits per component — `10` on a Main 10 HEVC source.
+    #[serde(rename = "bitDepth", default, deserialize_with = "de_i64")]
+    pub bit_depth: i64,
+    /// Video stream only: chroma subsampling as PMS spells it — `"4:2:0"`.
+    #[serde(rename = "chromaSubsampling", default)]
+    pub chroma_subsampling: String,
     #[serde(default, deserialize_with = "de_i64")]
     pub channels: i64,
     #[serde(rename = "audioChannelLayout", default)]
