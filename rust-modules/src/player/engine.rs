@@ -919,6 +919,76 @@ pub(crate) const PRES_NONE: i64 = i64::MIN;
 /// VIDEO lane feeder (aq_video is video-only). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
 /// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
+/// Nanoseconds added to every fed VIDEO PTS — **a one-tick rounding repair for LG's Dolby Vision
+/// display-management lookup**, and inert everywhere else.
+///
+/// The fault is arithmetic and it is entirely on the television's side; this is the only lever we
+/// have on it. `gstdualsequencer.c:606` (DWARF-confirmed, `libgstdualsequencer.so` 0x25b0–0x25e0)
+/// keys the LUT entry it hands the display firmware with a DOUBLE truncation of the buffer's
+/// nanosecond PTS:
+///
+/// ```text
+/// ulTimeStamp = trunc(trunc(pts_ns) * 9 / 100000)      // ns -> 90 kHz ticks
+/// ```
+///
+/// and `DOVI_SWSync_SetDoviLUTnMap` (`libkadaptor` 0xe30e8) then scans all 95 slots for **exact
+/// 32-bit equality** — no tolerance, no nearest match. At 24000/1001 fps neither unit is exact:
+/// a frame time is a whole number of nanoseconds only every **3rd** frame and a whole number of
+/// 90 kHz ticks only every **4th**, so on `n ≡ 4, 8 (mod 12)` — and on no other frame — the two
+/// truncations disagree by exactly one tick, the lookup misses, and the panel reuses the previous
+/// frame's tone mapping. `lcm(3,4) = 12` frames is **0.5005 s**, which is the period of the
+/// stutter as seen.
+///
+/// Measured on this set, uninstrumented, 85 s of Profile 5: 340 misses, and **340 of 340** equal
+/// the double-truncated key while **0 of 340** equal the exact tick value — residues `{4: 170,
+/// 8: 170}` and nothing else. It is a derivation that reproduces the data with no free parameter,
+/// not a fit.
+///
+/// The repair is to hand the pipeline a PTS whose truncation lands in the right bin. The loss is
+/// the fractional nanosecond FFmpeg's rescale already dropped, so it is strictly less than 1 ns,
+/// and **one** nanosecond recovers it. The upper bound is `100000/9 ≈ 11111 ns` — beyond that an
+/// already-correct frame would be pushed a tick the other way — so 1 sits at the safe end of a
+/// wide range. As an A/V offset it is nothing: 1 ns against a 41.7 ms frame.
+///
+/// **Video only.** The key is computed from the video buffer's own PTS; the audio lane never
+/// reaches this code and shifting it would be a skew for no reason.
+///
+/// **AND THE DEVICE REFUTED IT, so the default is 0 and this is a knob, not a fix.** The one step
+/// the disassembly could not settle was whether the OTHER side of that exact-equality comparison
+/// moves with us. It does. Controlled A/B, same title, same seek to 900 s, same 45 s window, only
+/// this value differing: **nudge 0 → 118 misses, nudge 1 → 230**. Worse, not fixed. A constant
+/// offset cannot repair a *relative* truncation difference when both sides derive from the same
+/// fed timestamp — which is now measured rather than assumed, and which also retires the tidiest
+/// explanation this investigation has produced.
+///
+/// What survives the refutation is the arithmetic, and it is not small: 340 of 340 misses in the
+/// unseeked run equal the double-truncated key and 0 of 340 equal the exact tick value, residues
+/// `{4, 8}` mod 12 and nothing else. So the key IS computed that way and the comparison IS exact.
+/// What is now open is why the slot the firmware asks for — using, we measured, dualsequencer's
+/// own key — is not in the ring. That points at pairing or at slot lifetime, not at rounding.
+///
+/// `/tmp/plxnative-ptsnudge=<ns>` is kept because it is the instrument that produced that result
+/// and the next candidate value is one run away. Anything from 1 to ~11110 is in range; beyond
+/// that an already-correct frame is pushed a tick the other way.
+fn pts_nudge_ns() -> i64 {
+    const DEFAULT: i64 = 0;
+    static NUDGE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
+    let v = NUDGE.load(Ordering::Relaxed);
+    if v != i64::MIN {
+        return v;
+    }
+    // Latched at the first feed rather than read per AU: this is the hottest path in the app and
+    // the trigger surface is a filesystem open. Same shape as every other `dev::` read here.
+    let v = crate::dev::read("ptsnudge")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(DEFAULT);
+    NUDGE.store(v, Ordering::Relaxed);
+    if v != DEFAULT {
+        log(&format!("ptsnudge: video PTS nudge overridden to {v} ns (default {DEFAULT})"));
+    }
+    v
+}
+
 pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
     let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
@@ -1015,7 +1085,7 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 continue;
             }
         }
-        let mut fp = pts + SHARED.pts_shift.load(Ordering::Relaxed);
+        let mut fp = pts + SHARED.pts_shift.load(Ordering::Relaxed) + pts_nudge_ns();
         if fp < eng.max_fed_video_pts - STALE_BACKJUMP_NS {
             eng.pending_video = None; // stale (a big backward jump)
             continue;
