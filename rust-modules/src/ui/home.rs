@@ -88,21 +88,29 @@ const HERO_CTRL_GAP: f32 = crate::ui::widgets::CTRL_GAP;
 /// controls without being one. It is the size the chevron has always been drawn at; what the
 /// correction removed is the 60px control BOX that used to sit around it, not the mark.
 const HERO_PAGER_D: f32 = HERO_CTRL_D * crate::ui::widgets::DISC_ICON_RATIO;
-/// The air beside the mark — the row's own [`HERO_CTRL_GAP`], applied to the mark's BOX on the left
-/// (where it is the visible stand-off from the info disc's plate) and again on the right as the
-/// row's trailing extent, which only [`hero_actions`]'s `on_axis` cull can see because nothing is
-/// drawn past it. Symmetric in the arithmetic because a bare mark has no plate to hang padding off,
-/// but the right half is a measurement rather than a gap the eye can check.
+/// The air beside the mark, applied to its BOX on the left (where it becomes the visible stand-off
+/// from the info disc's plate) and again on the right as the row's trailing extent, which only
+/// [`hero_actions`]'s `on_axis` cull can see because nothing is drawn past it. Both halves resolve
+/// to the row's own [`HERO_CTRL_GAP`] *measured to the ink* — on the right the arithmetic works out
+/// on its own, since box-right + `PAD` is ink-right + bearing + (`GAP` − bearing).
 ///
-/// **Measured to the BOX, not to the ink**, and the distinction is worth stating because the two
-/// differ by a lot: a glyph is centred and INSET in its box — `chevron.svg` strokes the middle ⅜ of
-/// its viewBox, so at 32 the ink is 12px wide with 10px of empty box on each side, putting the
-/// visible disc-plate-to-chevron-ink gap at 30 rather than 20. What the row's elements therefore
-/// share is the frame each glyph is issued (the info disc's own Info mark is inset in its 60px plate
-/// the same way), which in a row of a pill, a disc and a bare mark is the only thing that CAN be
-/// made equal. Do not "correct" this to 10 to close the optical gap without looking at the panel:
-/// the mark would then sit closer to the disc than the disc does to the pill.
-const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP;
+/// **Measured to the INK, not to the box**, and the distinction is the whole of this constant.
+/// A glyph is centred and INSET in its box: `chevron.svg` strokes the middle ⅜ of its viewBox
+/// (`M9 6l6 6-6 6` at stroke-width 3 spans x 7.5..16.5 of 24), so at 32 the ink is 12px wide with
+/// [`HERO_PAGER_BEARING`] of empty box each side. Padding the BOX by the row's gap therefore puts
+/// the *visible* stand-off at 30 where the pill-to-disc one is 20, and on the panel the mark reads
+/// adrift of the row rather than part of it — measured at 3× on the dev set, 2026-08-21.
+///
+/// The pill and the disc are both FILLED, so their visual edge is their own edge and the row's
+/// rhythm is a gap between inks. A bare mark has no plate, so the only way it can join that rhythm
+/// is to have its INK sit one gap from the disc — which means starting its box a bearing earlier.
+/// That is what the owner's "equal padding" asks for: equal to the eye, not equal in the arithmetic.
+/// (This was shipped box-measured first and corrected after looking at the television.)
+const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP - HERO_PAGER_BEARING;
+/// The empty box each side of the chevron's ink — `chevron.svg`'s stroke starts 7.5/24 into its
+/// viewBox, so the bearing is that fraction of the mark's box. Named because [`HERO_PAGER_PAD`]
+/// subtracts it and the `on_axis` cull adds it back.
+const HERO_PAGER_BEARING: f32 = HERO_PAGER_D * (7.5 / 24.0);
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 /// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
 /// spring units: the old `pos > 0.995` cut retired the transition while the incoming layer still
