@@ -48,6 +48,7 @@ rust-poc/
 .tv-stream.pid
 .tv-stream.log
 pkg/sockprobe
+pkg/logmprobe
 
 # tv-session.sh --remote: the published URL, the generated password and the tunnel/front-end
 # scratch. NEVER commit a password, and never commit a URL that is live while it is live.

@@ -331,6 +331,13 @@ mod tests {
 
     /// The copy names the PEOPLE, and it has to read as a sentence at one, two and three friends —
     /// the case a hand-built "friend1, friend2, " string gets wrong at exactly one of them.
+    ///
+    /// **The names here are invented, and that is a rule rather than a preference.** A shared
+    /// server's owner is a real person whose Plex handle is THEIRS, this repository is PUBLIC, and
+    /// a test fixture is as public as a README. It is an easy thing to get wrong because the real
+    /// handle is what is on screen while the feature is being written; four pull-request bodies
+    /// already had to be redacted for exactly this. Any new fixture that stands in for a person
+    /// uses a made-up name.
     #[test]
     fn the_copy_lists_the_people_who_shared_with_you() {
         assert_eq!(join_names(&names(&[])), None);
