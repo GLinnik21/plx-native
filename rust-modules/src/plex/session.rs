@@ -335,6 +335,32 @@ impl Session {
         self.home_users.iter().find(|u| u.uuid == self.user.uuid).map(|u| u.admin).unwrap_or(false)
     }
 
+    /// **Is the profile this session would resume as behind a PIN?**
+    ///
+    /// The other flag on the same roster row as [`Session::active_profile_is_admin`], read for the
+    /// one question the boot who's-watching picker has to answer: may BACK out of it silently
+    /// reinstate what is on disk? A PIN-protected profile is one plex.tv validates a code for on
+    /// every switch (`auth::submit_pin` → `AccountClient::switch_user`), so resuming it without
+    /// one hands out precisely the session the PIN exists to gate — see [`crate::auth::cancel`].
+    ///
+    /// It answers the OPPOSITE way to `active_profile_is_admin` when the roster cannot say, and
+    /// for the same reason: on each question, "we cannot prove it" must land on the side whose
+    /// wrong answer costs nothing. There it is somebody else's credentials, so an unknown uuid is
+    /// not the owner; here it is a bypassed PIN, so an unknown uuid is treated as protected. The
+    /// cost of being wrong is one profile pick — the picker is still fully usable, and its
+    /// *Sign out* pill is reachable with the roster empty.
+    ///
+    /// An EMPTY uuid is the exception and is false: no Plex Home selection was ever made, so there
+    /// is no managed profile and no PIN to be behind (`auth`'s single-user path enters Home on the
+    /// owner's own server token without writing one). That state cannot reach a boot picker
+    /// anyway — `app.rs`'s boot gate raises one only for a roster of more than one user.
+    pub fn active_profile_is_protected(&self) -> bool {
+        if self.user.uuid.is_empty() {
+            return false;
+        }
+        self.home_users.iter().find(|u| u.uuid == self.user.uuid).map(|u| u.protected).unwrap_or(true)
+    }
+
     /// One source by `machineIdentifier` — the only key that identifies a server.
     pub fn source(&self, machine_id: &str) -> Option<&SourceRef> {
         if machine_id.is_empty() {
@@ -910,6 +936,48 @@ mod tests {
         unknown.home_users.clear();
         assert!(!unknown.active_profile_is_admin());
         assert!(!home("u-nobody").active_profile_is_admin());
+    }
+
+    /// **The stored profile's PIN flag — what the boot picker's BACK is gated on.** The escalation
+    /// it exists to close: the adult profile carries the PIN, the app is signed in as them, a child
+    /// boots it, and BACK out of the who's-watching picker reinstated that session with no code
+    /// entered at all (`auth::cancel`).
+    ///
+    /// The two "the roster cannot say" answers deliberately disagree with the test above's. An
+    /// unknown uuid is NOT the owner, because that question's wrong answer is somebody else's
+    /// credentials; the same uuid IS treated as protected, because this question's wrong answer is
+    /// a bypassed PIN and being wrong the other way costs one profile pick.
+    #[test]
+    fn a_stored_profile_behind_a_pin_is_reported_as_protected() {
+        let home = |uuid: &str| Session {
+            client_id: "cid".into(),
+            account_token: "acct".into(),
+            user: UserRef { uuid: uuid.into(), ..Default::default() },
+            home_users: vec![
+                HomeUserRef {
+                    uuid: "u-owner".into(),
+                    title: "Gleb".into(),
+                    admin: true,
+                    protected: true,
+                    ..Default::default()
+                },
+                HomeUserRef { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        assert!(home("u-owner").active_profile_is_protected(), "the adult tile carries the PIN");
+        assert!(!home("u-kid").active_profile_is_protected(), "a managed profile with no PIN");
+
+        // An account with no Plex Home never writes a profile at all, so there is no PIN to be
+        // behind — and that state cannot raise a boot picker either (it needs a roster of >1).
+        let solo = Session { client_id: "cid".into(), account_token: "acct".into(), ..Default::default() };
+        assert!(!solo.active_profile_is_protected());
+
+        // …but a uuid the roster does not name is treated as protected.
+        let mut unknown = home("u-owner");
+        unknown.home_users.clear();
+        assert!(unknown.active_profile_is_protected());
+        assert!(home("u-nobody").active_profile_is_protected());
     }
 
     // ---- The FILE half: one writer at a time, and a whole file or none of it -------------------
