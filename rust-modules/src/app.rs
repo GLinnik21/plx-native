@@ -1817,8 +1817,13 @@ unsafe fn apply_item_action(
             // watching, so it is re-read too — the rk rides along so the filmstrip lands back
             // on the episode that changed (`detail::KEEP_EP`).
             let w = if watched { crate::viewstate::Write::Unwatched } else { crate::viewstate::Write::Watched };
+            //
+            // NO GUID from here, and deliberately: a catalog row carries none, and the guid the
+            // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
+            // guid that is merely close marks a different title watched on every other source, so
+            // `viewstate` looks the right one up from `(sid, rk)` on its own worker instead.
             let detail = matches!(host, MenuHost::Detail).then(|| rk.clone());
-            crate::viewstate::request(sid, &rk, w, detail);
+            crate::viewstate::request(sid, &rk, w, detail, "");
         }
         Action::RemoveFromDeck(rk) => {
             // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
@@ -1833,7 +1838,10 @@ unsafe fn apply_item_action(
             // would come back still listing the item (see `pms::project`).
             //
             // No detail refresh: this row exists only on a Continue Watching card.
-            crate::viewstate::request(sid, &rk, crate::viewstate::Write::RemoveFromDeck, None);
+            // No guid, and it would be ignored if there were one: a deck removal does not follow
+            // the title across sources (`viewstate::Write::propagates`) — your Continue Watching
+            // row is yours, and hiding a friend's item from it is not a claim about their deck.
+            crate::viewstate::request(sid, &rk, crate::viewstate::Write::RemoveFromDeck, None, "");
         }
         Action::PlayFromStart(rk) => {
             // On the detail page the target is an episode of the LOADED SEASON, which the hub
