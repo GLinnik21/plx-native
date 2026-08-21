@@ -100,6 +100,12 @@ const SHELF_COUNT_GAP: f32 = theme::space::SM;
 const BIO_W: f32 = 1180.0;
 const BIO_LINES: usize = 3;
 const BIO_LEAD: f32 = 40.0;
+/// The selectable-block mark's inset around the bio prose — `detail.rs`'s About columns spend the
+/// same 26 on x, so a block that can be opened is padded identically on both pages. The vertical
+/// pad is even (the About columns' 36/24 pair is asymmetric because their 36 clears a HEADING's cap
+/// band; this block has no heading, so an even box is what hugs it).
+const HL_PAD_X: f32 = 26.0;
+const HL_PAD_Y: f32 = 24.0;
 /// The bio's truncation mark, as a C literal — it is drawn every frame the bio is cut off, and the
 /// SAME pointer the reserved zone is measured from, so the gap and the mark can never end up being
 /// two different strings (`detail.rs`'s About card writes `c"MORE"` twice for want of one).
@@ -606,11 +612,17 @@ pub(crate) fn bio_is_truncated() -> bool {
 /// waiting ~150ms to animate a dip nobody can see would only add latency.
 ///
 /// The alternative — making the bio block a real focusable inside the band — was rejected against
-/// the page as built. It would put a second focus stop inside a row this module documents four
-/// times over as a scroll POSITION rather than a selection, give the condense a state it has no
-/// mock for, and require a focus mark on the prose that would turn `MORE` from a mark into a
-/// control. Here the whole header band is the target: focus is already at the top of the page, and
-/// OK there reads the rest.
+/// the page as built, and still is. It would put a second focus stop inside a row this module
+/// documents four times over as a scroll POSITION rather than a selection, and give the condense a
+/// state it has no mock for. Here the whole header band is the target: focus is already at the top
+/// of the page, and OK there reads the rest.
+///
+/// **What that rejection used to include, and no longer does, is the MARK.** The argument ran that
+/// a focus mark on the prose would turn `MORE` into a control — but the band was then the only
+/// focusable thing in the app that drew nothing at all for holding focus, so the block OK acts on
+/// was indistinguishable from prose that ends in a word. [`draw_header`] now draws the shared
+/// `widgets::text_block_highlight` under the bio on exactly this function's predicate. `MORE` is
+/// unchanged and is still a mark; the lift is the page saying which block the press will reach.
 pub(crate) fn header_ok() -> bool {
     if !scene().on_header || !bio_is_truncated() {
         return false;
@@ -972,16 +984,47 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
         // re-wrap ~3 KB of prose on every frame of the animation. The column has room for it at
         // every portrait diameter — see `BIO_W`.
         let bio = bio_view(&person.bio, ea);
-        let bh = bio.draw(p, Rect::new(col_x, by, BIO_W, 0.0));
+        // **The block that OK opens wears the page's selectable-block mark** — the shared
+        // `text_block_highlight`, i.e. the same lift the detail page's About card and its three
+        // columns take. Drawn UNDER the prose, so it is a ground and not a frame around it.
+        //
+        // Owner call, and it narrows a decision `header_ok` records rather than reversing it: what
+        // was rejected there was making the bio a SECOND FOCUS STOP inside the band, and it still
+        // is not one — the whole band is one stop, and this draws no ring, no scale and no dip.
+        // What it fixes is that the band was the only focusable thing in the app that showed
+        // nothing for holding focus, so the one block OK acts on looked like prose that happened to
+        // end in a word. `MORE` stays a mark; the lift is what says the mark can be pressed.
+        //
+        // Gated on `header_ok`'s condition, in its two halves: focus is here, and there is more to
+        // read. A lift under a two-line bio would promise a panel `person_bio::open` is never going
+        // to be asked for. The truncation half is asked of THIS view rather than through
+        // `bio_is_truncated`, so the lift, the `MORE` below it and the panel behind them are one
+        // expression on one memoised wrap and cannot disagree by a frame. On `sc.on_header` rather
+        // than on the condense spring, because focus leaves on a keypress and the spring is still
+        // at ~0 for several frames after it — a mark that faded out with the band would be
+        // describing focus that had already gone.
+        //
+        // The box hugs the prose's own INK: `last_line_cap_y` is where the view put the last line's
+        // cap band, so the height is measured to the text rather than to the flow, which ends in a
+        // line of leading nothing is drawn in.
+        let bh = bio.measure_h(BIO_W);
+        let truncated = bio.truncates(BIO_W);
+        if sc.on_header && truncated {
+            let ink = bio.last_line_cap_y(by, bh) - by + crate::text::cap_h(theme::size::BODY, 0);
+            crate::ui::widgets::text_block_highlight(
+                p,
+                Rect::new(col_x - HL_PAD_X, by - HL_PAD_Y, BIO_W + 2.0 * HL_PAD_X, ink + 2.0 * HL_PAD_Y),
+            );
+        }
+        bio.draw(p, Rect::new(col_x, by, BIO_W, 0.0));
         // MORE — quiet grey (the About card's ink; this is a mark, not a control, and the loudest
         // thing in the band must stay the name), pinned to the bio COLUMN's right edge and sitting
         // on the last line's own cap band, which is where the line just dissolved to meet it. Both
         // halves of that placement are ASKED OF THE VIEW THAT DREW THE TEXT (`last_line_cap_y`, and
         // `Label`'s own cap-band conversion) rather than restated here — the leading and the cap
-        // band are `bio`'s, not this block's. The gate shares `bio`'s memoised wrap, so `truncates`
-        // costs nothing beside the draw above. `ea` because the mark belongs to the expanded band
-        // and must condense out with it.
-        if bio.truncates(BIO_W) {
+        // band are `bio`'s, not this block's. `ea` because the mark belongs to the expanded band and
+        // must condense out with it.
+        if truncated {
             Label::new(MORE.as_ptr(), theme::size::BODY, theme::with_a(theme::TEXT_TERTIARY, ea))
                 .bold()
                 .h(HAlign::Right)

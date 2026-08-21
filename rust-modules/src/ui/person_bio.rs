@@ -272,13 +272,23 @@ fn viewport() -> Rect {
     Rect::new(c.x, top, text_w(), (bottom - top).max(0.0))
 }
 
-/// The header block's height: eyebrow, name, identity line, on their `space` rungs. Measured from
-/// the cap bands rather than the point sizes — `ui::label`'s layout-≠-paint rule.
+/// The header block's height: eyebrow, name, identity line, on the ALERT FAMILY's head ladder
+/// ([`theme::alert`]) — the same four numbers §1B spends, because §1C spells the same three runs.
+///
+/// **This used to measure its own cap bands and step by `space::SM`, and that is what made the
+/// eyebrow crowd the name.** Two rungs of 16 over two measured caps put `PERSON` 26px above the
+/// name and the name 45px above the identity line, against the family's 38 and 56 — the eyebrow
+/// ended up TIGHTER than the gap under the title, which is the one relationship a kicker may not
+/// invert. The leads are bands, not measurements, for the same reason: a cap height is what the
+/// glyphs happen to occupy, and `line-height` is what the design reserved for them.
+///
+/// The last run keeps its measured cap: the identity line is the block's last, so nothing below
+/// depends on its band — only on where its ink ends.
 fn head_h() -> f32 {
-    crate::text::cap_h(theme::size::CAPTION, 1)
-        + theme::space::SM
-        + crate::text::cap_h(theme::size::TITLE, 1)
-        + theme::space::SM
+    theme::alert::EYEBROW_LEAD
+        + theme::alert::GAP_EYEBROW_TITLE
+        + theme::alert::TITLE_LEAD
+        + theme::alert::GAP_TITLE_SUB
         + crate::text::cap_h(theme::size::CAPTION, 0)
 }
 
@@ -455,21 +465,27 @@ pub(crate) fn draw() {
     draw_foot(p, person, c);
 }
 
-/// Eyebrow, name, identity line — stacked from the content box's top edge on `space` rungs, the
-/// same flow [`head_h`] measures.
+/// Eyebrow, name, identity line — stacked from the content box's top edge on the alert family's
+/// head ladder ([`theme::alert`]), the same flow [`head_h`] measures.
 fn draw_head(p: Painter, person: &Person, c: Rect) {
     let mut y = c.y;
+    // **Every y in this block is a CAP TOP**, which is what makes the ladder comparable to §1A's and
+    // §1B's — both of those place through `TextView`/`Label`, i.e. `VAlign::CapTop`. `tracked_run`
+    // is the one run here that reaches `Painter::text` directly, so it converts, exactly as the
+    // identity line below does. Drawn at a bare `y` it started ~7px low, which put `PERSON` 7px
+    // closer to the name on top of the 12 the old rung ladder was already costing.
+    let (eyebrow_cap, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
     widgets::tracked_run(
         p,
         &EYEBROW,
         c.x,
-        y,
+        y - eyebrow_cap,
         theme::size::CAPTION,
         theme::TEXT_TERTIARY,
         1,
         EYEBROW_TRACK,
     );
-    y += crate::text::cap_h(theme::size::CAPTION, 1) + theme::space::SM;
+    y += theme::alert::EYEBROW_LEAD + theme::alert::GAP_EYEBROW_TITLE;
 
     // The name is ELIDED to the content box, not wrapped: this is an identity, and a two-line name
     // would push the reading window down by a whole rung of the flow. `person::refresh_runs` budgets
@@ -480,7 +496,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect) {
             .v(VAlign::CapTop)
             .draw(p, Rect::new(c.x, y, c.w, 0.0));
     }
-    y += crate::text::cap_h(theme::size::TITLE, 1) + theme::space::SM;
+    y += theme::alert::TITLE_LEAD + theme::alert::GAP_TITLE_SUB;
 
     let runs = meta_runs(
         &person.roles,

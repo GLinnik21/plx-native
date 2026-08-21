@@ -2,8 +2,10 @@
 //!
 //! One glass panel answering "what actually IS this file": the container and its size, the video
 //! stream's own technicals, the Dolby Vision layering when there is any, and then EVERY audio and
-//! subtitle track the part carries. It is opened by the ⓘ disc in the detail hero's control row
-//! and closed by BACK; it has no controls of its own, only a scroll.
+//! subtitle track the part carries. It is opened with OK on the About footer's **Languages**
+//! column — the block that lists those tracks — and closed by BACK; it has no controls of its own,
+//! only a scroll. (It hung off a ⓘ disc in the detail hero until 2026-08-21; `detail::hero_ctls`
+//! records why the door moved to the block the panel is about.)
 //!
 //! **Why the track list lives here and not in a panel of its own** is the design's own reasoning,
 //! and it is the thing to preserve if this screen is ever split: *"the audio list belongs beside
@@ -84,11 +86,14 @@ const K_SCROLL: f32 = 220.0;
 
 // Vertical rhythm inside the panel, top to bottom. Each is the design's own `margin-top`, kept as
 // named steps rather than one accumulated table so a changed block moves the ones below it.
-const EYEBROW_H: f32 = theme::size::CAPTION as f32; // line-height:1
-const TITLE_H: f32 = theme::size::TITLE as f32 * 1.1;
+// The first four are the FAMILY's head ladder ([`theme::alert`]), not this panel's — §1B and §1C
+// spell the same eyebrow → title → subtitle steps, and the one that spelled them itself drifted 12px
+// tight. Named through here so the local flow still reads as a flow.
+const EYEBROW_H: f32 = theme::alert::EYEBROW_LEAD;
+const TITLE_H: f32 = theme::alert::TITLE_LEAD;
+const GAP_EYEBROW_TITLE: f32 = theme::alert::GAP_EYEBROW_TITLE;
+const GAP_TITLE_PATH: f32 = theme::alert::GAP_TITLE_SUB;
 const PATH_H: f32 = theme::size::MICRO as f32 * 1.3;
-const GAP_EYEBROW_TITLE: f32 = 14.0;
-const GAP_TITLE_PATH: f32 = 12.0;
 const GAP_PATH_RULE: f32 = 28.0;
 const GAP_RULE_BODY: f32 = theme::space::MD;
 /// The footer band is exactly the KEYCAP's own height (the design's 36), because the cap is the
@@ -553,16 +558,19 @@ pub(crate) fn sel() -> c_int {
 
 /// Is there a file for this panel to describe?
 ///
-/// **The gate for the hero's ⓘ disc**, and it is `part` rather than `is_show` on purpose. A SHOW
+/// **The gate for the Languages column's press**, and it is `part` rather than `is_show` on
+/// purpose. A SHOW
 /// container carries no `Media` of its own — `parse_streams` backfills its audio/subtitle lists
 /// from episode 1 for the About footer — so on a show page this panel would print episode 1's
 /// path, size and bitrate under the show's name. That is not a truncation of the truth, it is a
 /// different file, and `Detail::part` is exactly the field that is empty when the item has no file
 /// of its own (`metadata.rs`: "Media[0].Part[0].key for a leaf (movie/episode); empty for a show").
 ///
-/// It is also false during the whole mount fetch, which is fine and is the row's normal behaviour:
-/// `hero_col` follows a control rather than an index, so the disc appearing when the item lands
-/// cannot move the focus off whatever the user was on.
+/// It is also false during the whole mount fetch, which costs nothing: the About footer is drawn
+/// from a loaded item, so there is no frame on which the Languages column is on screen and this is
+/// still false. Unlike the hero disc it replaced, the column does not appear or vanish with the
+/// answer — it is always the third of four — so a press that arrives early is refused rather than
+/// landing on a control that has moved.
 pub(crate) fn is_available() -> bool {
     metadata::current().map(|d| !d.part.is_empty()).unwrap_or(false)
 }
@@ -1255,7 +1263,7 @@ mod tests {
         assert!((b.x + b.w + RAIL_GAP + RAIL_W) - (r.x + PANEL_W - PAD) < 0.01);
     }
 
-    /// The ⓘ disc's gate. A SHOW borrows its streams from episode 1, so a panel on a show page
+    /// The Languages column's gate. A SHOW borrows its streams from episode 1, so a panel on a show page
     /// would print another item's path and size under the show's name — `part` is the field that
     /// is empty exactly then.
     #[test]

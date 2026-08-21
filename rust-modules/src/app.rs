@@ -4675,13 +4675,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         }
                         // dev: /tmp/plxnative-tracks[=<page>] opens the Track-information panel
-                        // over the page, at that 1-based page of its body. The panel is opened by
-                        // a hero DISC, so `detailcol`+`detailok` could in principle reach it — but
-                        // the disc's index moves with the control set (`hero_ctls`), so a recipe
-                        // written as "three RIGHTs" would land on a different control the moment
-                        // an item has no resume point or a second source. Naming the panel is the
-                        // stable form, and it is also what makes the SCROLL states capturable at
-                        // all: nothing else can page a body headlessly.
+                        // over the page, at that 1-based page of its body. `detailsec`+`detailcol`
+                        // +`detailok` can reach it by hand now that it opens from the About
+                        // footer's Languages column, which is a FIXED index (section 5, col 2) —
+                        // unlike the hero disc it used to hang off, whose index moved with the
+                        // control set. This stays because it is still the only way to capture a
+                        // SCROLL state: nothing else can page a body headlessly.
                         if let Some(pg) = crate::dev::read("tracks") {
                             if crate::ui::tracks_panel::is_available() {
                                 crate::ui::tracks_panel::open();
