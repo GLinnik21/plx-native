@@ -328,6 +328,22 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   in progress (rv=0, handshake dies at once) — which is why `stream.rs::http_open` publishes its fd
   at `socket()`. On Darwin the same call instead makes `connect_timeout` report *success* on a
   socket that never connected. Reach for this before asserting any syscall behaviour from memory.
+- `tools/logmprobe.c` — standalone ARM diagnostic (`make logmprobe`, scp, run, delete) for LG's
+  **KADP log masks, on a RUNNING app**. It exists because of one specific trap that cost a day:
+  `KADP_LOGM_WriteLog` gates **BITWISE**, not by threshold — `(1 << level) & rec[0x20] & ~rec[0x24]`
+  — and `kad-hdr` ships with `enable=0x0000000b`, i.e. levels 0/1/3 with **bit 2 clear**. So
+  `DOVI_MDAsync_WriteOTTMetaData`'s only unconditional line is invisible, a perfectly healthy
+  metadata writer logs NOTHING, and "it never appears in the log" is not evidence it never ran. The
+  mask table is mmap'd `MAP_SHARED` from `/dev/lg/logm`, so it is shared by every process and can be
+  flipped from a SECOND ssh session mid-playback — no rebuild, no relaunch, no perturbation of the
+  session being measured. Read-only unless given `set`/`clear`. This is what ended the Profile 5
+  investigation (2026-08-21) in one run, and the general rule it teaches is in
+  `[[silent-instrument-trap]]`: **prove the instrument can see the thing before reading its
+  silence.** Two more instruments here are silent by construction — the heartbeat's `vtick=`/`vgap=`
+  count a **5 Hz** position callback, not presented frames, and read a flat `vgap=201ms` straight
+  through a visible stutter; and LG's `GST_DEBUG` was long avoided as perturbing, which is true of
+  `dualsequencer:9` and **false of `:6`** (same scene, 123 misses uninstrumented vs 122 traced) —
+  `:6` is the only per-frame cadence instrument this project has.
 - `tools/threadprobe.c` — standalone ARM diagnostic (`make threadprobe`, scp, run as root, delete):
   spawns under the app's uid until `pthread_create` refuses. Measured 2026-07-28 — **2 MB stacks
   die at 2043 threads on `RLIMIT_AS` (the full AArch32 4 GB), 256 KB stacks at 3745 on
