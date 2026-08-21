@@ -150,7 +150,12 @@ Three independent blockers, each sourced:
 
 **Real risk to check.** Our destination alpha is not 1 everywhere. `frame_clear` clears to alpha 1.0 (`gfx.rs:152`), but the blend is non-separate `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` (`gfx.rs:329`), so a 0.5-alpha overdraw leaves dst alpha at 0.75 — every AA glyph edge, scrim and focus glow. The protocol warns *"marking transparent content as opaque will result in repaint artifacts"* (`:3326-3327`). Visually we *want* LSM to ignore alpha here; it still has to be seen on the panel. And it must be route-scoped and re-asserted the way the player path already re-asserts NULL every frame, or the first frame after leaving playback occludes a plane that has not torn down yet.
 
-**Go/no-go, one boot.** Arm `/tmp/plxnative-noidle` so Home presents at 60 and the charge is visible. A/B `surface-manager`'s 60 s `/proc` jiffy delta with a full-screen region set vs today's NULL, `DISPLAY` capture each way. **Flat ⇒** LSM's charge is per-commit, the entire compositor branch closes permanently, and the present gate stays the only thing that ever reaches its 62%. **A drop ⇒** it is area/blend-related, and this is a free win on every presenting frame of every screen — still not damage tracking.
+**Go/no-go, one boot.** Arm `plxnative-noidle` in this install's runtime root
+(`$(make -s print-rundir)`, not a bare `/tmp` — at the tracked `FLAVOR ?= debug` default those are
+different directories, and arming the wrong one leaves the present gate ON, so Home idles instead
+of presenting and BOTH legs measure the same settled screen. That produces exactly the flat result
+this section's rule reads as "the entire compositor branch closes permanently") so Home presents at
+60 and the charge is visible. A/B `surface-manager`'s 60 s `/proc` jiffy delta with a full-screen region set vs today's NULL, `DISPLAY` capture each way. **Flat ⇒** LSM's charge is per-commit, the entire compositor branch closes permanently, and the present gate stays the only thing that ever reaches its 62%. **A drop ⇒** it is area/blend-related, and this is a free win on every presenting frame of every screen — still not damage tracking.
 
 ### Three others, all worth more than damage
 
@@ -164,17 +169,26 @@ Three independent blockers, each sourced:
 
 **Question: does any animating frame spend its time in fill?** Nothing else can reopen the case.
 
+> **The `/tmp/plxnative-…` paths in this section predate the two-install split: they are the STABLE
+> install's runtime root.** A flavoured install puts the same names under `$(make -s print-rundir
+> FLAVOR=<f>)` — `/tmp/com.beb.plxnative.debug` at the tracked `FLAVOR ?= debug` default — so
+> pasted as bare `/tmp/…` this arms one install while `make run` launches the other, and every
+> number here is then read off an unarmed screen. The block below is therefore scoped with
+> `R=$(make -s print-rundir)`, which is also what keeps its `rm -f` from reaching across and wiping
+> the other install's triggers; the experiment itself is unchanged. See `docs/two-installs.md`.
+
 ```
-wake-tv; ssh root@TV 'rm -f /tmp/plxnative-*'          # a stale trigger changes which screen you boot to
-printf 'hm.grid' > /tmp/plxnative-profile               # one asynchronous timer-query phase per run
-touch /tmp/plxnative-homeosc                            # perpetual grid focus sweep: never settles, gate never fires
-echo "$TOKEN" > /tmp/plxnative-token
+R=$(make -s print-rundir)                              # this install's runtime root, never bare /tmp
+wake-tv; ssh root@TV "rm -f $R/plxnative-*"            # a stale trigger changes which screen you boot to
+printf 'hm.grid' > $R/plxnative-profile                # one asynchronous timer-query phase per run
+touch $R/plxnative-homeosc                             # perpetual grid focus sweep: never settles, gate never fires
+echo "$TOKEN" > $R/plxnative-token
 make run RUN_SECS=40      # then read the once-per-60-frames aggregate lines out of the event log
 ```
 
-There are **11** brackets already in the tree: `hm.backdrop`/`hm.hero`/`hm.grid` (`home.rs:1127`/`:1129`/`:1131`) and eight `dt.*` (`detail.rs:1402-1493`). Select and run them one at a time. Repeat with `echo <ratingKey> > /tmp/plxnative-navosc` (`home-detail-nav` — by the manifest's own reasoning at `:138` the heaviest thing in the app) and with `/tmp/plxnative-libswitch`.
+There are **11** brackets already in the tree: `hm.backdrop`/`hm.hero`/`hm.grid` (`home.rs:1127`/`:1129`/`:1131`) and eight `dt.*` (`detail.rs:1402-1493`). Select and run them one at a time. Repeat with `echo <ratingKey> > $R/plxnative-navosc` (`home-detail-nav` — by the manifest's own reasoning at `:138` the heaviest thing in the app) and with `$R/plxnative-libswitch`.
 
-Then, separately and without either profiler armed: `echo 14 > /tmp/plxnative-framedrop` on the same three scenes. `app.rs:521` states the read verbatim — **"high `swap` with low pump/draw ⇒ GPU fill."**
+Then, separately and without either profiler armed: `echo 14 > $R/plxnative-framedrop` on the same three scenes. `app.rs:521` states the read verbatim — **"high `swap` with low pump/draw ⇒ GPU fill."**
 
 **Flip condition.** If individual phase GPU time on a *sweeping* grid or a nav dip is a large fraction of 16.7 ms, or the framedrop lines show `swap` dominating with low `draw`, then animating frames are fill-bound and the question reopens — **as a fill project, not necessarily as damage.** Do not sum separately queried phases as normal frame time; use the whole-frame query for that. The cheaper fill levers are still unspent: `player_hud.rs:92-100` draws every subtitle line **five times** across the full panel at size 36 (`ui-framework-improvements.md` B7, *"biggest un-named fill item in the tree"*), and detail requests a 1920×1080 backdrop into a 64-slot LRU with no byte budget and no `glGetError` check (B10, `posters.rs:24`). Spend those before scissoring anything. If `draw` dominates `swap` and the phases come back small, the 45-tier is CPU, and this closes.
 
