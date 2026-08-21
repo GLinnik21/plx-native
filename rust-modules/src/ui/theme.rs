@@ -874,6 +874,21 @@ pub const RATING_MUTED: [f32; 4] = COOL_400;
 /// Card corner radius (tiles/shelves — `CardRow`'s rounded rect + its baked focus glow follow it).
 pub const CARD_RING_RAD: f32 = 14.0;
 
+/// The corner of a full-page **ALERT panel** — the read-only glass sheet a block opens with OK
+/// (`Alert Views.dc.html`), as opposed to the anchored menus a chip or a button drops. Those keep
+/// their own smaller corner (20/24): a menu hangs off a control and reads as part of it, while an
+/// alert owns the middle of the frame and is its own object.
+///
+/// **32, and the design states both of the bounds it sits between.** It is one step over the design
+/// system's own `--radius-panel` 24, because an alert is the bigger and more separate surface. It
+/// was also tried at **60** — one whole `--control-h`, so the panel would read as round as the
+/// pills inside it — and *that* is the value that made the modal look like it came from somewhere
+/// else: at 14 on every tile ([`CARD_RING_RAD`]) and 18 on a `TableView` row pill, this product has
+/// a restrained corner vocabulary and a 60px arc leaves it. 32 stays inside that vocabulary while
+/// still reading as softer than a card, and it clears the 28px glass bevel so the chamfer runs
+/// inside the arc rather than across it.
+pub const ALERT_PANEL_RAD: f32 = 32.0;
+
 // ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus
 // pop + a 1px perimeter edge-sheen, both FOLDED into the tile's own draw pass (FS_IMG for textured
 // tiles, FS_SRC for skeleton/chip fills), replacing the old glow ring. Applies to circles too. ──

@@ -1276,13 +1276,20 @@ pub(crate) fn open(idx: c_int) {
     }
 }
 
-/// BACK on the detail page, handled INSIDE the screen: dismiss the "Also available" panel if it is
+/// BACK on the detail page, handled INSIDE the screen: dismiss whichever of the page's own panels is
 /// up, and report whether the press was spent. `false` means the page has nothing of its own to
 /// close and `app.rs` should pop the BACK trail — the shape `library::back()` established, for the
 /// same reason (a panel is part of the screen, so leaving the screen must not be how you close it).
+///
+/// For the About alert, BACK is not merely *a* way out — it is the only affordance the panel draws,
+/// which is why the footer line names the key.
 pub(crate) fn back() -> bool {
     if crate::ui::alt_sources::is_open() {
         crate::ui::alt_sources::close();
+        return true;
+    }
+    if crate::ui::about_panel::is_open() {
+        crate::ui::about_panel::close();
         return true;
     }
     false
@@ -1293,6 +1300,11 @@ pub(crate) fn close() {
     // the panel is this page's, so it dies with it — and with an unset server and an empty rk
     // nothing can land in the store for a page that is gone
     crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
+    // …and so does the About alert, for the plainer reason that it draws `metadata::current()`,
+    // which the next line clears. A panel that survived the page would be printing the last item's
+    // synopsis over the next one's hero — or, past `clear()`, drawing nothing while still eating
+    // every key the page sends it.
+    crate::ui::about_panel::close();
     metadata::clear();
     // Every latch dies with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
@@ -1315,6 +1327,12 @@ pub(crate) fn move_focus(sym: c_int) {
     // as it is in every other popover this app opens
     if crate::ui::alt_sources::is_open() {
         crate::ui::alt_sources::move_focus(sym);
+        return;
+    }
+    // The About alert SWALLOWS them. Same rule, opposite reason: it has no list and no control, so
+    // there is nothing for a D-pad press to move — but the page behind a modal must not take keys
+    // either, or the focus a BACK returns to is somewhere the user never steered it.
+    if crate::ui::about_panel::is_open() {
         return;
     }
     let sym = sym as u32;
@@ -1732,6 +1750,8 @@ pub(crate) fn update(dt: f32) {
     // keeps `current()` empty for the whole fetch, so at `reset` time there is nothing to copy)
     crate::ui::alt_sources::pump();
     crate::ui::alt_sources::update(dt);
+    // the About alert's appear spring — a no-op while it is closed, like its neighbour above
+    crate::ui::about_panel::update(dt);
     // debounced season fetch: load the queued season only after its tab has held focus for a beat, so
     // scanning tabs (a hold, or fast taps) coalesces into ONE blocking `/children` fetch, not one per step.
     if v.pending_season >= 0 {
@@ -1817,6 +1837,13 @@ pub(crate) fn draw() {
     // own root painter (scrim included) rather than riding the scrolled one — a popover is anchored
     // to where its button was DRAWN, not to the page's content space. No-op while closed.
     crate::ui::alt_sources::draw();
+    // The About alert is the same kind of modal, split in two on purpose: its DIM is the page's
+    // (drawn here, at the end of the page) and its PANEL is its own. `ui/CLAUDE.md`'s rule — the
+    // scrim is part of what a glass panel looks through, so it must be on the frame before the
+    // backdrop is sampled, and `Popover::scrim` + `content_painter` is the pairing that puts it
+    // there without compounding with the panel's own fade. Both are no-ops while it is closed.
+    crate::ui::about_panel::draw_scrim();
+    crate::ui::about_panel::draw();
 }
 
 // The below-hero sections ARE the ScrollColumn's children (the hero at section id 0 is pinned, drawn
@@ -3346,8 +3373,9 @@ fn commit_resume(from_start: bool) {
 pub(crate) fn focus_is_card() -> bool {
     // Nothing behind an open panel is pressable, so nothing behind it is a card either: the press
     // belongs to the list, and `on_ok` routes it there. Without this an OK held over the panel
-    // would begin a tvOS press on a tile nobody can see and commit it on release.
-    if crate::ui::alt_sources::is_open() {
+    // would begin a tvOS press on a tile nobody can see and commit it on release. True of BOTH of
+    // this page's panels — the About alert has no list to route the press to, and dismisses on it.
+    if crate::ui::alt_sources::is_open() || crate::ui::about_panel::is_open() {
         return false;
     }
     // The episode filmstrip's METADATA block is not a card: it is a link into another page, so it
@@ -3368,6 +3396,12 @@ pub(crate) fn on_ok() -> bool {
     // navigation request, for the same reason the Related shelf's OK does not call `open_rk` itself.
     if crate::ui::alt_sources::is_open() {
         request_alt_open(crate::ui::alt_sources::on_ok());
+        return false;
+    }
+    // The About alert owns the press too, and spends it dismissing — see `about_panel::on_ok` for
+    // why a read-only panel answers OK at all when the design names only BACK.
+    if crate::ui::about_panel::is_open() {
+        crate::ui::about_panel::on_ok();
         return false;
     }
     view().last_resume_ns = 0; // default: no resume (set below for plays)
@@ -3519,6 +3553,19 @@ pub(crate) fn on_ok() -> bool {
                 if !key.is_empty() {
                     crate::ui::person::open(sid, &key, &c.tag_key, &c.tag, &c.thumb);
                 }
+            }
+            false
+        }
+        // About (5). **Only the CARD (col 0) opens anything** — the alert is earned by the one
+        // column that truncates something worth reading in full. Information, Languages and
+        // Accessibility (cols 1..=3) are read-only prose already printed whole, and the design
+        // refuses each of them an alert by name (`Alert Views.dc.html`'s opening paragraph;
+        // `about_panel`'s module doc has the three reasons). So they fall through to `false` and OK
+        // does nothing on them, which is the same "with nothing to open, nothing is drawn and
+        // nothing happens" shape the actions row's absent controls take.
+        5 => {
+            if col == 0 && metadata::current().is_some() {
+                crate::ui::about_panel::open();
             }
             false
         }
@@ -3961,6 +4008,11 @@ fn mount_rk(sid: crate::plex::ServerId, rk: &str) {
     // its control on this hero and offer to navigate to its copies. BOTH halves of the identity:
     // the other server's film with this rk is a different film, and its resolve may be in flight.
     crate::ui::alt_sources::reset(sid, rk);
+    // The About alert dies with the item it was opened for, exactly as the copy list does. It draws
+    // `metadata::current()` and the page is about to clear that for the whole fetch window, so a
+    // surviving panel would be a modal over an item that is no longer loaded — trapping every key
+    // the page sends it while showing nothing.
+    crate::ui::about_panel::close();
 }
 
 /// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
@@ -4285,6 +4337,19 @@ fn about_rows(d: &metadata::Detail) -> &'static AboutRows {
         *slot = Some(AboutRows { rk: d.rk.clone(), info, orig_audio, audio_list, access });
     }
     slot.as_ref().unwrap()
+}
+
+/// The four **Information** facts — `(label, value)` — for the loaded item, out of the same per-item
+/// cache the Information column draws from.
+///
+/// It exists so [`crate::ui::about_panel`] can print them under the synopsis without a second
+/// derivation. The design's reason for putting them there at all is that Information *"is four facts
+/// the hero line already carries, so they ride along under the synopsis instead"* of earning an alert
+/// of its own — which only holds if they are literally the same four facts. A private copy of
+/// `pretty_date` / `dur_long` / the `NR` fallback inside the panel would be four fresh chances for
+/// the page and its own alert to disagree about one item.
+pub(crate) fn about_info(d: &metadata::Detail) -> &'static [(&'static str, String)] {
+    &about_rows(d).info
 }
 
 fn draw_about(p: Painter) {
@@ -6774,6 +6839,11 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) -> bool {
         crate::ui::guard(|| crate::ui::alt_sources::pointer_focus(mx, my));
         return false;
     }
+    // The About alert has no rows for a hover to walk, so it only takes the pointer AWAY from the
+    // page — the same reason its `move_focus` arm swallows the D-pad.
+    if crate::ui::about_panel::is_open() {
+        return false;
+    }
     let mut moved = false;
     crate::ui::guard(|| {
         if let Some((sec, col, row)) = hit_at(mx, my) {
@@ -6792,6 +6862,12 @@ pub(crate) fn click(mx: f32, my: f32) -> bool {
     // reporting a hit would send `app.rs` on to `on_ok`, which would act a second time.
     if crate::ui::alt_sources::is_open() {
         crate::ui::guard(|| request_alt_open(crate::ui::alt_sources::click(mx, my)));
+        return false;
+    }
+    // Same rule for the About alert, which has nothing to commit: any click dismisses it, and is
+    // spent doing so rather than falling through to the page's own hit test.
+    if crate::ui::about_panel::is_open() {
+        crate::ui::guard(|| crate::ui::about_panel::click(mx, my));
         return false;
     }
     let mut hit = false;
