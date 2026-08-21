@@ -1746,7 +1746,7 @@ pub(crate) const GLASS_REGION_BUDGET: f32 = 300_000.0;
 /// already gives the only answer available, so a panel against the frame simply gets a shorter
 /// margin on that side.
 #[inline]
-fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
+pub(crate) fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
     let x0 = (x - BLUR_MARGIN).max(0.0);
     let y0 = (y - BLUR_MARGIN).max(0.0);
     let x1 = (x + w + BLUR_MARGIN).min(SCR_W);

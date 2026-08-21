@@ -1200,20 +1200,180 @@ const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
 /// The caller draws it AFTER its content and BEFORE its chrome, which is the order that lets it be
 /// opaque; `library::draw` has always used that order and it is why its scissor is a bound rather
 /// than a treatment.
+///
+/// **And the obvious idea — make it a BLUR rather than a grey — was built, measured and refused.**
+/// `/tmp/plxnative-navglass` is that build, still here and still off: the whole band becomes a
+/// backdrop-blurred surface and these three rects become its frost at [`NAV_GLASS_FROST`] of their
+/// weight. It looks like what it should look like, on the Library. It is also **far cheaper than
+/// the region arithmetic says** — 58 fps where `docs/glass-hardware-budget.md`'s law predicted 45
+/// — and it still loses, on the one number that answers the question: these two screens hold a
+/// flawless 60 today with no frame over 20.6 ms, and with the material every second's worst frame
+/// is ~26 ms. Numbers, both screens, both ways, and what the harness scenes could NOT see:
+/// `docs/glass-hardware-budget.md` §11. Reach for the trigger before proposing it again; do not
+/// reach for it to ship it.
 pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll: f32) {
     let a = (scroll / NAV_SCRIM_IN).clamp(0.0, 1.0);
     let gap = content_top - chrome_bottom;
     if a <= 0.004 || gap <= 0.0 {
         return;
     }
-    let base = theme::SURFACE_APP;
-    let knee_col = theme::with_a(base, NAV_SCRIM_KNEE_A);
-    let knee = chrome_bottom + gap * NAV_SCRIM_KNEE_F;
+    // The prototype material draws NOTHING into a blur source pass — the same rule
+    // [`draw_tab_row`] follows, and for the same reason: the snapshot this band frosts must be the
+    // live page, not a grey copy of the band itself. Left in, the band would blur its own veil and
+    // the material would show a flat wash however far the grid had scrolled.
+    if crate::gfx::blur_source_pass() && nav_glass_wanted() {
+        return;
+    }
     let ps = p.alpha(a); // the appear rides the cascade — all three bands together
+    let frost = if nav_glass_on() && nav_glass_backdrop(ps, content_top) { NAV_GLASS_FROST } else { 1.0 };
+    nav_scrim_bands(ps, chrome_bottom, content_top, frost);
+}
+
+/// The three bands, at `frost` of their full weight — 1.0 for the opaque treatment, and
+/// [`NAV_GLASS_FROST`] over a live backdrop.
+///
+/// One function for both paths so the two can never become two different curves: the glass path is
+/// the flat path's own ramp scaled, which is what makes "the material is the same shape, lighter"
+/// an executable statement rather than a claim (`nav_scrim_stops` and its test).
+fn nav_scrim_bands(ps: Painter, chrome_bottom: f32, content_top: f32, frost: f32) {
+    let (base, knee_col, clear) = nav_scrim_stops(frost);
+    let knee = chrome_bottom + (content_top - chrome_bottom) * NAV_SCRIM_KNEE_F;
     let w = crate::ui::consts::SCR_W;
     ps.rect(Rect::new(0.0, 0.0, w, chrome_bottom), 0.0, base, base, 0.0);
     ps.rect(Rect::new(0.0, chrome_bottom, w, knee - chrome_bottom), 0.0, base, knee_col, 0.0);
-    ps.rect(Rect::new(0.0, knee, w, content_top - knee), 0.0, knee_col, theme::with_a(base, 0.0), 0.0);
+    ps.rect(Rect::new(0.0, knee, w, content_top - knee), 0.0, knee_col, clear, 0.0);
+}
+
+/// The band's three colour stops at `frost` of full weight — solid, knee, nothing.
+fn nav_scrim_stops(frost: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
+    let base = theme::SURFACE_APP;
+    (
+        theme::with_a(base, frost),
+        theme::with_a(base, NAV_SCRIM_KNEE_A * frost),
+        theme::with_a(base, 0.0),
+    )
+}
+
+latched_flag!(
+    /// **`/tmp/plxnative-navglass` — the scroll band as a frosted MATERIAL instead of an opaque
+    /// grey one.** Default OFF, and it stays off: see [`nav_glass_rect`] for the arithmetic and
+    /// `docs/glass-hardware-budget.md` §11 for the television measurement that decided it.
+    ///
+    /// The idea is the obvious one — content scrolling under the top chrome should FROST rather
+    /// than dissolve into flat grey — and it is behind a trigger because the question it raises is
+    /// not a taste question. Measured on the set: the Library grid goes from a flawless 60 fps to
+    /// 58, and its worst frame each second from ~19 ms to ~26. Arm this and look at it before
+    /// proposing the idea again; do not arm it to ship it.
+    fn nav_glass_armed = "navglass";
+);
+
+/// How much of the flat treatment's weight the material keeps.
+///
+/// The band's whole job is to be legible ground for the chrome standing on it, and at `frost = 0`
+/// the tab pills' [`theme::TEXT_TERTIARY`] labels would sit on whatever poster happened to be
+/// passing. The density wanted is between the bar's own [`theme::Material::UltraThin`] 0.28 and a
+/// popover's 0.72 — a container you look PAST, but one carrying the app's only navigation — and
+/// that is [`theme::Material::Regular`], the rung the ladder already puts there. It was written out
+/// as a bare `0.62`, which is the same weight to within two percent of alpha and a fourth
+/// un-tokenised density in a system whose whole point is that there are five.
+///
+/// **The frost and the sample radius come from DIFFERENT rungs here, and that is deliberate rather
+/// than a drift.** `Material` is meant to hand over both halves from one name ([`panel_material`]
+/// says so in as many words), and this surface breaks that on purpose: [`nav_glass_backdrop`]
+/// passes `UltraThin` so the backdrop takes the CHEAPEST fetch there is — the measurement had to be
+/// a floor, not a representative sample — while the frost is the weight the chrome actually needs
+/// to stand on. If this were ever unrefused the two would have to be reconciled to one name, and
+/// the cost re-measured at that name.
+///
+/// It scales all three stops rather than replacing them, so the ramp keeps its knee — see
+/// [`nav_scrim_bands`].
+const NAV_GLASS_FROST: f32 = theme::Material::Regular.frost();
+
+/// How far past the panel the band's geometry is pushed on its three off-screen sides.
+///
+/// `fs_glass` puts its chamfer, lens and specular hairline within the rim's reach of every edge,
+/// and a band that spans the frame must not be ringed by a lit border down its left and right. Only
+/// the BOTTOM edge is meant to be seen, so only that one stays on the panel. The bleed costs nothing
+/// in region — `gfx::blur_region` clamps to the screen — which is exactly why it is free to use.
+/// Same trick, same reason, as `glassload`'s `NAV_BLEED`.
+const NAV_GLASS_BLEED: f32 = 80.0;
+
+static mut NAV_GLASS_STATE: GlassState = GlassState::new();
+
+/// Will this band wear the material this frame, ignoring the source pass?
+///
+/// **A popover takes it away**, on the tab track's argument one size larger: two glass surfaces in
+/// a frame converge on ONE grab, and a band across the top unioned with a panel in the middle is the
+/// whole-screen capture the region limit exists to avoid.
+fn nav_glass_wanted() -> bool {
+    nav_glass_armed() && !crate::ui::popover::any_open()
+}
+
+/// …and the source-pass clause: a page being drawn AS a blur source never wears the material it is
+/// producing.
+fn nav_glass_on() -> bool {
+    nav_glass_wanted() && !crate::gfx::blur_source_pass()
+}
+
+/// **The rectangle the band is charged for — and the number that turned out NOT to decide it.**
+///
+/// A glass surface costs its rect grown `gfx::BLUR_MARGIN` on every side, clamped to the panel.
+/// This one spans the full width, so the growth that matters is vertical only: the Library's
+/// `content_top` of 214 prices at 1920 x 302 = 579,840 px², and Search's 248 at 1920 x 336 =
+/// 645,120, against a `gfx::GLASS_REGION_BUDGET` of 300,000. Both are about twice over, which
+/// `docs/glass-hardware-budget.md`'s region law calls 45 fps at best.
+///
+/// **On the television it measured 58, and that prediction is now retired** — the law was taken on
+/// the capture path and the DIRECT source path renders the page again at quarter scale, which makes
+/// the region term about 4x cheaper (NOT a sixteenth: the chain's up pass is `region / 4` and is the
+/// largest thing that path writes — §11 has the pass table). What is left binding is the COMPOSITE,
+/// charged at the surface at full resolution and discounted by neither path, and this band's
+/// 1920 x 214 is 4.7x the largest area anything in that document ever measured. It is why the
+/// arithmetic below is kept as a test and NOT as the price: it counts the term that turned out not
+/// to decide. The band was refused on what it actually costs (§11): the two screens hold a flawless
+/// 60 with nothing over 20.6 ms today, and the material puts 206 frames a run past 20 ms and every
+/// second's worst frame at ~26. The test below keeps the ARITHMETIC honest; the doc keeps the
+/// measurement.
+fn nav_glass_rect(content_top: f32) -> Rect {
+    let b = NAV_GLASS_BLEED;
+    Rect::new(-b, -b, crate::ui::consts::SCR_W + 2.0 * b, content_top + b)
+}
+
+/// The band's backdrop. `false` — a driver with no render target — leaves the caller its opaque
+/// ground, which is the same fallback every other glass surface here takes.
+fn nav_glass_backdrop(ps: Painter, content_top: f32) -> bool {
+    Glass::DYNAMIC_BACKDROP.backdrop(
+        ps,
+        nav_glass_rect(content_top),
+        0.0,
+        0.0,
+        [1.0, 1.0, 1.0, 1.0],
+        // A container, like the track and the panel: the shallow chamfer and the long lens. Only
+        // the bottom edge is on the panel, so this is what defines the line the blur stops at —
+        // the material cannot RAMP its own blur, so it has to end at an edge somebody drew.
+        crate::gfx::GlassRim::Standing,
+        // The three bands above are the face, and they are a vertical ramp with a knee that a
+        // two-stop `GlassFace` cannot express.
+        crate::gfx::GlassFace::NONE,
+        // The band is chrome you look past, and this is also the CHEAPEST material there is (one
+        // fetch, no widened re-sample). If the measurement fails here it fails everywhere.
+        theme::Material::UltraThin,
+    )
+}
+
+/// Resolve the band's glass cadence BEFORE the page it sits on draws — `Glass::prepare`'s contract,
+/// exactly as [`tab_glass_prepare`] does for the track. Both step the one shared `DynamicClock`, and
+/// a second call in a present is a no-op by construction, so the two owners cannot multiply the
+/// snapshot rate between them.
+pub(crate) fn nav_glass_prepare() {
+    if !nav_glass_on() {
+        return;
+    }
+    let state = unsafe { &mut *std::ptr::addr_of_mut!(NAV_GLASS_STATE) };
+    Glass::DYNAMIC_BACKDROP.prepare(
+        state,
+        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+    );
 }
 
 /// **The top-left profile chip** — the whole control, not just its picture: the avatar texture (or
@@ -4054,6 +4214,76 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The scroll band's glass is about TWICE the region a moving host can carry, on both of the
+    /// screens that draw one** — the arithmetic that closed `/tmp/plxnative-navglass`, written as a
+    /// test so nobody re-derives it optimistically.
+    ///
+    /// A glass surface is charged for its rect grown [`crate::gfx::BLUR_MARGIN`] a side and clamped
+    /// to the panel. This band spans the full width, so only the vertical growth is left to pay
+    /// for, and there is nothing a design can do about it: the band's height IS the chrome it backs.
+    ///
+    /// The measurement that follows the arithmetic is in `docs/glass-hardware-budget.md` §11.
+    #[test]
+    fn the_scroll_band_is_twice_the_glass_region_budget_on_both_screens() {
+        let area = |content_top: f32| {
+            let r = nav_glass_rect(content_top);
+            let reg = crate::gfx::blur_region(r.x, r.y, r.w, r.h);
+            reg[2] * reg[3]
+        };
+        let lib = area(crate::ui::library::GRID_TOP);
+        let search = area(crate::ui::search::CONTENT_TOP);
+        assert_eq!(lib, 1920.0 * 302.0, "the Library band: 1920 wide, 0..214 grown 88 below");
+        assert_eq!(search, 1920.0 * 336.0, "Search's field sits 34px lower, and the band with it");
+        for (name, a) in [("library", lib), ("search", search)] {
+            assert!(
+                a > 1.9 * crate::gfx::GLASS_REGION_BUDGET,
+                "{name}: {a} px^2 against a {} budget — the arithmetic that made this look \
+                 hopeless before it was built. What refused it is the MEASUREMENT in \
+                 docs/glass-hardware-budget.md §11, not this ratio; §11 also records that the \
+                 direct source path makes the region term about 4x cheaper than the budget \
+                 assumes, and that what actually binds is the SURFACE's composite, not this.",
+                crate::gfx::GLASS_REGION_BUDGET,
+            );
+        }
+    }
+
+    /// **The material is the flat treatment's own ramp, scaled** — one curve, two weights.
+    ///
+    /// The knee is the part worth pinning. A band whose stops were solved independently for the two
+    /// paths could hold its chrome legible in one and not the other, and only the television would
+    /// say which.
+    #[test]
+    fn the_glass_band_is_the_opaque_band_scaled_by_its_frost() {
+        let (base, knee, clear) = nav_scrim_stops(1.0);
+        assert_eq!(base, theme::SURFACE_APP, "the flat path is untouched: a solid app-grey floor");
+        assert_eq!(knee[3], NAV_SCRIM_KNEE_A);
+        assert_eq!(clear[3], 0.0);
+
+        let (gbase, gknee, gclear) = nav_scrim_stops(NAV_GLASS_FROST);
+        assert_eq!(gbase[3], NAV_GLASS_FROST);
+        assert_eq!(gknee[3], NAV_SCRIM_KNEE_A * NAV_GLASS_FROST);
+        assert_eq!(gclear[3], 0.0, "both paths reach nothing at the content line");
+        assert_eq!(
+            gknee[3] / gbase[3],
+            knee[3] / base[3],
+            "the knee sits at the same FRACTION of the floor in both materials",
+        );
+        for i in 0..3 {
+            assert_eq!(gbase[i], base[i], "channel {i}: the same grey, only lighter");
+        }
+    }
+
+    /// The trigger is OFF in a build nobody armed, which is the whole promise the item was left on.
+    #[test]
+    fn the_scroll_band_material_is_off_unless_its_trigger_is_armed() {
+        assert!(
+            !crate::dev::flag("navglass"),
+            "the host suite must not be run with /tmp/plxnative-navglass armed",
+        );
+        assert!(!nav_glass_wanted(), "default OFF: nothing changes for anyone");
+        assert!(!nav_glass_on());
+    }
 
     /// **[`GLASS_TRACK_MAX`] is the budget, solved for width** — asserted rather than asserted-in-a-
     /// comment, because the two numbers live in different files and the one that moves is the
