@@ -123,6 +123,38 @@ static void install_crash_tracer(void) {
 #endif
 }
 
+/* Where this INSTALL's runtime files live — `/tmp/plxnative-events.log` for the app users get,
+ * `/tmp/com.beb.plxnative.debug/plxnative-events.log` for a developer build installed beside it.
+ *
+ * The answer comes from Rust (`plx_runtime_path`, rust-modules/src/paths.rs) rather than from a
+ * literal here, and that is the whole point: this file opens three logs before a single line of
+ * Rust runs, and `crate::log` and the panic hook then append to two of them. Two definitions of
+ * "where" — one in C, one in Rust — is the split-brain paths.rs documents at length: main.c would
+ * truncate a log at /tmp while Rust wrote to another, and the crash report built afterwards would
+ * be missing whichever half you did not look at. One resolver, asked twice, cannot disagree.
+ *
+ * Safe to call this early: the resolver touches nothing but its own lazily-initialised path and
+ * must not log (it would re-enter that initialisation). If it ever fails — a path longer than the
+ * buffer — the literal below keeps the behaviour every release so far has had, which is the right
+ * fallback because the app users get is exactly the one whose root IS `/tmp`.
+ *
+ * Two static buffers, alternated per call. No CURRENT call site holds two results at once — the
+ * stderr pair completes its `open_log_0600(...); fclose(...)` before the `freopen` beside it is
+ * evaluated — so this is cheap insurance for a future one that does, not a hazard being averted.
+ * Said plainly because the first version of this comment claimed the collision was live, which is
+ * the kind of invented justification that makes a reader distrust the rest of the file. */
+extern int plx_runtime_path(const char *name, char *out, size_t cap);
+
+static const char *runtime_path(const char *name) {
+    static char buf[2][256];
+    static int slot = 0;
+    char *b = buf[slot];
+    slot ^= 1;
+    if (plx_runtime_path(name, b, sizeof buf[0])) return b;
+    snprintf(b, sizeof buf[0], "/tmp/%s", name);
+    return b;
+}
+
 /* Open the event log TRUNCATED (fresh each launch, as `make run` and tests/run.py both assume)
  * but in APPEND mode, so every write lands at end-of-file.
  *
@@ -137,7 +169,7 @@ static void install_crash_tracer(void) {
  * Mode 0600 because this file records the server name, the LAN address, Plex Home profile names
  * and episode titles, and /tmp is world-readable. */
 static FILE *open_event_log(void) {
-    int fd = open("/tmp/plxnative-events.log", O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+    int fd = open(runtime_path("plxnative-events.log"), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
     return fd >= 0 ? fdopen(fd, "a") : NULL;
 }
 
@@ -162,11 +194,13 @@ static FILE *open_log_0600(const char *path, int flags) {
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     elogf = open_event_log();
-    clogf = open_log_0600("/tmp/plxnative-crash.log", O_APPEND); /* append: keep prior crashes across relaunches */
+    clogf = open_log_0600(runtime_path("plxnative-crash.log"), O_APPEND); /* append: keep prior crashes across relaunches */
     /* stderr is REPLACED, so it must go through freopen — but create the file at 0600 first, and
-     * freopen's "a" then reuses that inode rather than making a fresh 0644 one. */
-    { FILE *s = open_log_0600("/tmp/plxnative-stderr.log", O_TRUNC); if (s) fclose(s); }
-    freopen("/tmp/plxnative-stderr.log", "a", stderr); /* capture abort/assert text */
+     * freopen's "a" then reuses that inode rather than making a fresh 0644 one. Two calls to
+     * runtime_path(), which alternates buffers, so they cannot alias even though the first result
+     * is dead by the time the second is taken. */
+    { FILE *s = open_log_0600(runtime_path("plxnative-stderr.log"), O_TRUNC); if (s) fclose(s); }
+    freopen(runtime_path("plxnative-stderr.log"), "a", stderr); /* capture abort/assert text */
     install_crash_tracer();
     /* request BACK key delivery from the webOS access policy (before SDL init) */
     setenv("SDL_WEBOS_ACCESS_POLICY_KEYS_BACK", "true", 1);

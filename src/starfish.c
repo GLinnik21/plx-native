@@ -326,7 +326,20 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
 long acb_create(const char *appId, int playerType) {
     if (vp_mode() != VP_ACB) return 0;
     g_acb = acb.create();
-    if (g_acb) acb.initialize(g_acb, playerType, appId ? appId : "com.beb.plxnative", acb_cb);
+    /* NO FALLBACK ID. This used to substitute the shipped app's literal id for a NULL `appId`,
+     * which was the far half of a double fallback: the Rust side read `getenv("APPID")` and passed
+     * NULL when SAM had not exported it, and this line then quietly claimed to be the app users
+     * install. With a developer build able to sit beside that app on one television, a wrong id
+     * here binds the video plane for the WRONG application — audio with a black plane, no error
+     * line anywhere. The near half is fixed (`engine::acb_init_acb` now passes
+     * `paths::app_id()`, read from the install directory, which cannot be absent); refusing here
+     * rather than guessing is what keeps the pair readable together. */
+    if (g_acb && appId) {
+        acb.initialize(g_acb, playerType, appId, acb_cb);
+    } else if (g_acb && elogf) {
+        fprintf(elogf, "acb: no appId — NOT initialized; video will not bind\n");
+        fflush(elogf);
+    }
     return g_acb;
 }
 void acb_bind(const char *mediaId) {

@@ -118,7 +118,7 @@ fn link_of_code(c: u8) -> Option<Location> {
 
 /// The device facts of the playback identity. Shared with the plex.tv transport — see
 /// [`identity`](super::identity) for why these stopped being literals in this file.
-use super::identity::{DEVICE, DEVICE_NAME, MODEL, PROVIDES};
+use super::identity::{device_name, DEVICE, MODEL, PROVIDES};
 
 impl Client {
     /// Build a client for ONE server. `pub(super)`: a `Client` nobody can reach is useless, so
@@ -156,7 +156,7 @@ impl Client {
             .str("X-Plex-Platform", &self.platform)
             .str("X-Plex-Platform-Version", super::identity::platform_version())
             .str("X-Plex-Device", DEVICE)
-            .str("X-Plex-Device-Name", DEVICE_NAME)
+            .str("X-Plex-Device-Name", device_name())
             .str("X-Plex-Model", MODEL)
             .str("X-Plex-Provides", PROVIDES)
     }
