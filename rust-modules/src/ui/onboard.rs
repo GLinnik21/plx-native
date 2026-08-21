@@ -42,8 +42,10 @@ use std::ptr::{addr_of, addr_of_mut};
 /// bar-wearing screens use, which this route does not draw — the alignment is what makes the copy
 /// and the list read as one screen rather than two panes.
 const ROUTE_TOP: f32 = 150.0;
-/// The copy column: the product's one text column, `HERO_COL_W`, at the page margin.
-const COPY_W: f32 = 660.0;
+/// The copy column: the product's one text column, at the page margin. It IS
+/// [`home::HERO_COL_W`](crate::ui::home::HERO_COL_W) rather than a second 660 — this doc named that
+/// constant while the literal beside it was a copy, which is one edit away from two text columns.
+const COPY_W: f32 = crate::ui::home::HERO_COL_W;
 /// The list column's left edge (`--route-list-x`); it runs to the opposite page margin.
 const LIST_X: f32 = 930.0;
 /// The one action's minimum measure. A pill still SIZES itself from its label through the

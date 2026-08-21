@@ -3475,8 +3475,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // can show IMMEDIATELY (and all it can show offline); this is what makes a share
                 // granted since the last sign-in ever appear at all. Non-destructive on failure.
                 crate::auth::refresh_roster_online();
+                // WHO is watching, before anything reads a per-profile store. It drives the Home
+                // profile chip, and it is also what `browse::resolve_pins` and
+                // `ui::search::recents` key on — `install_pms` below ends in the section fetch
+                // that resolves the Home selection, so set after it that resolve ran against the
+                // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
+                // way into Home, already sets it before its own `install_pms` for this reason.)
+                crate::plex::session::set_current(Some(session.user.clone()));
                 install_pms(&session.server.address, session.server.port as c_int, session.pms_token());
-                crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
                 log("boot: stored session — local server (offline-capable)");
                 BootTo::Home
             }
@@ -6091,7 +6097,7 @@ mod route_tests {
             assert!(BarHost::of(over.route()) == Some(over));
         }
         // a route with no chip on it opens no popover at all — the guard in `chip_activate`
-        for r in [Route::Detail, Route::Person, Route::Login, Route::Profiles,
+        for r in [Route::Detail, Route::Person, Route::Login, Route::Profiles, Route::Onboard,
                   Route::Player { overlay: Overlay::None }, Route::ItemMenu { over: MenuHost::Detail }] {
             assert!(BarHost::of(r).is_none(), "only the three bar screens carry the profile chip");
         }
@@ -6240,7 +6246,7 @@ mod player_return_tests {
         assert_eq!(page(Route::Detail), det(A, "7"), "the detail page's Play/Resume and filmstrip");
         // The three boot gates and the player itself are unreachable as launch origins; they must
         // still name a page, and Home is the one that is always there.
-        for r in [Route::Login, Route::Profiles, Route::Player { overlay: Overlay::None }] {
+        for r in [Route::Login, Route::Profiles, Route::Onboard, Route::Player { overlay: Overlay::None }] {
             assert_eq!(page(r), Node::Home);
         }
     }
