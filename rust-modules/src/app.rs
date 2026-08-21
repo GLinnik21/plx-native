@@ -485,9 +485,10 @@ fn hud_visible(now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
     ((now < until || is_paused) && !dismissed) || crate::player::loading()
 }
 
-/// The transport's visibility predicate. Almost nothing else in this file is host-testable — it is
-/// the SDL event loop — but this pair is pure enough to pin, and the bug it encodes cost the
-/// diagnostics overlay its whole reason for existing.
+/// The transport's visibility predicate, and the one state transition that has to OUTRANK it —
+/// a fresh control-row offer. Almost nothing else in this file is host-testable — it is the SDL
+/// event loop — but these two are, and between them they encode the bugs that cost the diagnostics
+/// overlay its whole reason for existing and the Up Next tile its auto-advance.
 #[cfg(test)]
 mod hud_visibility_tests {
     use super::*;
@@ -537,6 +538,70 @@ mod hud_visibility_tests {
         });
         with_state(PlaybackState::Buffering, || {
             assert!(hud_visible(500, 1_000, false, true), "a stall outranks the dismiss");
+        });
+    }
+
+    /// THE Up Next regression: the credits offer has to reach the panel even when the user hid the
+    /// transport BY HAND earlier in the episode.
+    ///
+    /// Three points of one loop iteration are compressed here, in their real order, because the
+    /// failure lived in their COMPOSITION and not in any one of them: the offer edge raises the
+    /// HUD, the auto-hide re-park a few lines below reads `hud_visible`, and the NEXT frame's
+    /// steady-state cancel rule reads the ring. Raising the TIMER alone satisfied the first and
+    /// lost the other two — `dismissed` outranks the timer, so `draw_hud` was never called, the
+    /// invisible HUD's ring was reset the same frame, and `up_next::countdown_may_run` then read
+    /// that as the user walking away and latched the countdown off for the whole segment. The tile
+    /// appeared only if the HUD was raised by hand, with its auto-advance already dead.
+    ///
+    /// The on-device case (`marker_credits_up_next`) cannot see this: it never hides the HUD.
+    #[test]
+    fn a_fresh_offer_reaches_the_panel_through_an_earlier_up_hide() {
+        with_state(PlaybackState::Playing, || {
+            let saved = hud_until();
+            let now = 10_000u32;
+            set_hud(0); // the linger long expired…
+            // …and UP-from-the-control-row on top of it: dismissed, ring back on the scrubber
+            let mut hud = HudState { dismissed: true, ..HudState::IDLE };
+            assert!(
+                !hud_visible(now, hud_until(), false, hud.dismissed),
+                "the state the credits marker arrives into"
+            );
+
+            hud.raise_for_offer(now, crate::ui::up_next::PRIMARY_BTN);
+
+            assert!(
+                hud_visible(now, hud_until(), false, hud.dismissed),
+                "a countdown behind a HUD nobody drew is a cut to the next episode out of nowhere"
+            );
+            assert_eq!(hud.nav.focus, 1, "on the control row, so the auto-hide re-park leaves it");
+            assert!(
+                crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                "…and RESTING on the primary, which is what the next frame's cancel rule asks"
+            );
+            set_hud(saved);
+        });
+    }
+
+    /// The resting-position clause, the other half of the same call: an offer never takes the ring
+    /// off a control the user chose. It still puts the transport on screen — the segment is worth
+    /// seeing either way — but for Up Next this is also how being busy elsewhere DECLINES the
+    /// countdown, since the cancel rule reads the ring as a steady state rather than as an edge.
+    #[test]
+    fn an_offer_leaves_a_user_who_walked_off_the_scrubber_where_they_are() {
+        with_state(PlaybackState::Playing, || {
+            let saved = hud_until();
+            let now = 10_000u32;
+            set_hud(0);
+            // parked on the Chapters tab, which is only reachable by pressing DOWN twice
+            let mut hud = HudState { nav: HudNav { focus: 2, btn: 0, tab: 1 }, ..HudState::IDLE };
+            hud.raise_for_offer(now, crate::ui::up_next::PRIMARY_BTN);
+            assert!(hud_visible(now, hud_until(), false, hud.dismissed), "the offer is still shown");
+            assert_eq!((hud.nav.focus, hud.nav.tab), (2, 1), "their spot is theirs");
+            assert!(
+                !crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                "engaging the transport is not consent to be pulled into the next episode"
+            );
+            set_hud(saved);
         });
     }
 }
@@ -936,6 +1001,38 @@ impl HudState {
     /// Focus at rest, nothing dismissed, no segment seen yet, discs in the control row.
     const IDLE: HudState =
         HudState { nav: HudNav::HOME, dismissed: false, last_offer: None, was_standin: false };
+
+    /// A FRESH segment offer takes the control row: put the HUD ON SCREEN and, from rest, park the
+    /// ring on the row's primary so a bare OK acts on the offer in one press instead of
+    /// raise-HUD → navigate → OK.
+    ///
+    /// **Clearing the dismissal is half of "on screen", and leaving it out was the bug.**
+    /// [`extend_hud`] moves only the TIMER, and `dismissed` outranks the timer outright inside
+    /// [`hud_visible`] — so a user who UP-hid the transport mid-episode and then touched nothing
+    /// carried that dismissal into the credits, and the Up Next tile was offered to a HUD that
+    /// `draw_hud` was never called for. Being invisible it then lost its ring to the auto-hide
+    /// re-park at the bottom of the same block, which the NEXT frame's steady-state cancel rule
+    /// ([`crate::ui::up_next::countdown_may_run`]) read as the user walking away — latching the
+    /// countdown off for the whole segment. The tile appeared only if the HUD was raised by hand,
+    /// with its auto-advance already dead: exactly as reported. A dismissal is a "not now" that any
+    /// key clears; a segment beginning is that same kind of event, arriving from the player instead
+    /// of the remote, and it must clear it too — which is also what makes an offer behave the same
+    /// whether the HUD auto-hid or was hidden on purpose.
+    ///
+    /// Parking is only ever from REST: a user who walked to the Subtitles disc or an Info tab keeps
+    /// their spot (and for Up Next thereby declines the countdown — the same one rule, read as a
+    /// steady state one block below). `primary` is the occupant's own
+    /// ([`crate::ui::player_hud::ControlSlot::primary_btn`]) — item 0 for a Skip pill, the
+    /// RIGHT-hand one for Up Next, where parking on item 0 would disarm the timer on the frame
+    /// after it armed.
+    fn raise_for_offer(&mut self, now: u32, primary: c_int) {
+        extend_hud(now, HUD_LINGER_MS);
+        self.dismissed = false;
+        if self.nav.focus == 0 {
+            self.nav.focus = 1;
+            self.nav.btn = primary;
+        }
+    }
 }
 // scrub tuning: a press jumps SCRUB_STEP_NS; holding engages a continuous scrub ramping
 // SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second).
@@ -4360,20 +4457,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if let Some((kind, start)) = offer {
                         log(&format!("marker offer: {kind:?} at {}s", start / 1000));
                     }
-                    // A segment beginning raises the HUD and offers the row, so a bare OK acts on it
-                    // in one press instead of raise-HUD → navigate → OK. Only from the RESTING
-                    // position though: a user who deliberately walked to the Subtitles button or the
-                    // Info tab keeps their spot. (The previous version claimed this in a comment and
-                    // then claimed focus unconditionally.)
-                    extend_hud(now, HUD_LINGER_MS);
-                    if hud.nav.focus == 0 {
-                        hud.nav.focus = 1;
-                        // …on the row's PRIMARY, which is item 0 for a Skip pill and the RIGHT-hand
-                        // one for Up Next. Not cosmetic there: the countdown's cancel rule is a
-                        // steady state, so parking on Watch Credits would disarm the timer on the
-                        // frame after it armed and the tile would never count down at all.
-                        hud.nav.btn = ctrl.primary_btn();
-                    }
+                    // A segment beginning puts the HUD ON SCREEN and offers the row — the timer,
+                    // the DISMISSAL and the ring in one act, because raising the timer alone left
+                    // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
+                    // that rule, its resting-position clause and the bug are written down.
+                    hud.raise_for_offer(now, ctrl.primary_btn());
                 } else if crate::ui::player_hud::standin_left_the_ring(hud.was_standin, ctrl, hud.nav.focus == 1) {
                     // The stand-in went away under the focus ring. Without this the row swaps back
                     // to the discs with focus still on it and `btn` still 0, so the next OK opened
@@ -4384,25 +4472,37 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     hud.nav = HudNav::HOME;
                 }
                 hud.was_standin = !ctrl.is_discs();
-                // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to
-                // the next episode out of nowhere. `hud.dismissed` has to clear with it, not just
-                // the timer: a user who UP-hid the HUD and then touched nothing until the credits
-                // still carries the dismissal, which BEATS `extend_hud` inside `hud_visible`, so
-                // the countdown would run behind a tile `draw_hud` never draws and the next
-                // episode would start out of nowhere. Whether they may re-dismiss it is the
-                // cancel's business, one line below — a dismissed HUD is focus off the row.
-                //
-                // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here
-                // rather than at each key arm because every way of taking hold of the row (arrows,
-                // a click, walking away to the tabs) ends up as a cursor position by the time this
-                // frame draws. Reading it as a steady state is what makes that true.
-                if crate::ui::up_next::armed() {
-                    if crate::ui::up_next::countdown_may_run(hud.nav.focus == 1, hud.nav.btn) {
-                        hud.dismissed = false;
-                        extend_hud(now, HUD_LINGER_MS);
-                    } else {
-                        crate::ui::up_next::cancel();
-                    }
+            }
+            // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to the
+            // next episode out of nowhere. `hud.dismissed` has to clear with it, not just the
+            // timer: a user who UP-hid the HUD and then touched nothing until the credits still
+            // carries the dismissal, which BEATS `extend_hud` inside `hud_visible`, so the
+            // countdown would run behind a tile `draw_hud` never draws. Whether they may
+            // re-dismiss it is the cancel's business, one line below — a dismissed HUD is focus
+            // off the row.
+            //
+            // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here rather
+            // than at each key arm because every way of taking hold of the row (arrows, a click,
+            // walking away to the tabs, opening a panel) ends up as a cursor position and a route
+            // by the time this frame draws. Reading it as a steady state is what makes that true.
+            //
+            // Outside the `Overlay::None` gate above, deliberately: an overlay is the one way of
+            // taking hold of the transport that never moves the ring, and `draw_hud` draws the
+            // control row only for the BARE transport — so gated with the edges above, this block
+            // simply did not run for a tile that was already counting down when the Info card
+            // opened, and it cut to the next episode from behind a panel. The route is the rule's
+            // third input rather than a condition here, so there is still exactly one place that
+            // decides.
+            if matches!(route, Route::Player { .. }) && crate::ui::up_next::armed() {
+                if crate::ui::up_next::countdown_may_run(
+                    matches!(route, Route::Player { overlay: Overlay::None }),
+                    hud.nav.focus == 1,
+                    hud.nav.btn,
+                ) {
+                    hud.dismissed = false;
+                    extend_hud(now, HUD_LINGER_MS);
+                } else {
+                    crate::ui::up_next::cancel();
                 }
             }
             // when the HUD auto-hides, park focus back on the scrubber so the next reveal is clean
