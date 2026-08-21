@@ -273,6 +273,26 @@ impl DvPresentation {
 }
 
 crate::dev::latched_flag!(
+    /// `/tmp/plxnative-dvnonode` — with `-dv` also armed, keep the Dolby Vision **direct play**
+    /// but send **no** `DolbyHdrInfo` node. Diagnostic only, and it exists for one question the
+    /// trigger surface could not otherwise ask.
+    ///
+    /// The two things that changed together the day Profile 5 first direct-played are the
+    /// DECLARATION and the 4K HEVC direct play of a file that had never been fed before. Every
+    /// other combination is reachable by choosing a title — a Profile 8 direct-plays with the node
+    /// or without it, because its gate does not depend on the trigger — but the P5 file has only
+    /// two states, "declared and direct-played" and "refused", since [`Dovi::presentation`]
+    /// answers both halves from one value. This is the missing cell: the same bytes, the same
+    /// path, the declaration alone removed.
+    ///
+    /// Applied at the payload ([`crate::player::engine`]), NEVER at the gate — suppressing the
+    /// node at the gate would send the file to the transcoder and measure a different pipeline.
+    /// Note the resulting picture is expected to be WRONG (an IPT-PQ stream shown as ordinary
+    /// HDR); this knob is for judging cadence, not colour.
+    pub(crate) fn dv_node_suppressed = "dvnonode";
+);
+
+crate::dev::latched_flag!(
     /// `/tmp/plxnative-dv` — **declare Dolby Vision to the pipeline** (the `DolbyHdrInfo` node in
     /// the Starfish Load payload, and with it direct play for a single-layer Profile 5).
     ///

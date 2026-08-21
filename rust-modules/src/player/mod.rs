@@ -731,7 +731,46 @@ fn between(h: &[u8], prefix: &[u8], term: u8) -> Option<Vec<u8>> {
     Some(rest[..end].to_vec())
 }
 
-/// pipeline event on the LIBRARY thread. type 0 = frame presented (num = fed pts).
+/// Monotonic milliseconds, from an origin fixed at the first call.
+///
+/// Not SDL ticks: this is read on the pipeline's own callback thread, and the value is only ever
+/// differenced, so a private origin is enough and owes SDL nothing.
+fn vclock_ms() -> u32 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static T0: OnceLock<Instant> = OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed().as_millis() as u32
+}
+
+/// **The pipeline's `FRAMEREADY` cadence since the last call**: ticks received, and the worst gap
+/// between two consecutive ones in milliseconds. Draining, like
+/// [`crate::ui::idle::take_presents`] — the heartbeat is the one caller, once a second.
+///
+/// **This is a liveness signal, not a frame rate.** See [`sf_on_event`]: the healthy reading on
+/// every codec, resolution and container measured so far is `5` and `201`, because the tick is
+/// ~5 Hz regardless of the stream's frame rate. What it is good for is the opposite question —
+/// whether the pipeline still thinks it is running. A steady `5 / 201` through a picture the
+/// viewer says is stuttering is a real and useful finding: it rules the fault OUT of everything
+/// this process can see, and sends the search to the display side.
+pub(crate) fn vplane_take() -> (u32, u32) {
+    (SHARED.dg_vpres_ct.swap(0, Relaxed), SHARED.dg_vpres_gap.swap(0, Relaxed))
+}
+
+/// pipeline event on the LIBRARY thread. type 0 = `PF_EVENT_TYPE_FRAMEREADY` (num = fed pts).
+///
+/// **`FRAMEREADY` is NOT one callback per decoded frame on this firmware, and reading it that way
+/// is how a stutter investigation gets the wrong answer.** Kodi's Starfish path treats it as one
+/// picture per event, which is where the old "frame presented" gloss here came from. Measured on
+/// webOS 4.10.2 (2026-08-21), it is a **~5 Hz position tick**: a 1080p H264 direct play, a 4K HEVC
+/// direct play and a visibly stuttering Dolby Vision direct play all deliver it 5 times a second,
+/// 201 ms apart, to the millisecond. So [`frames`](crate::player::shared::Shared::frames) counts
+/// TICKS, not frames — which is what `pump`'s `frames >= 2` gate really means (≈400 ms of
+/// playback, not two pictures) and what `ui::stats` really shows.
+///
+/// The consequence for diagnosis: this callback can say the pipeline still believes it is
+/// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
+/// observable from this process at all — the evidence for that lives in the TV's own kernel log
+/// (`kad-hdr`).
 /// Panic-guarded (unwinding into C is UB); touches only SHARED.
 #[no_mangle]
 pub extern "C" fn sf_on_event(ty: c_int, num: i64, s: *const c_char) {
@@ -762,6 +801,16 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     }
     if ty == 0 {
         // a frame was PRESENTED — map fed pts -> real content position
+        //
+        // …and time it. This callback is the ONLY evidence this process ever gets about the video
+        // plane's cadence: our own `fps=` counts GL swaps on the other plane and reads a healthy
+        // 60 straight through a stuttering picture. See `Shared`'s `dg_vpres_*` block.
+        let t = vclock_ms();
+        let prev = SHARED.dg_vpres_at.swap(t, Relaxed);
+        SHARED.dg_vpres_ct.fetch_add(1, Relaxed);
+        if prev != 0 {
+            SHARED.dg_vpres_gap.fetch_max(t.saturating_sub(prev), Relaxed);
+        }
         SHARED.frames.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
