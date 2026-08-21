@@ -5606,6 +5606,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if route_wears_tab_bar(route) {
                             crate::ui::widgets::tab_glass_prepare();
                         }
+                        // The scroll band's prototype material (`/tmp/plxnative-navglass`), on the
+                        // two routes that draw a `widgets::nav_scrim` at all. Self-gated on the
+                        // trigger, so a default build resolves nothing here.
+                        //
+                        // **This list is a duplicate of `nav_scrim`'s CALLER set** — `library::draw`
+                        // and `search::draw`, and nothing else — and unlike `route_wears_tab_bar`
+                        // above it a `matches!` cannot be exhaustive about it, so a third screen
+                        // that adopts the shared scrim would draw a glass surface nobody prepared:
+                        // no `blur_invalidate`, so the band frosts a snapshot one refresh stale.
+                        // `grep -rn nav_scrim rust-modules/src` is the check. Only reachable with
+                        // the trigger armed, which is why it is a comment and not a guard.
+                        if matches!(page_of(route), Route::Library | Route::Search) {
+                            crate::ui::widgets::nav_glass_prepare();
+                        }
                         if matches!(route, Route::Account { .. }) {
                             crate::ui::account_menu::prepare_present(
                                 underlay_moving || crate::ui::idle::present_dirty(),
