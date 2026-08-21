@@ -1,7 +1,13 @@
-//! The Home **profile menu** — a small popover opened from the top-left profile chip, on the SAME
+//! The **profile menu** — a small popover opened from the top-left profile chip, on the SAME
 //! animated [`TableView`] as the in-player subtitle/audio menu. Switch Plex Home profile ("Change
 //! profile" → who's-watching), "Sign out", or "Sign in". The menu only reports the chosen action
 //! via [`on_ok`]; `app.rs` performs the routing.
+//!
+//! It is a popover on **whichever of the three screens wears the shared top bar** — Home, the
+//! Library or Search — because the chip is a stop on all three. That page keeps drawing and
+//! animating underneath and a dismissal returns to it; `app.rs`'s `Route::Account { over: BarHost }`
+//! is what carries it. This module was "the HOME profile menu" while Home was the only screen whose
+//! chip could be pressed.
 //!
 //! **The rows are a function of the account state, and that state is the persisted session** —
 //! `Session::account`, read fresh at each [`open`]. It used to be `session::current().is_some()`,
@@ -36,9 +42,9 @@ pub enum Action {
 /// case, where naming an account we do not have would be the same lie in reverse).
 const HEADER_FALLBACK: &str = "Account";
 
-/// The first production user of dynamic widget glass: Home stays at presentation rate while its
-/// dirty blurred backdrop is refreshed on the shared [`Glass`] cadence — every CHANGED present, so
-/// a settled menu still takes no snapshots at all.
+/// The first production user of dynamic widget glass: the HOST PAGE stays at presentation rate
+/// while this panel's dirty blurred backdrop is refreshed on the shared [`Glass`] cadence — every
+/// CHANGED present, so a settled menu still takes no snapshots at all.
 static mut POP: Popover = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
@@ -178,8 +184,12 @@ pub fn update(dt: f32) {
     table().update(dt, ph - 40.0);
 }
 
-/// Resolve the backdrop cadence before Home draws. The snapshot itself is deliberately deferred
-/// until [`draw`], where the panel sits after every underlay pixel in draw order.
+/// Resolve the backdrop cadence before the HOST PAGE draws. The snapshot itself is deliberately
+/// deferred until [`draw`], where the panel sits after every underlay pixel in draw order.
+///
+/// `underlay_changed` is the motion of that page — `app.rs` scopes each of the three bar screens'
+/// updates ([`crate::ui::idle::scoped_motion`]) so this panel's own appear spring cannot pass for
+/// movement in the page behind it.
 pub fn prepare_present(underlay_changed: bool) {
     if is_open() {
         pop().prepare_present(underlay_changed);

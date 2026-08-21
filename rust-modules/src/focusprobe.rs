@@ -218,7 +218,14 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
                 v.row,
                 v.col,
                 v.recent,
-                crate::ui::search::focused_pill(),
+                // the pill under the ring, from the SHARED bar's one answer. Still `pill=<int>` and
+                // still -1 off the strip: `zone=` on this same line already tells the chip apart
+                // from focus being off the bar, and `tests/keytable.json` is a recorded device
+                // golden — renaming a field there costs a TV run to regenerate, for no new fact.
+                match crate::ui::search::top_focus() {
+                    crate::ui::widgets::TopFocus::Pill(i) => i as i64,
+                    _ => -1,
+                },
                 b(crate::ui::search::focus_is_card()),
                 crate::ui::search::below(),
                 crate::ui::search::clear_index()

@@ -13,7 +13,7 @@ use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0,
+    AmbientWash, Art, Button, CircleButton, ControlStyle, PageDots, HERO_BASE_SCRIM_Y0,
 };
 // `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
 // doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
@@ -44,10 +44,15 @@ const HERO_AUTO_S: f32 = 8.0; // idle seconds between automatic hero flips
 const HERO_NBTN: usize = 3;
 /// The sliding text column's bottom-anchor line. The stack is a FIXED height whatever artwork
 /// lands: the reserved title band (`hero_logo::band_h` = 120) + kicker + 3-line synopsis tops out at
-/// y≈408 for every item ([`hero_stack_top`]). A logo taller than the band (up to
-/// `theme::logo::HERO_H_MAX` = 268) spills upward as PAINT, reaching y=260 at worst — clear of the
+/// y≈387 for every item ([`hero_stack_top`]). A logo taller than the band (up to
+/// `theme::logo::HERO_H_MAX` = 268) spills upward as PAINT, reaching y≈239 at worst — clear of the
 /// top-bar track's bottom edge (`widgets::TOP_BAR_BOTTOM` = 112). The action row and page dots hang
 /// at fixed offsets below this line, so the chrome never jumps between hero items.
+///
+/// (Both numbers were 21px lower — 408 and 260 — until the synopsis joined detail's on the shared
+/// `ui::hero_synopsis` block, `LABEL`/36 instead of `MICRO`/29. A bottom-anchored stack pays for a
+/// taller block by growing UPWARD, which is the whole cost of that change and is why the two host
+/// contracts grading this column read the block's height rather than quoting it.)
 pub(crate) const HERO_TEXT_BOTTOM: f32 = 692.0;
 /// The hero text column's width — the wrap budget for the title/kicker/synopsis and the column a
 /// clearLogo is contained to, so its RIGHT END (`MARGIN_X + HERO_COL_W` = 750) is the worst point
@@ -104,12 +109,9 @@ const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
 /// up. Named because [`Backdrop`]'s update and draw must read the SAME number: one skips the probe,
 /// the other the blit, and a drift between them is a layer the springs believe in and nothing paints.
 const HERO_ART_CULL: f32 = 0.996;
-// top-left profile chip (avatar) rect, recorded each draw for pointer hit-testing (opens the
-// account menu). See draw_chip / profile_chip_click. `chip_expand` is its focus animation — the
-// widget takes the amount as a scalar, and springs belong to the screen, not to a leaf widget.
-static mut profile_chip: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
-static mut chip_expand: Spring = Spring::at(0.0);
-const K_CHIP: f32 = 300.0; // chip unfurl — brisk, a touch stiffer than the hero slide
+// (the top-left profile chip's rect, hit test and unfurl spring all live in `widgets` now — it is
+// the SHARED bar's control, not this screen's, and Home owning them is what left it activatable on
+// Home alone. What Home still owns is where its own focus is: [`top_focus`].)
 
 /// Focus accessors clamp INTO THE LIVE HUB BOUNDS at read time (mirroring Home::env's per-frame
 /// clamp): a hub refetch can shrink the shelves underneath the raw statics, and the OK dispatch
@@ -534,12 +536,12 @@ impl View for Backdrop {
             // what makes the copy readable, and an earlier version of this comment claiming the
             // text band was "y≈550–700" is what sent a tuning pass at the wrong band: the column
             // is bottom-anchored on `HERO_TEXT_BOTTOM` 692 and grows UP, so the title band's top
-            // is at y≈408 (`hero_stack_top`) and the HERO-72 fallback's cap top — baselined on the
-            // band's bottom — at y≈479, where this ramp supplies only ~0.17, around 2:1 over
+            // is at y≈387 (`hero_stack_top`) and the HERO-72 fallback's cap top — baselined on the
+            // band's bottom — at y≈455, where this ramp supplies only ~0.14, under 2:1 over
             // bright art. It cannot be raised to fix that, because at any given y it is uniform
             // across all 1920px: enough alpha up there to rescue the title would put most of a
             // black frame over the whole picture on the title's line. (The clearLogo the band
-            // usually holds paints higher still — to y=260 for a square — where this ramp is
+            // usually holds paints higher still — to y≈239 for a square — where this ramp is
             // nothing at all and only the wedge below is working.)
             let sa = base_scrim_bottom_a(env.hero_a);
             let mid = sa * BASE_SCRIM_MID_K;
@@ -931,13 +933,19 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
     let meta_tv = TextView::new(&meta, theme::size::BODY, d_a).max_lines(1);
     let meta_h = meta_tv.measure_h(col_w);
 
-    // synopsis — the hero's fine-print "info" line (size::MICRO per explicit design direction:
-    // ~11px ink), pixel-wrapped to the hero column. 3 lines is the ceiling: a 4th would push the
-    // pinned action row's clearance into the peeking shelf. The kicker/meta line above stays at
-    // BODY — it's the label the eye needs to catch.
+    // synopsis — the SHARED hero blurb ([`crate::ui::hero_synopsis`]: `size::LABEL` 26 on a 36px
+    // leading in `TEXT_READING`, capped at 3 lines), pixel-wrapped to the hero column. It is
+    // shared because the detail page's hero draws the same role, and for one release the two
+    // disagreed about the rung, the leading AND the ink; that function carries the argument for
+    // the values. Home passes no lead run — an episode PREFIX is the detail hero's, whose blurb is
+    // the episode's own summary; this line is whatever the pooled item says about itself.
+    //
+    // The 3-line cap is also this screen's own ceiling: a 4th line would push the pinned action
+    // row's clearance into the peeking shelf. Raising the rung DID move the whole column up (the
+    // stack is bottom-anchored on `HERO_TEXT_BOTTOM`), by `3 * (36 - 29)` = 21px, which is why the
+    // two layout contracts that quote this block's height read it from `ui::hero_syn_h` now.
     let summary = &hero.summary;
-    let syn = (!summary.is_empty())
-        .then(|| TextView::new(summary, theme::size::MICRO, d_a).leading(29.0).max_lines(3));
+    let syn = (!summary.is_empty()).then(|| crate::ui::hero_synopsis(summary, ""));
     let syn_h = syn.as_ref().map(|tv| theme::space::SM + tv.measure_h(col_w)).unwrap_or(0.0);
 
     // stack the measured blocks up from the anchor, then draw top-down
@@ -1003,7 +1011,20 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     }
     Button::new(plabel.as_ptr(), theme::size::BODY, pill).icon(Icon::Play).focused(hf == 0).draw(env, p);
     CircleButton::new(c"".as_ptr()).icon(Icon::Info).at(info.x, info.y).focused(hf == 1).draw(env, p);
-    CircleButton::new(c"".as_ptr()).icon(Icon::Chevron).at(chev.x, chev.y).focused(hf == 2).draw(env, p);
+    // The pager is a **standalone mark**, not a third button: `ControlStyle::Bare` — idle it is the
+    // chevron alone, with no disc, no rim and no shadow under it, and focused it takes the same
+    // ACCENT disc every control in this row wears. That is the Library A–Z rail's idiom promoted to
+    // a style (`ControlStyle::Bare`'s own doc), so the app has ONE bare-mark treatment.
+    //
+    // Its FRAME is unchanged, which is the part worth keeping: `hero_btns[2]` above is this rect,
+    // so the pointer target does not shrink to the ink, and `hero_focus()` index 2 still addresses
+    // it — the D-pad row, `hero_flip` and the click-and-hold pager are all untouched.
+    CircleButton::new(c"".as_ptr())
+        .icon(Icon::Chevron)
+        .at(chev.x, chev.y)
+        .focused(hf == 2)
+        .style(ControlStyle::Bare)
+        .draw(env, p);
 }
 
 impl View for Hero {
@@ -1478,14 +1499,11 @@ pub(crate) fn home_update(dt: f32) {
         }
         let target = unsafe { addr_of!(snapTarget).read() };
         h.snap.step(target, K_SNAP, dt);
-        // the profile chip's unfurl (stepped here, drawn from `.pos` — home_draw runs at dt=0)
-        unsafe {
-            (*addr_of_mut!(chip_expand)).step(if chip_focused() { 1.0 } else { 0.0 }, K_CHIP, dt)
-        };
-        // the shared tab strip's horizontal scroll, same deal: a server with more libraries than
-        // fit the row reaches the rest by scrolling the focused pill into view. Home is always
-        // this screen's selected tab, so off the band the strip returns to the start.
-        crate::ui::widgets::tab_row_update(0, hero_pill_index(hero_focus()).map(|i| i as c_int).unwrap_or(-1), dt);
+        // the shared top bar's own motion — the strip's horizontal scroll (a server with more
+        // libraries than fit the row reaches the rest by scrolling the focused pill into view),
+        // its travelling capsules, and the profile chip's unfurl. Home is always this screen's
+        // selected tab, so off the band the strip returns to the start.
+        crate::ui::widgets::tab_row_update(0, top_focus(), dt);
         let env = h.env(dt);
         // The backdrop's own springs (the wash dissolve + the two art reveals) — and, inside it, the
         // frame's ONE resolve of each hero layer's texture. It runs AFTER the auto-flip and the slide
@@ -1534,30 +1552,28 @@ pub(crate) fn home_draw() {
         // profile name to its right, and with enough libraries the (centered) track now reaches
         // far enough left to meet it — under the track, the name was painted over by the track's
         // own scrim. Both are the same dark material, so an overlap reads as one band.
-        draw_chip(pk);
+        crate::ui::widgets::profile_chip(pk);
     });
 }
 
-/// Is the chip the focused thing? It is a real focus stop (UP from the hero action row), but only
-/// while the billboard is showing — the grid view has no top-band focus. The ONE predicate the
-/// unfurl spring's target and any future chip state read.
-fn chip_focused() -> bool {
-    hero_focus() == -1 && snap_pos() < 0.5
-}
-
-/// The top-left profile chip — the shared [`widgets::profile_chip`] visual. Records its rect for
-/// pointer hit-testing; a click or UP-in-hero opens the account menu (change profile / sign out).
-/// Focus is handed over as the spring's live position, so the chip unfurls its name capsule.
-fn draw_chip(p: Painter) {
-    let d = crate::ui::widgets::CHIP_D;
-    let r = Rect::new(MARGIN_X, crate::ui::widgets::TOP_BAR_Y, d, d);
-    unsafe { addr_of_mut!(profile_chip).write(r) };
-    crate::ui::widgets::profile_chip(p, r, unsafe { addr_of!(chip_expand).read() }.pos);
-}
-
-/// Pointer hit-test on the profile chip (returns true so the caller opens the account menu).
-pub(crate) fn profile_chip_click(mx: f32, my: f32) -> bool {
-    unsafe { addr_of!(profile_chip).read() }.contains(mx, my)
+/// **Where this screen's focus is on the SHARED top bar** — the one question `widgets` asks of every
+/// screen that wears it, so the chip's unfurl and the strip's capsules are animated in one place
+/// (`widgets::tab_row_update`) rather than three.
+///
+/// Gated on the SNAP as a whole: the top band is only reachable while the billboard is showing, and
+/// diving to the grid always passes back through the action row (`app.rs`'s DOWN arm sends a
+/// negative `hero_fc` to 0 rather than to the grid), so `hero_fc` is never a band value down there.
+/// Stating the gate once here is what makes that an invariant rather than something the pill half
+/// happens to satisfy — it used to hold for the chip and be left implicit for the pills.
+pub(crate) fn top_focus() -> crate::ui::widgets::TopFocus {
+    use crate::ui::widgets::TopFocus;
+    if snap_pos() >= 0.5 {
+        return TopFocus::Away;
+    }
+    match hero_focus() {
+        -1 => TopFocus::Chip,
+        f => hero_pill_index(f).map(TopFocus::Pill).unwrap_or(TopFocus::Away),
+    }
 }
 
 // ---- the loading / empty / error read-out ----------------------------------------------------
@@ -1629,6 +1645,10 @@ fn draw_status(env: &Env, p: Painter) {
 /// up, so it takes everything except the top band — the profile chip and the library tab pills,
 /// the two escapes that still work with no shelves. Split from [`status_activate`] so the rule is
 /// testable without kicking a real fetch.
+///
+/// The chip clause is belt-and-braces since the chip became the shared bar's control: `app.rs`
+/// answers `TopFocus::Chip` before this screen's activation is reached at all. It stays because it
+/// is the RULE — "the top band is not the read-out's" — and the read-out is what the rule is about.
 fn status_takes(hf: c_int) -> bool {
     status_read().is_some() && hf != -1 && hero_pill_index(hf).is_none()
 }
@@ -1818,6 +1838,42 @@ mod tests {
         set_hero_focus(999);
         assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "past the action row clamps to its end");
         set_hero_focus(saved);
+    }
+
+    /// **What Home reports to the SHARED top bar** — the one value `widgets::tab_row_update`
+    /// animates the chip's unfurl and the strip's capsules from, and the one `app.rs` routes OK on.
+    ///
+    /// Two things it must get right, and they used to be two different rules on one screen. The
+    /// chip is `hero_fc == -1` and the pills are the packed negatives, so a single `match` covers
+    /// the band; and the whole band is gated on the SNAP, because the top band is only reachable
+    /// while the billboard is showing. The gate used to be spelled only for the chip
+    /// (`chip_focused`) and left implicit for the pills — true by construction, but true because
+    /// nothing happened to violate it rather than because anything said so.
+    #[test]
+    fn the_top_band_reports_the_chip_and_the_pills_as_one_answer() {
+        use crate::ui::widgets::TopFocus;
+        let _s = crate::testlock::serial(); // `hero_pill_index`'s clamp reads `browse`'s table
+        let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
+        let (saved, snap0) = (hero_focus(), snap_target());
+        set_snap_target(0.0); // the billboard is showing
+
+        set_hero_focus(-1);
+        assert_eq!(top_focus(), TopFocus::Chip, "-1 IS the profile chip");
+        set_hero_focus(hero_focus_for_pill(0));
+        assert_eq!(top_focus(), TopFocus::Pill(0), "…and the packed negatives are the pills");
+        // LEFT off the Home pill is the chip: the same walk the Library and Search adopted, and
+        // the reason it is the same walk is that it is the only one the geometry admits.
+        home_hero_key(SDLK_LEFT);
+        assert_eq!(top_focus(), TopFocus::Chip, "◀ off the first pill reaches the chip");
+        home_hero_key(SDLK_RIGHT);
+        assert_eq!(top_focus(), TopFocus::Pill(0), "▶ walks back onto the pill it left");
+
+        for f in 0..HERO_NBTN as c_int {
+            set_hero_focus(f);
+            assert_eq!(top_focus(), TopFocus::Away, "the action row is not the bar");
+        }
+        set_hero_focus(saved);
+        set_snap_target(snap0);
     }
 
     /// The top band walks the PILLS the strip's projection produces, not the section table — with
@@ -2146,11 +2202,14 @@ mod tests {
     #[test]
     fn the_home_hero_logo_never_reaches_the_top_bar() {
         const META_H: f32 = 28.0 * 1.32; // one line of `size::BODY` at TextView's leading
-        const SYN_H: f32 = 3.0 * 29.0; // three `size::MICRO` lines at the hero's 29px leading
+        // the shared hero blurb at its cap — READ from `ui::hero_syn_h`, never quoted, so a change
+        // to the rung or the leading moves this contract with it instead of silently invalidating
+        // it (it was the literal `3.0 * 29.0` while home's blurb was MICRO/29)
+        let syn_h = crate::ui::hero_syn_h(crate::ui::HERO_SYN_MAXLINES);
         let band = hero_logo::band_h(LogoRung::Hero);
         // the worst case is the TALLEST text stack — it puts the band, and so the spill above it,
         // highest on screen (a shorter summary only pushes the whole column back down)
-        let top = hero_stack_top(band, META_H, theme::space::SM + SYN_H);
+        let top = hero_stack_top(band, META_H, theme::space::SM + syn_h);
         let spill = theme::logo::HERO_H_MAX - band;
         assert!(
             top - spill > crate::ui::widgets::TOP_BAR_BOTTOM,
