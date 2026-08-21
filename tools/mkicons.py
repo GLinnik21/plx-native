@@ -2,6 +2,7 @@
 """Cut the shipped app icons from a single square logo master.
 
     python3 tools/mkicons.py assets/logo-master.png [--band=N] [--splash=assets/splash-master.png]
+    python3 tools/mkicons.py assets/logo-master.png --out-dir=pkg/dev --sizes=80,130 --badge=DEV
 
 Emits `pkg/icon.png` (80), `pkg/largeIcon.png` (130) and, for the webosbrew channel listing,
 `pkg/icon160.png` / `pkg/icon320.png`. With `--splash` it also emits `pkg/splash.png` at exactly
@@ -9,6 +10,31 @@ Emits `pkg/icon.png` (80), `pkg/largeIcon.png` (130) and, for the webosbrew chan
 dev TV actually are (Amazon, Apple TV, Netflix, YouTube — checked, since the field is documented
 in a web-app context and it was not obvious it applies to `type: "native"` at all; it does).
 Re-running this is the only supported way to change any of them.
+
+**`--badge=TEXT` cuts the set for a SECOND INSTALL** — the developer build that lives beside the
+released app on the same television (`com.beb.plxnative.debug`; the Makefile's FLAVOR block is the
+account). The tiles sit side by side in the launcher, so the badge's whole job is to be unmistakable
+at the smallest size webOS ever draws.
+
+It is a full-bleed BOTTOM BAR, and both halves of that are load-bearing rather than taste:
+
+  * **Bottom, not a corner ribbon or dot.** `appinfo.json`'s `iconColor` paints the launcher tile
+    *behind* the icon, and `ci/check-package.py` compares it against the icon's own corner pixel —
+    a gate that exists because a gold tile shipped under a black icon until 2026-08-02 and was
+    invisible in every file, since it only exists once the system composites. A corner mark changes
+    pixel (1,1) and would fail it by ~240 levels; a bottom bar leaves the corner alone, so ONE
+    `iconColor` stays correct for both flavours and the badge needs no descriptor change at all.
+  * **A bar, not a whole-tile tint.** Tinting the tile means moving `iconColor` in lockstep or
+    reproducing exactly the defect above — and it stops looking like the product.
+
+The colours are the app's own `theme::RESUME_FILL` amber over `AMBER_950` ink, i.e. a pair the
+design system already uses on a filled control, so the badge is on-brand while being the one thing
+on the tile that could not be mistaken for the release artwork. The text colour is DERIVED from the
+fill by relative luminance rather than fixed, so a different `--badge-fill` cannot silently produce
+grey-on-grey.
+
+The bar is rasterized NATIVELY at each output size (never scaled from one master), because a 3-px
+stroke scaled 4x down is a smear where a 3-px stroke drawn at 80 is a stroke.
 
 Why a script and not four exports: the target is not "the logo, scaled". LG's icon guide
 (webostv.developer.lge.com/develop/guides/icon) specifies a **126x126 background panel** with the
@@ -52,13 +78,79 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # Fraction of the tile the logo's ink should span horizontally. Mid-pack against the four store
 # icons measured above; also keeps >=5px padding at 130 (130*0.78 -> 101 wide, 14 px each side).
 INK_FRACTION = 0.78
 # (filename, size). 80/130 are LG's; 160/320 are the webosbrew channel's iconUri/detailIconUri.
 TARGETS = (("icon.png", 80), ("largeIcon.png", 130), ("icon160.png", 160), ("icon320.png", 320))
+
+# --- the flavour badge -------------------------------------------------------------------------
+# `theme::RESUME_FILL` (AMBER_300) over `AMBER_950` — the design system's own filled-control pair.
+BADGE_FILL = "#fab82e"
+# Bar height as a fraction of the tile. 22% is 18 px at the 80 px launcher size, which leaves room
+# for a ~10 px cap height — comfortably above the ~8 px floor where a glyph stops being a glyph
+# (the same threshold `--band`'s advice is built on).
+BADGE_BAR = 0.22
+# Cap height as a fraction of the bar, leaving ~22% of the bar as padding above and below.
+BADGE_CAP = 0.55
+# The bold face the app itself renders in. Deliberately NOT `ImageFont.load_default()`, which is an
+# unscalable 10 px bitmap on older Pillow and a differently-metricked fallback on newer — either
+# way it makes the badge's size depend on which machine cut it.
+BADGE_FONT = "pkg/appfont-bold.ttf"
+
+
+def badge_ink(fill: str) -> str:
+    """Black or white over `fill`, whichever has more contrast. Derived, never assumed.
+
+    A fixed ink colour is one `--badge-fill` away from grey-on-grey, and the failure would be a
+    tile nobody can read rather than an error. sRGB relative luminance, WCAG's formula.
+    """
+    def lin(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(fill.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    # Contrast against white is (1.05)/(L+0.05); against black it is (L+0.05)/0.05.
+    return "#1a1204" if (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05) else "#f7fafc"
+
+
+def draw_badge(tile: Image.Image, text: str, fill: str, repo: Path) -> int:
+    """Stamp a full-bleed bottom bar carrying `text`. Returns the bar's height in pixels.
+
+    Drawn at the tile's OWN size — never scaled from a larger master — because at 80 px the bar is
+    18 px tall and the glyphs about 10, and a 4x downsample of either is a smear.
+    """
+    n = tile.size[0]
+    bar = max(1, round(n * BADGE_BAR))
+    cap = max(1, round(bar * BADGE_CAP))
+    face = repo / BADGE_FONT
+    if not face.exists():
+        raise SystemExit(f"{BADGE_FONT} is missing — the badge needs the app's own bold face "
+                         f"(Pillow's default is an unscalable bitmap and would size differently "
+                         f"on every machine)")
+    d = ImageDraw.Draw(tile)
+    d.rectangle([0, n - bar, n, n], fill=fill)
+    # Size the face so the CAP height lands on `cap`, measured on the text actually being drawn
+    # rather than on the font's nominal size — which is em-relative and differs between faces.
+    size = cap
+    for _ in range(12):
+        f = ImageFont.truetype(str(face), size)
+        h = d.textbbox((0, 0), text, font=f)[3] - d.textbbox((0, 0), text, font=f)[1]
+        if h <= 0:
+            break
+        adj = round(size * cap / h)
+        if adj == size:
+            break
+        size = max(1, adj)
+    f = ImageFont.truetype(str(face), size)
+    x0, y0, x1, y1 = d.textbbox((0, 0), text, font=f)
+    # Snap to whole pixels: a fractional origin under any resampling smears a 2-px stem, which is
+    # the same contract `gfx::snap` enforces for 1:1-texel content in the app itself.
+    tx = round((n - (x1 - x0)) / 2) - x0
+    ty = round(n - bar + (bar - (y1 - y0)) / 2) - y0
+    d.text((tx, ty), text, font=f, fill=badge_ink(fill))
+    return bar
 
 
 def ink_bbox(a: np.ndarray, bg: np.ndarray, tol: int = 40) -> tuple:
@@ -109,16 +201,47 @@ def write_splash(src: Path, out: Path) -> None:
     print(f"  {out.name:14s} 1920x1080")
 
 
+#: Every option this script accepts. UNKNOWN FLAGS ARE AN ERROR, and that is not pedantry: the old
+#: parser filtered out everything starting with `--` and read the four it knew, so a typo
+#: (`--outdir=pkg/dev`) silently wrote the BADGED set over `pkg/icon.png`, `pkg/largeIcon.png` and
+#: `pkg/icon160.png` — the last of which release.yml publishes as a raw.githubusercontent URL for
+#: the webosbrew channel listing. One mistyped letter, and the artwork thousands of people see
+#: before installing carries a DEV bar.
+OPTIONS = ("--band=", "--splash=", "--out-dir=", "--sizes=", "--badge=", "--badge-fill=", "--appinfo=")
+
+
+def opt(name: str, default=None):
+    return next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith(name)), default)
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    band_arg = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--band=")), None)
-    splash = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--splash=")), None)
+    bad = [a for a in sys.argv[1:] if a.startswith("--") and not a.startswith(OPTIONS)]
+    if bad:
+        raise SystemExit(f"unknown option(s) {' '.join(bad)} — accepts: {' '.join(OPTIONS)}")
+    band_arg = opt("--band=")
+    splash = opt("--splash=")
+    badge = opt("--badge=")
+    badge_fill = opt("--badge-fill=", BADGE_FILL)
     if len(args) != 1:
         return print(__doc__) or 2
 
     repo = Path(__file__).resolve().parent.parent
+    # WHERE the set is written. A directory rather than a filename prefix, because the packaged
+    # basenames are fixed: `appinfo.json`'s `icon`/`largeIcon` fields name `icon.png` and
+    # `largeIcon.png`, and `ci/check-package.py` grades the ipk payload by BASENAME — so a
+    # `dev-icon.png` would either have to be renamed during staging or drag a per-flavour
+    # descriptor behind it. The flavour lives in the source path and nowhere else.
+    out_dir = repo / opt("--out-dir=", "pkg")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Which sizes. 80 and 130 are the launcher's; 160/320 exist only for the webosbrew channel
+    # listing, which a second install is never in — so `--sizes=80,130` for a flavour.
+    want = opt("--sizes=")
+    targets = TARGETS if want is None else tuple(t for t in TARGETS if str(t[1]) in want.split(","))
+    if not targets:
+        raise SystemExit(f"--sizes={want} selects none of {[n for _, n in TARGETS]}")
     if splash:
-        write_splash(Path(splash), repo / "pkg" / "splash.png")
+        write_splash(Path(splash), out_dir / "splash.png")
     src = Image.open(args[0]).convert("RGB")
     a = np.asarray(src).astype(int)
     bg = a[2, 2].copy()                      # the master's own corner is the panel colour
@@ -141,11 +264,25 @@ def main() -> int:
             note = "   ** unreadable; consider --band **" if at130 < 8 else ""
             print(f"    band {i}: {b - t}px of {ink_h}  -> ~{at130:.1f}px tall at 130{note}")
 
-    was = sync_icon_color(repo / "pkg" / "appinfo.json", hexcolor)
-    print(f"  appinfo.json iconColor {was} -> {hexcolor}"
-          + ("   (unchanged)" if was.lower() == hexcolor else "   ** CHANGED **"))
+    # The descriptor to keep in step, if there is one beside the output. SKIPPED WITH A LINE rather
+    # than falling back to `pkg/appinfo.json`: `sync_icon_color` writes unconditionally, so a
+    # fallback would push a flavour's tile colour into the RELEASED descriptor — the exact
+    # hard-edged-rectangle defect this function exists to prevent, inflicted on the other flavour.
+    # (A flavoured descriptor is derived at package time by ci/flavor.py and is not on disk here,
+    # which is why "absent" is the normal case rather than a mistake.)
+    appinfo = Path(opt("--appinfo=", out_dir / "appinfo.json"))
+    if appinfo.exists():
+        was = sync_icon_color(appinfo, hexcolor)
+        print(f"  {appinfo.name} iconColor {was} -> {hexcolor}"
+              + ("   (unchanged)" if was.lower() == hexcolor else "   ** CHANGED **"))
+    else:
+        print(f"  no {appinfo} beside the output — iconColor not synced; it must already be {hexcolor}")
 
-    for name, n in TARGETS:
+    if badge:
+        print(f"  badge {badge!r} on {badge_fill} / {badge_ink(badge_fill)}"
+              f"  (bar {BADGE_BAR:.0%} of the tile, cap {BADGE_CAP:.0%} of the bar)")
+
+    for name, n in targets:
         target_w = n * INK_FRACTION
         scale = target_w / ink_w
         if ink_h * scale > target_w:          # a tall mark is bounded by height instead
@@ -156,14 +293,26 @@ def main() -> int:
         # LANCZOS: these are downsamples of 4-13x, where a box filter visibly thins the strokes.
         scaled = src.resize((sw, sh), Image.LANCZOS)
         left, upper = round(cx * scale) - n / 2, round(cy * scale) - n / 2
+        # A badge takes the bottom of the tile, so the wordmark is lifted by HALF the bar to stay
+        # optically centred in what is left. Half, not the whole bar: the mark then sits centred in
+        # the visible field above the bar, which is what the eye reads as centred.
+        bar = max(1, round(n * BADGE_BAR)) if badge else 0
         tile = Image.new("RGB", (n, n), tuple(bg))
-        tile.paste(scaled, (round(-left), round(-upper)))
-        out = repo / "pkg" / name
+        tile.paste(scaled, (round(-left), round(-upper) - bar // 2))
+        if badge:
+            draw_badge(tile, badge, badge_fill, repo)
+        out = out_dir / name
         tile.save(out, optimize=True)
         w, h = round(ink_w * scale), round(ink_h * scale)
-        pad = min((n - w) // 2, (n - h) // 2)
+        # Padding is graded against whatever actually bounds the mark. With a badge that is the gap
+        # to the BAR, not to the tile edge — the old expression would have reported LG's >=5px rule
+        # satisfied while the wordmark sat directly on the amber.
+        top_of_mark = round((n - bar) / 2) - h // 2
+        pad = min((n - w) // 2, top_of_mark, (n - bar) - (top_of_mark + h)) if badge \
+            else min((n - w) // 2, (n - h) // 2)
         flag = "" if pad >= 5 else "   ** under LG's 5px minimum padding **"
-        print(f"  {name:14s} {n}x{n}  logo {w}x{h}  padding {pad}px{flag}")
+        print(f"  {out.relative_to(repo)!s:24s} {n}x{n}  logo {w}x{h}"
+              f"{f'  bar {bar}px' if badge else ''}  padding {pad}px{flag}")
     return 0
 
 
