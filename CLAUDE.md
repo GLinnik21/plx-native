@@ -200,6 +200,39 @@ playback is device-verified on 4.10.0 (the dev set) and 6.5.2 (the webosbrew rev
 issue #22 — the `VP_EXPORTED` path works), and `docs/webos5-port.md` §4 is the list of what
 webOS 5+ still needs a human with a television to settle.
 
+**The inventories are SYMBOL LISTS — `name`, `package`, `needed`, `symbols`, and nothing else.**
+So `fwcompat.py` answers "does this release export that function" and cannot answer anything about
+**strings, struct layouts or code**. A JSON payload key like
+`option.externalStreamingInfo.contents.DolbyHdrInfo` lives in `.rodata`, so it is invisible here —
+proving one of those across releases needs the actual `.so` files, not this database. For our own
+set, `.claude/skills/decompile-tv-lib/` harvests and decompiles them; for OTHER releases we have no
+binaries at all today, which is exactly the gap to state out loud rather than infer past.
+
+## Look it up: this platform is under-documented, so search before assuming
+
+Almost nothing about webOS native app development is in anyone's training data, and much of what
+*is* there describes the web-app stack, which is a different world from ours. **Search the internet
+proactively** — do not reason from a symbol name, a header found once, or another client's source
+and call it settled.
+
+- **<https://www.webosbrew.org/develop/>** is the reference for homebrew/native development on
+  these sets: the NDK we build with, the app/package model, jail profiles and install prefixes,
+  and the Homebrew Channel. `https://www.webosbrew.org/webos-userland/` additionally publishes
+  Doxygen for LG's own headers (`StarfishMediaAPIs.h` among them) — a header, not documentation,
+  but often the only public statement of a signature.
+- Also worth searching, in roughly this order of authority: **LG's own published docs**;
+  **source of other clients that drive the same API** (Kodi's webOS port is the closest analogue —
+  it drives StarfishMediaAPIs in the same `BUFFERSTREAM` mode; jellyfin-webos and Plex's own webOS
+  app are NOT analogues, they hand the TV a URL, which is a different pipeline and their results
+  do not transfer); **vendor specs** for formats (Dolby, ITU, RFC); the **openlgtv / webosbrew**
+  community; and the FFmpeg source we vendor.
+- **Grade what you find.** Vendor doc, a spec, or source you can read beats a forum post, which
+  beats a recollection. Say which tier a claim came from. And prefer the `find-docs` skill / `ctx7`
+  for library and SDK documentation over a raw web search.
+- **Nothing external is authority over THIS firmware.** Another client's source proves what some
+  webOS does; only the binaries on the shelf prove what ours does. When the two disagree, or when
+  the answer decides a device session, settle it with `.claude/skills/decompile-tv-lib/`.
+
 ## Runtime architecture (big picture)
 
 Two planes are composited by the TV: the app's **GLES/graphics plane** (UI, drawn by us) sits
