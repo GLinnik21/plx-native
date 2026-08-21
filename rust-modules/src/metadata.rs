@@ -214,10 +214,10 @@ impl Dovi {
     /// call, one answer, two consumers.
     ///
     /// `signal` is whether we are willing to declare Dolby Vision for a stream **whose base layer
-    /// we could not show without it** ([`dv_signal_armed`] — the `/tmp/plxnative-dv` trigger).
-    /// That is narrower than it once was: it used to gate every declaration, and now gates only
-    /// the one profile whose declaration is not yet free of cost. It stays a parameter rather than
-    /// a read inside this function so the whole rule stays pure and both settings are unit-testable.
+    /// we could not show without it** — i.e. Profile 5. It is TRUE in every shipping configuration
+    /// now; `/tmp/plxnative-nodv` ([`dv_withheld`]) is the only thing that clears it, and it exists
+    /// to bisect, not to protect. It stays a parameter rather than a read inside this function so
+    /// the whole rule stays pure and both settings are unit-testable.
     ///
     /// The four arms, and why each is where it is:
     ///
@@ -256,18 +256,17 @@ impl Dovi {
         // **Whether a node will be sent, and the trigger is no longer the whole answer.** A
         // stream whose base layer is already a correct picture on its own declares
         // UNCONDITIONALLY; only one whose base layer is not — Profile 5 — waits behind
-        // [`dv_signal_armed`]. The asymmetry is a MEASUREMENT, not a preference, and it is worth
-        // stating because the two look identical from here: both declare correctly, both put the
-        // panel in Dolby Vision mode, and both are the same three JSON keys. What separates them
-        // is that a declared **P5 hitches** on this set — it loses exactly two frames every ~40 s,
-        // because the display firmware's per-frame lookup misses (`Requested <pts> PTS can not be
-        // found in LUT Buffer`, 3.41/s in a clean run) and the write that would fill that buffer
-        // is never issued by LG's own `dualsequencer`. Nothing in this payload changes that. A
-        // declared **P8 measured 0 and 1 misses over 78 s** on two different films, which is what
-        // a cross-compatible base layer buys: when the dynamic metadata is late the picture falls
-        // back on an HDR10/HLG/SDR image that was already right. So P8.x — 33 of the dev server's
-        // 34 Dolby Vision streams — gains its dynamic metadata for free, and P5 stays behind the
-        // trigger until the hitch is understood or accepted.
+        // [`dv_withheld`]. **Both arms now declare in every shipping configuration**, and the
+        // distinction survives only as a bisect and as the record of why it was ever needed.
+        //
+        // It was needed because a declared **P5 hitched** and a declared P8 did not: P5's display-
+        // management lookup missed for 2 frames in every 12 (`Requested <pts> PTS can not be found
+        // in LUT Buffer`), while a cross-compatible base layer masks the same fault — when the
+        // dynamic metadata is late, an HDR10/HLG/SDR image that was already right is what shows.
+        // That fault was **one 90 kHz tick** in the LUT key and is fixed
+        // ([`crate::player::engine`]'s `pts_nudge_ns`): 3 misses in 90 s on the shipped default,
+        // against 160 in 45 s before. So the asymmetry that put P5 behind a trigger is gone, and
+        // with it the trigger's opt-in polarity.
         //
         // Written through [`base_layer_unusable`](Self::base_layer_unusable) rather than a bare
         // `profile != 5` so the two can no more drift apart here than they can in the gate below.
@@ -294,7 +293,7 @@ impl Dovi {
     /// [`presentation`](Self::presentation) with the trigger read for you — the form both real
     /// call sites use, so the gate and the payload are answered from one latched bool.
     pub(crate) fn presentation_now(&self) -> DvPresentation {
-        self.presentation(dv_signal_armed())
+        self.presentation(!dv_withheld())
     }
 }
 
@@ -373,23 +372,34 @@ crate::dev::latched_flag!(
 );
 
 crate::dev::latched_flag!(
-    /// `/tmp/plxnative-dv` — **declare Dolby Vision to the pipeline** (the `DolbyHdrInfo` node in
-    /// the Starfish Load payload, and with it direct play for a single-layer Profile 5).
+    /// `/tmp/plxnative-nodv` — **withhold the Dolby Vision declaration**, for a bisect. The
+    /// polarity is inverted from what it was, and the inversion is the point.
     ///
-    /// **Default OFF, and that is a deliberate choice for the first device run.** The payload is
-    /// the `sourceInfo` envelope, which the pipeline parses before anything decodes: a malformed
-    /// one does not fail loudly, it wedges the video sink (`player/CLAUDE.md` records a wrong
-    /// audio codec string doing exactly that through `audioSync`). Disarmed, every byte of the
-    /// payload is what shipped yesterday and Profile 5 keeps taking the re-encode path it takes
-    /// today — so a `RELEASE=1` build, where this whole surface is compiled out and [`crate::dev::flag`] is a
-    /// compile-time `false`, behaves exactly as the released one does. Flip the default here once
-    /// the node has been seen to put a correct picture on a real panel.
+    /// This was `/tmp/plxnative-dv`, an opt-IN, default off, with a note in this doc saying to
+    /// flip the default "once the node has been seen to put a correct picture on a real panel".
+    /// The reason for the caution was real — the payload is the `sourceInfo` envelope, which the
+    /// pipeline parses before anything decodes, and a malformed one does not fail loudly, it
+    /// wedges the video sink. The condition has now been met, twice over and on the last profile
+    /// that had not met it:
     ///
-    /// Latched once per process rather than read per call, which is also what guarantees the gate
-    /// and the payload cannot disagree WITHIN a session: `tests/run.py` clears `/tmp/plxnative-*`
+    /// - **the picture is correct** — Profile 5 direct-played, photographed, with the set's own
+    ///   "Dolby Vision / Dolby Atmos" read-out on screen;
+    /// - **and its one measured defect is fixed.** A declared P5 used to lose the display-
+    ///   management lookup for 2 frames in 12 (a ~2 Hz tone pulse); that was one 90 kHz tick in
+    ///   the LUT key and is gone — 3 misses in 90 s on the shipped default, against 160 in 45 s.
+    ///   See `player::engine::pts_nudge_ns`.
+    ///
+    /// So every Dolby Vision stream the pipeline can feed is now declared by default, and this
+    /// knob only takes it away. Note what it does NOT do: withholding the declaration re-imposes
+    /// the old refusal on Profile 5 (`base_layer_unusable`), so this bisects "declared vs
+    /// transcoded", not "declared vs direct-played-undeclared". [`dv_node_suppressed`]
+    /// (`/tmp/plxnative-dvnonode`) is the finer instrument for that, and is why both exist.
+    ///
+    /// Latched once per process rather than read per call, which is what guarantees the gate and
+    /// the payload cannot disagree WITHIN a session: `tests/run.py` clears `/tmp/plxnative-*`
     /// between cases, so an unlatched read could legitimately answer differently at the route
     /// decision and at the Load a few frames later, and direct-play a Profile 5 with no node.
-    pub(crate) fn dv_signal_armed = "dv";
+    pub(crate) fn dv_withheld = "nodv";
 );
 
 // `Default` is for TESTS: every field is a zero/empty that means "PMS did not say", so a fixture
