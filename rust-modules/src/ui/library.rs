@@ -25,6 +25,9 @@
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::*;
+// The Sources ROW MODEL lives one module over, because it is drawn on TWO surfaces: this
+// panel, and the first-run route that asks the same question before Home (`ui::onboard`).
+use crate::ui::source_list::{self, Level, SrcAction, Tail};
 use crate::ui::icons::Icon;
 use crate::ui::popover::{Opener, Popover};
 use crate::ui::table::{Row, Section, TableView};
@@ -272,31 +275,6 @@ enum Chip {
     Filter,
 }
 
-/// The two levels of the Sources panel, swapped by the pills at its top — the same swap the
-/// player's track menu makes between Audio and Subtitles.
-///
-/// They differ in MEDIUM as well as in position, and that is the design's rule: a **mark** says
-/// where you are, a **word** says what is set, and no row ever says both. So Browse draws one tick
-/// and no words, On Home draws every row's word and no ticks — neither level mirrors the other's
-/// marks.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Level {
-    /// a picker: one tick, on the library you are looking at; OK closes the panel
-    Browse,
-    /// toggles: `On`/`Off` at the trailing edge; OK flips and the panel stays open
-    OnHome,
-}
-
-/// What a row of the Sources panel does. Built beside the rows, indexed by the same global row
-/// index the `TableView` reports — including the separator, which does nothing and can never be
-/// focused, but still occupies an index.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SrcAction {
-    None,
-    /// browse (Browse level) or pin (On Home level) this section
-    Library(usize),
-    Recheck,
-}
 /// What an OK / click means for app.rs (everything else is consumed internally).
 pub(crate) enum Action {
     None,
@@ -1640,90 +1618,17 @@ fn menu_stale() -> bool {
     match menu() {
         Menu::Sort { built } => *built != crate::browse::sorts().len(),
         Menu::Genre { built } => *built != crate::browse::genres().len(),
-        Menu::Source { gen, .. } => *gen != crate::browse::sections_gen(),
+        Menu::Source { gen, .. } => *gen != crate::browse::source_list_gen(),
         Menu::Filter | Menu::None => false,
     }
 }
 
 // ---- the Sources list ------------------------------------------------------------------------
-
-/// THE ROW MODEL of the two-level Sources panel, pure over its inputs so it is host-testable
-/// without a live section table (which is also why `browse` hands out owned [`SrcGroup`]/[`SrcRow`]
-/// projections rather than borrows of its statics).
-///
-/// The levels never mirror each other's marks. **Browse** is a picker: one tick, on the library you
-/// are looking at, and no words. **On Home** is a set of switches: every row states its value as
-/// the word `On`/`Off` at the trailing edge, and no ticks. A mark says where you are, a word says
-/// what is set, and no row is allowed to say both.
-///
-/// Returns the sections beside one [`SrcAction`] per global row index — the separator included,
-/// which does nothing but still occupies an index.
-fn source_sections(
-    level: Level,
-    groups: &[crate::browse::SrcGroup],
-    rows: &[crate::browse::SrcRow],
-) -> (Vec<Section>, Vec<SrcAction>) {
-    let mut out: Vec<Section> = Vec::new();
-    let mut acts: Vec<SrcAction> = Vec::new();
-    for (gi, g) in groups.iter().enumerate() {
-        let mine = rows.iter().filter(|r| r.src == gi);
-        // a server whose libraries we have never learned contributes no group at all — a header
-        // over nothing reads as broken, and D's answer for a source that cannot be reached on a
-        // FIRST run is absence
-        if mine.clone().next().is_none() {
-            continue;
-        }
-        // the header is the MACHINE, its accessory the PERSON — the one place in the app a machine
-        // is named, and the reason every other surface can say only the handle. An unreachable
-        // group also SAYS so there, and says it FIRST: the accessory is elided from the right, so
-        // leading with the state means a long handle gives way rather than the fact that the server
-        // is not answering. It is a state in the same register as the rows' own `On`/`Off`.
-        let accessory = match (g.reachable, g.handle.is_empty()) {
-            (true, _) => g.handle.clone(),
-            (false, true) => "Not reachable".to_string(),
-            (false, false) => format!("Not reachable \u{b7} {}", g.handle),
-        };
-        let mut sec = Section::new(g.name.clone()).accessory(accessory).dim(!g.reachable);
-        for r in mine {
-            let mut row = Row::new(r.title.clone());
-            row = match level {
-                Level::Browse => row.checked(r.current).detail(r.count_line.clone()),
-                Level::OnHome => row
-                    .toggle(r.pinned)
-                    // the LAST pinned library: the value dims, the label keeps live ink, and the
-                    // sub-line states the rule. Not the whole row — dim means unavailable, and this
-                    // is the library that works.
-                    .value_dim(r.last_pinned)
-                    .detail(if r.last_pinned {
-                        "Home needs one library".to_string()
-                    } else {
-                        r.count_line.clone()
-                    }),
-            };
-            acts.push(SrcAction::Library(r.section));
-            sec = sec.row(row);
-        }
-        out.push(sec);
-    }
-    // …and the one row that is not a library, last, under a separator. It rides BOTH levels, which
-    // is what keeps their row counts — and therefore the panel's height — identical.
-    if let Some(last) = out.last_mut() {
-        last.rows.push(Row::separator());
-        acts.push(SrcAction::None);
-        // no leading glyph, deliberately: on the Browse level that column carries the picker's
-        // tick, and an action mark in it would be a second grammar for one column
-        last.rows.push(Row::new("Check for new shares"));
-        acts.push(SrcAction::Recheck);
-    }
-    (out, acts)
-}
-
-/// Where the cursor sits. On OPEN it lands on the library you are browsing; on a rebuild — a level
-/// swap, a pin flip, a source's libraries landing — it HOLDS, because the two levels list the same
-/// rows in the same order and the design's whole claim about the swap is that nothing moves.
-fn source_sel(rows: &[crate::browse::SrcRow], keep: Option<i32>) -> i32 {
-    keep.unwrap_or_else(|| rows.iter().position(|r| r.current).map(|i| i as i32).unwrap_or(0))
-}
+//
+// The ROW MODEL is `ui::source_list` — the same builder the first-run route mounts, so the panel
+// and that route cannot drift on which column carries a mark, which carries a word, or what an
+// unreachable group says. What is left here is the panel: its level state, its cursor, and the
+// popover it lives in.
 
 /// Build (or rebuild in place) the Sources panel at the current level.
 fn build_source_menu(keep: bool) {
@@ -1732,11 +1637,11 @@ fn build_source_menu(keep: bool) {
     // only read, so nothing can move between here and the build today — but recording it after
     // would silently adopt a landing this panel was not built from, and that is a rebuild lost
     // rather than one too many.
-    let table_gen = crate::browse::sections_gen();
+    let table_gen = crate::browse::source_list_gen();
     let groups = crate::browse::source_groups();
     let rows = crate::browse::source_rows();
-    let (secs, acts) = source_sections(level, &groups, &rows);
-    let sel = source_sel(&rows, keep.then(|| table().sel));
+    let (secs, acts) = source_list::sections(level, &groups, &rows, Tail::Recheck);
+    let sel = source_list::sel(&rows, keep.then(|| table().sel));
     // the panel IS its key: the generation these rows were projected from and one action per row,
     // installed together and dropped together by [`close_menu`]
     set_menu(Menu::Source { gen: table_gen, acts });
@@ -3042,13 +2947,13 @@ mod tests {
     fn the_two_levels_never_mirror_each_others_marks() {
         let (g, r) = two_sources();
 
-        let (browse, _) = source_sections(Level::Browse, &g, &r);
+        let (browse, _) = source_list::sections(Level::Browse, &g, &r, Tail::Recheck);
         let m = marks(&browse, r.len());
         assert_eq!(m.iter().filter(|(t, _)| *t).count(), 1, "exactly one tick — the library you are on");
         assert!(m[0].0, "…and it is on the current library");
         assert!(m.iter().all(|(_, w)| w.is_none()), "Browse states no values: no pins are drawn here");
 
-        let (home, _) = source_sections(Level::OnHome, &g, &r);
+        let (home, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         let m = marks(&home, r.len());
         assert!(m.iter().all(|(t, _)| !t), "On Home draws no ticks — it is not a picker");
         assert_eq!(
@@ -3065,7 +2970,7 @@ mod tests {
     #[test]
     fn a_server_is_a_group_and_an_unreachable_one_dims_whole_while_still_reading_on() {
         let (mut g, r) = two_sources();
-        let (secs, _) = source_sections(Level::OnHome, &g, &r);
+        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         assert_eq!(secs.len(), 2);
         assert_eq!((secs[0].header.as_str(), secs[0].accessory.as_str()), ("mac-mini", ""));
         assert_eq!((secs[1].header.as_str(), secs[1].accessory.as_str()), ("nas-home", "friend"));
@@ -3074,7 +2979,7 @@ mod tests {
         g[1].reachable = false;
         let mut r = r;
         r[2].pinned = true; // pinned AND unreachable: the state the design calls out by name
-        let (secs, _) = source_sections(Level::OnHome, &g, &r);
+        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         assert!(secs[1].dim, "the whole group dims, header included");
         assert!(!secs[0].dim, "…and only that group");
         assert_eq!(secs[1].rows[0].toggle, Some(true), "it still reads On — nothing was turned off");
@@ -3083,7 +2988,7 @@ mod tests {
 
         // a source whose libraries we never learned contributes no group at all: a header over
         // nothing reads as broken, and absence is the answer for a share that has never answered
-        let (secs, _) = source_sections(Level::Browse, &g, &r[..2]);
+        let (secs, _) = source_list::sections(Level::Browse, &g, &r[..2], Tail::Recheck);
         assert_eq!(secs.len(), 1);
     }
 
@@ -3094,7 +2999,7 @@ mod tests {
     fn the_last_pinned_library_dims_its_value_and_states_the_rule() {
         let g = vec![group("mac-mini", "", true)];
         let r = vec![lib(0, 0, "Movies", true, true, true), lib(0, 1, "TV Shows", false, false, false)];
-        let (secs, _) = source_sections(Level::OnHome, &g, &r);
+        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         let last = &secs[0].rows[0];
         assert!(last.value_dim, "the value dims");
         assert!(!last.dim, "the label keeps live ink — the row is not unavailable");
@@ -3111,7 +3016,7 @@ mod tests {
     fn the_recheck_row_sits_last_under_a_separator_on_both_levels() {
         let (g, r) = two_sources();
         for level in [Level::Browse, Level::OnHome] {
-            let (secs, acts) = source_sections(level, &g, &r);
+            let (secs, acts) = source_list::sections(level, &g, &r, Tail::Recheck);
             let rows: Vec<&Row> = secs.iter().flat_map(|s| s.rows.iter()).collect();
             assert_eq!(rows.len(), acts.len(), "one action per row index, separator included");
             assert_eq!(rows.len(), r.len() + 2, "three libraries, a separator and the recheck row");

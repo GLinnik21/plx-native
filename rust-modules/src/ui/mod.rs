@@ -28,6 +28,8 @@ pub mod label;
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+pub mod onboard; // first-run route: which sources feed Home, asked once per PROFILE
+pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
 pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
