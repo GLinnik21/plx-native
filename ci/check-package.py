@@ -11,6 +11,9 @@ import struct
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flavor  # noqa: E402  — ci/flavor.py, the one descriptor transform
+
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
 
@@ -47,15 +50,56 @@ def font_family(p: Path) -> str:
     return "?"
 
 
+# WHICH INSTALL was packaged — read off the STAGE, not assumed.
+#
+# An installed app's identity is spelled FOUR times in the archive and they must all agree: the
+# staged `applications/<dir>` name, that directory's `appinfo.json` `id`,
+# `packages/<id>/packageinfo.json`, and the control file's `Package:`. The directory is also what
+# the running binary reads to learn which install it is (`paths::app_id`), so a mismatch is a
+# process that identifies as something its own descriptor denies. Since two ids can be packaged
+# from this tree now, taking the id
+# from the tracked `pkg/appinfo.json` would grade a debug package against the stable id and every
+# path below would go VACUOUS: an empty `rglob` prints nothing, fails nothing, and reports success.
+# That is the exact defect class the build-machine-path scan's own comment names, and it is how a
+# missing `packageinfo.json` hid for months. So: derive, then assert all four agree with each other.
+APPS = ROOT / "ipkroot/data/usr/palm/applications"
+staged = sorted(p.name for p in APPS.glob("*")) if APPS.is_dir() else []
+
+print("== packaged identity ==")
+check(len(staged) == 1,
+      f"exactly one application directory is staged (saw {staged or 'none — run `make ipk` first'})")
+if len(staged) != 1:
+    # Everything below reads through this id. Continuing would grade nothing and say so cheerfully.
+    for f in FAILURES:
+        print(f"::error::{f}")
+    sys.exit(1)
+PACKAGED_ID = staged[0]
+FLAVOR = next((f for f in flavor.FLAVORS if flavor.app_id(f) == PACKAGED_ID), None)
+check(FLAVOR is not None, f"the staged id is a known flavour ({PACKAGED_ID})")
+IS_STABLE = FLAVOR == "stable"
+print(f"  -- grading the {FLAVOR or '?'} package: {PACKAGED_ID}")
+
 print("== version / id consistency ==")
-appinfo = json.loads((ROOT / "pkg/appinfo.json").read_text())
+appinfo = json.loads((ROOT / f"ipkroot/data/usr/palm/applications/{PACKAGED_ID}/appinfo.json").read_text())
+# The tracked control file names the STABLE package; the flavoured one is assembled in memory by
+# `mkipk.py` at package time (as `Installed-Size` already was). Grade through the same transform,
+# rather than widening the equality into something that cannot fail.
 control = dict(
     line.split(": ", 1)
-    for line in (ROOT / "ipkroot/ctl/control").read_text().splitlines()
+    for line in flavor.control_for((ROOT / "ipkroot/ctl/control").read_text(), FLAVOR or "stable").splitlines()
     if ": " in line
 )
+check(appinfo["id"] == PACKAGED_ID,
+      f'staged appinfo id == the directory it sits in ({PACKAGED_ID})')
 check(appinfo["id"] == control["Package"],
       f'appinfo id == control Package ({appinfo["id"]})')
+# ...and the STABLE package's descriptor must be the tracked file, unchanged. This is the gate
+# that makes the whole flavour mechanism safe for the released artifact: if the transform were
+# ever anything but the identity for `stable`, the .ipk's sha256 would move and every published
+# manifest hash — the entire integrity story, since nothing here is code-signed — would be wrong.
+if IS_STABLE:
+    check(appinfo == json.loads((ROOT / "pkg/appinfo.json").read_text()),
+          "the stable package's appinfo.json is the tracked file, unchanged")
 check(appinfo["version"] == control["Version"],
       f'appinfo version == control Version ({appinfo["version"]})')
 # Cargo.toml is the FOURTH witness, and the one with a user-visible consequence: the diagnostics
@@ -97,7 +141,12 @@ HOSTPATH = re.compile(rb"(?:^|[^A-Za-z0-9/_.-])(/(?:Users|home)/[A-Za-z0-9_./+-]
 # identical on every CI runner, which is the reason releases must be BUILT by CI.
 ALLOWED_PATH = re.compile(rb"webos-ndk|^/home/runner/")
 
-PAYLOAD = ROOT / "ipkroot/data/usr/palm/applications/com.beb.plxnative"
+PAYLOAD = APPS / PACKAGED_ID
+# A missing payload directory is a HARD failure, not an empty loop. `check` only ever prints for
+# something it was given, so an absent stage used to print nothing at all here — no ok, no FAIL —
+# and the section that exists to keep a maintainer's working directory out of three FFmpeg
+# libraries (v0.2.1, which shipped exactly that) would have reported success by saying nothing.
+check(PAYLOAD.is_dir(), f"the staged payload directory exists ({PAYLOAD.relative_to(ROOT)})")
 for member in sorted(PAYLOAD.rglob("*")) if PAYLOAD.is_dir() else []:
     if not member.is_file():
         continue
@@ -113,11 +162,18 @@ for member in sorted(PAYLOAD.rglob("*")) if PAYLOAD.is_dir() else []:
 # hand skipped them wholesale — so the response to that cannot itself be something a person has to
 # remember to run.
 
-# CI publishes the release body from this file, so a missing one means a release with no notes.
+# ...and only for the package that is actually released. A developer flavour has no release note,
+# no published hash and no channel listing, and grading it against those would be a wall of
+# failures for an artifact that is doing exactly what it should. SAID OUT LOUD rather than skipped
+# silently, because a gate that quietly does not run is the defect this section exists to end.
 note = ROOT / f"docs/release-notes/v{appinfo['version']}.md"
-check(note.exists(), f"docs/release-notes/v{appinfo['version']}.md exists (CI publishes the body from it)")
+if not IS_STABLE:
+    print(f"  SKIP — release coherence is not graded for the {FLAVOR} flavour (it is never published)")
+else:
+    # CI publishes the release body from this file, so a missing one means a release with no notes.
+    check(note.exists(), f"docs/release-notes/v{appinfo['version']}.md exists (CI publishes the body from it)")
 
-if note.exists():
+if IS_STABLE and note.exists():
     body = note.read_text()
     # The three values that CANNOT be written by a person, because they do not exist until the
     # release run does: the artifact's hash, the commit and the run. `release.yml`'s publish job
@@ -190,8 +246,9 @@ if shipped:
 # the bytes rather than trusting the command line that produced them.
 #
 # The witness has to be a string only a `devtriggers` build emits, and almost none are: `dev.rs`
-# builds every trigger path with `format!("/tmp/plxnative-{name}")`, so no full trigger path is a
-# literal anywhere. The previous witness here was b"plxnative-autoplay" and it matched NOTHING —
+# composes every trigger path as `paths::in_runtime_dir(format!("plxnative-{name}"))` — a bare name
+# joined to a root resolved at RUNTIME, which since the flavour split is not even always `/tmp` — so
+# no full trigger path is a literal anywhere. The previous witness here was b"plxnative-autoplay" and it matched NOTHING —
 # in EITHER configuration — so from the day it was written this printed "ok — the packaged binary
 # is a RELEASE build" over CI's dev build on every run, while release.yml's stamp grep carried the
 # property alone. `dev.rs`'s DIAG list is the one place the full names are literals, it is
@@ -203,7 +260,27 @@ if shipped:
 # a witness that cannot fail is not a gate. The dev leg asserts the marker is still emitted, so the
 # day DIAG is renamed CI fails on the next push instead of quietly going vacuous again.
 DEV_WITNESS = b"plxnative-noidle"
-binary = ROOT / "ipkroot/data/usr/palm/applications/com.beb.plxnative/plxnative"
+binary = PAYLOAD / "plxnative"
+check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
+
+# THE ID IS THE RULE, and it is graded UNCONDITIONALLY — outside the `BUILD` branch below.
+#
+# `com.beb.plxnative` is what a user installs, so a dev-featured binary under it ships the whole
+# /tmp trigger surface, the world-writable `plxnative-remote` FIFO and the `:8910` listener to the
+# public. The Makefile's `release-guard` refuses to BUILD that; this is the same rule on the bytes,
+# which is the half that survives someone reaching for the documented `ALLOW_DEV_ON_STABLE=1`
+# hatch and forgetting.
+#
+# It must not sit under `if BUILD:` — `BUILD` is `None` for any stamp that is neither shipped
+# configuration, and the Makefile itself documents a third (`RUST_FEATFLAGS="--no-default-features
+# --features devtriggers"`, the README-screenshot recipe). Nested, that combination would satisfy
+# `release-guard` (RELEASE is non-empty), print "SKIP — neither shipped configuration", and package
+# a dev-trigger binary under the released id on a green run. "This package carries no dev-trigger
+# surface" is a property of the BYTES and needs no stamp to grade.
+if binary.exists() and IS_STABLE:
+    check(DEV_WITNESS not in binary.read_bytes(),
+          f"the {PACKAGED_ID} package carries no dev-trigger surface — that id is what users install")
+
 if binary.exists() and BUILD:
     has_dev = DEV_WITNESS in binary.read_bytes()
     if BUILD == "release":
@@ -217,19 +294,24 @@ elif binary.exists():
 # The checksum file has to verify where a USER stands: they download it beside the .ipk, so a
 # `pkg/` prefix in the line makes `shasum -a 256 -c` fail for everyone. It did, through v0.2.1.
 sha_file = ROOT / "pkg/ipk.sha256"
-if sha_file.exists():
+if not IS_STABLE:
+    print(f"  SKIP — ipk.sha256 is a released asset name; the {FLAVOR} flavour does not write it")
+elif sha_file.exists():
     check(not any(l.split("  ")[-1].startswith("pkg/") for l in sha_file.read_text().splitlines() if l.strip()),
           "ipk.sha256 carries the bare filename, so `shasum -c` works beside the .ipk")
 
-# The Makefile derives IPK_VERSION from appinfo.json, so the built filename is the third witness.
-built = sorted((ROOT / "pkg").glob("com.beb.plxnative_*_arm.ipk"))
+# The Makefile derives IPK_VERSION from appinfo.json, so the built filename is the fourth witness.
+# Scoped to THIS flavour's id: two flavours' artifacts can sit in pkg/ side by side, and the
+# `_arm.ipk` suffix in the pattern is what keeps `com.beb.plxnative_*` from also matching
+# `com.beb.plxnative.debug_*` (the dot is not a `_`, but a bare prefix test would still match).
+built = sorted((ROOT / "pkg").glob(f"{PACKAGED_ID}_*_arm.ipk"))
 if built:
-    check(len(built) == 1, f"exactly one built ipk in pkg/ (saw {[p.name for p in built]})")
-    m = re.fullmatch(r"com\.beb\.plxnative_([0-9][0-9.]*)_arm\.ipk", built[0].name)
+    check(len(built) == 1, f"exactly one built {PACKAGED_ID} ipk in pkg/ (saw {[p.name for p in built]})")
+    m = re.fullmatch(rf"{re.escape(PACKAGED_ID)}_([0-9][0-9.]*)_arm\.ipk", built[0].name)
     check(m is not None and m.group(1) == appinfo["version"],
           f"built ipk filename carries the appinfo version ({built[0].name})")
 else:
-    print("  SKIP — no built ipk in pkg/ (run `make ipk` first)")
+    print(f"  SKIP — no built {PACKAGED_ID} ipk in pkg/ (run `make ipk` first)")
 check(re.fullmatch(r"\d+\.\d+\.\d+", appinfo["version"]) is not None,
       "version is exactly three integers (LG requirement)")
 check(appinfo["type"] == "native", 'appinfo type == "native"')
@@ -265,8 +347,12 @@ check("@users.noreply.github.com" in control["Maintainer"] or "@gmail.com" not i
       f'control Maintainer is not a personal mailbox ({control["Maintainer"]})')
 
 print("== icons ==")
-check(png_size(ROOT / "pkg/icon.png") == (80, 80), "icon.png is 80x80")
-check(png_size(ROOT / "pkg/largeIcon.png") == (130, 130), "largeIcon.png is 130x130")
+# Graded on the STAGED artwork, so a badged debug tile is checked as thoroughly as the release one
+# — the icons are the only payload files whose SOURCE differs per flavour, which makes them the
+# only ones a per-flavour bug could reach. (They are staged under the canonical basenames, which is
+# itself what appinfo's `icon`/`largeIcon` fields and the payload gate below both require.)
+check(png_size(PAYLOAD / "icon.png") == (80, 80), "icon.png is 80x80")
+check(png_size(PAYLOAD / "largeIcon.png") == (130, 130), "largeIcon.png is 130x130")
 # `iconColor` paints the launcher tile BEHIND the icon, so a disagreement draws the icon as a
 # hard-edged rectangle floating in a differently-coloured tile. Shipped that way until 2026-08-02
 # (gold tile, black icon) and invisible in every file — it only exists once the system composites.
@@ -275,7 +361,7 @@ check(png_size(ROOT / "pkg/largeIcon.png") == (130, 130), "largeIcon.png is 130x
 corner = None
 try:
     from PIL import Image
-    corner = Image.open(ROOT / "pkg/largeIcon.png").convert("RGB").getpixel((1, 1))
+    corner = Image.open(PAYLOAD / "largeIcon.png").convert("RGB").getpixel((1, 1))
 except ImportError:
     print("  SKIP — Pillow absent; cannot compare iconColor against the icon background")
 if corner is not None:
@@ -284,8 +370,23 @@ if corner is not None:
     check(max(abs(a - b) for a, b in zip(corner, declared)) <= 2,
           f"iconColor {appinfo['iconColor']} matches the icon's own background rgb{corner}")
 
-check(png_size(ROOT / "pkg/splash.png") == (1920, 1080),
+check(png_size(PAYLOAD / "splash.png") == (1920, 1080),
       "splash.png is exactly 1920x1080 (splashBackground accepts no other size)")
+# The badged set is a tracked artwork source (`tools/mkicons.py --out-dir=pkg/dev --badge=DEV`), so
+# it is graded whether or not this run happens to be packaging it — otherwise a regression in it
+# would only ever be found by whoever next built a debug package.
+if (ROOT / "pkg/dev").is_dir():
+    check(png_size(ROOT / "pkg/dev/icon.png") == (80, 80), "pkg/dev/icon.png is 80x80")
+    check(png_size(ROOT / "pkg/dev/largeIcon.png") == (130, 130), "pkg/dev/largeIcon.png is 130x130")
+    if corner is not None:
+        # Same rule as above, and the same failure it prevents: iconColor paints the launcher tile
+        # BEHIND the icon, so a badge that changed the tile's own background without moving
+        # iconColor would draw the debug icon as a hard-edged rectangle in a differently-coloured
+        # tile. The badge is a BOTTOM bar for this reason — pixel (1,1) is untouched, so one
+        # iconColor stays correct for both flavours.
+        dbg_corner = Image.open(ROOT / "pkg/dev/largeIcon.png").convert("RGB").getpixel((1, 1))
+        check(max(abs(a - b) for a, b in zip(dbg_corner, declared)) <= 2,
+              f"the badged tile keeps iconColor {appinfo['iconColor']} at its corner rgb{dbg_corner}")
 check(appinfo.get("splashBackground") == "splash.png",
       "appinfo declares splashBackground: splash.png")
 

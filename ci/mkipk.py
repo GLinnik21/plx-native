@@ -10,6 +10,13 @@ Why Python rather than tar flags: the flags differ irreconcilably between GNU ta
 --owner=/--group=/--sort=) and bsdtar (the dev Mac: --uid/--gid/--uname/--gname, no --sort).
 tarfile gives both hosts the same bytes with no branching.
 
+WHICH INSTALL a package is for comes from `$FLAVOR` (see `ci/flavor.py`): unset or `stable` builds
+the app users install, `debug` builds `com.beb.plxnative.debug`, which sits beside it on the same
+television. Every id in the archive — the control `Package:`, `packageinfo.json`, the staged
+`applications/<id>/` directory and the `.ipk` filename — comes from that one transform, and the
+directory is additionally what the installed binary reads to learn which install it is
+(`paths::app_id`). They are asserted equal here and again in `ci/check-package.py`.
+
 This module also SYNTHESISES the two descriptors an ipk must carry and a scp-based dev loop never
 needed, both derived from `pkg/appinfo.json` so the version stays single-sourced:
 
@@ -49,9 +56,13 @@ from packaging, so `make ipk` no longer needs the NDK.
 import gzip
 import io
 import json
+import os
 import sys
 import tarfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flavor  # noqa: E402  — ci/flavor.py, the one descriptor transform
 
 # Any fixed epoch works; 2010-01-01 is safely inside the range old opkg builds accept.
 EPOCH = 1262304000
@@ -117,7 +128,7 @@ def write_packageinfo(data: Path, app: dict) -> Path:
     return out
 
 
-def control_with_size(ctl: Path, data: Path) -> tuple:
+def control_with_size(ctl: Path, data: Path, flav: str) -> tuple:
     """The control file's text with a real Installed-Size. Returns (text, size in KiB).
 
     Deliberately NOT written back to `ipkroot/ctl/control`: the size depends on the binary, so it
@@ -127,7 +138,10 @@ def control_with_size(ctl: Path, data: Path) -> tuple:
     stays the source of the fields a human maintains; this one is assembled at package time.
     """
     kib = (sum(p.stat().st_size for p in data.rglob("*") if p.is_file()) + 1023) // 1024
-    lines = [ln for ln in ctl.read_text().splitlines() if not ln.startswith("Installed-Size:")]
+    # `Package:` is re-pointed here for exactly the same reason and by the same rule — a flavoured
+    # package must declare its own id, and the tracked file must stay the stable one.
+    lines = [ln for ln in flavor.control_for(ctl.read_text(), flav).splitlines()
+             if not ln.startswith("Installed-Size:")]
     # Debian orders Installed-Size after Architecture; opkg does not care, but a stock-shaped
     # control file is one less difference when someone diffs this against a reference package.
     at = next((i for i, ln in enumerate(lines) if ln.startswith("Architecture:")), len(lines) - 1)
@@ -153,10 +167,25 @@ def write_ar(out: Path, members: list) -> None:
 
 def main() -> int:
     repo = Path(__file__).resolve().parent.parent
+    # WHICH INSTALL this package is for. `--emit-appinfo <flavour> <path>` writes just the derived
+    # descriptor and stops — that is how `make deploy` gets the appinfo it scp's, through THIS
+    # transform rather than a second writer, so the file on the television and the file in the .ipk
+    # cannot say different things about which app they belong to.
+    if sys.argv[1:2] == ["--emit-appinfo"]:
+        flav, out = sys.argv[2], Path(sys.argv[3])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # Same shape `pkg/appinfo.json` is committed in, so a diff of the two shows only the values.
+        out.write_text(json.dumps(flavor.appinfo_for(flav), indent=2) + "\n")
+        print(f"wrote {out} — id={flavor.app_id(flav)}")
+        return 0
+
     root = repo / "ipkroot"
-    app = json.loads((repo / "pkg" / "appinfo.json").read_text())
+    # The Makefile passes FLAVOR; a bare invocation packages the app users install, which is the
+    # right default for anything that does not know about flavours (release.yml pins it anyway).
+    flav = os.environ.get("FLAVOR", "stable")
+    app = flavor.appinfo_for(flav)
     write_packageinfo(root / "data", app)
-    control, kib = control_with_size(root / "ctl" / "control", root / "data")
+    control, kib = control_with_size(root / "ctl" / "control", root / "data", flav)
     write_targz(root / "control.tar.gz", root / "ctl", "",
                 extra={"control": control.encode()})
     write_targz(root / "data.tar.gz", root / "data", "")
@@ -167,6 +196,13 @@ def main() -> int:
                    for n in ("debian-binary", "control.tar.gz", "data.tar.gz")])
     print(f"wrote {ipk.name} ({ipk.stat().st_size} bytes) — packageinfo.json for {app['id']}, "
           f"Installed-Size {kib} KiB")
+    # The staged application directory's NAME is a fourth witness of the id, and the one the
+    # installed app READS at runtime (`paths::app_id`). It is laid down by the Makefile rather than
+    # here, so this is the one place that can see both at once — and a package whose directory and
+    # descriptor disagree is one whose binary would identify as something its own appinfo denies.
+    staged = sorted((root / "data/usr/palm/applications").glob("*"))
+    if [p.name for p in staged] != [app["id"]]:
+        sys.exit(f"staged applications/{[p.name for p in staged]} does not match appinfo id {app['id']}")
     return 0
 
 
