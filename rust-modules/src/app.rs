@@ -3249,6 +3249,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // (issue #22's bug class; docs/plex-pass-audit.md's closing section). Same contract as
     // above: one file read, cannot fail the boot, falls back to the profile that always shipped.
     crate::devcaps::probe();
+    // If armed, hand LG's own media pipeline its logging configuration BEFORE anything can create
+    // a player. libpf reads these four environment variables inside `PlayerFactory::create`, and
+    // its GStreamer is lazily initialised, so this is early enough and a later arming would be
+    // read by nobody. It is the only instrument that can see inside the closed Dolby Vision chain.
+    crate::dev::arm_gst_logging();
     // THE main-thread token, minted once — this function IS the SDL main thread. Everything that
     // touches the ACB/Starfish seam or the Engine slot takes it by reference, and `&MainThread` is
     // !Send, so `task::spawn` rejects any closure that captured one. See `task::MainThread`.

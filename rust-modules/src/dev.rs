@@ -40,7 +40,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 13] = [
+const DIAG: [&str; 15] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -58,6 +58,12 @@ const DIAG: [&str; 13] = [
     // harness has to be able to observe the who's-watching picker, which a non-DIAG trigger would
     // suppress — the observer would remove the screen it was armed to watch.
     "plxnative-focus",
+    // LG's own GStreamer logging ([`arm_gst_logging`]) and the file it writes. Both are DIAG for
+    // the same reason `plxnative-profile` is: the whole point is to observe a playback that would
+    // otherwise be unobservable, and a non-DIAG trigger would silently move the boot screen out
+    // from under the very session being measured.
+    "plxnative-gstlog",
+    "plxnative-gst.log",
 ];
 
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
@@ -103,6 +109,46 @@ macro_rules! latched_flag {
     };
 }
 pub(crate) use latched_flag;
+
+/// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
+///
+/// This is the only instrument that can see inside LG's Dolby Vision chain. That chain is
+/// `dvbin` → `h265parse` → `dvsplitter` → {`lxvideodec`, `dvmdparse`} → `dualsequencer`, all of it
+/// closed, and the app's own logs stop at `Feed()`. Decompilation established that
+/// `mediapipeline::PlayerFactory::create()` calls `gst_debug_is_active()` and, when it is, honours
+/// `GST_DEBUG_FILE_OVERWRITE` / `GST_DEBUG_FILE` by installing its own log function — so these four
+/// variables are read by libpf itself and need no cooperation from us beyond setting them.
+///
+/// **Timing is the whole reason this is here and not later.** Neither `libpf` nor `libplayerAPIs`
+/// imports `gst_init`; they use LG's lazy `gst_cool_init_check`, which does not run until a player
+/// is created. `plex_run` is therefore comfortably early — but anything that arms this AFTER the
+/// first `Load` would be setting variables nobody reads again.
+///
+/// An empty trigger takes the five Dolby categories at level 6; content overrides the whole
+/// `GST_DEBUG` spec, so `dvbin:9,dualsequencer:9` or `*:3` both work. The log goes to the runtime
+/// directory beside the event log.
+///
+/// **Not free.** Level 6 on five categories is a lot of formatted I/O on an ARM TV and it is not a
+/// setting to leave armed while measuring anything about frame pacing.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn arm_gst_logging() {
+    let Some(spec) = read("gstlog") else { return };
+    let spec = if spec.is_empty() {
+        "dvbin:6,dvsplitter:6,dvsplitter_algo:6,dvmdparse:6,dualsequencer:6".to_string()
+    } else {
+        spec
+    };
+    let log = crate::paths::in_runtime_dir("plxnative-gst.log");
+    // SAFETY: single-threaded here by construction — `plex_run` has not yet minted a worker, and
+    // this runs before SDL init. `set_var` is only unsound against a concurrent reader.
+    std::env::set_var("GST_DEBUG", &spec);
+    std::env::set_var("GST_DEBUG_FILE", &log);
+    std::env::set_var("GST_DEBUG_FILE_OVERWRITE", "enable");
+    std::env::set_var("GST_DEBUG_NO_COLOR", "1");
+    crate::log(&format!("gstlog: GST_DEBUG={spec} -> {}", log.display()));
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn arm_gst_logging() {}
 
 /// The trigger's CONTENT, trimmed. `Some("")` for a trigger armed as an empty file — several
 /// distinguish empty (take the default) from a value (`autoseek`, `library`, `marker`), so an
