@@ -76,7 +76,9 @@ which this repo already builds, at `rust-modules/src/plex/timeline.rs:56`.
 **Consequences, all client-side:**
 
 - PlayQueue creation, `/:/timeline`, `/:/scrobble`, `/decision` and `transcode_stop` must go to **the
-  server the bytes came from**, with **that server's token**. `viewOffset` lives there.
+  server the bytes came from**, with **that server's token**. `viewOffset` lives there. (One
+  deliberate exception, and only for the watched FLAG: a Mark as Watched is repeated on every source
+  holding the same `guid` — §11. Nothing else here fans out, and no `viewOffset` ever does.)
 - **Nothing aggregates server-side.** `/hubs`, `/hubs/continueWatching` and search are single-server;
   Plex's own provider contract describes `continuewatching` as a hub "for merging into a global
   Continue Watching hub" — the merge is the client's job.
@@ -522,11 +524,16 @@ per source, off the SDL thread).
 - **The identity is the `guid` (`plex://movie/…`), never the `ratingKey`.** §1 is not academic here:
   both servers in this household hold a `ratingKey` 4, so a fan-out matched on the key marks a
   different film watched on the other machine — confidently, and with a 200 back.
-- **The RESUME POSITION does not propagate. Only the watched flag.** This is the subtle half, and it
-  is the half `ui/alt_sources.rs` reasons out: an offset is about a file you are streaming from one
-  host, which is also why that panel NAVIGATES to the other copy rather than swapping it under you.
-  `unscrobble` is fanned out too — it is the other end of one control, and clearing the claim is
-  still a claim about the title — but no `viewOffset` is ever pushed anywhere.
+- **No resume position is ever COPIED between servers. Only the watched flag travels.** This is the
+  subtle half, and it is the half `ui/alt_sources.rs` reasons out: an offset is about a file you are
+  streaming from one host, which is also why that panel NAVIGATES to the other copy rather than
+  swapping it under you. `unscrobble` is fanned out too — it is the other end of one control, and
+  clearing the claim is still a claim about the title — but no `viewOffset` is read or pushed
+  anywhere. **The consequence that phrasing hides, stated plainly:** `/:/unscrobble` clears
+  `viewCount` *and* `viewOffset`, so marking a title unwatched DISCARDS the other copies' resume
+  points as well — exactly what it does to the copy you pressed. Watched and unwatched are therefore
+  not symmetric in cost: one adds a fact, the other throws two away, on every source holding the
+  title.
 - **Remove from Continue Watching does NOT fan out.** The deck is a per-server surface; taking a
   friend's item off *your* deck is not what that row promises.
 - **Resolved at WRITE time, on the worker.** Not off a detail page's earlier cross-source resolve:
