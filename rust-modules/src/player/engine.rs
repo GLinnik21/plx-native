@@ -234,7 +234,17 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
     // Real source frame rate (direct-play only; 0 on transcode → skip): give the pipeline the true
     // fps for A/V timing instead of the sink-envelope default, + adaptiveResolution so it adapts if
     // the coded dims change. libpf parses videoFpsValue/videoFpsScale/adaptiveResolution (verified).
-    if let Some((num, den)) = fps_rational(crate::route::stream_fps()) {
+    // `/tmp/plxnative-nofps` withholds the pair, for one experiment: the Dolby Vision display
+    // -management lookup misses because the LUT ring is keyed ONE 90 kHz tick above what the
+    // display firmware asks for (measured 2026-08-21 — 38 of 40 misses, written key == requested
+    // + 1, with LG's own level-2 KADP logging armed mid-playback). Neither derivation is ours: the
+    // fed PTS provably does not move the outcome (nudge A/B, alternating unseeked legs, 163/164/165
+    // misses regardless), and the pipeline timestamps by NEAREST-rounding on the 1001/24000 lattice
+    // rather than passing ours through. This rational is the one input we hand it that could be
+    // what it builds that lattice FROM, so it is the one remaining lever on our side.
+    if crate::dev::flag("nofps") {
+        log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
+    } else if let Some((num, den)) = fps_rational(crate::route::stream_fps()) {
         p = p
             .replace(
                 r#""seperatedPTS":true}"#,
@@ -953,7 +963,29 @@ pub(crate) const PRES_NONE: i64 = i64::MIN;
 /// **Video only.** The key is computed from the video buffer's own PTS; the audio lane never
 /// reaches this code and shifting it would be a skew for no reason.
 ///
-/// **AND THE DEVICE REFUTED IT, so the default is 0 and this is a knob, not a fix.** The one step
+/// **THE SIGN WAS BACKWARDS, AND −1 IS THE FIX.** Read the history below for what was tried; the
+/// short version is that the model was right about the mechanism, wrong about which side rounds,
+/// and the device settled it. Measured with LG's own level-2 KADP logging armed mid-playback
+/// (`tools/logmprobe`): for **38 of 40** misses the key written into the LUT ring is exactly the
+/// key the display firmware requested **plus one**. The ring is a tick HIGH, so the fed PTS goes
+/// DOWN. Alternating unseeked legs, same title, same binary:
+///
+/// ```text
+///   nudge = -1   misses 1        nudge = 0   misses 81
+///   nudge = -1   misses 1        nudge = 0   misses 81
+/// ```
+///
+/// Reproducible, 81:1, and the arithmetic that predicts −1 also predicted +1 would help; +1 was
+/// measured at 163/165 against 164 for zero — i.e. inert. **Trust the measurement here, not the
+/// derivation**: our fed PTS is not passed through, the pipeline re-timestamps by NEAREST-rounding
+/// on the 1001/24000 lattice (measured: alternating −0.333/+0.333 ns against the exact rational),
+/// so exactly how one nanosecond on our side moves a tick on theirs is not something this comment
+/// can honestly claim to model. What it can claim is 81:1, twice, with the scene controlled by
+/// alternation.
+///
+/// # The history, kept because three of its steps were wrong and each cost a run
+///
+/// **AND THE DEVICE REFUTED THE FIRST ATTEMPT, which is why the default was 0 for a while.** The one step
 /// the disassembly could not settle was whether the OTHER side of that exact-equality comparison
 /// moves with us. It does. Controlled A/B, same title, same seek to 900 s, same 45 s window, only
 /// this value differing: **nudge 0 → 118 misses, nudge 1 → 230**. Worse, not fixed. A constant
@@ -971,7 +1003,7 @@ pub(crate) const PRES_NONE: i64 = i64::MIN;
 /// and the next candidate value is one run away. Anything from 1 to ~11110 is in range; beyond
 /// that an already-correct frame is pushed a tick the other way.
 fn pts_nudge_ns() -> i64 {
-    const DEFAULT: i64 = 0;
+    const DEFAULT: i64 = -1;
     static NUDGE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
     let v = NUDGE.load(Ordering::Relaxed);
     if v != i64::MIN {

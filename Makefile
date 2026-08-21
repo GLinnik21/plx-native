@@ -539,6 +539,12 @@ threadprobe: tools/threadprobe.c
 sockprobe: tools/sockprobe.c
 	$(CC) $(CFLAGS) -o pkg/sockprobe tools/sockprobe.c -lpthread
 
+# tools/logmprobe.c — read/flip LG's KADP log MASK on a RUNNING app. The masks are BITWISE and
+# level 2 is off on this set, so the absence of a level-2 line proves nothing; this is what makes
+# the Dolby Vision metadata path observable. Read-only by default. See the file's header.
+logmprobe: tools/logmprobe.c
+	$(CC) $(CFLAGS) -o pkg/logmprobe tools/logmprobe.c
+
 # tools/mali-hwcnt-probe.c — userspace-only validation of the exact Midgard r12p0 vinstr ABI used
 # by the in-app profiler.  It is standalone, never linked into or deployed with the application.
 mali-hwcnt-probe: tools/mali-hwcnt-probe.c
@@ -643,4 +649,4 @@ fetch-profile:
 	-$(SCP) root@$(TV):/tmp/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output on the TV"
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile
