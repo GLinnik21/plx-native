@@ -391,6 +391,15 @@ fn dev_source() -> Option<&'static str> {
 /// Home is pill 0 and a real focus stop like any other — it used to be packed as `-(i+1)`, which
 /// aliased it onto the chip's -1, so the top band walked chip → Movies and the Home pill could
 /// never take the focused (white) treatment on its own screen.
+/// The hero action row's FOCUS POP — one spring per control (`Play/Continue`, the info disc), the
+/// same `widgets::CtlPop` the detail page's row uses.
+///
+/// Module-level rather than a field because `Hero` is a ZST and this row's whole state already lives
+/// in statics beside it. It is stepped once per frame in `home_update`, never from a draw: the row
+/// is drawn TWICE during a flip (the incoming item and the outgoing ghost), and a spring stepped
+/// from `draw` would advance twice on those frames and settle at the wrong rate.
+static mut HERO_POP: crate::ui::widgets::CtlPop<{ HERO_NBTN }> = crate::ui::widgets::CtlPop::new();
+
 pub(crate) fn hero_focus() -> c_int {
     unsafe { addr_of!(hero_fc).read() }
 }
@@ -1067,8 +1076,20 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     if !on_axis(tx + dx, mark.x + pd + HERO_PAGER_PAD - tx, SCR_W, 0.0) {
         return;
     }
-    Button::new(plabel.as_ptr(), theme::size::BODY, pill).icon(Icon::Play).focused(hf == 0).draw(env, p);
-    CircleButton::new(c"".as_ptr()).icon(Icon::Info).at(info.x, info.y).focused(hf == 1).draw(env, p);
+    // The pop belongs to the LIVE row only: mid-flip the outgoing ghost carries the same `hf`, and a
+    // ghost that popped would draw a second focused control sliding off the panel.
+    let pop = |i: usize| if live { unsafe { addr_of!(HERO_POP).as_ref().unwrap().scale(i) } } else { 1.0 };
+    Button::new(plabel.as_ptr(), theme::size::BODY, pill)
+        .icon(Icon::Play)
+        .focused(hf == 0)
+        .scale(pop(0))
+        .draw(env, p);
+    CircleButton::new(c"".as_ptr())
+        .icon(Icon::Info)
+        .at(info.x, info.y)
+        .focused(hf == 1)
+        .scale(pop(1))
+        .draw(env, p);
     // The pager is an **INDICATOR, not a control**: it says the billboard pages, and that is all it
     // does. It takes no focus (`HERO_NBTN` counts the two controls above it), it records no hit
     // rect, and nothing in the app can activate it — pressing it was never the point, since RIGHT
@@ -1568,6 +1589,13 @@ pub(crate) fn home_update(dt: f32) {
         }
         let target = unsafe { addr_of!(snapTarget).read() };
         h.snap.step(target, K_SNAP, dt);
+        // The action row's focus pop. `hero_fc` keeps its last control index while the GRID holds
+        // focus (and can be a packed tab-pill value, or app.rs's `c_int::MIN` sentinel), so the
+        // question is asked as "is the hero band focused at all, and is it on a control" — both
+        // halves, or the row would sit popped behind a focused grid.
+        let hero_ctl =
+            (!focus_is_card()).then(|| usize::try_from(hero_focus()).ok()).flatten().filter(|&i| i < HERO_NBTN);
+        unsafe { (*addr_of_mut!(HERO_POP)).step(hero_ctl, dt) };
         // the shared top bar's own motion — the strip's horizontal scroll (a server with more
         // libraries than fit the row reaches the rest by scrolling the focused pill into view),
         // its travelling capsules, and the profile chip's unfurl. Home is always this screen's

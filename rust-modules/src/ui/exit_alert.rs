@@ -90,6 +90,11 @@ pub enum Choice {
 
 static mut POP: Popover = Popover::new();
 static mut SEL: Choice = Choice::Cancel;
+/// The two answers' FOCUS POP (`widgets::CtlPop`) — the same treatment every control face in the app
+/// wears, and here it is doing a second job: these two capsules are EQUAL by design (one width, one
+/// row, so the sheet does not lead with an answer), which leaves the fill and the pop as the whole of
+/// what says where the ring is.
+static mut CTL_POP: crate::ui::widgets::CtlPop<2> = crate::ui::widgets::CtlPop::new();
 
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
@@ -125,6 +130,8 @@ pub fn close() {
 pub fn update(dt: f32) {
     if is_open() {
         pop().update(dt);
+        let sel = matches!(focus(), Choice::Exit) as usize;
+        unsafe { (*addr_of_mut!(CTL_POP)).step(Some(sel), dt) };
     }
 }
 
@@ -246,12 +253,15 @@ pub fn draw() {
         .draw(p, l.question);
 
     let sel = focus();
+    let pop = unsafe { addr_of!(CTL_POP).as_ref().unwrap() };
     Button::new(CANCEL.as_ptr(), theme::size::BODY, l.cancel)
         .focused(sel == Choice::Cancel)
+        .scale(pop.scale(0))
         .draw(&env, p);
     Button::new(EXIT.as_ptr(), theme::size::BODY, l.exit)
         .style(ControlStyle::Danger)
         .focused(sel == Choice::Exit)
+        .scale(pop.scale(1))
         .draw(&env, p);
 }
 

@@ -56,7 +56,11 @@ use std::ptr::{addr_of, addr_of_mut};
 /// The sheet, centred. 1120×700 is the design's alert class — wide enough for a comfortable measure
 /// of body text at [`theme::size::BODY`] and short enough to leave the page legible around it.
 const PANEL_W: f32 = 1120.0;
-const PANEL_H: f32 = 700.0;
+/// **676, and it was 700 until 2026-08-22** — the design's figure less the 24px this panel used to
+/// leave under its BACK hint, exactly as its two siblings were trimmed. See
+/// [`crate::ui::widgets::KeyHint::pad_below`] for the argument and [`content_rect`] for why the body
+/// does not lose those 24 with it.
+const PANEL_H: f32 = 676.0;
 /// The one padding, on all four sides. Quoted with [`theme::ALERT_PANEL_RAD`] because the two constrain
 /// each other — see that token for why a bigger corner would eat this box.
 const PAD: f32 = 48.0;
@@ -243,8 +247,15 @@ pub(crate) fn paragraphs(bio: &str) -> Vec<&str> {
 fn panel_rect() -> Rect {
     Rect::new((SCR_W - PANEL_W) * 0.5, (SCR_H - PANEL_H) * 0.5, PANEL_W, PANEL_H)
 }
+/// The panel's content box — **inset by `PAD` on three sides and by [`KeyHint::pad_below`] at the
+/// bottom**, the one asymmetry in this sheet.
+///
+/// It is what keeps the trim a trim: the box ends where the BACK hint's band ends, so shortening the
+/// panel by 24 and shortening its bottom inset by the same 24 leaves `c.h` — and therefore the
+/// paged viewport, its page count and the rail — byte-identical to what they were at 700.
 fn content_rect() -> Rect {
-    panel_rect().inset(PAD)
+    let r = panel_rect();
+    Rect::new(r.x + PAD, r.y + PAD, r.w - 2.0 * PAD, r.h - PAD - widgets::KeyHint::pad_below())
 }
 
 /// The prose column's wrap width — the content box less the rail and its air. The rail is part of

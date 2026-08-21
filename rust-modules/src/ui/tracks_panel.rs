@@ -63,7 +63,13 @@ use std::ptr::{addr_of, addr_of_mut};
 /// the design and not a function of how many tracks a file happens to carry — a panel that grew
 /// with the track count would be a different size on every item.
 const PANEL_W: f32 = 1240.0;
-const PANEL_H: f32 = 820.0;
+/// **796, and it was 820 until 2026-08-22** — the design's own figure, less the 24px this panel
+/// used to leave under its BACK hint. The footer closes on [`KeyHint::pad_below`] now rather than on
+/// `PAD`, which is the family's change and is argued there; trimming the sheet by exactly that 24 is
+/// what keeps it a trim. Every y above the footer is unchanged by construction: `fy` and the body's
+/// `bottom` are both `PANEL_H - PAD - FOOTER_H - …`, so dropping 24 from the height and 24 from the
+/// pad in the same edit cancels, and only the sheet's bottom edge moves.
+const PANEL_H: f32 = 796.0;
 /// The design places the panel at `left:340px; top:130px` in a 1920x1080 frame, which is exactly
 /// centred on both axes — and clears `--glass-edge-clear` 68 on all four sides, which the spec
 /// asks of every panel in the set.
@@ -138,7 +144,8 @@ fn body_rect() -> Rect {
         + GAP_PATH_RULE
         + HAIRLINE_H
         + GAP_RULE_BODY;
-    let bottom = r.y + PANEL_H - PAD - FOOTER_H - theme::space::MD - HAIRLINE_H - theme::space::MD;
+    let bottom = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H
+        - theme::space::MD - HAIRLINE_H - theme::space::MD;
     Rect::new(r.x + PAD, top, PANEL_W - 2.0 * PAD - RAIL_W - RAIL_GAP, bottom - top)
 }
 
@@ -900,7 +907,7 @@ pub(crate) fn draw() {
     p.rrect(Rect::new(rx, band.y + band.h * ft, RAIL_W, band.h * fh), rad, rad, theme::RAIL_FILL);
 
     // ---- footer ------------------------------------------------------------------------------
-    let fy = r.y + PANEL_H - PAD - FOOTER_H;
+    let fy = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H;
     rule(p, cx, fy - theme::space::MD - HAIRLINE_H, cw);
     let cy = fy + FOOTER_H * 0.5;
     // left: the two chevrons + "to scroll". Marks, not controls — there is nothing to focus, so
@@ -1252,7 +1259,15 @@ mod tests {
     #[test]
     fn the_panel_is_centred_and_its_body_sits_inside_the_padding() {
         let r = panel_rect();
-        assert_eq!((r.x, r.y, r.w, r.h), (340.0, 130.0, PANEL_W, PANEL_H));
+        // CENTRED, asserted as centring rather than as the mock's literal `left:340px; top:130px`.
+        // Those two numbers were the design's placement of an 820-tall sheet; this one is 796 (the
+        // 24px trimmed from under the BACK hint — `KeyHint::pad_below`), so a literal y here would
+        // have to be re-typed every time the panel's height moves, which is how it would come to
+        // pin a stale number instead of the property.
+        assert_eq!((r.w, r.h), (PANEL_W, PANEL_H));
+        assert_eq!(r.x, (SCR_W - PANEL_W) * 0.5, "centred horizontally");
+        assert_eq!(r.y, (SCR_H - PANEL_H) * 0.5, "…and vertically");
+        assert_eq!(r.x, 340.0, "which for this width is still the design's own x");
         assert!(r.x >= 68.0 && r.y >= 68.0, "clears --glass-edge-clear on the near sides");
         assert!(SCR_W - (r.x + r.w) >= 68.0 && SCR_H - (r.y + r.h) >= 68.0, "…and the far ones");
         let b = body_rect();

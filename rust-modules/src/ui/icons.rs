@@ -61,7 +61,21 @@ pub enum Icon {
     Minus,
     Play,
     Pause,
-    /// Counter-clockwise circular arrow (↺) — "play from the start", the detail hero's restart disc.
+    /// Counter-clockwise circular arrow (↺) — **the detail hero's restart disc, and only that**.
+    ///
+    /// It is the same ACTION as [`Icon::PlayStart`], which is normally how a second mark gets
+    /// deleted, and this one was — on 2026-08-21, on exactly that reasoning. It came back the next
+    /// day because the argument had the wrong scope. Cross-surface consistency is worth having,
+    /// but it loses to DISCRIMINABILITY WITHIN A ROW, and the hero is the only place these two
+    /// facts collide: the disc sits ~20px from the Play/Resume pill, it is icon-ONLY at rest (the
+    /// verb is behind the unfurl, so it exists for a fraction of a second on focus and never for
+    /// the control beside it), and `play-start` is a play triangle with a bar — at three metres,
+    /// the pill's ▶ with a tick of extra ink. Two controls that start playback, distinguished by
+    /// a 3px stem.
+    ///
+    /// The menu ROW has neither problem: its glyph is 20px from the words *Play from Start*, and
+    /// nothing beside it is a play triangle. So the row keeps `PlayStart` and the disc takes this,
+    /// and the divergence is the point rather than drift — see [`Icon::PlayStart`].
     Restart,
     Info,
     /// Warning triangle — `info.svg`'s sibling (same 24 viewBox, 2.2 stroke, round caps/joins,
@@ -75,7 +89,20 @@ pub enum Icon {
     Episode,
     /// A stack of layers — the item menu's "Go to Show" leading glyph (a series of episodes).
     Show,
-    /// A play triangle behind a leading bar — "Play from Start" (restart, not resume).
+    /// A play triangle behind a leading bar — **"Play from Start"** (restart, not resume), worn by
+    /// the card menu's row of that name and by nothing else.
+    ///
+    /// It is the better mark of the two, and that is why it has the surface where a mark is only
+    /// reinforcement: it says *from the beginning*, where [`Icon::Restart`]'s `↺` says *again*,
+    /// which is a different promise from the one the press keeps. What it cannot do is be the sole
+    /// carrier of "this is not the Play button" while standing next to the Play button — a
+    /// triangle-plus-bar against a triangle, both icon-only, at three metres. That is the hero
+    /// disc's whole job, so the hero takes `Restart` instead.
+    ///
+    /// **The two are one action deliberately drawn twice, and the split is by SURFACE, not by
+    /// accident**: wherever the verb is written out beside the glyph, this is the mark. Read
+    /// [`Icon::Restart`] before reconciling them — they were reconciled once, on 2026-08-21, and it
+    /// was wrong.
     PlayStart,
     /// An X — "remove this" (the item menu's Remove from Continue Watching row).
     Close,

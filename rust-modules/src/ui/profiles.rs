@@ -99,9 +99,17 @@ pub fn enter() {
     s.footer = false;
 }
 
+/// The footer control's FOCUS POP ([`crate::ui::widgets::CtlPop`]) — one control, and it still gets
+/// a spring rather than a bare `if focused`: focus moves between the avatar row and this footer, so
+/// the pill has to animate BOTH ways, and it is the only mark it has (a lone capsule below a row of
+/// faces has nothing beside it to be compared against).
+static mut FOOTER_POP: crate::ui::widgets::CtlPop<1> = crate::ui::widgets::CtlPop::new();
+
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
+    // …closed while the PIN pad is up, which is also when the control is not drawn at all.
+    unsafe { (*std::ptr::addr_of_mut!(FOOTER_POP)).step((s.footer && !s.pad.open).then_some(0), dt) };
     if s.pad.open {
         if s.pad.error_ms > 0.0 {
             s.pad.error_ms = (s.pad.error_ms - dt).max(0.0);
@@ -192,6 +200,7 @@ pub fn draw() {
     if !s.pad.open {
         crate::ui::widgets::Button::new(c"Sign out".as_ptr(), theme::size::BODY, footer_rect())
             .focused(s.footer)
+            .scale(unsafe { std::ptr::addr_of!(FOOTER_POP).as_ref().unwrap().scale(0) })
             .draw(&env, p);
     }
 

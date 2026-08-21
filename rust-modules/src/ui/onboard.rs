@@ -136,7 +136,15 @@ fn list_frame() -> Rect {
     Rect::new(LIST_X, ROUTE_TOP, SCR_W as f32 - MARGIN_X - LIST_X, SCR_H as f32 - ROUTE_TOP - MARGIN_X)
 }
 
+/// The action pill's FOCUS POP ([`crate::ui::widgets::CtlPop`]) — focus walks between it and the
+/// library list beside it, so it animates both ways.
+static mut ACTION_POP: crate::ui::widgets::CtlPop<1> = crate::ui::widgets::CtlPop::new();
+
 pub fn update(dt: f32) {
+    unsafe {
+        let f = (addr_of!(FOCUS).read() == Focus::Action).then_some(0);
+        (*addr_of_mut!(ACTION_POP)).step(f, dt);
+    }
     // The roster half of the pump, and only that half: sources, their sections, their machine
     // names and their library counts all land on workers that `browse::pump` schedules — and that
     // runs from the Library screen alone, so without this a share discovered after boot would
@@ -174,6 +182,7 @@ pub fn draw() {
     unsafe { ACTION_RECT = r };
     Button::new(ACTION.as_ptr(), theme::size::BODY, r)
         .focused(unsafe { addr_of!(FOCUS).read() } == Focus::Action)
+        .scale(unsafe { addr_of!(ACTION_POP).as_ref().unwrap().scale(0) })
         .draw(&env, p);
 
     // ---- right column: the list, on the ground ----
