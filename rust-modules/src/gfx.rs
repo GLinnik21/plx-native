@@ -1745,6 +1745,13 @@ pub(crate) const GLASS_REGION_BUDGET: f32 = 300_000.0;
 /// Clamping is not a special case: past the edge there is nothing to sample and `CLAMP_TO_EDGE`
 /// already gives the only answer available, so a panel against the frame simply gets a shorter
 /// margin on that side.
+///
+/// `pub(crate)` for ONE reader outside this module, and for the reason the whole file keeps
+/// repeating: `ui::widgets`' glass-band budget test grades a region against
+/// [`GLASS_REGION_BUDGET`], and while it modelled that region with its own copy of this arithmetic
+/// the copy was WRONG — it omitted this clamp and so priced the tab track at 281k px^2 where the
+/// real region is 223k, a 26% over-estimate that sat under a passing test for as long as the limit
+/// existed. The graded expression is now this one.
 #[inline]
 pub(crate) fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
     let x0 = (x - BLUR_MARGIN).max(0.0);
@@ -1760,8 +1767,11 @@ pub(crate) fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
 /// Either side may be the empty marker (a zero-width region), which is what the first frame after a
 /// reset carries; the union with it is the other side unchanged rather than a box anchored at the
 /// origin.
+///
+/// `pub(crate)` alongside [`blur_region`], and for the same reader: a BAND of glass surfaces is
+/// priced as the union it actually converges on, not as either surface alone.
 #[inline]
-fn blur_region_union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub(crate) fn blur_region_union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     if a[2] <= 0.0 || a[3] <= 0.0 {
         return b;
     }
@@ -2325,6 +2335,32 @@ pub(crate) fn ground_span() -> f32 {
 }
 static mut GROUND_AT: u32 = 0;
 
+/// **ONE latch and ONE rate counter, for the whole process — so this has exactly one caller.**
+///
+/// `GROUND_RGB` is a single `Option`, and `GROUND_AT` a single counter that admits a real readback
+/// once every [`GROUND_SAMPLE_EVERY`] calls. A second caller passing a different `r` therefore does
+/// two things, both silent AS THE CODE STANDS: it halves the rate each caller actually gets, and
+/// every call it does take clobbers the other's answer with pixels from somewhere else on the
+/// screen. There is no per-caller state to key on.
+///
+/// **What adding one would cost is a number worth having right, because a decision was taken
+/// against it.** It is not "a second `glReadPixels` flush per frame" — this is rate-limited by
+/// CALL COUNT, so two callers each keeping their own counter would each read once every
+/// [`GROUND_SAMPLE_EVERY`] of their own calls: one extra flush roughly twice a second, and only
+/// while the second surface is on screen. Two `Option`s and two `u32`s. The reason to prefer one
+/// solve is therefore the MATERIAL's — one band, one density — and not the readback's price; do not
+/// re-derive the argument from a cost that is thirty times smaller than it reads here.
+///
+/// So the rule is that a BAND of surfaces solves once and shares the answer. The top bar is the
+/// case: the tab track samples, and the profile chip — a second surface of the same material,
+/// 800px to its left — takes the track's solved stops rather than reading its own ground
+/// (`ui::widgets`' `BarMaterial`). That is also what keeps the band one alpha; two solves over a
+/// non-uniform hero land on two densities and the seam is visible.
+///
+/// **And the rect is the whole contract, which is the trap here.** The consumer solves a scrim
+/// weight so its INK clears a contrast floor over these pixels; a surface that is not inside `r`
+/// gets a density answered for somewhere else. `BarMaterial`'s doc carries the measurement for the
+/// one surface in this app that is in that position.
 pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         // A caller can refuse a FRESH reading while still wanting the last one — the route
