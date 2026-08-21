@@ -1947,7 +1947,7 @@ fn open_tile_menu(
 /// the filmstrip may not hold focus, and a season fetch in flight makes the row's contents a
 /// lie (see `detail::focused_episode`).
 fn open_episode_menu(route: &mut Route) -> bool {
-    let Some((rk, watched)) = crate::ui::detail::focused_episode() else {
+    let Some((rk, mark)) = crate::ui::detail::focused_episode() else {
         return false;
     };
     if rk.is_empty() {
@@ -1957,7 +1957,7 @@ fn open_episode_menu(route: &mut Route) -> bool {
         rect: crate::ui::detail::focused_episode_rect(),
         redraw: crate::ui::detail::redraw_focused_episode,
     };
-    crate::ui::item_menu::open_episode(crate::ui::detail::mounted_sid(), &rk, watched, opener);
+    crate::ui::item_menu::open_episode(crate::ui::detail::mounted_sid(), &rk, mark, opener);
     *route = Route::ItemMenu { over: MenuHost::Detail };
     true
 }
@@ -1995,7 +1995,8 @@ unsafe fn apply_item_action(
     // is the belt to that braces, since the menu is data-driven off the hub rows.
     let rk_of = |a: &Action| match a {
         Action::GoToItem(rk)
-        | Action::MarkWatched(rk, _)
+        | Action::MarkWatched(rk)
+        | Action::MarkUnwatched(rk)
         | Action::PlayFromStart(rk)
         | Action::RemoveFromDeck(rk) => rk.clone(),
         Action::GoToShow(rk, _) => rk.clone(),
@@ -2017,24 +2018,33 @@ unsafe fn apply_item_action(
             // where the stall is behind a screen that is already at alpha 0
             nav_open(*route, to_detail(sid, &show_rk), (season > 0).then_some(season), nav);
         }
-        Action::MarkWatched(rk, watched) => {
-            // Same ritual as the detail page's watched toggle, and now the same CODE: flip
-            // every surface that describes the item at once, write on a worker, refetch the
-            // hubs when the write lands so Continue Watching reflects it (a watched episode
-            // leaves the shelf; its successor takes the slot).
-            //
-            // All three used to run inline, on this thread, justified as "~100ms LAN and
-            // deliberately so". That priced one server on one LAN; with a share registered
-            // the item's server is routinely remote or asleep, and the same press parked the
-            // whole UI for seconds — see `crate::viewstate`, which is where the reasoning,
-            // the ordering rules and the `client_for(sid)`-never-`client()` note now live.
-            //
-            // When the popover was over the DETAIL page, that page is the surface the user is
-            // watching, so it is re-read too — the rk rides along so the filmstrip lands back
-            // on the episode that changed (`detail::KEEP_EP`).
-            let w = if watched { crate::viewstate::Write::Unwatched } else { crate::viewstate::Write::Watched };
+        // The two watch-state rows, and they are TWO because a part-watched item offers both:
+        // `Action::watch_write` reads the verb off the ROW the user aimed at. It used to be one
+        // variant carrying what the item was NOW, inverted here — which with a pair of rows would
+        // give both of them the same bool and make one do the opposite of its own label.
+        //
+        // Otherwise the same ritual as the detail page's watch discs, and the same CODE: flip every
+        // surface that describes the item at once, write on a worker, refetch the hubs when the
+        // write lands so Continue Watching reflects it (a watched episode leaves the shelf; its
+        // successor takes the slot).
+        //
+        // All three used to run inline, on this thread, justified as "~100ms LAN and deliberately
+        // so". That priced one server on one LAN; with a share registered the item's server is
+        // routinely remote or asleep, and the same press parked the whole UI for seconds — see
+        // `crate::viewstate`, which is where the reasoning, the ordering rules and the
+        // `client_for(sid)`-never-`client()` note now live.
+        //
+        // When the popover was over the DETAIL page, that page is the surface the user is watching,
+        // so it is re-read too — the rk rides along so the filmstrip lands back on the episode that
+        // changed (`detail::KEEP_EP`).
+        ref a @ (Action::MarkWatched(ref rk) | Action::MarkUnwatched(ref rk)) => {
+            // Unreachable by construction — this arm matches exactly the two variants
+            // `watch_write` answers for — and a `return` rather than an `expect` because a
+            // panic here unwinds out of the SDL loop and kills the app. If a third write row
+            // is ever added to this pattern without a verb, it does nothing instead.
+            let Some(w) = a.watch_write() else { return };
             let detail = matches!(host, MenuHost::Detail).then(|| rk.clone());
-            crate::viewstate::request(sid, &rk, w, detail);
+            crate::viewstate::request(sid, rk, w, detail);
         }
         Action::RemoveFromDeck(rk) => {
             // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
