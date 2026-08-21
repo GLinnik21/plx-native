@@ -1180,6 +1180,17 @@ fn blur_taps() -> [f32; 2] {
 /// filter" half that was missing). The stored snapshot is then half-res and genuinely smooth, and
 /// the per-frame panel draw stays exactly one bilinear tap — the up-filter cost is paid only when
 /// the cached snapshot is refreshed, not while that snapshot is reused.
+///
+/// **"Of the target" is load-bearing arithmetic, and it held by accident for a day.** `u_texel` is
+/// a UV offset into the SOURCE, and both passes spell this `BLUR_UP_TAP / c.mw` — the target's
+/// width — which is the documented radius only because the source is exactly HALF the target
+/// (quarter-res `a` into half-res `mid`): 1.25 target texels is 0.625 source texels is the same
+/// distance on screen. While [`BLUR_REDUCTIONS`] was 1 the tap targets were allocated at half
+/// canvas, i.e. the same size as `mid`, and the identity broke silently: the direct path's up pass
+/// ran at 1.25 SOURCE texels — twice this — so the tab bar was softer than this constant says, and
+/// the tap ladder that shipped on 2026-08-20 was judged through it. The const assertion beside
+/// [`BLUR_REDUCTIONS`] is what now makes the half-of-target relation impossible to break. If the
+/// bar ever wants that extra softness back, it is this number that moves, deliberately: 2.5.
 const BLUR_UP_TAP: f32 = 1.25;
 const BLUR_PASS_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit between targets
 
@@ -3317,6 +3328,11 @@ mod tests {
             assert_eq!((mw, mh), (vw / 2, vh / 2), "the first pass is always one exact halving");
             let want = (vw >> BLUR_REDUCTIONS, vh >> BLUR_REDUCTIONS);
             assert_eq!((sw, sh), want, "the tap target is {BLUR_REDUCTIONS} exact halvings down");
+            // **The up pass's radius depends on this exact factor of two.** Both paths spell the
+            // offset `BLUR_UP_TAP / c.mw` — the TARGET's width — which is the documented "1.25
+            // texels of the target" only while the source is half the target. It stopped being
+            // half for a day, and the direct path's up-filter silently doubled; see `BLUR_UP_TAP`.
+            assert_eq!((mw, mh), (sw * 2, sh * 2), "the tap target must be half the up target");
         }
         // odd dimensions floor rather than round up past the source (a target larger than its
         // source is a magnification pass, which is not what any of this is for)
