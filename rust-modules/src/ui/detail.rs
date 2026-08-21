@@ -443,6 +443,13 @@ const EP_TEXT_HL_PAD_X: f32 = theme::space::XS;
 const EP_TEXT_HL_PAD_Y: f32 = theme::space::SM;
 /// Its corner radius — the About footer's, because it is the same object doing the same job.
 const EP_TEXT_HL_RAD: f32 = 18.0;
+/// The filmstrip's alpha while a SEASON FETCH is in flight: the row keeps showing the previous
+/// season's episodes, dimmed, with a spinner over them — the switch is async, so a rapid tab hop
+/// never freezes the UI and never blanks the strip. Named because two places draw through it: the
+/// strip itself, and the lift of one cell over a context menu's scrim
+/// ([`redraw_focused_episode`]), which must not restore to full strength a tile that is dim
+/// precisely because it is stale.
+const EP_STALE_A: f32 = 0.35;
 // Related row (portrait posters) reuses the home shelf poster geometry (consts::CARD_*) so a poster
 // is one size app-wide (its texture request was already 250×375 → now drawn 1:1 sharp).
 const REL_W: f32 = CARD_W; // 250
@@ -1745,7 +1752,7 @@ impl Column for DetailView {
             // dimmed, with a spinner — the switch is async so rapid tab hops never freeze the UI
             2 => phase("dt.eps", || {
                 if metadata::season_loading() {
-                    draw_episodes(p.alpha(0.35));
+                    draw_episodes(p.alpha(EP_STALE_A));
                     crate::ui::widgets::Spinner::new(SCR_W * 0.5, EP_H * 0.5, 26.0)
                         .phase(self.spin_ms as u32)
                         .tint(theme::TEXT_PRIMARY)
@@ -2946,6 +2953,12 @@ fn draw_episode_cell(
 /// The whole CELL, not the still alone: the design's unit here is the tile plus its metadata block
 /// (`EpRow` makes them two focus rows of one thing), and lifting half of it would say the popover is
 /// about a picture rather than about an episode.
+///
+/// It carries the SEASON-SWITCH DIM too ([`EP_STALE_A`], the `p.alpha(0.35)` the strip is drawn
+/// through while a season fetch is in flight). A hold on the previous season's tiles is a reachable
+/// press — the row keeps drawing and keeps focus through the switch — and lifting one of them at
+/// full strength out of a strip that is dimmed precisely because it is STALE would make the one
+/// stale tile the brightest thing on the screen.
 pub(crate) fn redraw_focused_episode() {
     crate::ui::guard(|| {
         let Some(d) = metadata::current() else { return };
@@ -2956,7 +2969,10 @@ pub(crate) fn redraw_focused_episode() {
         let Some(ep) = d.episodes.get(i) else { return };
         let Some(top) = section_screen_top(2) else { return };
         let sx = view().ep_hscroll.pos;
-        let pe = Painter::root().alpha(crate::ui::nav::page_alpha()).translate(-sx, top);
+        let stale = if metadata::season_loading() { EP_STALE_A } else { 1.0 };
+        let pe = Painter::root()
+            .alpha(crate::ui::nav::page_alpha() * stale)
+            .translate(-sx, top);
         draw_episode_cell(pe, d, i, ep, i as c_int, view().ep_row, crate::ui::press::scale(), 0.0);
     });
 }

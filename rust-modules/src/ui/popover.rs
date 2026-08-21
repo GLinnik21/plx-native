@@ -207,11 +207,16 @@ impl Popover {
     /// never the snapshot — and a glass panel frosting a *dimmed* copy of the very card it is about
     /// is exactly the class of artefact the scrim's own placement rule exists to prevent.
     ///
-    /// While the scrim is still transparent the lift is a no-op to look at (it re-draws the same
-    /// pixels over themselves), so the appear ramp costs nothing visible. What it does add for the
-    /// life of the panel is the element's own soft shadow a second time — once dimmed under the
-    /// scrim and once over it — which reads as the element being RAISED above the dim, and is what
-    /// a lifted object would really cast.
+    /// **The lift is a SECOND DRAW, not a cut-out, and that is a visual decision rather than an
+    /// implementation detail.** Everything the element paints OPAQUELY comes out at exactly its own
+    /// colour, which is the point. Everything it paints with ALPHA — its soft shadow, its focus
+    /// glow, the anti-aliased edges of its label — composites twice, once dimmed under the scrim
+    /// and once over it, so those read heavier than the same element does anywhere else on the
+    /// screen. The shadow reading twice is what a raised object would really cast; the label's AA
+    /// edges thickening is the price, and it is paid from the first frame the panel is up, not
+    /// only once the scrim has ramped in. The alternative — scrim as four quads around the rect —
+    /// has neither cost and cannot follow an element whose glow and caption run outside its own
+    /// frame, which every card surface here has.
     pub(crate) fn scrim_lifting(&self, scrim_a: f32, opener: &Opener) {
         self.scrim(scrim_a);
         if scrim_a > 0.0 {
