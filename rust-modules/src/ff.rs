@@ -1885,8 +1885,13 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             // line or any assertion built on it. These fields can. `trc`/`pri`/`spc` are the raw
             // AVCOL_* enum values, logged as NUMBERS because naming them would mean binding three
             // more FFmpeg symbols for a diagnostic: trc 16 = smpte2084 (PQ/HDR10), 18 = arib-std-b67
-            // (HLG), spc 9 = bt2020nc, pri 9 = bt2020, and **2 = UNSPECIFIED on all three** — which
-            // is what a Profile 5 file reads, since IPT-PQ signals no ordinary transfer at all.
+            // (HLG), spc 9 = bt2020nc, pri 9 = bt2020, and **2 = UNSPECIFIED on all three** (every
+            // one of those six numbers checked against the vendored `libavutil/pixfmt.h`, not
+            // recalled). A Profile 5 file is expected to read 2/2/2, since IPT-PQ signals no
+            // ordinary transfer at all — inferred rather than seen from here, but from the same
+            // probe: PMS reports NO `colorTrc`, `colorSpace` or `colorPrimaries` at all on the dev
+            // server's P5 item while sending all three on every P8 (swept 2026-08-21). This line
+            // is where a television settles it.
             // All three were declared in the offsets table above and read NOWHERE until now.
             let dv = match dovi_conf(vcp) {
                 // `bl_compat` is the field that decides whether the base layer means anything on

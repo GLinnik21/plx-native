@@ -394,8 +394,11 @@ pub struct Stream {
     //
     // The field names are NOT in docs/plex-openapi.json — its `stream` schema carries 29
     // properties and not one DOVI among them, so the spec cannot settle them and neither can
-    // pms-api.md. These spellings were probed LIVE against the dev PMS 2026-08-21, on all eight
-    // Dolby Vision items in the library; the full set the server sends is `DOVIPresent`,
+    // pms-api.md. These spellings were probed LIVE against the dev PMS 2026-08-21, by sweeping
+    // every movie and episode on it — 540 leaves, of which 28 carry Dolby Vision (8 movies and
+    // 20 episodes) across 34 video streams, and **every one of the 34 sends the same eight keys**,
+    // which is the fact that matters: no shape on this server reports a profile without also
+    // reporting a compatibility id. The full set is `DOVIPresent`,
     // `DOVIProfile`, `DOVILevel`, `DOVIVersion`, `DOVIBLPresent`, `DOVIELPresent`,
     // `DOVIRPUPresent`, `DOVIBLCompatID`. Numbers arrive as JSON numbers and the flags as real
     // JSON booleans (`DOVIELPresent: false`), which is why every one of them is [`de_i64`].

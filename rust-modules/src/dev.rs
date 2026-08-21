@@ -297,7 +297,14 @@ pub(crate) const ENABLED: bool = cfg!(feature = "devtriggers");
 
 /// The trigger's absolute path. `/tmp/plxnative-<name>` on the television; see
 /// [`crate::paths::runtime_dir`] for why a host build may put the whole namespace elsewhere.
-#[cfg(feature = "devtriggers")]
+///
+/// `test` is in the cfg beside the feature, and only for a compile reason: the test below writes
+/// through this door rather than through a literal, and it guards itself at RUNTIME on
+/// [`ENABLED`] — but a runtime guard cannot stop a call from being compiled, so without this the
+/// whole crate failed to build under `--no-default-features --test` (E0425, "cannot find function
+/// `path` in module `super`"). A shipping release build is unchanged: `cfg(test)` is false there,
+/// and the fn is gone exactly as before.
+#[cfg(any(feature = "devtriggers", test))]
 fn path(name: &str) -> std::path::PathBuf {
     crate::paths::in_runtime_dir(&format!("plxnative-{name}"))
 }

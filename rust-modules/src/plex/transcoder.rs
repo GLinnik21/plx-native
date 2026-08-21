@@ -201,13 +201,25 @@ impl Client {
     /// [`Client::transcode_start_url`] — the decision that registers a session and the start.mkv
     /// it streams from MUST carry the same params.
     fn transcode_query(&self, s: &TranscodeSpec) -> String {
+        // `directStream` is the server's permission to COPY a track instead of encoding it, and
+        // it is granted on every flavor but one. A cap is not a refusal: with the permission in
+        // hand PMS copies whenever the source fits the caps this query carries — resolution,
+        // bitrate, and the profile's own limitation axes — and NONE of those axes can express
+        // "this file's pixels are wrong for us". So a source refused for what it IS rather than
+        // for how big it is (a Dolby Vision base layer that is not self-displayable) came back
+        // `Part.decision=transcode` with the video's own decision `copy`: the same bitstream one
+        // container down. `no_video_copy` withdraws the permission for exactly that case, and
+        // only on the re-encode flavor — a REMUX is a copy by definition, so the two can never
+        // both be true (`build_stream` derives `remux` from a gate this flag has already failed).
+        // See [`TranscodeSpec::no_video_copy`] for the measurement.
+        let copy_ok = !(s.no_video_copy && !s.remux);
         let mut q = QueryBuilder::new("")
             .str("path", &format!("/library/metadata/{}", s.rating_key))
             .int("mediaIndex", 0)
             .int("partIndex", 0)
             .str("protocol", "http")
             .int("directPlay", 0)
-            .int("directStream", 1);
+            .int("directStream", copy_ok as i64);
         // the one block the two flavors differ in: container-only REMUX copies the codecs
         // (a resolution/bitrate cap would force a re-encode), RE-ENCODE caps at native 4K so
         // an undecodable source goes to the profile's HEVC target instead of downscaled H264.
@@ -216,6 +228,11 @@ impl Client {
         } else {
             q.str("videoResolution", "3840x2160").int("maxVideoBitrate", 60000)
         };
+        if !copy_ok {
+            // the audio lane keeps its own permission, so this costs a VIDEO encoder and nothing
+            // else — an AC3/E-AC3 track the pipeline already decodes is still copied through
+            q = q.int("directStreamAudio", 1);
+        }
         q = q.opt_int("audioStreamID", s.audio_stream_id);
         if s.subtitle_stream_id > 0 {
             // burned in (Plex's default decision for our profile — no soft-sub support advertised)
@@ -291,8 +308,78 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{link_policy, Location, LinkPolicy};
+    use super::{link_policy, Client, Location, LinkPolicy, TranscodeSpec};
     use crate::devcaps::Caps;
+    use crate::plex::ServerId;
+
+    // ---- the universal-transcoder query: who is allowed to COPY ---------------------------
+
+    fn a_client() -> Client {
+        Client::new(ServerId::from_raw(1), "mach", "10.0.0.1", 32400, "tok", "cid")
+    }
+
+    fn spec<'a>(remux: bool, no_video_copy: bool) -> TranscodeSpec<'a> {
+        TranscodeSpec {
+            rating_key: "5",
+            session: "s1",
+            remux,
+            no_video_copy,
+            audio_stream_id: 0,
+            subtitle_stream_id: 0,
+            offset_secs: -1,
+        }
+    }
+
+    /// **`directStream` is the server's permission to copy the video track, and the ordinary
+    /// re-encode grants it.** That is right for every refusal the server's own caps can express —
+    /// a source over the device's frame-size bound does not fit them, so the permission goes
+    /// unused and a copy that DOES fit is a free win. This pins the default, because the bug
+    /// below is invisible without it: the flag has to be the exception, not the rule.
+    #[test]
+    fn the_ordinary_re_encode_still_lets_the_server_copy() {
+        let q = a_client().transcode_query(&spec(false, false));
+        assert!(q.contains("directStream=1"), "{q}");
+        assert!(q.contains("directPlay=0"), "{q}");
+        assert!(q.contains("videoResolution=3840x2160"), "{q}");
+        assert!(!q.contains("directStream=0"), "{q}");
+    }
+
+    /// **The Dolby Vision refusal, and the reason this flag exists.** `route::video_direct_plays`
+    /// refuses a Profile 5 file because of what its PIXELS are, and no cap in this query can say
+    /// so — resolution, bitrate and the profile's limitation axes are all about size. Measured
+    /// against the dev PMS 2026-08-21: with `directStream=1` the server answers
+    /// `Part.decision=transcode` while the VIDEO stream's own decision is `copy`, i.e. the same
+    /// IPT-PQ bitstream one container down. The refusal changed the container and nothing else.
+    /// Withdrawing the permission is the whole fix; `directStreamAudio=1` keeps the audio lane
+    /// free, so it costs a video encoder and nothing more.
+    #[test]
+    fn a_pixel_refusal_withdraws_the_copy_permission_but_not_the_audio_one() {
+        let q = a_client().transcode_query(&spec(false, true));
+        assert!(q.contains("directStream=0"), "the server must not copy the video: {q}");
+        assert!(q.contains("directStreamAudio=1"), "audio may still be copied: {q}");
+        // the caps still ride along — they bound the encode that now has to run
+        assert!(q.contains("videoResolution=3840x2160"), "{q}");
+        assert!(q.contains("maxVideoBitrate=60000"), "{q}");
+        // exactly ONE `directStream=` in the query. Two would be a contradiction PMS resolves by
+        // position, and which position wins is not ours to assume — the first shape of this fix
+        // appended `directStream=0` after the `directStream=1` the builder had already written.
+        // (`directStreamAudio=` does not match this needle; it is checked above on its own.)
+        assert_eq!(q.matches("directStream=").count(), 1, "one directStream, not two: {q}");
+    }
+
+    /// A REMUX is a copy by definition, so the two can never both be meant — `build_stream`
+    /// derives `remux` from the same gate this flag has already failed. If one ever reaches here
+    /// anyway, the remux wins and the query stays exactly what it was: the alternative is a
+    /// contradiction on the wire (`directStream=0` beside a flavor whose entire content is a
+    /// stream copy), which the server would resolve however it liked.
+    #[test]
+    fn a_remux_is_a_copy_and_the_flag_cannot_turn_it_into_something_else() {
+        let plain = a_client().transcode_query(&spec(true, false));
+        let flagged = a_client().transcode_query(&spec(true, true));
+        assert_eq!(plain, flagged, "the flag is meaningless on the remux flavor");
+        assert!(plain.contains("directStream=1"), "{plain}");
+        assert!(!plain.contains("videoResolution"), "a remux carries no cap, by design: {plain}");
+    }
 
     // ---- the relay policy ---------------------------------------------------------------
 
