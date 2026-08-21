@@ -731,14 +731,23 @@ pub(crate) const TEXT_BLOCK_HL_RAD: f32 = 18.0;
 /// it needs the **shadow** rather than a heavier fill: over the detail page's ambient ground a 7%
 /// panel has almost no edge of its own, so it reads as a smudge rather than as a raised surface,
 /// and lifting the wash instead would put a bright rectangle over the prose it exists to point at.
-/// The shadow is the card family's RESTING one — the same three constants `Button` and
-/// `CircleButton` carry — so a lit text block sits at the same altitude as the controls beside it.
+/// **No stroke, no rim, no glass** — the mark is a wash plus a lift, and nothing else. (The owner
+/// ruled all three out for a selection on 2026-08-21, on seeing what the previous shadow drew.)
 ///
-/// No shader work: [`Painter::shadow`] discards the occluder interior, which is exactly what a
-/// translucent panel wants — the ink stays outside the wash instead of darkening the text through it.
+/// **Both halves of the shadow are here because the panel is SEE-THROUGH, and neither of them can
+/// be borrowed from the card family.**
+/// - [`Painter::shadow_outside`], not [`Painter::shadow`]: the tile path throws away a BOX-shaped
+///   interior inset by `radius + 1` px, which leaves a full-strength band of ink under the
+///   occluder's own rim ending in a hard step. A card hides that band; a 7% wash shows it, and it
+///   reads as a dark rounded FRAME with the wash inset inside it — which is exactly what was
+///   shipping. The `_outside` cut is the panel's own rounded shape, so no ink lands under it.
+/// - [`theme::TEXT_BLOCK_SHADOW_BLUR`]/`_DY`/`_A`, not the `CARD_SHADOW_REST_*` triple: a contact
+///   shadow tuned to be seen only where it escapes past an opaque poster is fully visible here, and
+///   at 11px/0.34 its falloff has a readable boundary on a wide straight edge. That token block
+///   carries the reasoning.
 pub(crate) fn text_block_highlight(p: Painter, r: Rect) {
-    p.shadow(r, TEXT_BLOCK_HL_RAD, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-             theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+    p.shadow_outside(r, TEXT_BLOCK_HL_RAD, theme::TEXT_BLOCK_SHADOW_BLUR, theme::TEXT_BLOCK_SHADOW_DY,
+                     theme::with_a(theme::CARD_SHADOW, theme::TEXT_BLOCK_SHADOW_A));
     p.rrect(r, TEXT_BLOCK_HL_RAD, TEXT_BLOCK_HL_RAD, theme::OVERLAY_FOCUS_SOFT);
 }
 

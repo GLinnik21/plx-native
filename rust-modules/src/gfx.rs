@@ -276,6 +276,7 @@ static mut SL_SIZE: c_int = 0;
 static mut SL_RADIUS: c_int = 0;
 static mut SL_BLUR: c_int = 0;
 static mut SL_OFF: c_int = 0;
+static mut SL_CUT: c_int = 0;
 static mut SL_COL: c_int = 0;
 
 static mut IPROG: c_uint = 0;
@@ -504,6 +505,7 @@ pub(crate) fn init_gl() {
             SL_RADIUS = glGetUniformLocation(SPROG, c"u_radius".as_ptr());
             SL_BLUR = glGetUniformLocation(SPROG, c"u_blur".as_ptr());
             SL_OFF = glGetUniformLocation(SPROG, c"u_off".as_ptr());
+            SL_CUT = glGetUniformLocation(SPROG, c"u_cut".as_ptr());
             SL_COL = glGetUniformLocation(SPROG, c"u_col".as_ptr());
         }
 
@@ -711,7 +713,14 @@ pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad
 /// band (see `FS_SHADOW`). `(x,y)` is the shadow's box origin — the caller bakes any downward offset
 /// into `y`. No-ops if the program failed to link. Own GL program (bound lazily via [`use_prog`]),
 /// so it doesn't disturb the base shader's uniforms.
-pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, off: f32, col: *const f32) {
+///
+/// `cut` picks WHICH INTERIOR the shader throws away, and the choice is about the occluder's
+/// OPACITY, not its shape. Negative (the default, [`Painter::shadow`](crate::ui::Painter::shadow))
+/// takes the cheap box cut an opaque tile can afford — it leaves a full-strength band under the
+/// occluder's rim, which the occluder hides. A non-negative value is the occluder's own corner
+/// radius, and cuts the rounded shape exactly, so a TRANSLUCENT occluder has no ink under it to
+/// show through ([`Painter::shadow_outside`](crate::ui::Painter::shadow_outside)).
+pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, off: f32, cut: f32, col: *const f32) {
     let b = blur.max(0.5);
     // **Cull the QUAD, not the box.** A shadow paints a penumbra `b` px beyond the rect it is asked
     // for, and `b` is tens of px on a focused card — far past `culled`'s 4 px of AA slack. Culling
@@ -733,6 +742,7 @@ pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32
         glUniform1f(SL_RADIUS, radius);
         glUniform1f(SL_BLUR, b);
         glUniform1f(SL_OFF, off); // occluder (tile) offset above the shadow box; shader discards the covered interior
+        glUniform1f(SL_CUT, cut); // <0 = the opaque tile's box cut; >=0 = cut the occluder's rounded shape
         glUniform4fv(SL_COL, 1, col);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }

@@ -360,9 +360,26 @@ impl Painter {
     }
     /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
     /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
+    ///
+    /// **For an OPAQUE occluder only.** The shader throws away a box-shaped interior inset by
+    /// `radius + 1` (see `FS_SHADOW`), which leaves a full-strength band of ink under the
+    /// occluder's own rim, ending in a hard step. A tile hides that; anything you can see through
+    /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
         let c = self.c(col);
-        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, c.as_ptr());
+        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, -1.0, c.as_ptr());
+    }
+    /// [`shadow`](Self::shadow) for a **TRANSLUCENT** occluder: the ink stops at the occluder's own
+    /// rounded outline (corner `radius`), so nothing is drawn under the panel to show through it.
+    /// Everything outside is unchanged — the same analytic penumbra falling off over `blur`.
+    ///
+    /// The only user today is [`widgets::text_block_highlight`](crate::ui::widgets::text_block_highlight),
+    /// whose 7% wash was showing `shadow`'s under-the-rim band as a frame; the cut is worth its own
+    /// entry point rather than a flag on the tile path, because a tile pays a rounded-rect SDF for
+    /// a region it covers anyway.
+    pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        let c = self.c(col);
+        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, radius, c.as_ptr());
     }
     /// Standalone soft drop-shadow under a tile (its own [`FS_SHADOW`](crate::gfx) pass) — used by the
     /// profile chip, whose avatar isn't a folded card composite. Every tile carries a shadow that GROWS
