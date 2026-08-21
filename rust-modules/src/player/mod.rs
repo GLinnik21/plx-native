@@ -800,11 +800,24 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         log(&format!("smp_cb type={ty} num={num} str={preview}"));
     }
     if ty == 0 {
-        // a frame was PRESENTED — map fed pts -> real content position
+        // a POSITION UPDATE — map fed pts -> real content position.
         //
-        // …and time it. This callback is the ONLY evidence this process ever gets about the video
-        // plane's cadence: our own `fps=` counts GL swaps on the other plane and reads a healthy
-        // 60 straight through a stuttering picture. See `Shared`'s `dg_vpres_*` block.
+        // **It is not one per presented frame, and `vtick`/`vgap` cannot see a dropped frame.**
+        // Measured 2026-08-21 across every Profile 5 run: `vtick=5 vgap=201ms`, unvarying, on
+        // clean and visibly stuttering playback alike. The pipeline emits this at 5 Hz — it is a
+        // position report, not a vsync. This comment used to say "a frame was PRESENTED" and the
+        // `dg_vpres_*` block below still describes a cadence probe; both were written from the
+        // callback's NAME rather than from its rate, and an instrument that reads a flat 201 ms
+        // through the fault it exists to catch is worse than no instrument, because it is quoted.
+        //
+        // The real per-frame cadence is only observable from LG's own tracing — `GST_DEBUG=
+        // dualsequencer:6` via `/tmp/plxnative-gstlog`, whose `push_dual` and `lxvideosink`
+        // timestamps give one line per frame. That was long avoided as perturbing; it is not, at
+        // level 6: the same scene measured 123 LUT misses uninstrumented and 122 with the trace
+        // running. Level 9 IS perturbing and is what that reputation came from.
+        //
+        // `pres_fed` below is still sound — the feed-ahead throttle wants a position, and a 200 ms
+        // granularity against a 1.6 s budget is ample. Only the TIMING half was wrong.
         let t = vclock_ms();
         let prev = SHARED.dg_vpres_at.swap(t, Relaxed);
         SHARED.dg_vpres_ct.fetch_add(1, Relaxed);
