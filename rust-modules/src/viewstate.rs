@@ -57,12 +57,18 @@
 //!   (`ui::detail`'s note on posting a borrowed item's key to our own server).
 //!   [`crate::plex::Client::find_by_guid`] is the lookup, the same one "Also available" resolves
 //!   its rows with.
-//! * **The RESUME POSITION does not travel — only the watched flag.** This is the subtle half. A
-//!   resume offset is about a file you are streaming from one host, and `ui::alt_sources`' module
-//!   doc reasons that out at length; that reasoning stands. So `unscrobble` IS repeated on the
-//!   other copies (it is the "unwatched" end of one control, and clearing the flag is the same
-//!   statement about the title), but no `viewOffset` is ever pushed anywhere and nothing here
-//!   reads one.
+//! * **No resume position is ever COPIED from one server to another — only the watched flag
+//!   travels.** This is the subtle half. A resume offset is about a file you are streaming from one
+//!   host, and `ui::alt_sources`' module doc reasons that out at length; that reasoning stands. So
+//!   `unscrobble` IS repeated on the other copies (it is the "unwatched" end of one control, and
+//!   clearing the flag is the same statement about the title), but no `viewOffset` is read here and
+//!   none is pushed anywhere.
+//!   **One consequence has to be said plainly, because "the position does not travel" does not
+//!   sound like it:** [`Write::Unwatched`] is `/:/unscrobble`, which clears `viewCount` **and**
+//!   `viewOffset` — so marking a title unwatched DISCARDS the other copies' resume points too, the
+//!   same thing the press does to the copy in hand. That is what "I have not seen this" means, and
+//!   it is the reason [`Write::Watched`] and [`Write::Unwatched`] are not symmetric in cost: a
+//!   scrobble adds a fact, an unscrobble throws two away, on every source that holds the title.
 //! * **[`Write::RemoveFromDeck`] does NOT fan out** ([`Write::propagates`]). The deck is a
 //!   per-server surface, and taking a friend's item off *your* Continue Watching is not what that
 //!   row promises.
@@ -325,7 +331,7 @@ fn kick() {
                 // order, and a second thread doing the other sources would put those copies outside
                 // that ordering — a watched/unwatched pair could then settle differently per server,
                 // which is the one thing this whole feature exists to stop.
-                let also = if w.propagates() { fan_out(sid, &rk, &guid, w) } else { Vec::new() };
+                let also = if w.propagates() { fan_out(c, sid, &rk, &guid, w) } else { Vec::new() };
                 Done { ok, also }
             })
             .unwrap_or_default();
@@ -418,14 +424,26 @@ type Answer = (ServerId, Option<Vec<String>>);
 /// WORKER. Repeat `w` on every OTHER copy of this title, and report the ones the server took so the
 /// main thread can flip them locally. **Best-effort throughout**: nothing here can fail, delay or
 /// retry the write that has already gone out, and a source that never answers costs one log line.
-fn fan_out(sid: ServerId, rk: &str, guid: &str, w: Write) -> Vec<(ServerId, String)> {
+///
+/// `c` is the item's OWN client — the one [`kick`] captured on the main thread and the write itself
+/// went out on, handed down rather than re-resolved from `sid` here. That is `pms::kick`'s
+/// capture-at-the-spawn-site rule (a worker never asks the registry about the server it was given),
+/// and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or revoked mid-write
+/// cannot turn into a log line claiming the item has no portable id.
+fn fan_out(
+    c: &crate::plex::Client,
+    sid: ServerId,
+    rk: &str,
+    guid: &str,
+    w: Write,
+) -> Vec<(ServerId, String)> {
     let sources: Vec<ServerId> = crate::plex::server_ids().collect();
     if sources.len() < 2 {
         // A one-server install pays NOTHING for this feature: no guid lookup, no query, no line in
         // the log. Checked before the lookup below for exactly that reason.
         return Vec::new();
     }
-    let Some(guid) = resolved_guid(sid, rk, guid) else {
+    let Some(guid) = resolved_guid(c, rk, guid) else {
         // Never a silent no-op. With two sources registered, a title that cannot be identified
         // portably is one whose watch state WILL disagree between them, and this line is the only
         // place that says so.
@@ -435,8 +453,11 @@ fn fan_out(sid: ServerId, rk: &str, guid: &str, w: Write) -> Vec<(ServerId, Stri
     let answers = ask_sources(&sources, &guid);
     let mut done = Vec::new();
     for (id, key) in fanout_targets((sid, rk), &answers) {
-        let Some(c) = crate::plex::client_for(id) else { continue };
-        let ok = w.perform(c, &key);
+        // `dst`, not a second `c`: shadowing the item's own client inside the one loop that writes
+        // to OTHER machines is how a key ends up posted to the wrong server, which is the exact
+        // failure this whole function is arranged around.
+        let Some(dst) = crate::plex::client_for(id) else { continue };
+        let ok = w.perform(dst, &key);
         crate::log(&format!(
             "viewstate: fanout {guid} {} → server {} rk={key} ok={}",
             w.name(),
@@ -459,11 +480,11 @@ fn fan_out(sid: ServerId, rk: &str, guid: &str, w: Write) -> Vec<(ServerId, Stri
 /// costs one extra GET, on this worker, and only where a second source is registered. `None` is a
 /// server that did not answer or an item it has no portable id for — both leave the caller with a
 /// log line rather than a quiet nothing.
-fn resolved_guid(sid: ServerId, rk: &str, given: &str) -> Option<String> {
+fn resolved_guid(c: &crate::plex::Client, rk: &str, given: &str) -> Option<String> {
     if !given.is_empty() {
-        return Some(given.to_string());
+        return Some(given.to_string()); // the press knew it; no round trip at all
     }
-    let guid = crate::plex::client_for(sid)?.metadata(rk).map(|m| m.guid).unwrap_or_default();
+    let guid = c.metadata(rk).map(|m| m.guid).unwrap_or_default();
     (!guid.is_empty()).then_some(guid)
 }
 
@@ -532,9 +553,12 @@ pub(crate) fn reset() {
 mod tests {
     use super::*;
 
-    // Every test here holds the crate-wide serial lock: the queue, the mailbox and the two refresh
-    // latches are process globals, and `request` reaches into `pms` and `metadata` — whose own tests
-    // drive the same statics. `reset()` doubles as setup and teardown.
+    // Every test here that touches a STATIC holds the crate-wide serial lock: the queue, the
+    // mailbox and the two refresh latches are process globals, and `request`/`pump` reach into `pms`
+    // and `metadata` — whose own tests drive the same statics. `reset()` doubles as setup and
+    // teardown. The fan-out block at the bottom is the exception and says so there: most of its
+    // cases grade pure functions, which is why the identity rule was factored out of the worker in
+    // the first place.
     //
     // None of these calls `kick`. A host test has no registry, so a kicked write resolves no client
     // and is dropped with a log line — which is correct behaviour and useless as a subject. What is
@@ -714,9 +738,9 @@ mod tests {
 
     // ---- the fan-out ---------------------------------------------------------------------
     //
-    // These four grade PURE functions and take no lock: `fanout_targets` and `propagates` touch no
-    // static, no registry and no socket, which is the whole reason the identity rule was factored
-    // out of the worker. The fifth one does move crate globals and holds `testlock::serial()`.
+    // The first FIVE grade PURE functions and take no lock: `fanout_targets` and `propagates` touch
+    // no static, no registry and no socket, which is the whole reason the identity rule was factored
+    // out of the worker. The last two move crate globals and hold `testlock::serial()`.
 
     /// **The claim this feature makes.** A title held by three sources ends up written on all of
     /// them: the press wrote its own copy, and the fan-out writes the rest — matched on the guid,
@@ -778,10 +802,11 @@ mod tests {
         assert!(!Write::RemoveFromDeck.propagates(), "the deck is one server's own surface");
     }
 
-    /// What the LANDING does with a fanned-out copy: the same local flip the press made for the
-    /// copy in hand, applied to a `(server, ratingKey)` that could not be known any earlier. Graded
-    /// through the detail store, which is the surface that shows it — the press flipped OUR copy,
-    /// and this is the friend's page being brought into line when the write comes back.
+    /// The EDIT the landing applies to a fanned-out copy: the same local flip the press made for
+    /// the copy in hand, applied to a `(server, ratingKey)` that could not be known any earlier —
+    /// and applied to that PAIR, so the identical key on our own server is left alone. Graded
+    /// through the detail store, which is the surface that shows it. (That [`pump`] really calls
+    /// this, for every copy the worker reported, is the next test — this one is about the edit.)
     #[test]
     fn the_landing_flips_another_sources_copy_the_press_could_not_reach() {
         let _g = crate::testlock::serial();
@@ -800,6 +825,48 @@ mod tests {
         edit_local(SRV_B, "4", Write::Watched); // …and the fan-out's report, which is
         assert!(crate::metadata::current().unwrap().watched);
         assert_eq!(crate::metadata::current().unwrap().resume_ms, 0, "watched stops offering to resume");
+
+        crate::metadata::install_for_test(None);
+        reset();
+    }
+
+    /// **The landing itself, driven through [`pump`].** The test above grades what `edit_local`
+    /// does; this one grades that `pump` actually CALLS it — for every copy the worker reported,
+    /// with the write that was SENT rather than whatever was pressed since — and then clears the
+    /// in-flight slot. Without this the fan-out could report copies nobody ever applied, and every
+    /// pure test above would still be green.
+    #[test]
+    fn the_landing_applies_the_workers_whole_report_and_retires_the_write() {
+        let _g = crate::testlock::serial();
+        reset();
+        // the mounted page is the SHARE's copy — the one the press could not reach
+        crate::metadata::install_for_test(Some(crate::metadata::Detail {
+            sid: SRV_B,
+            rk: "4".into(),
+            ..Default::default()
+        }));
+
+        // a write that went out on OUR copy, and the worker's answer naming the share's
+        unsafe {
+            *addr_of_mut!(SENT) = Some(Req {
+                sid: SRV_A,
+                rk: "4".into(),
+                w: Write::Watched,
+                detail: None, // no detail re-read: this press came from a Home card menu
+                guid: "plex://movie/6856893830a4aaafd5c4291d".into(),
+            })
+        };
+        *MAIL.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Done { ok: true, also: vec![(SRV_B, "4".into())] });
+
+        pump();
+
+        assert!(
+            crate::metadata::current().unwrap().watched,
+            "the page mounted on the share's copy is flipped by the landing, not by the press"
+        );
+        assert!(!is_busy(), "…and the write that reported is no longer in flight");
+        assert!(MAIL.lock().unwrap_or_else(|e| e.into_inner()).is_none(), "the mailbox is drained");
 
         crate::metadata::install_for_test(None);
         reset();
