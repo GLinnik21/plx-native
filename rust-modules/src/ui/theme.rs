@@ -412,6 +412,23 @@ mod material_tests {
 pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
 /// The frosted sheet's bottom stop — see [`PANEL_FROST_TOP`].
 pub const PANEL_FROST_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.72);
+
+/// Corner radius of an **ALERT panel** — the big centred sheet that owns the frame and states one
+/// thing (`Alert Views.dc.html`'s 1120×700 class; `ui::person_bio` is the first).
+///
+/// **It is a rung, not a preference, and 32 is the whole argument.** The popovers this app already
+/// draws are ANCHORED menus a few hundred px wide and wear 20 (`alt_sources`, `item_menu`); a
+/// radius is read relative to the edge it rounds, so the same 20 on a 1120px sheet reads as a
+/// nearly square box. The other direction is worse and is the one worth naming: a "friendlier"
+/// 60 on a 700-tall panel eats **half the 48px padding box at every corner**, so the eyebrow's
+/// cap-top and the footer's keycap both sit inside the arc rather than beside it, and the panel
+/// stops having a rectangle for its content to be laid out in. 32 is the largest corner that keeps
+/// the arc clear of a 48px pad — it is why the padding and the radius are quoted together.
+///
+/// Deliberately a NAMED token rather than a literal at the call site: the per-screen `PANEL_RAD`
+/// constants (20/20/28) are three separate answers to one question, and this is the point where a
+/// fourth would have become a fifth.
+pub const ALERT_RAD: f32 = 32.0;
 /// The sign-in **QR card's** quiet-zone plate (`login.rs`) — a bright cool-white whose job is SCAN
 /// CONTRAST for a phone camera, not focus. It is a SURFACE, not a control fill, which is the whole
 /// reason it outlived the second control white it used to be (`FILL_PRIMARY`): a plate under a

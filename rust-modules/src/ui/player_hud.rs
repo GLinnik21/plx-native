@@ -608,18 +608,21 @@ fn draw_failed_readout(p: Painter) {
     draw_hint_with_keycap(p, c"Press", c"BACK", c"to return", FR_HINT_TOP);
 }
 
-/// "{pre} [KEY] {post}", centred at cap-top `top` — CAPTION tertiary prose around a keyline cap
-/// (min-w 74, h 36, r 8), the cap's label MICRO bold. The keyline is a knockout on the video
-/// ground, which is black here by construction.
+/// "{pre} [KEY] {post}", centred at cap-top `top` — CAPTION tertiary prose around the shared
+/// [`crate::ui::widgets::keycap`], whose label is MICRO bold.
+///
+/// The cap itself used to be drawn HERE, as a KNOCKOUT: a 34%-white rounded rect with an opaque
+/// BLACK interior painted back over it. That is exact on this screen only — the transport's ground
+/// is video, and where this hint sits it is black by construction — which is precisely why the cap
+/// could not be lifted into `widgets` unchanged. It is a real hollow ring now, so the same widget
+/// also draws correctly over the bio panel's frosted sheet, and the two raw colour literals the
+/// knockout carried are gone with it.
 fn draw_hint_with_keycap(p: Painter, pre: &std::ffi::CStr, key: &std::ffi::CStr, post: &std::ffi::CStr, top: f32) {
-    const CAP_H: f32 = 36.0;
-    const CAP_MIN_W: f32 = 74.0;
-    const CAP_PAD: f32 = 12.0;
     const GAP: f32 = 14.0;
     let sz = theme::size::CAPTION;
     let pw = crate::text::text_width(pre.as_ptr(), sz, 0);
     let ow = crate::text::text_width(post.as_ptr(), sz, 0);
-    let kw = (crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1) + 2.0 * CAP_PAD).max(CAP_MIN_W);
+    let kw = crate::ui::widgets::keycap_w(key);
     let total = pw + GAP + kw + GAP + ow;
     let x = (SCR_W - total) * 0.5;
     let (cap_top, baseline) = crate::text::text_cap_band(sz, 0);
@@ -627,13 +630,7 @@ fn draw_hint_with_keycap(p: Painter, pre: &std::ffi::CStr, key: &std::ffi::CStr,
     let cy = top + (baseline - cap_top) * 0.5;
     p.text(pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
     let kx = x + pw + GAP;
-    let kr = Rect::new(kx, cy - CAP_H * 0.5, kw, CAP_H);
-    const STROKE: f32 = 1.5;
-    p.rrect(kr, 8.0, 8.0, [1.0, 1.0, 1.0, 0.34]);
-    p.rrect(Rect::new(kr.x + STROKE, kr.y + STROKE, kr.w - 2.0 * STROKE, kr.h - 2.0 * STROKE), 8.0 - STROKE, 8.0 - STROKE, [0.0, 0.0, 0.0, 1.0]);
-    let kty = crate::text::text_vcenter_y(theme::size::MICRO, 1, cy);
-    let ktw = crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1);
-    p.text(key.as_ptr(), kx + (kw - ktw) * 0.5, kty, theme::size::MICRO, theme::TEXT_SECONDARY, 0, 1);
+    crate::ui::widgets::keycap(p, kx, cy, key, theme::TEXT_SECONDARY);
     p.text(post.as_ptr(), kx + kw + GAP, ty, sz, theme::TEXT_TERTIARY, 0, 0);
 }
 
