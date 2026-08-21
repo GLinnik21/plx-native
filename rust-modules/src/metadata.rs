@@ -2603,6 +2603,69 @@ mod tests {
         clear();
     }
 
+    /// The THIRD store this page holds, and the one the two arms above cannot reach: a **Related
+    /// tile**, which is a different item entirely.
+    ///
+    /// Since 2026-08-21 that shelf has a context menu, so the detail page can mark an item that is
+    /// neither the loaded one nor a leaf of it. Without this pass the press wrote correctly to the
+    /// server and the tile under the user's thumb kept its old tick and its old resume bar until a
+    /// refetch — which reads as the row having done nothing, the exact failure the optimistic edit
+    /// exists to prevent.
+    ///
+    /// Three properties, and each is a way the walk can be written wrong:
+    /// * it must run BEFORE (and outside) the loaded-item / episode arms, both of which return
+    ///   early — chained under either one, a Related hit on a page whose own rk did not match would
+    ///   never be reached;
+    /// * it must match on the ROW's `sid`, not the page's. Both servers number their ratingKeys
+    ///   from 1, so a bare-key walk would flip a tile because a *share's* item happened to share its
+    ///   number (`docs/shared-servers.md` §2);
+    /// * and the verdict must survive the arms below it, or the function reports "nothing here was
+    ///   about that item" having just edited a tile.
+    #[test]
+    fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
+        let _serial = crate::testlock::serial();
+        let rel = |sid, rk: &str| Related {
+            sid,
+            rk: rk.into(),
+            dur_ns: 7_020_000 * 1_000_000,
+            resume_ms: 3_510_000,
+            unwatched: true,
+            ..Default::default()
+        };
+        // a SHOW page, so the loaded item and its episodes are both populated and both must be left
+        // exactly as they were by a press on a tile that is neither
+        set_current_for_test(Some(Detail {
+            sid: SRV_A,
+            rk: "show".into(),
+            is_show: true,
+            episodes: vec![Episode { rk: "e1".into(), ..Default::default() }],
+            related: vec![rel(SRV_A, "r0"), rel(SRV_A, "r1")],
+            ..Default::default()
+        }));
+
+        // …and the tile is reached even though the page's own rk did not match and the rk is on no
+        // episode — the two arms that both return early
+        assert!(set_watched_local(SRV_A, "r1", true), "the Related tile is a hit, not a miss");
+        let d = current().unwrap();
+        assert!(d.related[1].watched && !d.related[1].unwatched, "the tick the menu just promised");
+        assert_eq!(d.related[1].resume_ms, 0, "…and the bar it was wearing, or the tile shows both");
+        assert!(d.related[0].resume_frac().is_some(), "no other tile moved");
+        assert!(!d.watched, "the page's own item is not what was pressed");
+        assert!(!d.episodes[0].watched, "…nor is any episode of it");
+
+        // the way back, from the second row a part-watched tile offers
+        assert!(set_watched_local(SRV_A, "r1", false));
+        let d = current().unwrap();
+        assert!(d.related[1].unwatched && !d.related[1].watched);
+
+        // A SHARE's `r0` is a different film that happens to carry the same number. The row's own
+        // `sid` is what keeps the press off it — a bare-key walk would flip the tile here.
+        assert!(!set_watched_local(SRV_B, "r0", true), "another server's key names nothing on this shelf");
+        assert!(current().unwrap().related[0].resume_frac().is_some(), "…and the tile is untouched");
+
+        clear();
+    }
+
     /// `cached_playing` is the fast path that SKIPS the PMS fetch, so a false hit is the worst of
     /// the five collisions: the whole `PlayingItem` — the `Stream.id`s that get PUT to a server, the
     /// frame size the direct-play gate reasons about, the fps, the chapters, the markers — would be

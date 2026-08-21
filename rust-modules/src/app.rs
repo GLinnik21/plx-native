@@ -2005,12 +2005,15 @@ fn open_episode_menu(route: &mut Route) -> bool {
 /// (the two paths for the profile menu had already drifted before those were unified).
 /// The menu itself only reports the choice; every route flip, server call and refresh is here.
 ///
-/// `host` is the screen the popover was over, and it still changes what ONE action means: on the
-/// DETAIL page the item is an episode of the loaded season, so Play from Start goes through that
-/// page's own episode path and the page has to re-read the state a scrobble just changed. Every
-/// other host — Home, the Library grid, a Search shelf, a person's filmography — is a card row, and
-/// they are all the same arm now: the row rides in the menu (`item_menu::item`) instead of being
-/// looked up in the hub catalog, which only Home's cards are ever in.
+/// `host` is the screen the popover was over, and it still changes what ONE action means — but the
+/// question is [`MenuHost::is_loaded_episode`], not "is this the detail page". Only
+/// [`MenuHost::Detail`], the episode filmstrip, holds an item that is a leaf of the loaded season:
+/// its Play from Start goes through that page's own episode path and its scrobble makes the page
+/// re-read itself. Every other host — Home, the Library grid, a Search shelf, a person's
+/// filmography, and the detail page's own RELATED shelf, which stands on that page while its tiles
+/// are OTHER items — is a card row, and they are all the same arm: the row rides in the menu
+/// (`item_menu::item`) instead of being looked up in the hub catalog, which only Home's cards are
+/// ever in.
 unsafe fn apply_item_action(
     mt: &crate::task::MainThread,
     act: crate::ui::item_menu::Action,

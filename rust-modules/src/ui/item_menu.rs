@@ -687,9 +687,16 @@ mod tests {
     ///
     /// The Related shelf was the last card surface with no context menu, excluded on the stated
     /// grounds that its tiles carried no `(ratingKey, watched)` pair — true of the old struct, never
-    /// of the response. So the assertion worth making is end to end: `/related`'s real JSON through
-    /// the same `pms::parse_item` the shelf now uses, into `build`, and out as labels. A fixture
-    /// built by hand here would pass even if `fetch_related` went back to dropping the fields.
+    /// of the response. So this half runs `/related`'s real JSON through the same `pms::parse_item`
+    /// the shelf now uses, into `build`, and out as labels, rather than through this module's
+    /// hand-made [`item`] fixture: the fixture sets the three flags directly, so it can only prove
+    /// that `build` reads them, never that the WIRE fills them in.
+    ///
+    /// It is deliberately only that half. The other coupling — that `fetch_related` still hands the
+    /// shelf a fully parsed row instead of going back to copying three fields — cannot be seen from
+    /// here, because this test calls `parse_item` itself. That one is
+    /// `metadata::tests::related_rows_carry_the_watch_state_the_wire_already_had`, which drives the
+    /// real `related_rows`; the two are a pair and neither is sufficient alone.
     ///
     /// It also pins the half a `viewCount > 0` shortcut gets wrong. A related **movie** is a leaf
     /// and offers Play from Start; a related **show** is a container, offers none, and when it is
