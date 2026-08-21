@@ -145,11 +145,32 @@ impl Season {
     }
 }
 
-pub(crate) struct Related {
-    pub(crate) rk: String,
-    pub(crate) title: String,
-    pub(crate) thumb: String,
-}
+/// A tile of the Related shelf — the **shared catalog row**, not a private three-field struct.
+///
+/// It used to be `{ rk, title, thumb }`: the poster art and nothing about the item. That shortfall
+/// was load-bearing in two visible ways. The shelf could draw no watched tick and no resume bar,
+/// while every other poster surface in the app draws both; and the press-and-hold context menu had
+/// nothing to build rows from, so a hold on a Related tile did nothing at all — the owner-reported
+/// gap — while the same hold on Home, the Library grid, Search and a person's filmography opened a
+/// menu.
+///
+/// **The data was never missing.** `/related`'s rows are the SAME wire DTO every other listing
+/// parses, carrying `viewCount`, `viewOffset`, `duration`, `type` and `Media[0].Part[0]`;
+/// `fetch_related` simply copied three fields out and dropped the rest. So the fix is not to widen
+/// this struct field by field but to stop having one: [`crate::pms::parse_item`] is the ONE
+/// `plex::Metadata` → row mapping that the hub catalog, the Library grid and the person page
+/// already share, and it owns rules a re-derivation gets wrong. The sharpest is that a related
+/// **SHOW** is watched on `viewedLeafCount >= leafCount` and never on `viewCount > 0`, so a series
+/// you are three episodes into is neither watched nor unwatched — which is exactly the state whose
+/// menu must offer BOTH write verbs (`ui::widgets::row_watch_state`).
+///
+/// Carrying `sid` is the second thing this buys, and it is a correctness property rather than a
+/// convenience: a related item is a key on the server THIS PAGE is mounted on, and both servers
+/// number their ratingKeys from 1 (`docs/shared-servers.md` §2). `fetch_related` stamps each row
+/// with the sid it fetched from, so every downstream use — the art request, the context menu's
+/// `SID`, the scrobble — addresses the right machine BY CONSTRUCTION rather than by a comment
+/// asking the next caller to remember `plex::current_server()` is the wrong answer here.
+pub(crate) type Related = crate::pms::PmsMovie;
 
 /// Clone because the playing-item store keeps the played leaf's OWN chapters (see [`PlayingItem`]) —
 /// on the detail-page play path they are cloned from the already-loaded `Detail` rather than refetched.
@@ -608,13 +629,19 @@ pub(crate) fn install_for_test(d: Option<Detail>) {
 /// and the filmstrip's checks would sit unchanged for as long as the item's server takes to answer —
 /// which on a share is seconds, and reads as the press having missed.
 ///
-/// Two things can be about the item, and both are updated:
+/// THREE things can be about the item, and all three are updated:
 /// * **the loaded item itself** — a movie, or the show whose hero toggle was pressed;
 /// * **one EPISODE of the loaded season** — the filmstrip's context menu, whose rk is a leaf of the
 ///   show `CURRENT` holds. Its season's `viewedLeafCount` moves with it, because the season tab's
 ///   tick is derived from that count ([`Season::watched`]) and a tick that disagreed with the
 ///   episode row beneath it is precisely the "two surfaces describing one item two ways" this page
 ///   already refuses elsewhere.
+/// * **a tile of the RELATED shelf** — a different item entirely, which is what makes it the odd
+///   one out: it is matched on its OWN `sid` (each row carries one, see [`Related`]) rather than on
+///   the page's, and it is checked unconditionally rather than as one arm of a chain. Since
+///   2026-08-21 that shelf's tiles have a context menu of their own, so this page can mark a third
+///   item watched — and without this pass the tile it was pressed on kept its old tick and resume
+///   bar until a refetch, which reads as the row having done nothing.
 ///
 /// `resume_ms` is cleared with the flag for the same reason `pms::set_watched` clears it: the
 /// still's own resolver (`ui::detail::ep_state`) reads progress ahead of the watched mark, so an
@@ -624,6 +651,25 @@ pub(crate) fn install_for_test(d: Option<Detail>) {
 pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
     unsafe {
         let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else { return false };
+        // The RELATED shelf first, and unconditionally — it is the one store here whose rows are
+        // OTHER items, so it is neither the loaded item nor one of its episodes and must not be
+        // reached through either of their early returns below. A related tile is also the one the
+        // press most often came FROM (its context menu is why this page can mark a third item
+        // watched at all), and left out, the tile kept its old tick and bar until a refetch.
+        //
+        // Not `else`-chained with the two arms under it for a subtler reason as well: the same
+        // title can legitimately be BOTH the loaded item and a row of some other page's shelf, and
+        // a hub that lists an item alongside itself is not something this function should trust
+        // itself to rule out.
+        let mut hit = false;
+        for m in d.related.iter_mut() {
+            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+                // the shared three-field flip (`watched`/`unwatched`/`resume_ms` move together, or
+                // the tile wears the progress bar it had before and shows no tick at all)
+                crate::pms::set_watched(m, on);
+                hit = true;
+            }
+        }
         if crate::plex::same_item((d.sid, &d.rk), (sid, rk)) {
             d.watched = on;
             d.resume_ms = 0;
@@ -631,10 +677,14 @@ pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) 
         }
         // An episode is only ever a leaf of the loaded show, so it is matched on the PAGE's server —
         // `Episode` carries no `sid` of its own precisely because it cannot come from anywhere else.
+        // Both misses below return `hit` rather than `false`: the Related pass above may already
+        // have changed this page, and reporting "nothing here was about that item" after editing a
+        // tile would be this function contradicting itself. (`viewstate` only logs the verdict, but
+        // a false negative is the kind that goes unnoticed until something starts trusting it.)
         if d.sid != sid {
-            return false;
+            return hit;
         }
-        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else { return false };
+        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else { return hit };
         let was = d.episodes[i].watched;
         d.episodes[i].watched = on;
         d.episodes[i].resume_ms = 0;
@@ -1219,6 +1269,22 @@ fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
             return Vec::new();
         }
     };
+    related_rows(&mc, sid)
+}
+
+/// Related tiles this shelf holds at most. PMS answers `/related` with several titled hubs and we
+/// concatenate them, so without a cap a well-connected film can carry a hundred rows into a strip
+/// that shows six.
+const RELATED_MAX: usize = 20;
+
+/// `/related`'s response → the shelf's rows. **PURE**, split out of [`fetch_related`] so the three
+/// things that can be wrong here are host-testable: which fields survive the copy, the de-duplication
+/// across hubs, and the cap.
+///
+/// De-duplication is across the WHOLE response and not per hub, which is the point of it: PMS's
+/// related hubs overlap heavily ("Similar Movies" and "More with <actor>" routinely name the same
+/// film), and a flattened strip that listed it twice would put two tiles of one title side by side.
+fn related_rows(mc: &crate::plex::MediaContainer, sid: crate::plex::ServerId) -> Vec<Related> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for h in &mc.hub {
@@ -1226,12 +1292,13 @@ fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
             if x.rating_key.is_empty() || !seen.insert(x.rating_key.clone()) {
                 continue;
             }
-            out.push(Related {
-                rk: x.rating_key.clone(),
-                title: x.title.clone(),
-                thumb: x.thumb.clone(),
-            });
-            if out.len() >= 20 {
+            // THE shared row mapping, not a three-field copy — see [`Related`]. `sid` is the
+            // server this response came from, passed in and never looked up: `fetch_related` runs
+            // on the detail worker, and the house rule (`pms::parse_item`'s own doc) is that a
+            // worker reads no statics, because "the current server" can change while a fetch is in
+            // flight and the rows in hand belong to the machine that was asked.
+            out.push(crate::pms::parse_item(x, sid));
+            if out.len() >= RELATED_MAX {
                 return out;
             }
         }
@@ -2109,6 +2176,98 @@ mod tests {
         assert_eq!(m.library_section_title, "Film Club", "the library names the row, not the machine");
         assert_eq!(m.duration, 7_020_000);
         assert_eq!(m.media.first().map(|x| x.video_resolution.as_str()), Some("1080"));
+    }
+
+    /// **The Related shelf's rows carry the watch state that was on the wire all along.**
+    ///
+    /// The reported bug — a long press on a Related tile doing nothing — was explained by "a Related
+    /// row has no `(ratingKey, watched)` pair to build menu rows from", and that was true of the
+    /// old three-field struct while being false of the response. This is the test that keeps the two
+    /// from drifting apart again: it feeds `/related`'s REAL shape and asserts the fields the shelf's
+    /// tick, its resume bar and its context menu are each built from.
+    ///
+    /// Three details are deliberately in the fixture rather than idealised away:
+    /// * `viewOffset`/`duration` arrive as JSON **strings**, which PMS really does (see
+    ///   `plex/CLAUDE.md` — a non-lenient adapter fails the WHOLE container, not one field);
+    /// * `viewCount` is **absent** on an unwatched row rather than `0`;
+    /// * the show is **part-watched** (`viewedLeafCount < leafCount`), the state that is neither
+    ///   watched nor unwatched and the one a `viewCount > 0` shortcut gets wrong.
+    #[test]
+    fn related_rows_carry_the_watch_state_the_wire_already_had() {
+        let body = r#"{"MediaContainer":{"Hub":[{"title":"Similar Movies","Metadata":[
+            {"ratingKey":"11","type":"movie","title":"finished","duration":"7020000","viewCount":2,
+             "Media":[{"Part":[{"key":"/library/parts/11/file.mkv"}]}]},
+            {"ratingKey":"12","type":"movie","title":"halfway","duration":"7020000","viewOffset":"3510000"},
+            {"ratingKey":"13","type":"movie","title":"never started","duration":7020000},
+            {"ratingKey":"14","type":"show","title":"three in","leafCount":10,"viewedLeafCount":3}
+        ]}]}}"#;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+        let rows = related_rows(&mc, SRV_B);
+        assert_eq!(rows.len(), 4, "every hub row with a key becomes a tile");
+
+        // …and every row is stamped with the server it was FETCHED from. A related item is a key on
+        // the page's own server, and both servers number from 1, so this is the field that keeps the
+        // art request, the menu's SID and the scrobble off the wrong machine.
+        assert!(rows.iter().all(|m| m.sid == SRV_B), "the row's server is the one that answered");
+
+        // finished: the tick, and no bar (`resume_frac` is None with no viewOffset)
+        assert!(rows[0].watched && !rows[0].unwatched);
+        assert_eq!(rows[0].resume_frac(), None);
+        assert_eq!(rows[0].part, "/library/parts/11/file.mkv", "Play from Start needs the part id");
+
+        // halfway: the bar, at the fraction the wire's STRING-encoded numbers give
+        assert!(!rows[1].watched && rows[1].unwatched, "a resume point is not a view count");
+        assert_eq!(rows[1].resume_frac(), Some(0.5), "the amber bar's fraction, off duration + viewOffset");
+
+        // never started: neither mark — and `viewCount` was absent, not zero
+        assert!(!rows[2].watched && rows[2].unwatched);
+        assert_eq!(rows[2].resume_frac(), None);
+
+        // the part-watched SHOW: NEITHER flag, which is the state the menu turns into both verbs
+        assert_eq!(rows[3].kind, 1, "the item KIND decides the menu's leaf/container rule");
+        assert!(!rows[3].watched, "3 of 10 leaves is not done");
+        assert!(!rows[3].unwatched, "…and it is not untouched either");
+    }
+
+    /// The two bounds on the shelf, which are one function's job and were easy to lose in the move
+    /// to the shared row mapping.
+    ///
+    /// **De-duplication is across the whole response, not per hub** — PMS's related hubs overlap
+    /// heavily, so the same film is routinely in two of them and a flattened strip would draw it
+    /// twice side by side. **The cap counts kept rows**, so a response padded with duplicates cannot
+    /// spend the budget on tiles that were never added.
+    #[test]
+    fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
+        let hub = |keys: &[i32]| {
+            let rows: Vec<String> = keys
+                .iter()
+                .map(|k| format!(r#"{{"ratingKey":"{k}","type":"movie","title":"t{k}"}}"#))
+                .collect();
+            format!(r#"{{"Metadata":[{}]}}"#, rows.join(","))
+        };
+        // the same three keys in two hubs, plus one the second hub alone has
+        let body = format!(
+            r#"{{"MediaContainer":{{"Hub":[{},{}]}}}}"#,
+            hub(&[1, 2, 3]),
+            hub(&[2, 3, 4])
+        );
+        let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+        let rows = related_rows(&mc, SRV_A);
+        let keys: Vec<&str> = rows.iter().map(|m| m.rk.as_str()).collect();
+        assert_eq!(keys, ["1", "2", "3", "4"], "one tile per title, in first-seen order");
+
+        // a row PMS sent no key for is not a tile — it addresses nothing
+        let body = r#"{"MediaContainer":{"Hub":[{"Metadata":[{"type":"movie","title":"keyless"}]}]}}"#;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+        assert!(related_rows(&mc, SRV_A).is_empty(), "no ratingKey, no tile");
+
+        // the cap, counted in KEPT rows: 30 distinct keys, each repeated twice
+        let many: Vec<i32> = (0..30).collect();
+        let body = format!(r#"{{"MediaContainer":{{"Hub":[{},{}]}}}}"#, hub(&many), hub(&many));
+        let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+        let rows = related_rows(&mc, SRV_A);
+        assert_eq!(rows.len(), RELATED_MAX, "the shelf is capped");
+        assert_eq!(rows.last().map(|m| m.rk.as_str()), Some("19"), "…at the 20th DISTINCT title");
     }
 
     /// A server that answers "I do not have it" contributes no row — and is not confused with one

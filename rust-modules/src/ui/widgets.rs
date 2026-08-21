@@ -445,9 +445,17 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
             }
             // The ONE state language on every poster, drawn in this shared composite so Home
-            // shelves + the Library grid + Related all inherit it: the amber WATCHED disc here
-            // (finished), the amber resume BAR (`card_row::resume_bar`) for in progress, and —
-            // deliberately — NOTHING for never started.
+            // shelves + the Library grid + Search + the person page + the detail page's Related
+            // shelf all inherit it: the amber WATCHED disc here (finished), the amber resume BAR
+            // (`card_row::resume_bar`) for in progress, and — deliberately — NOTHING for never
+            // started.
+            //
+            // **Inheriting it is a property of the ART VARIANT, not of the shelf**, and this line
+            // claimed Related had it for months while Related passed `Art::Thumb` and so wore no
+            // mark at all. A `Thumb` is a path and a size; only `Poster` carries the row the mark is
+            // derived from, so a shelf that wants the state language must hand over a `PmsMovie` —
+            // which is what putting a real catalog row behind Related's tiles bought (2026-08-21,
+            // `metadata::Related`).
             //
             // **Amber means "you have watched this"**, one hue for one vocabulary. Until 2026-08-13
             // this corner carried the opposite claim (an amber ANGLE marking a fully UNWATCHED

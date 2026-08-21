@@ -14,15 +14,25 @@
 //!
 //! **Every card surface opens it**, through two builders and one presenter. [`open`] serves the
 //! card rows — a home shelf, the Library browse grid, a Search result shelf, a person's filmography
-//! — and [`open_episode`] the detail page's episode filmstrip (the owner-reported gap: a long press
-//! on an episode still did nothing, so there was nowhere to mark an episode watched). The row SET
-//! differs only because a navigation row that leads to the page you are standing on is not an
-//! action; everything else — the panel, the placement, the choreography, the state rows — is shared.
+//! and the detail page's Related shelf — and [`open_episode`] the detail page's episode filmstrip
+//! (the owner-reported gap: a long press on an episode still did nothing, so there was nowhere to
+//! mark an episode watched). The row SET differs only because a navigation row that leads to the
+//! page you are standing on is not an action; everything else — the panel, the placement, the
+//! choreography, the state rows — is shared.
 //!
-//! The three tile surfaces deliberately left out are the ones whose tiles carry no `(ratingKey,
-//! watched)` pair, which is what every row here is built from: the detail page's Related shelf and
-//! its cast headshots, and Search's Cast & Crew / Collections rows (`search::Item::Tag` has no
-//! rating key at all). A hold there keeps doing nothing.
+//! **The Related shelf was the last card surface to join, and it is worth knowing why it was late.**
+//! It was excluded on the grounds that its tiles carried no `(ratingKey, watched)` pair to build
+//! rows from — which was true of the struct behind them and never of the data: `/related` returns
+//! the same wire DTO as every other listing, and `fetch_related` copied three fields out of it and
+//! dropped the rest. So the fix was upstream (`metadata::Related` is a real `pms::PmsMovie` now),
+//! and this module needed nothing: a Related tile takes [`open`], because it is a card row like the
+//! others and NOT a leaf of the season the page beneath it has loaded.
+//!
+//! **What remains excluded is excluded for a reason that does not dissolve.** A tile that is a
+//! PERSON or a TAG has no rating key and no watch state at all, so every row this module can build
+//! would be absent and the hold would open an empty panel: the detail page's cast headshots, and
+//! Search's Cast & Crew / Collections rows (`search::Item::Tag` has no rating key). A hold there
+//! keeps doing nothing, deliberately.
 //!
 //! Like [`crate::ui::account_menu`], this module only **reports** the chosen [`Action`]; `app.rs`
 //! performs the routing, the server call and the hub refresh. It never mutates playback or PMS
@@ -670,6 +680,62 @@ mod tests {
         assert_eq!(strip(PosterMark::None), ["Mark as Watched", "Play from Start"]);
         assert_eq!(strip(PosterMark::InProgress), ["Mark as Watched", "Mark as Unwatched", "Play from Start"]);
         assert_eq!(strip(PosterMark::Watched), ["Mark as Unwatched", "Play from Start"]);
+    }
+
+    /// **A RELATED tile gets the same three-state row set as every other card**, built from a row
+    /// that came off the wire rather than from this module's hand-made fixture.
+    ///
+    /// The Related shelf was the last card surface with no context menu, excluded on the stated
+    /// grounds that its tiles carried no `(ratingKey, watched)` pair — true of the old struct, never
+    /// of the response. So the assertion worth making is end to end: `/related`'s real JSON through
+    /// the same `pms::parse_item` the shelf now uses, into `build`, and out as labels. A fixture
+    /// built by hand here would pass even if `fetch_related` went back to dropping the fields.
+    ///
+    /// It also pins the half a `viewCount > 0` shortcut gets wrong. A related **movie** is a leaf
+    /// and offers Play from Start; a related **show** is a container, offers none, and when it is
+    /// part-watched it is at NEITHER end of the range and gets both write verbs — the same rule the
+    /// detail hero's discs follow.
+    #[test]
+    fn a_related_tile_off_the_wire_gets_the_row_set_its_state_earns() {
+        let row = |json: &str| {
+            let body = format!(r#"{{"MediaContainer":{{"Hub":[{{"Metadata":[{json}]}}]}}}}"#);
+            let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+            crate::pms::parse_item(&mc.hub[0].metadata[0], crate::plex::ServerId::UNSET)
+        };
+        let set = |json: &str| labels(&build(&row(json), false).0);
+
+        // a MOVIE, in each of the three states — one navigation row, then the state group
+        let movie = |extra: &str| format!(r#"{{"ratingKey":"11","type":"movie","duration":"7020000"{extra}}}"#);
+        assert_eq!(
+            set(&movie("")),
+            ["Go to Movie", "—", "Mark as Watched", "Play from Start"],
+            "never started: only the way forward"
+        );
+        assert_eq!(
+            set(&movie(r#","viewOffset":"3510000""#)),
+            ["Go to Movie", "—", "Mark as Watched", "Mark as Unwatched", "Play from Start"],
+            "part-watched: both ends are reachable and both are true"
+        );
+        assert_eq!(
+            set(&movie(r#","viewCount":2"#)),
+            ["Go to Movie", "—", "Mark as Unwatched", "Play from Start"],
+            "finished: only the way back"
+        );
+
+        // a SHOW — a container, so no Play from Start, and its middle state is the leaf-count one
+        let show = |extra: &str| format!(r#"{{"ratingKey":"14","type":"show","leafCount":10{extra}}}"#);
+        assert_eq!(set(&show("")), ["Go to Show", "—", "Mark as Watched"], "no leaf viewed");
+        assert_eq!(
+            set(&show(r#","viewedLeafCount":3"#)),
+            ["Go to Show", "—", "Mark as Watched", "Mark as Unwatched"],
+            "3 of 10: neither watched nor unwatched, so BOTH verbs — the case `viewCount > 0` misses"
+        );
+        assert_eq!(set(&show(r#","viewedLeafCount":10"#)), ["Go to Show", "—", "Mark as Unwatched"], "all 10");
+
+        // and no Related row offers the deck action: that shelf is not the Continue Watching deck
+        let (sec, acts) = build(&row(&movie("")), false);
+        assert!(!labels(&sec).iter().any(|l| l == "Remove from Deck"));
+        assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     }
 
     /// **A row performs the verb its own label names**, in every state and at both entry points —
