@@ -766,6 +766,11 @@ fn has_restart() -> bool {
 /// finished-then-restarted item, and being part-way through the re-watch is what the viewer is
 /// doing. Pure, so the control set it produces is host-gradeable.
 ///
+/// **The tile context menu asks the same question and must give the same answer** — its state rows
+/// are this row's discs as words (`ui::item_menu::state_rows`), so a change to what counts as "in
+/// the middle" here belongs in `widgets::row_watch_state` too, which is that menu's resolver over a
+/// catalog row and departs from `poster_mark` on exactly the container case this one does.
+///
 /// **KNOWN, on CONTAINERS only: the optimistic flip does not reach the evidence this reads**, so a
 /// show's tail settles a round trip late instead of on the press frame. `metadata::set_watched_local`
 /// edits the matched item's own `watched`/`resume_ms` — which is the whole answer for a leaf — but a
@@ -3148,6 +3153,25 @@ fn ep_state(ep: &metadata::Episode) -> EpState {
 /// **no capsule behind it**; `widgets::art_scrim` (drawn first by the caller) is what makes that safe.
 /// `card` is the rect actually drawn, i.e. the SCALED one while the tile is popped, so the line rides
 /// the focus pop without resizing.
+/// One episode's watch state in the app's shared vocabulary ([`PosterMark`]) — what the filmstrip's
+/// context menu builds its rows from (`item_menu::state_rows`).
+///
+/// A **projection of [`ep_state`]**, not a second predicate, which is the whole point: the still's
+/// state line and the menu opened on that still answer the same question about the same episode, and
+/// the resume-point edge this page already keeps (a `viewOffset` at or past the end is a finished
+/// item, not one in progress) is written down once. `EpGlyph::None` IS the in-progress case — the bar
+/// says it, so the glyph slot stays empty — which is why the progress field is what this reads.
+fn ep_watch_state(ep: &metadata::Episode) -> PosterMark {
+    let st = ep_state(ep);
+    if st.progress.is_some() {
+        PosterMark::InProgress
+    } else if st.glyph == EpGlyph::Watched {
+        PosterMark::Watched
+    } else {
+        PosterMark::None
+    }
+}
+
 fn ep_state_line(p: Painter, card: Rect, st: &EpState) {
     let sz = theme::size::CAPTION;
     // the label's cap band sits on the line's baseline inset, so the glyph can centre on it
@@ -3574,15 +3598,16 @@ pub(crate) fn take_alt_open() -> Option<(crate::plex::ServerId, String)> {
 // `app.rs` performs it. detail.rs supplies the item, the rect to anchor beside, and the two
 // operations an Action can turn into here.
 
-/// The focused episode's identity for the context menu — its ratingKey and whether it is watched
-/// (`viewCount >= 1`, which is EXACT for a leaf, so the row can be a true toggle). `None` unless
-/// the filmstrip actually holds focus.
+/// The focused episode's identity for the context menu — its ratingKey and its watch STATE, which is
+/// three-valued and not two ([`ep_watch_state`]): a part-watched episode is at neither end of the
+/// range, so the menu offers it both write rows rather than guessing an end. `None` unless the
+/// filmstrip actually holds focus.
 ///
 /// Also `None` while a season fetch is in flight: the row is still drawing the PREVIOUS season's
 /// episodes (dimmed, under a spinner) while `cur_season` already names the new one, so a menu built
 /// from it would offer to mark the wrong episode watched — the same trap `play_episode_at` refuses
 /// the press for.
-pub(crate) fn focused_episode() -> Option<(String, bool)> {
+pub(crate) fn focused_episode() -> Option<(String, PosterMark)> {
     if metadata::season_loading() {
         return None;
     }
@@ -3597,7 +3622,7 @@ pub(crate) fn focused_episode() -> Option<(String, bool)> {
         return None;
     }
     let ep = metadata::current()?.episodes.get(v.col.max(0) as usize)?;
-    Some((ep.rk.clone(), ep.watched))
+    Some((ep.rk.clone(), ep_watch_state(ep)))
 }
 
 /// The episode whose OWN page the filmstrip's [`EpRow::Text`] row opens — `None` unless that row
