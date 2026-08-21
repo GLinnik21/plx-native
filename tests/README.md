@@ -2,14 +2,17 @@
 
 Headless regression tests for the native webOS Plex player. There is no host-side runtime
 (the code only runs on the TV), so every test drives the **real app on the real TV** via the
-`/tmp/plxnative-*` dev triggers and asserts on the on-device event log (`/tmp/plxnative-events.log`).
+`plxnative-*` dev triggers and asserts on the on-device event log (`plxnative-events.log`) — both
+of them inside that install's **runtime root**, which is `/tmp` for the stable install and
+`/tmp/<app id>` for a flavoured one. See *Which install it drives*, below: it decides every path
+on this page, and the default is the **debug** build.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
   needs, the expected log signals, and the *shape* of the item it needs (`item`, a symbolic key
   like `movie_h264_ac3_1080p`) rather than any ratingKey.
 - `manifest.local.json` — **gitignored, one per installation**, and required. Maps each `item`
-  key to a ratingKey on *your* server, and carries your `pms` host, `tv` address, `test_user` and
-  (optionally) the `shared_server` a two-source case needs.
+  key to a ratingKey on *your* server, and carries your `pms` host, `tv` address, `test_user`,
+  which `flavour` to drive, and (optionally) the `shared_server` a two-source case needs.
   Copy it from `manifest.local.json.example` and fill it in; `run.py` merges it over the manifest
   at load and refuses to run without it, naming any key it cannot resolve.
 - `run.py` — the runner (Python 3 stdlib only; macOS system `python3` is fine).
@@ -18,6 +21,71 @@ Headless regression tests for the native webOS Plex player. There is no host-sid
 The split is not just anonymisation. The symbolic key keeps "five cases deliberately share one
 item" visible in the tracked file — which is the fact the per-case resume reset exists for — and
 it makes a mis-set item a named setup error instead of a mystery failure.
+
+## Which install it drives (`--flavor`)
+
+Two builds can sit on one television: **`com.beb.plxnative`**, the app users install, and
+**`com.beb.plxnative.debug`**, the developer build beside it — its own launcher tile, its own
+sign-in, its own runtime files. They are separate apps to SAM, and a run has to drive exactly one
+of them end to end.
+
+The flavour is resolved once, before anything is touched: **`--flavor`**, else the overlay's
+**`flavour`** key, else the Makefile's own default (`debug` — the dangerous id has to be typed).
+Everything downstream is then **asked for**, never restated: `run.py` reads the app id, the runtime
+root and the event-log path back from `make -s print-appid / print-rundir / print-eventlog
+FLAVOR=<f>`, and every `make` it shells out to carries the same `FLAVOR=`. So the flavour it
+resolved and the flavour it kills, launches, arms triggers in and greps for cannot drift apart —
+closing install A while launching install B reproduces SAM's stale-"running" no-op and then grades
+the other app's log, which is *plausible wrong data*, not a clean failure.
+
+- **The runtime root moved; the names did not.** Every `plxnative-*` trigger, the `plxnative-remote`
+  FIFO and the three `*.log` files are named exactly as before — only the directory they sit in
+  changed. Ask for it (`make -s print-rundir FLAVOR=debug`) rather than writing it out.
+- **The root is created `1777` — `mkdir` then an explicit `chmod`** (umask masks `mkdir`'s mode),
+  in the same round-trip that writes the first trigger. Two uids write into it and neither can be
+  made to go second: the harness arms triggers over ssh **as root** before the app has ever booted,
+  and the app then runs jailed under its own uid and creates its logs there. An owner-only mode
+  locks the other one out, and a root-owned event log the app cannot write stays 0 bytes — which
+  every assertion here reports as "no line found", i.e. exactly like a total regression.
+- **`--flavor stable` normally aborts, by design** — see the boot-line check below.
+
+### The `install:` boot line is a precondition, not a log line
+
+The app's **first** log line names the install that wrote it, before anything can fail:
+
+```
+install: id=com.beb.plxnative.debug flavour=debug runtime=/tmp/com.beb.plxnative.debug features=dev APPID_env=<value|unset>
+appdir: /media/developer/apps/usr/palm/applications/com.beb.plxnative.debug (from current_exe)
+```
+
+`run.py` grades it as the log arrives and **aborts the whole run**, once and by name, if `id=` is
+not the app id it drove or `features=` is not `dev` (`check_install`). Nothing else can answer that
+question: both binaries are named `plxnative`, and `pkg/plxnative` is a path every flavour *and*
+every configuration writes, so an md5 against the local build proves only that *some* build
+matches. An absent boot line is refused too — it means a deployed binary that predates the line,
+and an unattributable log.
+
+Uncaught, a **release** build fails like a catastrophe rather than like a mistake. `devtriggers` is
+compiled out, so it reads nothing under the runtime root: the injected token is ignored, the app
+parks on the who's-watching picker having played nothing, and every assertion fails as "the line
+has not appeared **yet**" — which `failed_for_good` deliberately never settles. Every case then
+burns its full `run_secs` and the summary reads as a total regression, for a build that is working
+perfectly. This is also why `--flavor stable` aborts in normal use: `make deploy` refuses to put a
+dev build on the stable id without `ALLOW_DEV_ON_STABLE=1`, so that install *is* a release build.
+
+### Three ways to name a running app, and they are not equivalent
+
+| | scope | matches |
+|---|---|---|
+| `fuser <appdir>/plxnative` | **inode** | exactly the install at that path |
+| `luna-send … closeByAppId {"id":…}` | **app id** | exactly that install |
+| `pidof plxnative` | **name** | **both installs** — both binaries are called `plxnative` |
+
+`make kill` uses the first two and carries `FLAVOR=`, which is what leaves the *other* install
+alone — including its running app. **`pidof plxnative` is no longer a liveness test**: it returns
+two pids, in an order busybox does not promise. Use `fuser <appdir>/plxnative`, or resolve
+`readlink /proc/<pid>/exe` per pid. And any match on the app id must be **anchored on a delimiter**:
+`com.beb.plxnative` is a prefix of `com.beb.plxnative.debug`.
 
 ## Security
 
@@ -29,8 +97,8 @@ credentials are already in the committed `Makefile`, so the runner shells out to
 
 Every other token the harness uses is **derived from that one at run time and stored nowhere**: the
 managed user's per-server token (below), and a second server's access token (further below). Both
-are written to a `/tmp/plxnative-*` file on the TV and are cleared by the same glob wipe — before
-every case, and again by `teardown()` on *every* exit path, including Ctrl-C and a crash.
+are written to a `plxnative-*` file in the TV's runtime root and cleared by the same glob wipe —
+before every case, and again by `teardown()` on *every* exit path, including Ctrl-C and a crash.
 
 ## Test identity — runs as a managed user (no watch-history pollution)
 
@@ -42,20 +110,20 @@ account stays clean. It works without storing any new secret:
   access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
   `userID` — which is what `test_user.id` is). The managed user must already have the libraries
   shared with it.
-- That token is used for the `/:/progress` resume seed **and** written to `/tmp/plxnative-token` on the
-  TV. The binary carries **no** token, so this file is the only way an automated run gets PMS access
-  at all (see `plex_run`); the **app itself** then plays and scrobbles as the managed user, not just
-  the seed. The token value is never printed (redacted to `<…, redacted>`), and `plxnative-token` is
-  cleared between cases like every other trigger.
+- That token is used for the `/:/progress` resume seed **and** written to `plxnative-token` in the
+  TV's runtime root. The binary carries **no** token, so this file is the only way an automated run
+  gets PMS access at all (see `plex_run`); the **app itself** then plays and scrobbles as the
+  managed user, not just the seed. The token value is never printed (redacted to
+  `<…, redacted>`), and `plxnative-token` is cleared between cases like every other trigger.
 - Pass **`--owner`** to run as the `config.local.h` owner token instead (history *will* be
   affected). If the overlay has no `test_user`, the runner falls back to owner with a warning.
 
 ## A second server (a friend's shared one)
 
-`/tmp/plxnative-token` carries exactly **one** token, and a shared server is a **separate
+`plxnative-token` carries exactly **one** token, and a shared server is a **separate
 authority**: its own `machineIdentifier`, its own per-(user,server) access token, and a 401 for
 anybody else's. So a screen that shows two sources at once could only ever be checked by hand, one
-capture at a time. `/tmp/plxnative-servers` is the second credential channel — **purely additive**:
+capture at a time. `plxnative-servers` is the second credential channel — **purely additive**:
 the primary server is still `plxnative-token` against the compiled-in host, unchanged, and a run
 that names one server behaves exactly as it always did.
 
@@ -92,7 +160,7 @@ server is needed, never *which*):
 ```
 
 - With `shared_server` configured, the runner resolves it **before touching the TV** and writes
-  `/tmp/plxnative-servers` for those cases only — a JSON array of
+  `plxnative-servers` for those cases only — a JSON array of
   `{name, machine_id, host, port, token}` — beside `plxnative-token`. Value never on stdout; the
   printed line is `plxnative-servers: <nas-home @ 10.0.0.9:32400, token redacted>`.
 - Without it, those cases are **SKIPPED**, with the reason, and appear as `[SKIP]` in the summary —
@@ -124,7 +192,11 @@ the wrong screen.
 - `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in every
   `<placeholder>` (PMS host/port, TV address, `test_user`, and a ratingKey per `item` key). Its
   `shared_server` block is optional; delete it unless a second server is shared with your account
-  (see below).
+  (see below). Its `flavour` key is optional too — see above; the fallback is the Makefile's own
+  default.
+- **The install being driven must already exist on the TV.** `make deploy` scp's into an app
+  directory SAM already knows about; a flavour is registered once with
+  `make FLAVOR=<f> install`, which builds its .ipk, installs it and then deploys into it.
 - The TV powered on and reachable (`root@<tv>`, the overlay's `tv`).
 - The PMS reachable at `http://<pms-host>:32400` (the overlay's `pms` block).
 - `src/config.local.h` present with `PMS_TOKEN`.
@@ -147,6 +219,9 @@ the wrong screen.
 
 # point at a different TV (overrides the overlay's `tv`)
 ./tests/run.py --tv 10.0.0.50 --filter dp_h264
+
+# drive the OTHER install (overrides the overlay's `flavour`; read the boot-line check first)
+./tests/run.py --flavor stable --filter dp_h264
 
 # run as the OWNER token instead of the overlay's test_user (history WILL be affected)
 ./tests/run.py --owner --filter dp_h264
@@ -250,13 +325,15 @@ cast+about / info-panel regressions.
 1. `make kill` — close the app (luna-send `closeByAppId` + `fuser -k`) **first**.
 2. If the case sets `viewOffset_ms`: `PUT /:/progress` to seed the resume point — done
    **after** the close so the app's `timeline_thread` can't re-scrobble over it.
-3. Clear every `/tmp/plxnative-*` trigger, then write only the ones this case needs.
-4. `make run TV=<tv> RUN_SECS=<n>` — relaunch, wait, and cat `/tmp/plxnative-events.log` back.
+3. Create the runtime root (`mkdir` + `chmod 1777`), clear every `plxnative-*` trigger in it,
+   then write only the ones this case needs.
+4. `make run TV=<tv> RUN_SECS=<n> FLAVOR=<f>` — relaunch, wait, and cat that install's
+   `plxnative-events.log` back.
 5. Filter the `smp_cb type=43 num=0 str=` flood and evaluate the assertions.
 
-## The `/tmp/plxnative-play=<rk>` trigger (added for this harness)
+## The `plxnative-play=<rk>` trigger (added for this harness)
 
-Tests use `/tmp/plxnative-play=<ratingKey>` instead of the fragile `/tmp/plxnative-detail`. `plxnative-detail`
+Tests use `plxnative-play=<ratingKey>` instead of the fragile `plxnative-detail`. `plxnative-detail`
 only *plays* if the rk is in the home catalog (Continue Watching / hubs); off-catalog it loads
 data-only and never plays. `plxnative-play` fetches the item's metadata fresh (`metadata::load_detail`,
 works for **any** rk) and drives the same field-based play path the detail Play button uses
@@ -392,7 +469,7 @@ index *r−1*.
 
 The library survey found these have no exercising item; the harness can't test them with real
 media (see `library_gaps` in `manifest.json`). A small set of **synthetic** `ffmpeg` clips
-(10–30 s), served from the host (`python3 -m http.server`) and fed via the `/tmp/plxnative-url` boot
+(10–30 s), served from the host (`python3 -m http.server`) and fed via the `plxnative-url` boot
 trigger, would close them deterministically — recommended as an optional supplement, kept clearly
 labeled "synthetic" and secondary to the 8 authoritative real item shapes:
 
@@ -425,7 +502,7 @@ labeled "synthetic" and secondary to the 8 authoritative real item shapes:
   human in front of the television is whether the panel engages Dolby Vision at all on the P8 file
   that does direct-play.
   **And since 2026-08-21 the P5 half of that refusal is CONDITIONAL, so read the paragraph above as
-  the behaviour with `/tmp/plxnative-dv` absent — which is what this suite runs and what a
+  the behaviour with `plxnative-dv` absent — which is what this suite runs and what a
   `RELEASE=1` build compiles in.** Arming that trigger makes the Load payload declare the stream
   (`contents.DolbyHdrInfo`, the node LG's own pipeline has parsed all along), and a declared
   single-layer Profile 5 direct-plays *correctly* — so with it armed the P5 item's expectation is a

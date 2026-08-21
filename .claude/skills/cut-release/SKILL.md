@@ -43,7 +43,15 @@ existing tag, use the `rebuild_tag` input.
 `make check` — deletes the release artifacts at parse time, so a later step silently operates on a
 dev build or on nothing. This bit during the very session that wrote this skill: a check for "does
 the release build open a `/tmp` FIFO?" reported yes and was wrong, because the TV was still holding
-a dev binary. The md5 comparison is what caught it.
+a dev binary. The md5 comparison is what caught it. `release-guard` now turns that exact
+split-invocation mistake into a message *for the stable id* — see the next section — but only
+there: everywhere else `RELEASE=1` is still yours to remember.
+
+The one exception, and it is safe to lean on: a **pure query** — any of the
+`print-*` goals, and only those (`QUERY_GOALS` in the Makefile is the source; transcribing the list
+here is how it went one short the first time it was written) is exempted from that
+parse-time deletion, precisely so that asking the Makefile a question mid-release cannot discard the
+binary you are about to publish. Mixing a query with a real goal is not a query and does stamp.
 
 Whenever you assert something about "the release build", prove the bytes first:
 
@@ -53,12 +61,62 @@ sshpass -p alpine ssh root@$(cat .tv-host) \
   "md5sum /media/developer/apps/usr/palm/applications/com.beb.plxnative/plxnative"
 ```
 
-**3. Every number in the note is copied from an artifact, never typed.**
-Past notes have claimed a "webOS 26" that does not exist and quoted an uncompressed size as a
-download size. Sizes come from the manifest's `ipkSize`; hashes from `shasum` on the published
-asset; firmware numbers must appear in `tools/fwcompat.py`'s matrix or `docs/webos5-port.md`'s
-table. `ci/check-package.py` gates all of this, and `ci/verify-published.sh` re-checks it
-against the artifacts a stranger actually downloads.
+**That id is spelled out on purpose, and it is the STABLE one.** This is the most-copied "prove the
+bytes" idiom in the repo, and there is now a second install on the same television —
+`com.beb.plxnative.debug`, the developer build, which is what an unflavoured `make deploy` targets.
+Pasted into a debug context this command silently compares against the wrong app and reports a
+mismatch (or, worse, a match) about a binary nobody is releasing. **A release is always the stable
+id**, so leave the literal alone here; anywhere else, get the path from
+`make -s print-appdir FLAVOR=<f>`. And note the hash is now weaker evidence than it reads as:
+`pkg/plxnative` is a path every flavour and both configurations write, so a match proves the bytes
+and not the install. The **first line of the event log** is the witness that names both —
+`install: id=com.beb.plxnative flavour=- … features=release` — where `features=release` is the
+direct answer to "is this the shipped configuration?". (The stable install prints `flavour=-`, not
+`flavour=stable`: the field is derived by stripping the stable id off the running one, so the app
+users get has nothing left to name.)
+
+## The stable id is a release-only id, and the Makefile enforces it
+
+`com.beb.plxnative` is the id users install. There is now a second install on the same
+television — `com.beb.plxnative.debug`, the developer build — and **that one is the Makefile's
+default**, so every release command below has to say `FLAVOR=stable` out loud. A release is always
+the stable id and always `RELEASE=1`; the other combination is refused:
+
+```
+$ make FLAVOR=stable ipk
+refusing to put a DEV build on com.beb.plxnative — that id is what users install.
+  release build:      make FLAVOR=stable RELEASE=1 ipk
+  developer install:  make ipk          (FLAVOR=stable is not the default)
+  really meant it:    make FLAVOR=stable ALLOW_DEV_ON_STABLE=1 ipk
+```
+
+(It echoes your goal back, so the three lines are always spelled for the target you just tried.
+The parenthetical names the flavour you **asked for**, not the default — reading it as advice to
+add `FLAVOR=stable` is backwards; the developer install is the one you get by typing nothing.)
+
+This is §2 seen from the other side: a dev-featured binary under the shipped id carries the whole
+`/tmp` trigger surface, the world-writable `plxnative-remote` FIFO and the `:8910` capture
+listener (8910 is the *stable* install's port; a flavoured one defaults to 8911, which is exactly
+why the shipped id carrying a listener **at all** is the thing being ruled out here). Before the
+split that could only happen by publishing by hand, which is how v0.2.1's defects got out; now it
+is one forgotten `RELEASE=1` on a machine that also has a television, so it gets a mechanism.
+
+**`ci/check-package.py` grades the same rule on the packaged BYTES, and it now does so
+unconditionally** — the check sits outside the `pkg/.build-config` branch, gated on nothing but
+"this package is the stable id". That matters because the stamp cannot be trusted to be one of the
+two shipped configurations: the Makefile documents a third (`RUST_FEATFLAGS="--no-default-features
+--features devtriggers"`, the README-screenshot recipe), and while the check was nested it would
+have printed "SKIP — neither shipped configuration" and packaged a dev-trigger binary under the
+released id on a green run. So the gate genuinely holds against the two ways past the recipe: the
+documented `ALLOW_DEV_ON_STABLE=1` hatch, and a third feature set that satisfies `release-guard`
+without being a release. "Carries no dev-trigger surface" is a property of the bytes and needs no
+stamp to grade.
+
+**`ALLOW_DEV_ON_STABLE=1` is never part of a release.** It exists for exactly one job —
+reproducing a user's report against the id they actually installed, with the dev trigger surface
+on — and a build made that way must never be published, packaged into a release asset, or hashed
+into a note. Put the real thing back with `make FLAVOR=stable RELEASE=1 deploy` when you are done,
+because the id it left behind is the one the household watches with.
 
 ## The procedure
 
@@ -89,9 +147,20 @@ moves one line.** Do not widen it because a firmware "should" work.
 ### 3. Build locally to catch mistakes early — CI builds what ships
 
 ```sh
-make RELEASE=1 ipk          # RELEASE=1 on every invocation, no exceptions
-python3 ci/check-package.py # the gate: versions, ar layout, descriptors, build paths, notes
+make FLAVOR=stable RELEASE=1 ipk   # both, on every invocation, no exceptions
+python3 ci/check-package.py        # the gate: versions, ar layout, descriptors, build paths, notes
 ```
+
+`FLAVOR=stable` is what makes this the shipped id: unflavoured it packages
+`com.beb.plxnative.debug`, whose `.ipk` filename, `appinfo.json` and staged directory all carry the
+debug id — and `make ipk` only writes `pkg/ipk.sha256` for the stable flavour, so a debug package
+cannot quietly overwrite the hash a release note quotes.
+
+**`check-package.py` deliberately takes no `FLAVOR`, and that is not an omission to fix.** It reads
+the flavour back out of the *staged* directory id (`ipkroot/data/usr/palm/applications/<id>`) and
+grades whatever is actually there. Passing it an environment flavour would let the two disagree,
+which is exactly the failure it exists to catch — so it prints `-- grading the <flavour> package:
+<id>` and you read that line rather than trusting what you meant to build.
 
 **Everything a command can decide is a gate in `ci/check-package.py`, not a step here.** That is
 deliberate and it is the lesson of v0.2.1: a checklist is only as good as the person following it,
@@ -108,6 +177,14 @@ local build embeds the local NDK path.
 gh workflow run release.yml -f version=X.Y.Z     # or -f bump=patch
 gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
 ```
+
+**There is no flavour input here, and you do not want one.** `release.yml` pins `FLAVOR: stable` in
+the build job's `env`, which is the right place for it: CI is the one context where the Makefile's
+`FLAVOR ?= debug` default is always wrong, and a value nobody can forget to type beats one they
+can. So the `FLAVOR=stable` you spell on every *local* command is already spelled for you in the
+workflow — do not try to pass it as `-f`. If you ever need to confirm which id a run actually
+packaged, read it off the artifact filename, which the workflow asserts, rather than from what the
+job was meant to do.
 
 Then confirm the gates actually ran — this is the check that would have caught v0.2.1:
 
@@ -148,10 +225,23 @@ ssh root@$(cat .tv-host) "script -qc \"luna-send -i -a com.webos.appInstallServi
   '{\\\"id\\\":\\\"com.beb.plxnative\\\",\\\"ipkUrl\\\":\\\"/tmp/com.beb.plxnative_X.Y.Z_arm.ipk\\\",\\\"subscribe\\\":true}'\" /dev/null"
 ```
 
-Wake the TV first (`wake-tv` skill). Then launch it and read the event log: the boot line names the
-firmware, and a release build must leave **only** the three `*.log` files in `/tmp` — no FIFO, no
-`:8910` listener. That is the release build's whole premise and it is worth re-checking every time,
-by hash.
+**Both ids here are the stable one, deliberately** — this step is the release going onto the id
+users install, and nothing about it is parameterised. **Do not substitute `make FLAVOR=stable
+RELEASE=1 install`**, which issues the same luna call and then *deploys over it*: that is right for
+bringing an install up, and wrong here, because it replaces the packaged binary with your local one
+and the whole point of this step is that the **package** is what runs.
+
+Wake the TV first (`wake-tv` skill). Then launch it and read the event log: its first line is
+`install: id=com.beb.plxnative flavour=- … features=release` — check the id and `features=` there
+rather than inferring them, since both builds' binaries are named `plxnative` — the next line names
+the firmware, and a release build must leave **only** the three `*.log` files in the stable runtime
+root, `/tmp`. No FIFO, no `:8910` listener. That is the release build's whole premise and it is
+worth re-checking every time, by hash.
+
+If the developer install is also on this television you will see a `/tmp/com.beb.plxnative.debug`
+directory beside those logs: that is the *other* install's runtime root, not a leak from this one.
+It is named for the app id — the reason the separator is a dot and not a hyphen — so it matches no
+`plxnative-*` glob and cannot be mistaken for a trigger by the check or by the app.
 
 ### 7. Tell the people who are waiting
 
