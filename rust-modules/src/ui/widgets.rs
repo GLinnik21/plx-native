@@ -861,6 +861,48 @@ pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4
     w
 }
 
+/// `"{pre} [KEY] {post}"` — a prose hint with the key drawn as a CAP, RIGHT-aligned so its last
+/// character lands on `right`, cap band centred on `cy`. Returns the width it occupied.
+///
+/// **The panel family's dismissal line** (`Alert Views.dc.html`: every read-only panel closes on
+/// BACK and says so). The cap is what survives a phone photograph of an issue thread, which is the
+/// same reason the failure read-out draws one.
+///
+/// It is composed from [`keyline_chip`] rather than being a second ring construction, and that is
+/// the point of putting it here: `player_hud`'s own `draw_hint_with_keycap` builds its cap as a
+/// KNOCKOUT — the ring colour, then the interior repainted in opaque black — which is exact there
+/// (the failure read-out paints its own black ground) and simply wrong over anything else. Over
+/// GLASS a knockout is a black box where a hairline should be, for precisely the reason
+/// `keyline_chip`'s own doc records. That older helper is deliberately left alone for now: it sits
+/// on a screen whose whole design brief is "survive a photograph", so migrating it wants a device
+/// look rather than a host one.
+pub(crate) fn key_cap_hint(
+    p: Painter,
+    pre: &std::ffi::CStr,
+    key: &std::ffi::CStr,
+    post: &std::ffi::CStr,
+    right: f32,
+    cy: f32,
+) -> f32 {
+    const GAP: f32 = 14.0;
+    let sz = theme::size::CAPTION;
+    let ink = theme::TEXT_TERTIARY;
+    let key_s = key.to_str().unwrap_or("");
+    let pw = crate::text::text_width(pre.as_ptr(), sz, 0);
+    let ow = crate::text::text_width(post.as_ptr(), sz, 0);
+    let kw = keyline_chip_w(key_s);
+    let total = pw + GAP + kw + GAP + ow;
+    let x = right - total;
+    let ty = crate::text::text_vcenter_y(sz, 0, cy);
+    p.text(pre.as_ptr(), x, ty, sz, ink, 0, 0);
+    // The cap's own ink is a step brighter than the prose around it: the KEY is the thing being
+    // named and the words are only the sentence carrying it, which is the same weighting the
+    // failure read-out uses (`TEXT_SECONDARY` on the cap, tertiary on the prose).
+    keyline_chip(p, x + pw + GAP, cy, key_s, theme::TEXT_SECONDARY);
+    p.text(post.as_ptr(), x + pw + GAP + kw + GAP, ty, sz, ink, 0, 0);
+    total
+}
+
 /// The **bottom scrim** on a piece of artwork: `h` px of near-black fading upward to nothing, clipped
 /// to the card's own rounded silhouette. This is what lets text sit directly ON a still with no chip
 /// or capsule behind it (`Details Screen.dc.html`'s episode tiles) — a plain label over an arbitrary

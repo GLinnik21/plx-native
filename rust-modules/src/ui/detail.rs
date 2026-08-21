@@ -821,6 +821,9 @@ enum HeroCtl {
     Restart,
     /// the *Also available* pill, present only while a second pinned source holds this item
     Alt,
+    /// the ⓘ disc — *Track information*. Present only while the item has a FILE of its own to
+    /// describe (`tracks_panel::is_available`), which excludes a show container.
+    Info,
     /// the ✓ disc — "mark as watched". Present unless the item already IS watched.
     MarkWatched,
     /// the − disc — "mark as unwatched". Present unless the item has never been started.
@@ -835,12 +838,18 @@ enum HeroCtl {
 struct HeroSet {
     restart: bool,
     alt: bool,
+    info: bool,
     mark: PosterMark,
 }
 
 /// The live set, read from the loaded item and the resolved copy list.
 fn hero_set() -> HeroSet {
-    HeroSet { restart: has_restart(), alt: crate::ui::alt_sources::is_available(), mark: hero_mark() }
+    HeroSet {
+        restart: has_restart(),
+        alt: crate::ui::alt_sources::is_available(),
+        info: crate::ui::tracks_panel::is_available(),
+        mark: hero_mark(),
+    }
 }
 
 /// The row's controls, in drawn order, for a given set. A fixed stack array plus a live count, like
@@ -850,14 +859,22 @@ fn hero_set() -> HeroSet {
 /// available*, then the watch-state discs last. The alt pill sits with the things you might do to
 /// the copy rather than with the things you do to your own view state.
 ///
+/// The ⓘ *Track information* disc joins that middle group, between *Also available* and the watch
+/// discs — `Alert Views.dc.html` does not draw the row, so this is our placement and the reasoning
+/// is the sentence above: inspecting the copy and choosing between copies are the same KIND of
+/// question ("which file is this"), and both belong before the things that change your own view
+/// state. It is also the safe end to grow from — everything past Play is conditional already, so
+/// the focus follows its CONTROL rather than an index ([`hero_col`]) and inserting one here cannot
+/// move the ring off what the user was standing on.
+///
 /// **The tail is one disc or TWO, and that is the design** (`CircleButton.d.ts`): each disc's glyph
 /// states the OUTCOME its press produces, so an item that is done offers only *mark unwatched* and
 /// one never started offers only *mark watched* — the button IS the circle, and a single disc that
 /// changed meaning without changing shape was the old row's real bug. A PART-WATCHED item is in
 /// neither state, and no single toggle can express both destinations, so it gets both discs: ✓ then
 /// −, the same order the two ends of the range read in. The state is [`hero_watch_state`]'s.
-fn hero_ctls(set: HeroSet) -> ([HeroCtl; 5], usize) {
-    let mut v = [HeroCtl::Play; 5];
+fn hero_ctls(set: HeroSet) -> ([HeroCtl; 6], usize) {
+    let mut v = [HeroCtl::Play; 6];
     let mut n = 1;
     if set.restart {
         v[n] = HeroCtl::Restart;
@@ -865,6 +882,10 @@ fn hero_ctls(set: HeroSet) -> ([HeroCtl; 5], usize) {
     }
     if set.alt {
         v[n] = HeroCtl::Alt;
+        n += 1;
+    }
+    if set.info {
+        v[n] = HeroCtl::Info;
         n += 1;
     }
     if set.mark != PosterMark::Watched {
@@ -958,6 +979,8 @@ enum HeroAction {
     MarkUnwatched,
     /// open the list of the OTHER sources holding this item (`ui::alt_sources`)
     Alt,
+    /// open the *Track information* panel for this item (`ui::tracks_panel`)
+    Info,
     None,
 }
 
@@ -984,6 +1007,7 @@ fn hero_action(col: c_int) -> HeroAction {
         Some(HeroCtl::Play) => HeroAction::Play,
         Some(HeroCtl::Restart) => HeroAction::Restart,
         Some(HeroCtl::Alt) => HeroAction::Alt,
+        Some(HeroCtl::Info) => HeroAction::Info,
         Some(HeroCtl::MarkWatched) => HeroAction::MarkWatched,
         Some(HeroCtl::MarkUnwatched) => HeroAction::MarkUnwatched,
         None => HeroAction::None,
@@ -1276,11 +1300,19 @@ pub(crate) fn open(idx: c_int) {
     }
 }
 
-/// BACK on the detail page, handled INSIDE the screen: dismiss the "Also available" panel if it is
-/// up, and report whether the press was spent. `false` means the page has nothing of its own to
+/// BACK on the detail page, handled INSIDE the screen: dismiss whichever of the page's own panels
+/// is up, and report whether the press was spent. `false` means the page has nothing of its own to
 /// close and `app.rs` should pop the BACK trail — the shape `library::back()` established, for the
 /// same reason (a panel is part of the screen, so leaving the screen must not be how you close it).
+///
+/// The two panels are mutually exclusive in practice (each is opened by a control the other one
+/// covers) but both are tested, in the order they sit in z: a defensive close of a panel that is
+/// not up is free, and spending the press twice is not possible because each arm returns.
 pub(crate) fn back() -> bool {
+    if crate::ui::tracks_panel::is_open() {
+        crate::ui::tracks_panel::close();
+        return true;
+    }
     if crate::ui::alt_sources::is_open() {
         crate::ui::alt_sources::close();
         return true;
@@ -1290,9 +1322,10 @@ pub(crate) fn back() -> bool {
 
 /// Leave the detail page (drop the loaded item).
 pub(crate) fn close() {
-    // the panel is this page's, so it dies with it — and with an unset server and an empty rk
-    // nothing can land in the store for a page that is gone
+    // the panels are this page's, so they die with it — and with an unset server and an empty rk
+    // nothing can land in the "Also available" store for a page that is gone
     crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
+    crate::ui::tracks_panel::close();
     metadata::clear();
     // Every latch dies with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
@@ -1311,8 +1344,14 @@ pub(crate) fn close() {
 }
 
 pub(crate) fn move_focus(sym: c_int) {
-    // the "Also available" panel takes the nav keys while it is up — focus is trapped in the list,
-    // as it is in every other popover this app opens
+    // An open panel takes the nav keys — focus is trapped inside it, as it is in every other
+    // popover this app opens. Track information has no focusable row, so UP/DOWN page its body
+    // and LEFT/RIGHT are swallowed rather than reaching the hero row behind it (the same rule
+    // `key_more_menu` keeps for a one-column menu: a control that is not visible is not drivable).
+    if crate::ui::tracks_panel::is_open() {
+        crate::ui::tracks_panel::move_focus(sym);
+        return;
+    }
     if crate::ui::alt_sources::is_open() {
         crate::ui::alt_sources::move_focus(sym);
         return;
@@ -1732,6 +1771,8 @@ pub(crate) fn update(dt: f32) {
     // keeps `current()` empty for the whole fetch, so at `reset` time there is nothing to copy)
     crate::ui::alt_sources::pump();
     crate::ui::alt_sources::update(dt);
+    // the Track-information panel's appear spring + its body scroll (no-op while it is closed)
+    crate::ui::tracks_panel::update(dt);
     // debounced season fetch: load the queued season only after its tab has held focus for a beat, so
     // scanning tabs (a hold, or fast taps) coalesces into ONE blocking `/children` fetch, not one per step.
     if v.pending_season >= 0 {
@@ -1813,10 +1854,11 @@ pub(crate) fn draw() {
             .tint(theme::TEXT_SECONDARY)
             .draw(&env, ps);
     }
-    // LAST, over everything: the "Also available" panel is a modal on this page, and it builds its
-    // own root painter (scrim included) rather than riding the scrolled one — a popover is anchored
-    // to where its button was DRAWN, not to the page's content space. No-op while closed.
+    // LAST, over everything: this page's modals build their OWN root painter (scrim included)
+    // rather than riding the scrolled one — a popover is anchored to where its button was DRAWN,
+    // or to the frame, and never to the page's content space. Both are no-ops while closed.
     crate::ui::alt_sources::draw();
+    crate::ui::tracks_panel::draw();
 }
 
 // The below-hero sections ARE the ScrollColumn's children (the hero at section id 0 is pinned, drawn
@@ -2818,6 +2860,18 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
             .focused(focus == i)
             .draw(env, p);
     }
+    // Track information (ⓘ) — the file inspector. A DISC and not a pill: it names no outcome and
+    // takes no argument, so there is no verb to letter across a pill the way *Also available* has
+    // one. Same `info.svg` the in-player Info card's action button uses, so "information about
+    // what is playing" is one mark in this app rather than two.
+    if let Some(i) = hero_index(HeroCtl::Info) {
+        let r = hero_btn_rect(i, y);
+        CircleButton::new(c"".as_ptr())
+            .icon(crate::ui::icons::Icon::Info)
+            .at(r.x, r.y)
+            .focused(focus == i)
+            .draw(env, p);
+    }
     // The watch-state discs, ONE or TWO of them (`hero_ctls`). Each **states the OUTCOME its press
     // produces** rather than the state the item is in — the design system's rule for a control that
     // is already a circle (`CircleButton.d.ts`): the BARE check / minus, never the filled
@@ -3345,9 +3399,9 @@ fn commit_resume(from_start: bool) {
 /// release (app.rs); the non-card controls activate immediately.
 pub(crate) fn focus_is_card() -> bool {
     // Nothing behind an open panel is pressable, so nothing behind it is a card either: the press
-    // belongs to the list, and `on_ok` routes it there. Without this an OK held over the panel
+    // belongs to the panel, and `on_ok` routes it there. Without this an OK held over the panel
     // would begin a tvOS press on a tile nobody can see and commit it on release.
-    if crate::ui::alt_sources::is_open() {
+    if crate::ui::alt_sources::is_open() || crate::ui::tracks_panel::is_open() {
         return false;
     }
     // The episode filmstrip's METADATA block is not a card: it is a link into another page, so it
@@ -3366,6 +3420,12 @@ pub(crate) fn on_ok() -> bool {
     // so an OK belongs to its highlighted row and never to the control set behind it. Reported
     // rather than performed there (`alt_sources`'s rule); [`ALT_OPEN`] is where it becomes a
     // navigation request, for the same reason the Related shelf's OK does not call `open_rk` itself.
+    // Track information is READ-ONLY: it has no row to activate, so OK is swallowed rather than
+    // reaching the hero control behind it. BACK is the only key that dismisses it, which is what
+    // the panel's own footer says.
+    if crate::ui::tracks_panel::is_open() {
+        return false;
+    }
     if crate::ui::alt_sources::is_open() {
         request_alt_open(crate::ui::alt_sources::on_ok());
         return false;
@@ -3408,6 +3468,14 @@ pub(crate) fn on_ok() -> bool {
                 {
                     crate::viewstate::request(sid, &rk, w, Some(String::new()), &guid);
                 }
+                return false;
+            }
+            if action == HeroAction::Info {
+                // Opened straight from here, unlike `Alt`'s deferred request: that panel is
+                // ANCHORED beside its control's drawn rect, so it needs a frame `app.rs` can hand
+                // it one from. This one is a fixed, centred frame and needs nothing from the draw
+                // — so a request latch would be a hop with no payload.
+                crate::ui::tracks_panel::open();
                 return false;
             }
             if action == HeroAction::Alt {
@@ -5607,6 +5675,38 @@ mod tests {
         mount(None, 0);
     }
 
+    /// **Where the ⓘ disc sits, pinned as a decision rather than left to the array literal.**
+    /// `Alert Views.dc.html` specifies the panel and not the control that opens it, so this
+    /// placement is ours (see [`hero_ctls`]'s doc): with the copy-level controls, after *Also
+    /// available* and before anything that writes view state. Graded on the FULL row, because the
+    /// only way to state "between" is to name both neighbours.
+    #[test]
+    fn track_information_sits_with_the_copy_controls_not_with_the_watch_state_ones() {
+        let full = HeroSet { restart: true, alt: true, info: true, mark: PosterMark::InProgress };
+        let (v, n) = hero_ctls(full);
+        assert_eq!(
+            &v[..n],
+            &[
+                HeroCtl::Play,
+                HeroCtl::Restart,
+                HeroCtl::Alt,
+                HeroCtl::Info,
+                HeroCtl::MarkWatched,
+                HeroCtl::MarkUnwatched,
+            ]
+        );
+        // …and it holds when the controls around it are absent, which is the ordinary case: on a
+        // one-server library there is no alt pill for it to follow, and an unstarted item has no
+        // restart disc — the disc must still land before the watch tail, not at a fixed index.
+        let plain = HeroSet { restart: false, alt: false, info: true, mark: PosterMark::None };
+        let (v, n) = hero_ctls(plain);
+        assert_eq!(&v[..n], &[HeroCtl::Play, HeroCtl::Info, HeroCtl::MarkWatched]);
+        // an item with no file of its own (a show) leaves the row exactly as it was before this
+        let none = HeroSet { info: false, ..plain };
+        let (v, n) = hero_ctls(none);
+        assert_eq!(&v[..n], &[HeroCtl::Play, HeroCtl::MarkWatched]);
+    }
+
     /// The row is ACCUMULATED, and with the alt pill it has a variable-width control in the middle
     /// — the exact case a fixed disc pitch gets wrong. Pure: both pill widths are passed in, since
     /// the host links no SDL_ttf (the split `hero_btn_rect_at` exists for).
@@ -5620,9 +5720,11 @@ mod tests {
         let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
         let sets = [false, true].into_iter().flat_map(|restart| {
             [false, true].into_iter().flat_map(move |alt| {
-                [PosterMark::None, PosterMark::InProgress, PosterMark::Watched]
-                    .into_iter()
-                    .map(move |mark| HeroSet { restart, alt, mark })
+                [false, true].into_iter().flat_map(move |info| {
+                    [PosterMark::None, PosterMark::InProgress, PosterMark::Watched]
+                        .into_iter()
+                        .map(move |mark| HeroSet { restart, alt, info, mark })
+                })
             })
         });
         for set in sets {
@@ -5663,9 +5765,10 @@ mod tests {
     #[test]
     fn the_widest_action_row_clears_the_people_column() {
         let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
-        let widest = HeroSet { restart: true, alt: true, mark: PosterMark::InProgress };
+        let widest =
+            HeroSet { restart: true, alt: true, info: true, mark: PosterMark::InProgress };
         let (_, n) = hero_ctls(widest);
-        assert_eq!(n, 5, "every conditional control at once");
+        assert_eq!(n, 6, "every conditional control at once");
 
         let last = hero_btn_rect_at(widest, n as c_int - 1, y, pw, alt_w);
         assert!(

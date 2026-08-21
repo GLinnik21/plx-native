@@ -874,6 +874,25 @@ pub const RATING_MUTED: [f32; 4] = COOL_400;
 /// Card corner radius (tiles/shelves — `CardRow`'s rounded rect + its baked focus glow follow it).
 pub const CARD_RING_RAD: f32 = 14.0;
 
+/// **The MODAL PANEL corner** — a full-frame alert panel (`Alert Views.dc.html`), not a menu
+/// popover. One rung softer than the 24 the anchored menus draw, and the design states why it is
+/// this number rather than a rounder one:
+///
+/// > "Panel corner is 32px, one step over `--radius-panel` 24. It was tried at 60 — one whole
+/// > `--control-h`, so the panel would read as round as the pills inside it — and that is the
+/// > value that made the modal look like it came from somewhere else: at 14px on every tile and
+/// > 18px on a `TableView` row pill, this page has a restrained corner vocabulary and a 60px arc
+/// > leaves it. 32 stays inside that vocabulary while still reading as softer than a card, and
+/// > clears the 28px glass bevel so the chamfer runs inside the arc."
+///
+/// That last clause is load-bearing rather than decorative: below the bevel width the chamfer
+/// would run OUTSIDE the corner arc and the rim would break at each corner. It is deliberately a
+/// token and not a per-panel literal — the four alert panels are one family and a corner that
+/// drifted between them would be the drift `theme.rs` exists to kill. The anchored menus
+/// (`item_menu`, `alt_sources`, the Library chip menus) keep their own smaller radii: they are
+/// pointing at an element, not owning the frame.
+pub const RADIUS_PANEL: f32 = 32.0;
+
 // ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus
 // pop + a 1px perimeter edge-sheen, both FOLDED into the tile's own draw pass (FS_IMG for textured
 // tiles, FS_SRC for skeleton/chip fills), replacing the old glow ring. Applies to circles too. ──
