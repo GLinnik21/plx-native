@@ -861,6 +861,134 @@ pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4
     w
 }
 
+// ---- Key cap + key hint: a REMOTE BUTTON named in running prose --------------------------------
+//
+// "Press [BACK] to return" — the line every read-only alert panel closes with (`Alert Views.dc.html`
+// 1A/1B/1C all carry it, 1E states the rule: the panels that hold no control close on BACK, so the
+// line IS the whole affordance) and the line the player's failure read-out already carried.
+//
+// **The cap is the point, not decoration.** `BACK` set in the same prose as the words around it
+// reads as a word; the same three letters inside a keyline read as the thing under your thumb. That
+// distinction has to survive a PHOTOGRAPH of a television in an issue thread, which is the failure
+// read-out's whole output format, and a keyline survives a phone camera's chroma subsampling where
+// a colour or weight change does not.
+//
+// The idiom was written first as a private `draw_hint_with_keycap` in `player_hud.rs`, screen-local
+// and centred on `SCR_W`. It is here because the alert panels want the same object RIGHT-aligned
+// inside a panel, and the guide's rule 4 answers that: promote the widget, don't fork it. Three
+// alert lanes reached for it independently and all three rejected the HUD's CONSTRUCTION for the
+// same reason, below.
+//
+// **The cap is a genuinely hollow ring in the LABEL'S OWN INK**, which is `keyline_chip`'s
+// construction and its measured reason — read that one before retuning either. The HUD's original
+// drew the ring as a knockout (a white-at-.34 rounded rect, then the interior repainted OPAQUE
+// BLACK) and got away with it because the video plane behind the read-out is black by construction.
+// On a glass panel that interior is a black hole punched through the frost. Going hollow is
+// therefore forced — and the alpha cannot come with it: at [`KEYCAP_W`] 1.5 the SDF's rim coverage
+// is the product of two 1.5px smoothsteps, whose overlap is about a quarter of a pixel, so a
+// stated `.34` resolves to roughly a tenth of that on screen. `keyline_chip` measured it (~12
+// levels above ground where the arithmetic says ~87). Opaque ink is what makes a 1.5px ring exist.
+//
+// **`player_hud::draw_hint_with_keycap` is DELIBERATELY NOT migrated onto this, and that is a
+// decision rather than an oversight.** Two of the three lanes did migrate it and one refused; the
+// refusal is what shipped. Going hollow is not a no-op on that screen — it trades a .34 white
+// knockout for opaque `TEXT_SECONDARY`, so the cap gets brighter on the one screen whose whole
+// design brief is "survive a phone photograph in an issue thread". That is a DEVICE look, gradeable
+// only on the television and not on a host simulator, so the failure read-out keeps its own cap
+// until someone can put the two side by side on the panel. The cost is a second cap construction in
+// the tree, which is why it is written down here rather than left to be rediscovered as duplication
+// worth cleaning up.
+/// The cap's outer height — a fixed band, unlike [`keyline_chip`], which hugs its label's cap band.
+/// A key cap stands for a physical button, so every cap in the app is the same size whatever word
+/// is on it; only the WIDTH grows.
+pub(crate) const KEYCAP_H: f32 = 36.0;
+/// The narrowest a cap is ever drawn. `BACK` sets it; `OK` would otherwise come out as a stub, and
+/// two caps of different widths on one line read as two different objects.
+const KEYCAP_MIN_W: f32 = 74.0;
+const KEYCAP_PAD_X: f32 = 12.0;
+const KEYCAP_RAD: f32 = 8.0;
+/// Stroke width — the design's 1.5, the same weight as [`keyline_chip`]'s and `ControlStyle::Keyline`'s.
+const KEYCAP_W: f32 = 1.5;
+/// A cap's label is BOLD [`theme::size::MICRO`]: it is a one-line de-emphasised LABEL in the rung's
+/// own terms, and it must hold its own inside a ring at a size below the reading floor.
+const KEYCAP_BOLD: c_int = 1;
+/// The gap between the cap and the prose either side of it.
+const KEYCAP_GAP: f32 = 14.0;
+
+/// The width [`key_cap`] will occupy for `label` — the measure-first companion, so a caller can
+/// right-align or centre the whole line before drawing any of it.
+pub(crate) fn key_cap_w(label: &std::ffi::CStr) -> f32 {
+    (crate::text::text_width(label.as_ptr(), theme::size::MICRO, KEYCAP_BOLD) + 2.0 * KEYCAP_PAD_X)
+        .max(KEYCAP_MIN_W)
+}
+
+/// Draw one key cap with its LEFT edge at `x`, centred on `cy`; returns its width.
+pub(crate) fn key_cap(p: Painter, x: f32, cy: f32, label: &std::ffi::CStr, ink: [f32; 4]) -> f32 {
+    let w = key_cap_w(label);
+    p.rring(Rect::new(x, cy - KEYCAP_H * 0.5, w, KEYCAP_H), KEYCAP_RAD, KEYCAP_W, ink);
+    let tw = crate::text::text_width(label.as_ptr(), theme::size::MICRO, KEYCAP_BOLD);
+    p.text(
+        label.as_ptr(),
+        x + (w - tw) * 0.5,
+        crate::text::text_vcenter_y(theme::size::MICRO, KEYCAP_BOLD, cy),
+        theme::size::MICRO,
+        ink,
+        0,
+        KEYCAP_BOLD,
+    );
+    w
+}
+
+/// `{pre} [KEY] {post}` — one line of fine print with a [`key_cap`] set into the middle of it.
+///
+/// Measure-then-place, because a caller needs the width before it knows the x: an alert panel
+/// right-aligns the line against its own padding edge (`right - hint.width()`), and the same
+/// arithmetic centres it (`(w - hint.width()) * 0.5`) for whoever wants that. It places by x rather
+/// than centring itself precisely so that both are the caller's to choose — the alignment is the
+/// half that belongs to the screen, the assembled line is the half that does not.
+///
+/// The three `&CStr`s are BORROWED for the widget's lifetime — the `Label` rule in `ui/CLAUDE.md`:
+/// keep the `CString` (or a `c"…"` literal) alive across the draw.
+pub(crate) struct KeyHint<'a> {
+    pre: &'a std::ffi::CStr,
+    key: &'a std::ffi::CStr,
+    post: &'a std::ffi::CStr,
+}
+
+impl<'a> KeyHint<'a> {
+    pub(crate) fn new(pre: &'a std::ffi::CStr, key: &'a std::ffi::CStr, post: &'a std::ffi::CStr) -> Self {
+        Self { pre, key, post }
+    }
+
+    /// Total width of the assembled line.
+    pub(crate) fn width(&self) -> f32 {
+        let sz = theme::size::CAPTION;
+        crate::text::text_width(self.pre.as_ptr(), sz, 0)
+            + KEYCAP_GAP
+            + key_cap_w(self.key)
+            + KEYCAP_GAP
+            + crate::text::text_width(self.post.as_ptr(), sz, 0)
+    }
+
+    /// The band the line occupies — the cap is taller than the prose's cap band, so a caller
+    /// reserving flow for this must reserve the CAP's height, not the text's.
+    pub(crate) const fn height() -> f32 {
+        KEYCAP_H
+    }
+
+    /// Draw with the line's LEFT edge at `x`, its cap band vertically centred on `cy`. The prose
+    /// sits on its own cap band (rule 3 — never a magic y), the cap on the same centre line.
+    pub(crate) fn draw(&self, p: Painter, x: f32, cy: f32) {
+        let sz = theme::size::CAPTION;
+        let ty = crate::text::text_vcenter_y(sz, 0, cy);
+        let pw = crate::text::text_width(self.pre.as_ptr(), sz, 0);
+        p.text(self.pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
+        let kx = x + pw + KEYCAP_GAP;
+        let kw = key_cap(p, kx, cy, self.key, theme::TEXT_SECONDARY);
+        p.text(self.post.as_ptr(), kx + kw + KEYCAP_GAP, ty, sz, theme::TEXT_TERTIARY, 0, 0);
+    }
+}
+
 /// The **bottom scrim** on a piece of artwork: `h` px of near-black fading upward to nothing, clipped
 /// to the card's own rounded silhouette. This is what lets text sit directly ON a still with no chip
 /// or capsule behind it (`Details Screen.dc.html`'s episode tiles) — a plain label over an arbitrary
