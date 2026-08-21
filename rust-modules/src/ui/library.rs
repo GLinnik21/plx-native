@@ -2323,11 +2323,17 @@ pub(crate) fn draw() {
     // that was already fading out from under it — visible on the panel. `TOOL_Y + TOOL_H` is the
     // lowest thing this bar draws, which is exactly what the shared element wants.
     crate::ui::widgets::nav_scrim(p, TOOL_Y + TOOL_H, GRID_TOP, sc);
-    // the shared bar, both stops: the chip (which unfurls when THIS screen's focus is on it — it
-    // used to be drawn here with a hard-coded `expand: 0.0`, because it could not be focused) and
-    // the centred pills.
-    crate::ui::widgets::profile_chip(pk);
+    // the shared bar, both stops: the centred pills, and then the chip — which unfurls when THIS
+    // screen's focus is on it, where it used to be drawn with a hard-coded `expand: 0.0` because it
+    // could not be focused here at all.
+    //
+    // **The chip goes LAST, over the track**, and that order is load-bearing now that it unfurls on
+    // this screen: the focused chip grows the profile NAME to its right, far enough with a long
+    // name to reach the centred track, and drawn first it went under the track's own scrim. Home
+    // has always drawn it in this order for exactly that reason; this screen could get away with
+    // the other one only while the chip here was frozen shut.
     crate::ui::widgets::draw_tab_row(pk);
+    crate::ui::widgets::profile_chip(pk);
 
     // the focused index comes from `tool_f` — the same clamped authority `focused_chip` reads, so
     // the chip wearing the ring and the chip OK activates are one chip

@@ -863,9 +863,13 @@ pub(crate) fn draw() {
     // The chip's frame is `widgets`' own now, which retires this screen's last way of disagreeing
     // with the others about it: it was a literal 54 here while Home drew the same chip at 60, and
     // Home↔Search is a chrome-CONTINUOUS cross-fade, so the avatar visibly shrank mid-transition on
-    // this screen alone. It also unfurls here now, because the chip is a focus stop on this screen.
-    crate::ui::widgets::profile_chip(pk);
+    // this screen alone. It also unfurls here now, because the chip is a focus stop on this screen
+    // — which is why it is drawn AFTER the track and not before it: the unfurled profile name
+    // reaches toward the centred strip, and under the strip it was painted over by the track's own
+    // scrim. Home's draw carries the same note, and this screen only got away with the other order
+    // while its chip could not open.
     crate::ui::widgets::draw_tab_row(pk);
+    crate::ui::widgets::profile_chip(pk);
 }
 
 /// Record the rect a recent-term row (or, at [`MAX_RECENTS`], the Clear control) was DRAWN at.
@@ -1032,6 +1036,19 @@ fn commit_query() {
         recents::remember(&q);
     }
     crate::ui::idle::invalidate();
+}
+
+/// **Take the television's keyboard down, from outside this screen** — [`commit_query`] under a
+/// name a caller can reach, recording the term exactly as leaving the field by remote does.
+///
+/// It exists for the profile chip. The panel is a SYSTEM surface, not something a popover of ours
+/// can draw over or suppress, so a modal opened while it is up leaves it on screen capturing
+/// `SDL_TEXTINPUT` into the field underneath — and this screen keeps updating behind a popover, so
+/// that text really does land. The D-pad cannot produce that state (reaching the chip means walking
+/// out of the field, which goes through `leave_field`); a POINTER click on the avatar can, and this
+/// is that path's half of the same rule. A no-op when the panel is not up.
+pub(crate) fn end_editing() {
+    commit_query();
 }
 
 // ---- input: keys, OK, BACK -----------------------------------------------------------------
