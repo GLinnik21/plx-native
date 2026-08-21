@@ -243,7 +243,45 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
             .replace(r#""audioOnly":false"#, r#""audioOnly":false,"adaptiveResolution":true"#);
         log(&format!("esInfo: videoFps {num}/{den} + adaptiveResolution (src {:.3})", crate::route::stream_fps()));
     }
-    with_dolby_hdr_info(&p, video, crate::route::stream_dovi().presentation_now())
+    let p = with_dolby_hdr_info(&p, video, crate::route::stream_dovi().presentation_now());
+    with_immersive(&p, crate::route::stream_immersive())
+}
+
+/// The `contents.immersive` node — **the Dolby Atmos half of the same envelope**, and the reason
+/// the television's Atmos read-out never appeared while its Dolby Vision one did.
+///
+/// PURE, so the splice is host-testable, and spliced at the same `provider` anchor and in the same
+/// shape as [`with_dolby_hdr_info`], which is its sibling in every sense: one key inside
+/// `externalStreamingInfo.contents`, one string, and the whole difference between a stream the
+/// pipeline treats as ordinary E-AC3 and one it treats as immersive.
+///
+/// **The key and the value are both read off the television's own binaries** (2026-08-21), which
+/// matters because neither is guessable and a wrong one is silent:
+/// - `libpf-1.0.so.1.0.0` holds the literal key path `option.externalStreamingInfo.contents.immersive`,
+///   logs it as `PF_EXT_IMMERSIVE : %s`, and carries it onto the audio caps it builds —
+///   `audio mediaInfo … channels[%d] language[%s] … immersive[%s] role[%s]`. It is a `%s` all the
+///   way down: libpf validates nothing and passes the string through.
+/// - The VALUE therefore has to come from whoever fills it, and **the bare literal `ATMOS` exists in
+///   exactly one library on this device: `libcbe.so`** — Chromium's media backend, i.e. the path
+///   LG's own web apps (Plex's included) take. In its string pool that literal sits immediately
+///   after `immersive` and in the same run as `externalStreamingInfo`, `esInfo`, `seperatedPTS`,
+///   `provider`, `DolbyHdrInfo`, `encryptionType`, `profileId` and `contents` — the payload we
+///   build, key for key. So `"ATMOS"` is not our invention; it is the value the working client
+///   sends, recovered from the binary that sends it.
+///
+/// `libplayerAPIs` injects `platformSupportDolbyATMOS` itself from its configd cache, exactly as it
+/// does for Dolby Vision, so this node states a fact about the STREAM and never about the set.
+fn with_immersive(p: &str, atmos: bool) -> String {
+    if !atmos {
+        return p.to_string();
+    }
+    let anchor = r#""provider":"plxnative""#;
+    if !p.contains(anchor) {
+        log("atmos: payload has no provider anchor — immersive NOT spliced");
+        return p.to_string();
+    }
+    log("atmos: sourceInfo contents.immersive=ATMOS");
+    p.replace(anchor, &format!(r#"{anchor},"immersive":"ATMOS""#))
 }
 
 /// The `contents.DolbyHdrInfo` node — **the whole of the Dolby Vision fix**, spliced into the
@@ -1141,7 +1179,7 @@ pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
 
 #[cfg(test)]
 mod payload_tests {
-    use super::{with_dolby_hdr_info, PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
+    use super::{with_dolby_hdr_info, with_immersive, PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
     use crate::metadata::Dovi;
 
     fn p5() -> Dovi {
@@ -1218,6 +1256,51 @@ mod payload_tests {
         ] {
             assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
         }
+    }
+
+    /// **What we actually send for a Dolby Atmos track**, at the key path `libpf` reads
+    /// (`option.externalStreamingInfo.contents.immersive`) and with the value `libcbe` — the
+    /// television's own working client — puts there. Same anchor and same shape as the Dolby
+    /// Vision node, which is the point: they are one envelope with two statements in it.
+    #[test]
+    fn an_atmos_track_splices_immersive_into_contents() {
+        let out = with_immersive(PAYLOAD_AV, true);
+        assert!(out.contains(r#""provider":"plxnative","immersive":"ATMOS"}"#), "{out}");
+        // the trailing `}` is `contents` closing — the node is INSIDE it, not a sibling of
+        // `contents` in `externalStreamingInfo`, which is where libpf would never look
+        assert!(out.contains(r#""immersive":"ATMOS"},"streamQualityInfo""#), "{out}");
+        // and nothing else moved
+        assert_eq!(out.replace(r#","immersive":"ATMOS""#, ""), PAYLOAD_AV);
+    }
+
+    /// The other side of it, and the one that matters for the whole library: a track with no
+    /// Atmos leaves the payload byte-identical. Every ordinary AAC/AC3 film takes this path, so a
+    /// splice that fired unconditionally would tell the television that all of them are immersive.
+    #[test]
+    fn a_plain_track_splices_nothing() {
+        assert_eq!(with_immersive(PAYLOAD_AV, false), PAYLOAD_AV);
+    }
+
+    /// **Both nodes at once**, which is the real case — the Profile 5 test item is Dolby Vision
+    /// AND Dolby Atmos, and it is what the television shows two read-outs for. They are spliced by
+    /// two independent functions at ONE anchor, so this is the test that says the second does not
+    /// land inside the first: `immersive` must be a sibling KEY of `DolbyHdrInfo` inside
+    /// `contents`, never a fourth field of the `DolbyHdrInfo` object.
+    #[test]
+    fn dolby_vision_and_atmos_are_siblings_inside_contents() {
+        let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
+        let out = with_immersive(&with_dolby_hdr_info(&base, "H265", p5().presentation(true)), true);
+        assert!(
+            out.contains(
+                r#""provider":"plxnative","immersive":"ATMOS","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#
+            ),
+            "{out}"
+        );
+        // the DolbyHdrInfo object still has exactly its three fields — `immersive` did not get
+        // swept inside it by an anchor both functions matched
+        assert!(!out.contains(r#""profileId":5,"immersive""#), "{out}");
+        assert_eq!(out.matches(r#""immersive":"ATMOS""#).count(), 1);
+        assert_eq!(out.matches("DolbyHdrInfo").count(), 1);
     }
 
     /// The consistency guard: a Dolby Vision declaration only ever rides an HEVC elementary
