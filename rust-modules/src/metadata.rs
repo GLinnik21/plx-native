@@ -758,6 +758,19 @@ pub(crate) struct Detail {
     pub(crate) year: i64,
     pub(crate) rating: String, // contentRating
     pub(crate) summary: String,
+    /// The marketing one-liner (`tagline`) — *"Everyone deserves the chance to fly."*
+    ///
+    /// **Atmosphere, never content**, which is why it is drawn only in the About alert
+    /// ([`crate::ui::about_panel`]) under the synopsis and nowhere on the page itself: it says
+    /// nothing a viewer needs in order to decide, so it earns a line only where there is room to
+    /// read the whole record. Empty for most items and for every episode — absence is the ordinary
+    /// case, and the panel drops the line AND its gap rather than reserving a hole.
+    ///
+    /// It arrives on the SINGLE-key `/library/metadata/{rk}` fetch, which asks for no field
+    /// exclusions. Both of the other reads in `plex/library.rs` pass
+    /// `excludeFields=summary,tagline` — the batched `metadata_many` and the section listing — so
+    /// anything derived from THOSE has never seen it and never will.
+    pub(crate) tagline: String,
     pub(crate) aired: String,
     pub(crate) dur_ms: i64,
     pub(crate) resume_ms: i64, // viewOffset (0 = not partially watched) — the resume position
@@ -1057,6 +1070,7 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         year: it.year,
         rating: it.content_rating.clone(),
         summary: it.summary.clone(),
+        tagline: it.tagline.clone(),
         aired: it.originally_available_at.clone(),
         dur_ms: it.duration,
         resume_ms: it.view_offset,
