@@ -92,6 +92,9 @@ pub(super) unsafe fn acb_bind(_media_id: *const c_char) {}
 pub(super) unsafe fn acb_send_video_data(_source_info: *const c_char) -> c_int {
     -1 // -1 = rejected, per starfish.h
 }
+pub(super) unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
+    0 // 0 = no ACB / no symbol, which is exactly the host's situation
+}
 pub(super) unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {}
 pub(super) unsafe fn acb_unload() {}
 pub(super) unsafe fn acb_pause() {}

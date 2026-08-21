@@ -61,8 +61,16 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   `setState(LOADED)` → *wait for decoded frames* → `setMediaVideoData(<sourceInfo envelope
   VERBATIM>)` → `setDisplayWindow` → `setState(PLAYING)`. The payload passed to
   `setMediaVideoData` is the **whole `sourceInfo` envelope** captured verbatim from the pipeline's
-  callback (`sourceInfoRaw`), not a reconstructed one. Audio is owned by the pipeline — **never**
-  feed audio to ACB (causes SOUND_ERROR_019). `AcbAPI_setMediaVideoData`/`setState`/
+  callback (`sourceInfoRaw`), not a reconstructed one. Audio is owned by the pipeline — **never feed
+  ACB an audio SINK or elementary stream**. That half is real and unchanged. Its long-stated
+  consequence is not: `SOUND_ERROR_019` is a literal that exists in **no library on this
+  television** (swept across ~70 harvested libraries including 92 MB of Chromium), and the clause
+  has carried no evidence since the initial commit. **`AcbAPI_setMediaAudioData` IS used**, for a
+  two-key METADATA descriptor — `{"audio":{"immersive":"ATMOS"},"context":"<mediaId>"}`, fired
+  right after `acb_bind`, which is exactly where LG's own client fires it. Device-measured
+  2026-08-21: `rv=1`, audio untouched (1600 AUs, `reply=O`, no error), and the set's own
+  "Dolby Vision / Dolby Atmos" read-out captured on screen. Details and addresses:
+  `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault).
 - **The Load payload's codecs must come from the `/decision` OUTPUT, not the source file.** A
