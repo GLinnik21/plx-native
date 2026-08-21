@@ -33,6 +33,7 @@ pub mod onboard; // first-run route: which sources feed Home, asked once per PRO
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
+pub mod person_bio; // ...and that page's bio ALERT panel — the full biography behind its `MORE` mark
 pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;

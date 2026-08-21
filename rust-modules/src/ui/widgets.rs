@@ -989,6 +989,163 @@ impl<'a> KeyHint<'a> {
     }
 }
 
+// ---- Dotted run: fine-print facts separated by `·` ----------------------------------------------
+
+/// Draw `parts` left to right from `x` on the cap-band y `y`, joined by a **`·` in
+/// [`theme::TEXT_SEPARATOR`]** with `pad` either side of it. Returns the total drawn width.
+///
+/// **Empty parts are ABSENT, not blank**: a run with no content contributes neither a draw nor a
+/// separator, so a person with no birthplace gets "Actor · 1987" and never "Actor · 1987 · ". That
+/// is the whole reason this is a component and not a `join(" · ")` — the dot is a *different ink*
+/// from the runs it divides ([`theme::TEXT_SEPARATOR`], .45 of the words' own, which is what every
+/// mock in the design project sets a separator to). A dot sharing the ink of the words either side
+/// JOINS them instead of punctuating them, and one `p.text` call cannot express the difference.
+///
+/// Promoted out of `detail.rs`, where it was `dotted_run` and private; the detail facts row and the
+/// bio panel's identity line are the same idiom one screen apart, and the second copy is where the
+/// separator ink would have drifted.
+pub(crate) fn dotted_run(p: Painter, parts: &[&str], x: f32, y: f32, sz: c_int, col: [f32; 4], pad: f32) -> f32 {
+    let mut bx = x;
+    for part in parts.iter().filter(|s| !s.is_empty()) {
+        if bx > x {
+            bx += pad;
+            if let Ok(dc) = CString::new("\u{b7}") {
+                bx += p.text(dc.as_ptr(), bx, y, sz, theme::TEXT_SEPARATOR, 0, 0);
+            }
+            bx += pad;
+        }
+        if let Ok(pc) = CString::new(*part) {
+            bx += p.text(pc.as_ptr(), bx, y, sz, col, 0, 0);
+        }
+    }
+    bx - x
+}
+
+// ---- Scroll rail: how far through a paged viewport you are --------------------------------------
+
+/// The rail's bar width, and the corner that makes it a pill. A **6px** bar is the design's, and the
+/// radius is simply half of it — a "pill radius" is not a number to choose, it is the constraint
+/// that the ends are semicircles.
+pub(crate) const RAIL_W: f32 = 6.0;
+const RAIL_RAD: f32 = RAIL_W * 0.5;
+
+/// Where the rail's fill sits inside its track, as `(top, height)` FRACTIONS of the track — the
+/// pure half of [`scroll_rail`], so the arithmetic is host-testable without a GL context.
+///
+/// **It is quantised to PAGES, not to pixels, and that is the design.** The viewport it indexes
+/// moves a page at a time (there is no continuous scroll to track), so a fill sized by
+/// `viewport/content` would sit at fractions the content can never rest at and would stop short of
+/// the bottom on the last page. One page of travel moves the fill by exactly its own height, which
+/// is what makes the rail readable as "3 of 5" rather than as an approximate position.
+///
+/// `pages == 0` cannot happen from [`scroll_rail`] (a viewport that fits is not railed at all), and
+/// is folded to the full track rather than dividing by zero. `page` is 1-based and clamped, so a
+/// caller that has not yet re-clamped after a resize draws a rail that is merely stale, never one
+/// hanging off the end of its track.
+pub(crate) fn rail_geom(page: usize, pages: usize) -> (f32, f32) {
+    if pages <= 1 {
+        return (0.0, 1.0);
+    }
+    let h = 1.0 / pages as f32;
+    let page = page.clamp(1, pages);
+    ((page - 1) as f32 * h, h)
+}
+
+/// Draw the paged scroll rail in `track` (the caller's 6px-wide column beside its viewport): the
+/// full-height dim track, then the fill at [`rail_geom`]'s offset. Both are pill-ended.
+///
+/// Drawn only when there is more than one page — a rail on content that fits is a control saying
+/// there is somewhere else to go when there is not.
+pub(crate) fn scroll_rail(p: Painter, track: Rect, page: usize, pages: usize) {
+    if pages <= 1 {
+        return;
+    }
+    p.rrect(track, RAIL_RAD, RAIL_RAD, theme::RAIL_TRACK);
+    let (top, h) = rail_geom(page, pages);
+    p.rrect(
+        Rect::new(track.x, track.y + top * track.h, track.w, h * track.h),
+        RAIL_RAD,
+        RAIL_RAD,
+        theme::RAIL_FILL,
+    );
+}
+
+// ---- Edge feather: the soft end of a hard-clipped viewport ---------------------------------------
+
+/// Feather the top and/or bottom `band` px of a **scissor-clipped** viewport, so prose that
+/// continues past the edge dissolves into the panel instead of being guillotined mid-glyph.
+///
+/// **It is cosmetic; the CLIP is what actually cuts.** `ui/CLAUDE.md` records that the old
+/// fade-mask-INSTEAD-of-a-clip trick was removed because a linear fade cannot cut a tall two-line
+/// row evenly and read as a broken clip. This is the other arrangement: `Painter::clip` makes the
+/// exact cut and the ramp only softens the last `band` px in front of it, which is sound precisely
+/// because a prose block has uniform leading — the objection was about rows of unequal height.
+///
+/// Each edge is drawn only when there is something on the far side of it (`top` = the block is
+/// scrolled off the top, `bot` = more remains below). An unconditional pair puts a permanent
+/// shadow across the first and last lines of a document that fits, which reads as content hidden
+/// where none is.
+///
+/// The ink is [`theme::SURFACE_PANEL`], whose documented role is exactly this ("opaque menu panel /
+/// fade mask"), at four alphas through [`Painter::grad4`] — one rgb at four alphas, which is the
+/// only way that primitive interpolates exactly (its own doc). Alpha reaches 1 AT the clip line, so
+/// the ramp is opaque precisely where the scissor bites and the seam has nothing left to show.
+pub(crate) fn edge_feather(p: Painter, view: Rect, band: f32, top: bool, bot: bool) {
+    let band = band.min(view.h * 0.5);
+    if band <= 0.0 {
+        return;
+    }
+    let ink = theme::SURFACE_PANEL;
+    let solid = theme::with_a(ink, 1.0);
+    let clear = theme::with_a(ink, 0.0);
+    if top {
+        // tl, tr, br, bl — opaque at the top edge, gone `band` px down
+        p.grad4(Rect::new(view.x, view.y, view.w, band), [solid, solid, clear, clear]);
+    }
+    if bot {
+        p.grad4(Rect::new(view.x, view.y + view.h - band, view.w, band), [clear, clear, solid, solid]);
+    }
+}
+
+// ---- Tracked caps: a kicker drawn letter by letter -----------------------------------------------
+
+/// Draw `chars` from `x` on cap-band y `y` with `track` px inserted BETWEEN characters (never after
+/// the last), returning the drawn width. The text backend has no letter-spacing, so tracking is
+/// always a per-character pen advance — see [`pass_capsule`]'s `PASS_TRACK`, which is the same
+/// technique with its own memo.
+///
+/// **Pre-split `&CStr` literals, not a `&str`**, so an eyebrow that draws every frame costs no
+/// allocation: the caller writes `const EYEBROW: [&CStr; 6] = [c"P", c"E", …]`. That is deliberately
+/// awkward — it is only worth doing for a CONSTANT word, which every tracked kicker in this app is.
+/// A tracked run of runtime text would want a different design (one `CString`, and the tracking
+/// baked into the wrap), and there is no such caller.
+pub(crate) fn tracked_run_w(chars: &[&std::ffi::CStr], sz: c_int, bold: c_int, track: f32) -> f32 {
+    if chars.is_empty() {
+        return 0.0;
+    }
+    let ink: f32 = chars.iter().map(|c| crate::text::text_width(c.as_ptr(), sz, bold)).sum();
+    ink + track * (chars.len() - 1) as f32
+}
+
+/// [`tracked_run_w`]'s draw half — see it for why the label is pre-split.
+pub(crate) fn tracked_run(
+    p: Painter,
+    chars: &[&std::ffi::CStr],
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: [f32; 4],
+    bold: c_int,
+    track: f32,
+) -> f32 {
+    let mut bx = x;
+    for c in chars {
+        bx += p.text(c.as_ptr(), bx, y, sz, col, 0, bold);
+        bx += track;
+    }
+    (bx - track - x).max(0.0)
+}
+
 /// The **bottom scrim** on a piece of artwork: `h` px of near-black fading upward to nothing, clipped
 /// to the card's own rounded silhouette. This is what lets text sit directly ON a still with no chip
 /// or capsule behind it (`Details Screen.dc.html`'s episode tiles) — a plain label over an arbitrary

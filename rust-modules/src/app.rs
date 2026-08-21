@@ -2940,11 +2940,20 @@ unsafe fn key_ok(
             );
         }
     } else if matches!(*route, Route::Person) {
-        // every focusable thing on the person page is a poster card → the
+        // every focusABLE thing on the person page is a poster card → the
         // same tvOS press as home's grid, committed on the spring-back
         if crate::ui::person::focus_is_card() {
             crate::ui::press::begin(SDL_GetTicks());
             *ok_armed = true;
+        } else {
+            // …and the HEADER, which is a focus row carrying no card: OK there
+            // opens the bio alert when there is more biography than the band
+            // shows. No press is armed, because a tvOS dip needs something to
+            // dip — nothing in the band draws `press::scale()` — and waiting
+            // for a spring-back nobody can see would only add latency.
+            // `header_ok` owns both tests (are we on the header, is the bio
+            // actually truncated) and answers false when it did nothing.
+            crate::ui::person::header_ok();
         }
     } else {
         // home: dispatch through the ONE activation (shared with pointer
@@ -3124,11 +3133,20 @@ fn key_back(
         // (does the page underneath wear the tab bar?) happens here.
         //
         // …but a panel the SCREEN has open takes the press first and the page
-        // stays: `detail::back()` is `library::back()`'s shape one screen over
-        // ("Also available" is part of the detail page, so leaving the page
-        // must not be the way to close it). It answers false on Person, which
-        // has no panel of its own.
-        if !crate::ui::detail::back() {
+        // stays: `back()` is `library::back()`'s shape one screen over ("Also
+        // available" is part of the detail page, so leaving the page must not
+        // be the way to close it).
+        //
+        // EACH ROUTE ANSWERS FOR ITS OWN PANELS. This was a bare
+        // `detail::back()` across both arms, resting on it answering false on
+        // Person — which was true only while Person had no panel of its own,
+        // and stopped being true when the bio alert landed. A page-owned modal
+        // BACK cannot close is a screen the user is stuck on.
+        let panel_took_it = match *route {
+            Route::Person => crate::ui::person::back(),
+            _ => crate::ui::detail::back(),
+        };
+        if !panel_took_it {
             nav_back(*route, trail, nav);
         }
     } else if matches!(*route, Route::Search) {
@@ -5700,6 +5718,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         if matches!(route, Route::Account { .. }) {
                             crate::ui::account_menu::prepare_present(
+                                underlay_moving || crate::ui::idle::present_dirty(),
+                            );
+                        }
+                        // The person page's bio alert, the other refreshing backdrop in the app.
+                        // It needs the cadence resolved for the reason its own `POP` records: a
+                        // CACHED snapshot would be taken on the frame it opened, with its scrim
+                        // still ramping through zero, and would frost an undimmed page for the
+                        // rest of the session.
+                        if matches!(route, Route::Person) {
+                            crate::ui::person_bio::prepare_present(
                                 underlay_moving || crate::ui::idle::present_dirty(),
                             );
                         }
