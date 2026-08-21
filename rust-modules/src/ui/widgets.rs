@@ -4232,9 +4232,10 @@ pub(crate) fn draw_tab_row(p: Painter) {
     })
 }
 
-/// Which colour treatment a control (Button / CircleButton) wears. One control widget, three looks —
+/// Which colour treatment a control (Button / CircleButton) wears. One control widget, four looks —
 /// the focus-driven default (every pill and disc in the app, the hero Play button included), a
-/// caller-coloured one-off, and the keyline pill for a secondary action over video.
+/// caller-coloured one-off, the keyline pill for a secondary action over video, and the
+/// destructive face.
 ///
 /// There used to be a fourth, `Primary`: an always-filled cool-white CTA. It went with
 /// `theme::FILL_PRIMARY` in the 2026-08-13 palette sync — **nothing is filled by rank, only by
@@ -4254,6 +4255,24 @@ pub enum ControlStyle {
     /// idle plate reads as a hole in the picture. Focused it takes the standard Accent treatment,
     /// so focus reads identically across every control in the family.
     Keyline,
+    /// The **destructive** face — the control that ends something (the exit alert's *Exit*).
+    ///
+    /// Idle it states the hue TWICE: the plate is [`Accent`]'s neutral one carrying
+    /// [`theme::DANGER_IDLE_TINT`] of [`theme::DANGER`] ([`theme::CONTROL_DANGER_IDLE_FILL`]) and
+    /// the label is drawn in the danger ink itself. That is not belt-and-braces — at ten feet a
+    /// 16% tint on a dark plate is a shade of grey, and the point of the pair is that the action
+    /// is NAMED as destructive before the remote ever reaches it. Focused, the hue takes the whole
+    /// face: [`theme::DANGER`] fill under [`theme::TEXT_PRIMARY`] ink.
+    ///
+    /// **There is no keyline, and that is a decision rather than an omission.** A danger-tinted
+    /// perimeter was a third signal saying what the plate and the label already say, and the
+    /// perimeter sheen every control wears ([`control_rim`]) is a card CONSTANT, not a state — a
+    /// style that made it a state would be the one control in the app whose edge means something.
+    ///
+    /// The invariant to preserve: **the colour is a property of the ACTION, the FILL is still a
+    /// property of FOCUS.** Every other control in this family lights up for exactly one reason,
+    /// and this one must not become a button that is filled by rank (the reason `Primary` went).
+    Danger,
 }
 /// A control's EDGE — the 1px perimeter the design system has always asked every control to wear
 /// and which none of them wore.
@@ -4288,6 +4307,11 @@ impl ControlStyle {
             ControlStyle::Custom { fill, ink } => (fill, ink),
             ControlStyle::Keyline if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
             ControlStyle::Keyline => (theme::PILL_KEYLINE_BG, theme::TEXT_HEADING),
+            // The hue takes the WHOLE face on focus, exactly as `Accent`'s near-white does —
+            // same shape, same rim, same shadow, one substitution. That is the sentence
+            // `ControlStyle::Danger` makes: the colour belongs to the action, the fill to focus.
+            ControlStyle::Danger if focused => (theme::DANGER, theme::TEXT_PRIMARY),
+            ControlStyle::Danger => (theme::CONTROL_DANGER_IDLE_FILL, theme::CONTROL_DANGER_IDLE_INK),
         }
     }
 }
@@ -4766,6 +4790,69 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The **destructive** face, both states, as the one sentence it is meant to say: *the colour
+    /// belongs to the ACTION, the fill belongs to FOCUS.*
+    ///
+    /// Both halves are graded, because each fails invisibly on its own. An idle plate that is not
+    /// tinted (a `Danger` arm that fell through to `Accent`'s neutral) still lights up correctly on
+    /// focus, so a device capture of the focused pill looks right. A focused face that is not the
+    /// whole hue reads as an ordinary control the moment the ring lands on it, which is the frame
+    /// nobody screenshots. The comparisons are against the tokens rather than against colour codes,
+    /// so a palette retune moves this test with the design instead of breaking it.
+    #[test]
+    fn the_danger_face_tints_when_idle_and_takes_the_whole_hue_when_focused() {
+        let (idle_fill, idle_ink) = ControlStyle::Danger.colors(false);
+        let (foc_fill, foc_ink) = ControlStyle::Danger.colors(true);
+
+        // FOCUSED: the hue is the face, under primary ink — the same substitution `Accent` makes
+        // with its near-white, so focus reads identically across the whole control family.
+        assert_eq!(foc_fill, theme::DANGER);
+        assert_eq!(foc_ink, theme::TEXT_PRIMARY);
+
+        // IDLE: the neutral plate with the hue leaned into it, and the label in the hue itself —
+        // the action is NAMED before the remote reaches it.
+        assert_eq!(idle_fill, theme::CONTROL_DANGER_IDLE_FILL);
+        assert_eq!(idle_ink, theme::DANGER);
+        let (neutral, _) = ControlStyle::Accent.colors(false);
+        assert_ne!(idle_fill, neutral, "an idle destructive plate is not the neutral one");
+        assert_eq!(
+            idle_fill[3], neutral[3],
+            "…but it is the same MATERIAL — `mix` keeps the neutral's alpha, so the hue is the \
+             only difference between the two idle plates"
+        );
+        // …and it is a TINT, not the fill: 16% of the way over, so the plate is nearer the
+        // neutral it is derived from than the hue it is announcing.
+        for c in 0..3 {
+            let leaned = (idle_fill[c] - neutral[c]).abs();
+            let whole = (theme::DANGER[c] - neutral[c]).abs();
+            assert!(
+                leaned <= whole * 0.5,
+                "channel {c}: an idle plate that is half the hue is a fill, not a tint"
+            );
+        }
+        assert_ne!(idle_fill, foc_fill, "the FILL is what focus owns, on this style as on every other");
+    }
+
+    /// **No keyline on the danger face.** The knockout stroke is `Keyline`'s alone — a danger rim
+    /// would be a third signal saying what the plate and the label already say, and the perimeter
+    /// sheen every control wears (`control_rim`) is a card CONSTANT rather than a state.
+    ///
+    /// `Button::plate` decides this with a `matches!` on one variant, so the property is not
+    /// something the type system defends: a later `| ControlStyle::Danger` added to that test
+    /// compiles and looks plausible. This is what refuses it.
+    #[test]
+    fn the_danger_face_wears_no_keyline() {
+        let styled = |s: ControlStyle, focused: bool| {
+            let b = Button::new(c"x".as_ptr(), theme::size::BODY, Rect::new(0.0, 0.0, 260.0, 60.0))
+                .style(s)
+                .focused(focused);
+            matches!(b.style, ControlStyle::Keyline) && !b.focused
+        };
+        assert!(!styled(ControlStyle::Danger, false), "an idle danger pill draws no stroke");
+        assert!(!styled(ControlStyle::Danger, true));
+        assert!(styled(ControlStyle::Keyline, false), "the control case: Keyline idle still does");
+    }
 
     /// **The scroll band's glass is about TWICE the region a moving host can carry, on both of the
     /// screens that draw one** — the arithmetic that closed `/tmp/plxnative-navglass`, written as a
