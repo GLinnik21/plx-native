@@ -403,6 +403,36 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Testing / verification (two tiers: a fast host unit suite, then the device)
 
+> ### THERE IS ONE TELEVISION AND IT IS A MUTEX. NOTHING ENFORCES THIS.
+>
+> There is exactly one dev set, one app instance on it, and **no lock of any kind** — not a file,
+> not a flag, not the harness. The only thing keeping two jobs off it is whoever is sequencing the
+> work, and that is precisely why it goes wrong: two `tests/run.py` runs, or a run plus a
+> `make deploy`, or a capture session plus either, **kill each other's app**. The damage is not a
+> clean failure — it is *plausible wrong data*: bogus `timeline_climb` failures, an fps number
+> measured while somebody else's binary was being deployed underneath, a capture of a screen the
+> other job navigated away from. You cannot tell those from a real regression by looking at them.
+>
+> **Before any device work, check — do not assume.** Owning it a minute ago is not owning it now:
+>
+> ```sh
+> pgrep -fl "tests/run.py|capture-screen|make deploy" ; ps aux | grep -c "[s]sh .*$(cat .tv-host)"
+> ssh root@$(cat .tv-host) 'pidof plxnative || echo NONE'   # `ps` finds nothing on this busybox TV
+> ```
+>
+> **When farming work out to several agents, the TV is the scheduling constraint, not a detail.**
+> Give device access to **at most one lane at a time** and say so in the other prompts; run the rest
+> host-only or on the simulator (`make sim` — N instances, `PLXNATIVE_RUNTIME_DIR` per instance,
+> which is the whole reason it exists). Telling two prompts "you own the television exclusively" is
+> *not* a mutex — each is true when written and false the moment the second one starts. That exact
+> mistake was made on 2026-08-21 with a blur measurement and a Dolby capture running at once, and it
+> was caught by luck rather than by anything failing loudly.
+>
+> If you find a collision: stop **one** job (`TaskStop`), let the other finish, then re-run the
+> stopped one from scratch — do not salvage its half-collected numbers. Check afterwards for a
+> stranded app, stray ssh clients and leftover `/tmp/plxnative-*` triggers, and **re-run anything
+> that was measured during the overlap**, because it is contaminated whether or not it looks fine.
+
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
