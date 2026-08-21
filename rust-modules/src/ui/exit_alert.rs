@@ -68,7 +68,7 @@ const BTN_W: f32 = 260.0;
 const BTN_GAP: f32 = 20.0;
 
 /// How far the panel slides on open — up into place, the shape every panel in the app appears with.
-const RISE: f32 = 18.0;
+const RISE: f32 = Popover::RISE;
 /// How dark Home goes behind the alert.
 ///
 /// Heavier than any menu's (`item_menu` .34, `alt_sources` .45, `account_menu` .5) and that is the

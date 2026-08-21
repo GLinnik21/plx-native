@@ -912,8 +912,11 @@ const KEYCAP_W: f32 = 1.5;
 /// A cap's label is BOLD [`theme::size::MICRO`]: it is a one-line de-emphasised LABEL in the rung's
 /// own terms, and it must hold its own inside a ring at a size below the reading floor.
 const KEYCAP_BOLD: c_int = 1;
-/// The gap between the cap and the prose either side of it.
-const KEYCAP_GAP: f32 = 14.0;
+/// The gap between the cap and the prose either side of it — the design's `gap:12`, which every
+/// alert footer in `Alert Views.dc.html` sets (§1A's and both of §1B's runs). It shipped at a
+/// hand-tuned 14 in all three lanes that built one of these panels, none of which could read the
+/// spec; two pixels either side of one cap is not a thing anyone would have found by looking.
+const KEYCAP_GAP: f32 = 12.0;
 
 /// The width [`key_cap`] will occupy for `label` — the measure-first companion, so a caller can
 /// right-align or centre the whole line before drawing any of it.

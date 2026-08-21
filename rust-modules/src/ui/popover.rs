@@ -154,6 +154,23 @@ impl Popover {
             .alpha(a * crate::ui::nav::page_alpha())
             .translate(0.0, rise * (1.0 - a))
     }
+    /// **The app's entry-slide distance** — how far a panel rises into place on open, in px, for
+    /// [`painter`](Self::painter) and [`content_painter`](Self::content_painter).
+    ///
+    /// It is published here because this type owns the appear choreography and the value is a
+    /// property of THAT, not of any one panel: every modal in the app is meant to arrive the same
+    /// way, and a panel sliding a different distance from its neighbour reads as a different kind
+    /// of object. `rise` stays a parameter rather than becoming this constant outright, because a
+    /// panel anchored to the BOTTOM of the frame passes it negative to drop down instead.
+    ///
+    /// 20 is what `alt_sources` has always drawn. It is written down because the four alert panels
+    /// arrived with 24 / 20 / 20 / 18 — each documented in its own file as "the shared entry
+    /// distance", "matching every other popover in the app", "the shape every panel in the app
+    /// appears with". Four files claiming to match each other, and no two of them agreeing, is the
+    /// exact failure a token exists to prevent; it is the same disease as the four names the 32px
+    /// corner shipped under.
+    pub(crate) const RISE: f32 = 20.0;
+
     /// Draw the optional modal scrim (peak alpha `scrim_a`; 0 = none) and return the content
     /// painter: faded by the appear state and sliding from `rise` px below (+, rises up into
     /// place) or above (−, drops down) to its rest position. The scrim draws on its OWN root

@@ -694,9 +694,17 @@ impl Flow {
 /// A caps section head — `FILE`, `AUDIO · 8 TRACKS`.
 ///
 /// `to_uppercase`, not `to_ascii_uppercase`, matching `table.rs`'s header rule: a head here can
-/// carry any script the server sends. The design sets `--track-caps` tracking on it, which this
-/// renderer has no letter-spacing for (the only tracked run in the app is the PLEX PASS capsule,
-/// drawn per-character); caps + bold at CAPTION is the app's established head face.
+/// carry any script the server sends.
+///
+/// **The design sets `--track-caps` tracking on this head and we do not draw it — and the reason
+/// recorded here was that the renderer HAS no letter-spacing, which is no longer true.**
+/// `widgets::tracked_run` is a shared component (the PLEX PASS capsule's per-character technique,
+/// promoted), and the person bio's own eyebrow spends it. So the three panels' kickers do not
+/// match each other: §1C is tracked, §1A and this one are not. Left as it is deliberately rather
+/// than guessed at — the spec copy in this tree carries no `ds/` token files, so `--track-caps`'s
+/// actual value is unverifiable here and §1C's `.08em` is itself a guess. Settle the number with
+/// the designer and then move all three together; caps + bold at CAPTION is meanwhile the app's
+/// established head face.
 fn head(f: &mut Flow, text: &str, x: f32, w: f32) {
     f.run(&text.to_uppercase(), x, w, HEAD_H, theme::size::CAPTION, true, theme::TEXT_TERTIARY, HAlign::Left);
 }
@@ -897,9 +905,12 @@ pub(crate) fn draw() {
         crate::ui::icons::draw(p, icon, Rect::new(gx, cy - GLYPH * 0.5, GLYPH, GLYPH), theme::TEXT_TERTIARY);
         gx += GLYPH + theme::space::XS + 4.0;
     }
+    // The design's `gap:12` applies between EVERY item in this run, the label included — the loop
+    // above already advances by 12, so the label takes the pen where it is rather than adding a
+    // second nudge of its own (which is what made this one gap 16 while its neighbour was 12).
     let hint = c"to scroll";
     Label::new(hint.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .draw(p, Rect::new(gx + 4.0, fy, cw, FOOTER_H));
+        .draw(p, Rect::new(gx, fy, cw, FOOTER_H));
     // right: Press [BACK] to return, RIGHT-aligned on the padding edge. The shared
     // `widgets::KeyHint` places by x and each caller solves its own alignment, so a right edge is
     // `right - width()`. (This was a local `key_cap_hint` that built its cap out of `keyline_chip`
@@ -918,7 +929,7 @@ fn rule(p: Painter, x: f32, y: f32, w: f32) {
 /// The modal dim, from the design's `scrimStill: 0.46`.
 const SCRIM_A: f32 = 0.46;
 /// How far the panel slides up into place — the panels' shared entry distance.
-const RISE: f32 = 20.0;
+const RISE: f32 = Popover::RISE;
 
 #[cfg(test)]
 mod tests {
